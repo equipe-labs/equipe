@@ -12,6 +12,8 @@
 
 import { parseArgs } from "node:util";
 import { ROLES } from "./core/types.js";
+import { runCodexLogin } from "./providers/auth/login.js";
+import { loadCredentials } from "./providers/auth/store.js";
 
 const VERSION = "0.0.1";
 
@@ -41,13 +43,43 @@ function cmdRoles(): void {
   }
 }
 
+async function cmdLogin(provider: string | undefined): Promise<void> {
+  const p = (provider ?? "openai").toLowerCase();
+  if (p !== "openai") {
+    console.error(`login: provider '${p}' is not supported yet (only 'openai' for now).`);
+    process.exitCode = 2;
+    return;
+  }
+
+  const existing = loadCredentials("openai");
+  if (existing?.method === "oauth-subscription") {
+    console.log("Already signed in to OpenAI (subscription). Re-authenticating…\n");
+  }
+
+  console.log("Sign in with your ChatGPT (Codex) subscription — this uses YOUR account.");
+  console.log("Equipe identifies itself honestly as a third-party harness (originator: equipe).\n");
+
+  try {
+    const cred = await runCodexLogin({
+      onUrl: (url) => console.log(`Opening your browser… if it didn't open, visit:\n  ${url}\n`),
+    });
+    const acct = cred.accountId ? ` (account ${cred.accountId})` : "";
+    const exp = cred.expires ? new Date(cred.expires * 1000).toISOString() : "unknown";
+    console.log(`\n✓ Signed in to OpenAI via subscription${acct}.`);
+    console.log(`  Token stored at ~/.equipe/credentials/openai.json (expires ${exp}).`);
+  } catch (err) {
+    console.error(`\n✗ Login failed: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+  }
+}
+
 function notImplemented(name: string): void {
   console.error(`equipe: '${name}' is scaffolded but not implemented yet.`);
   console.error("Follow along: this is an early skeleton. See docs/ARCHITECTURE.md.");
   process.exitCode = 2;
 }
 
-function main(argv: string[]): void {
+async function main(argv: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -75,6 +107,8 @@ function main(argv: string[]): void {
       cmdRoles();
       return;
     case "login":
+      await cmdLogin(values.provider);
+      return;
     case "init":
     case "run":
     case "board":
@@ -87,4 +121,7 @@ function main(argv: string[]): void {
   }
 }
 
-main(process.argv.slice(2));
+main(process.argv.slice(2)).catch((err: unknown) => {
+  console.error(err instanceof Error ? err.stack ?? err.message : String(err));
+  process.exitCode = 1;
+});
