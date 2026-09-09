@@ -1,0 +1,22 @@
+{
+  // Project slug for this squad's workspace.
+  "project": "my-app",
+
+  // Absolute path to the git repo the squad builds in.
+  "repo": "/absolute/path/to/your/repo",
+
+  // Default engine when a role doesn't override it.
+  // ChatGPT/Codex subscription via OAuth is the headline path.
+  "defaultEngine": {
+    "kind": "acp", // "acp" | "cli" | "llm"
+    "backend": "codex", // codex | claude-code | gemini | opencode | ...
+    "provider": "openai", // authenticated via `equipe login`
+    "model": "openai/gpt-5.6"
+  },
+
+  // Which roles are active for this project.
+  "roles": ["po", "designer", "frontend", "backend", "qa", "devops"],
+
+  // Statuses that pause for human approval before advancing.
+  "approvalGates": ["in_review"]
+}
