@@ -86,7 +86,8 @@ async function postTokenForm(form: Record<string, string>): Promise<AuthCredenti
     provider: "openai",
     method: "oauth-subscription",
     access: json.access_token,
-    refresh: form.refresh_token || json.refresh_token,
+    // Prefer a rotated refresh token from the server; fall back to the one we sent.
+    refresh: json.refresh_token || form.refresh_token,
     expires: typeof json.expires_in === "number" ? now + json.expires_in : undefined,
     accountId: decodeChatgptAccountId(json.access_token),
   };

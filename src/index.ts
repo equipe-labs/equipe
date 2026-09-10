@@ -12,6 +12,7 @@
 
 import { parseArgs } from "node:util";
 import { ROLES } from "./core/types.js";
+import { ensureFreshCredentials, listModels } from "./providers/codex-client.js";
 import { runCodexLogin } from "./providers/auth/login.js";
 import { loadCredentials } from "./providers/auth/store.js";
 
@@ -24,6 +25,7 @@ USAGE
 
 COMMANDS
   login      Authenticate an engine (default: ChatGPT/Codex subscription OAuth)
+  status     Verify the login and list models the backend offers
   init       Create an equipe.config.jsonc in the current repo
   roles      List the built-in squad roles
   run        Run the orchestrator against the board
@@ -73,6 +75,39 @@ async function cmdLogin(provider: string | undefined): Promise<void> {
   }
 }
 
+async function cmdStatus(): Promise<void> {
+  const cred = loadCredentials("openai");
+  if (!cred || cred.method !== "oauth-subscription") {
+    console.log("Not signed in. Run `equipe login`.");
+    process.exitCode = 1;
+    return;
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const tokenState =
+    cred.expires === undefined
+      ? "unknown"
+      : cred.expires - now > 0
+        ? `valid (${Math.floor((cred.expires - now) / 60)}m left)`
+        : "expired (will refresh)";
+
+  console.log("Provider : openai — ChatGPT/Codex subscription");
+  if (cred.accountId) console.log(`Account  : ${cred.accountId}`);
+  console.log(`Token    : ${tokenState}`);
+
+  try {
+    const fresh = await ensureFreshCredentials(cred);
+    const { models } = await listModels(fresh, VERSION);
+    console.log(`Backend  : ✓ reachable — ${models.length} model(s) available`);
+    if (models.length > 0) {
+      const shown = models.slice(0, 8).join(", ");
+      console.log(`Models   : ${shown}${models.length > 8 ? ", …" : ""}`);
+    }
+  } catch (err) {
+    console.error(`Backend  : ✗ ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+  }
+}
+
 function notImplemented(name: string): void {
   console.error(`equipe: '${name}' is scaffolded but not implemented yet.`);
   console.error("Follow along: this is an early skeleton. See docs/ARCHITECTURE.md.");
@@ -108,6 +143,9 @@ async function main(argv: string[]): Promise<void> {
       return;
     case "login":
       await cmdLogin(values.provider);
+      return;
+    case "status":
+      await cmdStatus();
       return;
     case "init":
     case "run":
