@@ -1,0 +1,84 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1200px; height: 675px; }
+  body {
+    background: radial-gradient(1200px 700px at 78% -10%, #1a2030 0%, #0d0e12 60%);
+    color: #e8e9ee;
+    font-family: -apple-system, "SF Pro Display", Inter, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: 56px 64px;
+    display: flex; flex-direction: column;
+  }
+  .top { display: flex; align-items: flex-start; justify-content: space-between; }
+  .brand { font-size: 68px; font-weight: 700; letter-spacing: -1.5px; }
+  .brand .dot { color: #7c9bff; }
+  .tag { margin-top: 8px; font-size: 26px; color: #9aa0ad; font-weight: 400; }
+  .pill {
+    font-size: 17px; color: #aeb8ff; border: 1px solid #33405f;
+    background: #161a26; padding: 8px 16px; border-radius: 999px; white-space: nowrap;
+  }
+  .diagram { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 16px; margin-top: 22px; }
+  .node {
+    border-radius: 14px; border: 1px solid #2a2f3c; background: #14161d;
+    padding: 16px 22px; text-align: center;
+  }
+  .node .t { font-size: 24px; font-weight: 600; }
+  .node .s { font-size: 17px; color: #9aa0ad; margin-top: 3px; }
+  .orch { background: #151a26; border-color: #33405f; }
+  .board {
+    background: #16211d; border-color: #2f5546; align-self: center; min-width: 560px;
+  }
+  .board .t { color: #7ce0c0; }
+  .arrow { align-self: center; color: #4a5162; font-size: 20px; line-height: 1; }
+  .roles { display: flex; gap: 12px; margin-top: 4px; }
+  .chip {
+    flex: 1; text-align: center; border-radius: 12px; border: 1px solid #2a2f3c;
+    background: #14161d; padding: 14px 8px; font-size: 20px; font-weight: 600;
+  }
+  .chip .s { display: block; font-size: 14px; color: #8b90a0; font-weight: 400; margin-top: 3px; }
+  .foot { display: flex; align-items: center; justify-content: space-between; margin-top: 26px; }
+  .hook { font-size: 22px; color: #cfd3dc; }
+  .hook b { color: #7c9bff; font-weight: 600; }
+  .meta { font-size: 16px; color: #6b7180; }
+</style>
+</head>
+<body>
+  <div class="top">
+    <div>
+      <div class="brand">equipe<span class="dot">.</span></div>
+      <div class="tag">A full software squad of AI agents.</div>
+    </div>
+    <div class="pill">building in public · #buildinpublic</div>
+  </div>
+
+  <div class="diagram">
+    <div class="node orch">
+      <div class="t">Orchestrator</div>
+      <div class="s">plans · splits into tickets · resolves deps · approval gates</div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="node board">
+      <div class="t">Board — single source of truth</div>
+      <div class="s">tickets · status · decisions · handoffs</div>
+    </div>
+    <div class="arrow">↓&nbsp;&nbsp;agents pull tickets · work in isolated git worktrees</div>
+    <div class="roles">
+      <div class="chip">PO<span class="s">specs</span></div>
+      <div class="chip">Designer<span class="s">UX/UI</span></div>
+      <div class="chip">Frontend<span class="s">code</span></div>
+      <div class="chip">Backend<span class="s">code</span></div>
+      <div class="chip">QA<span class="s">tests</span></div>
+      <div class="chip">DevOps<span class="s">ship</span></div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <div class="hook">The <b>team layer</b> for coding agents — ticket in → PR out.</div>
+    <div class="meta">MIT · ACP-first · your model or subscription</div>
+  </div>
+</body>
+</html>

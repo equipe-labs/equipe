@@ -1,26 +1,32 @@
 # equipe
 
-**Spin up a full software squad of AI agents — and let them build the real thing.**
+### Spin up a full software squad of AI agents — and ship real projects.
 
 <p align="center">
   <img src="demo/equipe.gif" alt="equipe CLI" width="820">
 </p>
 
-`equipe` (French for *team*, pronounced "eh-KEEP") assembles a coordinated crew of
-role agents — **PO · Designer · Frontend · Backend · QA · DevOps** — that pull work
-off a shared board and build large, real projects together. You bring the intent and
-the approvals; the squad does the work in your git repo.
+<p align="center">
+  <em>PO · Designer · Frontend · Backend · QA · DevOps</em> — a coordinated team,
+  working off a shared board, in your repo.
+</p>
 
-> Status: **early skeleton.** The architecture and CLI surface are landing first;
-> the orchestration and engines are being built in the open. Not production-ready.
+<p align="center">
+  <code>MIT</code> · <strong>building in public from commit #1</strong> ·
+  <a href="docs/ROADMAP.md">roadmap</a> · <a href="docs/ARCHITECTURE.md">architecture</a>
+</p>
+
+> **Status: early.** The spine is landing in the open — not production-ready yet.
+> Watch it build itself.
 
 ## Why
 
-Single coding agents are great in a chat window and fall apart on a real project:
-no one owns the spec, nothing gets reviewed, and there's no division of labor.
-`equipe` is not another agent loop — mature agent loops already exist. It is the
-**team layer on top of them**: roles, a board as the single source of truth,
-git worktrees for parallel work, and human approval gates at the boundaries that matter.
+A single coding agent is great in a chat window and falls apart on a real project:
+no one owns the spec, nothing gets reviewed, there's no division of labor.
+
+equipe isn't another agent loop — mature ones already exist. It's the **team layer
+on top of them**: roles, a board as the single source of truth, isolated git
+worktrees for parallel work, and human approval gates where they matter.
 
 ## How it works
 
@@ -34,35 +40,34 @@ git worktrees for parallel work, and human approval gates at the boundaries that
                    └─────────┬─────────┘
         pull ↑ tickets       │  events / handoffs
    ┌────────┬────────┬───────┴──┬─────────┬─────────┐
-  PO      Designer  Frontend  Backend    QA       DevOps     ← role agents
+  PO      Designer  Frontend  Backend    QA       DevOps
    each = [engine] + [role charter] + [toolset] + [git worktree]
 ```
 
-- **Board is the source of truth.** Agents coordinate through tickets and immutable
-  events, not a firehose of chatter. Every action ends in a visible outcome on the board.
-- **Roles are `charter + toolset + permissions`.** The PO writes specs; engineers edit
-  code in isolated worktrees; QA runs tests; DevOps ships.
-- **Engines are swappable (ACP-first).** Equipe drives mature agents over the
-  [Agent Client Protocol](https://agentclientprotocol.com) (Codex, Claude Code, Gemini,
-  opencode, …) or a local CLI — and uses thin LLM calls for non-coding roles.
-- **Humans stay in the loop** at approval gates (e.g. before a PR merges).
+- **The board is the source of truth.** Agents coordinate through tickets and
+  immutable events — not a firehose of chat. Every action ends in a visible outcome.
+- **Roles are `charter + toolset + permissions`.** The PO writes specs; engineers
+  edit code in isolated worktrees; QA runs tests; DevOps ships.
+- **Engines are swappable (ACP-first).** equipe drives mature coding agents over the
+  [Agent Client Protocol](https://agentclientprotocol.com) — Codex, Claude Code,
+  Gemini, opencode — and uses thin LLM calls for non-coding roles.
+- **You stay in the loop** at approval gates (e.g. before a PR merges).
 
 ## Models & auth
 
-Equipe is model-agnostic through a provider abstraction. The **default** path is the
-one people already pay for:
+Model-agnostic through a provider abstraction. The **default** path is the one you
+already pay for:
 
-- **OpenAI ChatGPT Plus/Pro (Codex) subscription — via OAuth.** `equipe login` runs the
-  standard OAuth flow so the squad runs on **your own subscription**, no API key required.
-- API keys and other providers (Anthropic, local models) are first-class and can be mixed
-  **per role** — put low-volume roles (PO/QA) on the subscription and heavy code generation
-  on an API key or a local model.
+- `equipe login` runs OAuth so the squad runs on **your own** ChatGPT Plus/Pro (Codex)
+  subscription — no API key required.
+- API keys and other providers (Anthropic, local models) are first-class and mixable
+  **per role** — put low-volume roles on the subscription, heavy code-gen on an API key.
 
-> **On subscription use — read this.** Equipe uses OpenAI's public Codex OAuth client the
-> same way OpenAI's own Codex CLI does; it authenticates *your* account and identifies
-> itself honestly as a third-party harness (it does **not** impersonate the official CLI).
-> Whether using a consumer subscription this way fits OpenAI's Terms is your call and your
-> risk — Equipe never hides what it is. If in doubt, use an API key.
+> equipe uses OpenAI's public Codex OAuth client the same way OpenAI's own Codex CLI
+> does, authenticates *your* account, and **identifies itself honestly** as a
+> third-party harness (it never impersonates the official CLI). Whether a consumer
+> subscription fits OpenAI's Terms this way is your call and your risk. If in doubt,
+> use an API key.
 
 ## Quick start
 
@@ -70,8 +75,8 @@ one people already pay for:
 npm install -g equipe      # (not published yet — building in the open)
 
 equipe login               # authenticate (ChatGPT/Codex OAuth by default)
-equipe init                # create equipe.config.jsonc in your repo
-equipe run                 # let the squad start pulling tickets
+equipe status              # verify the login, list available models
+equipe roles               # see the squad
 ```
 
 ## Development
@@ -80,6 +85,7 @@ equipe run                 # let the squad start pulling tickets
 pnpm install
 pnpm dev -- roles          # run the CLI from source
 pnpm build                 # compile to dist/
+pnpm demo                  # regenerate the hero gif (see demo/README.md)
 ```
 
 Requires Node 22+.
