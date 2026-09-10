@@ -70,10 +70,6 @@ Each code-writing agent works in its own `git worktree` off the project repo, so
 parallel work is isolated and every change lands as a reviewable branch/PR. Non-code
 roles produce artifacts (specs, designs) attached to tickets as events.
 
-## Roadmap (MVP slices)
+## Roadmap
 
-1. **Board + roles + CLI** (`init`, `roles`, `board`). ← current
-2. **Codex OAuth `login`** (headline auth path).
-3. **One ACP engine adapter** + a single role (backend) completing one ticket in a worktree.
-4. **Orchestrator loop**: PO ticket → assign → engineer → QA → approval gate.
-5. Multi-role, multi-engine, per-role provider mixing.
+See [ROADMAP.md](./ROADMAP.md) for the phased plan and build principles.
