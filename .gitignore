@@ -7,6 +7,9 @@ dist/
 *.sqlite
 *.sqlite-*
 
+# demo intermediates (the .gif is committed; the .cast is regenerable)
+demo/*.cast
+
 # env / secrets
 .env
 .env.*

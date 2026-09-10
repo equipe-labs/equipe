@@ -21,7 +21,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "demo": "tsc -p tsconfig.json && vhs demo/equipe.tape"
+    "demo": "tsc -p tsconfig.json && vhs demo/equipe.tape",
+    "demo:headless": "tsc -p tsconfig.json && asciinema rec --overwrite -c 'bash demo/scenes/phase0.sh' demo/equipe.cast && agg --theme dracula --font-size 20 demo/equipe.cast demo/equipe.gif"
   },
   "keywords": [
     "ai",

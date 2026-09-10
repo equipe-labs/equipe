@@ -6,12 +6,23 @@ so they're deterministic and regenerate from a text file — no hand-recording.
 
 ## Regenerate the hero GIF
 
+**Local (recommended)** — VHS, driven by `demo/equipe.tape`:
+
 ```bash
 brew install vhs      # one-time (pulls ttyd + ffmpeg)
-pnpm demo             # builds, then renders demo/equipe.gif from demo/equipe.tape
+pnpm demo             # builds, then renders demo/equipe.gif from the tape
 ```
 
-`demo/equipe.gif` is embedded at the top of the root `README.md`.
+**Headless / CI** — VHS needs a headless browser, which isn't available in some
+sandboxes. The browserless fallback records with asciinema and renders with
+[agg](https://github.com/asciinema/agg), driven by `demo/scenes/phase0.sh`:
+
+```bash
+brew install asciinema agg
+pnpm demo:headless    # builds, records demo/equipe.cast, renders demo/equipe.gif
+```
+
+Both write the same `demo/equipe.gif`, embedded at the top of the root `README.md`.
 
 ## How it works
 

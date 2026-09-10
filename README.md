@@ -2,6 +2,10 @@
 
 **Spin up a full software squad of AI agents — and let them build the real thing.**
 
+<p align="center">
+  <img src="demo/equipe.gif" alt="equipe CLI" width="820">
+</p>
+
 `equipe` (French for *team*, pronounced "eh-KEEP") assembles a coordinated crew of
 role agents — **PO · Designer · Frontend · Backend · QA · DevOps** — that pull work
 off a shared board and build large, real projects together. You bring the intent and

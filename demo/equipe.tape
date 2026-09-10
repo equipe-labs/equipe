@@ -20,7 +20,7 @@ Set Theme "Dracula"
 Set TypingSpeed 55ms
 
 # Hidden setup: make `equipe` resolve to the freshly built CLI.
-Hidden
+Hide
 Type "alias equipe='node ./dist/index.js'; clear"
 Enter
 Show
