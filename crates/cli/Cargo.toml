@@ -8,7 +8,9 @@ version.workspace = true
 clap = { version = "4.6.7", features = ["derive"] }
 console = "0.16.6"
 dialoguer = "0.12.0"
+equipe-core = { version = "0.0.1", path = "../core" }
 equipe-providers = { version = "0.0.1", path = "../providers" }
 reqwest = { version = "0.13.5", default-features = false }
 terminal_size = "0.4.4"
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros"] }
+unicode-width = "0.2.2"

@@ -49,8 +49,10 @@ pub fn width() -> usize {
     })
 }
 
-/// Visible length, skipping ANSI style sequences.
+/// Columns the text occupies, skipping ANSI style sequences. Wide characters —
+/// Hangul, CJK, most emoji — take two columns, as the terminal draws them.
 fn visible_len(text: &str) -> usize {
+    use unicode_width::UnicodeWidthChar as _;
     let mut len = 0;
     let mut in_escape = false;
     for c in text.chars() {
@@ -58,7 +60,7 @@ fn visible_len(text: &str) -> usize {
             (false, '\x1b') => in_escape = true,
             (true, 'm') => in_escape = false,
             (true, _) => {}
-            (false, _) => len += 1,
+            (false, _) => len += c.width().unwrap_or(0),
         }
     }
     len
@@ -237,6 +239,15 @@ mod tests {
     fn a_long_url_stays_whole() {
         let url = "https://auth.openai.com/oauth/authorize?response_type=code&client_id=x";
         assert_eq!(wrap(url, 0, 0, 20), url);
+    }
+
+    #[test]
+    fn hangul_counts_two_columns_per_syllable() {
+        assert_eq!(visible_len("안녕"), 4);
+        let out = wrap("에이전트가 파일을 고쳤어요 이제 리뷰해 주세요", 0, 0, 20);
+        for line in out.lines() {
+            assert!(visible_len(line) <= 20, "{line:?} is {} columns", visible_len(line));
+        }
     }
 
     #[test]

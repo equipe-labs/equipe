@@ -21,16 +21,6 @@ use equipe_providers::{AuthMethod, CredentialStore, Credentials};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Built-in squad roles. A project rarely needs more than these.
-const ROLES: [(&str, &str); 6] = [
-    ("po", "product owner — turns intent into specs and tickets"),
-    ("designer", "UX/UI — flows, wireframes, design tokens"),
-    ("frontend", "frontend engineer"),
-    ("backend", "backend engineer"),
-    ("qa", "quality — tests, review, acceptance"),
-    ("devops", "build, deploy, infra"),
-];
-
 #[derive(Parser)]
 #[command(name = "equipe", version, about = "A full software squad of AI agents.")]
 struct Cli {
@@ -108,8 +98,8 @@ async fn main() -> ExitCode {
         Command::Roles => {
             let p = ui::out();
             println!("{}\n", p.kicker("squad roles"));
-            for (id, what) in ROLES {
-                println!("  {}  {}", p.bold(&format!("{id:<9}")), p.dim(what));
+            for role in equipe_core::ROLES {
+                println!("  {}  {}", p.bold(&format!("{:<9}", role.id)), p.dim(role.summary));
             }
             Ok(())
         }

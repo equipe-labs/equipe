@@ -1788,10 +1788,12 @@ dependencies = [
  "clap",
  "console",
  "dialoguer",
+ "equipe-core",
  "equipe-providers",
  "reqwest",
  "terminal_size",
  "tokio",
+ "unicode-width",
 ]
 
 [[package]]
