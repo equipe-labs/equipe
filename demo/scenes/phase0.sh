@@ -3,7 +3,7 @@
 # Runs the freshly built CLI so the gif always reflects current code.
 set -euo pipefail
 
-equipe() { node ./dist/index.js "$@"; }
+equipe() { ./target/release/equipe "$@"; }
 
 # Print a shell-like prompt + command, run it, pause so it's readable.
 step() {

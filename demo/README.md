@@ -9,8 +9,8 @@ so they're deterministic and regenerate from a text file — no hand-recording.
 **Local (recommended)** — VHS, driven by `demo/equipe.tape`:
 
 ```bash
-brew install vhs      # one-time (pulls ttyd + ffmpeg)
-pnpm demo             # builds, then renders demo/equipe.gif from the tape
+brew install vhs          # one-time (pulls ttyd + ffmpeg)
+demo/render.sh            # builds, then renders demo/equipe.gif from the tape
 ```
 
 **Headless / CI** — VHS needs a headless browser, which isn't available in some
@@ -19,18 +19,18 @@ sandboxes. The browserless fallback records with asciinema and renders with
 
 ```bash
 brew install asciinema agg
-pnpm demo:headless    # builds, records demo/equipe.cast, renders demo/equipe.gif
+demo/render.sh --headless # builds, records demo/equipe.cast, renders demo/equipe.gif
 ```
 
 Both write the same `demo/equipe.gif`, embedded at the top of the root `README.md`.
 
 ## How it works
 
-- `equipe.tape` is a VHS script (typed commands + timing). `pnpm demo` runs
-  `tsc` then `vhs demo/equipe.tape`, which types the commands in a headless
-  terminal and writes `demo/equipe.gif`.
-- The tape aliases `equipe` to the freshly built `./dist/index.js`, so it always
-  demos the current code.
+- `equipe.tape` is a VHS script (typed commands + timing). `demo/render.sh` runs
+  `cargo build --release` then `vhs demo/equipe.tape`, which types the commands
+  in a headless terminal and writes `demo/equipe.gif`.
+- The tape aliases `equipe` to the freshly built `./target/release/equipe`, so it
+  always demos the current code.
 
 ## Rules of a good demo
 
@@ -42,6 +42,6 @@ Both write the same `demo/equipe.gif`, embedded at the top of the root `README.m
 
 ## Adding another tape
 
-Drop `demo/<name>.tape` (with its own `Output demo/<name>.gif`) and add a script,
-e.g. `"demo:try": "vhs demo/try.tape"`. Use per-phase tapes for X threads while
-`equipe.tape` stays the canonical hero.
+Drop `demo/<name>.tape` (with its own `Output demo/<name>.gif`) and render it with
+`cargo build --release -p equipe && vhs demo/<name>.tape`. Use per-phase tapes for
+X threads while `equipe.tape` stays the canonical hero.

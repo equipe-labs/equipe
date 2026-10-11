@@ -1,10 +1,10 @@
 # equipe demo tape — deterministic terminal GIF via VHS (charmbracelet/vhs).
 #
-# Regenerate:  pnpm demo        (one-time: brew install vhs)
+# Regenerate:  demo/render.sh   (one-time: brew install vhs)
 #
 # This tape UPGRADES every phase — it's the repo's living hero demo:
 #   Phase 0 (now): the CLI surface (--help, roles)
-#   Phase 1b:      equipe try "<prompt>"  ->  git diff   (an agent edits the repo)
+#   Phase 1b:      equipe try --edit "<prompt>"  ->  a branch (an agent edits the repo)
 #   Phase 2:       ticket in -> branch out
 #   Phase 3:       one sentence -> a whole squad ships a PR
 # Keep it under ~20s and put the payoff in the first 3 seconds.
@@ -21,7 +21,7 @@ Set TypingSpeed 55ms
 
 # Hidden setup: make `equipe` resolve to the freshly built CLI.
 Hide
-Type "alias equipe='node ./dist/index.js'; clear"
+Type "alias equipe='./target/release/equipe'; clear"
 Enter
 Show
 
