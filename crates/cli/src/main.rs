@@ -6,6 +6,7 @@
 //!   never sees Claude credentials (see `equipe_providers::claude_code`).
 
 mod ui;
+mod worktree;
 
 use std::io::{IsTerminal as _, Write as _};
 use std::process::ExitCode;
@@ -13,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use equipe_providers::claude_code::{self, AuthStatus};
+use equipe_providers::claude_code::{self, Access, Activity, AuthStatus};
 use equipe_providers::openai::{codex, login, responses};
 use equipe_providers::turn::TurnResult;
 use equipe_providers::{AuthMethod, CredentialStore, Credentials};
@@ -56,17 +57,22 @@ impl Engine {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Sign in to an engine
+    /// Sign in to an engine, or to every engine that isn't ready
     Login {
-        #[arg(value_enum, default_value = "codex")]
-        engine: Engine,
+        #[arg(value_enum)]
+        engine: Option<Engine>,
         /// Minutes to wait for the browser (codex)
         #[arg(long, default_value_t = 10)]
         timeout: u64,
         /// Print the sign-in link instead of opening a browser (codex)
         #[arg(long)]
         no_browser: bool,
+        /// Sign in again even when already signed in
+        #[arg(long)]
+        again: bool,
     },
+    /// Forget equipe's Codex login (Claude Code manages its own)
+    Logout,
     /// Show which engines are ready
     Status,
     /// Run one turn
@@ -78,6 +84,9 @@ enum Command {
         /// Model id or alias (default: the engine's own default)
         #[arg(long)]
         model: Option<String>,
+        /// Let the agent edit files — on a new branch, in an isolated worktree
+        #[arg(long)]
+        edit: bool,
     },
     /// List the built-in squad roles
     Roles,
@@ -92,10 +101,10 @@ async fn main() -> ExitCode {
     };
 
     let outcome = match cli.command {
-        Command::Login { engine: Engine::Codex, timeout, no_browser } => app.login_codex(timeout, no_browser).await,
-        Command::Login { engine: Engine::Claude, .. } => app.login_claude().await,
+        Command::Login { engine, timeout, no_browser, again } => app.login(engine, timeout, no_browser, again).await,
+        Command::Logout => app.logout(),
         Command::Status => app.status().await,
-        Command::Try { prompt, engine, model } => app.run_try(&prompt, engine, model.as_deref()).await,
+        Command::Try { prompt, engine, model, edit } => app.run_try(&prompt, engine, model.as_deref(), edit).await,
         Command::Roles => {
             let p = ui::out();
             println!("{}\n", p.kicker("squad roles"));
@@ -152,6 +161,48 @@ struct App {
 
 impl App {
     // ── login ──
+
+    async fn login(&self, engine: Option<Engine>, timeout: u64, no_browser: bool, again: bool) -> CmdResult {
+        let p = ui::out();
+        let engines = engine.map_or_else(|| vec![Engine::Codex, Engine::Claude], |e| vec![e]);
+        for (i, engine) in engines.into_iter().enumerate() {
+            if i > 0 {
+                println!();
+            }
+            match engine {
+                Engine::Codex => match self.store.load("openai") {
+                    Ok(Some(cred)) if !again => {
+                        let account = cred.account_id.map(|a| format!(" · {a}")).unwrap_or_default();
+                        println!("{}", p.ok(&format!("codex · already signed in{account}")));
+                        println!("  {}", p.dim("Sign in again with `equipe login codex --again`."));
+                    }
+                    _ => self.login_codex(timeout, no_browser).await?,
+                },
+                Engine::Claude => match claude_code::auth_status(claude_code::DEFAULT_BINARY).await {
+                    Ok(Some(status)) if status.logged_in && !again => {
+                        println!("{}", p.ok(&format!("claude code · already signed in · {}", describe_claude_login(&status))));
+                        println!("  {}", p.dim("Sign in again with `equipe login claude --again` — this changes Claude Code's login everywhere."));
+                    }
+                    _ => self.login_claude().await?,
+                },
+            }
+        }
+        Ok(())
+    }
+
+    /// Forget the Codex credential equipe holds. Claude Code's login is not equipe's.
+    fn logout(&self) -> CmdResult {
+        let p = ui::out();
+        let path = self.store.path("openai");
+        match std::fs::remove_file(&path) {
+            Ok(()) => println!("{}", p.ok("codex · signed out")),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => println!("{}", p.dim("codex · wasn't signed in")),
+            Err(err) => return Err(Failure::new(format!("couldn't remove {}: {err}", path.display()))),
+        }
+        println!("  {}", p.dim("Claude Code keeps its own login; `claude auth logout` signs it out everywhere."));
+        println!("\n  {}", p.hint("equipe login codex"));
+        Ok(())
+    }
 
     async fn login_codex(&self, timeout_min: u64, no_browser: bool) -> CmdResult {
         let p = ui::out();
@@ -333,9 +384,18 @@ impl App {
 
     // ── try ──
 
-    async fn run_try(&self, prompt: &str, engine: Option<Engine>, model: Option<&str>) -> CmdResult {
+    async fn run_try(&self, prompt: &str, engine: Option<Engine>, model: Option<&str>, edit: bool) -> CmdResult {
         if prompt.trim().is_empty() {
             return Err(Failure::new("try needs a prompt").next("equipe try \"summarize this repo\""));
+        }
+        if edit {
+            return match engine {
+                Some(Engine::Codex) => Err(Failure::new(
+                    "--edit runs on Claude Code for now; Codex edits arrive with its ACP engine",
+                )
+                .next("equipe try --edit --engine claude \"…\"")),
+                _ => self.run_edit(prompt, model).await,
+            };
         }
         let engine = match engine {
             Some(engine) => engine,
@@ -343,13 +403,8 @@ impl App {
         };
 
         let e = ui::err();
-        let mut streamed = false;
-        let mut on_delta = |delta: &str| {
-            streamed = true;
-            let mut out = std::io::stdout().lock();
-            let _ = out.write_all(delta.as_bytes());
-            let _ = out.flush();
-        };
+        let cwd = std::env::current_dir().map_err(|err| Failure::new(err.to_string()))?;
+        let mut printer = Printer::new(&cwd);
 
         let result: TurnResult = match engine {
             Engine::Codex => {
@@ -365,41 +420,90 @@ impl App {
                 };
                 eprintln!("{}\n", e.dim(&format!("{} · {model}", engine.label())));
                 let request = responses::TurnRequest { prompt, model: &model, instructions: None };
-                responses::run_turn(&self.client, &cred, VERSION, request, &mut on_delta).await?
+                responses::run_turn(&self.client, &cred, VERSION, request, |d| printer.text(d)).await?
             }
             Engine::Claude => {
                 let label = model.map(|m| format!("{} · {m}", engine.label())).unwrap_or_else(|| engine.label().to_owned());
                 eprintln!("{}\n", e.dim(&label));
-                let cwd = std::env::current_dir().map_err(|err| Failure::new(err.to_string()))?;
-                claude_code::run_turn(claude_code::DEFAULT_BINARY, &cwd, prompt, model, &mut on_delta)
+                claude_code::run_turn(claude_code::DEFAULT_BINARY, &cwd, prompt, model, Access::ReadOnly, |a| printer.activity(a))
                     .await
-                    .map_err(|err| {
-                        let failure = Failure::from(err);
-                        if failure.message.contains("not installed") || failure.message.to_lowercase().contains("login") {
-                            failure.next("equipe login claude")
-                        } else {
-                            failure
-                        }
-                    })?
+                    .map_err(claude_failure)?
             }
         };
+        printer.finish(&result);
+        Ok(())
+    }
 
-        // A turn that sent only a terminal event streamed nothing — print it now.
-        if !streamed {
-            print!("{}", result.text);
+    /// One turn that may edit files: on a new branch, in a worktree, through Claude Code.
+    async fn run_edit(&self, prompt: &str, model: Option<&str>) -> CmdResult {
+        let e = ui::err();
+        match claude_code::auth_status(claude_code::DEFAULT_BINARY).await {
+            Ok(Some(status)) if status.logged_in => {}
+            Ok(None) => return Err(claude_missing()),
+            _ => return Err(Failure::new("Claude Code isn't signed in").next("equipe login claude")),
         }
-        println!();
 
-        let mut footer = Vec::new();
-        if result.status != "completed" {
-            footer.push(format!("ended {}", result.status));
-        }
-        if let Some(usage) = result.usage {
-            let n = |v: Option<u64>| v.map_or("?".into(), |v| v.to_string());
-            footer.push(format!("{} in · {} out tokens", n(usage.input_tokens), n(usage.output_tokens)));
-        }
-        if !footer.is_empty() {
-            eprintln!("\n{}", e.dim(&footer.join(" · ")));
+        let cwd = std::env::current_dir().map_err(|err| Failure::new(err.to_string()))?;
+        let repo = worktree::repo_root(&cwd).map_err(Failure::new)?;
+        let id = format!("{:x}", now_secs());
+        let sandbox = worktree::create(&repo, &equipe_providers::credentials::equipe_home(), &id).map_err(Failure::new)?;
+
+        let short_base = &sandbox.base[..sandbox.base.len().min(7)];
+        let model_label = model.map(|m| format!(" · {m}")).unwrap_or_default();
+        eprintln!("{}", e.dim(&format!("claude code{model_label} · may edit files")));
+        eprintln!("{}", e.row("branch", &format!("{}  {}", e.bold(&sandbox.branch), e.dim(&format!("from {short_base}")))));
+        eprintln!("{}\n", e.row("", &e.dim("Your checkout is untouched; the agent works in its own worktree.")));
+
+        let mut printer = Printer::new(&sandbox.path);
+        let outcome = claude_code::run_turn(
+            claude_code::DEFAULT_BINARY,
+            &sandbox.path,
+            prompt,
+            model,
+            Access::EditFiles,
+            |a| printer.activity(a),
+        )
+        .await;
+
+        let subject: String = prompt.lines().next().unwrap_or("").chars().take(60).collect();
+        let result = match outcome {
+            Ok(result) => result,
+            Err(err) => {
+                // Keep whatever the agent managed to change before it stopped.
+                let kept = sandbox
+                    .commit_all(&format!("equipe try (incomplete): {subject}"))
+                    .ok()
+                    .flatten();
+                let _ = if kept.is_some() { sandbox.remove_worktree() } else { sandbox.discard() };
+                let failure = claude_failure(err);
+                return Err(match kept {
+                    Some(_) => Failure::new(format!("{} — partial changes kept on {}", failure.message, sandbox.branch)),
+                    None => failure,
+                });
+            }
+        };
+        printer.finish(&result);
+
+        let message = format!("equipe try: {subject}\n\nPrompt:\n{prompt}\n\nRun by equipe through Claude Code.");
+        let committed = sandbox.commit_all(&message).map_err(Failure::new)?;
+        let p = ui::out();
+        match committed {
+            None => {
+                sandbox.discard().map_err(Failure::new)?;
+                println!("\n{}", p.dim("No files changed, so no branch was kept."));
+            }
+            Some(_) => {
+                let stat = sandbox.diff_stat().unwrap_or_default();
+                sandbox.remove_worktree().map_err(Failure::new)?;
+                println!("\n{}", p.ok(&format!("Changes committed to {}", p.bold(&sandbox.branch))));
+                for line in stat.lines() {
+                    println!("  {}", p.dim(line.trim()));
+                }
+                println!();
+                println!("{}", p.row("review", &p.bold(&format!("git show {}", sandbox.branch))));
+                println!("{}", p.row("keep", &p.bold(&format!("git merge {}", sandbox.branch))));
+                println!("{}", p.row("discard", &p.bold(&format!("git branch -D {}", sandbox.branch))));
+            }
         }
         Ok(())
     }
@@ -438,4 +542,101 @@ fn now_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Point Claude Code failures at the command that fixes them.
+fn claude_failure(err: equipe_providers::Error) -> Failure {
+    let failure = Failure::from(err);
+    let lower = failure.message.to_lowercase();
+    if lower.contains("not installed") {
+        failure.next("see https://code.claude.com/docs/en/setup")
+    } else if lower.contains("login") || lower.contains("logged in") {
+        failure.next("equipe login claude")
+    } else {
+        failure
+    }
+}
+
+/// Streams a turn to the terminal: the answer on stdout, what the agent is doing
+/// as dim lines on stderr, so `equipe try … > answer.txt` keeps only the answer.
+struct Printer {
+    base: std::path::PathBuf,
+    streamed: bool,
+    mid_line: bool,
+}
+
+impl Printer {
+    fn new(base: &std::path::Path) -> Self {
+        Self {
+            // Canonical, so tool paths under a symlinked temp dir still shorten.
+            base: base.canonicalize().unwrap_or_else(|_| base.to_owned()),
+            streamed: false,
+            mid_line: false,
+        }
+    }
+
+    fn text(&mut self, text: &str) {
+        self.streamed = true;
+        self.mid_line = !text.ends_with('\n');
+        let mut out = std::io::stdout().lock();
+        let _ = out.write_all(text.as_bytes());
+        let _ = out.flush();
+    }
+
+    fn activity(&mut self, activity: Activity) {
+        match activity {
+            Activity::Text(text) => self.text(&text),
+            Activity::Tool { name, target } => {
+                if self.mid_line {
+                    println!();
+                    self.mid_line = false;
+                }
+                let verb = match name.as_str() {
+                    "Read" => "read",
+                    "Edit" | "MultiEdit" | "NotebookEdit" => "edit",
+                    "Write" => "write",
+                    "Bash" => "run",
+                    "Glob" | "Grep" => "search",
+                    "WebFetch" | "WebSearch" => "fetch",
+                    other => other,
+                };
+                let target = target.map(|t| self.relative(&t)).unwrap_or_default();
+                let e = ui::err();
+                let mark = if matches!(verb, "edit" | "write") { e.accent("✎") } else { e.dim("·") };
+                eprintln!("{mark} {}", e.dim(&format!("{verb:<6} {target}")));
+            }
+        }
+    }
+
+    fn relative(&self, target: &str) -> String {
+        let path = std::path::Path::new(target);
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+        path.strip_prefix(&self.base)
+            .map(|rel| rel.display().to_string())
+            .unwrap_or_else(|_| target.to_owned())
+    }
+
+    /// Close the answer and print the footer.
+    fn finish(&mut self, result: &TurnResult) {
+        // A turn that sent only a terminal event streamed nothing — print it now.
+        if !self.streamed {
+            print!("{}", result.text);
+            self.mid_line = !result.text.ends_with('\n');
+        }
+        if self.mid_line || !self.streamed {
+            println!();
+        }
+        let e = ui::err();
+        let mut footer = Vec::new();
+        if result.status != "completed" {
+            footer.push(format!("ended {}", result.status));
+        }
+        if let Some(usage) = &result.usage {
+            let n = |v: Option<u64>| v.map_or("?".into(), |v| v.to_string());
+            footer.push(format!("{} in · {} out tokens", n(usage.input_tokens), n(usage.output_tokens)));
+        }
+        if !footer.is_empty() {
+            eprintln!("\n{}", e.dim(&footer.join(" · ")));
+        }
+    }
 }

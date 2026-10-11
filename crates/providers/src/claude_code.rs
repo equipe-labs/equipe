@@ -80,12 +80,32 @@ pub async fn auth_status(binary: &str) -> Result<Option<AuthStatus>> {
     parse_auth_status(&stdout).map(Some)
 }
 
+/// What a turn may do to the files in its working directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    /// Read and answer; anything that would need approval is denied (`dontAsk`).
+    ReadOnly,
+    /// Also write files inside the working directory without asking
+    /// (`acceptEdits`). Shell commands beyond Claude Code's read-only set and
+    /// paths outside the working directory still need approval, which a headless
+    /// run has no one to give — so they are denied.
+    EditFiles,
+}
+
+impl Access {
+    fn permission_mode(self) -> &'static str {
+        match self {
+            Access::ReadOnly => "dontAsk",
+            Access::EditFiles => "acceptEdits",
+        }
+    }
+}
+
 /// Arguments for one headless turn.
 ///
 /// `--bare` is deliberately absent: bare mode never reads the subscription login,
-/// which is the whole point of bringing your own Claude Code. `dontAsk` denies
-/// anything that would need approval, so a plain turn can read but never edit.
-pub fn turn_args(prompt: &str, model: Option<&str>) -> Vec<String> {
+/// which is the whole point of bringing your own Claude Code.
+pub fn turn_args(prompt: &str, model: Option<&str>, access: Access) -> Vec<String> {
     let mut args: Vec<String> = [
         "-p",
         prompt,
@@ -94,7 +114,7 @@ pub fn turn_args(prompt: &str, model: Option<&str>) -> Vec<String> {
         "--verbose",
         "--include-partial-messages",
         "--permission-mode",
-        "dontAsk",
+        access.permission_mode(),
     ]
     .iter()
     .map(|s| (*s).to_owned())
@@ -103,6 +123,15 @@ pub fn turn_args(prompt: &str, model: Option<&str>) -> Vec<String> {
         args.extend(["--model".to_owned(), model.to_owned()]);
     }
     args
+}
+
+/// Something worth showing while a turn runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Activity {
+    /// A fragment of the answer.
+    Text(String),
+    /// Claude Code is using a tool, e.g. `Edit` on a file.
+    Tool { name: String, target: Option<String> },
 }
 
 /// Folds Claude Code's `stream-json` lines into one turn.
@@ -124,34 +153,31 @@ impl TurnCollector {
         self.model.as_deref()
     }
 
-    /// Apply one event. Returns the text fragment to display, if it carried one.
-    pub fn on_event(&mut self, event: &Value) -> Option<String> {
+    /// Apply one event. Returns what it shows: answer text and tool use.
+    pub fn on_event(&mut self, event: &Value) -> Vec<Activity> {
         match event.get("type").and_then(Value::as_str).unwrap_or("") {
             "system" if event.get("subtype").and_then(Value::as_str) == Some("init") => {
                 self.model = event.get("model").and_then(Value::as_str).map(str::to_owned);
-                None
+                Vec::new()
             }
-            "stream_event" => {
-                let delta = event.get("event")?.get("delta")?;
-                if delta.get("type").and_then(Value::as_str) != Some("text_delta") {
-                    return None; // thinking and signature deltas are not output
-                }
-                let text = delta.get("text").and_then(Value::as_str).filter(|t| !t.is_empty())?;
-                self.streamed.push_str(text);
-                Some(text.to_owned())
-            }
+            "stream_event" => text_delta(event)
+                .map(|text| {
+                    self.streamed.push_str(text);
+                    vec![Activity::Text(text.to_owned())]
+                })
+                .unwrap_or_default(),
             "assistant" => {
                 let text = message_text(event);
                 if !text.is_empty() {
                     self.last_message = text;
                 }
-                None
+                tool_uses(event)
             }
             "result" => {
                 self.result = Some(result_from(event, &self.streamed, &self.last_message));
-                None
+                Vec::new()
             }
-            _ => None,
+            _ => Vec::new(),
         }
     }
 
@@ -171,6 +197,36 @@ impl TurnCollector {
             ))),
         }
     }
+}
+
+/// The text of a `text_delta`; thinking and signature deltas are not output.
+fn text_delta(event: &Value) -> Option<&str> {
+    let delta = event.get("event")?.get("delta")?;
+    if delta.get("type").and_then(Value::as_str) != Some("text_delta") {
+        return None;
+    }
+    delta.get("text").and_then(Value::as_str).filter(|t| !t.is_empty())
+}
+
+/// `tool_use` blocks of an assistant message, with the thing each one acts on.
+fn tool_uses(event: &Value) -> Vec<Activity> {
+    event
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+        .filter_map(|block| {
+            let name = block.get("name").and_then(Value::as_str)?.to_owned();
+            let input = block.get("input");
+            let target = ["file_path", "path", "notebook_path", "pattern", "command", "url"]
+                .iter()
+                .find_map(|key| input?.get(*key).and_then(Value::as_str))
+                .map(|t| t.lines().next().unwrap_or("").chars().take(120).collect());
+            Some(Activity::Tool { name, target })
+        })
+        .collect()
 }
 
 fn message_text(event: &Value) -> String {
@@ -215,16 +271,17 @@ fn result_from(event: &Value, streamed: &str, last_message: &str) -> Result<Turn
     })
 }
 
-/// Run one headless turn through the user's Claude Code, streaming text to `on_delta`.
+/// Run one headless turn through the user's Claude Code, reporting activity as it happens.
 pub async fn run_turn(
     binary: &str,
     cwd: &Path,
     prompt: &str,
     model: Option<&str>,
-    mut on_delta: impl FnMut(&str),
+    access: Access,
+    mut on_activity: impl FnMut(Activity),
 ) -> Result<TurnResult> {
     let mut child = Command::new(binary)
-        .args(turn_args(prompt, model))
+        .args(turn_args(prompt, model, access))
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -255,11 +312,7 @@ pub async fn run_turn(
             continue;
         }
         match serde_json::from_str::<Value>(line) {
-            Ok(event) => {
-                if let Some(delta) = collector.on_event(&event) {
-                    on_delta(&delta);
-                }
-            }
+            Ok(event) => collector.on_event(&event).into_iter().for_each(&mut on_activity),
             // Keep the first few non-JSON lines for the error message.
             Err(_) if stray.len() < 5 => stray.push(line.to_owned()),
             Err(_) => {}
@@ -285,7 +338,14 @@ mod tests {
 
     fn collect(events: &[Value]) -> (Vec<String>, Result<TurnResult>) {
         let mut collector = TurnCollector::new();
-        let deltas = events.iter().filter_map(|e| collector.on_event(e)).collect();
+        let deltas = events
+            .iter()
+            .flat_map(|e| collector.on_event(e))
+            .filter_map(|a| match a {
+                Activity::Text(t) => Some(t),
+                Activity::Tool { .. } => None,
+            })
+            .collect();
         (deltas, collector.finish(""))
     }
 
@@ -333,7 +393,7 @@ mod tests {
 
     #[test]
     fn runs_headless_with_streaming_json_and_no_edits() {
-        let args = turn_args("hello", None);
+        let args = turn_args("hello", None, Access::ReadOnly);
         let has = |pair: [&str; 2]| args.windows(2).any(|w| w[0] == pair[0] && w[1] == pair[1]);
         assert!(has(["-p", "hello"]));
         assert!(has(["--output-format", "stream-json"]));
@@ -345,12 +405,36 @@ mod tests {
 
     #[test]
     fn never_uses_bare_mode_which_skips_the_subscription_login() {
-        assert!(!turn_args("x", Some("opus")).iter().any(|a| a == "--bare"));
+        for access in [Access::ReadOnly, Access::EditFiles] {
+            assert!(!turn_args("x", Some("opus"), access).iter().any(|a| a == "--bare"));
+        }
+    }
+
+    #[test]
+    fn edit_access_lets_claude_write_files_without_asking() {
+        let args = turn_args("x", None, Access::EditFiles);
+        assert!(args.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "acceptEdits"));
+        assert!(!args.iter().any(|a| a == "bypassPermissions" || a == "--dangerously-skip-permissions"));
+    }
+
+    #[test]
+    fn reports_tool_use_with_its_target() {
+        let mut collector = TurnCollector::new();
+        let activity = collector.on_event(&json!({ "type": "assistant", "message": { "content": [
+            { "type": "tool_use", "name": "Read", "input": { "file_path": "/repo/README.md" } },
+            { "type": "tool_use", "name": "Bash", "input": { "command": "ls -la\necho hi" } },
+            { "type": "tool_use", "name": "TodoWrite", "input": { "todos": [] } },
+        ]}}));
+        assert_eq!(activity, vec![
+            Activity::Tool { name: "Read".into(), target: Some("/repo/README.md".into()) },
+            Activity::Tool { name: "Bash".into(), target: Some("ls -la".into()) },
+            Activity::Tool { name: "TodoWrite".into(), target: None },
+        ]);
     }
 
     #[test]
     fn passes_the_model_through() {
-        let args = turn_args("x", Some("opus"));
+        let args = turn_args("x", Some("opus"), Access::ReadOnly);
         assert!(args.windows(2).any(|w| w[0] == "--model" && w[1] == "opus"));
     }
 
@@ -376,7 +460,7 @@ mod tests {
     #[test]
     fn remembers_the_model_from_init() {
         let mut collector = TurnCollector::new();
-        collector.on_event(&json!({ "type": "system", "subtype": "init", "model": "claude-opus-5-5" }));
+        let _ = collector.on_event(&json!({ "type": "system", "subtype": "init", "model": "claude-opus-5-5" }));
         assert_eq!(collector.model(), Some("claude-opus-5-5"));
     }
 
@@ -443,9 +527,13 @@ mod tests {
 EOF"#,
         );
         let mut seen = String::new();
-        let result = run_turn(bin.to_str().unwrap(), &dir, "ping", None, |d| seen.push_str(d))
-            .await
-            .unwrap();
+        let result = run_turn(bin.to_str().unwrap(), &dir, "ping", None, Access::ReadOnly, |a| {
+            if let Activity::Text(t) = a {
+                seen.push_str(&t)
+            }
+        })
+        .await
+        .unwrap();
         assert_eq!(seen, "pong");
         assert_eq!(result.text, "pong");
     }
@@ -454,7 +542,7 @@ EOF"#,
     #[tokio::test]
     async fn reports_stderr_when_the_binary_fails_without_a_result() {
         let (bin, dir) = fake_claude("echo 'boom: config is broken' >&2\nexit 3");
-        let err = run_turn(bin.to_str().unwrap(), &dir, "ping", None, |_| {})
+        let err = run_turn(bin.to_str().unwrap(), &dir, "ping", None, Access::ReadOnly, |_| {})
             .await
             .unwrap_err()
             .to_string();
@@ -473,7 +561,7 @@ EOF"#,
     #[tokio::test]
     async fn a_missing_binary_is_not_installed_rather_than_an_error() {
         assert_eq!(auth_status("equipe-no-such-claude-binary").await.unwrap(), None);
-        let err = run_turn("equipe-no-such-claude-binary", Path::new("."), "x", None, |_| {})
+        let err = run_turn("equipe-no-such-claude-binary", Path::new("."), "x", None, Access::ReadOnly, |_| {})
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not installed"));
