@@ -10,6 +10,16 @@ use crate::error::{Error, Result};
 /// Refresh with this much headroom before the token actually expires.
 const REFRESH_SKEW_SECONDS: i64 = 60;
 
+/// The Codex client level the model catalog is requested for.
+///
+/// The backend hides every model whose `minimal_client_version` is above the
+/// `client_version` it is sent, and answers HTTP 200 with an empty list — so
+/// sending equipe's own 0.0.1 looks exactly like "this account has no models".
+/// This is a capability level, not an identity: equipe still names itself in
+/// `originator` and `User-Agent`. Its turns use plain Responses features only,
+/// and models that need more are marked hidden and filtered out below.
+pub const CATALOG_CLIENT_VERSION: &str = "1.0.0";
+
 /// Whether `cred` should be refreshed before use at time `now`.
 pub fn needs_refresh(cred: &Credentials, now: i64) -> bool {
     cred.refresh.is_some()
@@ -33,7 +43,10 @@ pub async fn ensure_fresh(
     Ok(refreshed)
 }
 
-/// Pull model ids out of whichever listing shape the backend returns.
+/// Usable model ids from a listing, best first.
+///
+/// The Codex catalog (`{"models": [{slug, visibility, priority, …}]}`) is ranked
+/// by `priority` with hidden entries dropped; other shapes keep their order.
 pub fn extract_model_ids(json: &Value) -> Vec<String> {
     let list = json
         .as_array()
@@ -42,15 +55,35 @@ pub fn extract_model_ids(json: &Value) -> Vec<String> {
     let Some(list) = list else {
         return Vec::new();
     };
-    list.iter()
-        .filter_map(|item| match item {
-            Value::String(id) => Some(id.clone()),
-            Value::Object(rec) => ["id", "slug", "name"]
-                .iter()
-                .find_map(|key| rec.get(*key).and_then(Value::as_str))
-                .map(str::to_owned),
+    let mut ranked: Vec<(i64, usize, String)> = list
+        .iter()
+        .enumerate()
+        .filter_map(|(order, item)| match item {
+            Value::String(id) => Some((i64::MAX, order, id.clone())),
+            Value::Object(rec) => {
+                let hidden = rec
+                    .get("visibility")
+                    .and_then(Value::as_str)
+                    .is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "hide" | "hidden"));
+                if hidden {
+                    return None;
+                }
+                let id = ["slug", "id", "name"]
+                    .iter()
+                    .find_map(|key| rec.get(*key).and_then(Value::as_str))
+                    .filter(|id| !id.trim().is_empty())?;
+                let priority = rec.get("priority").and_then(Value::as_i64).unwrap_or(i64::MAX);
+                Some((priority, order, id.trim().to_owned()))
+            }
             _ => None,
         })
+        .collect();
+    ranked.sort();
+    let mut seen = std::collections::HashSet::new();
+    ranked
+        .into_iter()
+        .map(|(_, _, id)| id)
+        .filter(|id| seen.insert(id.clone()))
         .collect()
 }
 
@@ -62,7 +95,7 @@ pub async fn list_models(
 ) -> Result<Vec<String>> {
     let builder = client
         .get(format!("{CODEX_BACKEND_URL}/models"))
-        .query(&[("client_version", client_version)]);
+        .query(&[("client_version", CATALOG_CLIENT_VERSION)]);
     let res = with_identity(builder, cred, client_version).send().await?;
     let status = res.status();
     let body = res.text().await?;
@@ -117,6 +150,34 @@ mod tests {
             extract_model_ids(&json!({ "models": [{ "slug": "a" }, { "name": "b" }] })),
             ["a", "b"]
         );
+    }
+
+    #[test]
+    fn ranks_the_codex_catalog_by_priority_and_drops_hidden_models() {
+        // The shape and values the backend returned for a real Pro account.
+        let catalog = json!({ "models": [
+            { "slug": "gpt-6-luna", "visibility": "list", "priority": 4 },
+            { "slug": "gpt-reserve", "visibility": "hide", "priority": 4 },
+            { "slug": "gpt-5.6-luna", "visibility": "list", "priority": 9 },
+            { "slug": "gpt-5.6-terra", "visibility": "list", "priority": 8 },
+            { "slug": "codex-auto-review", "visibility": "hide", "priority": 43 },
+        ]});
+        assert_eq!(extract_model_ids(&catalog), ["gpt-6-luna", "gpt-5.6-terra", "gpt-5.6-luna"]);
+    }
+
+    #[test]
+    fn unranked_entries_follow_ranked_ones_in_listing_order() {
+        let catalog = json!({ "models": [
+            { "slug": "b" }, { "slug": "a" }, { "slug": "top", "priority": 1 }, { "slug": "b" },
+        ]});
+        assert_eq!(extract_model_ids(&catalog), ["top", "b", "a"]);
+    }
+
+    #[test]
+    fn requests_the_catalog_for_a_real_codex_client_level() {
+        // 0.0.1 makes the backend hide every model behind an HTTP 200 — see the constant.
+        let (major, minor) = CATALOG_CLIENT_VERSION.split_once('.').unwrap();
+        assert!(major.parse::<u32>().unwrap() >= 1 || minor.parse::<u32>().unwrap() >= 155);
     }
 
     #[test]

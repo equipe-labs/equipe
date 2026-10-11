@@ -67,14 +67,7 @@ pub async fn login(
     on_url: impl FnOnce(&str, std::result::Result<(), String>),
 ) -> Result<Credentials> {
     let req = oauth::authorization_request(CALLBACK_PORT);
-    let listener = TcpListener::bind(("127.0.0.1", CALLBACK_PORT))
-        .await
-        .map_err(|err| match err.kind() {
-            std::io::ErrorKind::AddrInUse => Error::Login(format!(
-                "port {CALLBACK_PORT} is in use. Close whatever holds it (another login?) and retry."
-            )),
-            _ => err.into(),
-        })?;
+    let listeners = bind_loopback(CALLBACK_PORT).await?;
 
     // Tell the caller whether a browser really opened, so it can keep the long
     // URL off the screen only when it isn't needed.
@@ -85,7 +78,7 @@ pub async fn login(
     };
     on_url(&req.url, opened);
 
-    let (code, mut stream) = tokio::time::timeout(options.timeout, wait_for_callback(&listener, &req.state))
+    let (code, mut stream) = tokio::time::timeout(options.timeout, wait_for_callback(&listeners, &req.state))
         .await
         .map_err(|_| Error::LoginTimeout)??;
 
@@ -104,11 +97,37 @@ pub async fn login(
     }
 }
 
+/// Listen on both loopback stacks. The redirect URI says `localhost`, which a
+/// browser may resolve to `::1` first; listening on `127.0.0.1` alone makes the
+/// callback fail with "connection refused" right after a successful sign-in.
+async fn bind_loopback(port: u16) -> Result<Vec<TcpListener>> {
+    let in_use = || {
+        Error::Login(format!(
+            "port {port} is in use. Close whatever holds it (another login?) and retry."
+        ))
+    };
+    let mut listeners = Vec::new();
+    for addr in ["127.0.0.1", "::1"] {
+        match TcpListener::bind((addr, port)).await {
+            Ok(listener) => listeners.push(listener),
+            Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => return Err(in_use()),
+            // A machine without IPv6 (or IPv4) loopback is fine as long as one stack listens.
+            Err(_) => {}
+        }
+    }
+    if listeners.is_empty() {
+        return Err(Error::Login(format!("couldn't listen on localhost:{port}")));
+    }
+    Ok(listeners)
+}
+
 /// Accept connections until the real callback arrives. Returns its code and the
 /// still-open connection so the caller can report the outcome to the browser.
-async fn wait_for_callback(listener: &TcpListener, state: &str) -> Result<(String, TcpStream)> {
+async fn wait_for_callback(listeners: &[TcpListener], state: &str) -> Result<(String, TcpStream)> {
     loop {
-        let (mut stream, _) = listener.accept().await?;
+        let accepts = listeners.iter().map(|l| Box::pin(l.accept()));
+        let (accepted, _, _) = futures_util::future::select_all(accepts).await;
+        let (mut stream, _) = accepted?;
         let Ok(Some(target)) = tokio::time::timeout(REQUEST_READ_TIMEOUT, read_request_target(&mut stream))
             .await
             .unwrap_or(Ok(None))
@@ -296,7 +315,7 @@ mod tests {
             (favicon, stale, real)
         });
 
-        let (code, mut stream) = wait_for_callback(&listener, "s1").await.unwrap();
+        let (code, mut stream) = wait_for_callback(std::slice::from_ref(&listener), "s1").await.unwrap();
         assert_eq!(code, "good");
         respond(&mut stream, "200 OK", "ok").await;
 
@@ -309,13 +328,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn answers_a_browser_that_resolves_localhost_to_ipv6() {
+        // The bug this guards: sign-in succeeded, then Chrome went to [::1] and was refused.
+        let Ok(v6) = TcpListener::bind(("::1", 0)).await else {
+            return; // no IPv6 loopback on this machine
+        };
+        let port = v6.local_addr().unwrap().port();
+        let Ok(v4) = TcpListener::bind(("127.0.0.1", port)).await else {
+            return; // port taken on IPv4 by something else; nothing to prove here
+        };
+        let browser = tokio::spawn(async move {
+            let mut s = TcpStream::connect(("::1", port)).await.unwrap();
+            s.write_all(b"GET /auth/callback?code=c6&state=s1 HTTP/1.1\r\n\r\n").await.unwrap();
+            let mut answer = String::new();
+            s.read_to_string(&mut answer).await.unwrap();
+            answer
+        });
+        let (code, mut stream) = wait_for_callback(&[v4, v6], "s1").await.unwrap();
+        assert_eq!(code, "c6");
+        respond(&mut stream, "200 OK", "ok").await;
+        assert!(browser.await.unwrap().starts_with("HTTP/1.1 200"));
+    }
+
+    #[tokio::test]
     async fn stops_waiting_when_the_provider_denies_the_login() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let browser = tokio::spawn(async move {
             get(port, "/auth/callback?state=s1&error=access_denied").await
         });
-        let err = wait_for_callback(&listener, "s1").await.unwrap_err();
+        let err = wait_for_callback(std::slice::from_ref(&listener), "s1").await.unwrap_err();
         assert!(err.to_string().contains("access_denied"));
         assert!(browser.await.unwrap().starts_with("HTTP/1.1 400"));
     }
