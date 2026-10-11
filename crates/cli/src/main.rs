@@ -208,21 +208,32 @@ impl App {
         let claude = claude_code::auth_status(claude_code::DEFAULT_BINARY).await.ok().flatten();
         let claude_ready = claude.as_ref().is_some_and(|s| s.logged_in);
 
-        let codex_state = if codex_ready { "✓ signed in".to_owned() } else { "not signed in".to_owned() };
-        let claude_state = match &claude {
-            None => "not installed".to_owned(),
-            Some(s) if s.logged_in => format!("✓ {}", describe_claude_login(s)),
-            Some(_) => "not signed in".to_owned(),
+        // One column per fact — engine, state, plan — so the rows compare at a glance.
+        let e = ui::err();
+        let state = |ready: bool, missing: &str| {
+            if ready {
+                format!("{} {:<15}", e.accent("✓"), "signed in")
+            } else {
+                format!("{} {:<15}", e.dim("○"), missing)
+            }
+        };
+        let claude_plan = match &claude {
+            Some(s) if s.logged_in => plan_label(s),
+            _ => "your claude".to_owned(),
         };
         let items = [
-            format!("codex        ChatGPT plan · {codex_state}"),
-            format!("claude code  your claude · {claude_state}"),
+            format!("{:<13}{}{}", "codex", state(codex_ready, "not signed in"), e.dim("ChatGPT plan")),
+            format!(
+                "{:<13}{}{}",
+                "claude code",
+                state(claude_ready, if claude.is_none() { "not installed" } else { "not signed in" }),
+                e.dim(&claude_plan)
+            ),
         ];
         // Start on the first engine that still needs a sign-in.
         let default = if !codex_ready { 0 } else if !claude_ready { 1 } else { 0 };
 
-        let p = ui::err();
-        eprintln!("{}  {}\n", p.wordmark(), p.dim("sign in"));
+        eprintln!("{}  {}\n", e.wordmark(), e.dim("sign in"));
         let picked = dialoguer::Select::with_theme(&*ui::select_theme())
             .with_prompt("Which engine?")
             .items(&items)
@@ -563,6 +574,18 @@ impl App {
             return Ok(Engine::Claude);
         }
         Err(Failure::new("No engine is ready. Sign in to Codex or Claude Code first.").next("equipe status"))
+    }
+}
+
+/// "Max plan", "Pro plan" — or how a non-subscription login is billed.
+fn plan_label(status: &AuthStatus) -> String {
+    if status.uses_subscription() {
+        let plan = status.subscription_type.as_deref().unwrap_or("claude.ai");
+        let mut chars = plan.chars();
+        let plan: String = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
+        format!("{plan} plan")
+    } else {
+        "billed per token".to_owned()
     }
 }
 

@@ -24,7 +24,7 @@ pub fn select_theme() -> Box<dyn dialoguer::theme::Theme> {
     }
     let accent = if err().truecolor { Style::new().true_color(180, 205, 230) } else { Style::new().color256(152) };
     Box::new(ColorfulTheme {
-        prompt_prefix: style(String::new()),
+        prompt_prefix: style("?".to_owned()).for_stderr().dim(),
         prompt_style: Style::new().bold(),
         prompt_suffix: style(String::new()),
         success_prefix: accent.clone().for_stderr().apply_to("✓".to_owned()),
@@ -33,7 +33,7 @@ pub fn select_theme() -> Box<dyn dialoguer::theme::Theme> {
         active_item_prefix: accent.for_stderr().apply_to("›".to_owned()),
         inactive_item_prefix: style(" ".to_owned()),
         active_item_style: Style::new().for_stderr().bold(),
-        inactive_item_style: Style::new().for_stderr().dim(),
+        inactive_item_style: Style::new().for_stderr(),
         ..ColorfulTheme::default()
     })
 }
