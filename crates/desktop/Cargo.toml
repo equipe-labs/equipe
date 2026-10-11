@@ -1,0 +1,16 @@
+[package]
+name = "equipe-desktop"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "equipe-desktop"
+path = "src/main.rs"
+
+[dependencies]
+equipe-core = { path = "../core" }
+# gpui-kit pins the matching GPUI snapshot (gpui-pre) and re-exports it, so we
+# depend on exactly one UI crate and upgrade it on our own schedule.
+gpui-kit = "=0.7.1"
+libc = "0.2"

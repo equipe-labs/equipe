@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+version = "0.0.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+opt-level = 3
+panic = "abort"
+
+# Fast inner loop: optimize deps once, keep our own crates cheap to rebuild.
+[profile.dev.package."*"]
+opt-level = 2

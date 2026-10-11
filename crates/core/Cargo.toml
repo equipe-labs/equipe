@@ -1,0 +1,8 @@
+[package]
+name = "equipe-core"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }
