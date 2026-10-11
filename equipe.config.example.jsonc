@@ -1,3 +1,5 @@
+// equipe project config — the shape Phase 2's orchestrator will read.
+// Not read by the CLI yet.
 {
   // Project slug for this squad's workspace.
   "project": "my-app",
@@ -6,12 +8,17 @@
   "repo": "/absolute/path/to/your/repo",
 
   // Default engine when a role doesn't override it.
-  // ChatGPT/Codex subscription via OAuth is the headline path.
+  //   codex       — your ChatGPT plan; equipe signs in (`equipe login codex`)
+  //   claude-code — your installed Claude Code; it signs itself in
   "defaultEngine": {
-    "kind": "acp", // "acp" | "cli" | "llm"
-    "backend": "codex", // codex | claude-code | gemini | opencode | ...
-    "provider": "openai", // authenticated via `equipe login`
-    "model": "openai/gpt-5.6"
+    "backend": "codex",
+    // Omit to use the engine's default (Codex: the account's top-ranked model).
+    "model": null
+  },
+
+  // Per-role overrides, e.g. a reviewer on a different model family.
+  "roleEngines": {
+    "qa": { "backend": "claude-code" }
   },
 
   // Which roles are active for this project.

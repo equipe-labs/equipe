@@ -1,6 +1,7 @@
 # Equipe architecture
 
-Design decisions and the shape of the code. This is a living document.
+Design decisions and the shape of the code. This is a living document; the
+[roadmap](./ROADMAP.md) says what is built and what is next.
 
 ## Principles
 
@@ -14,62 +15,167 @@ Design decisions and the shape of the code. This is a living document.
 3. **Roles are data, not code.** A role = charter (prompt) + toolset + permissions
    + preferred engine. Adding a role is a config change, not a new subsystem.
 4. **Humans own the gates.** Irreversible or outward-facing steps (merge, deploy)
-   pause at an approval gate. Borrowed from openclaw's admission/approval and
-   hermes' `_run_conversation_with_approval`.
+   pause at an approval gate.
+5. **Sign in once.** However many engines a squad uses, a person signs in to each
+   of their plans once. When an engine wants its own sign-in, equipe satisfies it
+   from the login it already holds where that is allowed, and asks the person only
+   when it isn't. Adding an engine must never add a login prompt to the daily path.
+6. **Honest identity, and only the credentials we are entitled to.** equipe names
+   itself to every backend and never impersonates another client. It holds a
+   credential only when the provider allows a third-party tool to: the ChatGPT
+   login, yes; Claude.ai credentials, never — Claude Code keeps those.
 
-## Layers (mirrors openclaw's clean separation)
+## Code layout
 
-| Layer        | Equipe concept        | Notes                                                      |
-| ------------ | --------------------- | ---------------------------------------------------------- |
-| Provider     | `ProviderId` + auth   | how we authenticate & pick models (OpenAI OAuth first)     |
-| Model        | `EngineRef.model`     | e.g. `openai/gpt-5.6`                                       |
-| Engine       | `EngineKind`          | `acp` \| `cli` \| `llm` — the thing that runs a turn        |
-| Role         | `RoleSpec`            | charter + toolset + permissions                            |
-| Orchestrator | director loop         | plans, assigns, gates                                      |
-| Board        | SQLite + git          | tickets, events, artifacts                                 |
+An all-Rust workspace. The domain lives in one core that every front end shares.
 
-## Engines: ACP-first hybrid
+| Crate | Owns | Depends on |
+|---|---|---|
+| `equipe-core` (`crates/core`) | The squad's domain: roles; the board and agent logs in SQLite | — |
+| `equipe-providers` (`crates/providers`) | Sign-in and engines: Codex (OAuth, models, Responses turns), the user's Claude Code | — |
+| `equipe` (`crates/cli`) | The command line: commands, terminal presentation, worktree sandboxes | core, providers |
+| `equipe-desktop` (`crates/desktop`) | The desktop app on GPUI Kit — see [DESKTOP.md](./DESKTOP.md) | core |
 
-- **`acp`** — drive an external coding agent over the Agent Client Protocol.
-  This is the primary path: one uniform interface to Codex, Claude Code, Gemini,
-  opencode, etc. (openclaw already binds all of these over ACP; hermes exposes
-  itself *as* an ACP server — so interop already exists in the ecosystem.)
-- **`cli`** — spawn a local coding-agent CLI process and parse its I/O. Fallback
-  for engines without a stable ACP surface.
-- **`llm`** — a thin provider call for non-coding roles (PO/Designer) that don't
-  need a full coding harness.
+**Next: the core speaks in events.** Engine calls, sessions and the board will
+publish a stream of events, and every front end — the CLI, an interactive
+terminal UI, the desktop app, an ACP server — renders that stream rather than
+owning logic. Codex's `core` / `tui` / `exec` / `app-server` split is the model.
 
-The ChatGPT-subscription setup: `EngineRef { kind: "acp"|"cli", backend: "codex",
-provider: "openai", model: "openai/gpt-5.6" }` authenticated via Codex OAuth.
+## Layers
 
-## Auth: OpenAI OAuth subscription (headline path)
+| Layer        | Equipe concept | Notes |
+| ------------ | -------------- | ----- |
+| Provider     | `equipe-providers` | how we sign in and which backends we reach |
+| Model        | model id / alias | Codex: chosen from the account's live catalog; Claude Code: its own aliases |
+| Engine       | `llm` \| `cli` \| `acp` | the thing that runs a turn — see below |
+| Role         | `equipe_core::roles` | id + mandate today; charter, toolset, engine next |
+| Orchestrator | director loop | plans, assigns, gates (Phase 2) |
+| Board        | `equipe_core::store` | tickets, events, agent logs in SQLite |
 
-Same mechanism OpenAI's own open-source Codex CLI uses:
+## Engines
 
-- Public Codex OAuth client + PKCE against `auth.openai.com` (loopback callback or
-  device code), yielding the user's own ChatGPT access/refresh tokens.
-- Model traffic to `chatgpt.com/backend-api/codex`, with **honest third-party
-  identity headers** (originator/version) — we do not impersonate the official CLI.
-- Tokens stored locally under `~/.equipe/credentials/`, refreshed on expiry.
-- `AuthMethod` also covers `api-key` and `none`; providers are pluggable so a squad
-  can mix subscription + API key + local models per role.
+| Kind | What runs a turn | Today |
+|---|---|---|
+| `llm` | A thin provider call — no tools, no loop | **Codex Responses** (`openai::responses`): one streamed turn on the ChatGPT backend. For non-coding roles (PO, Designer) |
+| `cli` | A local coding-agent CLI, driven headless | **Claude Code** (`claude_code`): `claude -p --output-format stream-json`, reporting text and tool use as it works |
+| `acp` | An external coding agent over the Agent Client Protocol | **Planned** for Codex edits via `codex-acp`; later any ACP agent |
+
+Engine access is explicit. A Claude Code turn is `ReadOnly` (`--permission-mode
+dontAsk`) unless the caller asks for `EditFiles` (`acceptEdits`): file writes inside
+the working directory only, with shell commands and outside paths still needing an
+approval that a headless run cannot give.
+
+**ACP: version 1.** v2 is a draft and removes the client-provided `fs/*` and
+`terminal/*` methods; v1's delegation of file access to the client is what lets
+equipe confine an agent to its worktree. equipe is an ACP *client* toward engines;
+exposing equipe itself as an ACP *agent* (so Zed or JetBrains can drive a squad) is
+a later option.
+
+## Sign-in
+
+### Codex: equipe signs in
+
+The mechanism OpenAI's own open-source Codex CLI uses:
+
+- Public Codex OAuth client + PKCE (S256) against `auth.openai.com`, with a state
+  value against CSRF. The loopback callback listens on **both** `127.0.0.1` and
+  `::1` — the redirect URI says `localhost`, which browsers may resolve to IPv6
+  first. A browser counts as opened only when the opener exits successfully;
+  otherwise the link is printed.
+- Traffic to `chatgpt.com/backend-api/codex` with **honest identity headers**
+  (`originator: equipe`, `User-Agent: equipe/<version>`), plus the workspace headers
+  the backend derives from the token: `ChatGPT-Account-ID` and, for
+  residency-enforced workspaces, `x-openai-internal-codex-residency`.
+- The model catalog is requested at a named Codex client level
+  (`CATALOG_CLIENT_VERSION`): the backend hides models above the `client_version`
+  it is sent and answers an empty list with HTTP 200. Hidden models are dropped and
+  the rest ranked by priority.
+- Credentials live in `~/.equipe/credentials/openai.json` (0600 in a 0700
+  directory, replaced atomically), refreshed 60 s before expiry.
+
+When Codex edits arrive over `codex-acp`, the adapter would ask for its own login.
+Under principle 5, equipe will give it a private `CODEX_HOME` seeded from the login
+it holds, and fall back to the adapter's own sign-in only if that fails.
+
+### Claude Code: bring your own
+
+Anthropic's terms
+([Claude Code legal and compliance](https://code.claude.com/docs/en/legal-and-compliance))
+don't let third-party developers offer Claude.ai login, route requests through
+Free/Pro/Max credentials on their users' behalf, or collect, store or intermediate
+Claude.ai credentials. They do allow an end user to sign in to the **unmodified
+Claude Code binary** with their own plan, including where another product runs it,
+provided that product doesn't remove or restrict its sign-in methods and each user
+is billed under their own agreement. So equipe:
+
+- runs the user's installed `claude` and never ships, patches or wraps a copy;
+- never reads, stores or forwards Claude credentials, and never injects a token —
+  the private-home trick planned for Codex is **not** used here;
+- asks `claude auth status --json` for status (non-secret fields only) and starts
+  `claude auth login` when the user chooses to sign in;
+- passes the environment through unchanged rather than stripping auth variables,
+  which would restrict the user's own choice of method — and instead shows in
+  `equipe status` whether usage is a subscription or per-token billing;
+- never passes `--bare`, which skips the subscription login.
+
+Open questions: whether a distributed orchestrator driving `claude -p` on a
+subscription sits fully inside the "unmodified binary" allowance is not spelled
+out — confirm with Anthropic before advertising subscription use. Claude Code plans
+to make `--bare` the default for `-p`; equipe will then need an explicit opt-out.
 
 ## Board
 
-SQLite (via `better-sqlite3`) under `.equipe/` in the project. Two core tables:
+SQLite through `rusqlite` (`equipe_core::store`). Today it holds tickets and
+per-agent log lines; logs never live in UI memory — writers append in batched
+transactions and a reader asks only for the rows it will draw.
 
-- `tickets` — id, title, body, status, role, assignee, dependsOn, branch, timestamps.
-- `events` — immutable log of created/assigned/note/handoff/status/approval/artifact.
+Next: `events`, an immutable log of created / assigned / note / handoff / status /
+approval / artifact. Status flow: `backlog → todo → in_progress → in_review → done`
+(plus `blocked`, `cancelled`); `approvalGates` lists statuses that pause for a human.
 
-Status flow: `backlog → todo → in_progress → in_review → done` (plus `blocked`,
-`cancelled`). `approvalGates` lists statuses that pause for a human.
+### Plans are notes; tickets are commitments
+
+Engines report their own step-by-step plan (ACP `agent-plan`). It is **not** a
+ticket, just as a developer's notebook is not the team's tracker:
+
+1. A plan belongs to the ticket being worked and is shown beside it as progress
+   (`2/4`). Each update replaces the previous plan whole (ACP requires this).
+2. Plan entries never become tickets on their own.
+3. Work outside the ticket's scope is **proposed** as a new ticket (through a board
+   tool equipe offers the agent over MCP); the PO or a person accepts it.
+4. A plan with every step done does not close the ticket. Review and the approval
+   gate do.
 
 ## Execution: git worktrees
 
-Each code-writing agent works in its own `git worktree` off the project repo, so
-parallel work is isolated and every change lands as a reviewable branch/PR. Non-code
-roles produce artifacts (specs, designs) attached to tickets as events.
+A code-writing agent never works in the user's checkout. `equipe try --edit` — and
+the orchestrator per ticket in Phase 2 — cuts a branch from `HEAD`
+(`equipe/try-<id>`), checks it out in a worktree under
+`~/.equipe/worktrees/<repo>/<id>` (outside the repo, so `git status` stays clean),
+runs the engine there, commits what changed to the branch and removes the worktree.
+What remains is one reviewable branch. A run that changes nothing leaves no branch;
+a run that fails keeps its partial changes on it.
 
-## Roadmap
+## Terminal
 
-See [ROADMAP.md](./ROADMAP.md) for the phased plan and build principles.
+The command line is a product surface, styled per [BRAND.md](./BRAND.md):
+
+- Monochrome; one cool accent, used only for success (✓) and edits (✎). Weight and
+  dimming carry the hierarchy. No emoji.
+- Text wraps to the terminal width between words, keeping indents, counting
+  Hangul/CJK as two columns; a word longer than a line (a URL) stays whole.
+- Answers go to stdout, everything else to stderr, so `equipe try … > file` keeps
+  only the answer. Plain text when piped or under `NO_COLOR`.
+- Every failure ends with the command that fixes it (`→ equipe login codex`).
+- Interactive choices are menus at a terminal and sensible defaults in scripts.
+
+Next: an interactive `equipe` (a terminal UI in the spirit of Claude Code and Codex,
+on `ratatui`), growing into a team-lead console — a live board of agents above a
+conversation with the PO, approvals inline.
+
+## Desktop
+
+`equipe-desktop` renders the same core in a native GPUI window. Its rules
+("draw nothing when nothing changed", logs never in UI memory) and measurements are
+in [DESKTOP.md](./DESKTOP.md); the stack research behind it is in
+[research/desktop-stack](./research/desktop-stack/README.md).

@@ -16,8 +16,8 @@
   <a href="docs/ROADMAP.md">roadmap</a> · <a href="docs/ARCHITECTURE.md">architecture</a>
 </p>
 
-> **Status: early.** The spine is landing in the open — not production-ready yet.
-> Watch it build itself.
+> **Status: early.** One agent can already edit your repo on its own branch, on
+> your own plan. The squad — board, roles, handoffs — is next. Watch it build itself.
 
 ## Why
 
@@ -46,49 +46,108 @@ worktrees for parallel work, and human approval gates where they matter.
 
 - **The board is the source of truth.** Agents coordinate through tickets and
   immutable events — not a firehose of chat. Every action ends in a visible outcome.
-- **Roles are `charter + toolset + permissions`.** The PO writes specs; engineers
-  edit code in isolated worktrees; QA runs tests; DevOps ships.
-- **Engines are swappable (ACP-first).** equipe drives mature coding agents over the
-  [Agent Client Protocol](https://agentclientprotocol.com) — Codex, Claude Code,
-  Gemini, opencode — and uses thin LLM calls for non-coding roles.
-- **You stay in the loop** at approval gates (e.g. before a PR merges).
+- **Roles are data.** The PO writes specs; engineers edit code in isolated
+  worktrees; QA runs tests; DevOps ships.
+- **Engines are borrowed, not rebuilt.** equipe drives mature coding agents —
+  Codex and Claude Code today, more over the
+  [Agent Client Protocol](https://agentclientprotocol.com) — and mixes them per role.
+- **You stay in the loop** at approval gates (e.g. before a branch merges).
 
-## Models & auth
+## What works today
 
-Model-agnostic through a provider abstraction. The **default** path is the one you
-already pay for:
+```
+$ equipe status
+equipe.  v0.0.1
 
-- `equipe login` runs OAuth so the squad runs on **your own** ChatGPT Plus/Pro (Codex)
-  subscription — no API key required.
-- API keys and other providers (Anthropic, local models) are first-class and mixable
-  **per role** — put low-volume roles on the subscription, heavy code-gen on an API key.
+CODEX  ChatGPT plan · equipe signs in
+  account    …
+  backend    ✓ 3 models  gpt-6-luna, gpt-5.6-terra, gpt-5.6-luna
 
-> equipe uses OpenAI's public Codex OAuth client the same way OpenAI's own Codex CLI
-> does, authenticates *your* account, and **identifies itself honestly** as a
-> third-party harness (it never impersonates the official CLI). Whether a consumer
-> subscription fits OpenAI's Terms this way is your call and your risk. If in doubt,
-> use an API key.
+CLAUDE CODE  your claude · signs itself in
+  login      ✓ claude.ai · max subscription
 
-## Quick start
+  ready      codex · claude
+```
+
+| Command | What it does |
+|---|---|
+| `equipe login` | Pick an engine and sign in (`codex` / `claude`, `--again`, `--no-browser`) |
+| `equipe logout` | Forget equipe's Codex login (Claude Code keeps its own) |
+| `equipe status` | Which engines are ready, on which plan, with which models |
+| `equipe try "…"` | One turn on whichever engine is ready (`--engine`, `--model`) |
+| `equipe try --edit "…"` | An agent edits your repo **on a new branch**, in its own worktree. Your checkout is untouched; you get review / keep / discard commands |
+| `equipe roles` | The squad roles |
+
+```
+$ equipe try --edit "In app.py, capitalize the name in greet()"
+claude code · may edit files
+  branch     equipe/try-6acb8840  from b54a531
+
+· read   app.py
+✎ edit   app.py
+Done. greet() now capitalizes the name.
+
+✓ Changes committed to equipe/try-6acb8840
+  review     git show equipe/try-6acb8840
+  keep       git merge equipe/try-6acb8840
+  discard    git branch -D equipe/try-6acb8840
+```
+
+## Engines & sign-in
+
+Both engines run on a plan **you** already have. equipe never pays for, resells or
+pools anyone's usage.
+
+**Codex — equipe signs in.** `equipe login codex` runs OAuth so equipe can use
+**your** ChatGPT plan, with PKCE and the public Codex OAuth client the same way
+OpenAI's own Codex CLI does. equipe **identifies itself honestly** as a
+third-party harness (`originator: equipe`) and never impersonates the official CLI.
+
+> Whether a consumer subscription fits OpenAI's Terms this way is your call and
+> your risk.
+
+**Claude Code — bring your own.** equipe runs **your installed, unmodified
+`claude`**, which signs itself in on Anthropic's own page (`equipe login claude`
+just starts that flow). equipe never reads, stores or forwards Claude credentials:
+Anthropic's terms don't allow third-party tools to offer Claude.ai login or handle
+its tokens, and they do allow you to sign in to the unmodified Claude Code binary
+with your own plan. Usage is billed to you under your own agreement; `equipe status`
+says whether that's a subscription or per-token API billing.
+
+> Anthropic's advertised Pro/Max limits assume ordinary, individual use. A whole
+> squad on one subscription will reach them; plan to give Claude Code the roles that
+> need it most.
+
+## Install
+
+From source, until releases are published. Needs [Rust](https://rustup.rs) 1.88+
+and git; [Claude Code](https://code.claude.com/docs/en/setup) for the `claude` engine.
 
 ```bash
-npm install -g equipe      # (not published yet — building in the open)
-
-equipe login               # authenticate (ChatGPT/Codex OAuth by default)
-equipe status              # verify the login, list available models
-equipe roles               # see the squad
+git clone https://github.com/livelikeabel/equipe && cd equipe
+cargo install --locked --path crates/cli
 ```
+
+`cargo install` puts `equipe` in `~/.cargo/bin`. To install elsewhere on your PATH,
+add `--root ~/.local` (→ `~/.local/bin/equipe`). Run the same command again to
+update.
 
 ## Development
 
 ```bash
-pnpm install
-pnpm dev -- roles          # run the CLI from source
-pnpm build                 # compile to dist/
-pnpm demo                  # regenerate the hero gif (see demo/README.md)
+cargo test --workspace                     # no network, no login needed
+cargo clippy --workspace --all-targets
+cargo run -p equipe -- status              # the CLI from source
+cargo run --release -p equipe-desktop      # the desktop app (see docs/DESKTOP.md)
+demo/render.sh                             # regenerate the hero gif (see demo/README.md)
 ```
 
-Requires Node 22+.
+| Crate | |
+|---|---|
+| `crates/core` | `equipe-core` — the squad's domain: roles, the board and agent logs in SQLite |
+| `crates/providers` | `equipe-providers` — sign-in and engines: Codex, your Claude Code |
+| `crates/cli` | `equipe` — the command line |
+| `crates/desktop` | `equipe-desktop` — the desktop app (GPUI) |
 
 ## License
 

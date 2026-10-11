@@ -47,7 +47,7 @@ impl Engine {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Sign in to an engine, or to every engine that isn't ready
+    /// Sign in to an engine (asks which at a terminal)
     Login {
         #[arg(value_enum)]
         engine: Option<Engine>,

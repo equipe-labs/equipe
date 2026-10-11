@@ -8,6 +8,8 @@ which pins its GPUI snapshot, `gpui-pre` 0.3.8).
 cargo run --release -p equipe-desktop
 ```
 
+Why a Rust core and GPUI: [research/desktop-stack](./research/desktop-stack/README.md).
+
 Spike knobs (env): `EQUIPE_AGENTS` (3), `EQUIPE_RATE` lines/s per mock agent
 (200, `0` = idle), `EQUIPE_TICK_MS` UI poll interval (33), `EQUIPE_W`/`EQUIPE_H`.
 
