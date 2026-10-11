@@ -8,6 +8,86 @@
 use std::io::IsTerminal as _;
 use std::sync::OnceLock;
 
+/// Whether a person is at the keyboard: both stdin and stderr are terminals.
+pub fn interactive() -> bool {
+    std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+}
+
+/// The selection-menu theme: the item under the cursor in bold with the accent
+/// marker, the rest dimmed — the same hierarchy as the rest of the CLI.
+pub fn select_theme() -> Box<dyn dialoguer::theme::Theme> {
+    use console::{Style, style};
+    use dialoguer::theme::{ColorfulTheme, SimpleTheme};
+
+    if !err().color {
+        return Box::new(SimpleTheme);
+    }
+    let accent = if err().truecolor { Style::new().true_color(180, 205, 230) } else { Style::new().color256(152) };
+    Box::new(ColorfulTheme {
+        prompt_prefix: style(String::new()),
+        prompt_style: Style::new().bold(),
+        prompt_suffix: style(String::new()),
+        success_prefix: accent.clone().for_stderr().apply_to("✓".to_owned()),
+        success_suffix: style("·".to_owned()).for_stderr().dim(),
+        values_style: Style::new().for_stderr().bold(),
+        active_item_prefix: accent.for_stderr().apply_to("›".to_owned()),
+        inactive_item_prefix: style(" ".to_owned()),
+        active_item_style: Style::new().for_stderr().bold(),
+        inactive_item_style: Style::new().for_stderr().dim(),
+        ..ColorfulTheme::default()
+    })
+}
+
+/// Columns available, from whichever stream is a terminal; 80 when unknown.
+pub fn width() -> usize {
+    static W: OnceLock<usize> = OnceLock::new();
+    *W.get_or_init(|| {
+        terminal_size::terminal_size_of(std::io::stdout())
+            .or_else(|| terminal_size::terminal_size_of(std::io::stderr()))
+            .map(|(terminal_size::Width(w), _)| w as usize)
+            .unwrap_or(80)
+    })
+}
+
+/// Visible length, skipping ANSI style sequences.
+fn visible_len(text: &str) -> usize {
+    let mut len = 0;
+    let mut in_escape = false;
+    for c in text.chars() {
+        match (in_escape, c) {
+            (false, '\x1b') => in_escape = true,
+            (true, 'm') => in_escape = false,
+            (true, _) => {}
+            (false, _) => len += 1,
+        }
+    }
+    len
+}
+
+/// Word-wrap `text` to `width` columns. The first line starts at column `first`
+/// (text already printed before it); continuation lines are indented by `rest`.
+/// A word longer than a line — a URL — stays whole so it still copies cleanly.
+pub fn wrap(text: &str, first: usize, rest: usize, width: usize) -> String {
+    let mut out = String::new();
+    let mut col = first;
+    for (i, word) in text.split(' ').enumerate() {
+        let len = visible_len(word);
+        if i > 0 {
+            if col + 1 + len > width && col > rest {
+                out.push('\n');
+                out.push_str(&" ".repeat(rest));
+                col = rest;
+            } else {
+                out.push(' ');
+                col += 1;
+            }
+        }
+        out.push_str(word);
+        col += len;
+    }
+    out
+}
+
 #[derive(Clone, Copy)]
 pub struct Painter {
     color: bool,
@@ -79,13 +159,90 @@ impl Painter {
         format!("{}{}", self.bold("equipe"), self.dim("."))
     }
 
-    /// A `key  value` row inside a section.
+    /// A `key  value` row inside a section; long values wrap under the value column.
     pub fn row(self, key: &str, value: &str) -> String {
-        format!("  {}  {value}", self.dim(&format!("{key:<9}")))
+        const VALUE_COL: usize = 13;
+        format!(
+            "  {}  {}",
+            self.dim(&format!("{key:<9}")),
+            wrap(value, VALUE_COL, VALUE_COL, width())
+        )
+    }
+
+    /// Plain prose, wrapped at `indent`.
+    pub fn para(self, indent: usize, text: &str) -> String {
+        format!("{}{}", " ".repeat(indent), wrap(text, indent, indent, width()))
+    }
+
+    /// Secondary prose, wrapped at `indent`, every line dimmed.
+    pub fn note(self, indent: usize, text: &str) -> String {
+        wrap(text, indent, indent, width())
+            .lines()
+            .enumerate()
+            .map(|(i, line)| {
+                let pad = if i == 0 { " ".repeat(indent) } else { String::new() };
+                let line = line.trim_start();
+                let lead = if i == 0 { String::new() } else { " ".repeat(indent) };
+                format!("{pad}{lead}{}", self.dim(line))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A line led by ✓, wrapped with continuation under the text.
+    pub fn ok_line(self, text: &str) -> String {
+        wrap(&self.ok(text), 0, 2, width())
+    }
+
+    /// A line led by ✗, wrapped with continuation under the text.
+    pub fn fail_line(self, text: &str) -> String {
+        wrap(&self.fail(text), 0, 2, width())
+    }
+
+    /// A section heading: label, then a dim description that wraps under it.
+    pub fn section(self, label: &str, description: &str) -> String {
+        let head = format!("{}  {}", self.kicker(label), self.dim(description));
+        wrap(&head, 0, 2, width())
     }
 
     /// A next step the user can type.
     pub fn hint(self, command: &str) -> String {
         format!("{} {}", self.dim("→"), self.bold(command))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wraps_between_words_never_inside_one() {
+        let out = wrap("Claude Code keeps its own login; `claude auth logout` signs it out", 2, 2, 30);
+        for line in out.lines() {
+            assert!(visible_len(line) <= 30, "{line:?}");
+        }
+        assert!(out.contains("`claude auth logout`") || out.contains("`claude\n"));
+        assert!(!out.contains("au\n"));
+    }
+
+    #[test]
+    fn continuation_lines_keep_their_indent() {
+        let out = wrap("one two three four five six", 4, 4, 14);
+        for line in out.lines().skip(1) {
+            assert!(line.starts_with("    ") && !line.starts_with("     "), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn a_long_url_stays_whole() {
+        let url = "https://auth.openai.com/oauth/authorize?response_type=code&client_id=x";
+        assert_eq!(wrap(url, 0, 0, 20), url);
+    }
+
+    #[test]
+    fn style_codes_do_not_count_as_width() {
+        let styled = format!("\x1b[1m{}\x1b[0m", "abc");
+        assert_eq!(visible_len(&styled), 3);
+        assert_eq!(wrap(&format!("{styled} {styled}"), 0, 0, 7), format!("{styled} {styled}"));
     }
 }

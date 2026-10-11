@@ -119,7 +119,7 @@ async fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(failure) => {
             let p = ui::err();
-            eprintln!("\n{}", p.fail(&failure.message));
+            eprintln!("\n{}", p.fail_line(&failure.message));
             if let Some(next) = failure.next {
                 eprintln!("  {}", p.hint(&next));
             }
@@ -164,24 +164,36 @@ impl App {
 
     async fn login(&self, engine: Option<Engine>, timeout: u64, no_browser: bool, again: bool) -> CmdResult {
         let p = ui::out();
-        let engines = engine.map_or_else(|| vec![Engine::Codex, Engine::Claude], |e| vec![e]);
+        // Named engine: that one. No name, in a terminal: let the user choose.
+        // No name and no terminal (scripts): every engine that isn't ready.
+        let (engines, chosen) = match engine {
+            Some(engine) => (vec![engine], false),
+            None if ui::interactive() => match self.pick_engine().await {
+                Some(engine) => (vec![engine], true),
+                None => {
+                    println!("{}", p.note(0, "Cancelled."));
+                    return Ok(());
+                }
+            },
+            None => (vec![Engine::Codex, Engine::Claude], false),
+        };
         for (i, engine) in engines.into_iter().enumerate() {
             if i > 0 {
                 println!();
             }
             match engine {
                 Engine::Codex => match self.store.load("openai") {
-                    Ok(Some(cred)) if !again => {
+                    Ok(Some(cred)) if !again && !chosen => {
                         let account = cred.account_id.map(|a| format!(" · {a}")).unwrap_or_default();
-                        println!("{}", p.ok(&format!("codex · already signed in{account}")));
-                        println!("  {}", p.dim("Sign in again with `equipe login codex --again`."));
+                        println!("{}", p.ok_line(&format!("codex · already signed in{account}")));
+                        println!("{}", p.note(2, "Sign in again: equipe login codex --again"));
                     }
                     _ => self.login_codex(timeout, no_browser).await?,
                 },
                 Engine::Claude => match claude_code::auth_status(claude_code::DEFAULT_BINARY).await {
                     Ok(Some(status)) if status.logged_in && !again => {
-                        println!("{}", p.ok(&format!("claude code · already signed in · {}", describe_claude_login(&status))));
-                        println!("  {}", p.dim("Sign in again with `equipe login claude --again` — this changes Claude Code's login everywhere."));
+                        println!("{}", p.ok_line(&format!("claude code · already signed in · {}", describe_claude_login(&status))));
+                        println!("{}", p.note(2, "Sign in again: equipe login claude --again (changes Claude Code's login everywhere)"));
                     }
                     _ => self.login_claude().await?,
                 },
@@ -190,16 +202,48 @@ impl App {
         Ok(())
     }
 
+    /// Ask which engine to sign in to, showing where each one stands.
+    async fn pick_engine(&self) -> Option<Engine> {
+        let codex_ready = matches!(self.store.load("openai"), Ok(Some(_)));
+        let claude = claude_code::auth_status(claude_code::DEFAULT_BINARY).await.ok().flatten();
+        let claude_ready = claude.as_ref().is_some_and(|s| s.logged_in);
+
+        let codex_state = if codex_ready { "✓ signed in".to_owned() } else { "not signed in".to_owned() };
+        let claude_state = match &claude {
+            None => "not installed".to_owned(),
+            Some(s) if s.logged_in => format!("✓ {}", describe_claude_login(s)),
+            Some(_) => "not signed in".to_owned(),
+        };
+        let items = [
+            format!("codex        ChatGPT plan · {codex_state}"),
+            format!("claude code  your claude · {claude_state}"),
+        ];
+        // Start on the first engine that still needs a sign-in.
+        let default = if !codex_ready { 0 } else if !claude_ready { 1 } else { 0 };
+
+        let p = ui::err();
+        eprintln!("{}  {}\n", p.wordmark(), p.dim("sign in"));
+        let picked = dialoguer::Select::with_theme(&*ui::select_theme())
+            .with_prompt("Which engine?")
+            .items(&items)
+            .default(default)
+            .interact_opt()
+            .ok()
+            .flatten()?;
+        eprintln!();
+        Some(if picked == 0 { Engine::Codex } else { Engine::Claude })
+    }
+
     /// Forget the Codex credential equipe holds. Claude Code's login is not equipe's.
     fn logout(&self) -> CmdResult {
         let p = ui::out();
         let path = self.store.path("openai");
         match std::fs::remove_file(&path) {
-            Ok(()) => println!("{}", p.ok("codex · signed out")),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => println!("{}", p.dim("codex · wasn't signed in")),
+            Ok(()) => println!("{}", p.ok_line("codex · signed out")),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => println!("{}", p.note(0, "codex · wasn't signed in")),
             Err(err) => return Err(Failure::new(format!("couldn't remove {}: {err}", path.display()))),
         }
-        println!("  {}", p.dim("Claude Code keeps its own login; `claude auth logout` signs it out everywhere."));
+        println!("{}", p.note(2, "Claude Code keeps its own login."));
         println!("\n  {}", p.hint("equipe login codex"));
         Ok(())
     }
@@ -207,8 +251,8 @@ impl App {
     async fn login_codex(&self, timeout_min: u64, no_browser: bool) -> CmdResult {
         let p = ui::out();
         println!("{}  {}\n", p.wordmark(), p.dim("sign in · codex"));
-        println!("Sign in with your ChatGPT subscription. This uses {} account;", p.bold("your"));
-        println!("{}\n", p.dim("equipe identifies itself to OpenAI as itself, never as Codex CLI."));
+        println!("{}", p.para(0, "Sign in with your ChatGPT subscription — your account, your plan."));
+        println!("{}\n", p.note(0, "equipe introduces itself to OpenAI as equipe, never as Codex CLI."));
 
         let options = login::LoginOptions {
             timeout: Duration::from_secs(timeout_min * 60),
@@ -235,19 +279,19 @@ impl App {
             }
             match opened {
                 Ok(()) => {
-                    println!("{}", p.ok("Opened the sign-in page in your browser."));
-                    println!("  {}", p.dim("Don't see it? Press Enter to print the link."));
+                    println!("{}", p.ok_line("Opened the sign-in page in your browser."));
+                    println!("{}", p.note(2, "Not there? Press Enter to print the link."));
                 }
                 Err(reason) => {
                     if !no_browser {
-                        println!("{}", p.fail(&format!("Couldn't open a browser: {reason}")));
+                        println!("{}", p.fail_line(&format!("Couldn't open a browser: {reason}")));
                     }
                     // Alone on its line and unindented, so it copies cleanly.
                     println!("Open this link to sign in:\n");
                     println!("{url}\n");
                 }
             }
-            println!("\n{}", p.dim(&format!("Waiting for the browser · up to {timeout_min} min · Ctrl-C to cancel")));
+            println!("\n{}", p.note(0, &format!("Waiting for the browser ({timeout_min} min) · Ctrl-C to cancel")));
         })
         .await
         .map_err(|err| {
@@ -260,7 +304,7 @@ impl App {
         })?;
 
         let account = cred.account_id.as_deref().map(|a| format!(" · {a}")).unwrap_or_default();
-        println!("\n{}", p.ok(&format!("Signed in to ChatGPT{account}")));
+        println!("\n{}", p.ok_line(&format!("Signed in to ChatGPT{account}")));
         println!("{}", p.row("saved", &self.store.path("openai").display().to_string()));
         println!("\n  {}", p.hint("equipe try \"hello\""));
         Ok(())
@@ -269,8 +313,8 @@ impl App {
     async fn login_claude(&self) -> CmdResult {
         let p = ui::out();
         println!("{}  {}\n", p.wordmark(), p.dim("sign in · claude code"));
-        println!("Claude Code signs itself in, through Anthropic's own page.");
-        println!("{}\n", p.dim("equipe never reads, stores or forwards your Claude credentials."));
+        println!("{}", p.para(0, "Claude Code signs itself in, on Anthropic's own page."));
+        println!("{}\n", p.note(0, "equipe never sees your Claude credentials."));
 
         let status = tokio::process::Command::new(claude_code::DEFAULT_BINARY)
             .args(["auth", "login"])
@@ -308,7 +352,7 @@ impl App {
 
     /// Prints the Codex section; returns whether Codex is usable.
     async fn codex_section(&self, p: &ui::Painter) -> bool {
-        println!("{}  {}", p.kicker("codex"), p.dim("ChatGPT subscription · signed in by equipe"));
+        println!("{}", p.section("codex", "ChatGPT plan · equipe signs in"));
         let cred = match self.codex_credentials().await {
             Ok(cred) => cred,
             Err(failure) => {
@@ -345,7 +389,7 @@ impl App {
 
     /// Prints the Claude Code section; returns whether Claude Code is usable.
     async fn claude_section(&self, p: &ui::Painter) -> bool {
-        println!("{}  {}", p.kicker("claude code"), p.dim("your installed claude · signs itself in"));
+        println!("{}", p.section("claude code", "your claude · signs itself in"));
         match claude_code::auth_status(claude_code::DEFAULT_BINARY).await {
             Ok(Some(status)) if status.logged_in => {
                 println!("{}", p.row("login", &p.ok(&describe_claude_login(&status))));
@@ -452,7 +496,7 @@ impl App {
         let model_label = model.map(|m| format!(" · {m}")).unwrap_or_default();
         eprintln!("{}", e.dim(&format!("claude code{model_label} · may edit files")));
         eprintln!("{}", e.row("branch", &format!("{}  {}", e.bold(&sandbox.branch), e.dim(&format!("from {short_base}")))));
-        eprintln!("{}\n", e.row("", &e.dim("Your checkout is untouched; the agent works in its own worktree.")));
+        eprintln!("{}\n", e.row("", &e.dim("Your checkout stays untouched.")));
 
         let mut printer = Printer::new(&sandbox.path);
         let outcome = claude_code::run_turn(
@@ -490,12 +534,12 @@ impl App {
         match committed {
             None => {
                 sandbox.discard().map_err(Failure::new)?;
-                println!("\n{}", p.dim("No files changed, so no branch was kept."));
+                println!("\n{}", p.note(0, "No files changed, so no branch was kept."));
             }
             Some(_) => {
                 let stat = sandbox.diff_stat().unwrap_or_default();
                 sandbox.remove_worktree().map_err(Failure::new)?;
-                println!("\n{}", p.ok(&format!("Changes committed to {}", p.bold(&sandbox.branch))));
+                println!("\n{}", p.ok_line(&format!("Changes committed to {}", p.bold(&sandbox.branch))));
                 for line in stat.lines() {
                     println!("  {}", p.dim(line.trim()));
                 }
