@@ -422,8 +422,10 @@ async fn at_its_desk_a_member_reads_every_project_and_gets_only_equipes_tools() 
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
 
     let call = &calls(&recorded)[0];
-    // Reads, never writes, at its desk — even an engineer.
-    assert_eq!(arg(call, "--permission-mode"), Some("dontAsk"));
+    // At its desk it reads on its own; anything more — a fetch, an edit — asks
+    // the person rather than being refused unseen.
+    assert_eq!(arg(call, "--permission-mode"), Some("manual"));
+    assert_eq!(arg(call, "--permission-prompt-tool"), Some("mcp__equipe__approve"));
     assert_eq!(arg(call, "--add-dir"), Some(&*app.to_string_lossy()));
     let mcp: serde_json::Value = serde_json::from_str(arg(call, "--mcp-config").unwrap()).unwrap();
     let server = &mcp["mcpServers"]["equipe"];

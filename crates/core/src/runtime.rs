@@ -824,8 +824,10 @@ impl Runtime {
                 (work.cwd.clone(), access_for(mode, edits && work.sandbox.is_some()), work.claude_session.clone(), work.history.clone(), Some(work.ticket), Vec::new())
             }
             None => {
-                // At its desk a member reads every project of its squad; it writes nowhere.
-                let access = if session.member.is_some() { claude_code::Access::ReadOnly } else { plain_access(session.access) };
+                // At its desk a member reads every project of its squad on its own;
+                // anything more — a fetch, an edit — asks the person (and in plan
+                // is refused), never denied unseen.
+                let access = if session.member.is_some() { desk_access(mode) } else { plain_access(session.access) };
                 let others: Vec<PathBuf> = projects.iter().filter(|p| **p != session.cwd).cloned().collect();
                 (session.cwd.clone(), access, session.claude_session.clone(), session.history.clone(), None, others)
             }
@@ -1953,6 +1955,17 @@ fn access_for(mode: Mode, may_edit: bool) -> claude_code::Access {
         (Mode::Ask, true) => claude_code::Access::Ask,
         (Mode::Auto, true) => claude_code::Access::EditFiles,
         (Mode::Full, true) => claude_code::Access::Full,
+    }
+}
+
+/// A member at its desk, between tickets: it looks around freely; beyond
+/// that, the mode decides — plan refuses, ask and auto put it to the person
+/// (auto still lets looking-only commands through), full lets it.
+fn desk_access(mode: Mode) -> claude_code::Access {
+    match mode {
+        Mode::Plan => claude_code::Access::ReadOnly,
+        Mode::Ask | Mode::Auto => claude_code::Access::Ask,
+        Mode::Full => claude_code::Access::Full,
     }
 }
 

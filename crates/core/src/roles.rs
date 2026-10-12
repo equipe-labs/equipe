@@ -222,9 +222,10 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
     };
     format!(
         "You are {name}, the {title} on a software squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{browser}\n\nYou run inside equipe, without a screen of your own: the person can't press keys \
-or change your permission mode, so never ask them to. When something you need is denied, say plainly what you \
-need and why. {language} Be concise.",
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{browser}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
+doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
+refuses, say plainly what you need and why. {language} Be concise.",
         role.duties
     )
 }

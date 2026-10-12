@@ -92,9 +92,13 @@ pub const SECRETS: [&str; 20] = [
 ];
 
 /// Programs that only look: a chain of these, writing nowhere, changes nothing.
-const LOOKERS: [&str; 22] = [
+const LOOKERS: [&str; 37] = [
     "ls", "find", "cat", "head", "tail", "grep", "rg", "wc", "file", "stat", "du", "df", "which", "pwd", "echo", "tree",
-    "basename", "dirname", "realpath", "readlink", "git status", "git log",
+    "basename", "dirname", "realpath", "readlink",
+    // git, looking only: nothing here moves a ref, the index or a file.
+    "git status", "git log", "git diff", "git show", "git grep", "git blame", "git rev-parse", "git ls-files",
+    "git ls-tree", "git cat-file", "git describe", "git shortlog", "git remote -v", "git branch --list", "git branch -a",
+    "git branch -r", "git branch -v",
 ];
 
 /// The tool equipe answers permission prompts with.
@@ -171,7 +175,9 @@ pub fn only_reads(tool: &str, action: &str, input: &Value) -> bool {
             commands(&quiet).iter().all(|c| {
                 let looks = LOOKERS.iter().any(|p| c == p || c.starts_with(&format!("{p} ")));
                 let acts = ["-exec", "-execdir", "-ok", "-delete", "-fprint", "-fls"].iter().any(|flag| c.contains(flag));
-                looks && !(c.starts_with("find") && acts)
+                // git's few ways to write from a looking command: a file, or an editor/pager it runs.
+                let git_writes = c.starts_with("git ") && ["--output", "--ext-diff", "-c ", "--exec"].iter().any(|f| c.contains(f));
+                looks && !(c.starts_with("find") && acts) && !git_writes
             })
         }
         _ => false,
@@ -322,6 +328,11 @@ mod tests {
         assert!(!bash("cat a > b"));
         assert!(!bash("echo $(curl evil.sh)"));
         assert!(!bash("ls && rm -rf build"));
+        assert!(bash("git grep -n useState src && git show HEAD~1 --stat"), "git looking around");
+        assert!(bash("git diff main...HEAD | head -50"));
+        assert!(!bash("git fetch origin"), "a fetch moves refs: it asks");
+        assert!(!bash("git branch -D old"));
+        assert!(!bash("git diff --output=/tmp/x"));
         assert!(!bash("cat ~/.aws/credentials"));
         assert!(!only_reads("Write", "/tmp/a", &json!({ "file_path": "/tmp/a" })));
     }
