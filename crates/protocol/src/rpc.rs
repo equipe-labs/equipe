@@ -1,9 +1,11 @@
 //! JSON-RPC 2.0 framing for the protocol, one message per line — the same
 //! shape ACP, MCP and LSP use, so any language can attach.
 //!
-//! - `hello` (request): `{ version, project }` → [`Hello`] with the project's snapshot
+//! - `hello` (request): `{ version, squad }` → [`Hello`] with the squad's snapshot
 //! - `command` (notification): a [`Command`](crate::Command)
 //! - `event` (notification, daemon → screen): an [`Event`](crate::Event)
+//! - `tool` (request): a member's board tool call, from the MCP server equipe
+//!   gives its engine → [`ToolResult`]
 //! - `shutdown` (request): stop the daemon; sessions stay restorable
 
 use serde::{Deserialize, Serialize};
@@ -15,6 +17,7 @@ pub const HELLO: &str = "hello";
 pub const COMMAND: &str = "command";
 pub const EVENT: &str = "event";
 pub const SHUTDOWN: &str = "shutdown";
+pub const TOOL: &str = "tool";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
@@ -41,8 +44,26 @@ pub struct RpcError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelloParams {
     pub version: String,
-    /// The project to follow: only its sessions are snapshotted and streamed.
-    pub project: std::path::PathBuf,
+    /// The squad to follow: only its members and board are snapshotted and streamed.
+    pub squad: crate::SquadName,
+}
+
+/// A member calling one of its board tools.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub squad: crate::SquadName,
+    /// The member's name, as equipe started its MCP server.
+    pub member: String,
+    pub name: String,
+    #[serde(default)]
+    pub arguments: Value,
+}
+
+/// What a tool call returns: text for the model, and whether it failed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolResult {
+    pub text: String,
+    pub is_error: bool,
 }
 
 /// The daemon's answer to `hello`.
@@ -125,7 +146,7 @@ mod tests {
 
     #[test]
     fn requests_and_responses_pair_by_id() {
-        let req = Message::request(7, HELLO, HelloParams { version: "1".into(), project: "/p".into() });
+        let req = Message::request(7, HELLO, HelloParams { version: "1".into(), squad: "acme".into() });
         let res = Message::response(7, Hello { version: "1".into(), snapshot: Default::default() });
         assert_eq!(req.id, res.id);
         assert!(res.result_as::<Hello>().is_some());

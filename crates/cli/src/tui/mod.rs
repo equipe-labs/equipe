@@ -9,24 +9,32 @@
 
 mod app;
 mod composer;
+mod markdown;
 mod view;
 
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, Event as Input, EventStream, KeyEventKind};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event as Input, EventStream,
+    KeyEventKind,
+};
 use crossterm::execute;
-use equipe_core::runtime;
 use futures_util::StreamExt as _;
 
+use crate::onboard::Start;
 use crate::{daemon, ui};
 
 pub struct Summary {
+    pub squad: String,
     pub agents: usize,
     pub working: usize,
     pub tokens: u64,
-    pub landed: Vec<(String, String)>,
+    /// Work accepted while the screen watched: `(ticket, title, branch)`.
+    pub accepted: Vec<(u32, String, String)>,
+    /// Tickets still waiting for the person's review.
+    pub to_review: usize,
     /// The daemon went away while this screen watched.
     pub daemon_lost: bool,
 }
@@ -36,17 +44,16 @@ struct TerminalGuard;
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+        let _ = execute!(std::io::stdout(), DisableBracketedPaste, DisableMouseCapture);
         ratatui::restore();
     }
 }
 
-pub async fn run(cwd: PathBuf) -> std::io::Result<Summary> {
-    let project = runtime::project_of(&cwd);
-    let (mut client, hello) = daemon::attach(&project).await?;
+pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
+    let (mut client, hello) = daemon::attach(&start.squad).await?;
     let branch = current_branch(&cwd);
     let daemon_build = hello.version.clone();
-    let (mut app, first) = app::App::from_snapshot(cwd, project, hello.snapshot);
+    let (mut app, first) = app::App::from_snapshot(cwd, hello.snapshot, &start.members);
     first.into_iter().for_each(|c| client.send(c));
     if daemon_build != daemon::build_id() {
         // A daemon from an older build keeps running old code; say so, but don't
@@ -61,6 +68,11 @@ pub async fn run(cwd: PathBuf) -> std::io::Result<Summary> {
     let _guard = TerminalGuard;
     // Pastes arrive whole, so a newline inside one never sends the message.
     execute!(std::io::stdout(), EnableBracketedPaste)?;
+    // The wheel scrolls; `/mouse` hands the mouse back so text can be selected.
+    let mut mouse = app.mouse;
+    if mouse {
+        execute!(std::io::stdout(), EnableMouseCapture)?;
+    }
 
     let mut input = EventStream::new();
     let mut daemon_lost = false;
@@ -74,6 +86,7 @@ pub async fn run(cwd: PathBuf) -> std::io::Result<Summary> {
                     }
                 }
                 Input::Paste(text) => app.on_paste(&text),
+                Input::Mouse(event) => app.on_mouse(event.kind),
                 Input::Resize(..) => {}
                 _ => continue,
             },
@@ -98,15 +111,25 @@ pub async fn run(cwd: PathBuf) -> std::io::Result<Summary> {
         if app.should_quit {
             break;
         }
+        if app.mouse != mouse {
+            mouse = app.mouse;
+            if mouse {
+                execute!(std::io::stdout(), EnableMouseCapture)?;
+            } else {
+                execute!(std::io::stdout(), DisableMouseCapture)?;
+            }
+        }
         // Drawn only after something changed — nothing redraws on a timer.
         terminal.draw(|f| view::render(f, &app, theme, branch.as_deref()))?;
     }
 
     Ok(Summary {
+        squad: app.squad.clone(),
         agents: app.agents.iter().filter(|a| a.is_open()).count(),
         working: app.working(),
         tokens: app.total_tokens(),
-        landed: app.landed.clone(),
+        accepted: app.accepted.clone(),
+        to_review: app.to_review().len(),
         daemon_lost,
     })
 }
@@ -115,25 +138,30 @@ pub async fn run(cwd: PathBuf) -> std::io::Result<Summary> {
 pub fn print_summary(summary: &Summary) {
     let p = ui::out();
     let team = match summary.agents {
-        0 => "no agents open".to_owned(),
-        1 => "1 agent".to_owned(),
-        n => format!("{n} agents"),
+        0 => "nobody on the squad".to_owned(),
+        1 => "1 member".to_owned(),
+        n => format!("{n} members"),
     };
-    println!("{}  {}", p.wordmark(), p.dim(&format!("detached · {team} · {} tokens", summary.tokens)));
+    println!(
+        "{}  {}",
+        p.wordmark(),
+        p.dim(&format!("detached from {} · {team} · {} tokens", summary.squad, summary.tokens))
+    );
     if summary.daemon_lost {
         println!("{}", p.fail_line("The daemon stopped while you watched."));
         println!("  {}", p.hint("equipe daemon start"));
     } else if summary.working > 0 {
-        let who = if summary.working == 1 { "1 agent is".to_owned() } else { format!("{} agents are", summary.working) };
-        println!("{}", p.ok_line(&format!("{who} still working. The team keeps going without this screen.")));
+        let who = if summary.working == 1 { "1 member is".to_owned() } else { format!("{} members are", summary.working) };
+        println!("{}", p.ok_line(&format!("{who} still working. The squad keeps going without this screen.")));
     }
-    for (branch, stat) in &summary.landed {
-        println!("\n{}", p.ok_line(&format!("Changes committed to {}", p.bold(branch))));
-        if let Some(last) = stat.lines().last() {
-            println!("  {}", p.dim(last.trim()));
-        }
-        println!("{}", p.row("review", &p.bold(&format!("git show {branch}"))));
-        println!("{}", p.row("keep", &p.bold(&format!("git merge {branch}"))));
+    if summary.to_review > 0 {
+        let what = if summary.to_review == 1 { "1 ticket waits".to_owned() } else { format!("{} tickets wait", summary.to_review) };
+        println!("{}", p.note(2, &format!("{what} for your review.")));
+    }
+    for (ticket, title, branch) in &summary.accepted {
+        println!("\n{}", p.ok_line(&format!("T-{ticket} {title} — accepted, on {}", p.bold(branch))));
+        println!("{}", p.row("review", &p.bold(&format!("git log -p main..{branch}"))));
+        println!("{}", p.row("merge", &p.bold(&format!("git merge {branch}"))));
     }
     if !summary.daemon_lost {
         println!("\n  {}", p.hint("equipe   to come back"));

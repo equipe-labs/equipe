@@ -32,7 +32,7 @@ An all-Rust workspace. The domain lives in one core that every front end shares.
 | Crate | Owns | Depends on |
 |---|---|---|
 | `equipe-protocol` (`crates/protocol`) | The contract between the brain and every screen: `Command`s in, `Event`s out | — |
-| `equipe-core` (`crates/core`) | The brain: the `runtime` that runs sessions on engines; roles; the board and agent logs in SQLite; worktree sandboxes | protocol, providers |
+| `equipe-core` (`crates/core`) | The brain: the `runtime` that runs members on engines; squads, roles and the board's rules; the journal in SQLite; the daemon's socket; the MCP board tools; worktree sandboxes | protocol, providers |
 | `equipe-providers` (`crates/providers`) | Sign-in and engines: Codex (OAuth, models, Responses turns), the user's Claude Code | — |
 | `equipe` (`crates/cli`) | Screens: the command line and the terminal UI | protocol, core |
 | `equipe-desktop` (`crates/desktop`) | The desktop app on GPUI Kit — see [DESKTOP.md](./DESKTOP.md) | core |
@@ -65,7 +65,7 @@ what they show. Codex's `core` / `tui` / `exec` / `app-server` split is the mode
 | Model        | model id / alias | Codex: chosen from the account's live catalog; Claude Code: its own aliases |
 | Engine       | `llm` \| `cli` \| `acp` | the thing that runs a turn — see below |
 | Role         | `equipe_core::roles` | charter, file access, model tier, engine preference |
-| Rules        | `equipe_core::runtime` | assignment, order, concurrency, budgets, gates — code, never a model's word |
+| Rules        | `equipe_core::board` | assignment and order — code, never a model's word; budgets and gates next |
 | Board        | `equipe_core::store` | tickets, events, agent logs in SQLite |
 
 ## Engines
@@ -141,13 +141,53 @@ to make `--bare` the default for `-p`; equipe will then need an explicit opt-out
 
 ## Board
 
-SQLite through `rusqlite` (`equipe_core::store`). Today it holds tickets and
-per-agent log lines; logs never live in UI memory — writers append in batched
-transactions and a reader asks only for the rows it will draw.
+Each squad's board lives in its database (`~/.equipe/squads/<squad>/squad.db`,
+`equipe_core::journal`): tickets, and an append-only record of what happened to
+each — created, assigned, handed in, commented, accepted, reopened. Tickets are
+kept forever (a few hundred bytes each); conversations follow the storage policy.
 
-Next: `events`, an immutable log of created / assigned / note / handoff / status /
-approval / artifact. Status flow: `backlog → todo → in_progress → in_review → done`
-(plus `blocked`, `cancelled`); `approvalGates` lists statuses that pause for a human.
+Status flow: `proposed → todo → in_progress → review → done` (or `cancelled`).
+
+- **The PM writes the board** through tools; a ticket has an owner (a role or a
+  member), a project when the squad has several, dependencies, and acceptance
+  criteria. A ticket from any other member is a *proposal* until the PM or the
+  person makes it `todo`.
+- **equipe's rules hand out the work** (`equipe_core::board::assignments`, plain
+  code): a `todo` ticket whose dependencies are finished goes to a free member who
+  owns it, oldest first, one ticket per member. The rules run whenever something
+  changes — a ticket, a member joining or finishing a turn.
+- **A member works on its ticket** in the ticket's project: an editing member in a
+  worktree of its own on `equipe/<name>-t<id>-…`, in a conversation of its own
+  for that ticket; its desk conversation waits.
+- **It hands the work in** (`submit_for_review`): at the end of the turn its
+  changes are committed to the branch and the ticket goes to `review`. The
+  worktree stays, so the work can be sent back.
+- **Only the person closes work.** `/accept T-3` makes it `done` (the worktree
+  goes, the branch stays to merge); `/reopen T-3 <what to change>` gives it back to
+  its member on the same branch and conversation; `/cancel T-3` drops it. These are
+  commands from the person's screen straight to equipe — no member can send them.
+
+### Board tools (MCP)
+
+A Claude Code member gets its tools from `equipe mcp`, a stdio MCP server equipe
+starts for it (`--mcp-config`). The server holds nothing: each call goes to the
+daemon over its socket (`tool` in the protocol), where the runtime decides. The
+member's identity comes from how equipe started the server, not from anything the
+model says.
+
+| Tool | Who | Does |
+|---|---|---|
+| `board` | everyone | the open tickets as text |
+| `create_ticket` | everyone | the PM's are `todo`; anyone else's are proposals |
+| `update_ticket` | the PM | change a `proposed`/`todo` ticket; accept or drop a proposal |
+| `comment` | everyone | add to a ticket's record |
+| `submit_for_review` | the member on a ticket | hand it in |
+
+`--strict-mcp-config` keeps the person's own MCP servers (mail, calendar…) away
+from the squad, and `--allowedTools mcp__equipe` lets a headless run use equipe's
+tools without a prompt. Codex members have no tools until Codex runs over ACP,
+whose `session/new` carries MCP servers; until then a Codex member says when it is
+done and the person accepts.
 
 ### Plans are notes; tickets are commitments
 
@@ -158,7 +198,8 @@ ticket, just as a developer's notebook is not the team's tracker:
    (`2/4`). Each update replaces the previous plan whole (ACP requires this).
 2. Plan entries never become tickets on their own.
 3. Work outside the ticket's scope is **proposed** as a new ticket (through a board
-   tool equipe offers the agent over MCP); the PM or the person accepts it.
+   tool equipe offers the agent over MCP); the PM or the person accepts it (`create_ticket` from anyone but the PM is a
+   proposal).
 4. A plan with every step done does not close the ticket. Review and the approval
    gate do.
 
@@ -230,17 +271,36 @@ who is still working, branches landed — is printed to the normal screen.
   branch. Right: the selected agent's conversation and work. Bottom: the message.
 - Pastes arrive whole (bracketed paste): a newline inside a paste never sends.
   A multi-line draft shows its size before it's sent.
-- Enter sends · Alt-Enter / Ctrl-J add a line · Esc stops the agent · Tab
-  switches agents · Ctrl-C clears the draft, twice leaves · `/new`, `/edit`,
-  `/close` (ends the agent, landing its branch), `/help`, `/quit`.
+- Enter sends (a memo, if the member is mid-turn) · Alt-Enter / Ctrl-J add a line ·
+  Esc stops the member · Tab or `@name` picks who to talk to · Ctrl-B (`/board`)
+  shows the board, the person's reviews first · PgUp/PgDn or the wheel scroll ·
+  `/mouse` hands the mouse back to the terminal for selecting text · Ctrl-C clears
+  the draft, twice leaves · `/add`, `/accept`, `/reopen`, `/cancel`, `/close`,
+  `/help`, `/quit`.
+- Replies are Markdown, drawn as such: bold, code, lists, code blocks, and tables
+  whose cells wrap inside their columns — wrapped by the console, Hangul counted
+  as two columns.
+- Work waiting for the person is always in sight: `1 to review` in the status bar.
 - Drawn only when something changed; nothing redraws on a timer.
-
-Next: the board fills the team pane, with approvals waiting in a fixed place.
 
 ## The squad
 
-A **member** is a session with a role: a charter, an engine, a model, its own
-memory and — for roles that edit — its own branch and worktree. Roles live in
+A **squad** is the person's team, not a repository: the way a company's squad
+owns a product's app, API and site at once, one squad works on several projects
+(`equipe_core::squads`). Everything it keeps lives in `~/.equipe/squads/<squad>/`;
+each project belongs to one squad. A screen follows a squad, whichever of its
+repositories it was opened in.
+
+**Onboarding** is the first `equipe` in a repository, under a minute: engines are
+checked (a squad needs one to run on), then the repository joins an existing squad
+— most people have one — or starts a new one, which the person names and staffs
+(the PM, plus designer and frontend ticked by default). Nothing is written into
+the repository.
+
+A **member** is a long-lived session with a role in a squad: a charter, an engine,
+a model, its own memory, and — while on a ticket — that ticket's project and, for
+roles that edit, a worktree. Between tickets it sits at its desk: it reads every
+project of the squad (`--add-dir`) and writes nowhere. Roles live in
 `equipe_core::roles`:
 
 | Role | Does | Edits files | Model tier |
@@ -291,8 +351,13 @@ sessions there — run naively, a member would read the person's private notes a
 write into them. Each member instead keeps its own: equipe moves Claude Code's
 auto memory to the member's directory with a setting of the unmodified binary
 (`--settings '{"autoMemoryDirectory": …}'`), under
-`~/.equipe/projects/<project>/members/<name>/memory`. Instructions that belong to
-the repository (`CLAUDE.md`) are still read; they are the team's.
+`~/.equipe/squads/<squad>/members/<name>/memory`. It belongs to the member, not a
+project: like a person, a member carries what it learned from one project to the
+next. What a project needs everyone to know belongs in the repository
+(`CLAUDE.md`, `AGENTS.md`), which every member reads.
+
+Members are told they run inside equipe without a screen, so they never ask the
+person to press keys or change Claude Code's permission mode — equipe sets it.
 
 ## Desktop
 

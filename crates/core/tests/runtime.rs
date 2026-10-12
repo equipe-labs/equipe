@@ -7,9 +7,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command as Process;
 use std::time::Duration;
 
-use equipe_core::journal::Journal;
-use equipe_core::protocol::{Access, Command, Engine, Entry, Event, SessionSpec, SessionState, TurnOutcome};
-use equipe_core::runtime::{self, Config};
+use equipe_core::journal::{self, Journal};
+use equipe_core::protocol::rpc::{ToolCall, ToolResult};
+use equipe_core::protocol::{
+    Access, Command, Engine, Entry, Event, SessionSpec, SessionState, Ticket, TicketStatus, TurnOutcome,
+};
+use equipe_core::runtime::{self, Config, Handle};
+use equipe_core::squads;
 use equipe_providers::CredentialStore;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -21,6 +25,13 @@ fn scratch(name: &str) -> PathBuf {
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("equipe-rt-{name}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.canonicalize().unwrap()
+}
+
+/// A fresh project directory called `name`, as the board names projects.
+fn named(name: &str) -> PathBuf {
+    let dir = scratch(name).join(name);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -46,48 +57,6 @@ fn answering(text: &str) -> String {
 {{"type":"result","subtype":"success","is_error":false,"result":"{text}","usage":{{"input_tokens":3,"output_tokens":1}}}}
 EOF"#
     )
-}
-
-fn config(claude: &Path, home: &Path, persist: bool) -> Config {
-    Config {
-        // No Codex login here, so Claude Code is the engine that's ready.
-        store: CredentialStore::new(home),
-        home: home.to_owned(),
-        client_version: "test".into(),
-        claude_binary: claude.to_string_lossy().into_owned(),
-        persist,
-        retention_days: 90,
-    }
-}
-
-fn start(claude: &Path) -> (runtime::Handle, UnboundedReceiver<Event>) {
-    runtime::start(config(claude, &scratch("home"), false))
-}
-
-/// Collect events until one matches, failing after a timeout.
-async fn until(rx: &mut UnboundedReceiver<Event>, done: impl Fn(&Event) -> bool) -> Vec<Event> {
-    let mut seen = Vec::new();
-    let wait = async {
-        while let Some(event) = rx.recv().await {
-            let stop = done(&event);
-            seen.push(event);
-            if stop {
-                return;
-            }
-        }
-    };
-    if tokio::time::timeout(Duration::from_secs(15), wait).await.is_err() {
-        panic!("timed out; events so far: {seen:#?}");
-    }
-    seen
-}
-
-fn spec(cwd: &Path, access: Access) -> SessionSpec {
-    SessionSpec { engine: None, model: None, access, cwd: cwd.to_owned(), role: None }
-}
-
-fn member(cwd: &Path, role: &str) -> SessionSpec {
-    SessionSpec { role: Some(role.into()), ..spec(cwd, Access::ReadOnly) }
 }
 
 /// A stand-in `claude` that also writes down the arguments of every turn, one
@@ -119,6 +88,50 @@ fn arg<'a>(call: &'a [String], flag: &str) -> Option<&'a str> {
     call.iter().position(|a| a == flag).and_then(|i| call.get(i + 1)).map(String::as_str)
 }
 
+fn config(claude: &Path, home: &Path, persist: bool) -> Config {
+    Config {
+        // No Codex login here, so Claude Code is the engine that's ready.
+        store: CredentialStore::new(home),
+        home: home.to_owned(),
+        client_version: "test".into(),
+        claude_binary: claude.to_string_lossy().into_owned(),
+        persist,
+        retention_days: 90,
+        equipe_binary: None,
+    }
+}
+
+fn start(claude: &Path) -> (Handle, UnboundedReceiver<Event>) {
+    runtime::start(config(claude, &scratch("home"), false))
+}
+
+/// Collect events until one matches, failing after a timeout.
+async fn until(rx: &mut UnboundedReceiver<Event>, done: impl Fn(&Event) -> bool) -> Vec<Event> {
+    let mut seen = Vec::new();
+    let wait = async {
+        while let Some(event) = rx.recv().await {
+            let stop = done(&event);
+            seen.push(event);
+            if stop {
+                return;
+            }
+        }
+    };
+    if tokio::time::timeout(Duration::from_secs(15), wait).await.is_err() {
+        panic!("timed out; events so far: {seen:#?}");
+    }
+    seen
+}
+
+fn spec(cwd: &Path, access: Access) -> SessionSpec {
+    SessionSpec { engine: None, model: None, access, cwd: cwd.to_owned(), role: None, squad: None }
+}
+
+/// A member of the squad `acme`, joining from `cwd`.
+fn member(cwd: &Path, role: &str) -> SessionSpec {
+    SessionSpec { role: Some(role.into()), squad: Some("acme".into()), ..spec(cwd, Access::ReadOnly) }
+}
+
 fn text_of(events: &[Event]) -> String {
     events
         .iter()
@@ -146,13 +159,43 @@ fn repo() -> PathBuf {
     dir
 }
 
+/// A home where the squad `acme` works on `projects`.
+fn squad_home(projects: &[&Path]) -> PathBuf {
+    let home = scratch("home");
+    squads::create(&home, "acme", projects[0]).unwrap();
+    for project in &projects[1..] {
+        squads::add_project(&home, "acme", project).unwrap();
+    }
+    home
+}
+
+/// Add a member and wait until it has started.
+async fn add(handle: &Handle, events: &mut UnboundedReceiver<Event>, id: u64, spec: SessionSpec) {
+    handle.send(Command::Start { session: id, spec });
+    until(events, |e| matches!(e, Event::SessionStarted { session, .. } if *session == id)).await;
+}
+
+async fn tool(handle: &Handle, member: &str, name: &str, arguments: serde_json::Value) -> ToolResult {
+    handle.tool(ToolCall { squad: "acme".into(), member: member.into(), name: name.into(), arguments }).await
+}
+
+fn ticket_changed(events: &[Event]) -> Vec<Ticket> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::TicketChanged { ticket, .. } => Some(ticket.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+// ── plain sessions (`equipe try`) ──
+
 #[tokio::test]
 async fn a_turn_streams_text_and_ends() {
     let claude = fake_claude(true, &answering("pong"));
     let (handle, mut events) = start(&claude);
-    let cwd = scratch("cwd");
-
-    handle.send(Command::Start { session: 1, spec: spec(&cwd, Access::ReadOnly) });
+    handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
     let started = until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
     assert!(matches!(started.last(), Some(Event::SessionStarted { engine: Engine::Claude, workspace: None, .. })));
 
@@ -168,10 +211,7 @@ async fn the_second_turn_continues_the_conversation() {
     // The stand-in answers "resumed" only when asked to continue sess-1.
     let claude = fake_claude(
         true,
-        &format!(
-            "case \"$*\" in *\"--resume sess-1\"*) T=resumed;; *) T=fresh;; esac\n{}",
-            answering("$T")
-        ),
+        &format!("case \"$*\" in *\"--resume sess-1\"*) T=resumed;; *) T=fresh;; esac\n{}", answering("$T")),
     );
     let (handle, mut events) = start(&claude);
     handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
@@ -181,7 +221,6 @@ async fn the_second_turn_continues_the_conversation() {
     let first = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     handle.send(Command::Submit { session: 1, text: "two".into() });
     let second = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
-
     assert_eq!(text_of(&first), "fresh");
     assert_eq!(text_of(&second), "resumed");
 }
@@ -293,60 +332,116 @@ async fn esc_delivers_waiting_memos_at_once() {
     assert!(asked.elapsed() < Duration::from_secs(2));
 }
 
+#[tokio::test]
+async fn no_engine_ready_says_how_to_fix_it() {
+    let claude = fake_claude(false, &answering("never"));
+    let (handle, mut events) = start(&claude);
+    handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
+    let failed = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
+    assert!(matches!(failed.last(), Some(Event::Error { next: Some(next), .. }) if next == "equipe login"));
+}
+
+#[tokio::test]
+async fn codex_cannot_edit_yet() {
+    let claude = fake_claude(true, &answering("x"));
+    let (handle, mut events) = start(&claude);
+    let mut edit = spec(&repo(), Access::EditFiles);
+    edit.engine = Some(Engine::Codex);
+    handle.send(Command::Start { session: 1, spec: edit });
+    let failed = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
+    let Some(Event::Error { message, .. }) = failed.last() else { unreachable!() };
+    assert!(message.contains("Claude Code"), "{message}");
+}
+
 // ── members ──
+
+#[tokio::test]
+async fn a_member_needs_a_squad_that_exists() {
+    let claude = fake_claude(true, &answering("ok"));
+    let (handle, mut events) = start(&claude);
+    handle.send(Command::Start { session: 1, spec: member(&scratch("cwd"), "pm") });
+    let failed = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
+    assert!(matches!(failed.last(), Some(Event::Error { message, .. }) if message.contains("no squad called acme")));
+}
 
 #[tokio::test]
 async fn a_member_gets_its_charter_a_recommended_model_and_its_own_memory() {
     let (claude, recorded) = recording_claude(&answering("on it"));
-    let home = scratch("home");
     let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     handle.send(Command::Start { session: 1, spec: member(&cwd, "pm") });
     let started = until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
-    assert!(matches!(started.last(), Some(Event::SessionStarted { member: Some(m), .. }) if m.name == "pm" && m.role == "pm"));
+    assert!(matches!(started.last(), Some(Event::SessionStarted { member: Some(m), squad: Some(s), .. })
+        if m.name == "pm" && s == "acme"));
 
     handle.send(Command::Submit { session: 1, text: "plan the site".into() });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     let call = &calls(&recorded)[0];
     let charter = arg(call, "--append-system-prompt").expect("a charter");
     assert!(charter.starts_with("You are pm, the product manager (PM)"), "{charter}");
-    // The PM plans: the top tier.
-    assert_eq!(arg(call, "--model"), Some("opus"));
-    // What it learns stays with this member of this project — not in the person's
+    assert_eq!(arg(call, "--model"), Some("opus"), "the PM plans: the top tier");
+    // What it learns stays with this member of this squad — not in the person's
     // own Claude Code memory.
     let settings = arg(call, "--settings").expect("settings");
-    let memory = equipe_core::journal::member_memory_dir(&home, &runtime::project_of(&cwd), "pm");
+    let memory = journal::member_memory_dir(&home, "acme", "pm");
     assert!(settings.contains(&*memory.to_string_lossy()), "{settings}");
+    // Without equipe's binary, no board tools are offered.
+    assert_eq!(arg(call, "--mcp-config"), None);
 }
 
 #[tokio::test]
 async fn members_are_named_by_role_and_told_who_else_is_on_the_team() {
     let (claude, recorded) = recording_claude(&answering("ok"));
-    let (handle, mut events) = start(&claude);
     let cwd = scratch("cwd");
-    for (id, role) in [(1, "pm"), (2, "frontend"), (3, "frontend")] {
-        handle.send(Command::Start { session: id, spec: SessionSpec { access: Access::ReadOnly, ..member(&cwd, role) } });
-        until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), false));
+    for (id, role) in [(1, "pm"), (2, "qa"), (3, "qa")] {
+        add(&handle, &mut events, id, member(&cwd, role)).await;
     }
-    let names: Vec<_> = handle.snapshot(&cwd).await.sessions.into_iter().map(|s| s.member.unwrap().name).collect();
-    assert_eq!(names, ["pm", "frontend", "frontend-2"]);
+    let names: Vec<_> = handle.snapshot("acme").await.sessions.into_iter().map(|s| s.member.unwrap().name).collect();
+    assert_eq!(names, ["pm", "qa", "qa-2"]);
 
     handle.send(Command::Submit { session: 3, text: "hi".into() });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 3, .. })).await;
     let charter = arg(&calls(&recorded)[0], "--append-system-prompt").unwrap().to_owned();
-    assert!(charter.starts_with("You are frontend-2, the frontend engineer"), "{charter}");
-    assert!(charter.contains("Your teammates: pm, frontend."), "{charter}");
+    assert!(charter.starts_with("You are qa-2, the QA engineer"), "{charter}");
+    assert!(charter.contains("Your teammates: pm, qa."), "{charter}");
+}
+
+#[tokio::test]
+async fn at_its_desk_a_member_reads_every_project_and_gets_only_equipes_tools() {
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let (site, app) = (named("site"), named("app"));
+    let home = squad_home(&[&site, &app]);
+    let mut config = config(&claude, &home, false);
+    config.equipe_binary = Some("/opt/equipe".into());
+    let (handle, mut events) = runtime::start(config);
+    add(&handle, &mut events, 1, member(&site, "frontend")).await;
+    handle.send(Command::Submit { session: 1, text: "what's in app?".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+
+    let call = &calls(&recorded)[0];
+    // Reads, never writes, at its desk — even an engineer.
+    assert_eq!(arg(call, "--permission-mode"), Some("dontAsk"));
+    assert_eq!(arg(call, "--add-dir"), Some(&*app.to_string_lossy()));
+    let mcp: serde_json::Value = serde_json::from_str(arg(call, "--mcp-config").unwrap()).unwrap();
+    let server = &mcp["mcpServers"]["equipe"];
+    assert_eq!(server["command"], "/opt/equipe");
+    let args: Vec<&str> = server["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+    assert_eq!(&args[..5], ["mcp", "--squad", "acme", "--member", "frontend"]);
+    assert!(call.iter().any(|a| a == "--strict-mcp-config"), "the person's own MCP servers stay out");
+    assert_eq!(arg(call, "--allowedTools"), Some("mcp__equipe"));
+    let charter = arg(call, "--append-system-prompt").unwrap();
+    assert!(charter.contains("several projects: site, app") && charter.contains("`submit_for_review`"), "{charter}");
 }
 
 #[tokio::test]
 async fn talking_to_a_member_directly_keeps_the_pm_in_the_loop() {
     let (claude, recorded) = recording_claude(&answering("Switching to Postgres."));
-    let (handle, mut events) = start(&claude);
     let cwd = scratch("cwd");
-    handle.send(Command::Start { session: 1, spec: member(&cwd, "pm") });
-    until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
-    handle.send(Command::Start { session: 2, spec: member(&cwd, "backend") });
-    until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), false));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    add(&handle, &mut events, 2, member(&cwd, "backend")).await;
 
     // The person goes straight to backend…
     handle.send(Command::Submit { session: 2, text: "use Postgres".into() });
@@ -374,55 +469,181 @@ async fn talking_to_a_member_directly_keeps_the_pm_in_the_loop() {
     assert_eq!(arg(&calls(&recorded)[2], "-p"), Some("thanks"));
 }
 
+// ── the board ──
+
+/// A turn that takes a moment and writes `file` where it runs.
+fn working_turn(file: &str) -> String {
+    format!(
+        "case \"$*\" in *\"You're on T-\"*) sleep 1; echo \"made by the squad\" > {file};; esac\n{}",
+        answering("working on it")
+    )
+}
+
 #[tokio::test]
-async fn an_editing_member_works_on_a_branch_named_after_it() {
+async fn a_ticket_goes_to_its_owner_who_hands_it_in_and_the_person_accepts_it() {
     let repo = repo();
-    let claude = fake_claude(true, &answering("ok"));
-    let (handle, mut events) = start(&claude);
-    handle.send(Command::Start { session: 1, spec: SessionSpec { access: Access::EditFiles, ..member(&repo, "frontend") } });
-    let started = until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
-    let Some(Event::SessionStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
-    assert!(ws.branch.starts_with("equipe/frontend-"), "{}", ws.branch);
+    let (claude, recorded) = recording_claude(&working_turn("HERO.md"));
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+
+    // The PM puts work on the board; equipe's rules hand it to the free frontend.
+    let made = tool(&handle, "pm", "create_ticket", serde_json::json!({
+        "title": "Landing hero", "body": "A headline and one button.", "owner": "frontend",
+    }))
+    .await;
+    assert_eq!(made, ToolResult { text: "Created T-1.".into(), is_error: false });
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
+    let Some(Event::WorkStarted { session: 2, ticket: 1, workspace: Some(ws), .. }) = started.last() else {
+        panic!("{started:#?}")
+    };
+    assert!(ws.branch.starts_with("equipe/frontend-t1-"), "{}", ws.branch);
+    let assigned = ticket_changed(&started);
+    assert_eq!(
+        assigned.last().map(|t| (t.status, t.assignee.clone())),
+        Some((TicketStatus::InProgress, Some("frontend".into())))
+    );
+
+    // Its first turn is the ticket, in its worktree, allowed to edit.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let call = calls(&recorded).pop().unwrap();
+    let prompt = arg(&call, "-p").unwrap();
+    assert!(prompt.starts_with("[equipe] You're on T-1: Landing hero"), "{prompt}");
+    assert!(prompt.contains("A headline and one button."), "{prompt}");
+    assert_eq!(arg(&call, "--permission-mode"), Some("acceptEdits"));
+
+    // It hands the work in mid-turn; at the turn's end the work is committed.
+    let handed = tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Hero done." })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    let review =
+        until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
+    let ticket = ticket_changed(&review).pop().unwrap();
+    assert_eq!(ticket.note.as_deref(), Some("Hero done."));
+    let branch = ticket.branch.clone().unwrap();
+    assert_eq!(git(&repo, &["show", &format!("{branch}:HERO.md")]), "made by the squad");
+    assert!(ws.path.exists(), "the worktree stays while the work is reviewed");
+    assert!(!repo.join("HERO.md").exists(), "the person's checkout is untouched");
+
+    // Only the person accepts: done, the branch stays to merge, the worktree goes.
+    handle.send(Command::Accept { squad: "acme".into(), ticket: 1 });
+    let done =
+        until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Done)).await;
+    assert_eq!(ticket_changed(&done).pop().unwrap().branch.as_deref(), Some(branch.as_str()));
+    assert!(!ws.path.exists());
+    let notices = until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
+    assert!(matches!(notices.last(), Some(Event::Notice { text, .. }) if text.starts_with("You accepted T-1")), "{notices:#?}");
 }
 
 #[tokio::test]
-async fn the_team_comes_back_after_a_restart_pm_first() {
-    let claude = fake_claude(true, &answering("ok"));
-    let home = scratch("home");
+async fn dependencies_hold_a_ticket_until_the_one_before_is_done() {
     let cwd = scratch("cwd");
-    {
-        let (handle, mut events) = runtime::start(config(&claude, &home, true));
-        // Session ids are random; the PM need not have the smallest.
-        for (id, role) in [(9, "designer"), (5, "pm")] {
-            handle.send(Command::Start { session: id, spec: member(&cwd, role) });
-            until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
-        }
-        handle.shutdown().await;
-    }
-    let (handle, _events) = runtime::start(config(&claude, &home, true));
-    let names: Vec<_> = handle.snapshot(&cwd).await.sessions.into_iter().map(|s| s.member.unwrap().name).collect();
-    assert_eq!(names, ["pm", "designer"]);
+    let claude = fake_claude(true, &answering("ok"));
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), false));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    add(&handle, &mut events, 2, member(&cwd, "qa")).await;
+    add(&handle, &mut events, 3, member(&cwd, "data")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Test plan", "body": "-", "owner": "qa" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({
+        "title": "Metrics", "body": "-", "owner": "data", "depends_on": [1],
+    }))
+    .await;
+    // data is free, but T-2 waits for T-1.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let board = handle.snapshot("acme").await.tickets;
+    assert_eq!(board[1].status, TicketStatus::Todo);
+
+    handle.send(Command::Accept { squad: "acme".into(), ticket: 1 });
+    let next = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
+    assert!(matches!(next.last(), Some(Event::WorkStarted { session: 3, .. })));
 }
 
 #[tokio::test]
-async fn no_engine_ready_says_how_to_fix_it() {
-    let claude = fake_claude(false, &answering("never"));
-    let (handle, mut events) = start(&claude);
-    handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
-    let failed = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
-    assert!(matches!(failed.last(), Some(Event::Error { next: Some(next), .. }) if next == "equipe login"));
+async fn work_sent_back_returns_to_its_member_on_the_same_branch_and_conversation() {
+    let repo = repo();
+    let (claude, recorded) = recording_claude(&working_turn("PAGE.md"));
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&repo]), false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Page", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
+    tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Page done." })).await;
+    let review =
+        until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
+    let branch = ticket_changed(&review).pop().unwrap().branch;
+
+    handle.send(Command::Reopen { squad: "acme".into(), ticket: 1, note: "make the button blue".into() });
+    let again = until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
+    assert!(matches!(again.last(), Some(Event::WorkStarted { session: 2, workspace: Some(ws), .. }) if Some(&ws.branch) == branch.as_ref()));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let call = calls(&recorded).pop().unwrap();
+    let prompt = arg(&call, "-p").unwrap();
+    assert!(prompt.contains("The person sent it back. Reopened: make the button blue"), "{prompt}");
+    assert_eq!(arg(&call, "--resume"), Some("sess-1"), "it continues the ticket's conversation");
 }
 
 #[tokio::test]
-async fn codex_cannot_edit_yet() {
-    let claude = fake_claude(true, &answering("x"));
-    let (handle, mut events) = start(&claude);
-    let mut edit = spec(&repo(), Access::EditFiles);
-    edit.engine = Some(Engine::Codex);
-    handle.send(Command::Start { session: 1, spec: edit });
-    let failed = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
-    let Some(Event::Error { message, .. }) = failed.last() else { unreachable!() };
-    assert!(message.contains("Claude Code"), "{message}");
+async fn a_members_ticket_is_a_proposal_until_the_pm_accepts_it() {
+    let cwd = scratch("cwd");
+    let claude = fake_claude(true, &answering("ok"));
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), false));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    add(&handle, &mut events, 2, member(&cwd, "qa")).await;
+
+    let proposed =
+        tool(&handle, "qa", "create_ticket", serde_json::json!({ "title": "Flaky login test", "body": "-", "owner": "qa" })).await;
+    assert!(proposed.text.starts_with("Proposed T-1"), "{proposed:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
+    assert!(matches!(seen.last(), Some(Event::Notice { text, .. }) if text == "qa proposed T-1: Flaky login test"));
+    // Only the PM changes tickets.
+    let refused = tool(&handle, "qa", "update_ticket", serde_json::json!({ "id": 1, "status": "todo" })).await;
+    assert!(refused.is_error);
+    // The PM accepts it, and it goes to work.
+    assert!(!tool(&handle, "pm", "update_ticket", serde_json::json!({ "id": 1, "status": "todo" })).await.is_error);
+    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+    // Work in progress is the person's to change, not the PM's.
+    let late = tool(&handle, "pm", "update_ticket", serde_json::json!({ "id": 1, "title": "x" })).await;
+    assert!(late.is_error && late.text.contains("in progress"), "{late:?}");
+}
+
+#[tokio::test]
+async fn tools_refuse_what_does_not_make_sense() {
+    let (site, app) = (named("site"), named("app"));
+    let claude = fake_claude(true, &answering("ok"));
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&site, &app]), false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    let nowhere = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "x", "body": "-" })).await;
+    assert!(nowhere.is_error && nowhere.text.contains("several: site, app"), "{nowhere:?}");
+    let unknown = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "x", "project": "web" })).await;
+    assert!(unknown.is_error && unknown.text.contains("No project called web"), "{unknown:?}");
+    let nothing = tool(&handle, "pm", "submit_for_review", serde_json::json!({ "summary": "?" })).await;
+    assert!(nothing.is_error && nothing.text.contains("not on a ticket"), "{nothing:?}");
+    let unstaffed =
+        tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "x", "project": "app", "owner": "designer" })).await;
+    assert!(!unstaffed.is_error && unstaffed.text.contains("/add designer"), "{unstaffed:?}");
+    let board = tool(&handle, "pm", "board", serde_json::json!({})).await;
+    assert_eq!(board.text, "T-1 [todo] x — owner designer, project app\n");
+}
+
+#[tokio::test]
+async fn a_member_who_leaves_puts_its_ticket_back_for_someone_else() {
+    let cwd = scratch("cwd");
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), false));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    add(&handle, &mut events, 2, member(&cwd, "qa")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Review", "body": "-", "owner": "qa" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, .. })).await;
+    add(&handle, &mut events, 3, member(&cwd, "qa")).await;
+
+    handle.send(Command::Close { session: 2 });
+    let moved = until(&mut events, |e| matches!(e, Event::WorkStarted { session: 3, .. })).await;
+    assert!(
+        ticket_changed(&moved).iter().any(|t| t.status == TicketStatus::Todo && t.note.as_deref() == Some("qa left the squad.")),
+        "{moved:#?}"
+    );
+    handle.shutdown().await;
 }
 
 // ── persistence: the daemon's runtime ──
@@ -439,35 +660,58 @@ fn text_entries(entries: &[Entry]) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn a_restarted_runtime_resumes_the_session_and_its_conversation() {
+async fn a_restarted_runtime_brings_the_squad_back_pm_first() {
     let claude = fake_claude(
         true,
         &format!("case \"$*\" in *\"--resume sess-1\"*) T=resumed;; *) T=fresh;; esac\n{}", answering("$T")),
     );
-    let home = scratch("home");
     let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
     {
         let (handle, mut events) = runtime::start(config(&claude, &home, true));
-        handle.send(Command::Start { session: 42, spec: spec(&cwd, Access::ReadOnly) });
-        until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
-        handle.send(Command::Submit { session: 42, text: "remember me".into() });
+        // Session ids are random; the PM need not have the smallest.
+        add(&handle, &mut events, 9, member(&cwd, "designer")).await;
+        add(&handle, &mut events, 5, member(&cwd, "pm")).await;
+        handle.send(Command::Submit { session: 5, text: "remember me".into() });
         until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
         handle.shutdown().await;
     }
 
-    // A new runtime on the same home: the session is back, with its conversation.
     let (handle, mut events) = runtime::start(config(&claude, &home, true));
-    let snapshot = handle.snapshot(&cwd).await;
-    assert_eq!(snapshot.sessions.len(), 1, "{snapshot:#?}");
-    let session = &snapshot.sessions[0];
-    assert_eq!(session.session, 42);
-    assert_eq!(session.title.as_deref(), Some("remember me"));
-    assert_eq!(text_entries(&session.recent), ["user: remember me", "reply: fresh"]);
+    let snapshot = handle.snapshot("acme").await;
+    let names: Vec<_> = snapshot.sessions.iter().map(|s| s.member.clone().unwrap().name).collect();
+    assert_eq!(names, ["pm", "designer"]);
+    let pm = &snapshot.sessions[0];
+    assert_eq!(pm.title.as_deref(), Some("remember me"));
+    assert_eq!(text_entries(&pm.recent), ["user: remember me", "reply: fresh"]);
+    assert_eq!(snapshot.projects, [cwd]);
 
-    // And the next turn continues Claude Code's conversation.
-    handle.send(Command::Submit { session: 42, text: "again".into() });
+    // The next turn continues Claude Code's conversation.
+    handle.send(Command::Submit { session: 5, text: "again".into() });
     let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert_eq!(text_of(&turn), "resumed");
+}
+
+#[tokio::test]
+async fn a_restarted_runtime_resumes_a_member_on_its_ticket() {
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let home = squad_home(&[&repo]);
+    {
+        let (handle, mut events) = runtime::start(config(&claude, &home, true));
+        add(&handle, &mut events, 1, member(&repo, "pm")).await;
+        add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+        tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
+        until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
+        handle.shutdown().await;
+    }
+    let (handle, _events) = runtime::start(config(&claude, &home, true));
+    let snapshot = handle.snapshot("acme").await;
+    let frontend = snapshot.sessions.iter().find(|s| s.session == 2).unwrap();
+    let work = frontend.work.as_ref().expect("still on its ticket");
+    assert_eq!(work.ticket, 1);
+    assert!(work.workspace.as_ref().is_some_and(|ws| ws.path.exists()));
+    assert_eq!(snapshot.tickets[0].status, TicketStatus::InProgress);
 }
 
 #[tokio::test]
@@ -483,52 +727,48 @@ async fn the_journal_keeps_finished_replies_not_streaming_fragments() {
 {"type":"result","subtype":"success","is_error":false,"result":"one two three","usage":{"input_tokens":3,"output_tokens":3}}
 EOF"#,
     );
-    let home = scratch("home");
     let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
     let (handle, mut events) = runtime::start(config(&claude, &home, true));
-    handle.send(Command::Start { session: 7, spec: spec(&cwd, Access::ReadOnly) });
-    until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+    add(&handle, &mut events, 7, member(&cwd, "pm")).await;
     handle.send(Command::Submit { session: 7, text: "count".into() });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     handle.shutdown().await;
 
-    let journal = Journal::for_project(&home, &runtime::project_of(&cwd)).unwrap();
+    let journal = Journal::for_squad(&home, "acme").unwrap();
     assert_eq!(text_entries(&journal.conversation(7).unwrap()), ["user: count", "reply: one two three"]);
     assert_eq!(journal.open_sessions().unwrap()[0].tokens, 6);
 }
 
 #[tokio::test]
-async fn a_screen_attaching_mid_turn_sees_the_agent_working() {
+async fn a_screen_attaching_mid_turn_sees_the_member_working() {
     let claude = fake_claude(true, "exec sleep 30");
-    let home = scratch("home");
     let cwd = scratch("cwd");
-    let (handle, mut events) = runtime::start(config(&claude, &home, true));
-    handle.send(Command::Start { session: 3, spec: spec(&cwd, Access::ReadOnly) });
-    until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), true));
+    add(&handle, &mut events, 3, member(&cwd, "pm")).await;
     handle.send(Command::Submit { session: 3, text: "long job".into() });
     until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
 
-    let snapshot = handle.snapshot(&cwd).await;
+    let snapshot = handle.snapshot("acme").await;
     assert_eq!(snapshot.sessions[0].state, SessionState::Working);
     assert_eq!(text_entries(&snapshot.sessions[0].recent), ["user: long job"]);
     handle.shutdown().await;
 }
 
 #[tokio::test]
-async fn a_closed_session_is_not_resumed() {
+async fn a_member_who_left_is_not_resumed() {
     let claude = fake_claude(true, &answering("ok"));
-    let home = scratch("home");
     let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
     {
         let (handle, mut events) = runtime::start(config(&claude, &home, true));
-        handle.send(Command::Start { session: 5, spec: spec(&cwd, Access::ReadOnly) });
-        until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+        add(&handle, &mut events, 5, member(&cwd, "pm")).await;
         handle.send(Command::Close { session: 5 });
         until(&mut events, |e| matches!(e, Event::SessionClosed { .. })).await;
         handle.shutdown().await;
     }
     let (handle, _events) = runtime::start(config(&claude, &home, true));
-    assert!(handle.snapshot(&cwd).await.sessions.is_empty());
+    assert!(handle.snapshot("acme").await.sessions.is_empty());
 }
 
 #[tokio::test]

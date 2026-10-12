@@ -137,6 +137,18 @@ pub fn turn_args(request: &TurnRequest<'_>) -> Vec<String> {
         let settings = serde_json::json!({ "autoMemoryDirectory": dir.to_string_lossy() });
         args.extend(["--settings".to_owned(), settings.to_string()]);
     }
+    for dir in request.add_dirs {
+        args.extend(["--add-dir".to_owned(), dir.to_string_lossy().into_owned()]);
+    }
+    // Only the MCP servers given here — never the person's own (their mail, their
+    // calendar) — and the tools named, which a headless run could not otherwise use.
+    if let Some(config) = request.mcp_config {
+        args.extend(["--mcp-config".to_owned(), config.to_owned(), "--strict-mcp-config".to_owned()]);
+    }
+    if !request.allowed_tools.is_empty() {
+        args.push("--allowedTools".to_owned());
+        args.extend(request.allowed_tools.iter().cloned());
+    }
     args
 }
 
@@ -154,6 +166,13 @@ pub struct TurnRequest<'a> {
     /// where Claude Code would put it — which is per directory and shared with the
     /// person's own sessions there.
     pub memory: Option<&'a Path>,
+    /// More directories the turn may read (and, with edit access, write).
+    pub add_dirs: &'a [std::path::PathBuf],
+    /// MCP servers for this turn, as Claude Code's `--mcp-config` JSON. Replaces
+    /// the person's own servers for the turn.
+    pub mcp_config: Option<&'a str>,
+    /// Tools allowed without asking, e.g. `mcp__equipe` for a whole server.
+    pub allowed_tools: &'a [String],
 }
 
 /// One turn's outcome, with the id that continues the conversation.
@@ -520,6 +539,25 @@ mod tests {
         let settings: Value = serde_json::from_str(&args[at + 1]).unwrap();
         assert_eq!(settings, json!({ "autoMemoryDirectory": dir.to_string_lossy() }));
         assert!(!turn_args(&TurnRequest { prompt: "x", ..Default::default() }).iter().any(|a| a == "--settings"));
+    }
+
+    #[test]
+    fn a_member_reads_other_projects_and_uses_only_equipes_tools() {
+        let dirs = [std::path::PathBuf::from("/code/api")];
+        let allowed = ["mcp__equipe".to_owned()];
+        let args = turn_args(&TurnRequest {
+            prompt: "x",
+            add_dirs: &dirs,
+            mcp_config: Some(r#"{"mcpServers":{}}"#),
+            allowed_tools: &allowed,
+            ..Default::default()
+        });
+        assert!(args.windows(2).any(|w| w[0] == "--add-dir" && w[1] == "/code/api"));
+        assert!(args.windows(2).any(|w| w[0] == "--mcp-config" && w[1] == r#"{"mcpServers":{}}"#));
+        assert!(args.iter().any(|a| a == "--strict-mcp-config"), "the person's own servers stay out");
+        assert!(args.windows(2).any(|w| w[0] == "--allowedTools" && w[1] == "mcp__equipe"));
+        // The prompt still comes right after -p, whatever follows.
+        assert!(args.windows(2).any(|w| w[0] == "-p" && w[1] == "x"));
     }
 
     // ── stream ──

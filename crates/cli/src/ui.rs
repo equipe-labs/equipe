@@ -30,6 +30,8 @@ pub fn select_theme() -> Box<dyn dialoguer::theme::Theme> {
         success_prefix: accent.clone().for_stderr().apply_to("✓".to_owned()),
         success_suffix: style("·".to_owned()).for_stderr().dim(),
         values_style: Style::new().for_stderr().bold(),
+        checked_item_prefix: accent.clone().for_stderr().apply_to("✓".to_owned()),
+        unchecked_item_prefix: style("○".to_owned()).for_stderr().dim(),
         active_item_prefix: accent.for_stderr().apply_to("›".to_owned()),
         inactive_item_prefix: style(" ".to_owned()),
         active_item_style: Style::new().for_stderr().bold(),

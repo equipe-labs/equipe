@@ -6,7 +6,7 @@
 //! `~/.equipe/daemon.log`.
 
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use equipe_core::gateway::{self, Client};
@@ -95,10 +95,10 @@ fn spawn_detached() -> io::Result<()> {
     command.spawn().map(|_| ())
 }
 
-/// Attach to the daemon (starting it if needed) and follow `project`.
-pub async fn attach(project: &Path) -> io::Result<(Client, Hello)> {
+/// Attach to the daemon (starting it if needed) and follow `squad`.
+pub async fn attach(squad: &str) -> io::Result<(Client, Hello)> {
     ensure_running().await?;
-    Client::connect(&socket(), &build_id(), project).await
+    Client::connect(&socket(), &build_id(), squad).await
 }
 
 /// `equipe daemon stop`: `Ok(false)` when none was running.

@@ -11,7 +11,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use equipe_protocol::rpc::{self, Hello, HelloParams, Message};
+use equipe_protocol::rpc::{self, Hello, HelloParams, Message, ToolCall, ToolResult};
 use equipe_protocol::{Command, Event};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::OwnedWriteHalf;
@@ -100,10 +100,10 @@ async fn serve_client(stream: UnixStream, core: Handle, version: String, stop: U
         match (message.method.as_deref(), message.id) {
             (Some(rpc::HELLO), Some(id)) => {
                 let Some(params) = message.params_as::<HelloParams>() else {
-                    let _ = out_tx.send(Message::failure(id, -32602, "hello needs { version, project }"));
+                    let _ = out_tx.send(Message::failure(id, -32602, "hello needs { version, squad }"));
                     continue;
                 };
-                let Some((snapshot, mut events)) = core.subscribe(&params.project).await else {
+                let Some((snapshot, mut events)) = core.subscribe(&params.squad).await else {
                     break;
                 };
                 let _ = out_tx.send(Message::response(id, Hello { version: version.clone(), snapshot }));
@@ -120,6 +120,20 @@ async fn serve_client(stream: UnixStream, core: Handle, version: String, stop: U
                 if let Some(command) = message.params_as::<Command>() {
                     core.send(command);
                 }
+            }
+            (Some(rpc::TOOL), Some(id)) => {
+                let Some(call) = message.params_as::<ToolCall>() else {
+                    let _ = out_tx.send(Message::failure(id, -32602, "tool needs { squad, member, name, arguments }"));
+                    continue;
+                };
+                // Answered on its own task: a tool call may wait while the runtime
+                // is busy, and this connection must keep reading meanwhile.
+                let core = core.clone();
+                let out = out_tx.clone();
+                tokio::spawn(async move {
+                    let result = core.tool(call).await;
+                    let _ = out.send(Message::response(id, result));
+                });
             }
             (Some(rpc::SHUTDOWN), Some(id)) => {
                 let (ack_tx, ack_rx) = oneshot::channel();
@@ -149,12 +163,12 @@ pub struct Client {
 }
 
 impl Client {
-    /// Attach to the daemon and follow `project`. Returns the daemon's greeting,
-    /// with the project's snapshot.
-    pub async fn connect(socket: &Path, version: &str, project: &Path) -> io::Result<(Self, Hello)> {
+    /// Attach to the daemon and follow `squad`. Returns the daemon's greeting,
+    /// with the squad's snapshot.
+    pub async fn connect(socket: &Path, version: &str, squad: &str) -> io::Result<(Self, Hello)> {
         let stream = UnixStream::connect(socket).await?;
         let (reader, mut writer) = stream.into_split();
-        let hello = Message::request(1, rpc::HELLO, HelloParams { version: version.to_owned(), project: project.to_owned() });
+        let hello = Message::request(1, rpc::HELLO, HelloParams { version: version.to_owned(), squad: squad.to_owned() });
         write_line(&mut writer, &hello).await?;
 
         let mut lines = BufReader::new(reader).lines();
@@ -224,6 +238,28 @@ pub async fn shutdown(socket: &Path) -> io::Result<bool> {
         }
     }
     Ok(true)
+}
+
+/// Call a member's board tool on the daemon at `socket` — what `equipe mcp`
+/// does for each call its engine makes.
+pub async fn call_tool(socket: &Path, call: &ToolCall) -> io::Result<ToolResult> {
+    let stream = UnixStream::connect(socket).await?;
+    let (reader, mut writer) = stream.into_split();
+    write_line(&mut writer, &Message::request(1, rpc::TOOL, call)).await?;
+    let mut lines = BufReader::new(reader).lines();
+    while let Some(line) = lines.next_line().await? {
+        let Ok(message) = Message::from_line(&line) else {
+            continue;
+        };
+        if message.id != Some(1) {
+            continue;
+        }
+        if let Some(error) = message.error {
+            return Ok(ToolResult { text: error.message, is_error: true });
+        }
+        return message.result_as::<ToolResult>().ok_or_else(|| io::Error::other("the daemon answered something unexpected"));
+    }
+    Err(io::Error::new(io::ErrorKind::UnexpectedEof, "the daemon closed the connection"))
 }
 
 /// Whether a daemon answers at `socket`.

@@ -40,9 +40,9 @@ pub const ROLES: [Role; 6] = [
         title: "product manager (PM)",
         summary: "turns what you want into a plan and tickets; your main contact",
         duties: "You are the person's main contact. Turn what they want into a plan the team can act on: \
-ask at most a few sharp questions when intent is unclear, otherwise propose. Break work into small tickets — \
-number them T-1, T-2…, and give each an owner (a role on the team), a one-line goal and acceptance criteria — \
-written so each can be handed to its owner as is. Keep track of what was decided and what is in flight. \
+ask at most a few sharp questions when intent is unclear, otherwise propose. Break work into small tickets, \
+each with an owner (a role on the team), a one-line goal and acceptance criteria, written so its owner can \
+start without asking. Keep track of what was decided and what is in flight. \
 You don't write code or edit files yourself.",
         edits: false,
         tier: Tier::Top,
@@ -121,10 +121,11 @@ pub fn role_or_custom(id: &str) -> &'static Role {
 }
 
 /// The engines to try for a role, best first. Editing runs on Claude Code for
-/// now; everyone else prefers Codex — which also puts QA on a different engine
-/// from the engineers, so a second model checks the first one's work.
+/// now, and so does the PM, whose board tools reach it over MCP; QA and data
+/// prefer Codex — which puts QA on a different engine from the engineers, so a
+/// second model checks the first one's work.
 pub fn engine_preference(role: &Role) -> [Engine; 2] {
-    if role.edits { [Engine::Claude, Engine::Codex] } else { [Engine::Codex, Engine::Claude] }
+    if role.edits || role.id == PM { [Engine::Claude, Engine::Codex] } else { [Engine::Codex, Engine::Claude] }
 }
 
 /// The model to recommend for a role on an engine. Claude Code takes its own
@@ -150,31 +151,58 @@ pub struct Teammate<'a> {
     pub role: &'a str,
 }
 
+/// What a charter says about the squad around a member.
+pub struct Context<'a> {
+    pub team: &'a [Teammate<'a>],
+    /// The squad's projects, by name.
+    pub projects: &'a [String],
+    /// Whether the member's engine has equipe's board tools.
+    pub board_tools: bool,
+}
+
 /// What an engine is told about who it is on the team.
-pub fn charter(role: &Role, name: &str, team: &[Teammate<'_>]) -> String {
+pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
     let title = if role.id == CUSTOM.id { format!("{name} (a custom role)") } else { role.title.to_owned() };
-    let mates: Vec<String> = team
+    let mates: Vec<String> = ctx
+        .team
         .iter()
         .filter(|m| m.name != name)
         .map(|m| if m.name == m.role { m.name.to_owned() } else { format!("{} ({})", m.name, m.role) })
         .collect();
     let mates = if mates.is_empty() { "nobody else yet".to_owned() } else { mates.join(", ") };
-    let pm = team.iter().find(|m| m.role == PM).map(|m| m.name);
+    let projects = match ctx.projects {
+        [] => String::new(),
+        [one] => format!(" The squad works on one project, {one}."),
+        many => format!(" The squad works on several projects: {}.", many.join(", ")),
+    };
+    let pm = ctx.team.iter().find(|m| m.role == PM).map(|m| m.name);
     let reporting = match pm {
         Some(pm) if pm != name => format!(
-            "{pm} (the PM) keeps the plan. The person may also talk to you directly — follow them, and when \
-what they ask goes beyond your current task, say so and propose it as a new ticket rather than quietly \
+            " {pm} (the PM) keeps the plan. The person may also talk to you directly — follow them, and when \
+what they ask goes beyond your current ticket, say so and propose it as a new ticket rather than quietly \
 widening your work."
         ),
         _ => String::new(),
     };
+    let tools = match (ctx.board_tools, role.id == PM) {
+        (true, true) => "Plan on the board with your equipe tools: `create_ticket` for each piece of work — with an \
+owner and, when there are several projects, the project — `update_ticket` to change a ticket or accept a \
+proposal, and `board` to see where things stand. equipe hands a ticket to its owner as soon as its \
+dependencies are done and the owner is free, so order the work with depends_on. Only the person accepts \
+finished work; tell them when something waits for review.",
+        (true, false) => "Your equipe tools: `board` shows the board, `create_ticket` proposes work outside your \
+ticket, `comment` notes something on a ticket, and `submit_for_review` hands in the ticket you are on once \
+it meets its acceptance criteria.",
+        (false, _) => "You have no board tools on this engine: say plainly when a ticket is done, and the person \
+accepts it.",
+    };
     format!(
         "You are {name}, the {title} on a software squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}. {reporting}\n\n{}\n\nReply in the language the person writes in. Be concise.",
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}\n\nYou run inside equipe, without a screen of your own: the person can't press keys \
+or change your permission mode, so never ask them to. When something you need is denied, say plainly what you \
+need and why. Reply in the language the person writes in. Be concise.",
         role.duties
     )
-    .replace(".  ", ". ")
-    .replace(". \n", ".\n")
 }
 
 #[cfg(test)]
@@ -210,6 +238,7 @@ mod tests {
     fn editors_run_on_claude_and_qa_checks_on_the_other_engine() {
         assert_eq!(engine_preference(role("backend").unwrap())[0], Engine::Claude);
         assert_eq!(engine_preference(role("qa").unwrap())[0], Engine::Codex);
+        assert_eq!(engine_preference(role(PM).unwrap())[0], Engine::Claude, "the PM needs its board tools");
     }
 
     #[test]
@@ -223,10 +252,17 @@ mod tests {
         assert_eq!(recommended_model(Tier::Top, Engine::Codex, &[]), None);
     }
 
+    fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
+        Context { team, projects, board_tools }
+    }
+
     #[test]
     fn a_charter_names_the_member_its_team_and_who_keeps_the_plan() {
         let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "frontend", role: "frontend" }, Teammate { name: "frontend-2", role: "frontend" }];
-        let text = charter(role("frontend").unwrap(), "frontend", &team);
+        let projects = ["site".to_owned(), "app".to_owned()];
+        let text = charter(role("frontend").unwrap(), "frontend", &ctx(&team, &projects, true));
+        assert!(text.contains("several projects: site, app."), "{text}");
+        assert!(text.contains("`submit_for_review`"), "{text}");
         assert!(text.starts_with("You are frontend, the frontend engineer"), "{text}");
         assert!(text.contains("Your teammates: pm, frontend-2 (frontend)."), "{text}");
         assert!(text.contains("pm (the PM) keeps the plan"), "{text}");
@@ -237,15 +273,16 @@ mod tests {
     #[test]
     fn the_pms_own_charter_does_not_point_at_itself() {
         let team = [Teammate { name: "pm", role: "pm" }];
-        let text = charter(role(PM).unwrap(), "pm", &team);
+        let text = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
         assert!(text.contains("nobody else yet"), "{text}");
         assert!(!text.contains("keeps the plan. The person may"), "{text}");
-        assert!(text.contains("T-1"), "{text}");
+        assert!(text.contains("`create_ticket`") && text.contains("Only the person accepts"), "{text}");
     }
 
     #[test]
     fn a_custom_role_is_named_by_the_person() {
-        let text = charter(&CUSTOM, "writer", &[]);
+        let text = charter(&CUSTOM, "writer", &ctx(&[], &[], false));
+        assert!(text.contains("no board tools"), "{text}");
         assert!(text.starts_with("You are writer, the writer (a custom role)"), "{text}");
     }
 }

@@ -7,8 +7,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use equipe_core::gateway::{self, Client};
-use equipe_core::protocol::{Access, Command, Entry, Event, SessionSpec, SessionState};
+use equipe_core::protocol::rpc::ToolCall;
+use equipe_core::protocol::{Access, Command, Entry, Event, SessionSpec, SessionState, TicketStatus};
 use equipe_core::runtime::Config;
+use equipe_core::squads;
 use equipe_providers::CredentialStore;
 
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -55,6 +57,7 @@ fn config(home: &Path, claude: &Path) -> Config {
         claude_binary: claude.to_string_lossy().into_owned(),
         persist: true,
         retention_days: 90,
+        equipe_binary: None,
     }
 }
 
@@ -90,19 +93,34 @@ async fn until(client: &mut Client, done: impl Fn(&Event) -> bool) -> Vec<Event>
     seen
 }
 
+/// A designer joining the squad `acme` from `cwd`.
 fn spec(cwd: &Path) -> SessionSpec {
-    SessionSpec { engine: None, model: None, access: Access::ReadOnly, cwd: cwd.to_owned(), role: None }
+    SessionSpec {
+        engine: None,
+        model: None,
+        access: Access::ReadOnly,
+        cwd: cwd.to_owned(),
+        role: Some("designer".into()),
+        squad: Some("acme".into()),
+    }
+}
+
+/// A home with the squad `acme` working on a fresh project.
+fn squad() -> (PathBuf, PathBuf) {
+    let home = scratch("home");
+    let project = scratch("proj");
+    squads::create(&home, "acme", &project.canonicalize().unwrap()).unwrap();
+    (home, project)
 }
 
 #[tokio::test]
 async fn the_squad_outlives_its_screens_and_its_daemon() {
-    let home = scratch("home");
-    let project = scratch("proj");
+    let (home, project) = squad();
     let claude = fake_claude(&slow_answer("1"));
     let (socket, daemon_task) = daemon(&home, &claude).await;
 
     // Screen A opens a session and starts a slow turn, then leaves.
-    let (mut a, hello) = Client::connect(&socket, "test", &project).await.unwrap();
+    let (mut a, hello) = Client::connect(&socket, "test", "acme").await.unwrap();
     assert!(hello.snapshot.sessions.is_empty());
     a.send(Command::Start { session: 11, spec: spec(&project) });
     until(&mut a, |e| matches!(e, Event::SessionStarted { .. })).await;
@@ -111,7 +129,7 @@ async fn the_squad_outlives_its_screens_and_its_daemon() {
     drop(a);
 
     // Screen B attaches mid-turn: it sees the work in progress, then its end.
-    let (mut b, hello) = Client::connect(&socket, "test", &project).await.unwrap();
+    let (mut b, hello) = Client::connect(&socket, "test", "acme").await.unwrap();
     let session = &hello.snapshot.sessions[0];
     assert_eq!(session.session, 11);
     assert_eq!(session.state, SessionState::Working);
@@ -126,7 +144,7 @@ async fn the_squad_outlives_its_screens_and_its_daemon() {
     assert!(!socket.exists(), "the socket is cleaned up");
     let (socket, _daemon) = daemon(&home, &claude).await;
 
-    let (mut c, hello) = Client::connect(&socket, "test", &project).await.unwrap();
+    let (mut c, hello) = Client::connect(&socket, "test", "acme").await.unwrap();
     let session = &hello.snapshot.sessions[0];
     assert_eq!(session.state, SessionState::Ready);
     assert_eq!(
@@ -141,13 +159,12 @@ async fn the_squad_outlives_its_screens_and_its_daemon() {
 
 #[tokio::test]
 async fn two_screens_watch_the_same_team() {
-    let home = scratch("home");
-    let project = scratch("proj");
+    let (home, project) = squad();
     let claude = fake_claude(&slow_answer("0"));
     let (socket, _daemon) = daemon(&home, &claude).await;
 
-    let (mut a, _) = Client::connect(&socket, "test", &project).await.unwrap();
-    let (mut b, _) = Client::connect(&socket, "test", &project).await.unwrap();
+    let (mut a, _) = Client::connect(&socket, "test", "acme").await.unwrap();
+    let (mut b, _) = Client::connect(&socket, "test", "acme").await.unwrap();
     a.send(Command::Start { session: 21, spec: spec(&project) });
     until(&mut a, |e| matches!(e, Event::SessionStarted { .. })).await;
     // B sees a session it didn't open, and the message A typed.
@@ -155,6 +172,48 @@ async fn two_screens_watch_the_same_team() {
     a.send(Command::Submit { session: 21, text: "from A".into() });
     let seen_by_b = until(&mut b, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(seen_by_b.iter().any(|e| matches!(e, Event::UserMessage { text, .. } if text == "from A")));
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_screen_sees_only_its_own_squad() {
+    let (home, project) = squad();
+    let other = scratch("other");
+    squads::create(&home, "beta", &other.canonicalize().unwrap()).unwrap();
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    let (mut acme, _) = Client::connect(&socket, "test", "acme").await.unwrap();
+    let (mut beta, _) = Client::connect(&socket, "test", "beta").await.unwrap();
+    beta.send(Command::Start { session: 31, spec: SessionSpec { squad: Some("beta".into()), ..spec(&other) } });
+    until(&mut beta, |e| matches!(e, Event::SessionStarted { .. })).await;
+    acme.send(Command::Start { session: 32, spec: spec(&project) });
+    let seen = until(&mut acme, |e| matches!(e, Event::SessionStarted { .. })).await;
+    assert!(matches!(seen.as_slice(), [Event::SessionStarted { session: 32, .. }]), "{seen:#?}");
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_members_tool_call_reaches_the_board_over_the_socket() {
+    let (home, project) = squad();
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    let (mut screen, _) = Client::connect(&socket, "test", "acme").await.unwrap();
+    screen.send(Command::Start { session: 41, spec: spec(&project) });
+    until(&mut screen, |e| matches!(e, Event::SessionStarted { .. })).await;
+
+    let call = ToolCall {
+        squad: "acme".into(),
+        member: "designer".into(),
+        name: "create_ticket".into(),
+        arguments: serde_json::json!({ "title": "A logo", "body": "Something simple." }),
+    };
+    let result = gateway::call_tool(&socket, &call).await.unwrap();
+    assert!(!result.is_error && result.text.starts_with("Proposed T-1"), "{result:?}");
+    let seen = until(&mut screen, |e| matches!(e, Event::TicketChanged { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::TicketChanged { ticket, .. }) if ticket.status == TicketStatus::Proposed));
+
+    let stranger = ToolCall { member: "nobody".into(), ..call };
+    assert!(gateway::call_tool(&socket, &stranger).await.unwrap().is_error);
     gateway::shutdown(&socket).await.unwrap();
 }
 

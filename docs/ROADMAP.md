@@ -52,14 +52,19 @@ roles, a board, and equipe's rules.
    the daemon's children, not the terminal's. What happened is journaled in
    SQLite under the storage policy below, so a restarted daemon resumes its
    sessions and their conversations.
-2. **Resident members, board, rules.** ← now. ✅ **Members**: a role (pm,
-   designer, frontend, backend, qa, data, or custom) + an engine + a model + its own
-   memory + a worktree. Models are recommended per role by tier, resolved against
-   the account's live models; QA prefers a different engine from the engineers.
-   The person talks to the PM — or to anyone directly, with the PM kept in the loop;
-   a busy member is left a memo (ARCHITECTURE "The squad"). ⬜ **Board**: the SQLite
-   board holds tickets and their record; the PM writes to it through board tools
-   (MCP); equipe's rules — code, not an agent — assign, order and gate the work.
+2. ✅ **Squads, members, board, rules.** A squad is the person's team and works
+   on several projects. A member is a role (pm, designer, frontend, backend, qa,
+   data, or custom) + an engine + a model + its own memory; models are recommended
+   per role by tier. The person talks to the PM — or anyone directly, with the PM
+   kept in the loop; a busy member is left a memo. The PM writes the board through
+   MCP tools; equipe's rules (code) hand each ready ticket to a free owner, who
+   works in a worktree of its own and hands it in; only the person accepts, sends
+   back or cancels. Onboarding is the first `equipe` in a repository.
+   **Next: permission modes** — Auto (recommended), Ask me, Plan, Full access —
+   per squad and per member, with approvals routed to the person
+   (`--permission-prompt-tool`), an allowlist built from "always allow", a hard
+   blocklist, and deny when nobody can answer. Then members can run commands
+   (install, build, test) inside their worktree.
 3. **First channel: Telegram.** Notifications, approve/deny buttons, short
    instructions to the PM — through the daemon's outbound connection, no open
    port. Senders must be paired; irreversible steps always need a button press.
@@ -70,6 +75,8 @@ roles, a board, and equipe's rules.
   streaming, conversation memory, bracketed paste, `/new` `/edit` `/close`.
 - ✅ **Members in the console**: starts with the PM; `/add <role…>`, `@name`,
   memos, and a composer that always says who a message goes to.
+- ✅ **The board in the console**: Ctrl-B, reviews first; `/accept`, `/reopen`,
+  `/cancel`; Markdown replies (tables included); wheel scrolling.
 - **Retires:** a team that outlives its terminal; orchestrator ↔ board ↔ worktree.
 - **Done:** close the terminal mid-task, reopen it, the work is done or still going;
   one request becomes tickets that members land as branches. **Demo:** "I closed my
@@ -139,6 +146,9 @@ the human-readable conversation in its largest session was 3.4% of its size.)
   talks to the PM and may talk to any member directly (the PM hears about it). What
   was called the director is not an agent: assignment, order, budgets and approval
   gates are deterministic code, and approvals go to the person, never through the PM.
+- **2026-10-12 — a squad spans projects.** A squad is a team, not a repository:
+  its members, board and record live under `~/.equipe/squads/<squad>/`, and each
+  repository joins one squad. Member memory follows the member across projects.
 - **2026-10-12 — members keep their own memory.** Claude Code's auto memory is moved
   per member, so the person's own notes never leak into a squad, or a squad's into them.
 
@@ -147,8 +157,10 @@ the human-readable conversation in its largest session was 3.4% of its size.)
 Phases 0 and 1 done (Codex edits move to Phase 3, over ACP). Phase 2 under way: the
 team lives in a daemon — the console detaches and reattaches, a closed terminal
 stops nothing, and a restarted daemon resumes its sessions and conversations.
-Members with roles are in: the PM first, teammates by `/add`, direct talk with the
-PM in the loop, memos. The board and the PM's board tools are next.
+The squad is in: one team across projects, members with roles, a board the PM
+writes through MCP tools, equipe's rules handing out tickets, and the person
+accepting the work — verified end to end on real Claude Code. Permission modes are
+next, then dogfooding on equipe's own website.
 
 Open risks: whether driving `claude -p` on a subscription fits Anthropic's
 allowance (ask before advertising it); Claude Code making `--bare` the default for

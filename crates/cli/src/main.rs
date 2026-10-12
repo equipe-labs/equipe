@@ -6,6 +6,7 @@
 //!   never sees Claude credentials (see `equipe_providers::claude_code`).
 
 mod daemon;
+mod onboard;
 mod tui;
 mod ui;
 
@@ -84,6 +85,20 @@ enum Command {
     },
     /// List the built-in squad roles
     Roles,
+    /// Your squads and the projects each works on
+    Squads,
+    /// Serve a member's board tools over MCP (equipe starts this for its engines)
+    #[command(hide = true)]
+    Mcp {
+        #[arg(long)]
+        squad: String,
+        #[arg(long)]
+        member: String,
+        #[arg(long)]
+        role: String,
+        #[arg(long)]
+        home: std::path::PathBuf,
+    },
     /// The background daemon the team lives in
     Daemon {
         #[command(subcommand)]
@@ -127,7 +142,15 @@ async fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        return match tui::run(cwd).await {
+        let start = match onboard::squad_for(&cwd).await {
+            Ok(start) => start,
+            Err(err) => {
+                eprintln!("{}", ui::err().fail_line(&err));
+                eprintln!("  {}", ui::err().hint("equipe login"));
+                return ExitCode::FAILURE;
+            }
+        };
+        return match tui::run(cwd, start).await {
             Ok(summary) => {
                 tui::print_summary(&summary);
                 ExitCode::SUCCESS
@@ -145,6 +168,22 @@ async fn main() -> ExitCode {
         Command::Status => app.status().await,
         Command::Try { prompt, engine, model, edit } => app.run_try(&prompt, engine, model.as_deref(), edit).await,
         Command::Daemon { action } => daemon_command(action).await,
+        Command::Mcp { squad, member, role, home } => serve_mcp(squad, member, role, home).await,
+        Command::Squads => {
+            let p = ui::out();
+            let squads = equipe_core::squads::list(&equipe_providers::credentials::equipe_home());
+            println!("{}\n", p.kicker("squads"));
+            if squads.is_empty() {
+                println!("{}", p.note(2, "None yet. Run equipe in a repository to start one."));
+            }
+            for squad in squads {
+                println!("  {}", p.bold(&squad.name));
+                for project in squad.projects {
+                    println!("{}", p.row("", &format!("{}  {}", equipe_core::board::project_name(&project), p.dim(&project.display().to_string()))));
+                }
+            }
+            Ok(())
+        }
         Command::Roles => {
             let p = ui::out();
             println!("{}\n", p.kicker("squad roles"));
@@ -174,6 +213,37 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `equipe mcp`: a member's board tools, as a stdio MCP server. Every call goes
+/// to the daemon, which decides; stdout carries only the protocol.
+async fn serve_mcp(squad: String, member: String, role: String, home: std::path::PathBuf) -> CmdResult {
+    use equipe_core::mcp::{self, Step};
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+
+    let socket = equipe_core::gateway::socket_path(&home);
+    let tools = equipe_core::board::tools(role == equipe_core::roles::PM);
+    let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    let mut out = tokio::io::stdout();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let reply = match mcp::handle(&line, &tools, VERSION) {
+            Step::Reply(reply) => reply,
+            Step::Call { id, name, arguments } => {
+                let call = protocol::rpc::ToolCall { squad: squad.clone(), member: member.clone(), name, arguments };
+                let result = equipe_core::gateway::call_tool(&socket, &call).await.unwrap_or_else(|err| {
+                    protocol::rpc::ToolResult { text: format!("equipe's daemon didn't answer: {err}"), is_error: true }
+                });
+                mcp::call_reply(id, &result)
+            }
+            Step::Nothing => continue,
+        };
+        let mut text = reply.to_string();
+        text.push('\n');
+        if out.write_all(text.as_bytes()).await.is_err() || out.flush().await.is_err() {
+            break;
+        }
+    }
+    Ok(())
 }
 
 async fn daemon_command(action: DaemonAction) -> CmdResult {
@@ -547,7 +617,7 @@ impl App {
         const ID: protocol::SessionId = 1;
         core.send(Cmd::Start {
             session: ID,
-            spec: SessionSpec { engine, model: model.map(str::to_owned), access, cwd: cwd.clone(), role: None },
+            spec: SessionSpec { engine, model: model.map(str::to_owned), access, cwd: cwd.clone(), role: None, squad: None },
         });
 
         let e = ui::err();
@@ -591,8 +661,12 @@ impl App {
                 }
                 Event::NothingChanged { .. } => println!("\n{}", p.note(0, "No files changed, so no branch was kept.")),
                 Event::SessionClosed { .. } => break,
-                // One prompt, one turn: no memos, no team to hear about.
-                Event::MessageQueued { .. } | Event::Notice { .. } => {}
+                // One prompt, one turn: no memos, no squad, no board.
+                Event::MessageQueued { .. }
+                | Event::Notice { .. }
+                | Event::WorkStarted { .. }
+                | Event::WorkEnded { .. }
+                | Event::TicketChanged { .. } => {}
                 Event::Error { message, next, .. } => {
                     failure.get_or_insert(Failure { message, next });
                     // A session that never opened won't send anything more.

@@ -6,8 +6,9 @@
 //! changes are committed to that branch and the worktree is removed: what remains
 //! is one reviewable branch.
 //!
-//! Phase 2's orchestrator will own this per ticket; `equipe try --edit` uses it
-//! for a single turn.
+//! A member gets one per ticket, kept while the work is in review so it can be
+//! reopened, and checked out again from its branch if it comes back later;
+//! `equipe try --edit` uses one for a single turn.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -71,6 +72,17 @@ pub fn create(repo: &Path, home: &Path, id: &str, label: &str) -> Result<Sandbox
     })
 }
 
+/// Check out an existing branch again — a reopened ticket whose worktree was
+/// removed — in a fresh worktree under `home`.
+pub fn resume(repo: &Path, home: &Path, id: &str, branch: &str, base: &str) -> Result<Sandbox> {
+    let name = repo.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "repo".into());
+    let path = home.join("worktrees").join(&name).join(id);
+    std::fs::create_dir_all(path.parent().expect("worktree path has a parent"))
+        .map_err(|err| format!("couldn't create {}: {err}", path.display()))?;
+    git(repo, &["worktree", "add", "-q", &path.to_string_lossy(), branch])?;
+    Ok(Sandbox { repo: repo.to_owned(), path, branch: branch.to_owned(), base: base.to_owned() })
+}
+
 /// Who a commit is attributed to when the user's git identity isn't configured.
 const FALLBACK_IDENTITY: [&str; 4] = ["-c", "user.name=equipe", "-c", "user.email=equipe@users.noreply.local"];
 
@@ -95,6 +107,12 @@ impl Sandbox {
     /// `git diff --stat` of the branch against where it started.
     pub fn diff_stat(&self) -> Result<String> {
         git(&self.repo, &["diff", "--stat", &format!("{}..{}", self.base, self.branch)])
+    }
+
+    /// Whether the branch has any commit beyond where it started.
+    pub fn has_commits(&self) -> bool {
+        git(&self.repo, &["rev-list", "--count", &format!("{}..{}", self.base, self.branch)])
+            .is_ok_and(|n| n != "0")
     }
 
     /// Remove the worktree directory; the branch stays.
@@ -142,6 +160,20 @@ mod tests {
         std::fs::create_dir_all(repo.join("a/b")).unwrap();
         let root = repo_root(&repo.join("a/b")).unwrap();
         assert_eq!(root.canonicalize().unwrap(), repo.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn a_branch_whose_worktree_was_removed_can_be_checked_out_again() {
+        let repo = repo();
+        let home = scratch("home");
+        let sandbox = create(&repo, &home, "t5", "frontend").unwrap();
+        std::fs::write(sandbox.path.join("A.md"), "a").unwrap();
+        sandbox.commit_all("a").unwrap();
+        assert!(sandbox.has_commits());
+        sandbox.remove_worktree().unwrap();
+        let again = resume(&repo, &home, "t5-again", &sandbox.branch, &sandbox.base).unwrap();
+        assert_eq!(std::fs::read_to_string(again.path.join("A.md")).unwrap(), "a");
+        assert_eq!(again.branch, "equipe/frontend-t5");
     }
 
     #[test]

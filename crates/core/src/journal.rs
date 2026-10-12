@@ -1,9 +1,11 @@
-//! What happened, kept on disk: one SQLite database per project.
+//! What happened, kept on disk: one SQLite database per squad.
 //!
-//! The journal holds the *record* (sessions: engine, branch, title, outcome,
-//! tokens) and the *conversation* (messages, finished replies, one line per tool
-//! use). It never holds raw material — file contents, command output, images,
-//! thinking, diffs: git has the changes and each engine keeps its own transcript.
+//! The journal holds the squad's *projects*, its *board* (tickets and an
+//! append-only record of what happened to each), the *record* of its sessions
+//! (engine, branch, title, outcome, tokens) and their *conversation* (messages,
+//! finished replies, one line per tool use). It never holds raw material — file
+//! contents, command output, images, thinking, diffs: git has the changes and
+//! each engine keeps its own transcript.
 //!
 //! Conversations are kept for a window and then pruned; the session record stays.
 //! The database is created in incremental-vacuum mode, so pruning gives the
@@ -11,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-use equipe_protocol::{Access, Engine, Entry, Member, SessionId};
+use equipe_protocol::{Access, Engine, Entry, Member, SessionId, Ticket, TicketId, TicketStatus};
 use rusqlite::{Connection, OptionalExtension as _, params};
 
 pub use rusqlite::Error;
@@ -58,25 +60,26 @@ pub struct Journal {
     path: PathBuf,
 }
 
-/// `<home>/projects/<name>-<hash>`: one directory per project.
-pub fn project_dir(home: &Path, project: &Path) -> PathBuf {
-    // FNV-1a over the path: stable across runs and Rust versions.
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in project.to_string_lossy().bytes() {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    let name = project
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "root".into());
-    home.join("projects").join(format!("{name}-{:08x}", hash as u32))
+/// `<home>/squads/<squad>`: everything a squad keeps.
+pub fn squad_dir(home: &Path, squad: &str) -> PathBuf {
+    home.join("squads").join(squad)
 }
 
-/// Where a member keeps what it learns about a project. Tied to the member's
-/// name, so a `frontend` closed and opened again remembers.
-pub fn member_memory_dir(home: &Path, project: &Path, name: &str) -> PathBuf {
-    project_dir(home, project).join("members").join(name).join("memory")
+/// Where a member keeps what it learns. It belongs to the member, not to a
+/// project — like a person, a member carries what it learned from one project
+/// to the next. What a project needs everyone to know belongs in the repository
+/// (`CLAUDE.md`, `AGENTS.md`).
+pub fn member_memory_dir(home: &Path, squad: &str, member: &str) -> PathBuf {
+    squad_dir(home, squad).join("members").join(member).join("memory")
+}
+
+/// Where an editing member's ticket work is checked out, so it can be resumed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TicketWork {
+    pub base: Option<String>,
+    pub worktree: Option<PathBuf>,
+    /// The engine's conversation for this ticket (Claude Code `--resume`).
+    pub engine_session: Option<String>,
 }
 
 fn now() -> i64 {
@@ -97,6 +100,36 @@ fn engine_from(s: &str) -> Engine {
     if s == "codex" { Engine::Codex } else { Engine::Claude }
 }
 
+fn status_str(status: TicketStatus) -> &'static str {
+    match status {
+        TicketStatus::Proposed => "proposed",
+        TicketStatus::Todo => "todo",
+        TicketStatus::InProgress => "in_progress",
+        TicketStatus::Review => "review",
+        TicketStatus::Done => "done",
+        TicketStatus::Cancelled => "cancelled",
+    }
+}
+
+fn status_from(s: &str) -> TicketStatus {
+    match s {
+        "proposed" => TicketStatus::Proposed,
+        "in_progress" => TicketStatus::InProgress,
+        "review" => TicketStatus::Review,
+        "done" => TicketStatus::Done,
+        "cancelled" => TicketStatus::Cancelled,
+        _ => TicketStatus::Todo,
+    }
+}
+
+fn ids_str(ids: &[TicketId]) -> String {
+    ids.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
+}
+
+fn ids_from(s: &str) -> Vec<TicketId> {
+    s.split(',').filter_map(|id| id.trim().parse().ok()).collect()
+}
+
 fn access_str(access: Access) -> &'static str {
     match access {
         Access::ReadOnly => "read_only",
@@ -105,14 +138,12 @@ fn access_str(access: Access) -> &'static str {
 }
 
 impl Journal {
-    /// Open (or create) the journal for `project` under `home`.
-    pub fn for_project(home: &Path, project: &Path) -> Result<Self> {
-        let dir = project_dir(home, project);
+    /// Open (or create) the journal of `squad` under `home`.
+    pub fn for_squad(home: &Path, squad: &str) -> Result<Self> {
+        let dir = squad_dir(home, squad);
         std::fs::create_dir_all(&dir).map_err(|e| Error::ToSqlConversionFailure(Box::new(e)))?;
-        let journal = Self::open(&dir.join("journal.db"))?;
-        journal
-            .conn
-            .execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('project', ?1)", [project.to_string_lossy()])?;
+        let journal = Self::open(&dir.join("squad.db"))?;
+        journal.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('squad', ?1)", [squad])?;
         Ok(journal)
     }
 
@@ -149,7 +180,38 @@ impl Journal {
                body TEXT NOT NULL,
                PRIMARY KEY (session, seq)
              ) WITHOUT ROWID;
-             CREATE INDEX IF NOT EXISTS entries_at ON entries(at);",
+             CREATE INDEX IF NOT EXISTS entries_at ON entries(at);
+             CREATE TABLE IF NOT EXISTS projects (
+               path TEXT PRIMARY KEY,
+               added_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS tickets (
+               id INTEGER PRIMARY KEY,
+               title TEXT NOT NULL,
+               body TEXT NOT NULL,
+               status TEXT NOT NULL,
+               owner TEXT,
+               assignee TEXT,
+               project TEXT,
+               depends_on TEXT NOT NULL DEFAULT '',
+               branch TEXT,
+               base TEXT,
+               worktree TEXT,
+               engine_session TEXT,
+               created_by TEXT NOT NULL,
+               note TEXT,
+               created_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS ticket_events (
+               ticket INTEGER NOT NULL,
+               seq INTEGER NOT NULL,
+               at INTEGER NOT NULL,
+               by TEXT NOT NULL,
+               kind TEXT NOT NULL,
+               text TEXT NOT NULL,
+               PRIMARY KEY (ticket, seq)
+             ) WITHOUT ROWID;",
         )?;
         // Columns added after the first release; a journal that has them already
         // refuses the ALTER, which is fine.
@@ -159,14 +221,151 @@ impl Journal {
         Ok(Self { conn, path: path.to_owned() })
     }
 
-    /// The project path this journal belongs to.
-    pub fn project(&self) -> Option<PathBuf> {
+    /// The squad this journal belongs to.
+    pub fn squad(&self) -> Option<String> {
         self.conn
-            .query_row("SELECT value FROM meta WHERE key = 'project'", [], |r| r.get::<_, String>(0))
+            .query_row("SELECT value FROM meta WHERE key = 'squad'", [], |r| r.get::<_, String>(0))
             .optional()
             .ok()
             .flatten()
-            .map(PathBuf::from)
+    }
+
+    // ── projects ──
+
+    /// The squad's projects, in the order they joined.
+    pub fn projects(&self) -> Result<Vec<PathBuf>> {
+        let mut stmt = self.conn.prepare("SELECT path FROM projects ORDER BY added_at, rowid")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.filter_map(|p| p.ok().map(PathBuf::from)).collect())
+    }
+
+    pub fn add_project(&self, path: &Path) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO projects (path, added_at) VALUES (?1, ?2)",
+            params![path.to_string_lossy(), now()],
+        )?;
+        Ok(())
+    }
+
+    // ── the board ──
+
+    /// Put a ticket on the board. Its id is the next free number; the one given is ignored.
+    pub fn create_ticket(&self, t: &Ticket) -> Result<TicketId> {
+        let id: i64 = self.conn.query_row("SELECT COALESCE(MAX(id), 0) + 1 FROM tickets", [], |r| r.get(0))?;
+        let at = now();
+        self.conn.execute(
+            "INSERT INTO tickets (id, title, body, status, owner, assignee, project, depends_on, branch, created_by,
+                                  note, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+            params![
+                id,
+                t.title,
+                t.body,
+                status_str(t.status),
+                t.owner,
+                t.assignee,
+                t.project.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                ids_str(&t.depends_on),
+                t.branch,
+                t.created_by,
+                t.note,
+                at,
+            ],
+        )?;
+        Ok(id as TicketId)
+    }
+
+    /// Write a ticket's fields back.
+    pub fn save_ticket(&self, t: &Ticket) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tickets SET title = ?1, body = ?2, status = ?3, owner = ?4, assignee = ?5, project = ?6,
+                                depends_on = ?7, branch = ?8, note = ?9, updated_at = ?10
+             WHERE id = ?11",
+            params![
+                t.title,
+                t.body,
+                status_str(t.status),
+                t.owner,
+                t.assignee,
+                t.project.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                ids_str(&t.depends_on),
+                t.branch,
+                t.note,
+                now(),
+                t.id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn ticket(&self, id: TicketId) -> Result<Option<Ticket>> {
+        Ok(self.query_tickets("WHERE id = ?1", params![id])?.into_iter().next())
+    }
+
+    /// Every ticket, oldest first.
+    pub fn tickets(&self) -> Result<Vec<Ticket>> {
+        self.query_tickets("", [])
+    }
+
+    fn query_tickets(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<Ticket>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note
+             FROM tickets {filter} ORDER BY id"
+        ))?;
+        let rows = stmt.query_map(args, |r| {
+            Ok(Ticket {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                body: r.get(2)?,
+                status: status_from(&r.get::<_, String>(3)?),
+                owner: r.get(4)?,
+                assignee: r.get(5)?,
+                project: r.get::<_, Option<String>>(6)?.map(PathBuf::from),
+                depends_on: ids_from(&r.get::<_, String>(7)?),
+                branch: r.get(8)?,
+                created_by: r.get(9)?,
+                note: r.get(10)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn ticket_work(&self, id: TicketId) -> Result<TicketWork> {
+        self.conn
+            .query_row("SELECT base, worktree, engine_session FROM tickets WHERE id = ?1", [id], |r| {
+                Ok(TicketWork {
+                    base: r.get(0)?,
+                    worktree: r.get::<_, Option<String>>(1)?.map(PathBuf::from),
+                    engine_session: r.get(2)?,
+                })
+            })
+            .optional()
+            .map(Option::unwrap_or_default)
+    }
+
+    pub fn set_ticket_work(&self, id: TicketId, work: &TicketWork) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tickets SET base = ?1, worktree = ?2, engine_session = ?3 WHERE id = ?4",
+            params![work.base, work.worktree.as_ref().map(|p| p.to_string_lossy().into_owned()), work.engine_session, id],
+        )?;
+        Ok(())
+    }
+
+    /// Add to a ticket's record — kept forever, a few hundred bytes a line.
+    pub fn ticket_event(&self, id: TicketId, by: &str, kind: &str, text: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO ticket_events (ticket, seq, at, by, kind, text)
+             VALUES (?1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM ticket_events WHERE ticket = ?1), ?2, ?3, ?4, ?5)",
+            params![id, now(), by, kind, text],
+        )?;
+        Ok(())
+    }
+
+    /// A ticket's record, oldest first: `(by, kind, text)`.
+    pub fn ticket_history(&self, id: TicketId) -> Result<Vec<(String, String, String)>> {
+        let mut stmt = self.conn.prepare("SELECT by, kind, text FROM ticket_events WHERE ticket = ?1 ORDER BY seq")?;
+        let rows = stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect()
     }
 
     pub fn record_session(&self, r: &SessionRecord) -> Result<()> {
@@ -379,7 +578,7 @@ mod tests {
     fn a_session_and_its_conversation_survive_reopening() {
         let home = temp_home();
         {
-            let j = Journal::for_project(&home, Path::new("/repo")).unwrap();
+            let j = Journal::for_squad(&home, "acme").unwrap();
             j.record_session(&record(7)).unwrap();
             j.set_title_if_empty(7, "add a docstring").unwrap();
             j.set_title_if_empty(7, "not this one").unwrap();
@@ -388,7 +587,7 @@ mod tests {
             j.append(7, &Entry::User { text: "add a docstring".into() }).unwrap();
             j.append(7, &Entry::Reply { text: "done".into() }).unwrap();
         }
-        let j = Journal::for_project(&home, Path::new("/repo")).unwrap();
+        let j = Journal::for_squad(&home, "acme").unwrap();
         let open = j.open_sessions().unwrap();
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].title.as_deref(), Some("add a docstring"));
@@ -398,12 +597,12 @@ mod tests {
             j.conversation(7).unwrap(),
             vec![Entry::User { text: "add a docstring".into() }, Entry::Reply { text: "done".into() }]
         );
-        assert_eq!(j.project().as_deref(), Some(Path::new("/repo")));
+        assert_eq!(j.squad().as_deref(), Some("acme"));
     }
 
     #[test]
     fn members_are_restored_in_the_order_they_joined() {
-        let j = Journal::for_project(&temp_home(), Path::new("/p")).unwrap();
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
         // Ids are random, so the order is when they joined, not the id.
         for (id, name) in [(90, "pm"), (10, "frontend")] {
             j.record_session(&SessionRecord { member: Some(Member { role: name.into(), name: name.into() }), ..record(id) }).unwrap();
@@ -434,7 +633,7 @@ mod tests {
 
     #[test]
     fn recent_returns_the_latest_lines_in_order() {
-        let j = Journal::for_project(&temp_home(), Path::new("/p")).unwrap();
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
         j.record_session(&record(1)).unwrap();
         for i in 0..10 {
             j.append(1, &Entry::Note { text: i.to_string() }).unwrap();
@@ -453,7 +652,7 @@ mod tests {
 
     #[test]
     fn closed_sessions_are_not_restored() {
-        let j = Journal::for_project(&temp_home(), Path::new("/p")).unwrap();
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
         j.record_session(&record(1)).unwrap();
         j.record_session(&record(2)).unwrap();
         j.set_outcome(1, "landed equipe/try-1").unwrap();
@@ -464,7 +663,7 @@ mod tests {
 
     #[test]
     fn pruning_drops_old_conversation_keeps_the_record_and_returns_space() {
-        let j = Journal::for_project(&temp_home(), Path::new("/p")).unwrap();
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
         j.record_session(&record(1)).unwrap();
         let big = "x".repeat(4000);
         for _ in 0..500 {
@@ -483,14 +682,14 @@ mod tests {
 
     #[test]
     fn new_journals_are_created_in_incremental_vacuum_mode() {
-        let j = Journal::for_project(&temp_home(), Path::new("/p")).unwrap();
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
         let mode: i64 = j.conn.query_row("PRAGMA auto_vacuum", [], |r| r.get(0)).unwrap();
         assert_eq!(mode, 2, "2 = INCREMENTAL");
     }
 
     #[test]
     fn recent_lines_survive_pruning() {
-        let j = Journal::for_project(&temp_home(), Path::new("/p")).unwrap();
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
         j.record_session(&record(1)).unwrap();
         j.append(1, &Entry::Note { text: "old".into() }).unwrap();
         j.backdate_entries(1, 1_000);
@@ -500,12 +699,59 @@ mod tests {
     }
 
     #[test]
-    fn each_project_gets_its_own_directory() {
+    fn a_squad_keeps_its_projects_in_the_order_they_joined() {
+        let j = Journal::for_squad(&temp_home(), "acme");
+        let j = j.unwrap();
+        j.add_project(Path::new("/code/site")).unwrap();
+        j.add_project(Path::new("/code/app")).unwrap();
+        j.add_project(Path::new("/code/site")).unwrap();
+        assert_eq!(j.projects().unwrap(), [PathBuf::from("/code/site"), PathBuf::from("/code/app")]);
+    }
+
+    fn ticket(title: &str) -> Ticket {
+        Ticket {
+            id: 0,
+            title: title.into(),
+            body: "do it".into(),
+            status: TicketStatus::Todo,
+            owner: Some("frontend".into()),
+            assignee: None,
+            project: Some("/code/site".into()),
+            depends_on: vec![],
+            branch: None,
+            created_by: "pm".into(),
+            note: None,
+        }
+    }
+
+    #[test]
+    fn tickets_are_numbered_kept_and_updated() {
+        let home = temp_home();
+        {
+            let j = Journal::for_squad(&home, "acme").unwrap();
+            assert_eq!(j.create_ticket(&ticket("Hero")).unwrap(), 1);
+            let id = j.create_ticket(&Ticket { depends_on: vec![1], ..ticket("Pricing") }).unwrap();
+            assert_eq!(id, 2);
+            let mut t = j.ticket(2).unwrap().unwrap();
+            t.status = TicketStatus::InProgress;
+            t.assignee = Some("frontend".into());
+            j.save_ticket(&t).unwrap();
+            j.set_ticket_work(2, &TicketWork { base: Some("abc".into()), worktree: Some("/w/2".into()), engine_session: Some("s".into()) }).unwrap();
+            j.ticket_event(2, "pm", "created", "Pricing").unwrap();
+            j.ticket_event(2, "equipe", "assigned", "frontend").unwrap();
+        }
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        let tickets = j.tickets().unwrap();
+        assert_eq!(tickets.len(), 2);
+        assert_eq!((tickets[1].status, tickets[1].depends_on.clone()), (TicketStatus::InProgress, vec![1]));
+        assert_eq!(j.ticket_work(2).unwrap().worktree, Some(PathBuf::from("/w/2")));
+        assert_eq!(j.ticket_history(2).unwrap()[1], ("equipe".into(), "assigned".into(), "frontend".into()));
+    }
+
+    #[test]
+    fn each_squad_gets_its_own_directory() {
         let home = Path::new("/h");
-        let a = project_dir(home, Path::new("/code/app"));
-        let b = project_dir(home, Path::new("/other/app"));
-        assert_ne!(a, b);
-        assert!(a.file_name().unwrap().to_string_lossy().starts_with("app-"));
-        assert_eq!(a, project_dir(home, Path::new("/code/app")), "stable");
+        assert_eq!(squad_dir(home, "acme"), PathBuf::from("/h/squads/acme"));
+        assert_eq!(member_memory_dir(home, "acme", "frontend"), PathBuf::from("/h/squads/acme/members/frontend/memory"));
     }
 }

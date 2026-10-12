@@ -73,6 +73,12 @@ closing the session lands the branch.",
             }),
             Event::UserMessage { text, .. } => Some(Entry::User { text: text.clone() }),
             Event::Notice { text, .. } => Some(Entry::Note { text: text.clone() }),
+            Event::WorkStarted { ticket, title, workspace, .. } => Some(Entry::Note {
+                text: match workspace {
+                    Some(ws) => format!("── T-{ticket} · {title} — on branch {}", ws.branch),
+                    None => format!("── T-{ticket} · {title}"),
+                },
+            }),
             Event::ToolUse { tool, target, .. } => Some(Entry::Tool { tool: tool.clone(), target: target.clone() }),
             Event::TurnEnded { outcome: TurnOutcome::Interrupted, .. } => Some(Entry::Note { text: "Stopped.".into() }),
             Event::TurnEnded { outcome: TurnOutcome::Incomplete, .. } => {

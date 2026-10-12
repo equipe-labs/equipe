@@ -73,6 +73,69 @@ pub struct Member {
     pub name: String,
 }
 
+/// A squad's name: lowercase letters, digits and dashes.
+pub type SquadName = String;
+
+/// A ticket's number on its squad's board: `T-3` is 3.
+pub type TicketId = u32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TicketStatus {
+    /// Suggested by a member; the PM or the person makes it real.
+    Proposed,
+    /// Ready to be picked up once its dependencies are done.
+    Todo,
+    InProgress,
+    /// Handed in; waiting for the person to accept it.
+    Review,
+    Done,
+    Cancelled,
+}
+
+impl TicketStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            TicketStatus::Proposed => "proposed",
+            TicketStatus::Todo => "todo",
+            TicketStatus::InProgress => "in progress",
+            TicketStatus::Review => "review",
+            TicketStatus::Done => "done",
+            TicketStatus::Cancelled => "cancelled",
+        }
+    }
+
+    /// Finished one way or the other: nothing more happens to it.
+    pub fn is_closed(self) -> bool {
+        matches!(self, TicketStatus::Done | TicketStatus::Cancelled)
+    }
+}
+
+/// A unit of work on the squad's board — the board is where the team agrees
+/// on what is being done, by whom, in which project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ticket {
+    pub id: TicketId,
+    pub title: String,
+    /// What to do and how to know it's done.
+    pub body: String,
+    pub status: TicketStatus,
+    /// Who it is for: a role (`frontend`) or a member (`frontend-2`).
+    pub owner: Option<String>,
+    /// The member working on it, once it has been picked up.
+    pub assignee: Option<String>,
+    /// The project (repository) it belongs to.
+    pub project: Option<PathBuf>,
+    /// Tickets that must be done first.
+    pub depends_on: Vec<TicketId>,
+    /// Where an editing member's work lives.
+    pub branch: Option<String>,
+    /// `you`, or the member who wrote it.
+    pub created_by: String,
+    /// The latest word on it: a hand-in summary, why it was reopened.
+    pub note: Option<String>,
+}
+
 /// How to open a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSpec {
@@ -87,6 +150,9 @@ pub struct SessionSpec {
     /// The role the session plays on the team. `None`: a plain agent, no role.
     #[serde(default)]
     pub role: Option<String>,
+    /// The squad a member joins. A member works on its squad's projects.
+    #[serde(default)]
+    pub squad: Option<SquadName>,
 }
 
 /// Screen → core: "do this".
@@ -103,8 +169,16 @@ pub enum Command {
     /// [`TurnOutcome::Interrupted`].
     Interrupt { session: SessionId },
     /// End the session. With [`Access::EditFiles`] this lands the branch first.
+    /// For a member: it leaves the squad, and a ticket it was on goes back to the board.
     /// Answered by [`Event::SessionClosed`].
     Close { session: SessionId },
+    /// The person accepts a ticket's work: it is done, its branch stays to merge.
+    /// Only the person can do this — never a member, the PM included.
+    Accept { squad: SquadName, ticket: TicketId },
+    /// The person sends a ticket back with what to change.
+    Reopen { squad: SquadName, ticket: TicketId, note: String },
+    /// The person drops a ticket.
+    Cancel { squad: SquadName, ticket: TicketId },
 }
 
 /// Token counts for one turn.
@@ -154,7 +228,23 @@ pub enum Event {
         /// Set for a session that plays a role on the team.
         #[serde(default)]
         member: Option<Member>,
+        #[serde(default)]
+        squad: Option<SquadName>,
     },
+    /// A member picked up a ticket. Its turns now run in the ticket's project —
+    /// in `workspace` when it edits.
+    WorkStarted {
+        session: SessionId,
+        ticket: TicketId,
+        title: String,
+        project: PathBuf,
+        workspace: Option<Workspace>,
+    },
+    /// The member put the ticket down (handed in, accepted, cancelled, or left);
+    /// its turns are back at its desk.
+    WorkEnded { session: SessionId, ticket: TicketId },
+    /// A ticket was created or changed. Carries the whole ticket.
+    TicketChanged { squad: SquadName, ticket: Ticket },
     /// What the person asked — sent to every screen, not only the one it was typed in.
     UserMessage { session: SessionId, text: String },
     /// A message left while the agent works. It becomes a [`Event::UserMessage`]
@@ -211,8 +301,11 @@ impl Event {
             | Event::TurnEnded { session, .. }
             | Event::BranchLanded { session, .. }
             | Event::NothingChanged { session }
-            | Event::SessionClosed { session } => Some(*session),
+            | Event::SessionClosed { session }
+            | Event::WorkStarted { session, .. }
+            | Event::WorkEnded { session, .. } => Some(*session),
             Event::Error { session, .. } => *session,
+            Event::TicketChanged { .. } => None,
         }
     }
 }
@@ -259,18 +352,60 @@ pub struct SessionInfo {
     /// Memos waiting for the turn in progress to end.
     #[serde(default)]
     pub queued: Vec<String>,
+    /// The ticket it is working on, and where.
+    #[serde(default)]
+    pub work: Option<WorkInfo>,
 }
 
-/// Everything open on one project, sent to a screen when it attaches.
+/// A member's current ticket, for a screen that attaches mid-work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkInfo {
+    pub ticket: TicketId,
+    pub project: PathBuf,
+    pub workspace: Option<Workspace>,
+}
+
+/// Everything a squad has going, sent to a screen when it attaches.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
+    pub squad: SquadName,
+    /// The squad's projects (repositories), in the order they joined.
+    #[serde(default)]
+    pub projects: Vec<PathBuf>,
+    /// The members, the PM first.
     pub sessions: Vec<SessionInfo>,
+    /// Open tickets and the latest closed ones.
+    #[serde(default)]
+    pub tickets: Vec<Ticket>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn ticket(id: TicketId) -> Ticket {
+        Ticket {
+            id,
+            title: "Landing hero".into(),
+            body: "Headline, subline, one button.".into(),
+            status: TicketStatus::Todo,
+            owner: Some("frontend".into()),
+            assignee: None,
+            project: Some("/site".into()),
+            depends_on: vec![1],
+            branch: None,
+            created_by: "pm".into(),
+            note: None,
+        }
+    }
+
+    #[test]
+    fn only_the_person_accepts_and_it_travels_as_json() {
+        let cmd = Command::Accept { squad: "acme".into(), ticket: 3 };
+        assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "accept", "squad": "acme", "ticket": 3 }));
+        assert_eq!(serde_json::to_value(TicketStatus::InProgress).unwrap(), json!("in_progress"));
+    }
 
     #[test]
     fn commands_serialize_with_a_type_tag() {
@@ -292,7 +427,10 @@ mod tests {
                 model: None,
                 workspace: Some(Workspace { branch: "equipe/try-1".into(), base: "abc".into(), path: "/w".into() }),
                 member: Some(Member { role: "frontend".into(), name: "frontend-2".into() }),
+                squad: Some("acme".into()),
             },
+            Event::TicketChanged { squad: "acme".into(), ticket: ticket(3) },
+            Event::WorkStarted { session: 1, ticket: 3, title: "Hero".into(), project: "/site".into(), workspace: None },
             Event::MessageQueued { session: 1, text: "also the footer".into() },
             Event::Notice { session: 2, text: "↪ You → frontend: hi".into() },
             Event::TextDelta { session: 1, text: "안녕".into() },
@@ -312,7 +450,14 @@ mod tests {
 
     #[test]
     fn a_session_spec_round_trips() {
-        let spec = SessionSpec { engine: None, model: Some("haiku".into()), access: Access::EditFiles, cwd: "/repo".into(), role: Some("frontend".into()) };
+        let spec = SessionSpec {
+            engine: None,
+            model: Some("haiku".into()),
+            access: Access::EditFiles,
+            cwd: "/repo".into(),
+            role: Some("frontend".into()),
+            squad: Some("acme".into()),
+        };
         let cmd = Command::Start { session: 7, spec };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains("\"edit_files\""), "{json}");
@@ -330,6 +475,9 @@ mod tests {
     #[test]
     fn a_snapshot_round_trips() {
         let snapshot = Snapshot {
+            squad: "acme".into(),
+            projects: vec!["/repo".into()],
+            tickets: vec![ticket(1)],
             sessions: vec![SessionInfo {
                 session: 9,
                 project: "/repo".into(),
@@ -343,6 +491,7 @@ mod tests {
                 tokens: 12,
                 recent: vec![Entry::User { text: "fix it".into() }, Entry::Reply { text: "on it".into() }],
                 queued: vec!["and the tests".into()],
+                work: Some(WorkInfo { ticket: 1, project: "/repo".into(), workspace: None }),
             }],
         };
         let json = serde_json::to_string(&snapshot).unwrap();
