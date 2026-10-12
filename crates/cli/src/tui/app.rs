@@ -2,16 +2,22 @@
 //!
 //! Keys and core [`Event`]s go in; the [`Command`]s to send to the core come
 //! out. Everything here is plain state, so it is tested without a terminal.
+//!
+//! The UI is a view of the daemon's team: it starts from a snapshot, follows
+//! events, and leaving it changes nothing — the agents keep working.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use equipe_core::protocol::{Access, Command, Engine, Event, SessionId, SessionSpec, TurnOutcome};
+use equipe_core::protocol::{
+    Access, Command, Engine, Event, SessionId, SessionInfo, SessionSpec, SessionState, Snapshot, Transcript,
+    new_session_id,
+};
 
 use super::composer::Composer;
 
-/// How long a first Ctrl-C waits for a second before it stops meaning "quit".
+/// How long a first Ctrl-C waits for a second before it stops meaning "leave".
 const QUIT_WINDOW: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,19 +31,6 @@ pub enum AgentState {
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Entry {
-    /// What the person asked.
-    User(String),
-    /// The agent's answer, as it streams.
-    Reply(String),
-    Tool { verb: String, target: String },
-    /// A quiet line from equipe itself.
-    Note(String),
-    Error { message: String, next: Option<String> },
-    Landed { branch: String, stat: String },
-}
-
 pub struct Agent {
     pub id: SessionId,
     pub engine: Option<Engine>,
@@ -45,12 +38,12 @@ pub struct Agent {
     pub edit: bool,
     pub branch: Option<String>,
     pub state: AgentState,
-    pub transcript: Vec<Entry>,
+    pub transcript: Transcript,
     pub tokens: u64,
     /// Lines scrolled up from the bottom; 0 follows new output.
     pub scroll_back: usize,
     /// Where the agent works; tool paths are shown relative to it.
-    base: PathBuf,
+    pub base: PathBuf,
     /// A message to send once the session has started.
     pending: Option<String>,
 }
@@ -64,8 +57,28 @@ impl Agent {
             edit,
             branch: None,
             state: AgentState::Starting,
-            transcript: Vec::new(),
+            transcript: Transcript::default(),
             tokens: 0,
+            scroll_back: 0,
+            base,
+            pending: None,
+        }
+    }
+
+    fn from_info(info: SessionInfo) -> Self {
+        let base = info.workspace.as_ref().map_or_else(|| info.project.clone(), |w| w.path.clone());
+        Self {
+            id: info.session,
+            engine: Some(info.engine),
+            model: info.model,
+            edit: info.access == Access::EditFiles,
+            branch: info.workspace.map(|w| w.branch),
+            state: match info.state {
+                SessionState::Ready => AgentState::Ready,
+                SessionState::Working => AgentState::Working,
+            },
+            transcript: Transcript::from_entries(info.recent),
+            tokens: info.tokens,
             scroll_back: 0,
             base,
             pending: None,
@@ -91,38 +104,40 @@ impl Agent {
 
 pub struct App {
     pub cwd: PathBuf,
+    /// The project this screen follows; sessions others open here appear too.
+    pub project: PathBuf,
     pub agents: Vec<Agent>,
     pub selected: usize,
     pub composer: Composer,
     /// A one-line message in the status bar, cleared by the next key.
     pub flash: Option<String>,
     pub should_quit: bool,
-    /// Branches landed this session, for the summary printed on exit.
+    /// Branches landed while this screen watched, for the summary on leaving.
     pub landed: Vec<(String, String)>,
-    next_id: SessionId,
     quit_armed: Option<Instant>,
 }
 
 const HELP: &str = "Enter sends · Alt-Enter or Ctrl-J adds a line · Esc stops the agent · \
-Tab switches agents · PgUp/PgDn scroll · Ctrl-C twice quits. \
+Tab switches agents · PgUp/PgDn scroll · Ctrl-C twice leaves — the team keeps working. \
 Commands: /new [codex|claude] opens another agent · /edit [task] opens one that may edit files on its own branch · \
-/close lands its branch · /quit.";
+/close ends the selected agent and lands its branch · /quit leaves.";
 
 impl App {
-    /// A fresh UI with its first agent starting. Returns the command that starts it.
-    pub fn new(cwd: PathBuf) -> (Self, Vec<Command>) {
+    /// The team as the daemon has it. With nobody on the team yet, the first
+    /// agent starts — that command is returned.
+    pub fn from_snapshot(cwd: PathBuf, project: PathBuf, snapshot: Snapshot) -> (Self, Vec<Command>) {
         let mut app = Self {
             cwd,
-            agents: Vec::new(),
+            project,
+            agents: snapshot.sessions.into_iter().map(Agent::from_info).collect(),
             selected: 0,
             composer: Composer::default(),
             flash: None,
             should_quit: false,
             landed: Vec::new(),
-            next_id: 1,
             quit_armed: None,
         };
-        let start = app.open_agent(None, false, None);
+        let start = if app.agents.is_empty() { app.open_agent(None, false, None) } else { Vec::new() };
         (app, start)
     }
 
@@ -130,17 +145,16 @@ impl App {
         self.agents.get(self.selected)
     }
 
-    fn agent_mut(&mut self, id: SessionId) -> Option<&mut Agent> {
-        self.agents.iter_mut().find(|a| a.id == id)
-    }
-
     pub fn total_tokens(&self) -> u64 {
         self.agents.iter().map(|a| a.tokens).sum()
     }
 
+    pub fn working(&self) -> usize {
+        self.agents.iter().filter(|a| a.state == AgentState::Working).count()
+    }
+
     fn open_agent(&mut self, engine: Option<Engine>, edit: bool, first: Option<String>) -> Vec<Command> {
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = new_session_id();
         let mut agent = Agent::new(id, edit, self.cwd.clone());
         agent.pending = first;
         self.agents.push(agent);
@@ -157,22 +171,6 @@ impl App {
         }]
     }
 
-    /// Close every open agent, landing editing branches. Sent on quit.
-    pub fn closing_commands(&mut self) -> Vec<Command> {
-        self.agents
-            .iter_mut()
-            .filter(|a| a.is_open())
-            .map(|a| {
-                a.state = AgentState::Closing;
-                Command::Close { session: a.id }
-            })
-            .collect()
-    }
-
-    pub fn all_closed(&self) -> bool {
-        self.agents.iter().all(|a| !a.is_open())
-    }
-
     // ── events from the core ──
 
     pub fn on_event(&mut self, event: Event) -> Vec<Command> {
@@ -182,9 +180,17 @@ impl App {
             }
             return Vec::new();
         };
-        let Some(agent) = self.agent_mut(id) else {
+        // A session another screen opened on this project joins the team here too.
+        if let Event::SessionStarted { project, .. } = &event
+            && *project == self.project
+            && !self.agents.iter().any(|a| a.id == id)
+        {
+            self.agents.push(Agent::new(id, false, self.cwd.clone()));
+        }
+        let Some(agent) = self.agents.iter_mut().find(|a| a.id == id) else {
             return Vec::new();
         };
+        agent.transcript.apply(&event);
         let mut commands = Vec::new();
         match event {
             Event::SessionStarted { engine, model, workspace, .. } => {
@@ -192,56 +198,33 @@ impl App {
                 agent.model = model;
                 agent.state = AgentState::Ready;
                 if let Some(ws) = workspace {
-                    agent.base = ws.path.clone();
-                    agent.transcript.push(Entry::Note(format!(
-                        "Working on branch {} in its own worktree. Your checkout stays untouched; \
-/close lands the branch.",
-                        ws.branch
-                    )));
+                    agent.edit = true;
+                    agent.base = ws.path;
                     agent.branch = Some(ws.branch);
                 }
                 if let Some(text) = agent.pending.take() {
-                    agent.transcript.push(Entry::User(text.clone()));
                     agent.state = AgentState::Working;
                     commands.push(Command::Submit { session: id, text });
                 }
             }
-            Event::TextDelta { text, .. } => match agent.transcript.last_mut() {
-                Some(Entry::Reply(reply)) => reply.push_str(&text),
-                _ => agent.transcript.push(Entry::Reply(text)),
-            },
-            Event::ToolUse { tool, target, .. } => agent.transcript.push(Entry::Tool {
-                verb: tool_verb(&tool).to_owned(),
-                target: target.map(|t| relative(&t, &agent.base)).unwrap_or_default(),
-            }),
+            Event::UserMessage { .. } => {
+                // Typed on another screen, perhaps: either way the agent is busy now.
+                agent.state = AgentState::Working;
+                agent.scroll_back = 0;
+            }
             Event::ModelKnown { model, .. } => agent.model = Some(model),
-            Event::TurnEnded { outcome, usage, .. } => {
+            Event::TurnEnded { usage, .. } => {
                 if agent.state == AgentState::Working {
                     agent.state = AgentState::Ready;
                 }
                 if let Some(u) = usage {
                     agent.tokens += u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0);
                 }
-                match outcome {
-                    TurnOutcome::Interrupted => agent.transcript.push(Entry::Note("Stopped.".into())),
-                    TurnOutcome::Incomplete => agent.transcript.push(Entry::Note("The engine ended early.".into())),
-                    TurnOutcome::Completed | TurnOutcome::Failed => {}
-                }
             }
-            Event::BranchLanded { branch, stat, .. } => {
-                agent.transcript.push(Entry::Landed { branch: branch.clone(), stat: stat.clone() });
-                self.landed.push((branch, stat));
-            }
-            Event::NothingChanged { .. } => {
-                agent.transcript.push(Entry::Note("No files changed, so no branch was kept.".into()));
-            }
+            Event::BranchLanded { branch, stat, .. } => self.landed.push((branch, stat)),
             Event::SessionClosed { .. } => agent.state = AgentState::Closed,
-            Event::Error { message, next, .. } => {
-                if agent.state == AgentState::Starting {
-                    agent.state = AgentState::Failed;
-                }
-                agent.transcript.push(Entry::Error { message, next });
-            }
+            Event::Error { .. } if agent.state == AgentState::Starting => agent.state = AgentState::Failed,
+            _ => {}
         }
         commands
     }
@@ -300,7 +283,7 @@ impl App {
             Some(at) if now.duration_since(at) <= QUIT_WINDOW => self.should_quit = true,
             _ => {
                 self.quit_armed = Some(now);
-                self.flash = Some("Press Ctrl-C again to quit.".into());
+                self.flash = Some("Press Ctrl-C again to leave. The team keeps working.".into());
             }
         }
         Vec::new()
@@ -338,12 +321,8 @@ impl App {
             return Vec::new();
         };
         match agent.state {
-            AgentState::Ready => {
-                agent.transcript.push(Entry::User(text.clone()));
-                agent.state = AgentState::Working;
-                agent.scroll_back = 0;
-                vec![Command::Submit { session: agent.id, text }]
-            }
+            // The message shows once the daemon echoes it, the same on every screen.
+            AgentState::Ready => vec![Command::Submit { session: agent.id, text }],
             AgentState::Starting => {
                 // Sent as soon as the session is up.
                 agent.pending = Some(text);
@@ -388,7 +367,7 @@ impl App {
             },
             "help" => {
                 if let Some(agent) = self.agents.get_mut(self.selected) {
-                    agent.transcript.push(Entry::Note(HELP.into()));
+                    agent.transcript.push_local(equipe_core::protocol::Entry::Note { text: HELP.into() });
                 }
                 Vec::new()
             }
@@ -418,7 +397,7 @@ pub fn tool_verb(name: &str) -> &str {
 }
 
 /// A tool's path, relative to where the agent works when it's inside it.
-fn relative(target: &str, base: &std::path::Path) -> String {
+pub fn relative(target: &str, base: &std::path::Path) -> String {
     let path = std::path::Path::new(target);
     // macOS reports temp dirs under /private; compare canonical forms.
     let canon = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
@@ -433,7 +412,7 @@ fn relative(target: &str, base: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use equipe_core::protocol::{Usage, Workspace};
+    use equipe_core::protocol::{Entry, TurnOutcome, Usage, Workspace};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -449,46 +428,77 @@ mod tests {
         }
     }
 
-    /// An app whose first agent has started on Claude Code.
-    fn ready() -> App {
-        let (mut app, _) = App::new("/repo".into());
-        app.on_event(Event::SessionStarted { session: 1, engine: Engine::Claude, model: None, workspace: None });
-        app
+    fn started(id: SessionId) -> Event {
+        Event::SessionStarted { session: id, project: "/repo".into(), engine: Engine::Claude, model: None, workspace: None }
+    }
+
+    /// A fresh UI whose first agent has started. Returns it with that agent's id.
+    fn ready() -> (App, SessionId) {
+        let (mut app, commands) = App::from_snapshot("/repo".into(), "/repo".into(), Snapshot::default());
+        let Some(Command::Start { session, .. }) = commands.first() else { panic!("no start") };
+        let id = *session;
+        app.on_event(started(id));
+        (app, id)
     }
 
     #[test]
-    fn starts_its_first_agent_on_whatever_engine_is_ready() {
-        let (app, commands) = App::new("/repo".into());
+    fn an_empty_team_starts_its_first_agent() {
+        let (app, commands) = App::from_snapshot("/repo".into(), "/repo".into(), Snapshot::default());
         assert!(matches!(
             commands.as_slice(),
-            [Command::Start { session: 1, spec }] if spec.engine.is_none() && spec.access == Access::ReadOnly
+            [Command::Start { spec, .. }] if spec.engine.is_none() && spec.access == Access::ReadOnly
         ));
         assert_eq!(app.agents[0].state, AgentState::Starting);
     }
 
     #[test]
-    fn enter_sends_the_message() {
-        let mut app = ready();
+    fn attaching_shows_the_team_as_it_is() {
+        let snapshot = Snapshot {
+            sessions: vec![SessionInfo {
+                session: 9,
+                project: "/repo".into(),
+                engine: Engine::Codex,
+                model: Some("gpt-6-luna".into()),
+                access: Access::EditFiles,
+                workspace: Some(Workspace { branch: "equipe/try-9".into(), base: "abc".into(), path: "/w/9".into() }),
+                state: SessionState::Working,
+                title: Some("fix it".into()),
+                tokens: 40,
+                recent: vec![Entry::User { text: "fix it".into() }, Entry::Reply { text: "on it".into() }],
+            }],
+        };
+        let (app, commands) = App::from_snapshot("/repo".into(), "/repo".into(), snapshot);
+        assert!(commands.is_empty(), "nothing new starts when a team exists");
+        let agent = &app.agents[0];
+        assert_eq!(agent.state, AgentState::Working);
+        assert_eq!(agent.branch.as_deref(), Some("equipe/try-9"));
+        assert_eq!(agent.transcript.entries().len(), 2);
+        assert_eq!(app.total_tokens(), 40);
+    }
+
+    #[test]
+    fn enter_sends_and_the_echo_shows_the_message() {
+        let (mut app, id) = ready();
         type_text(&mut app, "hello");
         let sent = app.on_key(key(KeyCode::Enter), Instant::now());
-        assert_eq!(sent, vec![Command::Submit { session: 1, text: "hello".into() }]);
+        assert_eq!(sent, vec![Command::Submit { session: id, text: "hello".into() }]);
+        app.on_event(Event::UserMessage { session: id, text: "hello".into() });
         assert_eq!(app.agents[0].state, AgentState::Working);
-        assert_eq!(app.agents[0].transcript, vec![Entry::User("hello".into())]);
+        assert_eq!(app.agents[0].transcript.entries(), &[Entry::User { text: "hello".into() }]);
     }
 
     #[test]
     fn a_pasted_newline_never_sends() {
-        let mut app = ready();
+        let (mut app, id) = ready();
         app.on_paste("fix this\nTypeError: x is undefined\n");
-        // The paste alone sent nothing; the person's Enter sends all of it.
         assert_eq!(app.composer.line_count(), 3);
         let sent = app.on_key(key(KeyCode::Enter), Instant::now());
-        assert_eq!(sent, vec![Command::Submit { session: 1, text: "fix this\nTypeError: x is undefined".into() }]);
+        assert_eq!(sent, vec![Command::Submit { session: id, text: "fix this\nTypeError: x is undefined".into() }]);
     }
 
     #[test]
     fn alt_enter_and_ctrl_j_add_a_line() {
-        let mut app = ready();
+        let (mut app, _) = ready();
         type_text(&mut app, "a");
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT), Instant::now());
         type_text(&mut app, "b");
@@ -499,50 +509,39 @@ mod tests {
 
     #[test]
     fn a_message_typed_while_starting_is_sent_once_ready() {
-        let (mut app, _) = App::new("/repo".into());
+        let (mut app, commands) = App::from_snapshot("/repo".into(), "/repo".into(), Snapshot::default());
+        let Some(Command::Start { session: id, .. }) = commands.first() else { panic!() };
+        let id = *id;
         type_text(&mut app, "early");
         assert!(app.on_key(key(KeyCode::Enter), Instant::now()).is_empty());
-        let sent = app.on_event(Event::SessionStarted { session: 1, engine: Engine::Codex, model: None, workspace: None });
-        assert_eq!(sent, vec![Command::Submit { session: 1, text: "early".into() }]);
+        let sent = app.on_event(started(id));
+        assert_eq!(sent, vec![Command::Submit { session: id, text: "early".into() }]);
     }
 
     #[test]
-    fn streamed_text_joins_one_reply_until_a_tool_runs() {
-        let mut app = ready();
-        for e in [
-            Event::TextDelta { session: 1, text: "Let me ".into() },
-            Event::TextDelta { session: 1, text: "look.".into() },
-            Event::ToolUse { session: 1, tool: "Read".into(), target: Some("a.rs".into()) },
-            Event::TextDelta { session: 1, text: "Done.".into() },
-        ] {
-            app.on_event(e);
-        }
-        assert_eq!(
-            app.agents[0].transcript,
-            vec![
-                Entry::Reply("Let me look.".into()),
-                Entry::Tool { verb: "read".into(), target: "a.rs".into() },
-                Entry::Reply("Done.".into()),
-            ]
-        );
+    fn a_session_opened_on_another_screen_joins_this_team() {
+        let (mut app, _) = ready();
+        app.on_event(Event::SessionStarted { session: 77, project: "/repo".into(), engine: Engine::Codex, model: None, workspace: None });
+        assert_eq!(app.agents.len(), 2);
+        // Another project's sessions stay out.
+        app.on_event(Event::SessionStarted { session: 78, project: "/other".into(), engine: Engine::Codex, model: None, workspace: None });
+        assert_eq!(app.agents.len(), 2);
     }
 
     #[test]
     fn esc_stops_only_a_working_agent() {
-        let mut app = ready();
+        let (mut app, id) = ready();
         assert!(app.on_key(key(KeyCode::Esc), Instant::now()).is_empty());
-        type_text(&mut app, "go");
-        app.on_key(key(KeyCode::Enter), Instant::now());
-        assert_eq!(app.on_key(key(KeyCode::Esc), Instant::now()), vec![Command::Interrupt { session: 1 }]);
+        app.on_event(Event::UserMessage { session: id, text: "go".into() });
+        assert_eq!(app.on_key(key(KeyCode::Esc), Instant::now()), vec![Command::Interrupt { session: id }]);
     }
 
     #[test]
     fn a_finished_turn_frees_the_agent_and_counts_tokens() {
-        let mut app = ready();
-        type_text(&mut app, "go");
-        app.on_key(key(KeyCode::Enter), Instant::now());
+        let (mut app, id) = ready();
+        app.on_event(Event::UserMessage { session: id, text: "go".into() });
         app.on_event(Event::TurnEnded {
-            session: 1,
+            session: id,
             outcome: TurnOutcome::Completed,
             usage: Some(Usage { input_tokens: Some(10), output_tokens: Some(5) }),
         });
@@ -551,33 +550,34 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_clears_a_draft_then_quits_on_a_second_press() {
-        let mut app = ready();
+    fn ctrl_c_clears_a_draft_then_leaves_on_a_second_press() {
+        let (mut app, _) = ready();
         let t0 = Instant::now();
         type_text(&mut app, "draft");
         app.on_key(ctrl('c'), t0);
         assert!(app.composer.is_empty() && !app.should_quit);
         app.on_key(ctrl('c'), t0);
         assert!(!app.should_quit, "one press only warns");
+        assert!(app.flash.as_deref().unwrap().contains("keeps working"));
         app.on_key(ctrl('c'), t0 + Duration::from_millis(500));
         assert!(app.should_quit);
     }
 
     #[test]
-    fn a_slow_second_ctrl_c_only_warns_again() {
-        let mut app = ready();
-        let t0 = Instant::now();
-        app.on_key(ctrl('c'), t0);
-        app.on_key(ctrl('c'), t0 + Duration::from_secs(5));
-        assert!(!app.should_quit);
+    fn leaving_sends_nothing_to_the_team() {
+        let (mut app, _) = ready();
+        type_text(&mut app, "/quit");
+        let sent = app.on_key(key(KeyCode::Enter), Instant::now());
+        assert!(sent.is_empty(), "leaving never closes agents: {sent:?}");
+        assert!(app.should_quit);
     }
 
     #[test]
     fn slash_new_opens_another_agent_and_tab_switches() {
-        let mut app = ready();
+        let (mut app, _) = ready();
         type_text(&mut app, "/new codex");
         let sent = app.on_key(key(KeyCode::Enter), Instant::now());
-        assert!(matches!(sent.as_slice(), [Command::Start { session: 2, spec }] if spec.engine == Some(Engine::Codex)));
+        assert!(matches!(sent.as_slice(), [Command::Start { spec, .. }] if spec.engine == Some(Engine::Codex)));
         assert_eq!(app.selected, 1);
         app.on_key(key(KeyCode::Tab), Instant::now());
         assert_eq!(app.selected, 0);
@@ -585,43 +585,30 @@ mod tests {
 
     #[test]
     fn slash_edit_opens_an_editing_agent_and_sends_its_task() {
-        let mut app = ready();
+        let (mut app, _) = ready();
         type_text(&mut app, "/edit add a docstring");
         let sent = app.on_key(key(KeyCode::Enter), Instant::now());
-        assert!(matches!(
-            sent.as_slice(),
-            [Command::Start { session: 2, spec }] if spec.access == Access::EditFiles && spec.engine == Some(Engine::Claude)
-        ));
+        let Some(Command::Start { session: id, spec }) = sent.first() else { panic!("{sent:?}") };
+        assert_eq!((spec.access, spec.engine), (Access::EditFiles, Some(Engine::Claude)));
+        let id = *id;
         let sent = app.on_event(Event::SessionStarted {
-            session: 2,
+            session: id,
+            project: "/repo".into(),
             engine: Engine::Claude,
             model: None,
             workspace: Some(Workspace { branch: "equipe/try-1".into(), base: "abc".into(), path: "/w".into() }),
         });
-        assert_eq!(sent, vec![Command::Submit { session: 2, text: "add a docstring".into() }]);
+        assert_eq!(sent, vec![Command::Submit { session: id, text: "add a docstring".into() }]);
         assert_eq!(app.agents[1].branch.as_deref(), Some("equipe/try-1"));
     }
 
     #[test]
     fn a_start_failure_marks_the_agent_failed_with_the_fix() {
-        let (mut app, _) = App::new("/repo".into());
-        app.on_event(Event::Error { session: Some(1), message: "No engine is ready.".into(), next: Some("equipe login".into()) });
+        let (mut app, commands) = App::from_snapshot("/repo".into(), "/repo".into(), Snapshot::default());
+        let Some(Command::Start { session: id, .. }) = commands.first() else { panic!() };
+        app.on_event(Event::Error { session: Some(*id), message: "No engine is ready.".into(), next: Some("equipe login".into()) });
         assert_eq!(app.agents[0].state, AgentState::Failed);
-        assert!(matches!(app.agents[0].transcript.last(), Some(Entry::Error { next: Some(n), .. }) if n == "equipe login"));
-    }
-
-    #[test]
-    fn quitting_closes_every_open_agent() {
-        let mut app = ready();
-        type_text(&mut app, "/edit");
-        app.on_key(key(KeyCode::Enter), Instant::now());
-        let closing = app.closing_commands();
-        assert_eq!(closing, vec![Command::Close { session: 1 }, Command::Close { session: 2 }]);
-        app.on_event(Event::BranchLanded { session: 2, branch: "equipe/try-2".into(), base: "a".into(), stat: "1 file".into() });
-        app.on_event(Event::SessionClosed { session: 1 });
-        app.on_event(Event::SessionClosed { session: 2 });
-        assert!(app.all_closed());
-        assert_eq!(app.landed, vec![("equipe/try-2".to_owned(), "1 file".to_owned())]);
+        assert!(matches!(app.agents[0].transcript.entries().last(), Some(Entry::Error { next: Some(n), .. }) if n == "equipe login"));
     }
 
     #[test]
@@ -633,8 +620,8 @@ mod tests {
 
     #[test]
     fn model_names_shorten_for_the_team_list() {
-        let mut app = ready();
-        app.on_event(Event::ModelKnown { session: 1, model: "claude-opus-5-5[1m]".into() });
+        let (mut app, id) = ready();
+        app.on_event(Event::ModelKnown { session: id, model: "claude-opus-5-5[1m]".into() });
         assert_eq!(app.agents[0].short_model().as_deref(), Some("opus-5-5"));
     }
 }

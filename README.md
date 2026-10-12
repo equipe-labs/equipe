@@ -71,7 +71,8 @@ CLAUDE CODE  your claude · signs itself in
 
 | Command | What it does |
 |---|---|
-| `equipe` | **The team console.** A full-screen terminal UI: your agents on the left, the selected one's conversation and work on the right. `/new` opens another agent, `/edit` one that changes files on its own branch, `/close` lands that branch |
+| `equipe` | **The team console.** A full-screen terminal UI: your agents on the left, the selected one's conversation and work on the right. `/new` opens another agent, `/edit` one that changes files on its own branch, `/close` lands that branch. **The team lives in a background daemon** — leave, or close the terminal, and it keeps working; run `equipe` again to come back |
+| `equipe daemon status\|stop\|restart` | The daemon itself. `equipe` starts it when needed; stopping it keeps open sessions, which resume when it starts again |
 | `equipe login` | Pick an engine and sign in (`codex` / `claude`, `--again`, `--no-browser`) |
 | `equipe logout` | Forget equipe's Codex login (Claude Code keeps its own) |
 | `equipe status` | Which engines are ready, on which plan, with which models |

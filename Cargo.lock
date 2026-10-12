@@ -1940,6 +1940,7 @@ dependencies = [
  "equipe-protocol",
  "equipe-providers",
  "futures-util",
+ "libc",
  "ratatui",
  "reqwest",
  "terminal_size",
@@ -1955,6 +1956,7 @@ dependencies = [
  "equipe-providers",
  "reqwest",
  "rusqlite",
+ "serde_json",
  "tokio",
 ]
 

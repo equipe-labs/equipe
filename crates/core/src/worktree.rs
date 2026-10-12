@@ -37,6 +37,7 @@ pub fn repo_root(dir: &Path) -> Result<PathBuf> {
         .map_err(|_| "not inside a git repository — `--edit` works on a branch of one".to_owned())
 }
 
+#[derive(Debug, Clone)]
 pub struct Sandbox {
     pub repo: PathBuf,
     pub path: PathBuf,
@@ -111,18 +112,15 @@ impl Sandbox {
 mod tests {
     use super::*;
 
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    /// A fresh directory; a counter, not the clock, keeps parallel tests apart.
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("equipe-wt-{name}-{}", uuid_like()));
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("equipe-wt-{name}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
-    }
-
-    fn uuid_like() -> String {
-        format!(
-            "{}-{:?}",
-            std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        )
     }
 
     /// A repository with one commit and a configured identity.

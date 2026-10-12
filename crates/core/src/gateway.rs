@@ -1,0 +1,232 @@
+//! The daemon's door: the runtime served over a Unix socket.
+//!
+//! One daemon per user, at `~/.equipe/equipe.sock`. The socket is a file only
+//! its owner can open, so no network port is involved and nothing else on the
+//! machine can drive the squad. Messages are the protocol's Commands and Events
+//! in JSON-RPC 2.0, one per line (see `equipe_protocol::rpc`).
+//!
+//! Screens come and go; the runtime — and the agents it runs, which are the
+//! daemon's children, not any terminal's — keeps going.
+
+use std::io;
+use std::path::{Path, PathBuf};
+
+use equipe_protocol::rpc::{self, Hello, HelloParams, Message};
+use equipe_protocol::{Command, Event};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::unix::OwnedWriteHalf;
+use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::oneshot;
+
+use crate::runtime::{self, Handle};
+
+/// Where the daemon listens.
+pub fn socket_path(home: &Path) -> PathBuf {
+    home.join("equipe.sock")
+}
+
+/// Serve the runtime on `socket` until a client asks it to shut down.
+/// Fails with `AddrInUse` when a daemon is already answering there.
+pub async fn serve(config: runtime::Config, socket: &Path, version: &str) -> io::Result<()> {
+    let listener = bind(socket).await?;
+    let (core, own_events) = runtime::start(config);
+    // Screens subscribe for themselves; an unread receiver would only pile up events.
+    drop(own_events);
+    let (stop_tx, mut stop_rx) = mpsc::unbounded_channel::<oneshot::Sender<()>>();
+
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, _) = accepted?;
+                tokio::spawn(serve_client(stream, core.clone(), version.to_owned(), stop_tx.clone()));
+            }
+            Some(ack) = stop_rx.recv() => {
+                core.shutdown().await;
+                let _ = std::fs::remove_file(socket);
+                let _ = ack.send(());
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Bind the socket, replacing a stale file left by a daemon that died.
+async fn bind(socket: &Path) -> io::Result<UnixListener> {
+    if socket.exists() {
+        if UnixStream::connect(socket).await.is_ok() {
+            return Err(io::Error::new(io::ErrorKind::AddrInUse, "a daemon is already running"));
+        }
+        std::fs::remove_file(socket)?;
+    }
+    if let Some(dir) = socket.parent() {
+        std::fs::create_dir_all(dir)?;
+        restrict(dir, 0o700)?;
+    }
+    let listener = UnixListener::bind(socket)?;
+    restrict(socket, 0o600)?;
+    Ok(listener)
+}
+
+fn restrict(path: &Path, mode: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+async fn write_line(writer: &mut OwnedWriteHalf, message: &Message) -> io::Result<()> {
+    writer.write_all(message.to_line().as_bytes()).await
+}
+
+/// One screen's connection: answer requests, forward its events.
+async fn serve_client(stream: UnixStream, core: Handle, version: String, stop: UnboundedSender<oneshot::Sender<()>>) {
+    let (reader, writer) = stream.into_split();
+    // Replies and events share the write half; a task owns it.
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
+    let writer_task = tokio::spawn(async move {
+        let mut writer = writer;
+        while let Some(message) = out_rx.recv().await {
+            if write_line(&mut writer, &message).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut lines = BufReader::new(reader).lines();
+    let mut forwarder: Option<tokio::task::JoinHandle<()>> = None;
+    while let Ok(Some(line)) = lines.next_line().await {
+        let Ok(message) = Message::from_line(&line) else {
+            continue;
+        };
+        match (message.method.as_deref(), message.id) {
+            (Some(rpc::HELLO), Some(id)) => {
+                let Some(params) = message.params_as::<HelloParams>() else {
+                    let _ = out_tx.send(Message::failure(id, -32602, "hello needs { version, project }"));
+                    continue;
+                };
+                let Some((snapshot, mut events)) = core.subscribe(&params.project).await else {
+                    break;
+                };
+                let _ = out_tx.send(Message::response(id, Hello { version: version.clone(), snapshot }));
+                let out = out_tx.clone();
+                forwarder.replace(tokio::spawn(async move {
+                    while let Some(event) = events.recv().await {
+                        if out.send(Message::event(&event)).is_err() {
+                            break;
+                        }
+                    }
+                }));
+            }
+            (Some(rpc::COMMAND), _) => {
+                if let Some(command) = message.params_as::<Command>() {
+                    core.send(command);
+                }
+            }
+            (Some(rpc::SHUTDOWN), Some(id)) => {
+                let (ack_tx, ack_rx) = oneshot::channel();
+                let _ = stop.send(ack_tx);
+                let _ = ack_rx.await;
+                let _ = out_tx.send(Message::response(id, "stopped"));
+                break;
+            }
+            (Some(_), Some(id)) => {
+                let _ = out_tx.send(Message::failure(id, -32601, "unknown method"));
+            }
+            _ => {}
+        }
+    }
+    // The screen left. Its agents keep working; only its view goes away.
+    if let Some(forwarder) = forwarder {
+        forwarder.abort();
+    }
+    drop(out_tx);
+    let _ = writer_task.await;
+}
+
+/// A screen's side of the socket.
+pub struct Client {
+    commands: UnboundedSender<Message>,
+    events: UnboundedReceiver<Event>,
+}
+
+impl Client {
+    /// Attach to the daemon and follow `project`. Returns the daemon's greeting,
+    /// with the project's snapshot.
+    pub async fn connect(socket: &Path, version: &str, project: &Path) -> io::Result<(Self, Hello)> {
+        let stream = UnixStream::connect(socket).await?;
+        let (reader, mut writer) = stream.into_split();
+        let hello = Message::request(1, rpc::HELLO, HelloParams { version: version.to_owned(), project: project.to_owned() });
+        write_line(&mut writer, &hello).await?;
+
+        let mut lines = BufReader::new(reader).lines();
+        let greeting = loop {
+            let line = lines
+                .next_line()
+                .await?
+                .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "the daemon closed the connection"))?;
+            let message = Message::from_line(&line).map_err(io::Error::other)?;
+            if message.id == Some(1) {
+                break message
+                    .result_as::<Hello>()
+                    .ok_or_else(|| io::Error::other("the daemon refused the hello"))?;
+            }
+        };
+
+        let (evt_tx, evt_rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok(Some(line)) = lines.next_line().await {
+                if let Ok(message) = Message::from_line(&line)
+                    && message.method.as_deref() == Some(rpc::EVENT)
+                    && let Some(event) = message.params_as::<Event>()
+                    && evt_tx.send(event).is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Message>();
+        tokio::spawn(async move {
+            while let Some(message) = cmd_rx.recv().await {
+                if write_line(&mut writer, &message).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok((Self { commands: cmd_tx, events: evt_rx }, greeting))
+    }
+
+    pub fn send(&self, command: Command) {
+        let _ = self.commands.send(Message::command(&command));
+    }
+
+    /// The next event, or `None` once the daemon is gone.
+    pub async fn next_event(&mut self) -> Option<Event> {
+        self.events.recv().await
+    }
+
+    /// An event already waiting, without waiting for one.
+    pub fn try_event(&mut self) -> Option<Event> {
+        self.events.try_recv().ok()
+    }
+}
+
+/// Ask the daemon at `socket` to stop. Its open sessions stay journaled and
+/// resume when it starts again. `Ok(false)` when no daemon was running.
+pub async fn shutdown(socket: &Path) -> io::Result<bool> {
+    let Ok(stream) = UnixStream::connect(socket).await else {
+        return Ok(false);
+    };
+    let (reader, mut writer) = stream.into_split();
+    write_line(&mut writer, &Message::request(1, rpc::SHUTDOWN, ())).await?;
+    let mut lines = BufReader::new(reader).lines();
+    while let Some(line) = lines.next_line().await? {
+        if Message::from_line(&line).map(|m| m.id == Some(1)).unwrap_or(false) {
+            return Ok(true);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether a daemon answers at `socket`.
+pub async fn is_running(socket: &Path) -> bool {
+    UnixStream::connect(socket).await.is_ok()
+}

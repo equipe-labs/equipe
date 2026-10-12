@@ -185,21 +185,54 @@ The command line is a product surface, styled per [BRAND.md](./BRAND.md):
 - Every failure ends with the command that fixes it (`→ equipe login codex`).
 - Interactive choices are menus at a terminal and sensible defaults in scripts.
 
+### The daemon
+
+The runtime lives in a daemon, one per user: `equipe daemon run`, started in the
+background by `equipe` when none is answering and detached from the terminal
+(`setsid`), so closing the terminal never reaches it or the agents it runs.
+
+- **The door** is a Unix socket, `~/.equipe/equipe.sock` (0600 in a 0700
+  directory): no network port, and only its owner can drive the squad. Messages
+  are the protocol in JSON-RPC 2.0, one per line — `hello` (attach to a project,
+  get its snapshot), `command`, `event`, `shutdown`.
+- **Attaching** is one step of the runtime loop: the snapshot and the
+  subscription to everything after it are taken together, so no event is missed
+  or doubled. A screen follows one project (its repository root); sessions opened
+  there from any screen appear on all of them.
+- **The journal** keeps one SQLite database per project under
+  `~/.equipe/projects/<name>-<hash>/`: the session record (engine, model, branch,
+  title, tokens, the engine's own conversation id) and the conversation — messages,
+  finished replies, one line per tool use. Streaming fragments are joined before
+  they are stored; raw material (file contents, command output, images, thinking,
+  diffs) never is. Conversations past the retention window (90 days) are pruned
+  daily and the space returned (incremental vacuum); the record stays.
+- **Restarting** resumes every open session: Claude Code continues with
+  `--resume`, Codex with its journaled history, editing sessions in their
+  worktrees. Stopping interrupts running turns; it never closes sessions.
+- **Builds**: a screen and the daemon compare build ids; a daemon left running
+  from an older build is pointed out, not restarted under agents mid-turn
+  (`equipe daemon restart`).
+- `equipe try` stays a standalone, in-process runtime for scripts and CI.
+
+Events fold into a conversation through one shared function
+(`equipe_protocol::Transcript`), used by the journal and every screen alike, so a
+screen that attaches later sees exactly what a screen that watched live saw.
+
 ### The team console
 
-`equipe` with no command opens the terminal UI (`ratatui`). It takes the whole
-screen (alternate screen) because a team means several agents updating at once —
-something a scrolling transcript can't show — and prints a summary of what
-happened (branches landed, tokens) to the normal screen when it closes, so the
-record stays in the terminal's history.
+`equipe` with no command opens the terminal UI (`ratatui`), a client of the
+daemon. It takes the whole screen (alternate screen) because a team means several
+agents updating at once — something a scrolling transcript can't show. Leaving
+(Ctrl-C twice, `/quit`) only detaches: the agents keep working, and a summary —
+who is still working, branches landed — is printed to the normal screen.
 
 - Left: the team — each agent, its state (`● working`, `○ ready`), its model or
   branch. Right: the selected agent's conversation and work. Bottom: the message.
 - Pastes arrive whole (bracketed paste): a newline inside a paste never sends.
   A multi-line draft shows its size before it's sent.
 - Enter sends · Alt-Enter / Ctrl-J add a line · Esc stops the agent · Tab
-  switches agents · Ctrl-C clears the draft, twice quits · `/new`, `/edit`,
-  `/close`, `/help`, `/quit`.
+  switches agents · Ctrl-C clears the draft, twice leaves · `/new`, `/edit`,
+  `/close` (ends the agent, landing its branch), `/help`, `/quit`.
 - Drawn only when something changed; nothing redraws on a timer.
 
 Next: the board fills the team pane, with approvals waiting in a fixed place.

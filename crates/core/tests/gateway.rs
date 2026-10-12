@@ -1,0 +1,191 @@
+//! The daemon over its socket: screens attach, detach and come back; the work
+//! and its record outlive both the screens and the daemon process.
+
+#![cfg(unix)]
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use equipe_core::gateway::{self, Client};
+use equipe_core::protocol::{Access, Command, Entry, Event, SessionSpec, SessionState};
+use equipe_core::runtime::Config;
+use equipe_providers::CredentialStore;
+
+static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A fresh directory — a counter keeps parallel tests apart — under /tmp,
+/// because Unix socket paths are limited to ~100 bytes.
+fn scratch(name: &str) -> PathBuf {
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = PathBuf::from("/tmp").join(format!("eqg-{name}-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn fake_claude(turn: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = scratch("bin").join("claude");
+    let script = format!(
+        "#!/bin/sh\nif [ \"$1\" = \"auth\" ]; then echo '{{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}}'; exit 0; fi\n{turn}\n"
+    );
+    std::fs::write(&bin, script).unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+/// Answers `text` after `delay` seconds, continuing sess-1 when asked to.
+fn slow_answer(delay: &str) -> String {
+    format!(
+        r#"sleep {delay}
+case "$*" in *"--resume sess-1"*) T=resumed;; *) T=fresh;; esac
+cat <<EOF
+{{"type":"system","subtype":"init","model":"m","session_id":"sess-1"}}
+{{"type":"stream_event","event":{{"type":"content_block_delta","delta":{{"type":"text_delta","text":"$T"}}}}}}
+{{"type":"result","subtype":"success","is_error":false,"result":"$T","usage":{{"input_tokens":1,"output_tokens":1}}}}
+EOF"#
+    )
+}
+
+fn config(home: &Path, claude: &Path) -> Config {
+    Config {
+        store: CredentialStore::new(home),
+        home: home.to_owned(),
+        client_version: "test".into(),
+        claude_binary: claude.to_string_lossy().into_owned(),
+        persist: true,
+        retention_days: 90,
+    }
+}
+
+async fn daemon(home: &Path, claude: &Path) -> (PathBuf, tokio::task::JoinHandle<std::io::Result<()>>) {
+    let socket = gateway::socket_path(home);
+    let task = tokio::spawn({
+        let (home, claude, socket) = (home.to_owned(), claude.to_owned(), socket.clone());
+        async move { gateway::serve(config(&home, &claude), &socket, "test").await }
+    });
+    for _ in 0..100 {
+        if gateway::is_running(&socket).await {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    (socket, task)
+}
+
+async fn until(client: &mut Client, done: impl Fn(&Event) -> bool) -> Vec<Event> {
+    let mut seen = Vec::new();
+    let wait = async {
+        while let Some(event) = client.next_event().await {
+            let stop = done(&event);
+            seen.push(event);
+            if stop {
+                return;
+            }
+        }
+    };
+    if tokio::time::timeout(Duration::from_secs(15), wait).await.is_err() {
+        panic!("timed out; events so far: {seen:#?}");
+    }
+    seen
+}
+
+fn spec(cwd: &Path) -> SessionSpec {
+    SessionSpec { engine: None, model: None, access: Access::ReadOnly, cwd: cwd.to_owned() }
+}
+
+#[tokio::test]
+async fn the_squad_outlives_its_screens_and_its_daemon() {
+    let home = scratch("home");
+    let project = scratch("proj");
+    let claude = fake_claude(&slow_answer("1"));
+    let (socket, daemon_task) = daemon(&home, &claude).await;
+
+    // Screen A opens a session and starts a slow turn, then leaves.
+    let (mut a, hello) = Client::connect(&socket, "test", &project).await.unwrap();
+    assert!(hello.snapshot.sessions.is_empty());
+    a.send(Command::Start { session: 11, spec: spec(&project) });
+    until(&mut a, |e| matches!(e, Event::SessionStarted { .. })).await;
+    a.send(Command::Submit { session: 11, text: "keep going without me".into() });
+    until(&mut a, |e| matches!(e, Event::UserMessage { .. })).await;
+    drop(a);
+
+    // Screen B attaches mid-turn: it sees the work in progress, then its end.
+    let (mut b, hello) = Client::connect(&socket, "test", &project).await.unwrap();
+    let session = &hello.snapshot.sessions[0];
+    assert_eq!(session.session, 11);
+    assert_eq!(session.state, SessionState::Working);
+    assert_eq!(session.recent, vec![Entry::User { text: "keep going without me".into() }]);
+    let rest = until(&mut b, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(rest.iter().any(|e| matches!(e, Event::TextDelta { text, .. } if text == "fresh")));
+    drop(b);
+
+    // The daemon stops; a new one resumes the session and its conversation.
+    assert!(gateway::shutdown(&socket).await.unwrap());
+    daemon_task.await.unwrap().unwrap();
+    assert!(!socket.exists(), "the socket is cleaned up");
+    let (socket, _daemon) = daemon(&home, &claude).await;
+
+    let (mut c, hello) = Client::connect(&socket, "test", &project).await.unwrap();
+    let session = &hello.snapshot.sessions[0];
+    assert_eq!(session.state, SessionState::Ready);
+    assert_eq!(
+        session.recent,
+        vec![Entry::User { text: "keep going without me".into() }, Entry::Reply { text: "fresh".into() }]
+    );
+    c.send(Command::Submit { session: 11, text: "and now?".into() });
+    let turn = until(&mut c, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(turn.iter().any(|e| matches!(e, Event::TextDelta { text, .. } if text == "resumed")));
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+#[tokio::test]
+async fn two_screens_watch_the_same_team() {
+    let home = scratch("home");
+    let project = scratch("proj");
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+
+    let (mut a, _) = Client::connect(&socket, "test", &project).await.unwrap();
+    let (mut b, _) = Client::connect(&socket, "test", &project).await.unwrap();
+    a.send(Command::Start { session: 21, spec: spec(&project) });
+    until(&mut a, |e| matches!(e, Event::SessionStarted { .. })).await;
+    // B sees a session it didn't open, and the message A typed.
+    until(&mut b, |e| matches!(e, Event::SessionStarted { session: 21, .. })).await;
+    a.send(Command::Submit { session: 21, text: "from A".into() });
+    let seen_by_b = until(&mut b, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(seen_by_b.iter().any(|e| matches!(e, Event::UserMessage { text, .. } if text == "from A")));
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+#[tokio::test]
+async fn only_one_daemon_per_socket() {
+    let home = scratch("home");
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    let second = gateway::serve(config(&home, &claude), &socket, "test").await;
+    assert_eq!(second.unwrap_err().kind(), std::io::ErrorKind::AddrInUse);
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_stale_socket_file_does_not_block_a_new_daemon() {
+    let home = scratch("home");
+    let claude = fake_claude(&slow_answer("0"));
+    let socket = gateway::socket_path(&home);
+    std::fs::write(&socket, b"").unwrap(); // left behind by a daemon that crashed
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    assert!(gateway::is_running(&socket).await);
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+#[tokio::test]
+async fn the_socket_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = scratch("home");
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    let mode = std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    gateway::shutdown(&socket).await.unwrap();
+}

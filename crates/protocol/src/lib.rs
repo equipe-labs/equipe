@@ -12,8 +12,28 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// One conversation with one agent. Chosen by the screen that opens it.
+pub mod rpc;
+pub mod transcript;
+
+pub use transcript::Transcript;
+
+/// One conversation with one agent. Chosen by the screen that opens it — at
+/// random, so screens attached to one daemon never collide — and kept below
+/// 2^53 so it survives JSON in any language.
 pub type SessionId = u64;
+
+/// A fresh session id: random, below 2^53.
+pub fn new_session_id() -> SessionId {
+    use std::hash::{BuildHasher as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    );
+    (hasher.finish() & ((1 << 53) - 1)).max(1)
+}
 
 /// The engines equipe can run a turn on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -109,6 +129,9 @@ pub struct Workspace {
 pub enum Event {
     SessionStarted {
         session: SessionId,
+        /// The project the session belongs to (its repository root, or the
+        /// directory it was opened in), so every screen on that project shows it.
+        project: PathBuf,
         engine: Engine,
         /// The model, once known. Codex resolves it at start; Claude Code
         /// reports it with the first turn.
@@ -116,6 +139,8 @@ pub enum Event {
         /// Set for [`Access::EditFiles`] sessions.
         workspace: Option<Workspace>,
     },
+    /// What the person asked — sent to every screen, not only the one it was typed in.
+    UserMessage { session: SessionId, text: String },
     /// A fragment of the agent's answer.
     TextDelta { session: SessionId, text: String },
     /// The agent is using a tool, e.g. `Edit` on a file.
@@ -155,6 +180,7 @@ impl Event {
     pub fn session(&self) -> Option<SessionId> {
         match self {
             Event::SessionStarted { session, .. }
+            | Event::UserMessage { session, .. }
             | Event::TextDelta { session, .. }
             | Event::ToolUse { session, .. }
             | Event::ModelKnown { session, .. }
@@ -165,6 +191,51 @@ impl Event {
             Event::Error { session, .. } => *session,
         }
     }
+}
+
+/// One line of a session's conversation, as kept and as replayed to a screen
+/// that attaches later. Streaming fragments are joined into one `Reply`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Entry {
+    User { text: String },
+    Reply { text: String },
+    Tool { tool: String, target: Option<String> },
+    /// A quiet line from equipe itself.
+    Note { text: String },
+    Error { message: String, next: Option<String> },
+    Landed { branch: String, stat: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionState {
+    Ready,
+    Working,
+}
+
+/// Where an open session stands, for a screen that attaches mid-flight.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionInfo {
+    pub session: SessionId,
+    pub project: PathBuf,
+    pub engine: Engine,
+    pub model: Option<String>,
+    pub access: Access,
+    pub workspace: Option<Workspace>,
+    pub state: SessionState,
+    /// The first line of the first message.
+    pub title: Option<String>,
+    pub tokens: u64,
+    /// The latest part of the conversation, oldest first. A reply still
+    /// streaming is its last `Reply`.
+    pub recent: Vec<Entry>,
+}
+
+/// Everything open on one project, sent to a screen when it attaches.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub sessions: Vec<SessionInfo>,
 }
 
 #[cfg(test)]
@@ -187,6 +258,7 @@ mod tests {
         let events = [
             Event::SessionStarted {
                 session: 1,
+                project: "/repo".into(),
                 engine: Engine::Claude,
                 model: None,
                 workspace: Some(Workspace { branch: "equipe/try-1".into(), base: "abc".into(), path: "/w".into() }),
@@ -213,6 +285,34 @@ mod tests {
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains("\"edit_files\""), "{json}");
         assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
+    }
+
+    #[test]
+    fn session_ids_are_random_and_json_safe() {
+        let a = new_session_id();
+        let b = new_session_id();
+        assert_ne!(a, b);
+        assert!(a < (1 << 53) && a > 0);
+    }
+
+    #[test]
+    fn a_snapshot_round_trips() {
+        let snapshot = Snapshot {
+            sessions: vec![SessionInfo {
+                session: 9,
+                project: "/repo".into(),
+                engine: Engine::Codex,
+                model: Some("m".into()),
+                access: Access::ReadOnly,
+                workspace: None,
+                state: SessionState::Working,
+                title: Some("fix it".into()),
+                tokens: 12,
+                recent: vec![Entry::User { text: "fix it".into() }, Entry::Reply { text: "on it".into() }],
+            }],
+        };
+        let json = serde_json::to_string(&snapshot).unwrap();
+        assert_eq!(serde_json::from_str::<Snapshot>(&json).unwrap(), snapshot);
     }
 
     #[test]

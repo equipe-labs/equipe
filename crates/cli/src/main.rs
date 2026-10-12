@@ -5,6 +5,7 @@
 //! - **claude**: the user's installed Claude Code, which signs itself in. equipe
 //!   never sees Claude credentials (see `equipe_providers::claude_code`).
 
+mod daemon;
 mod tui;
 mod ui;
 
@@ -82,6 +83,26 @@ enum Command {
     },
     /// List the built-in squad roles
     Roles,
+    /// The background daemon the team lives in
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum DaemonAction {
+    /// Start it in the background (equipe does this on its own when needed)
+    Start,
+    /// Stop it. Open sessions resume when it starts again
+    Stop,
+    /// Stop it and start this build
+    Restart,
+    /// Whether it is running
+    Status,
+    /// Serve in the foreground (what `start` runs)
+    #[command(hide = true)]
+    Run,
 }
 
 #[tokio::main]
@@ -105,7 +126,7 @@ async fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        return match tui::run(cwd, VERSION).await {
+        return match tui::run(cwd).await {
             Ok(summary) => {
                 tui::print_summary(&summary);
                 ExitCode::SUCCESS
@@ -122,6 +143,7 @@ async fn main() -> ExitCode {
         Command::Logout => app.logout(),
         Command::Status => app.status().await,
         Command::Try { prompt, engine, model, edit } => app.run_try(&prompt, engine, model.as_deref(), edit).await,
+        Command::Daemon { action } => daemon_command(action).await,
         Command::Roles => {
             let p = ui::out();
             println!("{}\n", p.kicker("squad roles"));
@@ -141,6 +163,52 @@ async fn main() -> ExitCode {
                 eprintln!("  {}", p.hint(&next));
             }
             ExitCode::FAILURE
+        }
+    }
+}
+
+async fn daemon_command(action: DaemonAction) -> CmdResult {
+    let p = ui::out();
+    match action {
+        DaemonAction::Run => daemon::run_foreground()
+            .await
+            .map_err(|err| Failure::new(format!("The daemon stopped: {err}"))),
+        DaemonAction::Start => match daemon::ensure_running().await {
+            Ok(true) => {
+                println!("{}", p.ok_line("Daemon started. The team lives here now; terminals come and go."));
+                Ok(())
+            }
+            Ok(false) => {
+                println!("{}", p.ok_line("Daemon already running."));
+                Ok(())
+            }
+            Err(err) => Err(Failure::new(err.to_string())),
+        },
+        DaemonAction::Stop => match daemon::stop().await {
+            Ok(true) => {
+                println!("{}", p.ok_line("Daemon stopped. Open sessions resume when it starts again."));
+                Ok(())
+            }
+            Ok(false) => {
+                println!("{}", p.note(0, "No daemon was running."));
+                Ok(())
+            }
+            Err(err) => Err(Failure::new(err.to_string())),
+        },
+        DaemonAction::Restart => {
+            let _ = daemon::stop().await;
+            daemon::ensure_running().await.map_err(|err| Failure::new(err.to_string()))?;
+            println!("{}", p.ok_line("Daemon restarted on this build."));
+            Ok(())
+        }
+        DaemonAction::Status => {
+            if equipe_core::gateway::is_running(&daemon::socket()).await {
+                println!("{}", p.ok_line("Daemon running."));
+                println!("{}", p.row("socket", &daemon::socket().display().to_string()));
+            } else {
+                println!("{}", p.note(0, "Daemon not running. `equipe` starts it when you open the console."));
+            }
+            Ok(())
         }
     }
 }
@@ -497,7 +565,7 @@ impl App {
                 }
                 Event::TextDelta { text, .. } => printer.text(&text),
                 Event::ToolUse { tool, target, .. } => printer.tool(&tool, target),
-                Event::ModelKnown { .. } => {}
+                Event::ModelKnown { .. } | Event::UserMessage { .. } => {}
                 Event::TurnEnded { outcome, usage, .. } => {
                     printer.end(outcome, usage);
                     core.send(Cmd::Close { session: ID });

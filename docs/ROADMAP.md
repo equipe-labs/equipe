@@ -45,14 +45,14 @@ The team lives in a daemon, not in a terminal: closing the terminal never stops
 it, and every surface sees the same team. Then the team itself — members with
 roles, a board, a director.
 
-1. **Daemon + local gateway** ← now. The core runtime moves behind a Unix socket
+1. ✅ **Daemon + local gateway.** The core runtime moves behind a Unix socket
    (`~/.equipe/equipe.sock`, JSON-RPC 2.0 carrying the protocol's Commands and
    Events). `equipe` attaches — starting the daemon if needed — and detaches
    without stopping anything; reattaching catches up from a snapshot. Agents are
    the daemon's children, not the terminal's. What happened is journaled in
    SQLite under the storage policy below, so a restarted daemon resumes its
    sessions and their conversations.
-2. **Resident members, board, director.** A member is a role (pm, designer,
+2. **Resident members, board, director.** ← next. A member is a role (pm, designer,
    frontend, backend, qa, data, or custom) + an engine + a model + memory + a
    worktree; models are recommended per role by tier, resolved against the
    account's live models, with QA on a different engine from the implementer.
@@ -135,7 +135,9 @@ the human-readable conversation in its largest session was 3.4% of its size.)
 ## Current status
 
 Phases 0 and 1 done (Codex edits move to Phase 3, over ACP). Phase 2 under way: the
-core speaks in events and the terminal team console works; the daemon is being built.
+team lives in a daemon — the console detaches and reattaches, a closed terminal
+stops nothing, and a restarted daemon resumes its sessions and conversations.
+Resident members, the board and the director are next.
 
 Open risks: whether driving `claude -p` on a subscription fits Anthropic's
 allowance (ask before advertising it); Claude Code making `--bare` the default for

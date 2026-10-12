@@ -9,7 +9,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use super::app::{Agent, AgentState, App, Entry};
+use equipe_core::protocol::Entry;
+
+use super::app::{Agent, AgentState, App, relative, tool_verb};
 use crate::ui;
 
 /// Styles, honouring NO_COLOR and terminals without truecolor.
@@ -121,7 +123,7 @@ fn render_team(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         let selected = i == app.selected;
         let marker = if selected { Span::styled("› ", theme.accent()) } else { Span::raw("  ") };
         let name_style = if selected { theme.bold() } else { Style::new() };
-        lines.push(Line::from(vec![marker, Span::styled(format!("{} {}", agent.id, agent.label()), name_style)]));
+        lines.push(Line::from(vec![marker, Span::styled(format!("{} {}", i + 1, agent.label()), name_style)]));
         let branch = agent.branch.as_deref().map(|b| b.strip_prefix("equipe/").unwrap_or(b).to_owned());
         let detail = branch.or_else(|| agent.short_model()).unwrap_or_default();
         let mut second = vec![Span::raw("    "), state_label(agent, theme)];
@@ -165,24 +167,26 @@ fn transcript_lines(agent: &Agent, theme: Theme, width: usize) -> Vec<Line<'stat
         };
         return wrapped(Vec::new(), hello, theme.dim(), 0, width);
     }
-    for entry in &agent.transcript {
+    for entry in agent.transcript.entries() {
         match entry {
-            Entry::User(text) => {
+            Entry::User { text } => {
                 if !lines.is_empty() {
                     lines.push(Line::raw(""));
                 }
                 lines.extend(wrapped(vec![Span::styled("› ", theme.accent())], text, theme.bold(), 2, width));
             }
-            Entry::Reply(text) => lines.extend(wrapped(Vec::new(), text, Style::new(), 0, width)),
-            Entry::Tool { verb, target } => {
-                let mark = if matches!(verb.as_str(), "edit" | "write") {
+            Entry::Reply { text } => lines.extend(wrapped(Vec::new(), text, Style::new(), 0, width)),
+            Entry::Tool { tool, target } => {
+                let verb = tool_verb(tool);
+                let target = target.as_deref().map(|t| relative(t, &agent.base)).unwrap_or_default();
+                let mark = if matches!(verb, "edit" | "write") {
                     Span::styled("✎ ", theme.accent())
                 } else {
                     Span::styled("· ", theme.dim())
                 };
                 lines.extend(wrapped(vec![mark], &format!("{verb:<6} {target}"), theme.dim(), 2, width));
             }
-            Entry::Note(text) => lines.extend(wrapped(Vec::new(), text, theme.dim(), 0, width)),
+            Entry::Note { text } => lines.extend(wrapped(Vec::new(), text, theme.dim(), 0, width)),
             Entry::Error { message, next } => {
                 lines.extend(wrapped(vec![Span::styled("✗ ", theme.bold())], message, Style::new(), 2, width));
                 if let Some(next) = next {
@@ -322,11 +326,9 @@ fn display_path(path: &std::path::Path) -> String {
 mod tests {
     use super::*;
     use crate::tui::app::App;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use equipe_core::protocol::{Engine, Event, TurnOutcome, Usage};
+    use equipe_core::protocol::{Command, Engine, Event, Snapshot, TurnOutcome, Usage};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use std::time::Instant;
 
     fn screen(app: &App, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -348,16 +350,20 @@ mod tests {
             .join("\n")
     }
 
+    /// The first agent's id, and an app where it is mid-turn.
+    fn working() -> (App, u64) {
+        let (mut app, commands) = App::from_snapshot("/repo".into(), "/repo".into(), Snapshot::default());
+        let Some(Command::Start { session: id, .. }) = commands.first() else { panic!() };
+        let id = *id;
+        app.on_event(Event::SessionStarted { session: id, project: "/repo".into(), engine: Engine::Claude, model: Some("haiku".into()), workspace: None });
+        app.on_event(Event::UserMessage { session: id, text: "fix the bug".into() });
+        app.on_event(Event::TextDelta { session: id, text: "Looking now.".into() });
+        app.on_event(Event::ToolUse { session: id, tool: "Edit".into(), target: Some("src/auth.rs".into()) });
+        (app, id)
+    }
+
     fn working_app() -> App {
-        let (mut app, _) = App::new("/repo".into());
-        app.on_event(Event::SessionStarted { session: 1, engine: Engine::Claude, model: Some("haiku".into()), workspace: None });
-        for c in "fix the bug".chars() {
-            app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), Instant::now());
-        }
-        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), Instant::now());
-        app.on_event(Event::TextDelta { session: 1, text: "Looking now.".into() });
-        app.on_event(Event::ToolUse { session: 1, tool: "Edit".into(), target: Some("src/auth.rs".into()) });
-        app
+        working().0
     }
 
     #[test]
@@ -370,9 +376,9 @@ mod tests {
 
     #[test]
     fn a_finished_turn_shows_tokens_and_a_ready_agent() {
-        let mut app = working_app();
+        let (mut app, id) = working();
         app.on_event(Event::TurnEnded {
-            session: 1,
+            session: id,
             outcome: TurnOutcome::Completed,
             usage: Some(Usage { input_tokens: Some(1200), output_tokens: Some(34) }),
         });
@@ -390,8 +396,9 @@ mod tests {
 
     #[test]
     fn a_failed_start_shows_the_fix() {
-        let (mut app, _) = App::new("/repo".into());
-        app.on_event(Event::Error { session: Some(1), message: "No engine is ready.".into(), next: Some("equipe login".into()) });
+        let (mut app, commands) = App::from_snapshot("/repo".into(), "/repo".into(), Snapshot::default());
+        let Some(Command::Start { session: id, .. }) = commands.first() else { panic!() };
+        app.on_event(Event::Error { session: Some(*id), message: "No engine is ready.".into(), next: Some("equipe login".into()) });
         let shot = screen(&app, 90, 16);
         assert!(shot.contains("✗ No engine is ready."), "{shot}");
         assert!(shot.contains("→ equipe login"), "{shot}");
@@ -400,8 +407,8 @@ mod tests {
 
     #[test]
     fn hangul_replies_wrap_inside_the_pane() {
-        let mut app = working_app();
-        app.on_event(Event::TextDelta { session: 1, text: "\n에이전트가 파일을 고쳤어요 이제 리뷰해 주세요 브랜치에 커밋했어요".into() });
+        let (mut app, id) = working();
+        app.on_event(Event::TextDelta { session: id, text: "\n에이전트가 파일을 고쳤어요 이제 리뷰해 주세요 브랜치에 커밋했어요".into() });
         let shot = screen(&app, 72, 20);
         for line in shot.lines() {
             assert!(unicode_width::UnicodeWidthStr::width(line) <= 72, "overflow: {line:?}");
@@ -411,8 +418,8 @@ mod tests {
 
     #[test]
     fn a_multi_line_paste_shows_its_size_before_sending() {
-        let mut app = working_app();
-        app.on_event(Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None });
+        let (mut app, id) = working();
+        app.on_event(Event::TurnEnded { session: id, outcome: TurnOutcome::Completed, usage: None });
         app.on_paste("line one\nline two\nline three");
         let shot = screen(&app, 90, 20);
         assert!(shot.contains("3 lines"), "{shot}");
@@ -421,9 +428,9 @@ mod tests {
 
     #[test]
     fn a_narrow_status_bar_drops_the_hints_and_keeps_the_facts() {
-        let mut app = working_app();
+        let (mut app, id) = working();
         app.on_event(Event::TurnEnded {
-            session: 1,
+            session: id,
             outcome: TurnOutcome::Completed,
             usage: Some(Usage { input_tokens: Some(100), output_tokens: Some(20) }),
         });
