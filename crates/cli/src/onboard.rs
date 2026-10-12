@@ -84,7 +84,7 @@ pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
     // A new squad: a team, named by the person. The repository's owner on its
     // host — an organisation, usually — is the team it most likely belongs to.
     let owner = remote_url(&project).as_deref().and_then(owner_of).map(str::to_owned);
-    let suggestion = squads::suggest_name(&home, Path::new(owner.as_deref().unwrap_or("my-squad")));
+    let suggestion = squads::suggest_name(&home, Path::new(&squad_name_for(owner.as_deref())));
     eprintln!("{}", e.note(2, "A squad is your team, not this repository: it can work on all your projects."));
     let squad: String = dialoguer::Input::with_theme(&*theme)
         .with_prompt("Name your squad")
@@ -142,6 +142,23 @@ pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
     Ok(Start { squad, members })
 }
 
+/// `equipe-squad` for the owner `equipe-labs`: the team's name with a company
+/// suffix dropped, then `-squad`; `my-squad` when there is no owner.
+fn squad_name_for(owner: Option<&str>) -> String {
+    let Some(owner) = owner.map(str::to_lowercase) else {
+        return "my-squad".into();
+    };
+    if owner.ends_with("-squad") || owner.ends_with("squad") {
+        return owner;
+    }
+    let base = ["-labs", "-lab", "-hq", "-inc", "-dev", "-io", "-app", "-team", "-org", "-co"]
+        .iter()
+        .find_map(|suffix| owner.strip_suffix(suffix))
+        .filter(|base| !base.is_empty())
+        .unwrap_or(&owner);
+    format!("{base}-squad")
+}
+
 /// Where `project`'s `origin` points, if it has one.
 fn remote_url(project: &Path) -> Option<String> {
     let out = std::process::Command::new("git").arg("-C").arg(project).args(["remote", "get-url", "origin"]).output().ok()?;
@@ -164,6 +181,14 @@ fn owner_of(url: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_squad_is_named_after_the_team_it_belongs_to() {
+        assert_eq!(squad_name_for(Some("equipe-labs")), "equipe-squad");
+        assert_eq!(squad_name_for(Some("Acme")), "acme-squad");
+        assert_eq!(squad_name_for(Some("rocket-squad")), "rocket-squad");
+        assert_eq!(squad_name_for(None), "my-squad");
+    }
 
     #[test]
     fn a_repositorys_owner_is_read_from_any_kind_of_remote() {
