@@ -81,9 +81,10 @@ pub async fn auth_status(binary: &str) -> Result<Option<AuthStatus>> {
 }
 
 /// What a turn may do to the files in its working directory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Access {
     /// Read and answer; anything that would need approval is denied (`dontAsk`).
+    #[default]
     ReadOnly,
     /// Also write files inside the working directory without asking
     /// (`acceptEdits`). Shell commands beyond Claude Code's read-only set and
@@ -105,37 +106,54 @@ impl Access {
 ///
 /// `--bare` is deliberately absent: bare mode never reads the subscription login,
 /// which is the whole point of bringing your own Claude Code.
-pub fn turn_args(prompt: &str, model: Option<&str>, access: Access, resume: Option<&str>) -> Vec<String> {
+pub fn turn_args(request: &TurnRequest<'_>) -> Vec<String> {
     let mut args: Vec<String> = [
         "-p",
-        prompt,
+        request.prompt,
         "--output-format",
         "stream-json",
         "--verbose",
         "--include-partial-messages",
         "--permission-mode",
-        access.permission_mode(),
+        request.access.permission_mode(),
     ]
     .iter()
     .map(|s| (*s).to_owned())
     .collect();
-    if let Some(model) = model {
+    if let Some(model) = request.model {
         args.extend(["--model".to_owned(), model.to_owned()]);
     }
     // Continue the conversation Claude Code already holds, rather than resending it.
-    if let Some(id) = resume {
+    if let Some(id) = request.resume {
         args.extend(["--resume".to_owned(), id.to_owned()]);
+    }
+    // Added to Claude Code's own system prompt, never replacing it.
+    if let Some(charter) = request.charter {
+        args.extend(["--append-system-prompt".to_owned(), charter.to_owned()]);
+    }
+    // Claude Code's auto memory, moved to a directory of the caller's choosing —
+    // a setting of the unmodified binary, not a change to it.
+    if let Some(dir) = request.memory {
+        let settings = serde_json::json!({ "autoMemoryDirectory": dir.to_string_lossy() });
+        args.extend(["--settings".to_owned(), settings.to_string()]);
     }
     args
 }
 
 /// One turn's input.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct TurnRequest<'a> {
     pub prompt: &'a str,
     pub model: Option<&'a str>,
     pub access: Access,
     /// Claude Code's session id from an earlier turn, to continue that conversation.
     pub resume: Option<&'a str>,
+    /// Who the agent is on the team, appended to Claude Code's system prompt.
+    pub charter: Option<&'a str>,
+    /// Where Claude Code keeps what it learns (its auto memory). `None` leaves it
+    /// where Claude Code would put it — which is per directory and shared with the
+    /// person's own sessions there.
+    pub memory: Option<&'a Path>,
 }
 
 /// One turn's outcome, with the id that continues the conversation.
@@ -312,7 +330,7 @@ pub async fn run_turn(
     mut on_activity: impl FnMut(Activity),
 ) -> Result<Turn> {
     let mut child = Command::new(binary)
-        .args(turn_args(request.prompt, request.model, request.access, request.resume))
+        .args(turn_args(&request))
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -424,7 +442,7 @@ mod tests {
 
     #[test]
     fn runs_headless_with_streaming_json_and_no_edits() {
-        let args = turn_args("hello", None, Access::ReadOnly, None);
+        let args = turn_args(&TurnRequest { prompt: "hello", ..Default::default() });
         let has = |pair: [&str; 2]| args.windows(2).any(|w| w[0] == pair[0] && w[1] == pair[1]);
         assert!(has(["-p", "hello"]));
         assert!(has(["--output-format", "stream-json"]));
@@ -437,13 +455,13 @@ mod tests {
     #[test]
     fn never_uses_bare_mode_which_skips_the_subscription_login() {
         for access in [Access::ReadOnly, Access::EditFiles] {
-            assert!(!turn_args("x", Some("opus"), access, None).iter().any(|a| a == "--bare"));
+            assert!(!turn_args(&TurnRequest { prompt: "x", model: Some("opus"), access, ..Default::default() }).iter().any(|a| a == "--bare"));
         }
     }
 
     #[test]
     fn edit_access_lets_claude_write_files_without_asking() {
-        let args = turn_args("x", None, Access::EditFiles, None);
+        let args = turn_args(&TurnRequest { prompt: "x", access: Access::EditFiles, ..Default::default() });
         assert!(args.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "acceptEdits"));
         assert!(!args.iter().any(|a| a == "bypassPermissions" || a == "--dangerously-skip-permissions"));
     }
@@ -465,9 +483,9 @@ mod tests {
 
     #[test]
     fn resumes_an_earlier_conversation() {
-        let args = turn_args("x", None, Access::ReadOnly, Some("sess-1"));
+        let args = turn_args(&TurnRequest { prompt: "x", resume: Some("sess-1"), ..Default::default() });
         assert!(args.windows(2).any(|w| w[0] == "--resume" && w[1] == "sess-1"));
-        assert!(!turn_args("x", None, Access::ReadOnly, None).iter().any(|a| a == "--resume"));
+        assert!(!turn_args(&TurnRequest { prompt: "x", ..Default::default() }).iter().any(|a| a == "--resume"));
     }
 
     #[test]
@@ -483,8 +501,25 @@ mod tests {
 
     #[test]
     fn passes_the_model_through() {
-        let args = turn_args("x", Some("opus"), Access::ReadOnly, None);
+        let args = turn_args(&TurnRequest { prompt: "x", model: Some("opus"), ..Default::default() });
         assert!(args.windows(2).any(|w| w[0] == "--model" && w[1] == "opus"));
+    }
+
+    #[test]
+    fn a_charter_is_appended_never_replacing_claude_codes_prompt() {
+        let args = turn_args(&TurnRequest { prompt: "x", charter: Some("You are the PM."), ..Default::default() });
+        assert!(args.windows(2).any(|w| w[0] == "--append-system-prompt" && w[1] == "You are the PM."));
+        assert!(!args.iter().any(|a| a == "--system-prompt"));
+    }
+
+    #[test]
+    fn a_member_keeps_its_own_memory() {
+        let dir = Path::new("/home/.equipe/projects/app/members/frontend/memory");
+        let args = turn_args(&TurnRequest { prompt: "x", memory: Some(dir), ..Default::default() });
+        let at = args.iter().position(|a| a == "--settings").expect("settings passed");
+        let settings: Value = serde_json::from_str(&args[at + 1]).unwrap();
+        assert_eq!(settings, json!({ "autoMemoryDirectory": dir.to_string_lossy() }));
+        assert!(!turn_args(&TurnRequest { prompt: "x", ..Default::default() }).iter().any(|a| a == "--settings"));
     }
 
     // ── stream ──
@@ -576,7 +611,7 @@ mod tests {
 EOF"#,
         );
         let mut seen = String::new();
-        let request = TurnRequest { prompt: "ping", model: None, access: Access::ReadOnly, resume: None };
+        let request = TurnRequest { prompt: "ping", ..Default::default() };
         let turn = run_turn(bin.to_str().unwrap(), &dir, request, |a| {
             if let Activity::Text(t) = a {
                 seen.push_str(&t)
@@ -592,7 +627,7 @@ EOF"#,
     #[tokio::test]
     async fn reports_stderr_when_the_binary_fails_without_a_result() {
         let (bin, dir) = fake_claude("echo 'boom: config is broken' >&2\nexit 3");
-        let request = TurnRequest { prompt: "ping", model: None, access: Access::ReadOnly, resume: None };
+        let request = TurnRequest { prompt: "ping", ..Default::default() };
         let err = run_turn(bin.to_str().unwrap(), &dir, request, |_| {})
             .await
             .unwrap_err()
@@ -612,7 +647,7 @@ EOF"#,
     #[tokio::test]
     async fn a_missing_binary_is_not_installed_rather_than_an_error() {
         assert_eq!(auth_status("equipe-no-such-claude-binary").await.unwrap(), None);
-        let request = TurnRequest { prompt: "x", model: None, access: Access::ReadOnly, resume: None };
+        let request = TurnRequest { prompt: "x", ..Default::default() };
         let err = run_turn("equipe-no-such-claude-binary", Path::new("."), request, |_| {})
             .await
             .unwrap_err();

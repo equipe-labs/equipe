@@ -51,6 +51,10 @@ impl Transcript {
             }
             return Vec::new();
         }
+        // A memo waits outside the conversation until it is delivered.
+        if let Event::MessageQueued { .. } = event {
+            return Vec::new();
+        }
 
         let mut done = Vec::new();
         if self.open_reply {
@@ -68,6 +72,7 @@ closing the session lands the branch.",
                 ),
             }),
             Event::UserMessage { text, .. } => Some(Entry::User { text: text.clone() }),
+            Event::Notice { text, .. } => Some(Entry::Note { text: text.clone() }),
             Event::ToolUse { tool, target, .. } => Some(Entry::Tool { tool: tool.clone(), target: target.clone() }),
             Event::TurnEnded { outcome: TurnOutcome::Interrupted, .. } => Some(Entry::Note { text: "Stopped.".into() }),
             Event::TurnEnded { outcome: TurnOutcome::Incomplete, .. } => {
@@ -134,6 +139,22 @@ mod tests {
         t.apply(&delta("partial"));
         let done = t.apply(&Event::TurnEnded { session: 1, outcome: TurnOutcome::Interrupted, usage: None });
         assert_eq!(done, vec![Entry::Reply { text: "partial".into() }, Entry::Note { text: "Stopped.".into() }]);
+    }
+
+    #[test]
+    fn a_memo_is_not_a_line_until_it_is_delivered() {
+        let mut t = Transcript::default();
+        t.apply(&delta("working"));
+        assert_eq!(t.apply(&Event::MessageQueued { session: 1, text: "also this".into() }), Vec::<Entry>::new());
+        t.apply(&delta(" still"));
+        assert_eq!(t.entries(), &[Entry::Reply { text: "working still".into() }], "a memo doesn't split the reply");
+    }
+
+    #[test]
+    fn a_notice_is_a_note() {
+        let mut t = Transcript::default();
+        let done = t.apply(&Event::Notice { session: 1, text: "↪ You → qa: check it".into() });
+        assert_eq!(done, vec![Entry::Note { text: "↪ You → qa: check it".into() }]);
     }
 
     #[test]

@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use equipe_protocol::{
-    Access, Command, Engine, Entry, Event, SessionId, SessionInfo, SessionSpec, SessionState, Snapshot, Transcript,
-    TurnOutcome, Usage, Workspace,
+    Access, Command, Engine, Entry, Event, Member, SessionId, SessionInfo, SessionSpec, SessionState, Snapshot,
+    Transcript, TurnOutcome, Usage, Workspace,
 };
 use equipe_providers::claude_code::{self, Activity};
 use equipe_providers::credentials::equipe_home;
@@ -26,10 +26,14 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::journal::{self, Journal, SessionRecord};
+use crate::roles::{self, Teammate};
 use crate::worktree::{self, Sandbox};
 
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
+
+/// How much of a member's answer the PM is told.
+const BRIEF_REPLY_CHARS: usize = 400;
 
 pub struct Config {
     pub store: CredentialStore,
@@ -123,6 +127,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         internal: internal_tx,
         sessions: HashMap::new(),
         journals: HashMap::new(),
+        next_join: 1,
     };
     if runtime.config.persist {
         runtime.restore();
@@ -139,6 +144,10 @@ pub fn project_of(dir: &Path) -> PathBuf {
 
 struct Session {
     project: PathBuf,
+    /// Who the session is on the team; `None` for a plain agent.
+    member: Option<Member>,
+    /// When it joined, for a stable team order (ids are random).
+    joined: u64,
     engine: Engine,
     model: Option<String>,
     access: Access,
@@ -155,6 +164,28 @@ struct Session {
     tokens: u64,
     transcript: Transcript,
     turn: Option<JoinHandle<()>>,
+    /// Memos left while a turn ran, delivered together when it ends.
+    queued: Vec<String>,
+    /// For the PM: what the person and members said to each other directly since
+    /// the PM's last turn. It travels with the PM's next message, so the PM keeps
+    /// up without spending a turn on every exchange.
+    briefing: Vec<String>,
+    /// Where a member's engine keeps what it learns (Claude Code's auto memory).
+    memory: Option<PathBuf>,
+}
+
+impl Session {
+    fn is_working(&self) -> bool {
+        self.turn.as_ref().is_some_and(|t| !t.is_finished())
+    }
+
+    fn is_pm(&self) -> bool {
+        self.member.as_ref().is_some_and(|m| m.role == roles::PM)
+    }
+
+    fn name(&self) -> Option<&str> {
+        self.member.as_ref().map(|m| m.name.as_str())
+    }
 }
 
 /// What a finished turn hands back to the loop.
@@ -178,6 +209,8 @@ struct Runtime {
     internal: UnboundedSender<Internal>,
     sessions: HashMap<SessionId, Session>,
     journals: HashMap<PathBuf, Journal>,
+    /// The next session's place in its team.
+    next_join: u64,
 }
 
 async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut internal: UnboundedReceiver<Internal>) {
@@ -204,7 +237,7 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
             },
             Some(message) = internal.recv() => match message {
                 Internal::Event(event) => rt.publish(event),
-                Internal::Done(done) => rt.on_turn_done(done),
+                Internal::Done(done) => rt.on_turn_done(done).await,
             },
             _ = daily.tick(), if rt.config.persist => rt.prune(),
         }
@@ -250,7 +283,7 @@ impl Runtime {
         match command {
             Command::Start { session, spec } => self.start(session, spec).await,
             Command::Submit { session, text } => self.submit(session, text).await,
-            Command::Interrupt { session } => self.interrupt(session),
+            Command::Interrupt { session } => self.interrupt(session).await,
             Command::Close { session } => self.close(session),
         }
     }
@@ -261,18 +294,22 @@ impl Runtime {
         if self.sessions.contains_key(&id) {
             return self.error(Some(id), format!("session {id} is already open"), None);
         }
+        let role = spec.role.as_deref().map(roles::role_or_custom);
         let engine = match spec.engine {
             Some(engine) => engine,
-            None => match first_ready_engine(&self.config.store, &self.config.claude_binary).await {
-                Some(engine) => engine,
-                None => {
-                    return self.error(
-                        Some(id),
-                        "No engine is ready. Sign in to Codex or Claude Code first.",
-                        Some("equipe login"),
-                    );
+            None => {
+                let preference = role.map_or([Engine::Codex, Engine::Claude], roles::engine_preference);
+                match first_ready_engine(&preference, &self.config.store, &self.config.claude_binary).await {
+                    Some(engine) => engine,
+                    None => {
+                        return self.error(
+                            Some(id),
+                            "No engine is ready. Sign in to Codex or Claude Code first.",
+                            Some("equipe login"),
+                        );
+                    }
                 }
-            },
+            }
         };
         if spec.access == Access::EditFiles && engine == Engine::Codex {
             return self.error(
@@ -292,36 +329,53 @@ impl Runtime {
                 };
                 if model.is_none() {
                     // Ask the backend what this account has rather than hardcoding an id.
-                    match codex::list_models(&self.client, &cred, &self.config.client_version).await {
-                        Ok(models) => model = models.into_iter().next(),
+                    let catalog = match codex::list_models(&self.client, &cred, &self.config.client_version).await {
+                        Ok(models) => models,
                         Err(err) => return self.error(Some(id), err.to_string(), Some("equipe status")),
-                    }
+                    };
+                    model = match role {
+                        Some(role) => roles::recommended_model(role.tier, engine, &catalog),
+                        None => catalog.into_iter().next(),
+                    };
                     if model.is_none() {
                         return self.error(Some(id), "The backend offered no models.", Some("equipe status"));
                     }
                 }
                 codex_cred = Some(cred);
             }
-            Engine::Claude => match claude_code::auth_status(&self.config.claude_binary).await {
-                Ok(Some(status)) if status.logged_in => {}
-                Ok(Some(_)) => return self.error(Some(id), "Claude Code isn't signed in.", Some("equipe login claude")),
-                Ok(None) => {
-                    return self.error(
-                        Some(id),
-                        "Claude Code isn't installed (no `claude` on PATH).",
-                        Some("see https://code.claude.com/docs/en/setup"),
-                    );
+            Engine::Claude => {
+                match claude_code::auth_status(&self.config.claude_binary).await {
+                    Ok(Some(status)) if status.logged_in => {}
+                    Ok(Some(_)) => return self.error(Some(id), "Claude Code isn't signed in.", Some("equipe login claude")),
+                    Ok(None) => {
+                        return self.error(
+                            Some(id),
+                            "Claude Code isn't installed (no `claude` on PATH).",
+                            Some("see https://code.claude.com/docs/en/setup"),
+                        );
+                    }
+                    Err(err) => return self.error(Some(id), err.to_string(), None),
                 }
-                Err(err) => return self.error(Some(id), err.to_string(), None),
-            },
+                if model.is_none()
+                    && let Some(role) = role
+                {
+                    model = roles::recommended_model(role.tier, engine, &[]);
+                }
+            }
         }
 
         let project = project_of(&spec.cwd);
+        let member = spec.role.as_deref().map(|role| {
+            let role = if role == "po" { roles::PM } else { role };
+            Member { role: role.to_owned(), name: self.free_name(&project, role) }
+        });
         let (cwd, sandbox) = match spec.access {
             Access::ReadOnly => (spec.cwd.clone(), None),
             Access::EditFiles => {
-                let made = worktree::repo_root(&spec.cwd)
-                    .and_then(|repo| worktree::create(&repo, &self.config.home, &format!("{:x}-{id:x}", now_secs())));
+                let label = member.as_ref().map_or_else(|| "try".to_owned(), |m| m.name.clone());
+                let made = worktree::repo_root(&spec.cwd).and_then(|repo| {
+                    worktree::create(&repo, &self.config.home, &format!("{:x}-{id:x}", now_secs()), &label)
+                });
                 match made {
                     Ok(sandbox) => (sandbox.path.clone(), Some(sandbox)),
                     Err(message) => return self.error(Some(id), message, None),
@@ -329,12 +383,14 @@ impl Runtime {
             }
         };
         let workspace = sandbox.as_ref().map(workspace_of);
+        let memory = member.as_ref().map(|m| journal::member_memory_dir(&self.config.home, &project, &m.name));
 
         if self.config.persist
             && let Some(journal) = journal_for(&mut self.journals, &self.config.home, &project)
         {
             let _ = journal.record_session(&SessionRecord {
                 id,
+                member: member.clone(),
                 engine,
                 model: model.clone(),
                 access: spec.access,
@@ -348,10 +404,14 @@ impl Runtime {
                 open: true,
             });
         }
+        let joined = self.next_join;
+        self.next_join += 1;
         self.sessions.insert(
             id,
             Session {
                 project: project.clone(),
+                member: member.clone(),
+                joined,
                 engine,
                 model: model.clone(),
                 access: spec.access,
@@ -365,17 +425,48 @@ impl Runtime {
                 tokens: 0,
                 transcript: Transcript::default(),
                 turn: None,
+                queued: Vec::new(),
+                briefing: Vec::new(),
+                memory,
             },
         );
-        self.publish(Event::SessionStarted { session: id, project, engine, model, workspace });
+        self.publish(Event::SessionStarted { session: id, project, engine, model, workspace, member });
+    }
+
+    /// `role`, or `role-2`, `role-3`… — whichever no open member of `project` has.
+    fn free_name(&self, project: &Path, role: &str) -> String {
+        let taken = |name: &str| self.sessions.values().any(|s| s.project == project && s.name() == Some(name));
+        (1..)
+            .map(|n| if n == 1 { role.to_owned() } else { format!("{role}-{n}") })
+            .find(|name| !taken(name))
+            .expect("some name is free")
+    }
+
+    /// The open members of `project`, in the order they joined.
+    fn team(&self, project: &Path) -> Vec<(String, String)> {
+        let mut members: Vec<(u64, String, String)> = self
+            .sessions
+            .values()
+            .filter(|s| s.project == project)
+            .filter_map(|s| s.member.as_ref().map(|m| (s.joined, m.name.clone(), m.role.clone())))
+            .collect();
+        members.sort();
+        members.into_iter().map(|(_, name, role)| (name, role)).collect()
+    }
+
+    /// The PM of `project`, if it has one.
+    fn pm_of(&self, project: &Path) -> Option<SessionId> {
+        self.sessions.iter().find(|(_, s)| s.project == project && s.is_pm()).map(|(&id, _)| id)
     }
 
     async fn submit(&mut self, id: SessionId, text: String) {
-        let Some(session) = self.sessions.get(&id) else {
+        let Some(session) = self.sessions.get_mut(&id) else {
             return self.error(Some(id), format!("no open session {id}"), None);
         };
-        if session.turn.as_ref().is_some_and(|t| !t.is_finished()) {
-            return self.error(Some(id), "A turn is already running. Esc stops it.", None);
+        if session.is_working() {
+            // A memo: it waits for the turn to end rather than cutting in.
+            session.queued.push(text.clone());
+            return self.publish(Event::MessageQueued { session: id, text });
         }
         // A session resumed after a restart loads its Codex login on first use.
         if session.engine == Engine::Codex && session.codex.is_none() {
@@ -390,11 +481,29 @@ impl Runtime {
         }
 
         self.publish(Event::UserMessage { session: id, text: text.clone() });
+        self.tell_the_pm(id, |name| format!("The person told {name}: {text}"), Some(&text));
+
+        let Some(session) = self.sessions.get(&id) else {
+            return;
+        };
+        let charter = session.member.as_ref().map(|m| {
+            let team = self.team(&session.project);
+            let mates: Vec<Teammate> = team.iter().map(|(name, role)| Teammate { name, role }).collect();
+            roles::charter(roles::role_or_custom(&m.role), &m.name, &mates)
+        });
         let internal = self.internal.clone();
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
         session.prompts.push(text.clone());
+        // What the PM missed travels with its next message; the person sees only theirs.
+        let prompt = match std::mem::take(&mut session.briefing) {
+            briefing if briefing.is_empty() => text,
+            briefing => format!(
+                "[equipe: since your last turn, the person worked with the team directly —\n{}]\n\n{text}",
+                briefing.iter().map(|line| format!("- {line}")).collect::<Vec<_>>().join("\n")
+            ),
+        };
         let turn = match session.engine {
             Engine::Codex => {
                 let client = self.client.clone();
@@ -407,14 +516,19 @@ impl Runtime {
                         let _ = internal.send(Internal::Event(event));
                     };
                     let mut streamed = false;
-                    let request = responses::TurnRequest { prompt: &text, model: &model, instructions: None, history: &history };
+                    let request = responses::TurnRequest {
+                        prompt: &prompt,
+                        model: &model,
+                        instructions: charter.as_deref(),
+                        history: &history,
+                    };
                     let result = responses::run_turn(&client, &cred, &version, request, |delta| {
                         streamed = true;
                         emit(Event::TextDelta { session: id, text: delta.to_owned() });
                     })
                     .await;
                     let reply = finish_turn(&emit, id, result.map_err(codex_failure), streamed);
-                    let _ = internal.send(Internal::Done(TurnDone { session: id, prompt: text, reply, claude_session: None }));
+                    let _ = internal.send(Internal::Done(TurnDone { session: id, prompt, reply, claude_session: None }));
                 })
             }
             Engine::Claude => {
@@ -422,6 +536,7 @@ impl Runtime {
                 let cwd = session.cwd.clone();
                 let model = session.model.clone();
                 let resume = session.claude_session.clone();
+                let memory = session.memory.clone();
                 let access = match session.access {
                     Access::ReadOnly => claude_code::Access::ReadOnly,
                     Access::EditFiles => claude_code::Access::EditFiles,
@@ -431,8 +546,14 @@ impl Runtime {
                         let _ = internal.send(Internal::Event(event));
                     };
                     let mut streamed = false;
-                    let request =
-                        claude_code::TurnRequest { prompt: &text, model: model.as_deref(), access, resume: resume.as_deref() };
+                    let request = claude_code::TurnRequest {
+                        prompt: &prompt,
+                        model: model.as_deref(),
+                        access,
+                        resume: resume.as_deref(),
+                        charter: charter.as_deref(),
+                        memory: memory.as_deref(),
+                    };
                     let outcome = claude_code::run_turn(&binary, &cwd, request, |activity| match activity {
                         Activity::Text(text) => {
                             streamed = true;
@@ -445,42 +566,87 @@ impl Runtime {
                     let claude_session = outcome.as_ref().ok().and_then(|turn| turn.session_id.clone());
                     let result = outcome.map(|turn| turn.result).map_err(claude_failure);
                     let reply = finish_turn(&emit, id, result, streamed);
-                    let _ = internal.send(Internal::Done(TurnDone { session: id, prompt: text, reply, claude_session }));
+                    let _ = internal.send(Internal::Done(TurnDone { session: id, prompt, reply, claude_session }));
                 })
             }
         };
         session.turn = Some(turn);
     }
 
-    fn interrupt(&mut self, id: SessionId) {
+    /// When `id` is a member other than the PM, brief its project's PM with
+    /// `line(name)`. With `shown`, the PM's conversation also shows what was said,
+    /// so a screen on the PM sees it happen.
+    fn tell_the_pm(&mut self, id: SessionId, line: impl FnOnce(&str) -> String, shown: Option<&str>) {
+        let Some(session) = self.sessions.get(&id) else {
+            return;
+        };
+        let (Some(name), false) = (session.name().map(str::to_owned), session.is_pm()) else {
+            return;
+        };
+        let Some(pm) = self.pm_of(&session.project.clone()) else {
+            return;
+        };
+        if let Some(pm) = self.sessions.get_mut(&pm) {
+            pm.briefing.push(line(&name));
+        }
+        if let Some(text) = shown {
+            let first = text.lines().next().unwrap_or_default();
+            let short: String = first.chars().take(120).collect();
+            let more = if short.len() < text.len() { "…" } else { "" };
+            self.publish(Event::Notice { session: pm, text: format!("↪ You → {name}: {short}{more}") });
+        }
+    }
+
+    /// Stop the turn in progress (Esc). Memos left during it are delivered at once.
+    async fn interrupt(&mut self, id: SessionId) {
+        if self.stop_turn(id) {
+            self.deliver_memos(id).await;
+        }
+    }
+
+    /// Stop the turn in progress, if any. Returns whether one was stopped.
+    fn stop_turn(&mut self, id: SessionId) -> bool {
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return false;
+        };
+        // A turn that already finished has its result on the way; let it land.
+        let Some(turn) = session.turn.take_if(|t| !t.is_finished()) else {
+            return false;
+        };
+        // Dropping the turn kills the engine process with it.
+        turn.abort();
+        self.publish(Event::TurnEnded { session: id, outcome: TurnOutcome::Interrupted, usage: None });
+        true
+    }
+
+    async fn deliver_memos(&mut self, id: SessionId) {
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
-        // A turn that already finished has its result on the way; let it land.
-        if let Some(turn) = session.turn.take_if(|t| !t.is_finished()) {
-            // Dropping the turn kills the engine process with it.
-            turn.abort();
-            self.publish(Event::TurnEnded { session: id, outcome: TurnOutcome::Interrupted, usage: None });
+        if session.queued.is_empty() {
+            return;
         }
+        let text = std::mem::take(&mut session.queued).join("\n\n");
+        Box::pin(self.submit(id, text)).await;
     }
 
     fn stop_all_turns(&mut self) {
         let running: Vec<SessionId> = self.sessions.keys().copied().collect();
         for id in running {
-            self.interrupt(id);
+            self.stop_turn(id);
         }
     }
 
-    fn on_turn_done(&mut self, done: TurnDone) {
+    async fn on_turn_done(&mut self, done: TurnDone) {
         let Some(session) = self.sessions.get_mut(&done.session) else {
             return;
         };
         session.turn = None;
-        if let Some(reply) = done.reply
+        if let Some(reply) = &done.reply
             && session.engine == Engine::Codex
         {
             session.history.push(responses::Message { role: responses::Role::User, text: done.prompt });
-            session.history.push(responses::Message { role: responses::Role::Assistant, text: reply });
+            session.history.push(responses::Message { role: responses::Role::Assistant, text: reply.clone() });
         }
         if let Some(engine_session) = done.claude_session {
             if self.config.persist {
@@ -493,10 +659,16 @@ impl Runtime {
                 session.claude_session = Some(engine_session);
             }
         }
+        if let Some(reply) = done.reply.filter(|r| !r.trim().is_empty()) {
+            let short: String = reply.chars().take(BRIEF_REPLY_CHARS).collect();
+            let more = if short.len() < reply.len() { "…" } else { "" };
+            self.tell_the_pm(done.session, |name| format!("{name} answered: {short}{more}"), None);
+        }
+        self.deliver_memos(done.session).await;
     }
 
     fn close(&mut self, id: SessionId) {
-        self.interrupt(id);
+        self.stop_turn(id);
         let Some(session) = self.sessions.get(&id) else {
             return self.error(Some(id), format!("no open session {id}"), None);
         };
@@ -511,7 +683,8 @@ impl Runtime {
                 .take(60)
                 .collect();
             let prompts = session.prompts.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n");
-            let message = format!("equipe: {subject}\n\nPrompts:\n{prompts}\n\nRun by equipe through Claude Code.");
+            let by = session.name().map_or_else(|| "equipe".to_owned(), |name| format!("{name} on equipe"));
+            let message = format!("equipe: {subject}\n\nPrompts:\n{prompts}\n\nRun by {by} through Claude Code.");
             match sandbox.commit_all(&message) {
                 Ok(Some(_)) => {
                     let stat = sandbox.diff_stat().unwrap_or_default();
@@ -550,22 +723,24 @@ impl Runtime {
                 SessionInfo {
                     session: id,
                     project: s.project.clone(),
+                    member: s.member.clone(),
                     engine: s.engine,
                     model: s.model.clone(),
                     access: s.access,
                     workspace: s.sandbox.as_ref().map(workspace_of),
-                    state: if s.turn.as_ref().is_some_and(|t| !t.is_finished()) {
-                        SessionState::Working
-                    } else {
-                        SessionState::Ready
-                    },
+                    state: if s.is_working() { SessionState::Working } else { SessionState::Ready },
                     title: s.title.clone(),
                     tokens: s.tokens,
                     recent: entries[entries.len().saturating_sub(SNAPSHOT_LINES)..].to_vec(),
+                    queued: s.queued.clone(),
                 }
             })
             .collect();
-        sessions.sort_by_key(|s| s.session);
+        // The PM first, then everyone in the order they joined.
+        sessions.sort_by_key(|info| {
+            let s = &self.sessions[&info.session];
+            (!s.is_pm(), s.joined)
+        });
         Snapshot { sessions }
     }
 
@@ -609,10 +784,15 @@ impl Runtime {
                         _ => {}
                     }
                 }
+                let memory = record.member.as_ref().map(|m| journal::member_memory_dir(&self.config.home, &project, &m.name));
+                let joined = self.next_join;
+                self.next_join += 1;
                 self.sessions.insert(
                     record.id,
                     Session {
                         project: project.clone(),
+                        member: record.member,
+                        joined,
                         engine: record.engine,
                         model: record.model,
                         access: record.access,
@@ -626,6 +806,9 @@ impl Runtime {
                         tokens: record.tokens,
                         transcript: Transcript::from_entries(conversation),
                         turn: None,
+                        queued: Vec::new(),
+                        briefing: Vec::new(),
+                        memory,
                     },
                 );
             }
@@ -648,15 +831,20 @@ impl Runtime {
 // await would require the journals' SQLite connections to be shareable across
 // threads, which they are not.
 
-/// Codex if signed in, else Claude Code if signed in.
-async fn first_ready_engine(store: &CredentialStore, claude_binary: &str) -> Option<Engine> {
-    if matches!(store.load("openai"), Ok(Some(_))) {
-        return Some(Engine::Codex);
+/// The first engine in `preference` that is signed in.
+async fn first_ready_engine(preference: &[Engine], store: &CredentialStore, claude_binary: &str) -> Option<Engine> {
+    for &engine in preference {
+        let ready = match engine {
+            Engine::Codex => matches!(store.load("openai"), Ok(Some(_))),
+            Engine::Claude => {
+                matches!(claude_code::auth_status(claude_binary).await, Ok(Some(status)) if status.logged_in)
+            }
+        };
+        if ready {
+            return Some(engine);
+        }
     }
-    match claude_code::auth_status(claude_binary).await {
-        Ok(Some(status)) if status.logged_in => Some(Engine::Claude),
-        _ => None,
-    }
+    None
 }
 
 /// The Codex login, refreshed if stale — or why there isn't one.

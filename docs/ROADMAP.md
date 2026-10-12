@@ -43,7 +43,7 @@ One agent, running on the user's own plan, does real work. No board yet.
 ### Phase 2 — The resident squad ← now
 The team lives in a daemon, not in a terminal: closing the terminal never stops
 it, and every surface sees the same team. Then the team itself — members with
-roles, a board, a director.
+roles, a board, and equipe's rules.
 
 1. ✅ **Daemon + local gateway.** The core runtime moves behind a Unix socket
    (`~/.equipe/equipe.sock`, JSON-RPC 2.0 carrying the protocol's Commands and
@@ -52,12 +52,14 @@ roles, a board, a director.
    the daemon's children, not the terminal's. What happened is journaled in
    SQLite under the storage policy below, so a restarted daemon resumes its
    sessions and their conversations.
-2. **Resident members, board, director.** ← next. A member is a role (pm, designer,
-   frontend, backend, qa, data, or custom) + an engine + a model + memory + a
-   worktree; models are recommended per role by tier, resolved against the
-   account's live models, with QA on a different engine from the implementer.
-   The SQLite board holds tickets and their record; the director turns a request
-   into tickets and assigns them. `equipe init` stands up a default squad.
+2. **Resident members, board, rules.** ← now. ✅ **Members**: a role (pm,
+   designer, frontend, backend, qa, data, or custom) + an engine + a model + its own
+   memory + a worktree. Models are recommended per role by tier, resolved against
+   the account's live models; QA prefers a different engine from the engineers.
+   The person talks to the PM — or to anyone directly, with the PM kept in the loop;
+   a busy member is left a memo (ARCHITECTURE "The squad"). ⬜ **Board**: the SQLite
+   board holds tickets and their record; the PM writes to it through board tools
+   (MCP); equipe's rules — code, not an agent — assign, order and gate the work.
 3. **First channel: Telegram.** Notifications, approve/deny buttons, short
    instructions to the PM — through the daemon's outbound connection, no open
    port. Senders must be paired; irreversible steps always need a button press.
@@ -66,6 +68,8 @@ roles, a board, a director.
 - ✅ **Core speaks in events** (`equipe-protocol` + the core runtime).
 - ✅ **Interactive `equipe` v0**: the team console — several agents at once,
   streaming, conversation memory, bracketed paste, `/new` `/edit` `/close`.
+- ✅ **Members in the console**: starts with the PM; `/add <role…>`, `@name`,
+  memos, and a composer that always says who a message goes to.
 - **Retires:** a team that outlives its terminal; orchestrator ↔ board ↔ worktree.
 - **Done:** close the terminal mid-task, reopen it, the work is done or still going;
   one request becomes tickets that members land as branches. **Demo:** "I closed my
@@ -131,13 +135,20 @@ the human-readable conversation in its largest session was 3.4% of its size.)
   terminal and reach a phone soon, so the gateway moves from Phase 4 to the front
   of Phase 2. Inside the daemon the core is still one Rust process; screens and
   channels are clients. First channel: Telegram.
+- **2026-10-12 — the PM is the main contact; equipe's rules are code.** The person
+  talks to the PM and may talk to any member directly (the PM hears about it). What
+  was called the director is not an agent: assignment, order, budgets and approval
+  gates are deterministic code, and approvals go to the person, never through the PM.
+- **2026-10-12 — members keep their own memory.** Claude Code's auto memory is moved
+  per member, so the person's own notes never leak into a squad, or a squad's into them.
 
 ## Current status
 
 Phases 0 and 1 done (Codex edits move to Phase 3, over ACP). Phase 2 under way: the
 team lives in a daemon — the console detaches and reattaches, a closed terminal
 stops nothing, and a restarted daemon resumes its sessions and conversations.
-Resident members, the board and the director are next.
+Members with roles are in: the PM first, teammates by `/add`, direct talk with the
+PM in the loop, memos. The board and the PM's board tools are next.
 
 Open risks: whether driving `claude -p` on a subscription fits Anthropic's
 allowance (ask before advertising it); Claude Code making `--bare` the default for

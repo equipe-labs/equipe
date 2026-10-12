@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use equipe_protocol::{Access, Engine, Entry, SessionId};
+use equipe_protocol::{Access, Engine, Entry, Member, SessionId};
 use rusqlite::{Connection, OptionalExtension as _, params};
 
 pub use rusqlite::Error;
@@ -24,6 +24,8 @@ pub const DEFAULT_RETENTION_DAYS: u64 = 90;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecord {
     pub id: SessionId,
+    /// The role it plays on the team, if any.
+    pub member: Option<Member>,
     pub engine: Engine,
     pub model: Option<String>,
     pub access: Access,
@@ -69,6 +71,12 @@ pub fn project_dir(home: &Path, project: &Path) -> PathBuf {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "root".into());
     home.join("projects").join(format!("{name}-{:08x}", hash as u32))
+}
+
+/// Where a member keeps what it learns about a project. Tied to the member's
+/// name, so a `frontend` closed and opened again remembers.
+pub fn member_memory_dir(home: &Path, project: &Path, name: &str) -> PathBuf {
+    project_dir(home, project).join("members").join(name).join("memory")
 }
 
 fn now() -> i64 {
@@ -143,6 +151,11 @@ impl Journal {
              ) WITHOUT ROWID;
              CREATE INDEX IF NOT EXISTS entries_at ON entries(at);",
         )?;
+        // Columns added after the first release; a journal that has them already
+        // refuses the ALTER, which is fine.
+        for column in ["role TEXT", "name TEXT", "joined INTEGER"] {
+            let _ = conn.execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), []);
+        }
         Ok(Self { conn, path: path.to_owned() })
     }
 
@@ -160,8 +173,10 @@ impl Journal {
         let t = now();
         self.conn.execute(
             "INSERT OR REPLACE INTO sessions
-               (id, engine, model, access, cwd, repo, branch, base, engine_session, title, tokens, open, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
+               (id, engine, model, access, cwd, repo, branch, base, engine_session, title, tokens, open, created_at, updated_at,
+                role, name, joined)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?14, ?15,
+                     (SELECT COALESCE(MAX(joined), 0) + 1 FROM sessions))",
             params![
                 r.id as i64,
                 engine_str(r.engine),
@@ -176,6 +191,8 @@ impl Journal {
                 r.tokens as i64,
                 r.open,
                 t,
+                r.member.as_ref().map(|m| m.role.clone()),
+                r.member.as_ref().map(|m| m.name.clone()),
             ],
         )?;
         Ok(())
@@ -255,8 +272,8 @@ impl Journal {
 
     pub fn open_sessions(&self) -> Result<Vec<SessionRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, engine, model, access, cwd, repo, branch, base, engine_session, title, tokens, open
-             FROM sessions WHERE open = 1 ORDER BY created_at, id",
+            "SELECT id, engine, model, access, cwd, repo, branch, base, engine_session, title, tokens, open, role, name
+             FROM sessions WHERE open = 1 ORDER BY COALESCE(joined, 0), created_at, id",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(SessionRecord {
@@ -272,6 +289,10 @@ impl Journal {
                 title: r.get(9)?,
                 tokens: r.get::<_, i64>(10)? as u64,
                 open: r.get(11)?,
+                member: match (r.get::<_, Option<String>>(12)?, r.get::<_, Option<String>>(13)?) {
+                    (Some(role), Some(name)) => Some(Member { role, name }),
+                    _ => None,
+                },
             })
         })?;
         rows.collect()
@@ -339,6 +360,7 @@ mod tests {
     fn record(id: SessionId) -> SessionRecord {
         SessionRecord {
             id,
+            member: None,
             engine: Engine::Claude,
             model: None,
             access: Access::EditFiles,
@@ -377,6 +399,37 @@ mod tests {
             vec![Entry::User { text: "add a docstring".into() }, Entry::Reply { text: "done".into() }]
         );
         assert_eq!(j.project().as_deref(), Some(Path::new("/repo")));
+    }
+
+    #[test]
+    fn members_are_restored_in_the_order_they_joined() {
+        let j = Journal::for_project(&temp_home(), Path::new("/p")).unwrap();
+        // Ids are random, so the order is when they joined, not the id.
+        for (id, name) in [(90, "pm"), (10, "frontend")] {
+            j.record_session(&SessionRecord { member: Some(Member { role: name.into(), name: name.into() }), ..record(id) }).unwrap();
+        }
+        let names: Vec<_> = j.open_sessions().unwrap().into_iter().map(|r| r.member.unwrap().name).collect();
+        assert_eq!(names, ["pm", "frontend"]);
+    }
+
+    #[test]
+    fn a_journal_from_before_members_gains_the_columns() {
+        let home = temp_home();
+        let path = home.join("old.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (id INTEGER PRIMARY KEY, engine TEXT NOT NULL, model TEXT, access TEXT NOT NULL,
+                   cwd TEXT NOT NULL, repo TEXT, branch TEXT, base TEXT, engine_session TEXT, title TEXT, outcome TEXT,
+                   tokens INTEGER NOT NULL DEFAULT 0, open INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL,
+                   updated_at INTEGER NOT NULL);
+                 INSERT INTO sessions (id, engine, access, cwd, created_at, updated_at) VALUES (5, 'claude', 'read_only', '/r', 1, 1);",
+            )
+            .unwrap();
+        }
+        let j = Journal::open(&path).unwrap();
+        let open = j.open_sessions().unwrap();
+        assert_eq!((open[0].id, open[0].member.clone()), (5, None));
     }
 
     #[test]

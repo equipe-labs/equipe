@@ -46,8 +46,9 @@ pub struct Sandbox {
     pub base: String,
 }
 
-/// Cut a new branch from `HEAD` and check it out in a worktree under `home`.
-pub fn create(repo: &Path, home: &Path, id: &str) -> Result<Sandbox> {
+/// Cut a new branch from `HEAD` — `equipe/<label>-<id>` — and check it out in a
+/// worktree under `home`.
+pub fn create(repo: &Path, home: &Path, id: &str, label: &str) -> Result<Sandbox> {
     let base = git(repo, &["rev-parse", "HEAD"])
         .map_err(|_| "the repository has no commits yet — commit something first".to_owned())?;
     let name = repo
@@ -55,7 +56,7 @@ pub fn create(repo: &Path, home: &Path, id: &str) -> Result<Sandbox> {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "repo".into());
     let path = home.join("worktrees").join(&name).join(id);
-    let branch = format!("equipe/try-{id}");
+    let branch = format!("equipe/{label}-{id}");
     std::fs::create_dir_all(path.parent().expect("worktree path has a parent"))
         .map_err(|err| format!("couldn't create {}: {err}", path.display()))?;
     git(
@@ -151,7 +152,7 @@ mod tests {
     #[test]
     fn changes_land_on_a_branch_and_leave_the_checkout_alone() {
         let repo = repo();
-        let sandbox = create(&repo, &scratch("home"), "t1").unwrap();
+        let sandbox = create(&repo, &scratch("home"), "t1", "try").unwrap();
         assert!(sandbox.path.join("README.md").exists());
 
         std::fs::write(sandbox.path.join("README.md"), "hello\nworld\n").unwrap();
@@ -170,7 +171,7 @@ mod tests {
     #[test]
     fn new_files_are_committed_too() {
         let repo = repo();
-        let sandbox = create(&repo, &scratch("home"), "t2").unwrap();
+        let sandbox = create(&repo, &scratch("home"), "t2", "try").unwrap();
         std::fs::write(sandbox.path.join("NEW.md"), "new\n").unwrap();
         assert!(sandbox.commit_all("add").unwrap().is_some());
         sandbox.remove_worktree().unwrap();
@@ -180,7 +181,7 @@ mod tests {
     #[test]
     fn a_run_that_changed_nothing_leaves_no_branch_behind() {
         let repo = repo();
-        let sandbox = create(&repo, &scratch("home"), "t3").unwrap();
+        let sandbox = create(&repo, &scratch("home"), "t3", "try").unwrap();
         assert_eq!(sandbox.commit_all("nothing").unwrap(), None);
         sandbox.discard().unwrap();
         assert!(git(&repo, &["rev-parse", "--verify", "-q", "equipe/try-t3"]).is_err());
@@ -189,7 +190,7 @@ mod tests {
     #[test]
     fn commits_even_without_a_configured_identity() {
         let repo = repo();
-        let sandbox = create(&repo, &scratch("home"), "t4").unwrap();
+        let sandbox = create(&repo, &scratch("home"), "t4", "try").unwrap();
         git(&repo, &["config", "--unset", "user.email"]).unwrap();
         git(&repo, &["config", "--unset", "user.name"]).unwrap();
         std::fs::write(sandbox.path.join("README.md"), "changed\n").unwrap();

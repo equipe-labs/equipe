@@ -123,9 +123,19 @@ fn render_team(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         let selected = i == app.selected;
         let marker = if selected { Span::styled("› ", theme.accent()) } else { Span::raw("  ") };
         let name_style = if selected { theme.bold() } else { Style::new() };
-        lines.push(Line::from(vec![marker, Span::styled(format!("{} {}", i + 1, agent.label()), name_style)]));
-        let branch = agent.branch.as_deref().map(|b| b.strip_prefix("equipe/").unwrap_or(b).to_owned());
-        let detail = branch.or_else(|| agent.short_model()).unwrap_or_default();
+        // Members go by name; a plain agent by its place and engine.
+        let name = if agent.member.is_some() { agent.label() } else { format!("{} {}", i + 1, agent.label()) };
+        let mut first = vec![marker, Span::styled(name, name_style)];
+        if !agent.queued.is_empty() {
+            let memos = if agent.queued.len() == 1 { "1 memo".to_owned() } else { format!("{} memos", agent.queued.len()) };
+            first.push(Span::styled(format!(" · {memos}"), theme.dim()));
+        }
+        lines.push(Line::from(first));
+        let detail = match (&agent.member, &agent.branch) {
+            (None, Some(branch)) => Some(branch.strip_prefix("equipe/").unwrap_or(branch).to_owned()),
+            _ => agent.short_model(),
+        }
+        .unwrap_or_default();
         let mut second = vec![Span::raw("    "), state_label(agent, theme)];
         if !detail.is_empty() {
             second.push(Span::styled(format!("  {detail}"), theme.dim()));
@@ -159,11 +169,16 @@ fn wrapped(lead: Vec<Span<'static>>, text: &str, style: Style, indent: usize, wi
 
 fn transcript_lines(agent: &Agent, theme: Theme, width: usize) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    if agent.transcript.is_empty() {
-        let hello = if agent.edit {
-            "Tell the agent what to change. It works on its own branch; /close lands it."
+    if agent.transcript.is_empty() && agent.queued.is_empty() {
+        let hello = if agent.is_pm() {
+            "Tell the PM what you want to build — it plans the work and splits it into tickets. \
+/add designer frontend brings in teammates; Tab or @name talks to one directly, and the PM hears about it."
+        } else if agent.edit {
+            "Tell it what to change. It works on its own branch, in a worktree of its own; /close lands the branch."
+        } else if agent.member.is_some() {
+            "Talk to it directly — the PM hears about it."
         } else {
-            "Ask anything. /edit opens an agent that may change files on its own branch. /help lists the rest."
+            "Ask anything. /add brings in teammates. /help lists the rest."
         };
         return wrapped(Vec::new(), hello, theme.dim(), 0, width);
     }
@@ -215,6 +230,12 @@ fn transcript_lines(agent: &Agent, theme: Theme, width: usize) -> Vec<Line<'stat
             }
         }
     }
+    // Memos wait below the conversation until the turn ends.
+    for memo in &agent.queued {
+        lines.push(Line::raw(""));
+        lines.extend(wrapped(vec![Span::styled("› ", theme.dim())], memo, theme.dim(), 2, width));
+        lines.push(Line::from(Span::styled("  memo · read when this turn ends · Esc to read now", theme.dim())));
+    }
     lines
 }
 
@@ -222,9 +243,11 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let Some(agent) = app.selected() else {
         return;
     };
-    let block = Block::bordered()
-        .border_style(theme.border())
-        .title(Span::styled(format!(" {} ", agent.label()), theme.dim()));
+    let title = match &agent.member {
+        Some(_) => format!(" {} · {} ", agent.label(), agent.engine_label()),
+        None => format!(" {} ", agent.label()),
+    };
+    let block = Block::bordered().border_style(theme.border()).title(Span::styled(title, theme.dim()));
     let inner = block.inner(area);
     let lines = transcript_lines(agent, theme, inner.width.saturating_sub(1) as usize);
     // Follow the bottom unless the person scrolled up.
@@ -235,7 +258,16 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
 }
 
 fn render_composer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
-    let block = Block::bordered().border_style(theme.border());
+    // Always say who a message goes to, so nothing reaches the wrong person.
+    let mut block = Block::bordered().border_style(theme.border());
+    if let Some((name, direct)) = app.addressee() {
+        let mut title = vec![Span::styled(" → ", theme.dim()), Span::styled(name, theme.bold())];
+        if direct {
+            title.push(Span::styled(" · the PM hears about it", theme.dim()));
+        }
+        title.push(Span::raw(" "));
+        block = block.title(Line::from(title));
+    }
     let inner = block.inner(area);
     let text_width = inner.width.saturating_sub(2) as usize;
     let (rows, (cursor_row, cursor_col)) = app.composer.layout(text_width);
@@ -254,7 +286,7 @@ fn render_composer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let content = if placeholder {
         Paragraph::new(Line::from(vec![
             Span::styled("› ", theme.accent()),
-            Span::styled("Message the agent · /help", theme.dim()),
+            Span::styled("Message · @name for someone else · /help", theme.dim()),
         ]))
     } else {
         Paragraph::new(lines)
@@ -326,7 +358,7 @@ fn display_path(path: &std::path::Path) -> String {
 mod tests {
     use super::*;
     use crate::tui::app::App;
-    use equipe_core::protocol::{Command, Engine, Event, Snapshot, TurnOutcome, Usage};
+    use equipe_core::protocol::{Command, Engine, Event, Member, Snapshot, TurnOutcome, Usage};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -355,7 +387,14 @@ mod tests {
         let (mut app, commands) = App::from_snapshot("/repo".into(), "/repo".into(), Snapshot::default());
         let Some(Command::Start { session: id, .. }) = commands.first() else { panic!() };
         let id = *id;
-        app.on_event(Event::SessionStarted { session: id, project: "/repo".into(), engine: Engine::Claude, model: Some("haiku".into()), workspace: None });
+        app.on_event(Event::SessionStarted {
+            session: id,
+            project: "/repo".into(),
+            engine: Engine::Claude,
+            model: Some("haiku".into()),
+            workspace: None,
+            member: Some(Member { role: "pm".into(), name: "pm".into() }),
+        });
         app.on_event(Event::UserMessage { session: id, text: "fix the bug".into() });
         app.on_event(Event::TextDelta { session: id, text: "Looking now.".into() });
         app.on_event(Event::ToolUse { session: id, tool: "Edit".into(), target: Some("src/auth.rs".into()) });
@@ -369,7 +408,7 @@ mod tests {
     #[test]
     fn shows_the_team_the_conversation_and_what_the_agent_does() {
         let shot = screen(&working_app(), 90, 20);
-        for expected in ["equipe.", "/repo · main", " team ", "1 claude code", "● working", "› fix the bug", "Looking now.", "✎ edit   src/auth.rs", "Esc stop"] {
+        for expected in ["equipe.", "/repo · main", " team ", "› pm", "● working", " pm · claude code ", "› fix the bug", "Looking now.", "✎ edit   src/auth.rs", " → pm ", "Esc stop"] {
             assert!(shot.contains(expected), "missing {expected:?} in:\n{shot}");
         }
     }
@@ -439,6 +478,29 @@ mod tests {
         let status = shot.lines().last().unwrap();
         assert!(status.contains("3 lines") && status.contains("120 tokens"), "{status:?}");
         assert!(!status.contains("Enter send"), "{status:?}");
+    }
+
+    #[test]
+    fn a_member_spoken_to_directly_says_the_pm_hears_and_memos_wait_in_sight() {
+        let (mut app, pm) = working();
+        app.on_event(Event::SessionStarted {
+            session: 2,
+            project: "/repo".into(),
+            engine: Engine::Claude,
+            model: Some("claude-sonnet-5-5".into()),
+            workspace: None,
+            member: Some(Member { role: "frontend".into(), name: "frontend".into() }),
+        });
+        app.on_event(Event::MessageQueued { session: pm, text: "and the footer".into() });
+        let shot = screen(&app, 100, 24);
+        assert!(shot.contains("○ ready  sonnet-5-5"), "{shot}");
+        assert!(shot.contains("› pm · 1 memo"), "{shot}");
+        assert!(shot.contains("› and the footer"), "{shot}");
+        assert!(shot.contains("memo · read when this turn ends"), "{shot}");
+
+        app.selected = 1;
+        let shot = screen(&app, 100, 24);
+        assert!(shot.contains(" → frontend · the PM hears about it "), "{shot}");
     }
 
     #[test]

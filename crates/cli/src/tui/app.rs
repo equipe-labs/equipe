@@ -11,9 +11,10 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use equipe_core::protocol::{
-    Access, Command, Engine, Event, SessionId, SessionInfo, SessionSpec, SessionState, Snapshot, Transcript,
-    new_session_id,
+    Access, Command, Engine, Entry, Event, Member, SessionId, SessionInfo, SessionSpec, SessionState, Snapshot,
+    Transcript, new_session_id,
 };
+use equipe_core::roles;
 
 use super::composer::Composer;
 
@@ -33,12 +34,16 @@ pub enum AgentState {
 
 pub struct Agent {
     pub id: SessionId,
+    /// Who it is on the team; `None` for a plain agent.
+    pub member: Option<Member>,
     pub engine: Option<Engine>,
     pub model: Option<String>,
     pub edit: bool,
     pub branch: Option<String>,
     pub state: AgentState,
     pub transcript: Transcript,
+    /// Memos waiting for its turn to end.
+    pub queued: Vec<String>,
     pub tokens: u64,
     /// Lines scrolled up from the bottom; 0 follows new output.
     pub scroll_back: usize,
@@ -52,12 +57,14 @@ impl Agent {
     fn new(id: SessionId, edit: bool, base: PathBuf) -> Self {
         Self {
             id,
+            member: None,
             engine: None,
             model: None,
             edit,
             branch: None,
             state: AgentState::Starting,
             transcript: Transcript::default(),
+            queued: Vec::new(),
             tokens: 0,
             scroll_back: 0,
             base,
@@ -69,6 +76,7 @@ impl Agent {
         let base = info.workspace.as_ref().map_or_else(|| info.project.clone(), |w| w.path.clone());
         Self {
             id: info.session,
+            member: info.member,
             engine: Some(info.engine),
             model: info.model,
             edit: info.access == Access::EditFiles,
@@ -78,6 +86,7 @@ impl Agent {
                 SessionState::Working => AgentState::Working,
             },
             transcript: Transcript::from_entries(info.recent),
+            queued: info.queued,
             tokens: info.tokens,
             scroll_back: 0,
             base,
@@ -85,9 +94,22 @@ impl Agent {
         }
     }
 
+    /// What the team calls it: its name, or for a plain agent its engine.
     pub fn label(&self) -> String {
+        match &self.member {
+            Some(member) => member.name.clone(),
+            None => self.engine_label(),
+        }
+    }
+
+    /// The engine, and whether it edits: `claude code · edit`.
+    pub fn engine_label(&self) -> String {
         let engine = self.engine.map_or("…", Engine::label);
         if self.edit { format!("{engine} · edit") } else { engine.to_owned() }
+    }
+
+    pub fn is_pm(&self) -> bool {
+        self.member.as_ref().is_some_and(|m| m.role == roles::PM)
     }
 
     /// The model as a short name: `opus-5-5` for `claude-opus-5-5[1m]`.
@@ -117,10 +139,13 @@ pub struct App {
     quit_armed: Option<Instant>,
 }
 
-const HELP: &str = "Enter sends · Alt-Enter or Ctrl-J adds a line · Esc stops the agent · \
-Tab switches agents · PgUp/PgDn scroll · Ctrl-C twice leaves — the team keeps working. \
-Commands: /new [codex|claude] opens another agent · /edit [task] opens one that may edit files on its own branch · \
-/close ends the selected agent and lands its branch · /quit leaves.";
+const HELP: &str = "The PM is your main contact: tell it what you want and it plans the work. \
+You can talk to anyone directly — Tab or @name — and the PM hears about it.\n\
+Enter sends; while a member works, a message waits as a memo until its turn ends · Esc stops the member \
+(a waiting memo goes in at once) · Alt-Enter or Ctrl-J adds a line · PgUp/PgDn scroll · Ctrl-C twice leaves — \
+the team keeps working.\n\
+/add <role…> [codex|claude] brings in teammates: pm, designer, frontend, backend, qa, data, or custom <name> · \
+/close ends the selected member and lands its branch · /new and /edit [task] open a plain agent · /quit leaves.";
 
 impl App {
     /// The team as the daemon has it. With nobody on the team yet, the first
@@ -137,7 +162,9 @@ impl App {
             landed: Vec::new(),
             quit_armed: None,
         };
-        let start = if app.agents.is_empty() { app.open_agent(None, false, None) } else { Vec::new() };
+        // Talk to the PM first: it is the main contact.
+        app.selected = app.agents.iter().position(Agent::is_pm).unwrap_or(0);
+        let start = if app.agents.is_empty() { app.add_member(roles::PM, None) } else { Vec::new() };
         (app, start)
     }
 
@@ -151,6 +178,14 @@ impl App {
 
     pub fn working(&self) -> usize {
         self.agents.iter().filter(|a| a.state == AgentState::Working).count()
+    }
+
+    /// Who a message goes to when Enter is pressed, and whether that is someone
+    /// other than the PM while a PM is on the team (so the PM hears about it).
+    pub fn addressee(&self) -> Option<(String, bool)> {
+        let agent = self.selected()?;
+        let has_pm = self.agents.iter().any(|a| a.is_pm() && a.is_open());
+        Some((agent.label(), agent.member.is_some() && !agent.is_pm() && has_pm))
     }
 
     fn open_agent(&mut self, engine: Option<Engine>, edit: bool, first: Option<String>) -> Vec<Command> {
@@ -167,6 +202,27 @@ impl App {
                 model: None,
                 access: if edit { Access::EditFiles } else { Access::ReadOnly },
                 cwd: self.cwd.clone(),
+                role: None,
+            },
+        }]
+    }
+
+    /// Bring a member onto the team. The selection stays where it is.
+    fn add_member(&mut self, role: &str, engine: Option<Engine>) -> Vec<Command> {
+        let id = new_session_id();
+        let edits = roles::role_or_custom(role).edits;
+        let mut agent = Agent::new(id, edits, self.cwd.clone());
+        // Named by the core once it starts; until then, by its role.
+        agent.member = Some(Member { role: role.to_owned(), name: role.to_owned() });
+        self.agents.push(agent);
+        vec![Command::Start {
+            session: id,
+            spec: SessionSpec {
+                engine,
+                model: None,
+                access: if edits { Access::EditFiles } else { Access::ReadOnly },
+                cwd: self.cwd.clone(),
+                role: Some(role.to_owned()),
             },
         }]
     }
@@ -193,7 +249,10 @@ impl App {
         agent.transcript.apply(&event);
         let mut commands = Vec::new();
         match event {
-            Event::SessionStarted { engine, model, workspace, .. } => {
+            Event::SessionStarted { engine, model, workspace, member, .. } => {
+                if member.is_some() {
+                    agent.member = member;
+                }
                 agent.engine = Some(engine);
                 agent.model = model;
                 agent.state = AgentState::Ready;
@@ -211,7 +270,10 @@ impl App {
                 // Typed on another screen, perhaps: either way the agent is busy now.
                 agent.state = AgentState::Working;
                 agent.scroll_back = 0;
+                // Waiting memos are delivered together as one message.
+                agent.queued.clear();
             }
+            Event::MessageQueued { text, .. } => agent.queued.push(text),
             Event::ModelKnown { model, .. } => agent.model = Some(model),
             Event::TurnEnded { usage, .. } => {
                 if agent.state == AgentState::Working {
@@ -317,25 +379,54 @@ impl App {
         if let Some(command) = text.strip_prefix('/') {
             return self.slash(command);
         }
-        let Some(agent) = self.agents.get_mut(self.selected) else {
+        let mut target = self.selected;
+        let mut text = text;
+        // `@frontend fix the header` goes to frontend without leaving this view.
+        if let Some(mention) = text.strip_prefix('@') {
+            let (name, rest) = mention.split_once(char::is_whitespace).unwrap_or((mention, ""));
+            match self.agents.iter().position(|a| a.is_open() && a.member.as_ref().is_some_and(|m| m.name == name)) {
+                Some(i) if rest.trim().is_empty() => {
+                    // Just `@frontend`: go and talk to it.
+                    self.selected = i;
+                    return Vec::new();
+                }
+                Some(i) => {
+                    target = i;
+                    text = rest.trim().to_owned();
+                }
+                None => {
+                    self.composer.insert_str(&text);
+                    self.flash = Some(format!("No one called @{name} on the team. /add brings someone in."));
+                    return Vec::new();
+                }
+            }
+        }
+        let Some(agent) = self.agents.get_mut(target) else {
             return Vec::new();
         };
+        let away = target != self.selected;
+        let name = agent.label();
         match agent.state {
             // The message shows once the daemon echoes it, the same on every screen.
-            AgentState::Ready => vec![Command::Submit { session: agent.id, text }],
+            AgentState::Ready => {
+                if away {
+                    self.flash = Some(format!("Sent to {name}."));
+                }
+                vec![Command::Submit { session: agent.id, text }]
+            }
+            AgentState::Working => {
+                // Left as a memo: the core holds it until the turn ends.
+                self.flash = Some(format!("Left {name} a memo — it reads it when this turn ends. Esc stops it to read now."));
+                vec![Command::Submit { session: agent.id, text }]
+            }
             AgentState::Starting => {
                 // Sent as soon as the session is up.
                 agent.pending = Some(text);
                 Vec::new()
             }
-            AgentState::Working => {
-                self.composer.insert_str(&text);
-                self.flash = Some("The agent is still working — Esc stops it.".into());
-                Vec::new()
-            }
             AgentState::Closing | AgentState::Closed | AgentState::Failed => {
                 self.composer.insert_str(&text);
-                self.flash = Some("This agent is closed. /new opens another.".into());
+                self.flash = Some(format!("{name} is closed. /add brings in a new one."));
                 Vec::new()
             }
         }
@@ -358,6 +449,7 @@ impl App {
                 self.open_agent(engine, false, None)
             }
             "edit" => self.open_agent(None, true, (!rest.is_empty()).then(|| rest.to_owned())),
+            "add" => self.add(rest),
             "close" => match self.agents.get_mut(self.selected) {
                 Some(agent) if agent.is_open() => {
                     agent.state = AgentState::Closing;
@@ -367,7 +459,7 @@ impl App {
             },
             "help" => {
                 if let Some(agent) = self.agents.get_mut(self.selected) {
-                    agent.transcript.push_local(equipe_core::protocol::Entry::Note { text: HELP.into() });
+                    agent.transcript.push_local(Entry::Note { text: HELP.into() });
                 }
                 Vec::new()
             }
@@ -380,6 +472,51 @@ impl App {
                 Vec::new()
             }
         }
+    }
+}
+
+impl App {
+    /// `/add designer frontend`, `/add qa codex`, `/add custom writer`.
+    fn add(&mut self, rest: &str) -> Vec<Command> {
+        let mut words: Vec<&str> = rest.split_whitespace().collect();
+        let engine = match words.last() {
+            Some(&"codex") => Some(Engine::Codex),
+            Some(&"claude") => Some(Engine::Claude),
+            _ => None,
+        };
+        if engine.is_some() {
+            words.pop();
+        }
+        let wanted: Vec<String> = match words.as_slice() {
+            [] => {
+                self.flash = Some("Who? /add designer frontend · roles: pm designer frontend backend qa data, or custom <name>".into());
+                return Vec::new();
+            }
+            ["custom"] => {
+                self.flash = Some("Name the role: /add custom writer".into());
+                return Vec::new();
+            }
+            ["custom", name, ..] => vec![name.to_lowercase()],
+            ids => {
+                let mut wanted = Vec::new();
+                for id in ids {
+                    match roles::role(id) {
+                        Some(role) => wanted.push(role.id.to_owned()),
+                        None => {
+                            self.flash = Some(format!(
+                                "No role '{id}'. Roles: pm designer frontend backend qa data — or /add custom {id}"
+                            ));
+                            return Vec::new();
+                        }
+                    }
+                }
+                wanted
+            }
+        };
+        let names = wanted.join(" and ");
+        let commands = wanted.iter().flat_map(|role| self.add_member(role, engine)).collect();
+        self.flash = Some(format!("{names} joining · Tab or @name to talk to them directly."));
+        commands
     }
 }
 
@@ -428,8 +565,24 @@ mod tests {
         }
     }
 
+    fn pm() -> Option<Member> {
+        Some(Member { role: "pm".into(), name: "pm".into() })
+    }
+
     fn started(id: SessionId) -> Event {
-        Event::SessionStarted { session: id, project: "/repo".into(), engine: Engine::Claude, model: None, workspace: None }
+        Event::SessionStarted { session: id, project: "/repo".into(), engine: Engine::Claude, model: None, workspace: None, member: pm() }
+    }
+
+    /// A member that has started, as the core announces it.
+    fn joined(app: &mut App, id: SessionId, name: &str) {
+        app.on_event(Event::SessionStarted {
+            session: id,
+            project: "/repo".into(),
+            engine: Engine::Claude,
+            model: None,
+            workspace: None,
+            member: Some(Member { role: name.into(), name: name.into() }),
+        });
     }
 
     /// A fresh UI whose first agent has started. Returns it with that agent's id.
@@ -442,13 +595,15 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_team_starts_its_first_agent() {
+    fn an_empty_team_starts_with_the_pm() {
         let (app, commands) = App::from_snapshot("/repo".into(), "/repo".into(), Snapshot::default());
         assert!(matches!(
             commands.as_slice(),
-            [Command::Start { spec, .. }] if spec.engine.is_none() && spec.access == Access::ReadOnly
+            [Command::Start { spec, .. }]
+                if spec.role.as_deref() == Some("pm") && spec.engine.is_none() && spec.access == Access::ReadOnly
         ));
         assert_eq!(app.agents[0].state, AgentState::Starting);
+        assert_eq!(app.addressee(), Some(("pm".into(), false)));
     }
 
     #[test]
@@ -457,6 +612,7 @@ mod tests {
             sessions: vec![SessionInfo {
                 session: 9,
                 project: "/repo".into(),
+                member: None,
                 engine: Engine::Codex,
                 model: Some("gpt-6-luna".into()),
                 access: Access::EditFiles,
@@ -465,6 +621,7 @@ mod tests {
                 title: Some("fix it".into()),
                 tokens: 40,
                 recent: vec![Entry::User { text: "fix it".into() }, Entry::Reply { text: "on it".into() }],
+                queued: Vec::new(),
             }],
         };
         let (app, commands) = App::from_snapshot("/repo".into(), "/repo".into(), snapshot);
@@ -521,10 +678,10 @@ mod tests {
     #[test]
     fn a_session_opened_on_another_screen_joins_this_team() {
         let (mut app, _) = ready();
-        app.on_event(Event::SessionStarted { session: 77, project: "/repo".into(), engine: Engine::Codex, model: None, workspace: None });
+        app.on_event(Event::SessionStarted { session: 77, project: "/repo".into(), engine: Engine::Codex, model: None, workspace: None, member: None });
         assert_eq!(app.agents.len(), 2);
         // Another project's sessions stay out.
-        app.on_event(Event::SessionStarted { session: 78, project: "/other".into(), engine: Engine::Codex, model: None, workspace: None });
+        app.on_event(Event::SessionStarted { session: 78, project: "/other".into(), engine: Engine::Codex, model: None, workspace: None, member: None });
         assert_eq!(app.agents.len(), 2);
     }
 
@@ -597,6 +754,7 @@ mod tests {
             engine: Engine::Claude,
             model: None,
             workspace: Some(Workspace { branch: "equipe/try-1".into(), base: "abc".into(), path: "/w".into() }),
+            member: None,
         });
         assert_eq!(sent, vec![Command::Submit { session: id, text: "add a docstring".into() }]);
         assert_eq!(app.agents[1].branch.as_deref(), Some("equipe/try-1"));
@@ -616,6 +774,126 @@ mod tests {
         assert_eq!(relative("/repo/src/x.rs", std::path::Path::new("/repo")), "src/x.rs");
         assert_eq!(relative("/elsewhere/x.rs", std::path::Path::new("/repo")), "/elsewhere/x.rs");
         assert_eq!(relative("*.rs", std::path::Path::new("/repo")), "*.rs");
+    }
+
+    // ── the team ──
+
+    fn info(id: SessionId, member: Option<Member>) -> SessionInfo {
+        SessionInfo {
+            session: id,
+            project: "/repo".into(),
+            member,
+            engine: Engine::Claude,
+            model: None,
+            access: Access::ReadOnly,
+            workspace: None,
+            state: SessionState::Ready,
+            title: None,
+            tokens: 0,
+            recent: Vec::new(),
+            queued: Vec::new(),
+        }
+    }
+
+    /// The PM (selected) and a frontend engineer, both ready.
+    fn team() -> (App, SessionId, SessionId) {
+        let frontend = Some(Member { role: "frontend".into(), name: "frontend".into() });
+        let snapshot = Snapshot { sessions: vec![info(1, pm()), info(2, frontend)] };
+        let (app, _) = App::from_snapshot("/repo".into(), "/repo".into(), snapshot);
+        (app, 1, 2)
+    }
+
+    #[test]
+    fn attaching_talks_to_the_pm_first() {
+        let frontend = Some(Member { role: "frontend".into(), name: "frontend".into() });
+        let snapshot = Snapshot { sessions: vec![info(2, frontend), info(1, pm())] };
+        let (app, _) = App::from_snapshot("/repo".into(), "/repo".into(), snapshot);
+        assert_eq!(app.selected().unwrap().label(), "pm");
+    }
+
+    #[test]
+    fn add_brings_in_members_with_their_access_and_stays_put() {
+        let (mut app, _, _) = team();
+        type_text(&mut app, "/add designer backend");
+        let sent = app.on_key(key(KeyCode::Enter), Instant::now());
+        let specs: Vec<_> = sent
+            .iter()
+            .map(|c| match c {
+                Command::Start { spec, .. } => (spec.role.clone().unwrap(), spec.access),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(specs, [("designer".into(), Access::EditFiles), ("backend".into(), Access::EditFiles)]);
+        assert_eq!(app.selected().unwrap().label(), "pm", "the conversation stays where it was");
+        assert_eq!(app.agents.len(), 4);
+    }
+
+    #[test]
+    fn add_takes_an_engine_a_custom_role_and_refuses_typos() {
+        let (mut app, _, _) = team();
+        type_text(&mut app, "/add qa codex");
+        let sent = app.on_key(key(KeyCode::Enter), Instant::now());
+        assert!(matches!(sent.as_slice(), [Command::Start { spec, .. }] if spec.engine == Some(Engine::Codex) && spec.access == Access::ReadOnly));
+
+        type_text(&mut app, "/add custom writer");
+        let sent = app.on_key(key(KeyCode::Enter), Instant::now());
+        assert!(matches!(sent.as_slice(), [Command::Start { spec, .. }] if spec.role.as_deref() == Some("writer")));
+
+        type_text(&mut app, "/add fronend");
+        assert!(app.on_key(key(KeyCode::Enter), Instant::now()).is_empty());
+        assert!(app.flash.as_deref().unwrap().contains("/add custom fronend"), "{:?}", app.flash);
+    }
+
+    #[test]
+    fn a_mention_sends_to_that_member_without_leaving_the_pm() {
+        let (mut app, _, frontend) = team();
+        type_text(&mut app, "@frontend make the header sticky");
+        let sent = app.on_key(key(KeyCode::Enter), Instant::now());
+        assert_eq!(sent, vec![Command::Submit { session: frontend, text: "make the header sticky".into() }]);
+        assert_eq!(app.selected().unwrap().label(), "pm");
+    }
+
+    #[test]
+    fn a_bare_mention_goes_to_talk_to_that_member() {
+        let (mut app, _, _) = team();
+        type_text(&mut app, "@frontend");
+        assert!(app.on_key(key(KeyCode::Enter), Instant::now()).is_empty());
+        assert_eq!(app.selected().unwrap().label(), "frontend");
+        assert_eq!(app.addressee(), Some(("frontend".into(), true)), "the PM hears about it");
+    }
+
+    #[test]
+    fn a_mention_of_nobody_keeps_the_draft() {
+        let (mut app, _, _) = team();
+        type_text(&mut app, "@ceo hi");
+        assert!(app.on_key(key(KeyCode::Enter), Instant::now()).is_empty());
+        assert_eq!(app.composer.text(), "@ceo hi");
+        assert!(app.flash.as_deref().unwrap().contains("@ceo"));
+    }
+
+    #[test]
+    fn a_message_to_a_working_member_is_left_as_a_memo() {
+        let (mut app, pm, _) = team();
+        app.on_event(Event::UserMessage { session: pm, text: "plan it".into() });
+        type_text(&mut app, "also the pricing page");
+        let sent = app.on_key(key(KeyCode::Enter), Instant::now());
+        assert_eq!(sent, vec![Command::Submit { session: pm, text: "also the pricing page".into() }]);
+        assert!(app.flash.as_deref().unwrap().contains("memo"));
+        app.on_event(Event::MessageQueued { session: pm, text: "also the pricing page".into() });
+        assert_eq!(app.agents[0].queued, ["also the pricing page"]);
+        // Delivered when the turn ends: the memo becomes the next message.
+        app.on_event(Event::UserMessage { session: pm, text: "also the pricing page".into() });
+        assert!(app.agents[0].queued.is_empty());
+    }
+
+    #[test]
+    fn a_member_is_named_by_the_core() {
+        let (mut app, _, _) = team();
+        type_text(&mut app, "/add frontend");
+        let sent = app.on_key(key(KeyCode::Enter), Instant::now());
+        let Some(Command::Start { session, .. }) = sent.first() else { panic!() };
+        joined(&mut app, *session, "frontend-2");
+        assert_eq!(app.agents[2].label(), "frontend-2");
     }
 
     #[test]

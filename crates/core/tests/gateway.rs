@@ -91,7 +91,7 @@ async fn until(client: &mut Client, done: impl Fn(&Event) -> bool) -> Vec<Event>
 }
 
 fn spec(cwd: &Path) -> SessionSpec {
-    SessionSpec { engine: None, model: None, access: Access::ReadOnly, cwd: cwd.to_owned() }
+    SessionSpec { engine: None, model: None, access: Access::ReadOnly, cwd: cwd.to_owned(), role: None }
 }
 
 #[tokio::test]

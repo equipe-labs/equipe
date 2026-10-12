@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use clap::{CommandFactory as _, Parser, Subcommand, ValueEnum};
 use equipe_core::protocol::{self, Command as Cmd, Event, SessionSpec, TurnOutcome, Usage};
+use equipe_core::roles::Tier;
 use equipe_core::runtime;
 use equipe_providers::claude_code::{self, AuthStatus};
 use equipe_providers::openai::{codex, login};
@@ -148,8 +149,16 @@ async fn main() -> ExitCode {
             let p = ui::out();
             println!("{}\n", p.kicker("squad roles"));
             for role in equipe_core::ROLES {
-                println!("  {}  {}", p.bold(&format!("{:<9}", role.id)), p.dim(role.summary));
+                println!("  {}  {}", p.bold(&format!("{:<9}", role.id)), ui::wrap(role.summary, 13, 13, ui::width()));
+                let work = if role.edits { "edits files on its own branch" } else { "reads and reports" };
+                let model = match role.tier {
+                    Tier::Top => "opus · Codex's top model",
+                    Tier::Upper => "sonnet · Codex's top model",
+                    Tier::Mid => "sonnet · a lighter Codex model",
+                };
+                println!("{}", p.row("", &p.dim(&format!("{work} · {model}"))));
             }
+            println!("\n  {}", p.hint("equipe   then /add designer frontend"));
             Ok(())
         }
     };
@@ -538,7 +547,7 @@ impl App {
         const ID: protocol::SessionId = 1;
         core.send(Cmd::Start {
             session: ID,
-            spec: SessionSpec { engine, model: model.map(str::to_owned), access, cwd: cwd.clone() },
+            spec: SessionSpec { engine, model: model.map(str::to_owned), access, cwd: cwd.clone(), role: None },
         });
 
         let e = ui::err();
@@ -582,6 +591,8 @@ impl App {
                 }
                 Event::NothingChanged { .. } => println!("\n{}", p.note(0, "No files changed, so no branch was kept.")),
                 Event::SessionClosed { .. } => break,
+                // One prompt, one turn: no memos, no team to hear about.
+                Event::MessageQueued { .. } | Event::Notice { .. } => {}
                 Event::Error { message, next, .. } => {
                     failure.get_or_insert(Failure { message, next });
                     // A session that never opened won't send anything more.

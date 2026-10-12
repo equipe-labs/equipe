@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <em>PO · Designer · Frontend · Backend · QA · DevOps</em> — a coordinated team,
+  <em>PM · Designer · Frontend · Backend · QA · Data</em> — a coordinated team,
   working off a shared board, in your repo.
 </p>
 
@@ -16,8 +16,9 @@
   <a href="docs/ROADMAP.md">roadmap</a> · <a href="docs/ARCHITECTURE.md">architecture</a>
 </p>
 
-> **Status: early.** One agent can already edit your repo on its own branch, on
-> your own plan. The squad — board, roles, handoffs — is next. Watch it build itself.
+> **Status: early.** A squad with roles already lives in a background daemon on
+> your own plans: you talk to the PM, or to anyone directly, and engineers edit
+> your repo on their own branches. The board and handoffs are next. Watch it build itself.
 
 ## Why
 
@@ -31,23 +32,25 @@ worktrees for parallel work, and human approval gates where they matter.
 ## How it works
 
 ```
-             ┌──────────────── Orchestrator (Director) ────────────────┐
-             │  plan · split into tickets · resolve deps · approval gates │
-             └───────────────┬─────────────────────────────────────────┘
-                             │  reads / writes
-                   ┌─────────▼─────────┐   ← single source of truth (SQLite + git)
-                   │      Board        │      tickets · status · decisions · artifacts
-                   └─────────┬─────────┘
-        pull ↑ tickets       │  events / handoffs
-   ┌────────┬────────┬───────┴──┬─────────┬─────────┐
-  PO      Designer  Frontend  Backend    QA       DevOps
-   each = [engine] + [role charter] + [toolset] + [git worktree]
+                    You ── talk to the PM, or to anyone directly
+                     │
+      ┌──────────────▼──────────────┐   equipe's rules, in code:
+      │  PM — plans, splits tickets │   assignment · order · budgets · approval gates
+      └──────────────┬──────────────┘
+                     │  reads / writes
+           ┌─────────▼─────────┐   ← single source of truth (SQLite + git)
+           │      Board        │      tickets · status · decisions · artifacts
+           └─────────┬─────────┘
+      ┌─────────┬────┴─────┬─────────┬─────────┐
+   Designer  Frontend   Backend     QA       Data
+   each = [engine] + [role charter] + [its own memory] + [git worktree]
 ```
 
 - **The board is the source of truth.** Agents coordinate through tickets and
   immutable events — not a firehose of chat. Every action ends in a visible outcome.
-- **Roles are data.** The PO writes specs; engineers edit code in isolated
-  worktrees; QA runs tests; DevOps ships.
+- **Roles are data.** The PM turns what you want into tickets; engineers edit code
+  in isolated worktrees; QA reviews; the data analyst answers with numbers. Each
+  member gets a model suited to its role, and keeps its own memory.
 - **Engines are borrowed, not rebuilt.** equipe drives mature coding agents —
   Codex and Claude Code today, more over the
   [Agent Client Protocol](https://agentclientprotocol.com) — and mixes them per role.
@@ -71,14 +74,14 @@ CLAUDE CODE  your claude · signs itself in
 
 | Command | What it does |
 |---|---|
-| `equipe` | **The team console.** A full-screen terminal UI: your agents on the left, the selected one's conversation and work on the right. `/new` opens another agent, `/edit` one that changes files on its own branch, `/close` lands that branch. **The team lives in a background daemon** — leave, or close the terminal, and it keeps working; run `equipe` again to come back |
+| `equipe` | **The team console.** A full-screen terminal UI: your squad on the left, the selected member's conversation and work on the right. You start with the PM; `/add designer frontend` brings in teammates (engineers edit on their own branches). Talk to anyone with Tab or `@name` — the PM hears about it. A message to a member mid-task waits as a memo; Esc stops it to read now. `/close` lands a member's branch. **The team lives in a background daemon** — leave, or close the terminal, and it keeps working; run `equipe` again to come back |
 | `equipe daemon status\|stop\|restart` | The daemon itself. `equipe` starts it when needed; stopping it keeps open sessions, which resume when it starts again |
 | `equipe login` | Pick an engine and sign in (`codex` / `claude`, `--again`, `--no-browser`) |
 | `equipe logout` | Forget equipe's Codex login (Claude Code keeps its own) |
 | `equipe status` | Which engines are ready, on which plan, with which models |
+| `equipe roles` | The roles a squad can have, what each does and the model it gets |
 | `equipe try "…"` | One turn on whichever engine is ready (`--engine`, `--model`) |
 | `equipe try --edit "…"` | An agent edits your repo **on a new branch**, in its own worktree. Your checkout is untouched; you get review / keep / discard commands |
-| `equipe roles` | The squad roles |
 
 ```
 $ equipe try --edit "In app.py, capitalize the name in greet()"

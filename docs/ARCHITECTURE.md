@@ -64,15 +64,15 @@ what they show. Codex's `core` / `tui` / `exec` / `app-server` split is the mode
 | Provider     | `equipe-providers` | how we sign in and which backends we reach |
 | Model        | model id / alias | Codex: chosen from the account's live catalog; Claude Code: its own aliases |
 | Engine       | `llm` \| `cli` \| `acp` | the thing that runs a turn — see below |
-| Role         | `equipe_core::roles` | id + mandate today; charter, toolset, engine next |
-| Orchestrator | director loop | plans, assigns, gates (Phase 2) |
+| Role         | `equipe_core::roles` | charter, file access, model tier, engine preference |
+| Rules        | `equipe_core::runtime` | assignment, order, concurrency, budgets, gates — code, never a model's word |
 | Board        | `equipe_core::store` | tickets, events, agent logs in SQLite |
 
 ## Engines
 
 | Kind | What runs a turn | Today |
 |---|---|---|
-| `llm` | A thin provider call — no tools, no loop | **Codex Responses** (`openai::responses`): one streamed turn on the ChatGPT backend. For non-coding roles (PO, Designer) |
+| `llm` | A thin provider call — no tools, no loop | **Codex Responses** (`openai::responses`): one streamed turn on the ChatGPT backend. For roles that read and report (PM, QA, data) |
 | `cli` | A local coding-agent CLI, driven headless | **Claude Code** (`claude_code`): `claude -p --output-format stream-json`, reporting text and tool use as it works |
 | `acp` | An external coding agent over the Agent Client Protocol | **Planned** for Codex edits via `codex-acp`; later any ACP agent |
 
@@ -158,7 +158,7 @@ ticket, just as a developer's notebook is not the team's tracker:
    (`2/4`). Each update replaces the previous plan whole (ACP requires this).
 2. Plan entries never become tickets on their own.
 3. Work outside the ticket's scope is **proposed** as a new ticket (through a board
-   tool equipe offers the agent over MCP); the PO or a person accepts it.
+   tool equipe offers the agent over MCP); the PM or the person accepts it.
 4. A plan with every step done does not close the ticket. Review and the approval
    gate do.
 
@@ -236,6 +236,63 @@ who is still working, branches landed — is printed to the normal screen.
 - Drawn only when something changed; nothing redraws on a timer.
 
 Next: the board fills the team pane, with approvals waiting in a fixed place.
+
+## The squad
+
+A **member** is a session with a role: a charter, an engine, a model, its own
+memory and — for roles that edit — its own branch and worktree. Roles live in
+`equipe_core::roles`:
+
+| Role | Does | Edits files | Model tier |
+|---|---|---|---|
+| `pm` (or `po`) | turns what the person wants into a plan and tickets; the main contact | no | top |
+| `designer` | flows, layout, visual language, tokens | yes | upper |
+| `frontend` | pages, components, styles, client logic | yes | upper |
+| `backend` | servers, APIs, data models, integrations | yes | top |
+| `qa` | reviews, test plans, edge cases, acceptance | no | mid |
+| `data` | metrics, analysis, answers with numbers | no | mid |
+| `custom <name>` | whatever its name says | no | upper |
+
+- **Engines and models.** A tier is resolved against what the person's plan
+  offers: Claude Code by alias (top `opus`, otherwise `sonnet`), Codex from its live
+  catalog (its first model, or a `mini` one for the mid tier). Editing roles run on
+  Claude Code for now; the others prefer Codex — which also puts QA on a different
+  engine from the engineers, so a second model checks the first one's work.
+- **Charters** are added to the engine's own instructions, never replacing them:
+  `--append-system-prompt` for Claude Code, `instructions` for Codex. A charter names
+  the member, its teammates and who keeps the plan, and is rebuilt every turn, so it
+  follows the team as members come and go.
+- **Names** are unique per team — `frontend`, `frontend-2` — and editing members
+  work on `equipe/<name>-<id>` branches.
+
+### Talking to the team
+
+**The PM is the person's main contact**, the way a CEO mostly talks to the PM.
+But the person can talk to anyone, the way a CEO can walk over to any desk — Tab or
+`@name` in the console. Three rules keep that from splitting the team:
+
+1. **Direct talk is never hidden.** What the person tells a member shows in the
+   PM's conversation (`↪ You → backend: …`), and what was said both ways travels
+   with the PM's next message — so the PM keeps up without spending a turn on every
+   exchange.
+2. **A busy member is left a memo.** A message sent mid-turn waits and is
+   delivered when the turn ends (memos left in the meantime arrive together). Esc
+   stops the turn, and a waiting memo goes in at once — a tap on the shoulder.
+3. **Scope changes become tickets.** A member asked for something beyond its task
+   says so and proposes a ticket instead of quietly widening its work.
+
+Approvals never pass through the PM: equipe asks the person directly, because no
+agent's word — the PM's included — can authorize a merge or a deploy.
+
+### Memory
+
+Claude Code keeps an auto memory per directory, shared with the person's own
+sessions there — run naively, a member would read the person's private notes and
+write into them. Each member instead keeps its own: equipe moves Claude Code's
+auto memory to the member's directory with a setting of the unmodified binary
+(`--settings '{"autoMemoryDirectory": …}'`), under
+`~/.equipe/projects/<project>/members/<name>/memory`. Instructions that belong to
+the repository (`CLAUDE.md`) are still read; they are the team's.
 
 ## Desktop
 

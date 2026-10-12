@@ -64,6 +64,15 @@ pub enum Access {
     EditFiles,
 }
 
+/// Who a session is on the team.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Member {
+    /// A built-in role id (`pm`, `frontend`, …) or a name the person chose.
+    pub role: String,
+    /// Unique in its project, so the person can address it: `frontend`, `frontend-2`.
+    pub name: String,
+}
+
 /// How to open a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSpec {
@@ -75,6 +84,9 @@ pub struct SessionSpec {
     /// Where the agent works. With [`Access::EditFiles`], the repository the
     /// session's branch is cut from.
     pub cwd: PathBuf,
+    /// The role the session plays on the team. `None`: a plain agent, no role.
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 /// Screen → core: "do this".
@@ -83,8 +95,9 @@ pub struct SessionSpec {
 pub enum Command {
     /// Open a session. Answered by [`Event::SessionStarted`] or [`Event::Error`].
     Start { session: SessionId, spec: SessionSpec },
-    /// Send the user's message. One turn runs at a time per session; a message
-    /// sent while a turn runs is refused with an error.
+    /// Send the person's message. One turn runs at a time per session: a
+    /// message sent while a turn runs waits as a memo ([`Event::MessageQueued`])
+    /// and is delivered when the turn ends — or at once, if the turn is stopped.
     Submit { session: SessionId, text: String },
     /// Stop the turn in progress (Esc). Answered by a `TurnEnded` with
     /// [`TurnOutcome::Interrupted`].
@@ -138,9 +151,18 @@ pub enum Event {
         model: Option<String>,
         /// Set for [`Access::EditFiles`] sessions.
         workspace: Option<Workspace>,
+        /// Set for a session that plays a role on the team.
+        #[serde(default)]
+        member: Option<Member>,
     },
     /// What the person asked — sent to every screen, not only the one it was typed in.
     UserMessage { session: SessionId, text: String },
+    /// A message left while the agent works. It becomes a [`Event::UserMessage`]
+    /// when the turn ends; memos left in the meantime arrive together.
+    MessageQueued { session: SessionId, text: String },
+    /// A line from equipe for this session's conversation — e.g. the PM being
+    /// told that the person spoke to a member directly.
+    Notice { session: SessionId, text: String },
     /// A fragment of the agent's answer.
     TextDelta { session: SessionId, text: String },
     /// The agent is using a tool, e.g. `Edit` on a file.
@@ -181,6 +203,8 @@ impl Event {
         match self {
             Event::SessionStarted { session, .. }
             | Event::UserMessage { session, .. }
+            | Event::MessageQueued { session, .. }
+            | Event::Notice { session, .. }
             | Event::TextDelta { session, .. }
             | Event::ToolUse { session, .. }
             | Event::ModelKnown { session, .. }
@@ -219,6 +243,8 @@ pub enum SessionState {
 pub struct SessionInfo {
     pub session: SessionId,
     pub project: PathBuf,
+    #[serde(default)]
+    pub member: Option<Member>,
     pub engine: Engine,
     pub model: Option<String>,
     pub access: Access,
@@ -230,6 +256,9 @@ pub struct SessionInfo {
     /// The latest part of the conversation, oldest first. A reply still
     /// streaming is its last `Reply`.
     pub recent: Vec<Entry>,
+    /// Memos waiting for the turn in progress to end.
+    #[serde(default)]
+    pub queued: Vec<String>,
 }
 
 /// Everything open on one project, sent to a screen when it attaches.
@@ -262,7 +291,10 @@ mod tests {
                 engine: Engine::Claude,
                 model: None,
                 workspace: Some(Workspace { branch: "equipe/try-1".into(), base: "abc".into(), path: "/w".into() }),
+                member: Some(Member { role: "frontend".into(), name: "frontend-2".into() }),
             },
+            Event::MessageQueued { session: 1, text: "also the footer".into() },
+            Event::Notice { session: 2, text: "↪ You → frontend: hi".into() },
             Event::TextDelta { session: 1, text: "안녕".into() },
             Event::ToolUse { session: 1, tool: "Edit".into(), target: Some("a.rs".into()) },
             Event::TurnEnded {
@@ -280,7 +312,7 @@ mod tests {
 
     #[test]
     fn a_session_spec_round_trips() {
-        let spec = SessionSpec { engine: None, model: Some("haiku".into()), access: Access::EditFiles, cwd: "/repo".into() };
+        let spec = SessionSpec { engine: None, model: Some("haiku".into()), access: Access::EditFiles, cwd: "/repo".into(), role: Some("frontend".into()) };
         let cmd = Command::Start { session: 7, spec };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains("\"edit_files\""), "{json}");
@@ -301,6 +333,7 @@ mod tests {
             sessions: vec![SessionInfo {
                 session: 9,
                 project: "/repo".into(),
+                member: Some(Member { role: "pm".into(), name: "pm".into() }),
                 engine: Engine::Codex,
                 model: Some("m".into()),
                 access: Access::ReadOnly,
@@ -309,10 +342,18 @@ mod tests {
                 title: Some("fix it".into()),
                 tokens: 12,
                 recent: vec![Entry::User { text: "fix it".into() }, Entry::Reply { text: "on it".into() }],
+                queued: vec!["and the tests".into()],
             }],
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert_eq!(serde_json::from_str::<Snapshot>(&json).unwrap(), snapshot);
+    }
+
+    #[test]
+    fn older_messages_without_members_still_parse() {
+        // A screen from before members existed sends specs without a role.
+        let spec: SessionSpec = serde_json::from_str(r#"{"engine":null,"model":null,"access":"read_only","cwd":"/r"}"#).unwrap();
+        assert_eq!(spec.role, None);
     }
 
     #[test]
