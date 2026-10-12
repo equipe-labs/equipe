@@ -2,89 +2,35 @@
 <html>
 <head>
 <meta charset="utf-8">
-<!-- The org avatar. `#mark` (default): the lowercase e and its chrome period.
-     `#object`: the chrome sculpture alone. Render with demo/render-avatar.sh. -->
+<!-- The org avatar: a label. Bone ground, the wordmark reduced to its first
+     letter and its chrome-grey period. Render with demo/render-avatar.sh. -->
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { width:512px; height:512px; }
   body {
-    background:#0A0A0C;
+    background:#EFEDE7;
     font-family:"Helvetica Neue", Helvetica, Arial, sans-serif;
     -webkit-font-smoothing:antialiased;
     position:relative; overflow:hidden;
   }
-  /* studio light from the upper right, the floor falling into shadow */
+  /* the faintest studio fall-off, so the ground reads as paper, not a fill */
   .light { position:absolute; inset:0;
-    background:
-      radial-gradient(420px 360px at 78% 14%, rgba(180,190,205,0.17), transparent 62%),
-      radial-gradient(560px 420px at 50% 118%, rgba(0,0,0,0.6), transparent 60%);
+    background: radial-gradient(520px 460px at 32% 22%, rgba(255,255,255,0.55), transparent 65%),
+                radial-gradient(620px 520px at 70% 110%, rgba(10,10,12,0.06), transparent 60%);
   }
-  .grain { position:absolute; inset:0; opacity:0.12; mix-blend-mode:overlay; pointer-events:none; }
-
-  /* A: e + chrome period */
-  .mark { position:absolute; left:50%; top:50%; transform:translate(-50%, -61%); display:flex; align-items:flex-end; }
-  .e { font-size:372px; font-weight:700; letter-spacing:-14px; line-height:0.74; color:#EFEDE7; }
-  .dot { width:88px; height:88px; margin-left:20px; margin-bottom:-9px; }
-
-  /* B: the sculpture alone, cropped off the right edge */
-  .obj { position:absolute; right:-64px; top:50%; transform:translateY(-50%); width:470px; height:470px; display:none; }
-  body.object .mark { display:none; }
-  body.object .obj { display:block; }
+  .mark { position:absolute; left:50%; top:50%; transform:translate(-50%, -57%);
+    font-size:318px; font-weight:700; letter-spacing:-18px; line-height:1; color:#0A0A0C; white-space:nowrap; }
+  .mark span { color:#8f9aa8; }
+  .grain { position:absolute; inset:0; width:100%; height:100%; opacity:0.07; mix-blend-mode:multiply; pointer-events:none; }
 </style>
 </head>
 <body>
   <div class="light"></div>
-
-  <svg width="0" height="0" style="position:absolute">
-    <defs>
-      <radialGradient id="chrome" cx="36%" cy="28%" r="82%">
-        <stop offset="0%"  stop-color="#F6F7F8"/>
-        <stop offset="18%" stop-color="#D2D6DC"/>
-        <stop offset="40%" stop-color="#8A909B"/>
-        <stop offset="62%" stop-color="#3B4049"/>
-        <stop offset="82%" stop-color="#181B21"/>
-        <stop offset="100%" stop-color="#0B0D11"/>
-      </radialGradient>
-      <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0%" stop-color="rgba(180,205,230,0.6)"/>
-        <stop offset="45%" stop-color="rgba(180,205,230,0)"/>
-        <stop offset="100%" stop-color="rgba(120,110,150,0.35)"/>
-      </linearGradient>
-      <filter id="soft"><feGaussianBlur stdDeviation="7"/></filter>
-      <filter id="softer"><feGaussianBlur stdDeviation="2.2"/></filter>
-    </defs>
-  </svg>
-
-  <div class="mark">
-    <div class="e">e</div>
-    <!-- the period, as the brand's chrome object -->
-    <svg class="dot" viewBox="0 0 100 100">
-      <path d="M50 6 C 74 5, 94 24, 93 50 C 92 74, 74 95, 48 94 C 24 93, 6 74, 7 50 C 8 26, 27 7, 50 6 Z"
-            fill="url(#chrome)" stroke="url(#rim)" stroke-width="1.2"/>
-      <ellipse cx="34" cy="31" rx="15" ry="10" fill="#ffffff" opacity="0.7" filter="url(#softer)"/>
-      <path d="M22 70 C 36 84, 62 86, 80 70" stroke="#ffffff" stroke-width="3" fill="none" opacity="0.16" filter="url(#softer)"/>
-    </svg>
-  </div>
-
-  <svg class="obj" viewBox="0 0 560 560">
-    <ellipse cx="285" cy="470" rx="185" ry="26" fill="#000" opacity="0.55" filter="url(#soft)"/>
-    <path d="M280 66 C 402 60, 500 158, 486 288 C 476 402, 388 500, 262 490
-             C 150 481, 60 388, 70 268 C 78 158, 162 72, 280 66 Z"
-          fill="url(#chrome)" stroke="url(#rim)" stroke-width="1.5"/>
-    <ellipse cx="196" cy="182" rx="70" ry="46" fill="#ffffff" opacity="0.65" filter="url(#soft)"/>
-    <ellipse cx="360" cy="150" rx="26" ry="14" fill="#ffffff" opacity="0.45" filter="url(#soft)"/>
-    <path d="M120 360 C 200 430, 330 442, 430 372" stroke="#ffffff" stroke-width="10"
-          fill="none" opacity="0.18" filter="url(#soft)"/>
-  </svg>
-
+  <div class="mark">e<span>.</span></div>
   <svg class="grain">
     <filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/>
       <feColorMatrix type="saturate" values="0"/></filter>
     <rect width="100%" height="100%" filter="url(#n)"/>
   </svg>
-
-  <script>
-    if (location.hash === "#object") document.body.classList.add("object");
-  </script>
 </body>
 </html>

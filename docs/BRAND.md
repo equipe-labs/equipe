@@ -63,8 +63,8 @@ system" without being a literal diagram. Always paired with:
     --screenshot="$PWD/demo/social-card.png" "file://$PWD/demo/social-card.html"
   ```
 - `demo/avatar.html` → `demo/render-avatar.sh` renders `demo/avatar.png` (1024×1024),
-  the org avatar: the lowercase **e** and its period as the chrome object — the
-  wordmark reduced to what still reads at 20px. `render-avatar.sh object` renders
-  the sculpture alone, for large placements only.
+  the org avatar: a **label** — bone ground, a black lowercase **e** and its
+  chrome-grey period. The wordmark reduced to what still reads at 20px; inverted,
+  so it stands apart from the dark icons around it on GitHub's light and dark themes.
 - Terminal demo gifs (`demo/*.tape`) inherit the same palette (Dracula-ish dark);
   keep them dark, quiet, and text-forward.
