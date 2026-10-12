@@ -42,14 +42,15 @@ One agent, running on the user's own plan, does real work. No board yet.
 
 ### Phase 2 — The spine ← next
 Board + one role + one ticket → a real branch/diff.
-- **Core speaks in events** (see ARCHITECTURE "Code layout"), so the CLI, a terminal
-  UI and the desktop app render one stream.
+- ✅ **Core speaks in events** (`equipe-protocol` + the core runtime), so the CLI,
+  the terminal UI and the desktop app render one stream.
 - SQLite board in `equipe-core` (`tickets`, `events`) + `equipe board`.
 - One `backend` role (charter + toolset) + an orchestrator that takes a ticket,
   runs the engine in a worktree (the `--edit` sandbox, per ticket) and lands a
   branch. Human reviews.
-- **Interactive `equipe` v0**: a terminal UI (`ratatui`) — one agent, streaming,
-  slash commands, approvals inline.
+- ✅ **Interactive `equipe` v0**: the team console in the terminal — several agents
+  at once, streaming, conversation memory, bracketed paste, `/new` `/edit` `/close`.
+  Next: approvals inline, the board in the team pane.
 - **Retires:** orchestrator ↔ board ↔ worktree wiring.
 - **Done:** file a ticket → a branch appears with the change. **Demo:** ticket in,
   branch out (single role).
@@ -101,8 +102,8 @@ changing shape — is verified by running it, and each bug found that way gets a
 
 ## Current status
 
-Phases 0 and 1 done (Codex edits over ACP outstanding). Phase 2 starts with the
-event-speaking core and the board.
+Phases 0 and 1 done (Codex edits over ACP outstanding). Phase 2 under way: the core
+speaks in events and the terminal team console works; the board is next.
 
 Open risks: whether driving `claude -p` on a subscription fits Anthropic's
 allowance (ask before advertising it); Claude Code making `--bare` the default for

@@ -31,15 +31,31 @@ An all-Rust workspace. The domain lives in one core that every front end shares.
 
 | Crate | Owns | Depends on |
 |---|---|---|
-| `equipe-core` (`crates/core`) | The squad's domain: roles; the board and agent logs in SQLite | — |
+| `equipe-protocol` (`crates/protocol`) | The contract between the brain and every screen: `Command`s in, `Event`s out | — |
+| `equipe-core` (`crates/core`) | The brain: the `runtime` that runs sessions on engines; roles; the board and agent logs in SQLite; worktree sandboxes | protocol, providers |
 | `equipe-providers` (`crates/providers`) | Sign-in and engines: Codex (OAuth, models, Responses turns), the user's Claude Code | — |
-| `equipe` (`crates/cli`) | The command line: commands, terminal presentation, worktree sandboxes | core, providers |
+| `equipe` (`crates/cli`) | Screens: the command line and the terminal UI | protocol, core |
 | `equipe-desktop` (`crates/desktop`) | The desktop app on GPUI Kit — see [DESKTOP.md](./DESKTOP.md) | core |
 
-**Next: the core speaks in events.** Engine calls, sessions and the board will
-publish a stream of events, and every front end — the CLI, an interactive
-terminal UI, the desktop app, an ACP server — renders that stream rather than
-owning logic. Codex's `core` / `tui` / `exec` / `app-server` split is the model.
+### The brain and the screens
+
+The core speaks in messages. A screen sends `Command`s — start a session,
+submit a message, interrupt, close — and renders the `Event`s that come back:
+text as it streams, tool use, turn ends, branches landed, errors with the
+command that fixes them. Screens never call an engine and hold no state beyond
+what they show. Codex's `core` / `tui` / `exec` / `app-server` split is the model.
+
+- Inside one process, messages are Rust values on a channel. Every message also
+  serializes to JSON, so `equipe serve` can later carry the same contract over a
+  socket as JSON-RPC 2.0 — the shape of ACP, MCP and LSP — and the terminal,
+  the desktop app, Slack or Zed attach as clients.
+- The runtime owns each session: its engine and model, the conversation so far
+  (Codex resends history; Claude Code resumes with `--resume`), and an editing
+  session's worktree. One turn runs at a time per session; Esc interrupts it at
+  once.
+- Because both sides meet only at the protocol, each is tested alone: the
+  runtime by sending commands against a stand-in engine, the screens by feeding
+  events and checking what they draw.
 
 ## Layers
 
@@ -169,9 +185,24 @@ The command line is a product surface, styled per [BRAND.md](./BRAND.md):
 - Every failure ends with the command that fixes it (`→ equipe login codex`).
 - Interactive choices are menus at a terminal and sensible defaults in scripts.
 
-Next: an interactive `equipe` (a terminal UI in the spirit of Claude Code and Codex,
-on `ratatui`), growing into a team-lead console — a live board of agents above a
-conversation with the PO, approvals inline.
+### The team console
+
+`equipe` with no command opens the terminal UI (`ratatui`). It takes the whole
+screen (alternate screen) because a team means several agents updating at once —
+something a scrolling transcript can't show — and prints a summary of what
+happened (branches landed, tokens) to the normal screen when it closes, so the
+record stays in the terminal's history.
+
+- Left: the team — each agent, its state (`● working`, `○ ready`), its model or
+  branch. Right: the selected agent's conversation and work. Bottom: the message.
+- Pastes arrive whole (bracketed paste): a newline inside a paste never sends.
+  A multi-line draft shows its size before it's sent.
+- Enter sends · Alt-Enter / Ctrl-J add a line · Esc stops the agent · Tab
+  switches agents · Ctrl-C clears the draft, twice quits · `/new`, `/edit`,
+  `/close`, `/help`, `/quit`.
+- Drawn only when something changed; nothing redraws on a timer.
+
+Next: the board fills the team pane, with approvals waiting in a fixed place.
 
 ## Desktop
 

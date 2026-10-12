@@ -125,6 +125,11 @@ impl Painter {
         }
     }
 
+    /// Whether this stream gets colour, and whether it gets 24-bit colour.
+    pub fn palette(self) -> (bool, bool) {
+        (self.color, self.truecolor)
+    }
+
     pub fn bold(self, text: &str) -> String {
         self.wrap("1", text)
     }

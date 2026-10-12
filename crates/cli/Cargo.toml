@@ -7,10 +7,14 @@ version.workspace = true
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
 console = "0.16.6"
+crossterm = { version = "0.29", features = ["event-stream", "bracketed-paste"] }
 dialoguer = "0.12.0"
+dirs = "7.0.0"
 equipe-core = { version = "0.0.1", path = "../core" }
 equipe-protocol = { version = "0.0.1", path = "../protocol" }
 equipe-providers = { version = "0.0.1", path = "../providers" }
+futures-util = "0.3.34"
+ratatui = "0.30.2"
 reqwest = { version = "0.13.5", default-features = false }
 terminal_size = "0.4.4"
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros"] }

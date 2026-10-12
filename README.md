@@ -71,6 +71,7 @@ CLAUDE CODE  your claude · signs itself in
 
 | Command | What it does |
 |---|---|
+| `equipe` | **The team console.** A full-screen terminal UI: your agents on the left, the selected one's conversation and work on the right. `/new` opens another agent, `/edit` one that changes files on its own branch, `/close` lands that branch |
 | `equipe login` | Pick an engine and sign in (`codex` / `claude`, `--again`, `--no-browser`) |
 | `equipe logout` | Forget equipe's Codex login (Claude Code keeps its own) |
 | `equipe status` | Which engines are ready, on which plan, with which models |
@@ -144,9 +145,10 @@ demo/render.sh                             # regenerate the hero gif (see demo/R
 
 | Crate | |
 |---|---|
-| `crates/core` | `equipe-core` — the squad's domain: roles, the board and agent logs in SQLite |
+| `crates/protocol` | `equipe-protocol` — the contract between the brain and every screen: Commands in, Events out |
+| `crates/core` | `equipe-core` — the brain: the runtime that runs sessions on engines, roles, the board, worktrees |
 | `crates/providers` | `equipe-providers` — sign-in and engines: Codex, your Claude Code |
-| `crates/cli` | `equipe` — the command line |
+| `crates/cli` | `equipe` — the command line and the terminal UI |
 | `crates/desktop` | `equipe-desktop` — the desktop app (GPUI) |
 
 ## License

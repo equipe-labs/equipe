@@ -5,6 +5,7 @@
 //! - **claude**: the user's installed Claude Code, which signs itself in. equipe
 //!   never sees Claude credentials (see `equipe_providers::claude_code`).
 
+mod tui;
 mod ui;
 
 use std::io::{IsTerminal as _, Write as _};
@@ -12,7 +13,7 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory as _, Parser, Subcommand, ValueEnum};
 use equipe_core::protocol::{self, Command as Cmd, Event, SessionSpec, TurnOutcome, Usage};
 use equipe_core::runtime;
 use equipe_providers::claude_code::{self, AuthStatus};
@@ -24,8 +25,9 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Parser)]
 #[command(name = "equipe", version, about = "A full software squad of AI agents.")]
 struct Cli {
+    /// With no command: the team console, at a terminal.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -90,7 +92,32 @@ async fn main() -> ExitCode {
         client: reqwest::Client::new(),
     };
 
-    let outcome = match cli.command {
+    let Some(command) = cli.command else {
+        // The team console needs a person at a terminal; scripts get the help.
+        if !(ui::interactive() && std::io::stdout().is_terminal()) {
+            let _ = Cli::command().print_help();
+            return ExitCode::SUCCESS;
+        }
+        let cwd = match std::env::current_dir() {
+            Ok(cwd) => cwd,
+            Err(err) => {
+                eprintln!("{}", ui::err().fail_line(&err.to_string()));
+                return ExitCode::FAILURE;
+            }
+        };
+        return match tui::run(cwd, VERSION).await {
+            Ok(summary) => {
+                tui::print_summary(&summary);
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("{}", ui::err().fail_line(&format!("The terminal UI stopped: {err}")));
+                ExitCode::FAILURE
+            }
+        };
+    };
+
+    let outcome = match command {
         Command::Login { engine, timeout, no_browser, again } => app.login(engine, timeout, no_browser, again).await,
         Command::Logout => app.logout(),
         Command::Status => app.status().await,
