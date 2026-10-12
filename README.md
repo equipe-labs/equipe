@@ -132,7 +132,7 @@ From source, until releases are published. Needs [Rust](https://rustup.rs) 1.88+
 and git; [Claude Code](https://code.claude.com/docs/en/setup) for the `claude` engine.
 
 ```bash
-git clone https://github.com/livelikeabel/equipe && cd equipe
+git clone https://github.com/equipe-labs/equipe && cd equipe
 cargo install --locked --path crates/cli
 ```
 
