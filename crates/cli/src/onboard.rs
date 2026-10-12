@@ -81,8 +81,11 @@ pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
         }
     }
 
-    // A new squad: the person's team, named by them.
-    let suggestion = squads::suggest_name(&home, Path::new(&whoami()));
+    // A new squad: a team, named by the person. The repository's owner on its
+    // host — an organisation, usually — is the team it most likely belongs to.
+    let owner = remote_url(&project).as_deref().and_then(owner_of).map(str::to_owned);
+    let suggestion = squads::suggest_name(&home, Path::new(owner.as_deref().unwrap_or("my-squad")));
+    eprintln!("{}", e.note(2, "A squad is your team, not this repository: it can work on all your projects."));
     let squad: String = dialoguer::Input::with_theme(&*theme)
         .with_prompt("Name your squad")
         .default(suggestion)
@@ -139,7 +142,35 @@ pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
     Ok(Start { squad, members })
 }
 
-/// The person's login name, for a squad name they can accept or change.
-fn whoami() -> String {
-    std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "my-squad".into())
+/// Where `project`'s `origin` points, if it has one.
+fn remote_url(project: &Path) -> Option<String> {
+    let out = std::process::Command::new("git").arg("-C").arg(project).args(["remote", "get-url", "origin"]).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned()).filter(|u| !u.is_empty())
+}
+
+/// The owner in a repository URL: `equipe-labs` in `https://github.com/equipe-labs/equipe-site.git`,
+/// `git@github.com:equipe-labs/equipe-site.git` or `ssh://git@host/equipe-labs/site`.
+fn owner_of(url: &str) -> Option<&str> {
+    let path = match url.split_once("://") {
+        Some((_, rest)) => rest.split_once('/')?.1,
+        None => url.split_once(':')?.1, // scp-like: git@host:owner/repo
+    };
+    let mut parts = path.trim_matches('/').split('/');
+    let owner = parts.next().filter(|o| !o.is_empty())?;
+    parts.next().filter(|r| !r.is_empty())?;
+    Some(owner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_repositorys_owner_is_read_from_any_kind_of_remote() {
+        assert_eq!(owner_of("https://github.com/equipe-labs/equipe-site.git"), Some("equipe-labs"));
+        assert_eq!(owner_of("git@github.com:equipe-labs/equipe-site.git"), Some("equipe-labs"));
+        assert_eq!(owner_of("ssh://git@gitlab.example.com/acme/web"), Some("acme"));
+        assert_eq!(owner_of("/srv/git/site.git"), None);
+        assert_eq!(owner_of("https://github.com/"), None);
+    }
 }
