@@ -432,6 +432,10 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
     let switch: usize = switch_label(app, app.pane, theme).iter().map(Span::width).sum();
     let other = if app.pane == Pane::Board { Pane::Conversation } else { Pane::Board };
     let mut hits = vec![(right.x + right.width.saturating_sub(switch as u16), right.x + right.width, right.y, Hit::Pane(other))];
+    // The squad's name in the header, and its ▾: the way to the other squads.
+    let header = content(screen);
+    let name_x = header.x + 10;
+    hits.push((name_x, name_x + unicode_width::UnicodeWidthStr::width(app.squad.as_str()) as u16 + 2, header.y, Hit::Squads));
     if app.pane == Pane::Board {
         let width = (board.width as usize).saturating_sub(1).min(PROSE_MAX + 20);
         let rows = board_list(app, theme, width);
@@ -603,6 +607,10 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
         ("y · a · n", "allow · always allow · decline a request"),
         ("on the board", "a accept · r ask for changes · d the diff · Enter talk to its owner"),
     ]), keys));
+    lines.extend(heading("MODES — how much members do on their own · /mode [member] <mode>"));
+    let modes: Vec<(String, &str)> =
+        equipe_core::protocol::Mode::ALL.iter().map(|m| (m.label().to_owned(), m.summary())).collect();
+    lines.extend(rows(&modes, keys));
     lines.extend(heading("COMMANDS — type / to complete"));
     let widest = commands.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
     lines.extend(rows(&commands, widest));
@@ -622,6 +630,8 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App, theme: Theme, branch:
         Span::styled(".", theme.dim()),
         Span::raw("   "),
         Span::styled(app.squad.clone(), theme.bold()),
+        // A click on the name lists the other squads.
+        Span::styled(" ▾", theme.dim()),
     ];
     // Without the squad pane, the header says who is there.
     if narrow {

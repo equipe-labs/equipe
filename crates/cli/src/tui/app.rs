@@ -46,6 +46,8 @@ pub enum AgentState {
 /// Something on screen a click acts on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hit {
+    /// The squad's name in the header: lists the other squads.
+    Squads,
     Pane(Pane),
     Ticket(TicketId),
 }
@@ -253,6 +255,8 @@ pub struct App {
     pub open_browser: bool,
     /// The help screen is open over the conversation.
     pub help_open: bool,
+    /// Another squad to show, and the roles to start it with when it is new.
+    pub switch_to: Option<(String, Vec<String>)>,
     /// Which completion is picked, and the text the person closed completion on.
     pub pick: usize,
     /// The person moved the pick with ↑↓: Enter takes it even after a space.
@@ -317,6 +321,7 @@ impl App {
             view_diff: None,
             open_browser: false,
             help_open: false,
+            switch_to: None,
             pick: 0,
             picked: false,
             dismissed: None,
@@ -439,6 +444,12 @@ impl App {
             Some(Hit::Pane(pane)) => {
                 self.pane = pane;
                 self.board_scroll = 0;
+            }
+            Some(Hit::Squads) => {
+                self.pane = Pane::Conversation;
+                self.help_open = false;
+                self.composer.clear();
+                self.composer.insert_str("/squad ");
             }
             Some(Hit::Ticket(id)) => {
                 self.pane = Pane::Board;
@@ -723,6 +734,10 @@ impl App {
             open: tickets(&[TicketStatus::Proposed, TicketStatus::Todo, TicketStatus::InProgress, TicketStatus::Review]),
             members: self.agents.iter().filter_map(|a| a.member.as_ref().map(|m| (m.name.as_str(), m.role.as_str()))).collect(),
             roles: roles::ROLES.iter().map(|r| r.id).collect(),
+            // Read only when it's wanted: it opens every squad's journal.
+            squads: if text.starts_with("/squad ") { self.other_squads() } else { Vec::new() },
+            mode: Some(self.mode),
+            member_modes: self.agents.iter().filter_map(|a| Some((a.member.as_ref()?.name.as_str(), a.mode?))).collect(),
         };
         commands::complete(text, &ctx)
     }
@@ -1021,6 +1036,7 @@ impl App {
                 Vec::new()
             }
             "browser" => self.browser(rest),
+            "squad" => self.squad_command(rest),
             "mouse" => {
                 self.mouse = !self.mouse;
                 self.flash = Some(if self.mouse {
@@ -1046,6 +1062,67 @@ impl App {
         }
     }
 
+    /// Every squad but this one, with what each works on.
+    fn other_squads(&self) -> Vec<(String, String)> {
+        let home = equipe_providers::credentials::equipe_home();
+        equipe_core::squads::list(&home)
+            .into_iter()
+            .filter(|s| s.name != self.squad)
+            .map(|s| {
+                let projects: Vec<String> = s.projects.iter().map(|p| equipe_core::board::project_name(p)).collect();
+                (s.name, format!("works on {}", projects.join(", ")))
+            })
+            .collect()
+    }
+
+    /// `/squad <name>` shows another squad; `/squad new <name> <folder>` starts
+    /// one on that folder, with the PM and the usual team.
+    fn squad_command(&mut self, rest: &str) -> Vec<Command> {
+        let home = equipe_providers::credentials::equipe_home();
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        match words.as_slice() {
+            [] => {
+                let others: Vec<String> = self.other_squads().into_iter().map(|(name, _)| name).collect();
+                self.flash = Some(match others.as_slice() {
+                    [] => format!("This is {}, your only squad · /squad new <name> <folder> starts another", self.squad),
+                    names => format!("On {} · also {} · /squad <name> switches, /squad new starts one", self.squad, names.join(", ")),
+                });
+            }
+            ["new"] | ["new", _] => {
+                self.flash = Some("A name and the folder it works in: /squad new shop ~/Projects/shop".into());
+            }
+            ["new", name, folder] => {
+                let path = match folder.strip_prefix("~/") {
+                    Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
+                    None => std::path::PathBuf::from(folder),
+                };
+                if !path.is_dir() {
+                    self.flash = Some(format!("No folder at {folder}"));
+                    return Vec::new();
+                }
+                let project = equipe_core::runtime::project_of(&path);
+                if let Some(owner) = equipe_core::squads::find(&home, &project) {
+                    self.flash = Some(format!("{} is already {owner}'s · /squad {owner}", equipe_core::board::project_name(&project)));
+                    return Vec::new();
+                }
+                match equipe_core::squads::create(&home, name, &project) {
+                    Ok(()) => self.switch_to = Some(((*name).to_owned(), crate::onboard::starting_team())),
+                    Err(err) => self.flash = Some(err),
+                }
+            }
+            [name] if *name == self.squad => self.flash = Some(format!("Already on {name}")),
+            [name] => {
+                if equipe_core::squads::list(&home).iter().any(|s| s.name == *name) {
+                    self.switch_to = Some(((*name).to_owned(), Vec::new()));
+                } else {
+                    self.flash = Some(format!("No squad called {name} · /squad new {name} <folder> starts it"));
+                }
+            }
+            _ => self.flash = Some("/squad <name> switches · /squad new <name> <folder> starts one".into()),
+        }
+        Vec::new()
+    }
+
     /// `/browser` opens the sign-in window; `/browser show [member]` puts members'
     /// browsers on this Mac's screen, `/browser hide [member]` hides them again.
     fn browser(&mut self, rest: &str) -> Vec<Command> {
@@ -1053,6 +1130,22 @@ impl App {
         let (show, member) = match words.as_slice() {
             [] => {
                 self.open_browser = true;
+                return Vec::new();
+            }
+            ["max"] => {
+                let home = equipe_providers::credentials::equipe_home();
+                self.flash = Some(format!("Up to {} browsers open at once · /browser max <n> changes it", equipe_core::browser::at_once(&home)));
+                return Vec::new();
+            }
+            ["max", n] => {
+                let home = equipe_providers::credentials::equipe_home();
+                self.flash = Some(match n.parse::<usize>() {
+                    Ok(max @ 1..=16) => match equipe_core::browser::set_at_once(&home, max) {
+                        Ok(()) => format!("Up to {max} browsers open at once, from the next one that opens"),
+                        Err(err) => format!("Couldn't keep it: {err}"),
+                    },
+                    _ => "A number from 1 to 16: /browser max 6".into(),
+                });
                 return Vec::new();
             }
             ["show", rest @ ..] if rest.len() <= 1 => (true, rest.first()),
@@ -1724,6 +1817,30 @@ mod tests {
         assert!(app.help_open);
         app.on_key(key(KeyCode::Esc), Instant::now());
         assert!(!app.help_open);
+    }
+
+    #[test]
+    fn a_squad_is_switched_to_by_name_and_started_on_a_folder() {
+        let (mut app, _, _) = team();
+        type_text(&mut app, "/squad acme");
+        enter(&mut app);
+        assert!(app.flash.as_deref().unwrap().contains("Already on acme"), "{:?}", app.flash);
+        assert!(app.switch_to.is_none());
+        type_text(&mut app, "/squad new");
+        enter(&mut app);
+        assert!(app.flash.as_deref().unwrap().contains("the folder it works in"), "{:?}", app.flash);
+        type_text(&mut app, "/squad new shop /no/such/folder");
+        enter(&mut app);
+        assert!(app.flash.as_deref().unwrap().contains("No folder"), "{:?}", app.flash);
+        assert!(app.switch_to.is_none());
+    }
+
+    #[test]
+    fn the_squads_name_in_the_header_lists_the_others() {
+        let (mut app, _, _) = team();
+        app.set_hits(vec![(10, 20, 0, Hit::Squads)], None);
+        app.on_click(12, 0);
+        assert_eq!(app.composer.text(), "/squad ");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! The console's commands in one place: what `/help` lists and what completion
 //! offers as the person types `/…` or `@…`.
 
-use equipe_core::protocol::TicketId;
+use equipe_core::protocol::{Mode, TicketId};
 
 pub struct Spec {
     pub name: &'static str,
@@ -9,7 +9,8 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-pub const COMMANDS: [Spec; 12] = [
+pub const COMMANDS: [Spec; 13] = [
+    Spec { name: "squad", args: "[name] · new <name> <folder>", about: "Switch squads, or start a new one" },
     Spec { name: "accept", args: "T-n", about: "Approve handed-in work" },
     Spec { name: "reopen", args: "T-n <what to change>", about: "Send work back with what to change" },
     Spec { name: "cancel", args: "T-n", about: "Drop a ticket" },
@@ -17,7 +18,7 @@ pub const COMMANDS: [Spec; 12] = [
     Spec { name: "add", args: "<role…> [codex|claude]", about: "Bring in teammates" },
     Spec { name: "close", args: "", about: "Remove the selected member" },
     Spec { name: "mode", args: "[member] plan|ask|auto|full", about: "How much members do on their own" },
-    Spec { name: "browser", args: "[show|hide [member]]", about: "Sign in to sites; show or hide members' browsers" },
+    Spec { name: "browser", args: "[show|hide [member] · max <n>]", about: "Sign in to sites; show, hide or cap members' browsers" },
     Spec { name: "export", args: "", about: "Open the conversation in your editor" },
     Spec { name: "mouse", args: "", about: "Let the terminal select text" },
     Spec { name: "help", args: "", about: "Keys and commands" },
@@ -45,6 +46,11 @@ pub struct Context<'a> {
     /// The squad's members: name and role.
     pub members: Vec<(&'a str, &'a str)>,
     pub roles: Vec<&'a str>,
+    /// Every squad: its name and what it works on, the one shown first.
+    pub squads: Vec<(String, String)>,
+    /// The squad's mode, and each member's own where it differs.
+    pub mode: Option<Mode>,
+    pub member_modes: Vec<(&'a str, Mode)>,
 }
 
 const MODES: [&str; 4] = ["plan", "ask", "auto", "full"];
@@ -105,16 +111,41 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
         ("cancel", 1) => tickets(&ctx.open, ""),
         // What to change follows the number.
         ("reopen", 1) => tickets(&ctx.reopenable, " "),
+        // Each mode says what it lets members do, and which one is on now.
         ("mode", 1) => {
-            let mut choices: Vec<Choice> = MODES.iter().filter(|w| starts(w)).map(|m| word(m, "for the whole squad", "")).collect();
-            choices.extend(ctx.members.iter().filter(|(m, _)| starts(m)).map(|(m, _)| word(m, "just this member", " ")));
+            let mut choices: Vec<Choice> =
+                MODES.iter().filter(|w| starts(w)).map(|m| word(m, &mode_about(m, ctx.mode, "the squad"), "")).collect();
+            choices.extend(ctx.members.iter().filter(|(m, _)| starts(m)).map(|(m, _)| {
+                let own = ctx.member_modes.iter().find(|(name, _)| name == m).map(|(_, mode)| *mode);
+                let now = match (own, ctx.mode) {
+                    (Some(mode), _) => format!("just this member · on {} of its own", mode.label()),
+                    (None, Some(mode)) => format!("just this member · on the squad's {}", mode.label()),
+                    (None, None) => "just this member".to_owned(),
+                };
+                word(m, &now, " ")
+            }));
             choices
         }
         ("mode", 2) if ctx.members.iter().any(|(m, _)| *m == words[0]) => {
-            MODES.iter().chain(["squad"].iter()).filter(|w| starts(w)).map(|m| word(m, "", "")).collect()
+            let own = ctx.member_modes.iter().find(|(name, _)| *name == words[0]).map(|(_, mode)| *mode);
+            let mut choices: Vec<Choice> =
+                MODES.iter().filter(|w| starts(w)).map(|m| word(m, &mode_about(m, own, words[0]), "")).collect();
+            if starts("squad") {
+                let squad = ctx.mode.map_or(String::new(), |m| format!(" ({})", m.label()));
+                choices.push(word("squad", &format!("back on the squad's mode{squad}"), ""));
+            }
+            choices
         }
         ("add", _) => ctx.roles.iter().filter(|w| starts(w)).map(|r| word(r, "", " ")).collect(),
-        ("browser", 1) => [("show", "browsers on this Mac's screen"), ("hide", "browsers hidden again")]
+        ("squad", 1) => {
+            let mut choices: Vec<Choice> = ctx.squads.iter().filter(|(n, _)| starts(n)).map(|(n, about)| word(n, about, "")).collect();
+            if starts("new") {
+                choices.push(word("new", "start a squad: a name, then the folder it works in", " "));
+            }
+            choices
+        }
+        ("squad", 3) if words[0] == "new" => folders(typed).into_iter().map(|f| word(&f, "", "")).collect(),
+        ("browser", 1) => [("show", "browsers on this Mac's screen"), ("hide", "browsers hidden again"), ("max", "how many open at once")]
             .iter()
             .filter(|(w, _)| starts(w))
             .map(|(w, about)| word(w, about, ""))
@@ -124,6 +155,43 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
         }
         _ => Vec::new(),
     }
+}
+
+/// What a mode lets members do — with "now" on the one `who` is on.
+fn mode_about(word: &str, now: Option<Mode>, who: &str) -> String {
+    let Some(mode) = Mode::parse(word) else {
+        return String::new();
+    };
+    let on = if now == Some(mode) { format!("now, for {who} · ") } else { String::new() };
+    format!("{on}{}", mode.summary())
+}
+
+/// Folders that complete a typed path — `~/Pro` → `~/Projects/` — not the
+/// hidden ones unless asked for.
+fn folders(typed: &str) -> Vec<String> {
+    let home = dirs::home_dir().unwrap_or_default();
+    let (dir, prefix) = match typed.rfind('/') {
+        Some(at) => (&typed[..=at], &typed[at + 1..]),
+        None => ("", typed),
+    };
+    let on_disk = match dir.strip_prefix("~/") {
+        Some(rest) => home.join(rest),
+        None if dir.is_empty() => std::env::current_dir().unwrap_or_default(),
+        None => std::path::PathBuf::from(dir),
+    };
+    let Ok(entries) = std::fs::read_dir(&on_disk) else {
+        return Vec::new();
+    };
+    let mut found: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(prefix) && (prefix.starts_with('.') || !name.starts_with('.')))
+        .map(|name| format!("{dir}{name}/"))
+        .collect();
+    found.sort();
+    found.truncate(30);
+    found
 }
 
 #[cfg(test)]
@@ -137,6 +205,9 @@ mod tests {
             open: vec![(5, "SEO check")],
             members: vec![("pm", "pm"), ("frontend", "frontend")],
             roles: vec!["pm", "designer", "frontend", "backend", "qa", "data"],
+            squads: vec![("equipe-squad".into(), "equipe-site".into()), ("ios".into(), "app".into())],
+            mode: Some(Mode::Auto),
+            member_modes: vec![("frontend", Mode::Full)],
         }
     }
 
@@ -161,8 +232,21 @@ mod tests {
         assert_eq!(texts(&complete("/reopen 3", &ctx())), ["/reopen T-3 "], "what to change comes next");
         assert_eq!(texts(&complete("/mode f", &ctx())), ["/mode full", "/mode frontend "]);
         assert_eq!(texts(&complete("/mode frontend a", &ctx())), ["/mode frontend ask", "/mode frontend auto"]);
+        let modes = complete("/mode ", &ctx());
+        assert!(modes[2].about.starts_with("now, for the squad · edits, installs"), "{:?}", modes[2]);
+        assert!(modes.iter().any(|c| c.label == "frontend" && c.about.contains("full access of its own")), "{modes:?}");
+        assert!(complete("/mode pm s", &ctx()).iter().any(|c| c.about.contains("back on the squad's mode (auto)")));
         assert_eq!(texts(&complete("/add designer q", &ctx())), ["/add designer qa "]);
         assert_eq!(texts(&complete("/browser show f", &ctx())), ["/browser show frontend"]);
         assert_eq!(texts(&complete("@fr", &ctx())), ["@frontend "]);
+        assert_eq!(texts(&complete("/squad ", &ctx())), ["/squad equipe-squad", "/squad ios", "/squad new "]);
+        assert_eq!(texts(&complete("/browser m", &ctx())), ["/browser max"]);
+        let tmp = std::env::temp_dir().join(format!("equipe-folders-{}", std::process::id()));
+        std::fs::create_dir_all(tmp.join("web")).unwrap();
+        std::fs::create_dir_all(tmp.join("wallet")).unwrap();
+        std::fs::create_dir_all(tmp.join(".git")).unwrap();
+        let typed = format!("/squad new shop {}/w", tmp.display());
+        assert_eq!(complete(&typed, &ctx()).iter().map(|c| c.label.rsplit('/').nth(1).unwrap()).collect::<Vec<_>>(), ["wallet", "web"]);
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 }

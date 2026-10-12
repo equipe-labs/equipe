@@ -92,13 +92,16 @@ pub const SECRETS: [&str; 20] = [
 ];
 
 /// Programs that only look: a chain of these, writing nowhere, changes nothing.
-const LOOKERS: [&str; 37] = [
+const LOOKERS: [&str; 50] = [
     "ls", "find", "cat", "head", "tail", "grep", "rg", "wc", "file", "stat", "du", "df", "which", "pwd", "echo", "tree",
     "basename", "dirname", "realpath", "readlink",
     // git, looking only: nothing here moves a ref, the index or a file.
     "git status", "git log", "git diff", "git show", "git grep", "git blame", "git rev-parse", "git ls-files",
     "git ls-tree", "git cat-file", "git describe", "git shortlog", "git remote -v", "git branch --list", "git branch -a",
     "git branch -r", "git branch -v",
+    // GitHub's CLI, reading: status, repositories, pull requests, issues, runs.
+    "gh auth status", "gh api", "gh repo view", "gh pr list", "gh pr view", "gh pr diff", "gh pr checks",
+    "gh issue list", "gh issue view", "gh run list", "gh run view", "gh release list", "gh release view",
 ];
 
 /// The tool equipe answers permission prompts with.
@@ -177,7 +180,10 @@ pub fn only_reads(tool: &str, action: &str, input: &Value) -> bool {
                 let acts = ["-exec", "-execdir", "-ok", "-delete", "-fprint", "-fls"].iter().any(|flag| c.contains(flag));
                 // git's few ways to write from a looking command: a file, or an editor/pager it runs.
                 let git_writes = c.starts_with("git ") && ["--output", "--ext-diff", "-c ", "--exec"].iter().any(|f| c.contains(f));
-                looks && !(c.starts_with("find") && acts) && !git_writes
+                // `gh api` reads unless told to send: a method, fields or a body.
+                let gh_sends = c.starts_with("gh api")
+                    && [" -X", "--method", " -f ", " -F ", "--field", "--raw-field", "--input"].iter().any(|f| c.contains(f));
+                looks && !(c.starts_with("find") && acts) && !git_writes && !gh_sends
             })
         }
         _ => false,
@@ -333,6 +339,10 @@ mod tests {
         assert!(!bash("git fetch origin"), "a fetch moves refs: it asks");
         assert!(!bash("git branch -D old"));
         assert!(!bash("git diff --output=/tmp/x"));
+        assert!(bash("gh auth status 2>&1 | head; gh api repos/equipe-labs/equipe/traffic/views 2>&1 | head -c 400"));
+        assert!(!bash("gh api -X DELETE repos/a/b"));
+        assert!(!bash("gh api repos/a/b/issues -f title=x"));
+        assert!(!bash("gh auth status; env | grep -i token"), "the environment holds keys: it asks");
         assert!(!bash("cat ~/.aws/credentials"));
         assert!(!only_reads("Write", "/tmp/a", &json!({ "file_path": "/tmp/a" })));
     }

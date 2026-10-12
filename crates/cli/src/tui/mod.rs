@@ -95,8 +95,9 @@ fn count_changes(app: &mut app::App, cwd: &std::path::Path) {
 }
 
 pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
+    let mut cwd = cwd;
     let (mut client, hello) = daemon::attach(&start.squad).await?;
-    let branch = current_branch(&cwd);
+    let mut branch = current_branch(&cwd);
     let daemon_build = hello.version.clone();
     let (mut app, first) = app::App::from_snapshot(cwd.clone(), hello.snapshot, &start.members);
     app.squad_width = saved_squad_width();
@@ -131,7 +132,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
     let mut last_sample = Instant::now();
     let mut daemon_lost = false;
     let mut layouts = view::Layouts::default();
-    let draw = |terminal: &mut ratatui::DefaultTerminal, app: &mut app::App, layouts: &mut view::Layouts| {
+    let draw = |terminal: &mut ratatui::DefaultTerminal, app: &mut app::App, layouts: &mut view::Layouts, branch: Option<&str>| {
         let size = terminal.size()?;
         if let Some((id, lines)) = layouts.prepare(app, theme, size.width) {
             app.grew(id, lines);
@@ -139,9 +140,9 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         let extent = view::extent(app, theme, ratatui::layout::Rect::new(0, 0, size.width, size.height), layouts);
         app.set_extent(extent.page, extent.conversation_max, extent.board_max);
         app.set_hits(extent.hits, extent.divider);
-        terminal.draw(|f| view::render(f, app, theme, branch.as_deref(), layouts)).map(|_| ())
+        terminal.draw(|f| view::render(f, app, theme, branch, layouts)).map(|_| ())
     };
-    draw(&mut terminal, &mut app, &mut layouts)?;
+    draw(&mut terminal, &mut app, &mut layouts, branch.as_deref())?;
     // While someone works, its dot breathes and its clock ticks; with nobody
     // working, nothing redraws on a timer.
     let mut clock = tokio::time::interval(Duration::from_millis(60));
@@ -250,6 +251,31 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                 _ => "The browser didn't open — run `equipe browser` in a terminal to see why.".into(),
             });
         }
+        if let Some((squad, members)) = app.switch_to.take() {
+            // Another squad: attach to it and show it in place — this one keeps
+            // working in the daemon.
+            match daemon::attach(&squad).await {
+                Ok((next, hello)) => {
+                    client = next;
+                    let home = equipe_providers::credentials::equipe_home();
+                    let first_project = equipe_core::squads::list(&home).into_iter().find(|s| s.name == squad).and_then(|s| s.projects.first().cloned());
+                    cwd = first_project.unwrap_or(cwd);
+                    branch = current_branch(&cwd);
+                    let (mut fresh, first) = app::App::from_snapshot(cwd.clone(), hello.snapshot, &members);
+                    first.into_iter().for_each(|c| client.send(c));
+                    fresh.squad_width = app.squad_width;
+                    fresh.mouse = app.mouse;
+                    fresh.flash = Some(if members.is_empty() {
+                        format!("Now on {squad} · /squad switches back")
+                    } else {
+                        format!("Started {squad}: the PM joins first, then the team · tell the PM what to build")
+                    });
+                    app = fresh;
+                    layouts = view::Layouts::default();
+                }
+                Err(err) => app.flash = Some(format!("Couldn't open {squad}: {err}")),
+            }
+        }
         if app.pane == app::Pane::Board {
             count_changes(&mut app, &cwd);
         }
@@ -271,7 +297,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
             }
         }
         // Drawn only after something changed — nothing redraws on a timer.
-        draw(&mut terminal, &mut app, &mut layouts)?;
+        draw(&mut terminal, &mut app, &mut layouts, branch.as_deref())?;
     }
 
     Ok(Summary {

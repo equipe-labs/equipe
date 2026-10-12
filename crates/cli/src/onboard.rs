@@ -25,6 +25,12 @@ pub struct Start {
 const STARTERS: [(&str, bool); 5] =
     [("designer", true), ("frontend", true), ("backend", false), ("qa", false), ("data", false)];
 
+/// The team a squad started from the console begins with: the PM, then the
+/// roles ticked by default.
+pub fn starting_team() -> Vec<String> {
+    std::iter::once(equipe_core::roles::PM).chain(STARTERS.iter().filter(|(_, on)| *on).map(|(id, _)| *id)).map(str::to_owned).collect()
+}
+
 /// The squad `cwd` works in — asking, the first time, which one.
 pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
     let home = equipe_home();

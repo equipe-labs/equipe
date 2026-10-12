@@ -41,17 +41,30 @@ fn keeper(home: &Path) -> PathBuf {
     let script = KEEP_SIGN_INS
         .replace("__STATE__", &quoted(state_file(home)))
         .replace("__SLOTS__", &quoted(home.join("browser").join("open")))
-        .replace("__MAX__", &at_once().to_string());
+        .replace("__MAX__", &at_once(home).to_string());
     if std::fs::read_to_string(&path).ok().as_deref() != Some(script.as_str()) {
         let _ = std::fs::write(&path, script);
     }
     path
 }
 
-/// How many members' browsers may be open at once. A browser on a real site
-/// takes the better part of a gigabyte: one for every 8 GB of memory, 1 to 4.
-pub fn at_once() -> usize {
-    (memory_gb() / 8).clamp(1, 4)
+/// How many members' browsers may be open at once: what the person set with
+/// `/browser max`, or one for every 4 GB of memory, 2 to 8.
+pub fn at_once(home: &Path) -> usize {
+    std::fs::read_to_string(max_file(home))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or_else(|| (memory_gb() / 4).clamp(2, 8))
+}
+
+/// The most browsers the person allows open at once, kept for every squad.
+pub fn set_at_once(home: &Path, max: usize) -> std::io::Result<()> {
+    std::fs::create_dir_all(home.join("browser"))?;
+    std::fs::write(max_file(home), max.to_string())
+}
+
+fn max_file(home: &Path) -> PathBuf {
+    home.join("browser").join("max")
 }
 
 fn memory_gb() -> usize {
@@ -126,6 +139,15 @@ pub fn sites(state: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_person_sets_how_many_browsers_open_at_once() {
+        let home = std::env::temp_dir().join(format!("equipe-max-{}", std::process::id()));
+        assert!((2..=8).contains(&at_once(&home)), "by memory until set");
+        set_at_once(&home, 10).unwrap();
+        assert_eq!(at_once(&home), 10);
+        std::fs::remove_dir_all(&home).unwrap();
+    }
 
     #[test]
     fn sites_are_named_by_their_domain() {

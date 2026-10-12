@@ -171,10 +171,10 @@ impl Mode {
     /// What it means, in a line.
     pub fn summary(self) -> &'static str {
         match self {
-            Mode::Plan => "reads and plans; changes nothing",
-            Mode::Ask => "asks you before every change and command",
-            Mode::Auto => "works inside its own worktree on its own; asks you for anything beyond",
-            Mode::Full => "does anything your account can, except what equipe always blocks",
+            Mode::Plan => "reads and plans — changes nothing, runs nothing but looking around",
+            Mode::Ask => "asks you before every edit and every command",
+            Mode::Auto => "edits, installs, builds and tests on its own, sandboxed in its worktree; asks before anything beyond — network, pushes, your accounts",
+            Mode::Full => "does anything your account can without asking, except what equipe always blocks; still asks before acting in your name",
         }
     }
 
