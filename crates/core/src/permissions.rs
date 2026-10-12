@@ -94,6 +94,23 @@ pub fn describe(tool: &str, input: &Value) -> (String, Option<String>) {
     (action, reason)
 }
 
+/// Whether a command reaches outside the squad — any command of a chain that
+/// pushes, publishes or deploys.
+pub fn outward(tool: &str, action: &str) -> bool {
+    tool == "Bash"
+        && OUTWARD
+            .iter()
+            .filter_map(|rule| rule.strip_prefix("Bash(").and_then(|r| r.strip_suffix(":*)")))
+            .any(|prefix| commands(action).iter().any(|c| c.starts_with(prefix)))
+}
+
+/// Whether a shell command will run inside the sandbox — it didn't ask to leave
+/// it. Claude Code asks about some such commands anyway (long chains, heredocs);
+/// allowing them changes nothing, since the operating system still fences them in.
+pub fn stays_in_sandbox(tool: &str, input: &Value) -> bool {
+    tool == "Bash" && input.get("dangerouslyDisableSandbox").and_then(Value::as_bool) != Some(true)
+}
+
 /// Whether equipe refuses this outright — when any command of a chain is
 /// blocked, the chain is. Prefixes match the way Claude Code's own rules do, so
 /// the engine and equipe refuse the same things.
@@ -178,6 +195,16 @@ mod tests {
         assert_eq!(describe("WebFetch", &json!({ "url": "https://example.com/a" })).0, "https://example.com/a");
         let (_, reason) = describe("Bash", &json!({ "command": "git push", "description": "Push", "dangerouslyDisableSandbox": true }));
         assert_eq!(reason.as_deref(), Some("Outside the sandbox · Push"));
+    }
+
+    #[test]
+    fn outward_commands_are_found_anywhere_in_a_chain() {
+        assert!(outward("Bash", "npm run build && git push origin main"));
+        assert!(outward("Bash", "vercel deploy --prod"));
+        assert!(!outward("Bash", "mkdir -p src && cat > a.ts <<'EOF'\nx\nEOF"));
+        assert!(stays_in_sandbox("Bash", &json!({ "command": "ls" })));
+        assert!(!stays_in_sandbox("Bash", &json!({ "command": "ls", "dangerouslyDisableSandbox": true })));
+        assert!(!stays_in_sandbox("Write", &json!({ "file_path": "/etc/hosts" })));
     }
 
     #[test]

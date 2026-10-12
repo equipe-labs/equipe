@@ -179,9 +179,25 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         "WebFetch" => "fetch",
         other => other,
     };
-    let mut lines = wrapped(vec![Span::styled(format!("{verb}  "), theme.dim())], &approval.action, theme.bold(), 2, width);
+    // A few lines of the command, never the whole script: the box must leave the
+    // conversation room, and its keys must always show.
+    const SHOWN: usize = 3;
+    let rows: Vec<&str> = approval.action.lines().collect();
+    let mut lines = Vec::new();
+    for (i, row) in rows.iter().take(SHOWN).enumerate() {
+        let lead = if i == 0 { format!("{verb}  ") } else { " ".repeat(verb.chars().count() + 2) };
+        let room = width.saturating_sub(lead.chars().count());
+        lines.push(Line::from(vec![Span::styled(lead, theme.dim()), Span::styled(ui::fit(row, room), theme.bold())]));
+    }
+    let writes = files_written(&approval.action);
+    if !writes.is_empty() {
+        lines.push(Line::from(Span::styled(ui::fit(&format!("writes {}", writes.join(", ")), width), theme.dim())));
+    }
+    if rows.len() > SHOWN {
+        lines.push(Line::from(Span::styled(format!("… {} more lines", rows.len() - SHOWN), theme.dim())));
+    }
     if let Some(reason) = &approval.reason {
-        lines.extend(wrapped(Vec::new(), reason, theme.dim(), 0, width));
+        lines.push(Line::from(Span::styled(ui::fit(reason, width), theme.dim())));
     }
     let mut keys = vec![
         Span::styled("y", theme.bold()),
@@ -196,6 +212,28 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     }
     lines.push(Line::from(keys));
     lines
+}
+
+/// The files a shell script writes with `cat > file`, `cat >> file` or `tee file`.
+fn files_written(script: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    for line in script.lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        for (i, word) in words.iter().enumerate() {
+            let target = match *word {
+                ">" | ">>" if i > 0 && words[i - 1] == "cat" => words.get(i + 1),
+                "tee" | "-a" if i > 0 && (words[i - 1] == "|" || words[i - 1] == "tee") => words.get(i + 1),
+                _ => None,
+            };
+            if let Some(file) = target.filter(|f| !f.starts_with('<') && !f.starts_with('-')) {
+                let file = file.trim_matches(['\'', '"']).to_owned();
+                if !files.contains(&file) {
+                    files.push(file);
+                }
+            }
+        }
+    }
+    files
 }
 
 fn render_approval(frame: &mut Frame, area: Rect, app: &App, lines: Vec<Line<'static>>, theme: Theme) {
@@ -849,6 +887,29 @@ mod tests {
         assert_eq!(layouts.prepare(&app, Theme::plain(), 100), None, "nothing changed, nothing laid out again");
         app.on_event(Event::TextDelta { session: id, text: "\n\nmore\n\nand more".into() });
         assert_eq!(layouts.prepare(&app, Theme::plain(), 100), Some((id, 3)));
+    }
+
+    #[test]
+    fn a_long_script_asks_in_a_few_lines_and_says_what_it_writes() {
+        let (mut app, _) = working();
+        let script = "mkdir -p src/pages\ncat > astro.config.mjs <<'EOF'\nexport default {}\nEOF\ncat > tsconfig.json <<'EOF'\n{}\nEOF\necho done";
+        app.on_event(Event::ApprovalRequested {
+            squad: "acme".into(),
+            approval: equipe_core::protocol::Approval {
+                id: 1,
+                session: 2,
+                member: "frontend".into(),
+                ticket: Some(2),
+                tool: "Bash".into(),
+                action: script.into(),
+                reason: None,
+            },
+        });
+        let shot = screen(&app, 100, 30);
+        assert!(shot.contains("writes astro.config.mjs, tsconfig.json"), "{shot}");
+        assert!(shot.contains("… 5 more lines"), "{shot}");
+        assert!(shot.contains("y allow"), "the keys always show:\n{shot}");
+        assert!(!shot.contains("echo done"), "{shot}");
     }
 
     #[test]

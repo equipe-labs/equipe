@@ -165,6 +165,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     if runtime.config.persist {
         runtime.restore();
         runtime.prune();
+        runtime.resume_work();
     }
     tokio::spawn(run(runtime, req_rx, internal_rx));
     (Handle { requests: req_tx }, evt_rx)
@@ -1356,6 +1357,17 @@ impl Runtime {
             let _ = reply.send(verdict(Decision::Allow, &input, ""));
             return;
         }
+        // In auto, a member on a ticket works inside the fence on its own: a shell
+        // command that stays in the sandbox and reaches nowhere outward is allowed —
+        // the operating system still holds it in.
+        let squad_mode = self.journal(&call.squad).map(Journal::mode).unwrap_or_default();
+        let fenced = self.sessions.get(&id).is_some_and(|s| {
+            s.mode.unwrap_or(squad_mode) == Mode::Auto && s.work.as_ref().is_some_and(|w| w.sandbox.is_some())
+        });
+        if fenced && permissions::stays_in_sandbox(&tool, &input) && !permissions::outward(&tool, &action) {
+            let _ = reply.send(verdict(Decision::Allow, &input, ""));
+            return;
+        }
         let approval_id = self.next_approval;
         self.next_approval += 1;
         let approval = Approval { id: approval_id, session: id, member: call.member.clone(), ticket, tool, action, reason };
@@ -1677,6 +1689,28 @@ End your turn now with a short summary.",
                 );
             }
             self.journals.insert(squad, journal);
+        }
+    }
+
+    /// Members that were on a ticket when the daemon stopped carry on with it —
+    /// a squad keeps working through a restart. (Codex members wait for their
+    /// next message: their login loads on first use.)
+    fn resume_work(&mut self) {
+        let on_tickets: Vec<(SessionId, TicketId)> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.engine == Engine::Claude)
+            .filter_map(|(&id, s)| s.work.as_ref().map(|w| (id, w.ticket)))
+            .collect();
+        for (id, ticket) in on_tickets {
+            self.publish(Event::Notice { session: id, text: format!("equipe restarted; picking T-{ticket} up again.") });
+            self.start_turn(
+                id,
+                format!(
+                    "[equipe] equipe restarted while you worked on T-{ticket}. Carry on from where you left off — \
+check what is already done in your worktree first."
+                ),
+            );
         }
     }
 

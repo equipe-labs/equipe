@@ -712,6 +712,9 @@ async fn a_restarted_runtime_resumes_a_member_on_its_ticket() {
     assert_eq!(work.ticket, 1);
     assert!(work.workspace.as_ref().is_some_and(|ws| ws.path.exists()));
     assert_eq!(snapshot.tickets[0].status, TicketStatus::InProgress);
+    // It picks the ticket up again by itself: the squad keeps working through a restart.
+    assert_eq!(frontend.state, SessionState::Working);
+    assert!(frontend.recent.iter().any(|e| matches!(e, Entry::Note { text } if text.contains("picking T-1 up again"))), "{:?}", frontend.recent);
 }
 
 #[tokio::test]
@@ -869,6 +872,9 @@ async fn a_request_for_permission_waits_for_the_person_and_always_becomes_a_rule
     let (handle, mut events) = runtime::start(with_tools(&claude, &home));
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
     add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    // Ask me: every command is put to the person.
+    handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::Ask) });
+    until(&mut events, |e| matches!(e, Event::ModeChanged { .. })).await;
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
 
@@ -902,6 +908,25 @@ async fn a_request_for_permission_waits_for_the_person_and_always_becomes_a_rule
 }
 
 #[tokio::test]
+async fn in_auto_a_command_that_stays_in_the_sandbox_is_not_asked_about() {
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&repo])));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
+    // A heredoc Claude Code asks about anyway: inside the fence, equipe allows it.
+    let inside = ask(&handle, "mkdir -p src && cat > src/a.ts <<'EOF'\nexport {}\nEOF").await.unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&inside.text).unwrap()["behavior"], "allow");
+    // Pushing still asks.
+    let _push = ask(&handle, "npm run build && git push origin main");
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    assert!(matches!(asked.last(), Some(Event::ApprovalRequested { approval, .. }) if approval.action.contains("git push")));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn blocked_commands_are_refused_without_asking() {
     let repo = repo();
     let claude = fake_claude(true, "exec sleep 30");
@@ -925,7 +950,7 @@ async fn stopping_a_member_withdraws_what_it_was_waiting_for() {
     add(&handle, &mut events, 2, member(&repo, "frontend")).await;
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
-    let waiting = ask(&handle, "npm install");
+    let waiting = ask(&handle, "npm publish");
     until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
     handle.send(Command::Interrupt { session: 2 });
     let resolved = until(&mut events, |e| matches!(e, Event::ApprovalResolved { .. })).await;
