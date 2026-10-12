@@ -40,39 +40,56 @@ One agent, running on the user's own plan, does real work. No board yet.
   catalog that came back empty for a low client version.
 - **Demo:** "logged in with my plan, an agent edited my repo — on its own branch."
 
-### Phase 2 — The spine ← next
-Board + one role + one ticket → a real branch/diff.
-- ✅ **Core speaks in events** (`equipe-protocol` + the core runtime), so the CLI,
-  the terminal UI and the desktop app render one stream.
-- SQLite board in `equipe-core` (`tickets`, `events`) + `equipe board`.
-- One `backend` role (charter + toolset) + an orchestrator that takes a ticket,
-  runs the engine in a worktree (the `--edit` sandbox, per ticket) and lands a
-  branch. Human reviews.
-- ✅ **Interactive `equipe` v0**: the team console in the terminal — several agents
-  at once, streaming, conversation memory, bracketed paste, `/new` `/edit` `/close`.
-  Next: approvals inline, the board in the team pane.
-- **Retires:** orchestrator ↔ board ↔ worktree wiring.
-- **Done:** file a ticket → a branch appears with the change. **Demo:** ticket in,
-  branch out (single role).
+### Phase 2 — The resident squad ← now
+The team lives in a daemon, not in a terminal: closing the terminal never stops
+it, and every surface sees the same team. Then the team itself — members with
+roles, a board, a director.
 
-### Phase 3 — The squad
-Multiple roles, handoffs, dependencies — a team, not one agent.
-- PO splits a request into tickets → assigns → engineer implements → QA reviews/tests
-  → approval gate → done. Add Designer / Frontend / DevOps. Dependency resolution.
+1. **Daemon + local gateway** ← now. The core runtime moves behind a Unix socket
+   (`~/.equipe/equipe.sock`, JSON-RPC 2.0 carrying the protocol's Commands and
+   Events). `equipe` attaches — starting the daemon if needed — and detaches
+   without stopping anything; reattaching catches up from a snapshot. Agents are
+   the daemon's children, not the terminal's. What happened is journaled in
+   SQLite under the storage policy below, so a restarted daemon resumes its
+   sessions and their conversations.
+2. **Resident members, board, director.** A member is a role (pm, designer,
+   frontend, backend, qa, data, or custom) + an engine + a model + memory + a
+   worktree; models are recommended per role by tier, resolved against the
+   account's live models, with QA on a different engine from the implementer.
+   The SQLite board holds tickets and their record; the director turns a request
+   into tickets and assigns them. `equipe init` stands up a default squad.
+3. **First channel: Telegram.** Notifications, approve/deny buttons, short
+   instructions to the PM — through the daemon's outbound connection, no open
+   port. Senders must be paired; irreversible steps always need a button press.
+4. **Desktop app** — another client of the same socket.
+
+- ✅ **Core speaks in events** (`equipe-protocol` + the core runtime).
+- ✅ **Interactive `equipe` v0**: the team console — several agents at once,
+  streaming, conversation memory, bracketed paste, `/new` `/edit` `/close`.
+- **Retires:** a team that outlives its terminal; orchestrator ↔ board ↔ worktree.
+- **Done:** close the terminal mid-task, reopen it, the work is done or still going;
+  one request becomes tickets that members land as branches. **Demo:** "I closed my
+  laptop's terminal; my squad kept shipping."
+
+### Phase 3 — The squad at work
+Handoffs, dependencies, review — a team, not parallel agents.
+- PM splits a request into tickets → assigns → engineer implements → QA reviews/tests
+  → approval gate → done. Dependency resolution.
 - Agent plans shown as progress on tickets; out-of-scope work proposed as tickets
   through a board tool (ARCHITECTURE "Plans are notes").
+- Codex edits over ACP (`codex-acp`) with the login-once handoff.
 - **Retires:** coordination without chaos (board as the only channel).
 - **Done:** one feature request → several roles collaborate → a reviewed branch.
   **Demo:** "one sentence in, a coordinated PR out."
 
 ### Phase 4 — Robustness & human-in-the-loop
 What real projects need to trust it.
-- Approval-gate UX, steering/interrupts, budget/cost controls, failure recovery,
-  observability (what is each agent doing, how much memory it holds), parallel
-  worktrees, the team-lead console in the terminal and the desktop app, per-role
-  engine mixing.
+- Approval UX on every surface, steering/interrupts, budget/cost controls, failure
+  recovery, observability (what is each agent doing, how much memory it holds),
+  start at login (launchd/systemd), the daemon on a server (attach over SSH), more
+  channels (Slack, Discord).
 - **Retires:** losing control on a big project.
-- **Done:** several tickets in parallel, interruptible, fully visible on the board.
+- **Done:** several tickets in parallel, interruptible, visible everywhere.
 
 ### Phase 5 — Extensibility & ecosystem
 Make it something others build on.
@@ -92,6 +109,17 @@ functions, and processes are exercised against stand-ins (a fake `claude`, scrat
 git repos, a real loopback socket). What only a real account can prove — a backend
 changing shape — is verified by running it, and each bug found that way gets a test.
 
+**Storage.** equipe journals the *record* and the *conversation*, never the raw
+material. Kept forever: tickets, assignments, decisions, approvals, branches landed
+— a few hundred bytes each. Kept for a window (default 90 days, then reduced to a
+one-line summary): messages, finished replies (never per-token deltas), one line per
+tool use, tokens. Never kept: file contents, command output, images, thinking,
+diffs — git holds the changes and each engine keeps its own full transcript, which
+equipe only references. One database per project, incremental vacuum so pruning
+returns disk, a size cap, and `equipe storage` / `equipe prune` to see and act. (For
+scale: on the author's machine Claude Code wrote 1.8 GB of transcripts in 25 days;
+the human-readable conversation in its largest session was 3.4% of its size.)
+
 ## Decisions log
 
 - **2026-10-11 — all-Rust.** The core moves to Rust so the desktop app can embed
@@ -99,11 +127,15 @@ changing shape — is verified by running it, and each bug found that way gets a
   retired from `main`; its last version is the `phase1b-try` branch.
 - **2026-10-11 — Claude Code is "bring your own".** equipe runs the user's
   unmodified `claude` and never handles Claude credentials (Anthropic's terms).
+- **2026-10-12 — a resident daemon now, not later.** The squad must outlive the
+  terminal and reach a phone soon, so the gateway moves from Phase 4 to the front
+  of Phase 2. Inside the daemon the core is still one Rust process; screens and
+  channels are clients. First channel: Telegram.
 
 ## Current status
 
-Phases 0 and 1 done (Codex edits over ACP outstanding). Phase 2 under way: the core
-speaks in events and the terminal team console works; the board is next.
+Phases 0 and 1 done (Codex edits move to Phase 3, over ACP). Phase 2 under way: the
+core speaks in events and the terminal team console works; the daemon is being built.
 
 Open risks: whether driving `claude -p` on a subscription fits Anthropic's
 allowance (ask before advertising it); Claude Code making `--bare` the default for
