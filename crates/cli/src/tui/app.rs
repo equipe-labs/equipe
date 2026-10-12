@@ -1258,6 +1258,11 @@ impl App {
             format!("Modes: {} · /mode <mode> for the squad, /mode <member> <mode> for one", modes.join(" · "))
         };
         let squad = self.squad.clone();
+        // The mode that only reads is called that; "plan" isn't one of the names.
+        if words.contains(&"plan") {
+            self.flash = Some("The mode that only reads is called read-only: /mode read-only".into());
+            return Vec::new();
+        }
         match words.as_slice() {
             [] => {
                 self.flash = Some(format!("The squad works in {} mode. {}", self.mode.label(), usage()));
@@ -1903,6 +1908,20 @@ mod tests {
     }
 
     #[test]
+    fn the_mode_that_only_reads_is_read_only_not_plan() {
+        let (mut app, _, _) = team();
+        type_text(&mut app, "/mode read-only");
+        assert_eq!(enter(&mut app), vec![Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::ReadOnly) }]);
+        type_text(&mut app, "/mode plan");
+        assert!(enter(&mut app).is_empty());
+        assert!(app.flash.as_deref().unwrap().contains("/mode read-only"), "{:?}", app.flash);
+        assert_eq!(Mode::ReadOnly.label(), "read-only");
+        // A squad kept from before the rename still reads as read-only.
+        assert_eq!(Mode::stored("plan"), Some(Mode::ReadOnly));
+        assert_eq!(Mode::parse("plan"), None);
+    }
+
+    #[test]
     fn browser_opens_the_sign_in_window() {
         let (mut app, _, _) = team();
         type_text(&mut app, "/browser");
@@ -2005,9 +2024,9 @@ mod tests {
         );
         type_text(&mut app, "/mode frontend squad");
         assert_eq!(enter(&mut app), vec![Command::SetMode { squad: "acme".into(), member: Some("frontend".into()), mode: None }]);
-        app.on_event(Event::ModeChanged { squad: "acme".into(), member: Some("frontend".into()), mode: Some(Mode::Plan) });
+        app.on_event(Event::ModeChanged { squad: "acme".into(), member: Some("frontend".into()), mode: Some(Mode::ReadOnly) });
         app.on_event(Event::ModeChanged { squad: "acme".into(), member: None, mode: Some(Mode::Ask) });
-        assert_eq!(app.mode_of(&app.agents[1]), Mode::Plan);
+        assert_eq!(app.mode_of(&app.agents[1]), Mode::ReadOnly);
         assert_eq!(app.mode_of(&app.agents[0]), Mode::Ask);
     }
 

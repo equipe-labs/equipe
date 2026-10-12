@@ -784,7 +784,7 @@ impl Runtime {
         // may change things. In Auto and Full it browses freely; in Ask each
         // step comes to the person.
         let browser = match (&self.config.npx, &squad, &session.member) {
-            (Some(npx), Some(squad), Some(m)) if board_tools && mode != Mode::Plan && browser::signed_in(&self.config.home) => {
+            (Some(npx), Some(squad), Some(m)) if board_tools && mode != Mode::ReadOnly && browser::signed_in(&self.config.home) => {
                 // Page snapshots and screenshots: in the temp folder, readable without
                 // asking, and never in the project.
                 let output = std::env::temp_dir().join("equipe-browser").join(squad).join(&m.name);
@@ -1569,7 +1569,7 @@ impl Runtime {
         match &member {
             None => {
                 let Some(mode) = mode else {
-                    return self.squad_error(squad, "Name a mode: plan, ask, auto or full.");
+                    return self.squad_error(squad, "Name a mode: read-only, ask, auto or full.");
                 };
                 if let Some(journal) = self.journal(squad) {
                     let _ = journal.set_mode(mode);
@@ -1951,7 +1951,7 @@ If you are blocked or need a decision, say so and end your turn — the person a
 /// its own worktree, ever writes.
 fn access_for(mode: Mode, may_edit: bool) -> claude_code::Access {
     match (mode, may_edit) {
-        (_, false) | (Mode::Plan, _) => claude_code::Access::ReadOnly,
+        (_, false) | (Mode::ReadOnly, _) => claude_code::Access::ReadOnly,
         (Mode::Ask, true) => claude_code::Access::Ask,
         (Mode::Auto, true) => claude_code::Access::EditFiles,
         (Mode::Full, true) => claude_code::Access::Full,
@@ -1963,7 +1963,7 @@ fn access_for(mode: Mode, may_edit: bool) -> claude_code::Access {
 /// (auto still lets looking-only commands through), full lets it.
 fn desk_access(mode: Mode) -> claude_code::Access {
     match mode {
-        Mode::Plan => claude_code::Access::ReadOnly,
+        Mode::ReadOnly => claude_code::Access::ReadOnly,
         Mode::Ask | Mode::Auto => claude_code::Access::Ask,
         Mode::Full => claude_code::Access::Full,
     }

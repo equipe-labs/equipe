@@ -17,7 +17,7 @@ pub const COMMANDS: [Spec; 13] = [
     Spec { name: "board", args: "", about: "The board (Ctrl-B)" },
     Spec { name: "add", args: "<role…> [codex|claude]", about: "Bring in teammates" },
     Spec { name: "close", args: "", about: "Remove the selected member" },
-    Spec { name: "mode", args: "[member] plan|ask|auto|full", about: "How much members do on their own" },
+    Spec { name: "mode", args: "[member] read-only|ask|auto|full", about: "How much members do on their own" },
     Spec { name: "browser", args: "[show|hide [member] · max <n>]", about: "Sign in to sites; show, hide or cap members' browsers" },
     Spec { name: "export", args: "", about: "Open the conversation in your editor" },
     Spec { name: "mouse", args: "", about: "Hand the mouse to the terminal (dragging over text already copies it)" },
@@ -53,7 +53,7 @@ pub struct Context<'a> {
     pub member_modes: Vec<(&'a str, Mode)>,
 }
 
-const MODES: [&str; 4] = ["plan", "ask", "auto", "full"];
+const MODES: [&str; 4] = ["read-only", "ask", "auto", "full"];
 
 /// What could complete `text`, best first. Empty when nothing would, or when
 /// the text is already whole.

@@ -104,7 +104,7 @@ fn engine_from(s: &str) -> Engine {
 
 fn mode_str(mode: Mode) -> &'static str {
     match mode {
-        Mode::Plan => "plan",
+        Mode::ReadOnly => "read-only",
         Mode::Ask => "ask",
         Mode::Auto => "auto",
         Mode::Full => "full",
@@ -264,7 +264,7 @@ impl Journal {
             .optional()
             .ok()
             .flatten()
-            .and_then(|m| Mode::parse(&m))
+            .and_then(|m| Mode::stored(&m))
             .unwrap_or_default()
     }
 
@@ -628,7 +628,7 @@ impl Journal {
                     (Some(role), Some(name)) => Some(Member { role, name }),
                     _ => None,
                 },
-                mode: r.get::<_, Option<String>>(14)?.as_deref().and_then(Mode::parse),
+                mode: r.get::<_, Option<String>>(14)?.as_deref().and_then(Mode::stored),
             })
         })?;
         rows.collect()

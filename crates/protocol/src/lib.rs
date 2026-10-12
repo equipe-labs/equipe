@@ -144,8 +144,8 @@ pub struct Ticket {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
-    /// Read and plan; change nothing.
-    Plan,
+    /// Read only: look around and plan; change nothing.
+    ReadOnly,
     /// Ask the person before every change and every command.
     Ask,
     /// Edit and run commands inside its own worktree, fenced in by the operating
@@ -157,11 +157,11 @@ pub enum Mode {
 }
 
 impl Mode {
-    pub const ALL: [Mode; 4] = [Mode::Plan, Mode::Ask, Mode::Auto, Mode::Full];
+    pub const ALL: [Mode; 4] = [Mode::ReadOnly, Mode::Ask, Mode::Auto, Mode::Full];
 
     pub fn label(self) -> &'static str {
         match self {
-            Mode::Plan => "plan",
+            Mode::ReadOnly => "read-only",
             Mode::Ask => "ask me",
             Mode::Auto => "auto",
             Mode::Full => "full access",
@@ -171,22 +171,28 @@ impl Mode {
     /// What it means, in a line.
     pub fn summary(self) -> &'static str {
         match self {
-            Mode::Plan => "reads and plans — changes nothing, runs nothing but looking around",
+            Mode::ReadOnly => "reads and plans — changes nothing, runs nothing but looking around",
             Mode::Ask => "asks you before every edit and every command",
             Mode::Auto => "edits, installs, builds and tests on its own, sandboxed in its worktree; asks before anything beyond — network, pushes, your accounts",
             Mode::Full => "does anything your account can without asking, except what equipe always blocks; still asks before acting in your name",
         }
     }
 
-    /// `plan`, `ask`, `auto`, `full` — as typed in a command.
+    /// `read-only`, `ask`, `auto`, `full` — as typed in a command.
     pub fn parse(text: &str) -> Option<Mode> {
         match text.trim().to_lowercase().as_str() {
-            "plan" => Some(Mode::Plan),
+            "read-only" | "readonly" | "read" => Some(Mode::ReadOnly),
             "ask" | "ask-me" | "askme" | "manual" => Some(Mode::Ask),
             "auto" => Some(Mode::Auto),
             "full" | "full-access" | "bypass" => Some(Mode::Full),
             _ => None,
         }
+    }
+
+    /// As written in a squad's journal — `plan` from before read-only was
+    /// called that.
+    pub fn stored(text: &str) -> Option<Mode> {
+        if text == "plan" { Some(Mode::ReadOnly) } else { Mode::parse(text) }
     }
 }
 
@@ -622,7 +628,7 @@ mod tests {
             squad: "acme".into(),
             projects: vec!["/repo".into()],
             tickets: vec![ticket(1)],
-            mode: Mode::Plan,
+            mode: Mode::ReadOnly,
             approvals: Vec::new(),
             sessions: vec![SessionInfo {
                 session: 9,

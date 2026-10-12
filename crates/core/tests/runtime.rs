@@ -908,7 +908,7 @@ async fn once_the_person_signs_in_members_browse_as_them() {
     assert!(charter.contains("`ask_person`") && charter.contains("CAPTCHA"), "what it asks the person first: {charter}");
 
     // Plan changes nothing anywhere — not on a website either.
-    handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::Plan) });
+    handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::ReadOnly) });
     until(&mut events, |e| matches!(e, Event::ModeChanged { member: None, .. })).await;
     let call = turn(&handle, &mut events).await;
     assert!(browser_of(&call).is_null(), "{call:?}");
@@ -1053,7 +1053,7 @@ async fn the_mode_decides_how_a_ticket_runs_and_a_member_can_differ_from_the_squ
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
     add(&handle, &mut events, 2, member(&repo, "frontend")).await;
 
-    handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::Plan) });
+    handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::ReadOnly) });
     until(&mut events, |e| matches!(e, Event::ModeChanged { member: None, .. })).await;
     let call = first_ticket_turn(&handle, &mut events, &recorded, "frontend").await;
     assert_eq!(arg(&call, "--permission-mode"), Some("dontAsk"), "plan reads, even on a ticket");
@@ -1068,7 +1068,7 @@ async fn the_mode_decides_how_a_ticket_runs_and_a_member_can_differ_from_the_squ
     assert_eq!(arg(&call, "--permission-prompt-tool"), Some("mcp__equipe__approve"));
 
     let snapshot = handle.snapshot("acme").await;
-    assert_eq!(snapshot.mode, Mode::Plan);
+    assert_eq!(snapshot.mode, Mode::ReadOnly);
     assert_eq!(snapshot.sessions.iter().find(|s| s.session == 2).unwrap().mode, Some(Mode::Ask));
 }
 

@@ -60,7 +60,7 @@ roles, a board, and equipe's rules.
    MCP tools; equipe's rules (code) hand each ready ticket to a free owner, who
    works in a worktree of its own and hands it in; only the person accepts, sends
    back or cancels. Onboarding is the first `equipe` in a repository.
-   ✅ **Permission modes** — plan, ask me, auto (recommended), full access — per
+   ✅ **Permission modes** — read-only, ask me, auto (recommended), full access — per
    squad and per member. In auto a member installs, builds and tests inside an OS
    sandbox around its worktree; anything beyond it, and anything outward (push,
    publish, deploy), is put to the person, who answers y / a / n in the console.
@@ -153,7 +153,7 @@ the human-readable conversation in its largest session was 3.4% of its size.)
 - **2026-10-12 — permissions are a fence plus questions.** Like Codex and Claude
   Code: the operating system fences a member's commands in; whatever lies beyond
   is asked of the person through equipe, never decided by a model. Four presets
-  (plan, ask me, auto, full access), not five: in equipe edits already happen in a
+  (read-only, ask me, auto, full access), not five: in equipe edits already happen in a
   member's own worktree, so "accept edits" and "auto" would be the same.
 - **2026-10-12 — members keep their own memory.** Claude Code's auto memory is moved
   per member, so the person's own notes never leak into a squad, or a squad's into them.
