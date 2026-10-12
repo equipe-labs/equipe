@@ -61,11 +61,16 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         app.flash = Some("The daemon runs an older build — `equipe daemon restart` when its agents are idle.".into());
     }
 
-    let theme = view::Theme::detect();
     // ratatui::init enters the alternate screen and raw mode, and restores them
     // if we panic.
     let mut terminal = ratatui::init();
     let _guard = TerminalGuard;
+    // In raw mode, before anything else reads the input: ask the terminal its
+    // background colour, so the person's messages can sit on a faint wash of it.
+    let theme = view::Theme::detect(query_background());
+    if app.mouse && first_time("mouse-select") {
+        app.flash = Some("The wheel scrolls here. To select text, hold Shift (Option in iTerm2) while dragging — or /mouse.".into());
+    }
     // Pastes arrive whole, so a newline inside one never sends the message.
     execute!(std::io::stdout(), EnableBracketedPaste)?;
     // The wheel scrolls; `/mouse` hands the mouse back so text can be selected.
@@ -87,8 +92,9 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         terminal.draw(|f| view::render(f, app, theme, branch.as_deref(), layouts)).map(|_| ())
     };
     draw(&mut terminal, &mut app, &mut layouts)?;
-    // A working member's clock ticks; with nobody working, nothing redraws on a timer.
-    let mut clock = tokio::time::interval(Duration::from_secs(1));
+    // While someone works, its dot breathes and its clock ticks; with nobody
+    // working, nothing redraws on a timer.
+    let mut clock = tokio::time::interval(Duration::from_millis(100));
     loop {
         tokio::select! {
             _ = clock.tick() => {
@@ -130,6 +136,26 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         if app.should_quit {
             break;
         }
+        if std::mem::take(&mut app.export) {
+            match export(&app) {
+                Ok((path, editor)) => {
+                    if let Some(editor) = editor {
+                        // Hand the terminal to the editor, then take it back.
+                        let _ = execute!(std::io::stdout(), DisableBracketedPaste, DisableMouseCapture);
+                        ratatui::restore();
+                        let _ = std::process::Command::new("sh").arg("-c").arg(format!("{editor} \"$1\"")).arg("sh").arg(&path).status();
+                        terminal = ratatui::init();
+                        execute!(std::io::stdout(), EnableBracketedPaste)?;
+                        if mouse {
+                            execute!(std::io::stdout(), EnableMouseCapture)?;
+                        }
+                        terminal.clear()?;
+                    }
+                    app.flash = Some(format!("Saved to {}", path.display()));
+                }
+                Err(err) => app.flash = Some(format!("Couldn't export: {err}")),
+            }
+        }
         if app.mouse != mouse {
             mouse = app.mouse;
             if mouse {
@@ -151,6 +177,73 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         to_review: app.to_review().len(),
         daemon_lost,
     })
+}
+
+/// Write the selected member's conversation to a Markdown file under
+/// `~/.equipe/exports`, and name the editor to open it in, if one is set.
+fn export(app: &app::App) -> std::io::Result<(PathBuf, Option<String>)> {
+    let agent = app.selected().ok_or_else(|| std::io::Error::other("nobody is selected"))?;
+    let dir = equipe_providers::credentials::equipe_home().join("exports");
+    std::fs::create_dir_all(&dir)?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let path = dir.join(format!("{}-{}-{stamp}.md", app.squad, agent.label()));
+    std::fs::write(&path, app::transcript_markdown(agent, &app.squad))?;
+    let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).ok().filter(|e| !e.trim().is_empty());
+    Ok((path, editor))
+}
+
+/// Whether this is the first time the hint `name` is shown on this machine — and
+/// remember that it was.
+fn first_time(name: &str) -> bool {
+    let marker = equipe_providers::credentials::equipe_home().join("hints").join(name);
+    if marker.exists() {
+        return false;
+    }
+    let _ = std::fs::create_dir_all(marker.parent().expect("hints has a parent"));
+    std::fs::write(&marker, b"").is_ok()
+}
+
+/// Ask the terminal for its background colour (OSC 11) and wait a moment for the
+/// answer. Raw mode must be on, and nothing else reading the input yet.
+fn query_background() -> Option<(u8, u8, u8)> {
+    use std::io::Write as _;
+    use std::os::fd::AsRawFd as _;
+    let mut out = std::io::stdout();
+    out.write_all(b"\x1b]11;?\x1b\\").ok()?;
+    out.flush().ok()?;
+    let fd = std::io::stdin().as_raw_fd();
+    let deadline = Instant::now() + Duration::from_millis(250);
+    let mut answer = Vec::new();
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        let mut ready = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        // SAFETY: one valid pollfd, and a buffer we own for the read.
+        if unsafe { libc::poll(&mut ready, 1, left.as_millis() as libc::c_int) } <= 0 {
+            break;
+        }
+        let mut chunk = [0u8; 64];
+        let n = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
+        if n <= 0 {
+            break;
+        }
+        answer.extend_from_slice(&chunk[..n as usize]);
+        if answer.ends_with(b"\x07") || answer.ends_with(b"\x1b\\") {
+            break;
+        }
+    }
+    parse_background(&String::from_utf8_lossy(&answer))
+}
+
+/// `…]11;rgb:1e1e/1e1e/2020…` → (30, 30, 32): channels of one to four hex digits.
+fn parse_background(answer: &str) -> Option<(u8, u8, u8)> {
+    let rgb = answer.split("rgb:").nth(1)?;
+    let mut parts = rgb.split(['/', '\x07', '\x1b']);
+    let mut channel = || {
+        let hex = parts.next()?;
+        let value = u32::from_str_radix(hex, 16).ok()?;
+        let max = (1u32 << (4 * hex.len().clamp(1, 4))) - 1;
+        Some((value * 255 / max) as u8)
+    };
+    Some((channel()?, channel()?, channel()?))
 }
 
 /// Apply one terminal event. Returns whether it could have changed the screen.
@@ -215,4 +308,16 @@ fn current_branch(cwd: &std::path::Path) -> Option<String> {
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
         .filter(|b| !b.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_background_answer_reads_in_any_precision() {
+        assert_eq!(parse_background("\x1b]11;rgb:1e1e/1e1e/2020\x1b\\"), Some((30, 30, 32)));
+        assert_eq!(parse_background("\x1b]11;rgb:ff/ff/ff\x07"), Some((255, 255, 255)));
+        assert_eq!(parse_background(""), None);
+    }
 }

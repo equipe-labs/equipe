@@ -27,8 +27,11 @@ use crate::ui;
 /// Prose is laid out no wider than this: past it, lines get hard to read.
 const PROSE_MAX: usize = 96;
 
-/// The squad pane's width, and the gap holding the hairline beside it.
+/// The squad pane's width — wider on a wide terminal — and the gap holding the
+/// hairline beside it.
 const SQUAD_WIDTH: u16 = 26;
+const SQUAD_WIDE: u16 = 32;
+const WIDE_BODY: u16 = 116;
 const GAP: u16 = 4;
 
 /// Below this width the squad pane gives way to the conversation.
@@ -41,17 +44,54 @@ pub struct Theme {
     truecolor: bool,
     /// The terminal's background is light: the pale accent would vanish on it.
     light: bool,
+    /// The terminal's background colour, when it told us.
+    background: Option<(u8, u8, u8)>,
 }
 
 impl Theme {
-    pub fn detect() -> Self {
+    /// `background`: the terminal's answer to "what is your background colour",
+    /// if it gave one.
+    pub fn detect(background: Option<(u8, u8, u8)>) -> Self {
         let (color, truecolor) = ui::out().palette();
-        Self { color, truecolor, light: light_background() }
+        let light = match background {
+            Some((r, g, b)) => (0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32) / 255.0 > 0.5,
+            None => light_background(),
+        };
+        Self { color, truecolor, light, background }
     }
 
     #[cfg(test)]
     pub fn plain() -> Self {
-        Self { color: false, truecolor: false, light: false }
+        Self { color: false, truecolor: false, light: false, background: None }
+    }
+
+    /// A faint wash over the background for the person's own messages: white at
+    /// 7% on a dark terminal, black at 5% on a light one. Only when the terminal
+    /// said what its background is — a guess would show as a grey slab.
+    fn tint(self) -> Option<Color> {
+        let (r, g, b) = self.background.filter(|_| self.color && self.truecolor)?;
+        let (toward, amount) = if self.light { (0.0, 0.05) } else { (255.0, 0.07) };
+        let mix = |c: u8| (c as f32 + (toward - c as f32) * amount).round() as u8;
+        Some(Color::Rgb(mix(r), mix(g), mix(b)))
+    }
+
+    /// The working dot's slow breath: from dim to the accent and back, every
+    /// 1.6 seconds. Without truecolor it alternates; without colour it stays bold.
+    fn pulse(self, now: Instant) -> Style {
+        static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        let start = *START.get_or_init(|| now);
+        let ms = now.saturating_duration_since(start).as_millis() % 1600;
+        let wave = if ms < 800 { ms as f32 / 800.0 } else { (1600 - ms) as f32 / 800.0 };
+        match (self.color, self.truecolor) {
+            (true, true) => {
+                let (from, to) = if self.light { ((106, 108, 116), (46, 92, 138)) } else { ((92, 100, 112), (180, 205, 230)) };
+                let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * wave).round() as u8;
+                Style::new().fg(Color::Rgb(mix(from.0, to.0), mix(from.1, to.1), mix(from.2, to.2)))
+            }
+            (true, false) if wave < 0.5 => self.dim(),
+            (true, false) => self.accent(),
+            _ => self.bold(),
+        }
     }
 
     fn accent(self) -> Style {
@@ -109,8 +149,9 @@ fn columns(body: Rect) -> (Option<Rect>, Option<Rect>, Rect) {
     if body.width + 4 < SQUAD_MIN_TOTAL {
         return (None, None, body);
     }
+    let squad_width = if body.width >= WIDE_BODY { SQUAD_WIDE } else { SQUAD_WIDTH };
     let [squad, gap, right] =
-        Layout::horizontal([Constraint::Length(SQUAD_WIDTH), Constraint::Length(GAP), Constraint::Min(20)]).areas(body);
+        Layout::horizontal([Constraint::Length(squad_width), Constraint::Length(GAP), Constraint::Min(20)]).areas(body);
     (Some(squad), Some(gap), right)
 }
 
@@ -126,7 +167,7 @@ fn transcript_width(total: u16) -> usize {
 /// What a laid-out conversation depends on: the width it was laid out for, and
 /// enough of the conversation to notice it changed — its length, the length of
 /// its last line (a reply grows as it streams), the memos waiting.
-type LayoutKey = (usize, usize, usize, usize);
+type LayoutKey = (usize, usize, usize, usize, bool);
 
 /// Conversations already laid out, per member. Laying one out means reading all
 /// of its Markdown; scrolling must not do that again for every wheel event.
@@ -173,7 +214,7 @@ fn layout_key(agent: &Agent, width: usize) -> LayoutKey {
         Entry::Error { message, .. } => message.len(),
         Entry::Landed { stat, .. } => stat.len(),
     });
-    (width, entries.len(), last, agent.queued.len())
+    (width, entries.len(), last, agent.queued.len(), agent.expanded)
 }
 
 // ── the screen ──
@@ -317,7 +358,7 @@ fn glyph(app: &App, agent: &Agent, theme: Theme) -> Span<'static> {
     match agent.state {
         AgentState::Starting => Span::styled("…", theme.dim()),
         AgentState::Ready => Span::styled("○", theme.dim()),
-        AgentState::Working => Span::styled("●", theme.accent()),
+        AgentState::Working => Span::styled("●", theme.pulse(Instant::now())),
         AgentState::Closing | AgentState::Closed => Span::styled("·", theme.dim()),
         AgentState::Failed => Span::styled("✗", theme.bold()),
     }
@@ -402,6 +443,59 @@ fn tool_line(line: &ToolLine, theme: Theme, width: usize) -> Vec<Line<'static>> 
     wrapped(vec![mark], &format!("{:<6} {}", line.verb, named.join(", ")), theme.dim(), 2, width)
 }
 
+/// A run of tool use longer than this folds to its first and last lines.
+const RUN_FOLDS_AT: usize = 6;
+
+/// A run of tool lines; folded to its start and end — with how many steps lie
+/// between — unless the person unfolded it (Ctrl-O).
+fn tool_run(run: Vec<ToolLine>, expanded: bool, theme: Theme, width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if expanded || run.len() <= RUN_FOLDS_AT {
+        for line in &run {
+            lines.extend(tool_line(line, theme, width));
+        }
+        return lines;
+    }
+    let (head, tail) = (3, 2);
+    for line in &run[..head] {
+        lines.extend(tool_line(line, theme, width));
+    }
+    let hidden = run.len() - head - tail;
+    lines.push(Line::from(vec![
+        Span::styled(format!("· {hidden} more steps · "), theme.dim()),
+        Span::styled("ctrl-o", theme.bold()),
+        Span::styled(" to unfold", theme.dim()),
+    ]));
+    for line in &run[run.len() - tail..] {
+        lines.extend(tool_line(line, theme, width));
+    }
+    lines
+}
+
+/// The person's own message: `›` and bold text, on a faint wash of the
+/// background when the terminal told us its colour.
+fn user_message(text: &str, theme: Theme, width: usize) -> Vec<Line<'static>> {
+    let Some(tint) = theme.tint() else {
+        return wrapped(vec![Span::styled("› ", theme.accent())], text, theme.bold(), 2, width);
+    };
+    // One column of wash on either side, and the whole width washed.
+    let inner = width.saturating_sub(2);
+    let washed = |spans: Vec<Span<'static>>| {
+        let used: usize = spans.iter().map(Span::width).sum();
+        let mut spans: Vec<Span<'static>> = spans.into_iter().map(|s| { let style = s.style.bg(tint); s.style(style) }).collect();
+        spans.insert(0, Span::styled(" ", Style::new().bg(tint)));
+        spans.push(Span::styled(" ".repeat(width.saturating_sub(used + 1)), Style::new().bg(tint)));
+        Line::from(spans)
+    };
+    let blank = Line::from(Span::styled(" ".repeat(width), Style::new().bg(tint)));
+    let mut lines = vec![blank.clone()];
+    for line in wrapped(vec![Span::styled("› ", theme.accent())], text, theme.bold(), 2, inner) {
+        lines.push(washed(line.spans));
+    }
+    lines.push(blank);
+    lines
+}
+
 fn transcript_lines(agent: &Agent, theme: Theme, width: usize) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     if agent.transcript.is_empty() && agent.queued.is_empty() {
@@ -416,11 +510,10 @@ You can talk to it directly — the PM hears about it."
         };
         return wrapped(Vec::new(), hello, theme.dim(), 0, width);
     }
-    let mut pending: Option<ToolLine> = None;
-    let flush = |pending: &mut Option<ToolLine>, lines: &mut Vec<Line<'static>>| {
-        if let Some(line) = pending.take() {
-            lines.extend(tool_line(&line, theme, width));
-        }
+    // Tool use gathers into a run until something else is said; a long run folds.
+    let mut run: Vec<ToolLine> = Vec::new();
+    let flush = |run: &mut Vec<ToolLine>, lines: &mut Vec<Line<'static>>| {
+        lines.extend(tool_run(std::mem::take(run), agent.expanded, theme, width));
     };
     // A blank line between turns: before each message, and between it and its answer.
     let gap = |lines: &mut Vec<Line<'static>>| {
@@ -445,31 +538,24 @@ You can talk to it directly — the PM hears about it."
                         (verb, target.as_deref().map(|t| relative(t, &agent.base)).unwrap_or_default(), edits)
                     }
                 };
+                // Looking around — reads, searches, fetches — merges into one line.
                 let merges = matches!(verb.as_str(), "read" | "search" | "fetch" | "recall");
-                match &mut pending {
+                match run.last_mut() {
                     Some(line) if merges && line.verb == verb => {
                         if !target.is_empty() && !line.targets.contains(&target) {
                             line.targets.push(target);
                         }
                     }
-                    _ => {
-                        flush(&mut pending, &mut lines);
-                        let line = ToolLine { verb, targets: if target.is_empty() { Vec::new() } else { vec![target] }, edits };
-                        if merges {
-                            pending = Some(line);
-                        } else {
-                            lines.extend(tool_line(&line, theme, width));
-                        }
-                    }
+                    _ => run.push(ToolLine { verb, targets: if target.is_empty() { Vec::new() } else { vec![target] }, edits }),
                 }
                 continue;
             }
-            _ => flush(&mut pending, &mut lines),
+            _ => flush(&mut run, &mut lines),
         }
         match entry {
             Entry::User { text } => {
                 gap(&mut lines);
-                lines.extend(wrapped(vec![Span::styled("› ", theme.accent())], text, theme.bold(), 2, width));
+                lines.extend(user_message(text, theme, width));
                 lines.push(Line::raw(""));
             }
             Entry::Reply { text } => lines.extend(markdown::lines(text, width, &theme.markdown())),
@@ -503,7 +589,7 @@ You can talk to it directly — the PM hears about it."
             Entry::Tool { .. } => {}
         }
     }
-    flush(&mut pending, &mut lines);
+    flush(&mut run, &mut lines);
     // Memos wait below the conversation until the turn ends.
     for memo in &agent.queued {
         gap(&mut lines);
@@ -542,7 +628,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
     } else if agent.state == AgentState::Working {
         let took = agent.working_since.map(|since| elapsed(Instant::now().duration_since(since))).unwrap_or_default();
         footer.push(Line::from(vec![
-            Span::styled("● ", theme.accent()),
+            Span::styled("● ", theme.pulse(Instant::now())),
             Span::styled("working", theme.accent()),
             Span::styled(format!(" · {took} · esc to stop"), theme.dim()),
         ]));
@@ -836,25 +922,34 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         facts.push((format!("{} tokens", group_digits(tokens)), theme.dim()));
     }
     let left_width: usize = left.iter().map(|s| s.width()).sum();
-    // When space runs short, the key hints go first; the facts stay.
-    let hints = ("enter send · tab squad · /help".to_owned(), theme.dim());
-    let width = |items: &[(String, Style)]| {
-        items.iter().map(|(t, _)| t.chars().count()).sum::<usize>() + 3 * items.len().saturating_sub(1)
+    // Facts first; the key hints — key in bold, what it does dim — go when space runs short.
+    let mut right: Vec<Vec<Span<'static>>> = facts.into_iter().map(|(text, style)| vec![Span::styled(text, style)]).collect();
+    let keys: Vec<Vec<Span<'static>>> = [("enter", "send"), ("tab", "squad"), ("/help", "")]
+        .iter()
+        .map(|(key, what)| {
+            let mut spans = vec![Span::styled(*key, theme.bold())];
+            if !what.is_empty() {
+                spans.push(Span::styled(format!(" {what}"), theme.dim()));
+            }
+            spans
+        })
+        .collect();
+    let width = |items: &[Vec<Span<'static>>]| {
+        items.iter().map(|spans| spans.iter().map(Span::width).sum::<usize>()).sum::<usize>() + 3 * items.len().saturating_sub(1)
     };
-    let mut right = facts.clone();
-    right.push(hints);
-    if left_width + width(&right) + 3 > area.width as usize {
-        right = facts;
+    let with_keys: Vec<Vec<Span<'static>>> = right.iter().cloned().chain(keys).collect();
+    if left_width + width(&with_keys) + 3 <= area.width as usize {
+        right = with_keys;
     }
     let gap = (area.width as usize).saturating_sub(left_width + width(&right));
     let mut spans = left;
     if gap >= 3 && !right.is_empty() {
         spans.push(Span::raw(" ".repeat(gap)));
-        for (i, (text, style)) in right.into_iter().enumerate() {
+        for (i, item) in right.into_iter().enumerate() {
             if i > 0 {
                 spans.push(Span::styled(" · ", theme.dim()));
             }
-            spans.push(Span::styled(text, style));
+            spans.extend(item);
         }
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -1031,8 +1126,8 @@ mod tests {
         app.on_event(Event::TextDelta { session: id, text: format!("\n\n{}", "word ".repeat(60)) });
         let shot = screen(&app, 220, 22);
         let longest = shot.lines().filter(|l| l.contains("word")).map(|l| l.trim_end().len()).max().unwrap();
-        // The pane starts after the margin, the squad and the hairline: 2 + 26 + 4.
-        assert!(longest <= 32 + PROSE_MAX, "{longest}");
+        // The pane starts after the margin, the (wide) squad and the hairline: 2 + 32 + 4.
+        assert!(longest <= 38 + PROSE_MAX, "{longest}");
     }
 
     #[test]
@@ -1217,6 +1312,55 @@ mod tests {
         let shot = screen(&app, 100, 24);
         assert!(shot.contains('┃'), "{shot}");
         assert!(shot.contains("› fix the bug"), "at the top, the first message shows:\n{shot}");
+    }
+
+    #[test]
+    fn a_long_run_of_tool_use_folds_and_o_unfolds_it() {
+        let (mut app, id) = working();
+        for i in 0..9 {
+            app.on_event(Event::ToolUse { session: id, tool: "Edit".into(), target: Some(format!("src/f{i}.rs")) });
+        }
+        let shot = screen(&app, 100, 30);
+        // The edit from `working()` and nine more make a run of ten: three, the fold, two.
+        assert!(shot.contains("· 5 more steps · ctrl-o to unfold"), "{shot}");
+        assert_eq!(shot.matches("✎ edit").count(), 5, "{shot}");
+        app.agents[0].expanded = true;
+        let shot = screen(&app, 100, 30);
+        assert_eq!(shot.matches("✎ edit").count(), 10, "{shot}");
+        assert!(!shot.contains("more steps"), "{shot}");
+    }
+
+    #[test]
+    fn the_persons_messages_sit_on_a_wash_of_the_terminals_background() {
+        let (app, _) = working();
+        let theme = Theme { color: true, truecolor: true, light: false, background: Some((20, 20, 24)) };
+        let mut terminal = Terminal::new(TestBackend::new(100, 22)).unwrap();
+        terminal.draw(|f| render(f, &app, theme, None, &Layouts::default())).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = (0..22).find(|&y| (0..100).map(|x| buffer[(x, y)].symbol()).collect::<String>().contains("fix the bug")).unwrap();
+        let x = (0..100).find(|&x| buffer[(x, row)].symbol() == "f").unwrap();
+        // White at 7% over (20, 20, 24).
+        assert_eq!(buffer[(x, row)].bg, Color::Rgb(36, 36, 40));
+        // Without the terminal's answer there is no wash: a guess would show as a slab.
+        assert_eq!(Theme { background: None, ..theme }.tint(), None);
+    }
+
+    #[test]
+    fn the_working_dot_breathes() {
+        let theme = Theme { color: true, truecolor: true, light: false, background: None };
+        let start = Instant::now();
+        let a = theme.pulse(start);
+        let b = theme.pulse(start + std::time::Duration::from_millis(800));
+        assert_ne!(a.fg, b.fg, "dim at one moment, bright at another");
+        assert_eq!(theme.pulse(start + std::time::Duration::from_millis(1600)).fg, a.fg, "and back");
+    }
+
+    #[test]
+    fn a_wide_terminal_gives_the_squad_more_room() {
+        let narrow = screen(&working().0, 110, 20);
+        let wide = screen(&working().0, 160, 20);
+        let bar = |shot: &str| shot.lines().nth(2).unwrap().find('│').unwrap();
+        assert!(bar(&wide) > bar(&narrow), "{wide}");
     }
 
     #[test]

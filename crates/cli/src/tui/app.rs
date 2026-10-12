@@ -69,6 +69,8 @@ pub struct Agent {
     pub unseen: usize,
     /// When its current turn started, for the elapsed time shown while it works.
     pub working_since: Option<Instant>,
+    /// Long runs of tool use shown in full rather than folded.
+    pub expanded: bool,
     /// Where it works now; tool paths are shown relative to it.
     pub base: PathBuf,
     /// Its desk, where it works between tickets.
@@ -96,6 +98,7 @@ impl Agent {
             scroll_back: 0,
             unseen: 0,
             working_since: None,
+            expanded: false,
             desk: base.clone(),
             base,
             pending: None,
@@ -128,6 +131,7 @@ impl Agent {
             unseen: 0,
             // Attached mid-turn: the clock starts now, not when the turn did.
             working_since: (info.state == SessionState::Working).then(Instant::now),
+            expanded: false,
             base,
             desk: info.project,
             pending: None,
@@ -234,6 +238,8 @@ pub struct App {
     board_max: usize,
     /// The last wheel event: when, and which way.
     last_wheel: Option<(Instant, bool)>,
+    /// The selected member's conversation, asked for as a file (`/export`).
+    pub export: bool,
     quit_armed: Option<Instant>,
 }
 
@@ -245,7 +251,7 @@ End jumps to the latest line · Ctrl-C twice leaves — the squad keeps working.
 /add <role…> [codex|claude] brings in teammates: pm, designer, frontend, backend, qa, data, or custom <name> · \
 /accept T-3 approves handed-in work · /reopen T-3 <what to change> sends it back · /cancel T-3 drops it · \
 /board · /mode [member] plan|ask|auto|full sets how much members do on their own — y/a/n answers a request \
-for permission (allow, always allow, decline) · /mouse lets the terminal select text (or hold Shift — Option in iTerm2 — while dragging) · /close removes the selected \
+for permission (allow, always allow, decline) · Ctrl-O unfolds long runs of tool use · /export opens the conversation in your editor · /mouse lets the terminal select text (or hold Shift — Option in iTerm2 — while dragging) · /close removes the selected \
 member · /quit leaves.";
 
 impl App {
@@ -272,6 +278,7 @@ impl App {
             conversation_max: usize::MAX,
             board_max: usize::MAX,
             last_wheel: None,
+            export: false,
             quit_armed: None,
         };
         // Talk to the PM first: it is the main contact.
@@ -538,6 +545,13 @@ impl App {
                 return vec![Command::Decide { squad: self.squad.clone(), approval: approval.id, decision }];
             }
         }
+        // Ctrl-O unfolds (and folds again) long runs of tool use.
+        if key.code == KeyCode::Char('o') && ctrl && self.pane == Pane::Conversation {
+            if let Some(agent) = self.agents.get_mut(self.selected) {
+                agent.expanded = !agent.expanded;
+            }
+            return Vec::new();
+        }
         match key.code {
             KeyCode::Char('c') if ctrl => return self.ctrl_c(now),
             KeyCode::Char('b') if ctrl => self.toggle_board(),
@@ -717,6 +731,10 @@ impl App {
                 }
                 _ => Vec::new(),
             },
+            "export" => {
+                self.export = true;
+                Vec::new()
+            }
             "mouse" => {
                 self.mouse = !self.mouse;
                 self.flash = Some(if self.mouse {
@@ -847,6 +865,26 @@ impl App {
         self.flash = Some(format!("{names} joining · Tab or @name to talk to them directly."));
         commands
     }
+}
+
+/// A member's conversation as Markdown, for a file the person can search and copy.
+pub fn transcript_markdown(agent: &Agent, squad: &str) -> String {
+    let mut out = format!("# {} · {squad}\n\n", agent.label());
+    for entry in agent.transcript.entries() {
+        match entry {
+            Entry::User { text } => out.push_str(&format!("**You:** {text}\n\n")),
+            Entry::Reply { text } => out.push_str(&format!("{text}\n\n")),
+            Entry::Tool { tool, target } => {
+                out.push_str(&format!("- {} {}\n", tool_verb(tool), target.as_deref().unwrap_or("")));
+            }
+            Entry::Note { text } => out.push_str(&format!("_{text}_\n\n")),
+            Entry::Error { message, next } => {
+                out.push_str(&format!("> ✗ {message}{}\n\n", next.as_ref().map(|n| format!(" → `{n}`")).unwrap_or_default()))
+            }
+            Entry::Landed { branch, stat } => out.push_str(&format!("✓ Landed on `{branch}`\n\n```\n{stat}\n```\n\n")),
+        }
+    }
+    out
 }
 
 /// How a tool use reads in one word.
@@ -1406,6 +1444,31 @@ mod tests {
         app.on_key(key(KeyCode::End), Instant::now());
         app.on_key(key(KeyCode::Home), Instant::now());
         assert_eq!(app.agents[0].scroll_back, 30, "Home goes to the beginning");
+    }
+
+    #[test]
+    fn ctrl_o_folds_and_unfolds_tool_runs_and_o_stays_a_letter() {
+        let (mut app, _, _) = team();
+        app.on_key(ctrl('o'), Instant::now());
+        assert!(app.agents[0].expanded);
+        app.on_key(ctrl('o'), Instant::now());
+        assert!(!app.agents[0].expanded);
+        type_text(&mut app, "ok");
+        assert_eq!(app.composer.text(), "ok", "a message may start with o");
+    }
+
+    #[test]
+    fn export_asks_for_the_conversation_as_markdown() {
+        let (mut app, pm, _) = team();
+        app.on_event(Event::UserMessage { session: pm, text: "plan it".into() });
+        app.on_event(Event::TextDelta { session: pm, text: "**Done.**".into() });
+        app.on_event(Event::ToolUse { session: pm, tool: "Read".into(), target: Some("a.rs".into()) });
+        type_text(&mut app, "/export");
+        enter(&mut app);
+        assert!(app.export);
+        let text = transcript_markdown(&app.agents[0], "acme");
+        assert!(text.starts_with("# pm · acme"), "{text}");
+        assert!(text.contains("**You:** plan it") && text.contains("**Done.**") && text.contains("- read a.rs"), "{text}");
     }
 
     #[test]
