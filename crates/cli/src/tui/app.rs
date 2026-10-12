@@ -48,6 +48,8 @@ pub enum AgentState {
 pub enum Hit {
     /// The squad's name in the header: lists the other squads.
     Squads,
+    /// A project's chip in the header — or "all" (`None`): puts it in focus.
+    Project(Option<usize>),
     Pane(Pane),
     Ticket(TicketId),
 }
@@ -255,6 +257,11 @@ pub struct App {
     pub open_browser: bool,
     /// The help screen is open over the conversation.
     pub help_open: bool,
+    /// The project the board, the review card and new requests are about;
+    /// `None` shows all of the squad's projects.
+    pub focus: Option<PathBuf>,
+    /// Commands a click produced, for the loop to send.
+    pub outbox: Vec<Command>,
     /// Another squad to show, and the roles to start it with when it is new.
     pub switch_to: Option<(String, Vec<String>)>,
     /// Which completion is picked, and the text the person closed completion on.
@@ -341,6 +348,8 @@ impl App {
             open_browser: false,
             help_open: false,
             switch_to: None,
+            focus: None,
+            outbox: Vec::new(),
             pick: 0,
             picked: false,
             dismissed: None,
@@ -413,9 +422,24 @@ impl App {
 
     /// The board's tickets in the order they are listed: the person's reviews,
     /// work in progress, to do, proposed, then the latest few finished.
+    /// The project a ticket is in: its own, or the squad's first.
+    pub fn ticket_project(&self, ticket: &Ticket) -> Option<PathBuf> {
+        ticket.project.clone().or_else(|| self.projects.first().cloned())
+    }
+
+    /// Whether a ticket shows under the current focus.
+    pub fn in_focus(&self, ticket: &Ticket) -> bool {
+        self.focus.is_none() || self.ticket_project(ticket) == self.focus
+    }
+
+    /// Work waiting for the person's review, in the project in focus.
+    pub fn to_review_here(&self) -> Vec<&Ticket> {
+        self.to_review().into_iter().filter(|t| self.in_focus(t)).collect()
+    }
+
     pub fn board_order(&self) -> Vec<TicketId> {
         let group = |statuses: &[TicketStatus]| -> Vec<TicketId> {
-            self.tickets.iter().filter(|t| statuses.contains(&t.status)).map(|t| t.id).collect()
+            self.tickets.iter().filter(|t| statuses.contains(&t.status) && self.in_focus(t)).map(|t| t.id).collect()
         };
         let mut order = group(&[TicketStatus::Review]);
         order.extend(group(&[TicketStatus::InProgress]));
@@ -479,6 +503,11 @@ impl App {
             Some(Hit::Pane(pane)) => {
                 self.pane = pane;
                 self.board_scroll = 0;
+            }
+            Some(Hit::Project(at)) => {
+                let name = at.and_then(|i| self.projects.get(i)).map(|p| equipe_core::board::project_name(p)).unwrap_or_default();
+                let commands = self.focus_on(&name);
+                self.outbox.extend(commands);
             }
             Some(Hit::Squads) => {
                 self.pane = Pane::Conversation;
@@ -794,6 +823,7 @@ impl App {
             // Read only when it's wanted: it opens every squad's journal.
             squads: if text.starts_with("/squad ") { self.other_squads() } else { Vec::new() },
             mode: Some(self.mode),
+            projects: self.projects.iter().map(|p| equipe_core::board::project_name(p)).collect(),
             member_modes: self.agents.iter().filter_map(|a| Some((a.member.as_ref()?.name.as_str(), a.mode?))).collect(),
         };
         commands::complete(text, &ctx)
@@ -814,7 +844,7 @@ impl App {
         if asked_to_sign_in == Some(true) {
             return Some("/browser".into());
         }
-        self.to_review().iter().map(|t| t.id).max().map(|id| format!("/accept T-{id}"))
+        self.to_review_here().iter().map(|t| t.id).max().map(|id| format!("/accept T-{id}"))
     }
 
     fn key(&mut self, key: KeyEvent, now: Instant) -> Vec<Command> {
@@ -1096,6 +1126,7 @@ impl App {
             }
             "browser" => self.browser(rest),
             "squad" => self.squad_command(rest),
+            "project" => self.focus_on(rest),
             "mouse" => {
                 self.mouse = !self.mouse;
                 self.flash = Some(if self.mouse {
@@ -1119,6 +1150,31 @@ impl App {
                 Vec::new()
             }
         }
+    }
+
+    /// `/project <name>` puts one project in focus — the board, the review card
+    /// and new requests are about it; `/project all` (or no name) shows them all.
+    pub fn focus_on(&mut self, name: &str) -> Vec<Command> {
+        let name = name.trim();
+        let project = match name {
+            "" | "all" => None,
+            name => match self.projects.iter().find(|p| equipe_core::board::project_name(p) == name) {
+                Some(p) => Some(p.clone()),
+                None => {
+                    let names: Vec<String> = self.projects.iter().map(|p| equipe_core::board::project_name(p)).collect();
+                    self.flash = Some(format!("No project {name} in {} · {}", self.squad, names.join(", ")));
+                    return Vec::new();
+                }
+            },
+        };
+        self.focus = project.clone();
+        self.board_selected = None;
+        let label = project.as_deref().map(equipe_core::board::project_name);
+        self.flash = Some(match &label {
+            Some(name) => format!("{name} in focus: the board and reviews show it, and new work goes there · /project all"),
+            None => "All projects".to_owned(),
+        });
+        vec![Command::Focus { squad: self.squad.clone(), project: label }]
     }
 
     /// Every squad but this one, with what each works on.
@@ -1147,18 +1203,51 @@ impl App {
                     names => format!("On {} · also {} · /squad <name> switches, /squad new starts one", self.squad, names.join(", ")),
                 });
             }
+            ["add", folder] => {
+                let Some(path) = folder_path(folder) else {
+                    self.flash = Some(format!("No folder at {folder}"));
+                    return Vec::new();
+                };
+                let project = equipe_core::runtime::project_of(&path);
+                match equipe_core::squads::add_project(&home, &self.squad, &project) {
+                    Ok(()) => {
+                        if !self.projects.contains(&project) {
+                            self.projects.push(project.clone());
+                        }
+                        self.flash = Some(format!("{} works on {} too · members see it from their next turn", self.squad, equipe_core::board::project_name(&project)));
+                    }
+                    Err(err) => self.flash = Some(err),
+                }
+            }
+            ["remove", name] => {
+                let Some(project) = self.projects.iter().find(|p| equipe_core::board::project_name(p) == *name || p.to_string_lossy() == *name).cloned() else {
+                    self.flash = Some(format!("{} doesn't work on {name}", self.squad));
+                    return Vec::new();
+                };
+                if self.projects.len() == 1 {
+                    self.flash = Some("A squad works on at least one project · /squad add another first".into());
+                    return Vec::new();
+                }
+                match equipe_core::squads::remove_project(&home, &self.squad, &project) {
+                    Ok(()) => {
+                        self.projects.retain(|p| *p != project);
+                        if self.focus.as_ref() == Some(&project) {
+                            self.focus = None;
+                        }
+                        self.flash = Some(format!("{} no longer works on {name} — its tickets and branches stay", self.squad));
+                    }
+                    Err(err) => self.flash = Some(err),
+                }
+            }
+            ["add"] | ["remove"] => self.flash = Some("/squad add <folder> · /squad remove <project>".into()),
             ["new"] | ["new", _] => {
                 self.flash = Some("A name and the folder it works in: /squad new shop ~/Projects/shop".into());
             }
             ["new", name, folder] => {
-                let path = match folder.strip_prefix("~/") {
-                    Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
-                    None => std::path::PathBuf::from(folder),
-                };
-                if !path.is_dir() {
+                let Some(path) = folder_path(folder) else {
                     self.flash = Some(format!("No folder at {folder}"));
                     return Vec::new();
-                }
+                };
                 let project = equipe_core::runtime::project_of(&path);
                 if let Some(owner) = equipe_core::squads::find(&home, &project) {
                     self.flash = Some(format!("{} is already {owner}'s · /squad {owner}", equipe_core::board::project_name(&project)));
@@ -1381,6 +1470,16 @@ pub fn tool_verb(name: &str) -> &str {
             _ => other,
         },
     }
+}
+
+/// A folder as the person typed it — `~/…` is under home — if it is one.
+fn folder_path(typed: &str) -> Option<PathBuf> {
+    let path = match typed.strip_prefix("~/") {
+        Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
+        None if typed == "~" => dirs::home_dir().unwrap_or_default(),
+        None => PathBuf::from(typed),
+    };
+    path.is_dir().then_some(path)
 }
 
 /// The memory each member's browser takes, from `ps -axo pid=,ppid=,rss=,command=`:
@@ -1919,6 +2018,30 @@ mod tests {
         // A squad kept from before the rename still reads as read-only.
         assert_eq!(Mode::stored("plan"), Some(Mode::ReadOnly));
         assert_eq!(Mode::parse("plan"), None);
+    }
+
+    #[test]
+    fn a_project_in_focus_narrows_the_board_and_tells_the_squad() {
+        let (mut app, _, _) = team();
+        app.projects = vec!["/code/site".into(), "/code/app".into()];
+        let mut site = ticket(1, TicketStatus::Review);
+        site.project = Some("/code/site".into());
+        let mut app_ticket = ticket(2, TicketStatus::Review);
+        app_ticket.project = Some("/code/app".into());
+        for t in [site, app_ticket] {
+            app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t });
+        }
+        assert_eq!(app.board_order(), vec![1, 2]);
+        type_text(&mut app, "/project app");
+        assert_eq!(enter(&mut app), vec![Command::Focus { squad: "acme".into(), project: Some("app".into()) }]);
+        assert_eq!(app.board_order(), vec![2]);
+        assert_eq!(app.to_review_here().len(), 1);
+        assert_eq!(app.hint().as_deref(), Some("/accept T-2"));
+        // A chip click does the same, and "all" shows everything again.
+        app.set_hits(vec![(0, 3, 0, Hit::Project(None))], None);
+        app.on_click(1, 0);
+        assert_eq!(app.outbox, vec![Command::Focus { squad: "acme".into(), project: None }]);
+        assert_eq!(app.board_order(), vec![1, 2]);
     }
 
     #[test]

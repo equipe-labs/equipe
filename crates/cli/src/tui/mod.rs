@@ -447,6 +447,9 @@ fn on_input(app: &mut app::App, client: &equipe_core::gateway::Client, event: In
         Input::Resize(..) => {}
         _ => return false,
     }
+    for command in app.outbox.drain(..) {
+        client.send(command);
+    }
     true
 }
 

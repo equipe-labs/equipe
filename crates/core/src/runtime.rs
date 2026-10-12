@@ -167,6 +167,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         next_join: 1,
         pending: HashMap::new(),
         next_approval: 1,
+        focus: HashMap::new(),
     };
     let mut memos = Vec::new();
     if runtime.config.persist {
@@ -319,6 +320,8 @@ struct Runtime {
     /// Requests for permission waiting for the person, by id.
     pending: HashMap<u64, Pending>,
     next_approval: u64,
+    /// The project each squad's person is looking at, by name.
+    focus: HashMap<String, String>,
 }
 
 async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut internal: UnboundedReceiver<Internal>) {
@@ -420,6 +423,14 @@ impl Runtime {
             Command::Cancel { squad, ticket } => self.cancel(&squad, ticket).await,
             Command::SetMode { squad, member, mode } => self.set_mode(&squad, member, mode),
             Command::ShowBrowser { squad, member, show } => self.show_browser(&squad, member, show),
+            Command::Focus { squad, project } => match project {
+                Some(name) => {
+                    self.focus.insert(squad, name);
+                }
+                None => {
+                    self.focus.remove(&squad);
+                }
+            },
             Command::Decide { squad, approval, decision } => {
                 if self.pending.get(&approval).is_some_and(|p| p.squad == squad) {
                     self.answer(approval, decision, "");
@@ -757,13 +768,17 @@ impl Runtime {
         };
         session.prompts.push(text.clone());
         // What the PM missed travels with its next message; the person sees only theirs.
-        let prompt = match std::mem::take(&mut session.briefing) {
+        let mut prompt = match std::mem::take(&mut session.briefing) {
             briefing if briefing.is_empty() => text,
             briefing => format!(
                 "[equipe: since your last turn —\n{}]\n\n{text}",
                 briefing.iter().map(|line| format!("- {line}")).collect::<Vec<_>>().join("\n")
             ),
         };
+        // With several projects, which one the person is looking at.
+        if let Some(project) = session.squad.as_ref().and_then(|s| self.focus.get(s)) {
+            prompt = format!("[equipe: the person is looking at the project {project} — new work is for it unless they say otherwise]\n\n{prompt}");
+        }
         self.save_waiting(id);
         self.start_turn(id, prompt);
     }

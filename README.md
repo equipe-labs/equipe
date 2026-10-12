@@ -84,6 +84,7 @@ CLAUDE CODE  your claude · signs itself in
 | `equipe status` | Which engines are ready, on which plan, with which models |
 | `equipe roles` | The roles a squad can have, what each does and the model it gets |
 | `equipe squads` | Your squads and the projects each works on |
+| `/squad` · `/project` | In the console: `/squad <name>` switches to another squad (click its name in the header), `/squad new <name> <folder>` starts one, `/squad add <folder>` / `/squad remove <project>` change what a squad works on. With several projects, each shows as a chip in the header and a tag on its tickets; `/project <name>` (or a click on the chip) puts one in focus — the board, the review card and new requests are about it |
 | `equipe try "…"` | One turn on whichever engine is ready (`--engine`, `--model`) |
 | `equipe try --edit "…"` | An agent edits your repo **on a new branch**, in its own worktree. Your checkout is untouched; you get review / keep / discard commands |
 

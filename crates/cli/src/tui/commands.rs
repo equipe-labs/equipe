@@ -9,8 +9,9 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-pub const COMMANDS: [Spec; 13] = [
-    Spec { name: "squad", args: "[name] · new <name> <folder>", about: "Switch squads, or start a new one" },
+pub const COMMANDS: [Spec; 14] = [
+    Spec { name: "squad", args: "[name] · new <name> <folder> · add|remove <folder>", about: "Switch, start, or change what a squad works on" },
+    Spec { name: "project", args: "[name|all]", about: "Put one project in focus: board, reviews and new work" },
     Spec { name: "accept", args: "T-n", about: "Approve handed-in work" },
     Spec { name: "reopen", args: "T-n <what to change>", about: "Send work back with what to change" },
     Spec { name: "cancel", args: "T-n", about: "Drop a ticket" },
@@ -50,6 +51,8 @@ pub struct Context<'a> {
     pub squads: Vec<(String, String)>,
     /// The squad's mode, and each member's own where it differs.
     pub mode: Option<Mode>,
+    /// The squad's projects, by name.
+    pub projects: Vec<String>,
     pub member_modes: Vec<(&'a str, Mode)>,
 }
 
@@ -142,6 +145,21 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             if starts("new") {
                 choices.push(word("new", "start a squad: a name, then the folder it works in", " "));
             }
+            if starts("add") {
+                choices.push(word("add", "a folder for this squad to work on too", " "));
+            }
+            if starts("remove") {
+                choices.push(word("remove", "stop working on one of its projects", " "));
+            }
+            choices
+        }
+        ("squad", 2) if words[0] == "add" => folders(typed).into_iter().map(|f| word(&f, "", "")).collect(),
+        ("squad", 2) if words[0] == "remove" => ctx.projects.iter().filter(|p| starts(p)).map(|p| word(p, "", "")).collect(),
+        ("project", 1) => {
+            let mut choices: Vec<Choice> = ctx.projects.iter().filter(|p| starts(p)).map(|p| word(p, "board, reviews and new work about it", "")).collect();
+            if starts("all") {
+                choices.push(word("all", "every project", ""));
+            }
             choices
         }
         ("squad", 3) if words[0] == "new" => folders(typed).into_iter().map(|f| word(&f, "", "")).collect(),
@@ -207,6 +225,7 @@ mod tests {
             roles: vec!["pm", "designer", "frontend", "backend", "qa", "data"],
             squads: vec![("equipe-squad".into(), "equipe-site".into()), ("ios".into(), "app".into())],
             mode: Some(Mode::Auto),
+            projects: vec!["site".into(), "app".into()],
             member_modes: vec![("frontend", Mode::Full)],
         }
     }
@@ -239,8 +258,13 @@ mod tests {
         assert_eq!(texts(&complete("/add designer q", &ctx())), ["/add designer qa "]);
         assert_eq!(texts(&complete("/browser show f", &ctx())), ["/browser show frontend"]);
         assert_eq!(texts(&complete("@fr", &ctx())), ["@frontend "]);
-        assert_eq!(texts(&complete("/squad ", &ctx())), ["/squad equipe-squad", "/squad ios", "/squad new "]);
+        assert_eq!(
+            texts(&complete("/squad ", &ctx())),
+            ["/squad equipe-squad", "/squad ios", "/squad new ", "/squad add ", "/squad remove "]
+        );
         assert_eq!(texts(&complete("/browser m", &ctx())), ["/browser max"]);
+        assert_eq!(texts(&complete("/project ", &ctx())), ["/project site", "/project app", "/project all"]);
+        assert_eq!(texts(&complete("/squad remove a", &ctx())), ["/squad remove app"]);
         let tmp = std::env::temp_dir().join(format!("equipe-folders-{}", std::process::id()));
         std::fs::create_dir_all(tmp.join("web")).unwrap();
         std::fs::create_dir_all(tmp.join("wallet")).unwrap();

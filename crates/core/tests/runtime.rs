@@ -990,6 +990,24 @@ async fn running_code_in_the_browser_shows_the_code_to_the_person() {
 }
 
 #[tokio::test]
+async fn the_project_in_focus_travels_with_the_persons_message() {
+    let (site, app) = (named("site"), named("app"));
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&site, &app]), false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("app".into()) });
+    handle.send(Command::Submit { session: 1, text: "add an onboarding screen".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let prompt = arg(&calls(&recorded)[0], "-p").unwrap().to_owned();
+    assert!(prompt.contains("looking at the project app") && prompt.ends_with("add an onboarding screen"), "{prompt}");
+    // Back to all: nothing added.
+    handle.send(Command::Focus { squad: "acme".into(), project: None });
+    handle.send(Command::Submit { session: 1, text: "and the site?".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert_eq!(arg(calls(&recorded).last().unwrap(), "-p"), Some("and the site?"));
+}
+
+#[tokio::test]
 async fn a_member_asks_the_person_before_doing_something_on_their_behalf() {
     let repo = repo();
     let claude = fake_claude(true, "exec sleep 30");

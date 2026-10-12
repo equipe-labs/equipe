@@ -88,6 +88,12 @@ pub fn add_project(home: &Path, name: &str, project: &Path) -> Result<(), String
     journal.add_project(project).map_err(|err| err.to_string())
 }
 
+/// Take a project off a squad. Its tickets and branches stay.
+pub fn remove_project(home: &Path, name: &str, project: &Path) -> Result<(), String> {
+    let journal = Journal::for_squad(home, name).map_err(|err| err.to_string())?;
+    journal.remove_project(project).map_err(|err| err.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,6 +116,8 @@ mod tests {
         assert_eq!(find(&home, Path::new("/code/site")).as_deref(), Some("acme"));
         assert_eq!(find(&home, Path::new("/code/other")), None);
         assert_eq!(list(&home), [SquadSummary { name: "acme".into(), projects: vec!["/code/app".into(), "/code/site".into()] }]);
+        remove_project(&home, "acme", Path::new("/code/site")).unwrap();
+        assert_eq!(find(&home, Path::new("/code/site")), None, "taken off, it belongs to no squad");
     }
 
     #[test]

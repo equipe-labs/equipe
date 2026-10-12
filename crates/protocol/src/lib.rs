@@ -281,6 +281,9 @@ pub enum Command {
     SetMode { squad: SquadName, member: Option<String>, mode: Option<Mode> },
     /// The person answers a member's request for permission.
     Decide { squad: SquadName, approval: u64, decision: Decision },
+    /// The project the person is looking at, by name — new work goes there
+    /// unless they say otherwise; `None`: all of the squad's projects.
+    Focus { squad: SquadName, project: Option<String> },
     /// Members' browsers open on screen (`show`) or run hidden: one member's,
     /// or (`member: None`) everyone's. Kept for the squad.
     ShowBrowser { squad: SquadName, member: Option<String>, show: bool },

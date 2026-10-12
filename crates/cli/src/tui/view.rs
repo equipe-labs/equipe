@@ -361,7 +361,7 @@ fn conversation_areas(area: Rect, app: &App, agent: &Agent) -> (Rect, Rect, Rect
 const CARD_SHOWN: usize = 3;
 
 fn waiting_card_height(app: &App, room: u16) -> u16 {
-    let waiting = app.to_review().len();
+    let waiting = app.to_review_here().len();
     // Never on a short screen: the conversation comes first.
     if waiting == 0 || room < 16 {
         return 0;
@@ -372,11 +372,12 @@ fn waiting_card_height(app: &App, room: u16) -> u16 {
 /// Work waiting for the person, in sight under any conversation: a heading,
 /// then a row a ticket — each a click from its review on the board.
 fn waiting_card(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Option<TicketId>)> {
-    let waiting = app.to_review();
+    let waiting = app.to_review_here();
     if waiting.is_empty() {
         return Vec::new();
     }
     let bar = || Span::styled("▎ ", theme.accent());
+    let tags = tag_width(app);
     let mut rows = vec![(
         Line::from(vec![
             bar(),
@@ -391,13 +392,14 @@ fn waiting_card(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Op
         let style = looks.iter().find(|(name, ..)| *name == who).map_or_else(|| theme.dim(), |l| theme.member(l.2));
         let id = format!("{:<6}", format!("T-{}", t.id));
         // Owners line up: titles take a fixed width.
-        let title_room = width.saturating_sub(2 + 6 + 2 + 12).min(56);
+        let title_room = width.saturating_sub(2 + 6 + 2 + 12 + if tags > 0 { tags + 2 } else { 0 }).min(56);
         let title = ui::fit(&t.title, title_room);
         let pad = title_room.saturating_sub(unicode_width::UnicodeWidthStr::width(title.as_str()));
         rows.push((
             Line::from(vec![
                 bar(),
                 Span::styled(id, theme.accent()),
+                project_tag(app, t, theme, tags).map_or_else(|| Span::raw(""), |tag| Span::styled(format!("{}  ", tag.content), tag.style)),
                 Span::styled(title, Style::new()),
                 Span::raw(" ".repeat(pad + 2)),
                 Span::styled(who, style),
@@ -434,10 +436,15 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
     let switch: usize = switch_label(app, app.pane, theme).iter().map(Span::width).sum();
     let other = if app.pane == Pane::Board { Pane::Conversation } else { Pane::Board };
     let mut hits = vec![(right.x + right.width.saturating_sub(switch as u16), right.x + right.width, right.y, Hit::Pane(other))];
-    // The squad's name in the header, and its ▾: the way to the other squads.
-    let header = content(screen);
-    let name_x = header.x + 10;
-    hits.push((name_x, name_x + unicode_width::UnicodeWidthStr::width(app.squad.as_str()) as u16 + 2, header.y, Hit::Squads));
+    // The squad's name in the header, and its ▾: the way to the other squads;
+    // with several projects, their chips.
+    let top = content(screen);
+    let name_x = top.x + 10;
+    hits.push((name_x, name_x + unicode_width::UnicodeWidthStr::width(app.squad.as_str()) as u16 + 2, top.y, Hit::Squads));
+    let narrow = columns(app, body).0.is_none();
+    for (from, to, hit) in header(app, theme, None, narrow, top.width as usize).1 {
+        hits.push((top.x + from, top.x + to, top.y, hit));
+    }
     if app.pane == Pane::Board {
         let width = (board.width as usize).saturating_sub(1).min(PROSE_MAX + 20);
         let rows = board_list(app, theme, width);
@@ -625,11 +632,39 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
 }
 
 fn render_header(frame: &mut Frame, area: Rect, app: &App, theme: Theme, branch: Option<&str>, narrow: bool) {
-    let mut place = display_path(&app.cwd);
-    if let Some(branch) = branch {
-        place.push_str(" · ");
-        place.push_str(branch);
+    let (spans, _) = header(app, theme, branch, narrow, area.width as usize);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// A project's colour among the squad's, by its place in the list.
+fn project_style(app: &App, project: Option<&std::path::Path>, theme: Theme) -> Style {
+    let at = project.and_then(|p| app.projects.iter().position(|q| q == p)).unwrap_or(0);
+    theme.member([2, 6, 4, 7, 5, 1, 3, 0][at % 8])
+}
+
+/// A ticket's project, as a tag in its colour — only when the squad works on
+/// more than one, padded to `width` so tags line up.
+fn project_tag(app: &App, ticket: &equipe_core::protocol::Ticket, theme: Theme, width: usize) -> Option<Span<'static>> {
+    if app.projects.len() < 2 {
+        return None;
     }
+    let project = app.ticket_project(ticket);
+    let name = project.as_deref().map(project_name).unwrap_or_default();
+    Some(Span::styled(format!("{:<width$}", ui::fit(&name, width)), project_style(app, project.as_deref(), theme)))
+}
+
+/// The widest project tag a squad needs, up to 12 columns.
+fn tag_width(app: &App) -> usize {
+    if app.projects.len() < 2 {
+        return 0;
+    }
+    app.projects.iter().map(|p| unicode_width::UnicodeWidthStr::width(project_name(p).as_str())).max().unwrap_or(0).min(12)
+}
+
+/// The header: the wordmark, the squad (a click lists the others), then where
+/// it works — the folder and branch for one project; for several, each
+/// project as a chip that puts it in focus, and "all".
+fn header(app: &App, theme: Theme, branch: Option<&str>, narrow: bool, width: usize) -> (Vec<Span<'static>>, Vec<(u16, u16, Hit)>) {
     let mut spans = vec![
         Span::styled("equipe", theme.bold()),
         Span::styled(".", theme.dim()),
@@ -645,18 +680,48 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App, theme: Theme, branch:
         let summary = if working > 0 { format!("   {open} members · {working} working") } else { format!("   {open} members") };
         spans.push(Span::styled(summary, theme.dim()));
     }
-    let used: usize = spans.iter().map(Span::width).sum();
+    let mut hits = Vec::new();
+    let used = |spans: &[Span]| spans.iter().map(Span::width).sum::<usize>();
+    if app.projects.len() > 1 {
+        spans.push(Span::raw("   "));
+        let mut chips: Vec<(String, Option<usize>)> =
+            app.projects.iter().enumerate().map(|(i, p)| (project_name(p), Some(i))).collect();
+        chips.push(("all".to_owned(), None));
+        for (n, (name, at)) in chips.into_iter().enumerate() {
+            if n > 0 {
+                spans.push(Span::styled(" · ", theme.dim()));
+            }
+            let focused = match at {
+                Some(i) => app.focus.as_ref() == app.projects.get(i),
+                None => app.focus.is_none(),
+            };
+            let style = match (focused, at) {
+                (true, Some(i)) => project_style(app, app.projects.get(i).map(|p| p.as_path()), theme).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                (true, None) => theme.bold().add_modifier(Modifier::UNDERLINED),
+                (false, _) => theme.dim(),
+            };
+            let from = used(&spans) as u16;
+            spans.push(Span::styled(name.clone(), style));
+            hits.push((from, from + unicode_width::UnicodeWidthStr::width(name.as_str()) as u16, Hit::Project(at)));
+        }
+        return (spans, hits);
+    }
+    let mut place = display_path(&app.cwd);
+    if let Some(branch) = branch {
+        place.push_str(" · ");
+        place.push_str(branch);
+    }
     // Keep the end of a long path — the project and branch — and drop the start.
-    let room = (area.width as usize).saturating_sub(used + 3);
+    let room = width.saturating_sub(used(&spans) + 3);
     if room > 4 {
-        let width = unicode_width::UnicodeWidthStr::width(place.as_str());
-        if width > room {
+        let place_width = unicode_width::UnicodeWidthStr::width(place.as_str());
+        if place_width > room {
             let tail: String = place.chars().rev().collect();
             place = format!("…{}", ui::fit(&tail, room - 1).trim_end_matches('…').chars().rev().collect::<String>());
         }
         spans.push(Span::styled(format!("   {place}"), theme.dim()));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    (spans, hits)
 }
 
 /// Each member's own mark and colour, so the squad tells apart at a glance.
@@ -748,7 +813,11 @@ fn render_squad(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
             let text = match (agent.queued.len(), agent.ticket) {
                 (1, _) => "1 memo".to_owned(),
                 (n @ 2.., _) => format!("{n} memos"),
-                (0, Some(ticket)) => format!("T-{ticket}"),
+                // With several projects, which one the ticket is in.
+                (0, Some(ticket)) => match app.tickets.iter().find(|t| t.id == ticket).filter(|_| app.projects.len() > 1) {
+                    Some(t) => format!("T-{ticket} {}", app.ticket_project(t).as_deref().map(project_name).unwrap_or_default()),
+                    None => format!("T-{ticket}"),
+                },
                 (0, None) => agent.short_model().unwrap_or_default(),
             };
             // An open browser, and what it costs in memory.
@@ -1326,11 +1395,12 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
             TicketStatus::Done => "done".to_owned(),
             TicketStatus::Cancelled => "cancelled".to_owned(),
         };
-        let place = if several_projects { t.project.as_deref().map(project_name).map(|p| format!(" · {p}")).unwrap_or_default() } else { String::new() };
-        // Columns: marker, id, title (what's left), owner, state.
+        // Columns: marker, id, project (with several), title (what's left), owner, state.
         // Fixed columns, so owners and states line up down the list.
-        let tail_width = (12 + 14 + if several_projects { 14 } else { 0 }).min(width / 2);
-        let title_room = width.saturating_sub(2 + 6 + 2 + tail_width);
+        let tags = tag_width(app);
+        let tag = project_tag(app, t, theme, tags).map(|tag| vec![tag, Span::raw("  ")]).unwrap_or_default();
+        let tail_width = (12 + 14).min(width / 2);
+        let title_room = width.saturating_sub(2 + 6 + 2 + tail_width + if several_projects { tags + 2 } else { 0 });
         let title = ui::fit(&t.title, title_room);
         let pad = title_room.saturating_sub(unicode_width::UnicodeWidthStr::width(title.as_str()));
         let closed = t.status.is_closed();
@@ -1340,17 +1410,18 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
             (false, false) => Style::new(),
         };
         let state_style = if t.status == TicketStatus::Review { theme.accent() } else { theme.dim() };
-        rows.push((
-            Line::from(vec![
-                if selected { Span::styled("› ", theme.accent()) } else { Span::raw("  ") },
-                Span::styled(format!("{:<6}", format!("T-{}", t.id)), if selected { theme.bold() } else { theme.dim() }),
-                Span::styled(title, title_style),
-                Span::raw(" ".repeat(pad + 2)),
-                Span::styled(format!("{who:<10}  "), if closed { theme.dim() } else { member_style(app, &who, theme) }),
-                Span::styled(ui::fit(&format!("{state}{place}"), tail_width.saturating_sub(12)), state_style),
-            ]),
-            Some(t.id),
-        ));
+        let mut spans = vec![
+            if selected { Span::styled("› ", theme.accent()) } else { Span::raw("  ") },
+            Span::styled(format!("{:<6}", format!("T-{}", t.id)), if selected { theme.bold() } else { theme.dim() }),
+        ];
+        spans.extend(tag);
+        spans.extend([
+            Span::styled(title, title_style),
+            Span::raw(" ".repeat(pad + 2)),
+            Span::styled(format!("{who:<10}  "), if closed { theme.dim() } else { member_style(app, &who, theme) }),
+            Span::styled(ui::fit(&state, tail_width.saturating_sub(12)), state_style),
+        ]);
+        rows.push((Line::from(spans), Some(t.id)));
     }
     rows
 }
@@ -2158,6 +2229,27 @@ mod tests {
         assert!(cell.modifier.contains(Modifier::REVERSED));
         app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('x')), Instant::now());
         assert!(app.selection.is_none());
+    }
+
+    #[test]
+    fn several_projects_show_as_chips_and_tags() {
+        let (mut app, _) = working();
+        app.projects = vec!["/code/site".into(), "/code/app".into()];
+        let mut t = ticket(3, TicketStatus::Review, "Onboarding screens");
+        t.project = Some("/code/app".into());
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t });
+        app.flash = None;
+        let shot = screen(&app, 110, 30);
+        assert!(shot.lines().next().unwrap().contains("site · app · all"), "{shot}");
+        assert!(shot.contains("T-3   app   Onboarding screens"), "the review card names the project:\n{shot}");
+        app.pane = Pane::Board;
+        let shot = screen(&app, 110, 30);
+        assert!(shot.contains("› T-3   app   Onboarding screens"), "{shot}");
+        // Its chip is a click away.
+        let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 110, 30), &Layouts::default());
+        let chip = laid.hits.iter().find(|h| h.3 == Hit::Project(Some(1))).copied().unwrap();
+        let row: String = shot.lines().next().unwrap().chars().skip(chip.0 as usize).take(3).collect();
+        assert_eq!(row, "app");
     }
 
     #[test]

@@ -361,6 +361,12 @@ impl Journal {
         Ok(())
     }
 
+    /// Stop working on a project. Its tickets stay on the board, as they were.
+    pub fn remove_project(&self, path: &Path) -> Result<()> {
+        self.conn.execute("DELETE FROM projects WHERE path = ?1", params![path.to_string_lossy()])?;
+        Ok(())
+    }
+
     // ── the board ──
 
     /// Put a ticket on the board. Its id is the next free number; the one given is ignored.
