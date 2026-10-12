@@ -19,21 +19,22 @@ use std::time::Duration;
 
 use equipe_protocol::rpc::{ToolCall, ToolResult};
 use equipe_protocol::{
-    Access, Command, Engine, Entry, Event, Member, SessionId, SessionInfo, SessionSpec, SessionState, Snapshot,
-    Ticket, TicketId, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
+    Access, Approval, Command, Decision, Engine, Entry, Event, Member, Mode, SessionId, SessionInfo, SessionSpec,
+    SessionState, Snapshot, Ticket, TicketId, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
 };
 use equipe_providers::claude_code::{self, Activity};
 use equipe_providers::credentials::equipe_home;
 use equipe_providers::openai::{codex, responses};
 use equipe_providers::turn::TurnResult;
 use equipe_providers::{AuthMethod, CredentialStore, Credentials};
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::board::{self, Candidate};
 use crate::journal::{self, Journal, SessionRecord, TicketWork};
+use crate::permissions;
 use crate::roles::{self, Role, Teammate};
 use crate::worktree::{self, Sandbox};
 
@@ -48,6 +49,10 @@ const CLOSED_TICKETS_SHOWN: usize = 20;
 
 /// The MCP server equipe gives members; its tools are `mcp__equipe__*`.
 const MCP_SERVER: &str = "equipe";
+
+/// How long a member waits for the person to answer a request for permission
+/// before it is declined.
+const APPROVAL_WAIT: Duration = Duration::from_secs(30 * 60);
 
 pub struct Config {
     pub store: CredentialStore,
@@ -154,6 +159,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         sessions: HashMap::new(),
         journals: HashMap::new(),
         next_join: 1,
+        pending: HashMap::new(),
+        next_approval: 1,
     };
     if runtime.config.persist {
         runtime.restore();
@@ -216,6 +223,8 @@ struct Session {
     briefing: Vec<String>,
     /// Where a member's engine keeps what it learns (Claude Code's auto memory).
     memory: Option<PathBuf>,
+    /// Its own mode; `None` follows the squad's.
+    mode: Option<Mode>,
 }
 
 impl Session {
@@ -258,6 +267,17 @@ struct TurnDone {
 enum Internal {
     Event(Event),
     Done(TurnDone),
+    /// Nobody answered a request for permission in time.
+    ApprovalTimedOut(u64),
+}
+
+/// A request for permission waiting for the person, and the engine waiting on it.
+struct Pending {
+    squad: String,
+    approval: Approval,
+    /// The tool use as the engine asked for it, handed back when allowed.
+    input: Value,
+    reply: oneshot::Sender<ToolResult>,
 }
 
 /// How a member puts a ticket down.
@@ -283,6 +303,9 @@ struct Runtime {
     journals: HashMap<String, Journal>,
     /// The next session's place in its team.
     next_join: u64,
+    /// Requests for permission waiting for the person, by id.
+    pending: HashMap<u64, Pending>,
+    next_approval: u64,
 }
 
 async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut internal: UnboundedReceiver<Internal>) {
@@ -300,10 +323,7 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                     rt.subscribers.push((Some(squad.clone()), tx));
                     let _ = reply.send((rt.snapshot(&squad), rx));
                 }
-                Some(Request::Tool(call, reply)) => {
-                    let result = rt.tool(call).await;
-                    let _ = reply.send(result);
-                }
+                Some(Request::Tool(call, reply)) => rt.tool(call, reply).await,
                 Some(Request::Shutdown(reply)) => {
                     rt.stop_all_turns();
                     let _ = reply.send(());
@@ -314,6 +334,7 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
             Some(message) = internal.recv() => match message {
                 Internal::Event(event) => rt.publish(event),
                 Internal::Done(done) => rt.on_turn_done(done).await,
+                Internal::ApprovalTimedOut(id) => rt.answer(id, Decision::Deny, "Nobody answered in time."),
             },
             _ = daily.tick(), if rt.config.persist => rt.prune(),
         }
@@ -357,8 +378,8 @@ impl Runtime {
                 }
             }
         }
-        if let Event::TicketChanged { squad: name, .. } = &event {
-            squad = Some(name.clone());
+        if let Some(name) = event.squad() {
+            squad = Some(name.to_owned());
         }
         self.subscribers.retain(|(follows, screen)| match follows {
             Some(follows) if squad.as_ref() != Some(follows) => !screen.is_closed(),
@@ -384,6 +405,12 @@ impl Runtime {
             Command::Accept { squad, ticket } => self.accept(&squad, ticket).await,
             Command::Reopen { squad, ticket, note } => self.reopen(&squad, ticket, note).await,
             Command::Cancel { squad, ticket } => self.cancel(&squad, ticket).await,
+            Command::SetMode { squad, member, mode } => self.set_mode(&squad, member, mode),
+            Command::Decide { squad, approval, decision } => {
+                if self.pending.get(&approval).is_some_and(|p| p.squad == squad) {
+                    self.answer(approval, decision, "");
+                }
+            }
         }
     }
 
@@ -602,6 +629,7 @@ impl Runtime {
             let _ = journal.record_session(&SessionRecord {
                 id,
                 member: member.clone(),
+                mode: None,
                 engine,
                 model: model.clone(),
                 access,
@@ -641,6 +669,7 @@ impl Runtime {
                 queued: Vec::new(),
                 briefing: Vec::new(),
                 memory,
+                mode: None,
             },
         );
         self.publish(Event::SessionStarted { session: id, project, engine, model, workspace, member, squad: squad.clone() });
@@ -728,18 +757,25 @@ impl Runtime {
             _ => None,
         };
         let edits = session.edits();
+        let mode = session.mode.or_else(|| squad.as_deref().and_then(|s| self.journals.get(s)).map(Journal::mode)).unwrap_or_default();
         let (cwd, access, resume, history, ticket, add_dirs) = match &session.work {
             Some(work) => {
-                let access = if edits && work.sandbox.is_some() { Access::EditFiles } else { Access::ReadOnly };
-                (work.cwd.clone(), access, work.claude_session.clone(), work.history.clone(), Some(work.ticket), Vec::new())
+                (work.cwd.clone(), access_for(mode, edits && work.sandbox.is_some()), work.claude_session.clone(), work.history.clone(), Some(work.ticket), Vec::new())
             }
             None => {
                 // At its desk a member reads every project of its squad; it writes nowhere.
-                let access = if session.member.is_some() { Access::ReadOnly } else { session.access };
+                let access = if session.member.is_some() { claude_code::Access::ReadOnly } else { plain_access(session.access) };
                 let others: Vec<PathBuf> = projects.iter().filter(|p| **p != session.cwd).cloned().collect();
                 (session.cwd.clone(), access, session.claude_session.clone(), session.history.clone(), None, others)
             }
         };
+        // A member on a ticket, in Auto, is fenced in by the operating system; what it
+        // can't do inside the fence, and anything Ask needs, goes to the person.
+        let member_rules = session.member.is_some();
+        let fenced = member_rules && access == claude_code::Access::EditFiles && mode == Mode::Auto;
+        let prompt_tool = (mcp_config.is_some() && matches!(access, claude_code::Access::EditFiles | claude_code::Access::Ask))
+            .then(|| format!("mcp__{MCP_SERVER}__{}", permissions::APPROVE_TOOL));
+        let squad_rules = squad.as_deref().and_then(|s| self.journals.get(s)).and_then(|j| j.allowed().ok()).unwrap_or_default();
         let internal = self.internal.clone();
         let turn = match session.engine {
             Engine::Codex => {
@@ -773,11 +809,14 @@ impl Runtime {
                 let binary = self.config.claude_binary.clone();
                 let model = session.model.clone();
                 let memory = session.memory.clone();
-                let access = match access {
-                    Access::ReadOnly => claude_code::Access::ReadOnly,
-                    Access::EditFiles => claude_code::Access::EditFiles,
-                };
-                let allowed: Vec<String> = mcp_config.iter().map(|_| format!("mcp__{MCP_SERVER}")).collect();
+                let mut allowed: Vec<String> = mcp_config.iter().map(|_| format!("mcp__{MCP_SERVER}")).collect();
+                if member_rules {
+                    allowed.extend(squad_rules);
+                }
+                let blocked: Vec<String> =
+                    if member_rules { permissions::BLOCKED.iter().map(|r| (*r).to_owned()).collect() } else { Vec::new() };
+                let domains: Vec<String> = permissions::ALLOWED_DOMAINS.iter().map(|d| (*d).to_owned()).collect();
+                let outward: Vec<String> = permissions::OUTWARD.iter().map(|r| (*r).to_owned()).collect();
                 tokio::spawn(async move {
                     let emit = |event| {
                         let _ = internal.send(Internal::Event(event));
@@ -793,6 +832,9 @@ impl Runtime {
                         add_dirs: &add_dirs,
                         mcp_config: mcp_config.as_deref(),
                         allowed_tools: &allowed,
+                        disallowed_tools: &blocked,
+                        sandbox: fenced.then_some(claude_code::Sandbox { allowed_domains: &domains, ask: &outward }),
+                        prompt_tool: prompt_tool.as_deref(),
                     };
                     let outcome = claude_code::run_turn(&binary, &cwd, request, |activity| match activity {
                         Activity::Text(text) => {
@@ -834,6 +876,11 @@ impl Runtime {
         // Dropping the turn kills the engine process with it.
         turn.abort();
         self.publish(Event::TurnEnded { session: id, outcome: TurnOutcome::Interrupted, usage: None });
+        // Nobody is waiting for those answers any more.
+        let asked: Vec<u64> = self.pending.iter().filter(|(_, p)| p.approval.session == id).map(|(&a, _)| a).collect();
+        for approval in asked {
+            self.answer(approval, Decision::Deny, "The turn was stopped.");
+        }
         true
     }
 
@@ -1268,15 +1315,132 @@ impl Runtime {
 
     // ── board tools ──
 
-    async fn tool(&mut self, call: ToolCall) -> ToolResult {
+    /// A member's tool call. A request for permission waits for the person; the
+    /// rest are answered at once.
+    async fn tool(&mut self, call: ToolCall, reply: oneshot::Sender<ToolResult>) {
+        if call.name == permissions::APPROVE_TOOL {
+            return self.ask_permission(call, reply);
+        }
         let squad = call.squad.clone();
         let result = self.run_tool(call);
         // Whatever changed, the rules look again.
         self.dispatch(&squad).await;
-        match result {
+        let _ = reply.send(match result {
             Ok(text) => ToolResult { text, is_error: false },
             Err(text) => ToolResult { text, is_error: true },
+        });
+    }
+
+    // ── permission ──
+
+    /// The engine asks whether a member may use a tool its mode doesn't allow on
+    /// its own. Blocked things are refused, "always allow" rules answered, and
+    /// everything else put to the person.
+    fn ask_permission(&mut self, call: ToolCall, reply: oneshot::Sender<ToolResult>) {
+        let tool = call.arguments.get("tool_name").and_then(Value::as_str).unwrap_or("?").to_owned();
+        let input = call.arguments.get("input").cloned().unwrap_or_else(|| json!({}));
+        let (action, reason) = permissions::describe(&tool, &input);
+        let Some(id) = self.member_id(&call.squad, &call.member) else {
+            let _ = reply.send(verdict(Decision::Deny, &input, "Unknown member."));
+            return;
+        };
+        let ticket = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
+        if permissions::blocked(&tool, &action) {
+            let _ = reply.send(verdict(Decision::Deny, &input, "equipe never allows this, in any mode."));
+            self.publish(Event::Notice { session: id, text: format!("✗ equipe blocked: {action}") });
+            self.audit(&call.squad, ticket, "equipe", "blocked", &action);
+            return;
         }
+        let rules = self.journal(&call.squad).and_then(|j| j.allowed().ok()).unwrap_or_default();
+        if rules.iter().any(|rule| permissions::matches(rule, &tool, &action)) {
+            let _ = reply.send(verdict(Decision::Allow, &input, ""));
+            return;
+        }
+        let approval_id = self.next_approval;
+        self.next_approval += 1;
+        let approval = Approval { id: approval_id, session: id, member: call.member.clone(), ticket, tool, action, reason };
+        self.pending.insert(
+            approval_id,
+            Pending { squad: call.squad.clone(), approval: approval.clone(), input, reply },
+        );
+        self.publish(Event::ApprovalRequested { squad: call.squad.clone(), approval });
+        let internal = self.internal.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(APPROVAL_WAIT).await;
+            let _ = internal.send(Internal::ApprovalTimedOut(approval_id));
+        });
+    }
+
+    /// Answer a waiting request for permission. "Always" also becomes one of the
+    /// squad's rules, so the same kind of thing doesn't ask again.
+    fn answer(&mut self, approval_id: u64, decision: Decision, why: &str) {
+        let Some(pending) = self.pending.remove(&approval_id) else {
+            return;
+        };
+        let Pending { squad, approval, input, reply } = pending;
+        let mut decision = decision;
+        let rule = (decision == Decision::Always).then(|| permissions::rule_for(&approval.tool, &approval.action)).flatten();
+        if decision == Decision::Always {
+            match &rule {
+                Some(rule) => {
+                    if let Some(journal) = self.journal(&squad) {
+                        let _ = journal.allow(rule, "you");
+                    }
+                }
+                // Nothing sound to generalise to: allow it this once.
+                None => decision = Decision::Allow,
+            }
+        }
+        let why = if why.is_empty() && decision == Decision::Deny { "The person declined." } else { why };
+        let _ = reply.send(verdict(decision, &input, why));
+        let line = match (decision, &rule) {
+            (Decision::Always, Some(rule)) => format!("✓ You always allow {rule} for the squad · {}", approval.action),
+            (Decision::Allow | Decision::Always, _) => format!("✓ You allowed: {}", approval.action),
+            (Decision::Deny, _) if why == "The person declined." => format!("✗ You declined: {}", approval.action),
+            (Decision::Deny, _) => format!("✗ {why} Declined: {}", approval.action),
+        };
+        self.publish(Event::Notice { session: approval.session, text: line });
+        let verb = match decision {
+            Decision::Allow => "allowed",
+            Decision::Always => "always allowed",
+            Decision::Deny => "declined",
+        };
+        self.audit(&squad, approval.ticket, "you", verb, &approval.action);
+        self.publish(Event::ApprovalResolved { squad, approval: approval_id, decision });
+    }
+
+    /// Note a permission decision on the ticket's record.
+    fn audit(&mut self, squad: &str, ticket: Option<TicketId>, by: &str, what: &str, action: &str) {
+        if let (Some(ticket), Some(journal)) = (ticket, self.journal(squad)) {
+            let _ = journal.ticket_event(ticket, by, what, action);
+        }
+    }
+
+    fn set_mode(&mut self, squad: &str, member: Option<String>, mode: Option<Mode>) {
+        match &member {
+            None => {
+                let Some(mode) = mode else {
+                    return self.squad_error(squad, "Name a mode: plan, ask, auto or full.");
+                };
+                if let Some(journal) = self.journal(squad) {
+                    let _ = journal.set_mode(mode);
+                }
+            }
+            Some(name) => {
+                let Some(id) = self.member_id(squad, name) else {
+                    return self.squad_error(squad, format!("No one called {name} on the squad."));
+                };
+                if let Some(session) = self.sessions.get_mut(&id) {
+                    session.mode = mode;
+                }
+                if self.config.persist
+                    && let Some(journal) = self.journal(squad)
+                {
+                    let _ = journal.set_member_mode(id, mode);
+                }
+            }
+        }
+        self.publish(Event::ModeChanged { squad: squad.to_owned(), member, mode });
     }
 
     fn run_tool(&mut self, call: ToolCall) -> Result<String, String> {
@@ -1429,6 +1593,7 @@ End your turn now with a short summary.",
                         project: w.project.clone(),
                         workspace: w.sandbox.as_ref().map(workspace_of),
                     }),
+                    mode: s.mode,
                 }
             })
             .collect();
@@ -1437,7 +1602,11 @@ End your turn now with a short summary.",
             let s = &self.sessions[&info.session];
             (!s.is_pm(), s.joined)
         });
-        Snapshot { squad: squad.to_owned(), projects, sessions, tickets }
+        let mode = self.journal(squad).map(Journal::mode).unwrap_or_default();
+        let mut approvals: Vec<Approval> =
+            self.pending.values().filter(|p| p.squad == squad).map(|p| p.approval.clone()).collect();
+        approvals.sort_by_key(|a| a.id);
+        Snapshot { squad: squad.to_owned(), projects, sessions, tickets, mode, approvals }
     }
 
     /// Bring back every squad's members, and the tickets they were on.
@@ -1503,6 +1672,7 @@ End your turn now with a short summary.",
                         queued: Vec::new(),
                         briefing: Vec::new(),
                         memory,
+                        mode: record.mode,
                     },
                 );
             }
@@ -1576,6 +1746,34 @@ If you are blocked or need a decision, say so and end your turn — the person a
         "\nWhen it's done, say so plainly; the person accepts it. If you are blocked or need a decision, say so."
     });
     out
+}
+
+/// How a member's turn on a ticket runs in `mode`. Only a member that edits, in
+/// its own worktree, ever writes.
+fn access_for(mode: Mode, may_edit: bool) -> claude_code::Access {
+    match (mode, may_edit) {
+        (_, false) | (Mode::Plan, _) => claude_code::Access::ReadOnly,
+        (Mode::Ask, true) => claude_code::Access::Ask,
+        (Mode::Auto, true) => claude_code::Access::EditFiles,
+        (Mode::Full, true) => claude_code::Access::Full,
+    }
+}
+
+/// A plain session (`equipe try`) reads, or edits in its worktree.
+fn plain_access(access: Access) -> claude_code::Access {
+    match access {
+        Access::ReadOnly => claude_code::Access::ReadOnly,
+        Access::EditFiles => claude_code::Access::EditFiles,
+    }
+}
+
+/// What the engine's permission prompt tool answers: Claude Code reads it as JSON.
+fn verdict(decision: Decision, input: &Value, why: &str) -> ToolResult {
+    let text = match decision {
+        Decision::Allow | Decision::Always => json!({ "behavior": "allow", "updatedInput": input }),
+        Decision::Deny => json!({ "behavior": "deny", "message": why }),
+    };
+    ToolResult { text: text.to_string(), is_error: false }
 }
 
 /// Remove a ticket's worktree; keep its branch if it has commits, drop it if not.

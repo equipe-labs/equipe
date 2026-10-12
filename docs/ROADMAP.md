@@ -60,11 +60,12 @@ roles, a board, and equipe's rules.
    MCP tools; equipe's rules (code) hand each ready ticket to a free owner, who
    works in a worktree of its own and hands it in; only the person accepts, sends
    back or cancels. Onboarding is the first `equipe` in a repository.
-   **Next: permission modes** — Auto (recommended), Ask me, Plan, Full access —
-   per squad and per member, with approvals routed to the person
-   (`--permission-prompt-tool`), an allowlist built from "always allow", a hard
-   blocklist, and deny when nobody can answer. Then members can run commands
-   (install, build, test) inside their worktree.
+   ✅ **Permission modes** — plan, ask me, auto (recommended), full access — per
+   squad and per member. In auto a member installs, builds and tests inside an OS
+   sandbox around its worktree; anything beyond it, and anything outward (push,
+   publish, deploy), is put to the person, who answers y / a / n in the console.
+   "Always allow" becomes a squad rule; a hard blocklist holds in every mode;
+   nobody answering is a no.
 3. **First channel: Telegram.** Notifications, approve/deny buttons, short
    instructions to the PM — through the daemon's outbound connection, no open
    port. Senders must be paired; irreversible steps always need a button press.
@@ -149,6 +150,11 @@ the human-readable conversation in its largest session was 3.4% of its size.)
 - **2026-10-12 — a squad spans projects.** A squad is a team, not a repository:
   its members, board and record live under `~/.equipe/squads/<squad>/`, and each
   repository joins one squad. Member memory follows the member across projects.
+- **2026-10-12 — permissions are a fence plus questions.** Like Codex and Claude
+  Code: the operating system fences a member's commands in; whatever lies beyond
+  is asked of the person through equipe, never decided by a model. Four presets
+  (plan, ask me, auto, full access), not five: in equipe edits already happen in a
+  member's own worktree, so "accept edits" and "auto" would be the same.
 - **2026-10-12 — members keep their own memory.** Claude Code's auto memory is moved
   per member, so the person's own notes never leak into a squad, or a squad's into them.
 
@@ -158,9 +164,9 @@ Phases 0 and 1 done (Codex edits move to Phase 3, over ACP). Phase 2 under way: 
 team lives in a daemon — the console detaches and reattaches, a closed terminal
 stops nothing, and a restarted daemon resumes its sessions and conversations.
 The squad is in: one team across projects, members with roles, a board the PM
-writes through MCP tools, equipe's rules handing out tickets, and the person
-accepting the work — verified end to end on real Claude Code. Permission modes are
-next, then dogfooding on equipe's own website.
+writes through MCP tools, equipe's rules handing out tickets, permission modes with
+approvals in the console, and the person accepting the work — verified end to end
+on real Claude Code. Next: dogfooding on equipe's own website, then Telegram.
 
 Open risks: whether driving `claude -p` on a subscription fits Anthropic's
 allowance (ask before advertising it); Claude Code making `--bare` the default for

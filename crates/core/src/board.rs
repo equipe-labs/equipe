@@ -163,6 +163,22 @@ Your changes are committed to the ticket's branch and the person reviews them. T
             },
         }),
     ];
+    // Claude Code's permission prompts come here (`--permission-prompt-tool`):
+    // equipe answers from its rules, or asks the person.
+    tools.push(json!({
+        "name": crate::permissions::APPROVE_TOOL,
+        "description": "equipe's answer to a permission prompt: it asks the person when a rule doesn't decide. \
+Claude Code calls this itself; there is no need to call it.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tool_name": { "type": "string" },
+                "input": { "type": "object" },
+                "tool_use_id": { "type": "string" },
+            },
+            "required": ["tool_name", "input"],
+        },
+    }));
     if is_pm {
         tools.push(json!({
             "name": UPDATE_TICKET,

@@ -6,6 +6,7 @@
 
 use std::path::Path;
 
+use equipe_core::protocol::Mode;
 use equipe_core::{runtime, squads};
 use equipe_providers::CredentialStore;
 use equipe_providers::claude_code;
@@ -102,10 +103,36 @@ pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
         .with_prompt("Who's on the team? The PM joins first · space toggles, enter confirms")
         .items(&labels)
         .defaults(&ticked)
+        .report(false)
         .interact_opt()
         .map_err(|err| err.to_string())?
         .ok_or("Nothing changed.")?;
+    // The answer in a line, not the whole menu again.
+    let team: Vec<&str> = std::iter::once("pm").chain(picked.iter().map(|&i| STARTERS[i].0)).collect();
+    eprintln!("{} {} {} {}", e.accent("✓"), e.bold("Team"), e.dim("·"), team.join(", "));
+    // How much the squad does on its own: Auto unless the person says otherwise.
+    let modes: Vec<String> = Mode::ALL
+        .iter()
+        .map(|m| {
+            let note = if *m == Mode::Auto { "  recommended" } else { "" };
+            format!("{:<13}{}{}", m.label(), e.dim(m.summary()), e.accent(note))
+        })
+        .collect();
+    let auto = Mode::ALL.iter().position(|m| *m == Mode::Auto).unwrap_or(0);
+    let picked_mode = dialoguer::Select::with_theme(&*theme)
+        .with_prompt("How much may members do on their own? · /mode changes it any time")
+        .items(&modes)
+        .default(auto)
+        .report(false)
+        .interact_opt()
+        .map_err(|err| err.to_string())?
+        .ok_or("Nothing changed.")?;
+    let mode = Mode::ALL[picked_mode];
+    eprintln!("{} {} {} {}", e.accent("✓"), e.bold("Mode"), e.dim("·"), mode.label());
     squads::create(&home, &squad, &project)?;
+    equipe_core::journal::Journal::for_squad(&home, &squad)
+        .and_then(|j| j.set_mode(mode))
+        .map_err(|err| err.to_string())?;
     let mut members = vec![equipe_core::roles::PM.to_owned()];
     members.extend(picked.into_iter().map(|i| STARTERS[i].0.to_owned()));
     eprintln!();

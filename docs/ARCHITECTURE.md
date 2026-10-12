@@ -344,6 +344,44 @@ But the person can talk to anyone, the way a CEO can walk over to any desk — T
 Approvals never pass through the PM: equipe asks the person directly, because no
 agent's word — the PM's included — can authorize a merge or a deploy.
 
+### Permission modes
+
+How much a member may do on its own while it works a ticket — the squad's
+default, or one member's (`/mode`, chosen at onboarding). At its desk a member
+always only reads, and a role that doesn't edit never writes, whatever the mode.
+
+| Mode | A member on a ticket | Claude Code |
+|---|---|---|
+| **plan** | reads and plans; changes nothing | `dontAsk` |
+| **ask me** | asks the person before every change and command | `manual`, prompts to equipe |
+| **auto** (default) | edits and runs commands inside its worktree; asks for anything beyond | `acceptEdits` + sandbox, prompts to equipe |
+| **full access** | anything the person's account can do, except what equipe blocks | `bypassPermissions` |
+
+Two layers, as in Codex (sandbox × approval policy) and Claude Code (sandbox ×
+permission modes), with the presets on top (`equipe_core::permissions`):
+
+- **A fence the operating system enforces.** In auto, Claude Code's sandbox
+  confines a member's shell commands: they write only inside its worktree and
+  reach only package registries and source hosts (`ALLOWED_DOMAINS`), and run
+  without asking while they stay inside. A prompt can talk a model into anything;
+  it can't talk the kernel out of a sandbox.
+- **Questions for everything beyond it**, put to the person. Claude Code sends its
+  permission prompts to equipe's `approve` tool (`--permission-prompt-tool`); the
+  console shows the exact command, who asks, for which ticket and why, in a fixed
+  place above the composer — `y` allow, `a` always allow, `n` decline. Commands
+  that reach outside — `git push`, publishing, deploying (`OUTWARD`) — ask even
+  inside the fence. A command that must leave the fence asks too, and runs
+  outside only when allowed.
+- **"Always allow"** becomes a rule for the whole squad (`Bash(npm install:*)`,
+  `WebFetch(domain:docs.rs)`), kept in its database and passed to every member's
+  turn. A chained command (`a && b`) is allowed once, never as a pattern.
+- **Never, in any mode** (`BLOCKED`): `sudo`, `rm -rf /`, force-pushes and the
+  like are refused without asking — by the engine (`--disallowedTools`) and by
+  equipe, which checks every command of a chain.
+- **Nobody answering is a no.** A request waits 30 minutes for the person, then is
+  declined; stopping the member withdraws it. Every answer is noted on the ticket's
+  record.
+
 ### Memory
 
 Claude Code keeps an auto memory per directory, shared with the person's own

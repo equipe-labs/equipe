@@ -18,8 +18,9 @@
 
 > **Status: early.** A squad already lives in a background daemon on your own
 > plans: you tell the PM what you want, it puts tickets on the board, engineers
-> pick them up and work on their own branches, and you accept the work. Permission
-> modes and handoffs are next. Watch it build itself.
+> pick them up and work on their own branches inside a sandbox, asking you before
+> anything beyond it, and you accept the work. Handoffs and a phone channel are
+> next. Watch it build itself.
 
 ## Why
 
@@ -75,7 +76,7 @@ CLAUDE CODE  your claude · signs itself in
 
 | Command | What it does |
 |---|---|
-| `equipe` | **The squad console.** The first time in a repository it sets up your squad (or adds the repository to it) in under a minute. Then: your squad on the left, the selected member's conversation and work on the right. Tell the PM what you want — it puts tickets on the board, equipe hands each to its owner, engineers work on their own branches and hand the work in; you `/accept` or `/reopen` it (Ctrl-B shows the board). Talk to anyone with Tab or `@name` — the PM hears about it. **The squad lives in a background daemon** — leave, or close the terminal, and it keeps working; run `equipe` again to come back |
+| `equipe` | **The squad console.** The first time in a repository it sets up your squad (or adds the repository to it) in under a minute. Then: your squad on the left, the selected member's conversation and work on the right. Tell the PM what you want — it puts tickets on the board, equipe hands each to its owner, engineers work on their own branches and hand the work in; you `/accept` or `/reopen` it (Ctrl-B shows the board). Talk to anyone with Tab or `@name` — the PM hears about it. In **auto** mode members install, build and test inside a sandbox around their worktree; anything beyond — a push, a deploy — waits for your `y` / `a` / `n` (`/mode` switches between plan, ask me, auto and full access). **The squad lives in a background daemon** — leave, or close the terminal, and it keeps working; run `equipe` again to come back |
 | `equipe daemon status\|stop\|restart` | The daemon itself. `equipe` starts it when needed; stopping it keeps open sessions, which resume when it starts again |
 | `equipe login` | Pick an engine and sign in (`codex` / `claude`, `--again`, `--no-browser`) |
 | `equipe logout` | Forget equipe's Codex login (Claude Code keeps its own) |

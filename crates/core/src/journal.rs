@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-use equipe_protocol::{Access, Engine, Entry, Member, SessionId, Ticket, TicketId, TicketStatus};
+use equipe_protocol::{Access, Engine, Entry, Member, Mode, SessionId, Ticket, TicketId, TicketStatus};
 use rusqlite::{Connection, OptionalExtension as _, params};
 
 pub use rusqlite::Error;
@@ -28,6 +28,8 @@ pub struct SessionRecord {
     pub id: SessionId,
     /// The role it plays on the team, if any.
     pub member: Option<Member>,
+    /// Its own mode, when it doesn't follow the squad's.
+    pub mode: Option<Mode>,
     pub engine: Engine,
     pub model: Option<String>,
     pub access: Access,
@@ -98,6 +100,15 @@ fn engine_str(engine: Engine) -> &'static str {
 
 fn engine_from(s: &str) -> Engine {
     if s == "codex" { Engine::Codex } else { Engine::Claude }
+}
+
+fn mode_str(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Plan => "plan",
+        Mode::Ask => "ask",
+        Mode::Auto => "auto",
+        Mode::Full => "full",
+    }
 }
 
 fn status_str(status: TicketStatus) -> &'static str {
@@ -215,7 +226,14 @@ impl Journal {
         )?;
         // Columns added after the first release; a journal that has them already
         // refuses the ALTER, which is fine.
-        for column in ["role TEXT", "name TEXT", "joined INTEGER"] {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS allowed (
+               rule TEXT PRIMARY KEY,
+               by TEXT NOT NULL,
+               added_at INTEGER NOT NULL
+             );",
+        )?;
+        for column in ["role TEXT", "name TEXT", "joined INTEGER", "mode TEXT"] {
             let _ = conn.execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), []);
         }
         Ok(Self { conn, path: path.to_owned() })
@@ -228,6 +246,44 @@ impl Journal {
             .optional()
             .ok()
             .flatten()
+    }
+
+    // ── modes and permissions ──
+
+    /// How much the squad's members may do on their own, by default.
+    pub fn mode(&self) -> Mode {
+        self.conn
+            .query_row("SELECT value FROM meta WHERE key = 'mode'", [], |r| r.get::<_, String>(0))
+            .optional()
+            .ok()
+            .flatten()
+            .and_then(|m| Mode::parse(&m))
+            .unwrap_or_default()
+    }
+
+    pub fn set_mode(&self, mode: Mode) -> Result<()> {
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('mode', ?1)", [mode_str(mode)])?;
+        Ok(())
+    }
+
+    /// A member's own mode; `None` follows the squad's.
+    pub fn set_member_mode(&self, id: SessionId, mode: Option<Mode>) -> Result<()> {
+        self.touch(id, "mode", mode.map(mode_str))
+    }
+
+    /// The squad's "always allow" rules, oldest first.
+    pub fn allowed(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT rule FROM allowed ORDER BY added_at, rowid")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect()
+    }
+
+    pub fn allow(&self, rule: &str, by: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO allowed (rule, by, added_at) VALUES (?1, ?2, ?3)",
+            params![rule, by, now()],
+        )?;
+        Ok(())
     }
 
     // ── projects ──
@@ -373,9 +429,9 @@ impl Journal {
         self.conn.execute(
             "INSERT OR REPLACE INTO sessions
                (id, engine, model, access, cwd, repo, branch, base, engine_session, title, tokens, open, created_at, updated_at,
-                role, name, joined)
+                role, name, joined, mode)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?14, ?15,
-                     (SELECT COALESCE(MAX(joined), 0) + 1 FROM sessions))",
+                     (SELECT COALESCE(MAX(joined), 0) + 1 FROM sessions), ?16)",
             params![
                 r.id as i64,
                 engine_str(r.engine),
@@ -392,6 +448,7 @@ impl Journal {
                 t,
                 r.member.as_ref().map(|m| m.role.clone()),
                 r.member.as_ref().map(|m| m.name.clone()),
+                r.mode.map(mode_str),
             ],
         )?;
         Ok(())
@@ -471,7 +528,7 @@ impl Journal {
 
     pub fn open_sessions(&self) -> Result<Vec<SessionRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, engine, model, access, cwd, repo, branch, base, engine_session, title, tokens, open, role, name
+            "SELECT id, engine, model, access, cwd, repo, branch, base, engine_session, title, tokens, open, role, name, mode
              FROM sessions WHERE open = 1 ORDER BY COALESCE(joined, 0), created_at, id",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -492,6 +549,7 @@ impl Journal {
                     (Some(role), Some(name)) => Some(Member { role, name }),
                     _ => None,
                 },
+                mode: r.get::<_, Option<String>>(14)?.as_deref().and_then(Mode::parse),
             })
         })?;
         rows.collect()
@@ -560,6 +618,7 @@ mod tests {
         SessionRecord {
             id,
             member: None,
+            mode: None,
             engine: Engine::Claude,
             model: None,
             access: Access::EditFiles,
@@ -746,6 +805,24 @@ mod tests {
         assert_eq!((tickets[1].status, tickets[1].depends_on.clone()), (TicketStatus::InProgress, vec![1]));
         assert_eq!(j.ticket_work(2).unwrap().worktree, Some(PathBuf::from("/w/2")));
         assert_eq!(j.ticket_history(2).unwrap()[1], ("equipe".into(), "assigned".into(), "frontend".into()));
+    }
+
+    #[test]
+    fn modes_and_always_allow_rules_are_kept() {
+        let home = temp_home();
+        {
+            let j = Journal::for_squad(&home, "acme").unwrap();
+            assert_eq!(j.mode(), Mode::Auto, "auto until the person says otherwise");
+            j.set_mode(Mode::Ask).unwrap();
+            j.record_session(&record(3)).unwrap();
+            j.set_member_mode(3, Some(Mode::Full)).unwrap();
+            j.allow("Bash(npm install:*)", "you").unwrap();
+            j.allow("Bash(npm install:*)", "you").unwrap();
+        }
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        assert_eq!(j.mode(), Mode::Ask);
+        assert_eq!(j.open_sessions().unwrap()[0].mode, Some(Mode::Full));
+        assert_eq!(j.allowed().unwrap(), ["Bash(npm install:*)"]);
     }
 
     #[test]

@@ -781,3 +781,156 @@ async fn every_screen_sees_what_was_typed() {
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(seen.iter().any(|e| matches!(e, Event::UserMessage { text, .. } if text == "hello team")));
 }
+
+// ── modes and permission ──
+
+use equipe_core::protocol::{Decision, Mode};
+
+/// A config whose members get equipe's tools — and so its permission prompts.
+fn with_tools(claude: &Path, home: &Path) -> Config {
+    Config { equipe_binary: Some("/opt/equipe".into()), ..config(claude, home, false) }
+}
+
+/// Put T-1 on the board for `owner` and wait until its first turn has run.
+async fn first_ticket_turn(handle: &Handle, events: &mut UnboundedReceiver<Event>, recorded: &Path, owner: &str) -> Vec<String> {
+    let before = calls(recorded).len();
+    tool(handle, "pm", "create_ticket", serde_json::json!({ "title": "Hero", "body": "-", "owner": owner })).await;
+    until(events, |e| matches!(e, Event::WorkStarted { .. })).await;
+    until(events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let all = calls(recorded);
+    assert_eq!(all.len(), before + 1);
+    all.last().unwrap().clone()
+}
+
+#[tokio::test]
+async fn in_auto_a_member_on_a_ticket_is_fenced_in_and_asks_for_the_rest() {
+    let repo = repo();
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&repo])));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    let call = first_ticket_turn(&handle, &mut events, &recorded, "frontend").await;
+
+    assert_eq!(arg(&call, "--permission-mode"), Some("acceptEdits"));
+    let settings: serde_json::Value = serde_json::from_str(arg(&call, "--settings").unwrap()).unwrap();
+    assert_eq!(settings["sandbox"]["enabled"], true, "the operating system fences its commands in");
+    assert_eq!(settings["sandbox"]["autoAllowBashIfSandboxed"], true, "inside the fence, no questions");
+    assert!(settings["sandbox"]["network"]["allowedDomains"].as_array().unwrap().iter().any(|d| d == "registry.npmjs.org"));
+    assert!(settings["permissions"]["ask"].as_array().unwrap().iter().any(|r| r == "Bash(git push:*)"), "pushing asks");
+    assert_eq!(arg(&call, "--permission-prompt-tool"), Some("mcp__equipe__approve"));
+    assert!(call.iter().any(|a| a == "Bash(sudo:*)"), "the blocklist travels with every member turn");
+}
+
+#[tokio::test]
+async fn the_mode_decides_how_a_ticket_runs_and_a_member_can_differ_from_the_squad() {
+    let repo = repo();
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&repo])));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+
+    handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::Plan) });
+    until(&mut events, |e| matches!(e, Event::ModeChanged { member: None, .. })).await;
+    let call = first_ticket_turn(&handle, &mut events, &recorded, "frontend").await;
+    assert_eq!(arg(&call, "--permission-mode"), Some("dontAsk"), "plan reads, even on a ticket");
+    assert_eq!(arg(&call, "--permission-prompt-tool"), None);
+
+    handle.send(Command::SetMode { squad: "acme".into(), member: Some("frontend".into()), mode: Some(Mode::Ask) });
+    until(&mut events, |e| matches!(e, Event::ModeChanged { member: Some(_), .. })).await;
+    handle.send(Command::Submit { session: 2, text: "go on".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let call = calls(&recorded).pop().unwrap();
+    assert_eq!(arg(&call, "--permission-mode"), Some("manual"), "ask me: every change is asked");
+    assert_eq!(arg(&call, "--permission-prompt-tool"), Some("mcp__equipe__approve"));
+
+    let snapshot = handle.snapshot("acme").await;
+    assert_eq!(snapshot.mode, Mode::Plan);
+    assert_eq!(snapshot.sessions.iter().find(|s| s.session == 2).unwrap().mode, Some(Mode::Ask));
+}
+
+/// A member asks to run `command`; returns the waiting answer.
+fn ask(handle: &Handle, command: &str) -> tokio::task::JoinHandle<ToolResult> {
+    let handle = handle.clone();
+    let arguments = serde_json::json!({
+        "tool_name": "Bash",
+        "input": { "command": command, "description": "Install dependencies" },
+        "tool_use_id": "toolu_1",
+    });
+    tokio::spawn(async move {
+        handle.tool(ToolCall { squad: "acme".into(), member: "frontend".into(), name: "approve".into(), arguments }).await
+    })
+}
+
+#[tokio::test]
+async fn a_request_for_permission_waits_for_the_person_and_always_becomes_a_rule() {
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
+
+    let waiting = ask(&handle, "npm install react");
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    assert_eq!((approval.member.as_str(), approval.ticket, approval.action.as_str()), ("frontend", Some(1), "npm install react"));
+    assert_eq!(approval.reason.as_deref(), Some("Install dependencies"));
+    assert_eq!(handle.snapshot("acme").await.approvals.len(), 1, "a screen attaching now sees it waiting");
+    assert!(!waiting.is_finished(), "the member waits for the person");
+
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Always });
+    let answer = waiting.await.unwrap();
+    let verdict: serde_json::Value = serde_json::from_str(&answer.text).unwrap();
+    assert_eq!(verdict["behavior"], "allow");
+    assert_eq!(verdict["updatedInput"]["command"], "npm install react");
+    let seen = until(&mut events, |e| matches!(e, Event::ApprovalResolved { .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 2, text } if text.starts_with("✓ You always allow Bash(npm install:*)"))));
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().allowed().unwrap(), ["Bash(npm install:*)"]);
+
+    // The same kind of thing doesn't ask again; something else does.
+    let again = ask(&handle, "npm install lodash").await.unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&again.text).unwrap()["behavior"], "allow");
+    let other = ask(&handle, "curl https://example.com");
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny });
+    let no: serde_json::Value = serde_json::from_str(&other.await.unwrap().text).unwrap();
+    assert_eq!((no["behavior"].as_str(), no["message"].as_str()), (Some("deny"), Some("The person declined.")));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn blocked_commands_are_refused_without_asking() {
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&repo])));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    let answer = ask(&handle, "npm test && sudo rm -rf /var").await.unwrap();
+    let verdict: serde_json::Value = serde_json::from_str(&answer.text).unwrap();
+    assert_eq!(verdict["behavior"], "deny");
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { session: 2, .. })).await;
+    assert!(matches!(seen.last(), Some(Event::Notice { text, .. }) if text.starts_with("✗ equipe blocked")));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn stopping_a_member_withdraws_what_it_was_waiting_for() {
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&repo])));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
+    let waiting = ask(&handle, "npm install");
+    until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    handle.send(Command::Interrupt { session: 2 });
+    let resolved = until(&mut events, |e| matches!(e, Event::ApprovalResolved { .. })).await;
+    assert!(matches!(resolved.last(), Some(Event::ApprovalResolved { decision: Decision::Deny, .. })));
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&waiting.await.unwrap().text).unwrap()["behavior"], "deny");
+    assert!(handle.snapshot("acme").await.approvals.is_empty());
+    handle.shutdown().await;
+}

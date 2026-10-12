@@ -87,10 +87,13 @@ pub enum Access {
     #[default]
     ReadOnly,
     /// Also write files inside the working directory without asking
-    /// (`acceptEdits`). Shell commands beyond Claude Code's read-only set and
-    /// paths outside the working directory still need approval, which a headless
-    /// run has no one to give — so they are denied.
+    /// (`acceptEdits`). Anything else needs approval: from the prompt tool when
+    /// there is one, otherwise it is denied.
     EditFiles,
+    /// Ask before every change and command (`manual`).
+    Ask,
+    /// Ask nothing (`bypassPermissions`); only disallowed tools stay out.
+    Full,
 }
 
 impl Access {
@@ -98,8 +101,23 @@ impl Access {
         match self {
             Access::ReadOnly => "dontAsk",
             Access::EditFiles => "acceptEdits",
+            Access::Ask => "manual",
+            Access::Full => "bypassPermissions",
         }
     }
+}
+
+/// Claude Code's own sandbox: shell commands run fenced in by the operating
+/// system — writing only inside the working directory, reaching only the
+/// network hosts named — and need no approval while they stay inside. A command
+/// that must run outside the fence asks first (through the prompt tool), and runs
+/// outside only when allowed.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Sandbox<'a> {
+    pub allowed_domains: &'a [String],
+    /// Commands that ask anyway, sandboxed or not — whatever reaches outside
+    /// (`Bash(git push:*)`).
+    pub ask: &'a [String],
 }
 
 /// Arguments for one headless turn.
@@ -131,11 +149,36 @@ pub fn turn_args(request: &TurnRequest<'_>) -> Vec<String> {
     if let Some(charter) = request.charter {
         args.extend(["--append-system-prompt".to_owned(), charter.to_owned()]);
     }
-    // Claude Code's auto memory, moved to a directory of the caller's choosing —
-    // a setting of the unmodified binary, not a change to it.
+    // Settings of the unmodified binary, not changes to it: Claude Code's auto
+    // memory moved to a directory of the caller's choosing, and its sandbox.
+    let mut settings = serde_json::Map::new();
     if let Some(dir) = request.memory {
-        let settings = serde_json::json!({ "autoMemoryDirectory": dir.to_string_lossy() });
-        args.extend(["--settings".to_owned(), settings.to_string()]);
+        settings.insert("autoMemoryDirectory".into(), dir.to_string_lossy().into());
+    }
+    if let Some(sandbox) = &request.sandbox {
+        settings.insert(
+            "sandbox".into(),
+            serde_json::json!({
+                "enabled": true,
+                "autoAllowBashIfSandboxed": true,
+                "allowUnsandboxedCommands": true,
+                "network": { "allowedDomains": sandbox.allowed_domains },
+            }),
+        );
+        if !sandbox.ask.is_empty() {
+            settings.insert("permissions".into(), serde_json::json!({ "ask": sandbox.ask }));
+        }
+    }
+    if !settings.is_empty() {
+        args.extend(["--settings".to_owned(), Value::Object(settings).to_string()]);
+    }
+    // Questions a headless run can't put to anyone go to this tool instead.
+    if let Some(tool) = request.prompt_tool {
+        args.extend(["--permission-prompts".to_owned(), "host".to_owned(), "--permission-prompt-tool".to_owned(), tool.to_owned()]);
+    }
+    if !request.disallowed_tools.is_empty() {
+        args.push("--disallowedTools".to_owned());
+        args.extend(request.disallowed_tools.iter().cloned());
     }
     for dir in request.add_dirs {
         args.extend(["--add-dir".to_owned(), dir.to_string_lossy().into_owned()]);
@@ -173,6 +216,11 @@ pub struct TurnRequest<'a> {
     pub mcp_config: Option<&'a str>,
     /// Tools allowed without asking, e.g. `mcp__equipe` for a whole server.
     pub allowed_tools: &'a [String],
+    /// Tools never allowed, whatever the mode: `Bash(sudo:*)`.
+    pub disallowed_tools: &'a [String],
+    pub sandbox: Option<Sandbox<'a>>,
+    /// The MCP tool that answers permission prompts (`mcp__equipe__approve`).
+    pub prompt_tool: Option<&'a str>,
 }
 
 /// One turn's outcome, with the id that continues the conversation.
@@ -483,6 +531,40 @@ mod tests {
         let args = turn_args(&TurnRequest { prompt: "x", access: Access::EditFiles, ..Default::default() });
         assert!(args.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "acceptEdits"));
         assert!(!args.iter().any(|a| a == "bypassPermissions" || a == "--dangerously-skip-permissions"));
+    }
+
+    #[test]
+    fn a_sandbox_fences_commands_in_and_questions_go_to_the_prompt_tool() {
+        let domains = ["registry.npmjs.org".to_owned()];
+        let ask = ["Bash(git push:*)".to_owned()];
+        let blocked = ["Bash(sudo:*)".to_owned()];
+        let args = turn_args(&TurnRequest {
+            prompt: "x",
+            access: Access::EditFiles,
+            memory: Some(Path::new("/m")),
+            sandbox: Some(Sandbox { allowed_domains: &domains, ask: &ask }),
+            prompt_tool: Some("mcp__equipe__approve"),
+            disallowed_tools: &blocked,
+            ..Default::default()
+        });
+        let at = args.iter().position(|a| a == "--settings").unwrap();
+        let settings: Value = serde_json::from_str(&args[at + 1]).unwrap();
+        assert_eq!(settings["autoMemoryDirectory"], "/m", "one settings object carries both");
+        assert_eq!(settings["sandbox"]["enabled"], true);
+        assert_eq!(settings["sandbox"]["allowUnsandboxedCommands"], true, "leaving the fence asks, never happens silently");
+        assert_eq!(settings["sandbox"]["network"]["allowedDomains"], json!(["registry.npmjs.org"]));
+        assert_eq!(settings["permissions"]["ask"], json!(["Bash(git push:*)"]));
+        assert!(args.windows(2).any(|w| w[0] == "--permission-prompts" && w[1] == "host"));
+        assert!(args.windows(2).any(|w| w[0] == "--permission-prompt-tool" && w[1] == "mcp__equipe__approve"));
+        assert!(args.windows(2).any(|w| w[0] == "--disallowedTools" && w[1] == "Bash(sudo:*)"));
+    }
+
+    #[test]
+    fn each_access_maps_to_a_permission_mode() {
+        for (access, mode) in [(Access::ReadOnly, "dontAsk"), (Access::Ask, "manual"), (Access::Full, "bypassPermissions")] {
+            let args = turn_args(&TurnRequest { prompt: "x", access, ..Default::default() });
+            assert!(args.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == mode), "{mode}");
+        }
     }
 
     #[test]

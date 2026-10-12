@@ -77,9 +77,12 @@ fn composer_height(app: &App, width: u16) -> u16 {
 
 pub fn render(frame: &mut Frame, app: &App, theme: Theme, branch: Option<&str>) {
     let area = frame.area();
-    let [header, body, composer, status] = Layout::vertical([
+    let asking = approval_lines(app, theme, area.width.saturating_sub(4) as usize);
+    let asking_height = if asking.is_empty() { 0 } else { asking.len() as u16 + 2 };
+    let [header, body, approval, composer, status] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(4),
+        Constraint::Length(asking_height),
         Constraint::Length(composer_height(app, area.width)),
         Constraint::Length(1),
     ])
@@ -95,8 +98,56 @@ pub fn render(frame: &mut Frame, app: &App, theme: Theme, branch: Option<&str>) 
         Pane::Conversation => render_transcript(frame, right, app, theme),
         Pane::Board => render_board(frame, right, app, theme),
     }
+    if asking_height > 0 {
+        render_approval(frame, approval, app, asking, theme);
+    }
     render_composer(frame, composer, app, theme);
     render_status(frame, status, app, theme);
+}
+
+/// The oldest request for permission, in a fixed place above the composer —
+/// what exactly, who, why, and the keys that answer it.
+fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
+    let Some(approval) = app.approvals.first() else {
+        return Vec::new();
+    };
+    let verb = match approval.tool.as_str() {
+        "Bash" => "run",
+        "Write" | "Edit" | "MultiEdit" => "edit",
+        "WebFetch" => "fetch",
+        other => other,
+    };
+    let mut lines = wrapped(vec![Span::styled(format!("{verb}  "), theme.dim())], &approval.action, theme.bold(), 2, width);
+    if let Some(reason) = &approval.reason {
+        lines.extend(wrapped(Vec::new(), reason, theme.dim(), 0, width));
+    }
+    let mut keys = vec![
+        Span::styled("y", theme.bold()),
+        Span::styled(" allow  ", theme.dim()),
+        Span::styled("a", theme.bold()),
+        Span::styled(" always allow  ", theme.dim()),
+        Span::styled("n", theme.bold()),
+        Span::styled(" decline", theme.dim()),
+    ];
+    if app.approvals.len() > 1 {
+        keys.push(Span::styled(format!("  · {} more waiting", app.approvals.len() - 1), theme.dim()));
+    }
+    lines.push(Line::from(keys));
+    lines
+}
+
+fn render_approval(frame: &mut Frame, area: Rect, app: &App, lines: Vec<Line<'static>>, theme: Theme) {
+    let Some(approval) = app.approvals.first() else {
+        return;
+    };
+    let ticket = approval.ticket.map(|t| format!(" · T-{t}")).unwrap_or_default();
+    let title = Line::from(vec![
+        Span::styled(" ", theme.accent()),
+        Span::styled(approval.member.clone(), theme.bold()),
+        Span::styled(format!(" asks{ticket} ", ), theme.accent()),
+    ]);
+    let block = Block::bordered().border_style(theme.accent()).title(title);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn render_header(frame: &mut Frame, area: Rect, app: &App, theme: Theme, branch: Option<&str>) {
@@ -402,6 +453,9 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
             if let Some(model) = agent.short_model() {
                 spans.push(Span::styled(format!(" · {model}"), theme.dim()));
             }
+            if agent.member.is_some() {
+                spans.push(Span::styled(format!(" · {}", app.mode_of(agent).label()), theme.dim()));
+            }
             spans.push(Span::raw("  "));
             spans.push(state_label(agent, theme));
             spans
@@ -670,6 +724,28 @@ mod tests {
         let (mut app, _) = working();
         app.pane = Pane::Board;
         assert!(screen(&app, 90, 16).contains("The board is empty."));
+    }
+
+    #[test]
+    fn a_request_for_permission_sits_above_the_composer_with_its_keys() {
+        let (mut app, _) = working();
+        app.on_event(Event::ApprovalRequested {
+            squad: "acme".into(),
+            approval: equipe_core::protocol::Approval {
+                id: 1,
+                session: 2,
+                member: "frontend".into(),
+                ticket: Some(3),
+                tool: "Bash".into(),
+                action: "npm publish".into(),
+                reason: Some("Release the package".into()),
+            },
+        });
+        let shot = screen(&app, 100, 24);
+        for expected in ["frontend asks · T-3", "run  npm publish", "Release the package", "y allow  a always allow  n decline"] {
+            assert!(shot.contains(expected), "missing {expected:?} in:\n{shot}");
+        }
+        assert!(shot.lines().last().unwrap().contains("pm · haiku · auto"), "{shot}");
     }
 
     #[test]

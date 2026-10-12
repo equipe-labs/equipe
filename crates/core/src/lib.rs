@@ -14,6 +14,7 @@ pub mod board;
 pub mod gateway;
 pub mod journal;
 pub mod mcp;
+pub mod permissions;
 pub mod mock;
 pub mod roles;
 pub mod runtime;

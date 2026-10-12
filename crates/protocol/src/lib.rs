@@ -136,6 +136,84 @@ pub struct Ticket {
     pub note: Option<String>,
 }
 
+/// How much a member may do on its own while it works a ticket. At its desk a
+/// member always only reads.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    /// Read and plan; change nothing.
+    Plan,
+    /// Ask the person before every change and every command.
+    Ask,
+    /// Edit and run commands inside its own worktree, fenced in by the operating
+    /// system; ask the person for anything beyond that.
+    #[default]
+    Auto,
+    /// Anything the person's account can do, except what equipe always blocks.
+    Full,
+}
+
+impl Mode {
+    pub const ALL: [Mode; 4] = [Mode::Plan, Mode::Ask, Mode::Auto, Mode::Full];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Plan => "plan",
+            Mode::Ask => "ask me",
+            Mode::Auto => "auto",
+            Mode::Full => "full access",
+        }
+    }
+
+    /// What it means, in a line.
+    pub fn summary(self) -> &'static str {
+        match self {
+            Mode::Plan => "reads and plans; changes nothing",
+            Mode::Ask => "asks you before every change and command",
+            Mode::Auto => "works inside its own worktree on its own; asks you for anything beyond",
+            Mode::Full => "does anything your account can, except what equipe always blocks",
+        }
+    }
+
+    /// `plan`, `ask`, `auto`, `full` — as typed in a command.
+    pub fn parse(text: &str) -> Option<Mode> {
+        match text.trim().to_lowercase().as_str() {
+            "plan" => Some(Mode::Plan),
+            "ask" | "ask-me" | "askme" | "manual" => Some(Mode::Ask),
+            "auto" => Some(Mode::Auto),
+            "full" | "full-access" | "bypass" => Some(Mode::Full),
+            _ => None,
+        }
+    }
+}
+
+/// A member asking the person for permission — something its mode doesn't
+/// allow on its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Approval {
+    pub id: u64,
+    pub session: SessionId,
+    pub member: String,
+    pub ticket: Option<TicketId>,
+    /// The engine's tool: `Bash`, `Write`, `WebFetch`…
+    pub tool: String,
+    /// What exactly: the command, the file, the address.
+    pub action: String,
+    /// Why, in the member's words, when it gave one.
+    pub reason: Option<String>,
+}
+
+/// The person's answer to an [`Approval`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Decision {
+    /// This once.
+    Allow,
+    /// This, and the same kind of thing from now on, for the whole squad.
+    Always,
+    Deny,
+}
+
 /// How to open a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSpec {
@@ -179,6 +257,11 @@ pub enum Command {
     Reopen { squad: SquadName, ticket: TicketId, note: String },
     /// The person drops a ticket.
     Cancel { squad: SquadName, ticket: TicketId },
+    /// Set how much members may do on their own: the squad's default, or one
+    /// member's (`member`); `mode: None` puts a member back on the squad's default.
+    SetMode { squad: SquadName, member: Option<String>, mode: Option<Mode> },
+    /// The person answers a member's request for permission.
+    Decide { squad: SquadName, approval: u64, decision: Decision },
 }
 
 /// Token counts for one turn.
@@ -245,6 +328,13 @@ pub enum Event {
     WorkEnded { session: SessionId, ticket: TicketId },
     /// A ticket was created or changed. Carries the whole ticket.
     TicketChanged { squad: SquadName, ticket: Ticket },
+    /// The squad's default mode, or one member's, changed. `mode: None`: the
+    /// member follows the squad again.
+    ModeChanged { squad: SquadName, member: Option<String>, mode: Option<Mode> },
+    /// A member waits for the person's permission.
+    ApprovalRequested { squad: SquadName, approval: Approval },
+    /// It was answered — by the person, or by nobody in time (`Deny`).
+    ApprovalResolved { squad: SquadName, approval: u64, decision: Decision },
     /// What the person asked — sent to every screen, not only the one it was typed in.
     UserMessage { session: SessionId, text: String },
     /// A message left while the agent works. It becomes a [`Event::UserMessage`]
@@ -288,6 +378,17 @@ pub enum Event {
 }
 
 impl Event {
+    /// The squad a squad-wide event (the board, modes, approvals) belongs to.
+    pub fn squad(&self) -> Option<&str> {
+        match self {
+            Event::TicketChanged { squad, .. }
+            | Event::ModeChanged { squad, .. }
+            | Event::ApprovalRequested { squad, .. }
+            | Event::ApprovalResolved { squad, .. } => Some(squad),
+            _ => None,
+        }
+    }
+
     /// The session this event belongs to, if any.
     pub fn session(&self) -> Option<SessionId> {
         match self {
@@ -305,7 +406,10 @@ impl Event {
             | Event::WorkStarted { session, .. }
             | Event::WorkEnded { session, .. } => Some(*session),
             Event::Error { session, .. } => *session,
-            Event::TicketChanged { .. } => None,
+            Event::TicketChanged { .. }
+            | Event::ModeChanged { .. }
+            | Event::ApprovalRequested { .. }
+            | Event::ApprovalResolved { .. } => None,
         }
     }
 }
@@ -355,6 +459,9 @@ pub struct SessionInfo {
     /// The ticket it is working on, and where.
     #[serde(default)]
     pub work: Option<WorkInfo>,
+    /// Its own mode, when it doesn't follow the squad's.
+    #[serde(default)]
+    pub mode: Option<Mode>,
 }
 
 /// A member's current ticket, for a screen that attaches mid-work.
@@ -377,6 +484,12 @@ pub struct Snapshot {
     /// Open tickets and the latest closed ones.
     #[serde(default)]
     pub tickets: Vec<Ticket>,
+    /// How much members may do on their own, unless one has its own mode.
+    #[serde(default)]
+    pub mode: Mode,
+    /// Requests for permission waiting for the person, oldest first.
+    #[serde(default)]
+    pub approvals: Vec<Approval>,
 }
 
 #[cfg(test)]
@@ -405,6 +518,30 @@ mod tests {
         let cmd = Command::Accept { squad: "acme".into(), ticket: 3 };
         assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "accept", "squad": "acme", "ticket": 3 }));
         assert_eq!(serde_json::to_value(TicketStatus::InProgress).unwrap(), json!("in_progress"));
+    }
+
+    #[test]
+    fn modes_read_the_way_people_type_them_and_default_to_auto() {
+        assert_eq!(Mode::default(), Mode::Auto);
+        assert_eq!(Mode::parse("Ask"), Some(Mode::Ask));
+        assert_eq!(Mode::parse("full-access"), Some(Mode::Full));
+        assert_eq!(Mode::parse("yolo"), None);
+        let cmd = Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always };
+        assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "decide", "squad": "acme", "approval": 7, "decision": "always" }));
+        let event = Event::ApprovalRequested {
+            squad: "acme".into(),
+            approval: Approval {
+                id: 7,
+                session: 2,
+                member: "frontend".into(),
+                ticket: Some(3),
+                tool: "Bash".into(),
+                action: "npm publish".into(),
+                reason: None,
+            },
+        };
+        assert_eq!(event.squad(), Some("acme"));
+        assert_eq!(serde_json::from_str::<Event>(&serde_json::to_string(&event).unwrap()).unwrap(), event);
     }
 
     #[test]
@@ -478,6 +615,8 @@ mod tests {
             squad: "acme".into(),
             projects: vec!["/repo".into()],
             tickets: vec![ticket(1)],
+            mode: Mode::Plan,
+            approvals: Vec::new(),
             sessions: vec![SessionInfo {
                 session: 9,
                 project: "/repo".into(),
@@ -492,6 +631,7 @@ mod tests {
                 recent: vec![Entry::User { text: "fix it".into() }, Entry::Reply { text: "on it".into() }],
                 queued: vec!["and the tests".into()],
                 work: Some(WorkInfo { ticket: 1, project: "/repo".into(), workspace: None }),
+                mode: Some(Mode::Ask),
             }],
         };
         let json = serde_json::to_string(&snapshot).unwrap();

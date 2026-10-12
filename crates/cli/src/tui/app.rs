@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
 use equipe_core::board;
 use equipe_core::protocol::{
-    Access, Command, Engine, Entry, Event, Member, SessionId, SessionInfo, SessionSpec, SessionState, Snapshot,
-    Ticket, TicketId, TicketStatus, Transcript, new_session_id,
+    Access, Approval, Command, Decision, Engine, Entry, Event, Member, Mode, SessionId, SessionInfo, SessionSpec,
+    SessionState, Snapshot, Ticket, TicketId, TicketStatus, Transcript, new_session_id,
 };
 use equipe_core::roles;
 
@@ -65,6 +65,8 @@ pub struct Agent {
     pub base: PathBuf,
     /// Its desk, where it works between tickets.
     desk: PathBuf,
+    /// Its own mode; `None` follows the squad's.
+    pub mode: Option<Mode>,
     /// A message to send once the session has started.
     pending: Option<String>,
 }
@@ -87,6 +89,7 @@ impl Agent {
             desk: base.clone(),
             base,
             pending: None,
+            mode: None,
         }
     }
 
@@ -115,6 +118,7 @@ impl Agent {
             base,
             desk: info.project,
             pending: None,
+            mode: info.mode,
         }
     }
 
@@ -168,6 +172,10 @@ pub struct App {
     /// Work accepted while this screen watched, for the summary on leaving:
     /// `(ticket, title, branch)`.
     pub accepted: Vec<(TicketId, String, String)>,
+    /// How much members may do on their own, unless one has its own mode.
+    pub mode: Mode,
+    /// Requests for permission waiting for the person, oldest first.
+    pub approvals: Vec<Approval>,
     quit_armed: Option<Instant>,
 }
 
@@ -178,7 +186,9 @@ memo goes in at once) · Alt-Enter or Ctrl-J adds a line · PgUp/PgDn or the whe
 Ctrl-C twice leaves — the squad keeps working.\n\
 /add <role…> [codex|claude] brings in teammates: pm, designer, frontend, backend, qa, data, or custom <name> · \
 /accept T-3 approves handed-in work · /reopen T-3 <what to change> sends it back · /cancel T-3 drops it · \
-/board · /mouse lets the terminal select text · /close removes the selected member · /quit leaves.";
+/board · /mode [member] plan|ask|auto|full sets how much members do on their own — y/a/n answers a request \
+for permission (allow, always allow, decline) · /mouse lets the terminal select text · /close removes the selected \
+member · /quit leaves.";
 
 impl App {
     /// The squad as the daemon has it. `joining` are roles to bring in now (a
@@ -198,6 +208,8 @@ impl App {
             should_quit: false,
             mouse: true,
             accepted: Vec::new(),
+            mode: snapshot.mode,
+            approvals: snapshot.approvals,
             quit_armed: None,
         };
         // Talk to the PM first: it is the main contact.
@@ -220,6 +232,11 @@ impl App {
 
     pub fn working(&self) -> usize {
         self.agents.iter().filter(|a| a.state == AgentState::Working).count()
+    }
+
+    /// The mode a member works in: its own, or the squad's.
+    pub fn mode_of(&self, agent: &Agent) -> Mode {
+        agent.mode.unwrap_or(self.mode)
     }
 
     /// Tickets waiting for the person to accept or send back.
@@ -258,9 +275,30 @@ impl App {
     // ── events from the core ──
 
     pub fn on_event(&mut self, event: Event) -> Vec<Command> {
-        if let Event::TicketChanged { ticket, .. } = event {
-            self.on_ticket(ticket);
-            return Vec::new();
+        match event {
+            Event::TicketChanged { ticket, .. } => {
+                self.on_ticket(ticket);
+                return Vec::new();
+            }
+            Event::ApprovalRequested { approval, .. } => {
+                self.approvals.push(approval);
+                return Vec::new();
+            }
+            Event::ApprovalResolved { approval, .. } => {
+                self.approvals.retain(|a| a.id != approval);
+                return Vec::new();
+            }
+            Event::ModeChanged { member: None, mode: Some(mode), .. } => {
+                self.mode = mode;
+                return Vec::new();
+            }
+            Event::ModeChanged { member: Some(name), mode, .. } => {
+                if let Some(agent) = self.agents.iter_mut().find(|a| a.member.as_ref().is_some_and(|m| m.name == name)) {
+                    agent.mode = mode;
+                }
+                return Vec::new();
+            }
+            _ => {}
         }
         let Some(id) = event.session() else {
             if let Event::Error { message, .. } = event {
@@ -374,6 +412,18 @@ impl App {
         if !(ctrl && key.code == KeyCode::Char('c')) {
             self.quit_armed = None;
             self.flash = None;
+        }
+        // A request for permission answers to one key — while nothing is being typed.
+        if let (Some(approval), true, false, false) = (self.approvals.first(), self.composer.is_empty(), ctrl, alt) {
+            let decision = match key.code {
+                KeyCode::Char('y') => Some(Decision::Allow),
+                KeyCode::Char('a') => Some(Decision::Always),
+                KeyCode::Char('n') => Some(Decision::Deny),
+                _ => None,
+            };
+            if let Some(decision) = decision {
+                return vec![Command::Decide { squad: self.squad.clone(), approval: approval.id, decision }];
+            }
         }
         match key.code {
             KeyCode::Char('c') if ctrl => return self.ctrl_c(now),
@@ -528,6 +578,7 @@ impl App {
                 Vec::new()
             }
             "accept" | "reopen" | "cancel" => self.decide(name, rest),
+            "mode" => self.set_mode(rest),
             "close" => match self.agents.get_mut(self.selected) {
                 Some(agent) if agent.is_open() => {
                     agent.state = AgentState::Closing;
@@ -579,6 +630,47 @@ impl App {
             "accept" => vec![Command::Accept { squad, ticket }],
             "reopen" => vec![Command::Reopen { squad, ticket, note: note.trim().to_owned() }],
             _ => vec![Command::Cancel { squad, ticket }],
+        }
+    }
+
+    /// `/mode auto` for the squad, `/mode frontend ask` for one member,
+    /// `/mode frontend squad` to put it back on the squad's.
+    fn set_mode(&mut self, rest: &str) -> Vec<Command> {
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        let usage = || {
+            let modes: Vec<String> = Mode::ALL.iter().map(|m| format!("{} ({})", m.label(), m.summary())).collect();
+            format!("Modes: {} · /mode <mode> for the squad, /mode <member> <mode> for one", modes.join(" · "))
+        };
+        let squad = self.squad.clone();
+        match words.as_slice() {
+            [] => {
+                self.flash = Some(format!("The squad works in {} mode. {}", self.mode.label(), usage()));
+                Vec::new()
+            }
+            [mode] => match Mode::parse(mode) {
+                Some(mode) => vec![Command::SetMode { squad, member: None, mode: Some(mode) }],
+                None => {
+                    self.flash = Some(usage());
+                    Vec::new()
+                }
+            },
+            [name, mode, ..] => {
+                if !self.agents.iter().any(|a| a.member.as_ref().is_some_and(|m| m.name == *name)) {
+                    self.flash = Some(format!("No one called {name} on the squad."));
+                    return Vec::new();
+                }
+                let mode = match *mode {
+                    "squad" | "default" => None,
+                    other => match Mode::parse(other) {
+                        Some(mode) => Some(mode),
+                        None => {
+                            self.flash = Some(usage());
+                            return Vec::new();
+                        }
+                    },
+                };
+                vec![Command::SetMode { squad, member: Some((*name).to_owned()), mode }]
+            }
         }
     }
 
@@ -718,6 +810,7 @@ mod tests {
             recent: Vec::new(),
             queued: Vec::new(),
             work: None,
+            mode: None,
         }
     }
 
@@ -1065,6 +1158,55 @@ mod tests {
         assert_eq!((agent.ticket, agent.state, agent.base.clone()), (Some(3), AgentState::Working, PathBuf::from("/w/3")));
         app.on_event(Event::WorkEnded { session: frontend, ticket: 3 });
         assert_eq!((app.agents[1].ticket, app.agents[1].base.clone()), (None, PathBuf::from("/repo")));
+    }
+
+    fn approval(id: u64) -> Approval {
+        Approval {
+            id,
+            session: 2,
+            member: "frontend".into(),
+            ticket: Some(3),
+            tool: "Bash".into(),
+            action: "npm install".into(),
+            reason: None,
+        }
+    }
+
+    #[test]
+    fn a_request_for_permission_answers_to_y_a_and_n_unless_the_person_is_typing() {
+        let (mut app, _, _) = team();
+        app.on_event(Event::ApprovalRequested { squad: "acme".into(), approval: approval(7) });
+        assert_eq!(
+            app.on_key(key(KeyCode::Char('a')), Instant::now()),
+            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always }]
+        );
+        assert_eq!(
+            app.on_key(key(KeyCode::Char('n')), Instant::now()),
+            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Deny }]
+        );
+        // Mid-sentence, letters are letters.
+        type_text(&mut app, "hey");
+        assert_eq!(app.composer.text(), "hey");
+        app.on_event(Event::ApprovalResolved { squad: "acme".into(), approval: 7, decision: Decision::Deny });
+        assert!(app.approvals.is_empty());
+    }
+
+    #[test]
+    fn modes_are_set_for_the_squad_or_one_member() {
+        let (mut app, _, _) = team();
+        type_text(&mut app, "/mode ask");
+        assert_eq!(enter(&mut app), vec![Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::Ask) }]);
+        type_text(&mut app, "/mode frontend full");
+        assert_eq!(
+            enter(&mut app),
+            vec![Command::SetMode { squad: "acme".into(), member: Some("frontend".into()), mode: Some(Mode::Full) }]
+        );
+        type_text(&mut app, "/mode frontend squad");
+        assert_eq!(enter(&mut app), vec![Command::SetMode { squad: "acme".into(), member: Some("frontend".into()), mode: None }]);
+        app.on_event(Event::ModeChanged { squad: "acme".into(), member: Some("frontend".into()), mode: Some(Mode::Plan) });
+        app.on_event(Event::ModeChanged { squad: "acme".into(), member: None, mode: Some(Mode::Ask) });
+        assert_eq!(app.mode_of(&app.agents[1]), Mode::Plan);
+        assert_eq!(app.mode_of(&app.agents[0]), Mode::Ask);
     }
 
     #[test]

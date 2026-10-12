@@ -666,7 +666,10 @@ impl App {
                 | Event::Notice { .. }
                 | Event::WorkStarted { .. }
                 | Event::WorkEnded { .. }
-                | Event::TicketChanged { .. } => {}
+                | Event::TicketChanged { .. }
+                | Event::ModeChanged { .. }
+                | Event::ApprovalRequested { .. }
+                | Event::ApprovalResolved { .. } => {}
                 Event::Error { message, next, .. } => {
                     failure.get_or_insert(Failure { message, next });
                     // A session that never opened won't send anything more.
