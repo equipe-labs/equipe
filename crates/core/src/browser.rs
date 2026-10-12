@@ -37,13 +37,41 @@ const KEEP_SIGN_INS: &str = include_str!("../assets/keep-sign-ins.ts");
 
 fn keeper(home: &Path) -> PathBuf {
     let path = home.join("browser").join("keep-sign-ins.ts");
-    let state = serde_json::to_string(&state_file(home).to_string_lossy()).unwrap_or_default();
-    let script = KEEP_SIGN_INS.replace("__STATE__", &state);
+    let quoted = |p: PathBuf| serde_json::to_string(&p.to_string_lossy()).unwrap_or_default();
+    let script = KEEP_SIGN_INS
+        .replace("__STATE__", &quoted(state_file(home)))
+        .replace("__SLOTS__", &quoted(home.join("browser").join("open")))
+        .replace("__MAX__", &at_once().to_string());
     if std::fs::read_to_string(&path).ok().as_deref() != Some(script.as_str()) {
         let _ = std::fs::write(&path, script);
     }
     path
 }
+
+/// How many members' browsers may be open at once. A browser on a real site
+/// takes the better part of a gigabyte: one for every 8 GB of memory, 1 to 4.
+pub fn at_once() -> usize {
+    (memory_gb() / 8).clamp(1, 4)
+}
+
+fn memory_gb() -> usize {
+    let bytes = std::process::Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .or_else(|| {
+            let info = std::fs::read_to_string("/proc/meminfo").ok()?;
+            let kb = info.lines().find(|l| l.starts_with("MemTotal:"))?.split_whitespace().nth(1)?.parse::<u64>().ok()?;
+            Some(kb * 1024)
+        });
+    bytes.map_or(16, |b| (b / (1 << 30)) as usize)
+}
+
+/// A browser left unused this long closes, giving its memory back; the next
+/// step opens a fresh one, still signed in.
+const IDLE_MS: &str = "300000";
 
 /// One member's browser server: in memory, starting from the squad's
 /// sign-ins and handing new ones back; on screen when `shown`, hidden
@@ -61,6 +89,8 @@ pub fn server(npx: &Path, home: &Path, output: &Path, shown: bool) -> Value {
         json!(output),
         json!("--init-page"),
         json!(keeper(home)),
+        json!("--idle-timeout"),
+        json!(IDLE_MS),
     ]);
     json!({ "type": "stdio", "command": npx, "args": args })
 }
@@ -120,7 +150,8 @@ mod tests {
         let args: Vec<&str> = server["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
         let script = args.windows(2).find(|w| w[0] == "--init-page").unwrap()[1];
         let text = std::fs::read_to_string(script).unwrap();
-        assert!(text.contains(&*state_file(&home).to_string_lossy()) && !text.contains("__STATE__"), "{text}");
+        assert!(text.contains(&*state_file(&home).to_string_lossy()) && !["__STATE__", "__SLOTS__", "__MAX__"].iter().any(|p| text.contains(p)), "{text}");
+        assert!(args.windows(2).any(|w| w == ["--idle-timeout", IDLE_MS]), "an idle browser gives its memory back");
         std::fs::remove_dir_all(&home).unwrap();
     }
 }

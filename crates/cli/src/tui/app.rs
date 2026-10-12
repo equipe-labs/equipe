@@ -254,6 +254,8 @@ pub struct App {
     pub board_selected: Option<TicketId>,
     /// What each ticket's branch changed (`git diff --stat`), by ticket and branch.
     pub diffs: HashMap<TicketId, (String, String)>,
+    /// Memory each member's open browser takes, in MB, as last sampled.
+    pub browsers: HashMap<String, u64>,
     /// A ticket whose whole diff the person asked to see.
     pub view_diff: Option<TicketId>,
     /// Where clickable things were drawn, as `(from column, to column, row, what)`.
@@ -314,6 +316,7 @@ impl App {
             export: false,
             board_selected: None,
             diffs: HashMap::new(),
+            browsers: HashMap::new(),
             view_diff: None,
             open_browser: false,
             hits: Vec::new(),
@@ -1125,6 +1128,54 @@ pub fn tool_verb(name: &str) -> &str {
     }
 }
 
+/// The memory each member's browser takes, from `ps -axo pid=,ppid=,rss=,command=`:
+/// a browser server is known by its output folder (`equipe-browser/<squad>/<member>`),
+/// and counts with everything it started — Chrome and its helpers.
+pub fn browser_memory(ps: &str, squad: &str) -> HashMap<String, u64> {
+    let rows: Vec<(u32, u32, u64, &str)> = ps
+        .lines()
+        .filter_map(|line| {
+            // Three numbers, then the command with its own spaces.
+            let mut rest = line.trim_start();
+            let mut number = || -> Option<&str> {
+                let end = rest.find(char::is_whitespace)?;
+                let field = &rest[..end];
+                rest = rest[end..].trim_start();
+                Some(field)
+            };
+            let pid = number()?.parse().ok()?;
+            let ppid = number()?.parse().ok()?;
+            let rss = number()?.parse().ok()?;
+            Some((pid, ppid, rss, rest))
+        })
+        .collect();
+    let marker = format!("equipe-browser/{squad}/");
+    let mut memory = HashMap::new();
+    for &(pid, _, _, command) in &rows {
+        // The server itself, not the `npx` that started it.
+        if !command.contains("@playwright/mcp") || command.contains("npm exec") {
+            continue;
+        }
+        let Some(member) = command.split(&marker).nth(1).and_then(|rest| rest.split(['/', ' ']).next()) else {
+            continue;
+        };
+        let mut family = vec![pid];
+        let mut kb = 0;
+        while let Some(parent) = family.pop() {
+            for &(child, ppid, rss, _) in &rows {
+                if child == parent {
+                    kb += rss;
+                }
+                if ppid == parent {
+                    family.push(child);
+                }
+            }
+        }
+        *memory.entry(member.to_owned()).or_insert(0) += kb / 1024;
+    }
+    memory
+}
+
 /// A tool's path, relative to where the agent works when it's inside it.
 pub fn relative(target: &str, base: &std::path::Path) -> String {
     let path = std::path::Path::new(target);
@@ -1508,6 +1559,20 @@ mod tests {
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(4, TicketStatus::Review) });
         assert!(app.flash.as_deref().unwrap().contains("/accept T-4"), "{:?}", app.flash);
         assert_eq!(app.to_review().len(), 1);
+    }
+
+    #[test]
+    fn a_members_browser_counts_with_everything_it_started() {
+        let ps = "\
+  10     1  50000 node /x/npm exec @playwright/mcp@0.0.83 --output-dir /T/equipe-browser/acme/frontend
+  11    10 100000 node /x/node_modules/.bin/mcp-server-playwright @playwright/mcp --output-dir /T/equipe-browser/acme/frontend --init-page k.ts
+  12    11 409600 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --headless
+  13    12 204800 Google Chrome Helper (Renderer)
+  20     1 100000 node @playwright/mcp --output-dir /T/equipe-browser/other/pm
+  30     1 999999 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        let memory = browser_memory(ps, "acme");
+        assert_eq!(memory.get("frontend"), Some(&((100000 + 409600 + 204800) / 1024)));
+        assert_eq!(memory.len(), 1, "another squad's browser and the person's own Chrome don't count: {memory:?}");
     }
 
     #[test]

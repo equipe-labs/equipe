@@ -1,15 +1,55 @@
-// equipe: a member's browser hands what it signs in to back to the squad.
-// Playwright MCP runs this on every page (--init-page); STATE is filled in by
-// equipe. Cookies and local storage are merged into the shared sign-ins, newest
-// wins, a second after each page loads and when the browser closes.
+// equipe: a member's browser hands what it signs in to back to the squad, and
+// takes one of the squad's browser places while it is open.
+// Playwright MCP runs this on every page (--init-page); STATE, SLOTS and MAX are
+// filled in by equipe. Cookies and local storage are merged into the shared
+// sign-ins, newest wins, a second after each page loads and when the browser
+// closes. At most MAX browsers run at once: a browser opening while all places
+// are taken waits for one (a few minutes at most, then opens anyway).
 import * as fs from 'node:fs';
 
 const STATE: string = __STATE__;
+const SLOTS: string = __SLOTS__;
+const MAX: number = __MAX__;
+
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// A place is a file holding the pid of the server that has it; a dead pid frees it.
+async function takePlace(): Promise<string | undefined> {
+  fs.mkdirSync(SLOTS, { recursive: true });
+  for (let waited = 0; waited < 5 * 60_000; waited += 2000) {
+    for (let i = 0; i < MAX; i++) {
+      const file = `${SLOTS}/${i}`;
+      let holder = 0;
+      try { holder = Number(fs.readFileSync(file, 'utf8')); } catch {}
+      if (holder === process.pid) return file;
+      if (holder && alive(holder)) continue;
+      fs.writeFileSync(file, String(process.pid));
+      await new Promise(r => setTimeout(r, 50));
+      try { if (Number(fs.readFileSync(file, 'utf8')) === process.pid) return file; } catch {}
+    }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  return undefined;
+}
+
+function leave(file: string | undefined) {
+  if (!file) return;
+  try { if (Number(fs.readFileSync(file, 'utf8')) === process.pid) fs.unlinkSync(file); } catch {}
+}
 
 export default async ({ page }: { page: any }) => {
   const context = page.context();
   if (context.__equipe) return;
   context.__equipe = true;
+  const place = await takePlace();
+  process.on('exit', () => leave(place));
   const save = async () => {
     const mine = await context.storageState();
     let kept = { cookies: [] as any[], origins: [] as any[] };
@@ -30,5 +70,7 @@ export default async ({ page }: { page: any }) => {
   };
   context.on('page', (p: any) => p.on('load', soon));
   page.on('load', soon);
-  context.on('close', () => save().catch(() => {}));
+  context.on('close', () => {
+    save().catch(() => {}).finally(() => leave(place));
+  });
 };

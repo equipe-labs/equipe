@@ -645,6 +645,12 @@ fn render_squad(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
                 (0, Some(ticket)) => format!("T-{ticket}"),
                 (0, None) => agent.short_model().unwrap_or_default(),
             };
+            // An open browser, and what it costs in memory.
+            let text = match app.browsers.get(&agent.label()) {
+                Some(mb) if *mb >= 1024 => format!("{text} · {:.1}G", *mb as f32 / 1024.0),
+                Some(mb) => format!("{text} · {mb}M"),
+                None => text,
+            };
             Span::styled(text, theme.dim())
         };
         lines.push(Line::from(vec![marker, glyph(app, agent, theme), Span::raw(" "), name, Span::raw("  "), detail]));

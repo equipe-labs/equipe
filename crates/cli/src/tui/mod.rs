@@ -127,6 +127,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
 
     let mut input = EventStream::new();
     let mut saved_width = app.squad_width;
+    let mut last_sample = Instant::now();
     let mut daemon_lost = false;
     let mut layouts = view::Layouts::default();
     let draw = |terminal: &mut ratatui::DefaultTerminal, app: &mut app::App, layouts: &mut view::Layouts| {
@@ -250,6 +251,15 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         }
         if app.pane == app::Pane::Board {
             count_changes(&mut app, &cwd);
+        }
+        // Members' browsers and the memory they take, every few seconds while
+        // anyone works or a browser is open.
+        let busy = app.agents.iter().any(|a| a.state == app::AgentState::Working) || !app.browsers.is_empty();
+        if busy && last_sample.elapsed() >= Duration::from_secs(3) {
+            last_sample = Instant::now();
+            if let Ok(out) = std::process::Command::new("ps").args(["-axo", "pid=,ppid=,rss=,command="]).output() {
+                app.browsers = app::browser_memory(&String::from_utf8_lossy(&out.stdout), &app.squad);
+            }
         }
         if app.mouse != mouse {
             mouse = app.mouse;
