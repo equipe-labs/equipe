@@ -178,8 +178,20 @@ fn layout_key(agent: &Agent, width: usize) -> LayoutKey {
 
 // ── the screen ──
 
-pub fn render(frame: &mut Frame, app: &App, theme: Theme, branch: Option<&str>, layouts: &Layouts) {
-    let area = content(frame.area());
+/// The screen's rows: header, body, approval, hairline, composer, footer — and
+/// the approval's lines, which decide its height.
+struct Rows {
+    header: Rect,
+    body: Rect,
+    approval: Rect,
+    rule: Rect,
+    composer: Rect,
+    footer: Rect,
+    asking: Vec<Line<'static>>,
+}
+
+fn rows(app: &App, theme: Theme, screen: Rect) -> Rows {
+    let area = content(screen);
     let asking = approval_lines(app, theme, area.width.saturating_sub(2) as usize);
     let asking_height = if asking.is_empty() { 0 } else { asking.len() as u16 + 1 };
     let (composer_rows, _) = app.composer.layout(area.width.saturating_sub(2) as usize);
@@ -194,6 +206,56 @@ pub fn render(frame: &mut Frame, app: &App, theme: Theme, branch: Option<&str>, 
         Constraint::Length(1),
     ])
     .areas(area);
+    Rows { header, body, approval, rule, composer, footer, asking }
+}
+
+/// A pane under its title line and the blank line after it.
+fn under_title(area: Rect) -> Rect {
+    let [_, _, rest] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]).areas(area);
+    rest
+}
+
+/// The conversation's text area, above its live row (working, or new lines).
+fn conversation_text(area: Rect, agent: &Agent) -> Rect {
+    let live = (agent.scroll_back > 0 && agent.unseen > 0) || agent.state == AgentState::Working;
+    let [text, _, _] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(u16::from(live)),
+        Constraint::Length(u16::from(live)),
+    ])
+    .areas(under_title(area));
+    text
+}
+
+/// How much there is to scroll on a screen this size: half the conversation's
+/// height for a page, and how far the conversation and the board can go.
+pub struct Extent {
+    pub page: usize,
+    pub conversation_max: usize,
+    pub board_max: usize,
+}
+
+pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Extent {
+    let (_, _, right) = columns(rows(app, theme, screen).body);
+    let board = under_title(right);
+    let board_width = (board.width as usize).saturating_sub(1).min(PROSE_MAX);
+    let board_max = board_lines(app, theme, board_width).len().saturating_sub(board.height as usize);
+    let Some(agent) = app.selected() else {
+        return Extent { page: board.height as usize / 2, conversation_max: 0, board_max };
+    };
+    let text = conversation_text(right, agent);
+    let width = (text.width as usize).saturating_sub(1).min(PROSE_MAX);
+    let lines = layouts.get(agent, width).map_or_else(|| transcript_lines(agent, theme, width).len(), <[_]>::len);
+    Extent {
+        page: text.height as usize / 2,
+        conversation_max: lines.saturating_sub(text.height as usize),
+        board_max,
+    }
+}
+
+pub fn render(frame: &mut Frame, app: &App, theme: Theme, branch: Option<&str>, layouts: &Layouts) {
+    let Rows { header, body, approval, rule, composer, footer, asking } = rows(app, theme, frame.area());
+    let asking_height = approval.height;
 
     let (squad, gap, right) = columns(body);
     render_header(frame, header, app, theme, branch, squad.is_none());
@@ -493,18 +555,49 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
     .areas(area);
 
     let width = (text.width as usize).saturating_sub(1).min(PROSE_MAX);
-    let lines = match layouts.get(agent, width) {
-        Some(lines) => lines.to_vec(),
-        None => transcript_lines(agent, theme, width),
+    let fresh;
+    let lines: &[Line<'static>] = match layouts.get(agent, width) {
+        Some(lines) => lines,
+        None => {
+            fresh = transcript_lines(agent, theme, width);
+            &fresh
+        }
     };
-    // Follow the bottom unless the person scrolled up.
+    // Follow the bottom unless the person scrolled up; draw only what shows.
     let height = text.height as usize;
     let bottom = lines.len().saturating_sub(height);
     let top = bottom.saturating_sub(agent.scroll_back.min(bottom));
-    frame.render_widget(Paragraph::new(lines).scroll((top as u16, 0)), text);
+    let shown = lines[top..lines.len().min(top + height)].to_vec();
+    frame.render_widget(Paragraph::new(shown), text);
+    // Scrolled up, a thin bar on the right says where in the conversation this is.
+    if top < bottom {
+        render_scrollbar(frame, text, top, height, lines.len(), theme);
+    }
     if !footer.is_empty() {
         frame.render_widget(Paragraph::new(footer), live);
     }
+}
+
+/// A one-column scrollbar at the right edge of `area`: the thumb's size is the
+/// share of the text that shows, its place where that share sits.
+fn render_scrollbar(frame: &mut Frame, area: Rect, top: usize, height: usize, total: usize, theme: Theme) {
+    if area.width == 0 || total <= height || height == 0 {
+        return;
+    }
+    let thumb = (height * height / total).clamp(1, height);
+    let travel = height - thumb;
+    let at = if total > height { top * travel / (total - height) } else { 0 };
+    let column = Rect { x: area.x + area.width - 1, width: 1, ..area };
+    let rows: Vec<Line> = (0..height)
+        .map(|row| {
+            if row >= at && row < at + thumb {
+                Line::from(Span::styled("┃", theme.dim()))
+            } else {
+                Line::from(Span::styled("│", theme.dim().add_modifier(Modifier::DIM)))
+            }
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(rows), column);
 }
 
 /// The board, grouped by what needs whom: the person's reviews first.
@@ -1109,8 +1202,62 @@ mod tests {
     }
 
     #[test]
+    fn scrolled_up_a_bar_shows_where_and_the_extent_knows_the_ends() {
+        let (mut app, id) = working();
+        for i in 0..40 {
+            app.on_event(Event::TextDelta { session: id, text: format!("\n\nline {i}") });
+        }
+        let extent = extent(&app, Theme::plain(), Rect::new(0, 0, 100, 24), &Layouts::default());
+        assert!(extent.conversation_max > 20, "{}", extent.conversation_max);
+        assert!(extent.page >= 3);
+        app.set_extent(extent.page, extent.conversation_max, extent.board_max);
+        app.agents[0].scroll_back = 10_000;
+        app.set_extent(extent.page, extent.conversation_max, extent.board_max);
+        assert_eq!(app.agents[0].scroll_back, extent.conversation_max, "clamped to the top");
+        let shot = screen(&app, 100, 24);
+        assert!(shot.contains('┃'), "{shot}");
+        assert!(shot.contains("› fix the bug"), "at the top, the first message shows:\n{shot}");
+    }
+
+    #[test]
     fn group_digits_reads_like_a_number() {
         assert_eq!(group_digits(1234567), "1,234,567");
         assert_eq!(group_digits(999), "999");
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use crate::tui::app::App;
+    use equipe_core::protocol::{Command, Engine, Event, Member, Snapshot};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    #[ignore]
+    fn how_long_a_long_conversation_takes_to_draw() {
+        let snapshot = Snapshot { squad: "acme".into(), projects: vec!["/repo".into()], ..Snapshot::default() };
+        let (mut app, commands) = App::from_snapshot("/repo".into(), snapshot, &[]);
+        let Some(Command::Start { session: id, .. }) = commands.first() else { panic!() };
+        let id = *id;
+        app.on_event(Event::SessionStarted { session: id, project: "/repo".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Member { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) });
+        for i in 0..200 {
+            app.on_event(Event::UserMessage { session: id, text: format!("question {i}") });
+            app.on_event(Event::TextDelta { session: id, text: "## Plan\n\n1. **designer**: 랜딩 페이지 카피와 디자인을 맡아요. equipe가 뭔지 담아요.\n2. **frontend**: 정적 사이트 프로젝트를 세팅해요 (Astro 제안).\n\n| 티켓 | 담당 | 내용 |\n|---|---|---|\n| T-1 | designer | 카피·디자인 |\n| T-2 | frontend | Astro 셋업 |\n\nSome `code` and more prose that goes on for a while to wrap across lines in the pane.".into() });
+            app.on_event(Event::ToolUse { session: id, tool: "Read".into(), target: Some("src/a.rs".into()) });
+            app.on_event(Event::TurnEnded { session: id, outcome: equipe_core::protocol::TurnOutcome::Completed, usage: None });
+        }
+        let mut layouts = Layouts::default();
+        let mut terminal = Terminal::new(TestBackend::new(140, 45)).unwrap();
+        let t = std::time::Instant::now();
+        layouts.prepare(&app, Theme::plain(), 140);
+        let layout = t.elapsed();
+        let t = std::time::Instant::now();
+        for _ in 0..50 {
+            app.agents[0].scroll_back += 3;
+            terminal.draw(|f| render(f, &app, Theme::plain(), None, &layouts)).unwrap();
+        }
+        eprintln!("lay out once: {layout:?}; draw while scrolling: {:?} per frame", t.elapsed() / 50);
     }
 }

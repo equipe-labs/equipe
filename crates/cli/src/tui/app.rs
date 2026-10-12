@@ -23,9 +23,12 @@ use super::composer::Composer;
 /// How long a first Ctrl-C waits for a second before it stops meaning "leave".
 const QUIT_WINDOW: Duration = Duration::from_secs(2);
 
-/// Lines one wheel event scrolls. A trackpad sends many small events; two
-/// lines each reads as smooth there and still moves a mouse wheel along.
-const WHEEL_LINES: isize = 2;
+/// Lines a lone wheel event scrolls — a mouse wheel's notch.
+const WHEEL_NOTCH: isize = 3;
+
+/// Wheel events closer together than this are one gesture — a trackpad's —
+/// and each moves one line, so the view follows the fingers exactly.
+const WHEEL_GESTURE: Duration = Duration::from_millis(40);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
@@ -224,6 +227,13 @@ pub struct App {
     pub mode: Mode,
     /// Requests for permission waiting for the person, oldest first.
     pub approvals: Vec<Approval>,
+    /// Lines a page key moves: half the conversation's height on screen.
+    pub page: usize,
+    /// How far the selected conversation and the board can scroll, as last drawn.
+    conversation_max: usize,
+    board_max: usize,
+    /// The last wheel event: when, and which way.
+    last_wheel: Option<(Instant, bool)>,
     quit_armed: Option<Instant>,
 }
 
@@ -258,6 +268,10 @@ impl App {
             accepted: Vec::new(),
             mode: snapshot.mode,
             approvals: snapshot.approvals,
+            page: 10,
+            conversation_max: usize::MAX,
+            board_max: usize::MAX,
+            last_wheel: None,
             quit_armed: None,
         };
         // Talk to the PM first: it is the main contact.
@@ -478,12 +492,30 @@ impl App {
         self.composer.insert_str(text);
     }
 
-    pub fn on_mouse(&mut self, kind: MouseEventKind) {
-        match kind {
-            MouseEventKind::ScrollUp => self.scroll(WHEEL_LINES),
-            MouseEventKind::ScrollDown => self.scroll(-WHEEL_LINES),
-            _ => {}
+    pub fn on_mouse(&mut self, kind: MouseEventKind, now: Instant) {
+        let up = match kind {
+            MouseEventKind::ScrollUp => true,
+            MouseEventKind::ScrollDown => false,
+            _ => return,
+        };
+        // A trackpad's stream of events moves a line each; a lone notch, three.
+        let in_gesture = self.last_wheel.is_some_and(|(at, was_up)| was_up == up && now.duration_since(at) < WHEEL_GESTURE);
+        self.last_wheel = Some((now, up));
+        let lines = if in_gesture { 1 } else { WHEEL_NOTCH };
+        self.scroll(if up { lines } else { -lines });
+    }
+
+    /// What the screen holds, as last drawn: the page size, and how far the
+    /// conversation and the board can scroll. Scrolling stops at the ends rather
+    /// than running on past them (and having to come back before anything moves).
+    pub fn set_extent(&mut self, page: usize, conversation_max: usize, board_max: usize) {
+        self.page = page.max(3);
+        self.conversation_max = conversation_max;
+        self.board_max = board_max;
+        if let Some(agent) = self.agents.get_mut(self.selected) {
+            agent.scroll_back = agent.scroll_back.min(conversation_max);
         }
+        self.board_scroll = self.board_scroll.min(board_max);
     }
 
     pub fn on_key(&mut self, key: KeyEvent, now: Instant) -> Vec<Command> {
@@ -516,13 +548,15 @@ impl App {
             KeyCode::Esc => return self.interrupt(),
             KeyCode::Tab => self.cycle(1),
             KeyCode::BackTab => self.cycle(-1),
-            KeyCode::PageUp => self.scroll(10),
-            KeyCode::PageDown => self.scroll(-10),
+            KeyCode::PageUp => self.scroll(self.page as isize),
+            KeyCode::PageDown => self.scroll(-(self.page as isize)),
             KeyCode::Up if !self.composer.recall_older() => self.scroll(1),
             KeyCode::Down if !self.composer.recall_newer() => self.scroll(-1),
             KeyCode::Up | KeyCode::Down => {}
             KeyCode::Left => self.composer.left(),
             KeyCode::Right => self.composer.right(),
+            // With nothing typed, Home goes back to the beginning.
+            KeyCode::Home if self.composer.is_empty() => self.scroll(isize::MAX / 2),
             KeyCode::Home => self.composer.home(),
             // With nothing typed, End jumps back to the latest line.
             KeyCode::End if self.composer.is_empty() => self.jump_to_latest(),
@@ -587,13 +621,14 @@ impl App {
     }
 
     fn scroll(&mut self, lines: isize) {
-        let scrolled = |at: usize| (at as isize + lines).max(0) as usize;
+        let moved = |at: usize, by: isize, max: usize| (at as isize).saturating_add(by).clamp(0, max.min(isize::MAX as usize) as isize) as usize;
         match self.pane {
             // The board reads top-down; the conversation bottom-up.
-            Pane::Board => self.board_scroll = (self.board_scroll as isize - lines).max(0) as usize,
+            Pane::Board => self.board_scroll = moved(self.board_scroll, -lines, self.board_max),
             Pane::Conversation => {
+                let max = self.conversation_max;
                 if let Some(agent) = self.agents.get_mut(self.selected) {
-                    agent.scroll_back = scrolled(agent.scroll_back);
+                    agent.scroll_back = moved(agent.scroll_back, lines, max);
                     if agent.scroll_back == 0 {
                         agent.unseen = 0;
                     }
@@ -1335,7 +1370,7 @@ mod tests {
     #[test]
     fn scrolled_up_new_lines_are_counted_and_end_jumps_back() {
         let (mut app, pm, _) = team();
-        app.on_mouse(MouseEventKind::ScrollUp);
+        app.on_mouse(MouseEventKind::ScrollUp, Instant::now());
         app.grew(pm, 4);
         assert_eq!(app.agents[0].unseen, 4);
         app.on_key(key(KeyCode::End), Instant::now());
@@ -1343,16 +1378,47 @@ mod tests {
     }
 
     #[test]
+    fn a_wheel_notch_moves_three_lines_and_a_trackpad_gesture_one_per_event() {
+        let (mut app, _, _) = team();
+        let t0 = Instant::now();
+        app.on_mouse(MouseEventKind::ScrollUp, t0);
+        assert_eq!(app.agents[0].scroll_back, 3, "a lone notch");
+        for ms in [10, 20, 30, 40] {
+            app.on_mouse(MouseEventKind::ScrollUp, t0 + Duration::from_millis(ms));
+        }
+        assert_eq!(app.agents[0].scroll_back, 7, "a gesture follows the fingers");
+        app.on_mouse(MouseEventKind::ScrollDown, t0 + Duration::from_millis(45));
+        assert_eq!(app.agents[0].scroll_back, 4, "turning round is a new gesture");
+    }
+
+    #[test]
+    fn scrolling_stops_at_the_ends_and_pages_are_half_a_screen() {
+        let (mut app, _, _) = team();
+        app.set_extent(12, 30, 0);
+        app.on_key(key(KeyCode::PageUp), Instant::now());
+        assert_eq!(app.agents[0].scroll_back, 12);
+        for _ in 0..5 {
+            app.on_key(key(KeyCode::PageUp), Instant::now());
+        }
+        assert_eq!(app.agents[0].scroll_back, 30, "the top is the top");
+        app.on_key(key(KeyCode::PageDown), Instant::now());
+        assert_eq!(app.agents[0].scroll_back, 18, "and coming back moves at once");
+        app.on_key(key(KeyCode::End), Instant::now());
+        app.on_key(key(KeyCode::Home), Instant::now());
+        assert_eq!(app.agents[0].scroll_back, 30, "Home goes to the beginning");
+    }
+
+    #[test]
     fn the_wheel_scrolls_the_conversation_and_mouse_can_be_released() {
         let (mut app, _, _) = team();
-        app.on_mouse(MouseEventKind::ScrollUp);
-        assert_eq!(app.agents[0].scroll_back, 2);
+        let t0 = Instant::now();
+        app.on_mouse(MouseEventKind::ScrollUp, t0);
+        assert_eq!(app.agents[0].scroll_back, 3);
         app.grew(1, 5);
-        assert_eq!(app.agents[0].scroll_back, 7, "scrolled up, it keeps its place as lines arrive");
-        app.on_mouse(MouseEventKind::ScrollDown);
-        app.on_mouse(MouseEventKind::ScrollDown);
-        app.on_mouse(MouseEventKind::ScrollDown);
-        app.on_mouse(MouseEventKind::ScrollDown);
+        assert_eq!(app.agents[0].scroll_back, 8, "scrolled up, it keeps its place as lines arrive");
+        app.on_mouse(MouseEventKind::ScrollDown, t0 + Duration::from_secs(1));
+        app.on_mouse(MouseEventKind::ScrollDown, t0 + Duration::from_secs(2));
+        app.on_mouse(MouseEventKind::ScrollDown, t0 + Duration::from_secs(3));
         assert_eq!(app.agents[0].scroll_back, 0);
         type_text(&mut app, "/mouse");
         enter(&mut app);

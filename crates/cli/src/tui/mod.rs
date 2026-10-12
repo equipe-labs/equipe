@@ -78,10 +78,12 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
     let mut daemon_lost = false;
     let mut layouts = view::Layouts::default();
     let draw = |terminal: &mut ratatui::DefaultTerminal, app: &mut app::App, layouts: &mut view::Layouts| {
-        let width = terminal.size()?.width;
-        if let Some((id, lines)) = layouts.prepare(app, theme, width) {
+        let size = terminal.size()?;
+        if let Some((id, lines)) = layouts.prepare(app, theme, size.width) {
             app.grew(id, lines);
         }
+        let extent = view::extent(app, theme, ratatui::layout::Rect::new(0, 0, size.width, size.height), layouts);
+        app.set_extent(extent.page, extent.conversation_max, extent.board_max);
         terminal.draw(|f| view::render(f, app, theme, branch.as_deref(), layouts)).map(|_| ())
     };
     draw(&mut terminal, &mut app, &mut layouts)?;
@@ -160,7 +162,7 @@ fn on_input(app: &mut app::App, client: &equipe_core::gateway::Client, event: In
             }
         }
         Input::Paste(text) => app.on_paste(&text),
-        Input::Mouse(event) => app.on_mouse(event.kind),
+        Input::Mouse(event) => app.on_mouse(event.kind, Instant::now()),
         Input::Resize(..) => {}
         _ => return false,
     }
