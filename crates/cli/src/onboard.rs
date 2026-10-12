@@ -55,6 +55,8 @@ pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
     }
     eprintln!();
 
+    // Every menu line fits the terminal: a menu that wraps redraws over itself.
+    let menu = ui::width().saturating_sub(6).max(20);
     let name = squads::list(&home);
     let place = equipe_core::board::project_name(&project);
     if !name.is_empty() {
@@ -63,12 +65,12 @@ pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
             .iter()
             .map(|s| {
                 let projects: Vec<String> = s.projects.iter().map(|p| equipe_core::board::project_name(p)).collect();
-                format!("Add {place} to {}  {}", e.bold(&s.name), e.dim(&format!("works on {}", projects.join(", "))))
+                menu_item(&format!("Add {place} to {}  · works on {}", s.name, projects.join(", ")), menu)
             })
             .collect();
         items.push("Start a new squad".into());
         let picked = dialoguer::Select::with_theme(&*theme)
-            .with_prompt(format!("{place} isn't in a squad yet"))
+            .with_prompt(ui::fit(&format!("{place} isn't in a squad yet"), menu))
             .items(&items)
             .default(0)
             .interact_opt()
@@ -98,12 +100,13 @@ pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
         .iter()
         .map(|(id, _)| {
             let role = equipe_core::roles::role(id).expect("a built-in role");
-            format!("{id:<10}{}", e.dim(role.summary))
+            menu_item(&format!("{id:<10}{}", role.summary), menu)
         })
         .collect();
     let ticked: Vec<bool> = STARTERS.iter().map(|(_, on)| *on).collect();
+    eprintln!("{}", e.note(2, "The PM joins first. Space toggles, enter confirms."));
     let picked = dialoguer::MultiSelect::with_theme(&*theme)
-        .with_prompt("Who's on the team? The PM joins first · space toggles, enter confirms")
+        .with_prompt(ui::fit("Who's on the team?", menu))
         .items(&labels)
         .defaults(&ticked)
         .report(false)
@@ -117,13 +120,15 @@ pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
     let modes: Vec<String> = Mode::ALL
         .iter()
         .map(|m| {
-            let note = if *m == Mode::Auto { "  recommended" } else { "" };
-            format!("{:<13}{}{}", m.label(), e.dim(m.summary()), e.accent(note))
+            // Up front, so a narrow terminal cuts the description, not the advice.
+            let note = if *m == Mode::Auto { "recommended · " } else { "" };
+            menu_item(&format!("{:<13}{note}{}", m.label(), m.summary()), menu)
         })
         .collect();
     let auto = Mode::ALL.iter().position(|m| *m == Mode::Auto).unwrap_or(0);
+    eprintln!("{}", e.note(2, "How much may members do on their own? /mode changes it any time."));
     let picked_mode = dialoguer::Select::with_theme(&*theme)
-        .with_prompt("How much may members do on their own? · /mode changes it any time")
+        .with_prompt(ui::fit("Mode", menu))
         .items(&modes)
         .default(auto)
         .report(false)
@@ -140,6 +145,25 @@ pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
     members.extend(picked.into_iter().map(|i| STARTERS[i].0.to_owned()));
     eprintln!();
     Ok(Start { squad, members })
+}
+
+/// A menu line that never wraps. dialoguer measures its items in bytes when it
+/// redraws a menu, so a line whose bytes (style codes, `—`, Hangul) outrun the
+/// terminal's width makes it clear lines above the menu. Items are plain text,
+/// cut to fit in bytes as well as in columns.
+fn menu_item(text: &str, width: usize) -> String {
+    let fitted = ui::fit(text, width);
+    if fitted.len() <= width {
+        return fitted;
+    }
+    let mut cut = String::new();
+    for c in fitted.trim_end_matches('…').chars() {
+        if cut.len() + c.len_utf8() + '…'.len_utf8() > width {
+            break;
+        }
+        cut.push(c);
+    }
+    format!("{}…", cut.trim_end())
 }
 
 /// `equipe-squad` for the owner `equipe-labs`: the team's name with a company
@@ -181,6 +205,14 @@ fn owner_of(url: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_menu_item_fits_in_bytes_as_well_as_columns() {
+        let item = menu_item("designer  UX and UI — flows, layout, visual language, design tokens", 40);
+        assert!(item.len() <= 40, "{item:?} is {} bytes", item.len());
+        assert!(item.starts_with("designer  UX and UI —") && item.ends_with('…'), "{item:?}");
+        assert_eq!(menu_item("qa  reviews", 40), "qa  reviews");
+    }
 
     #[test]
     fn a_squad_is_named_after_the_team_it_belongs_to() {

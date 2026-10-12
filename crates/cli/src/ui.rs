@@ -68,6 +68,26 @@ fn visible_len(text: &str) -> usize {
     len
 }
 
+/// `text` cut to `width` columns, ending in `…` when cut — for lines that must
+/// stay on one row, like menu items a menu redraws in place.
+pub fn fit(text: &str, width: usize) -> String {
+    use unicode_width::UnicodeWidthChar as _;
+    if visible_len(text) <= width {
+        return text.to_owned();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w + 1 > width {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    format!("{}…", out.trim_end())
+}
+
 /// Word-wrap `text` to `width` columns. The first line starts at column `first`
 /// (text already printed before it); continuation lines are indented by `rest`.
 /// A word longer than a line — a URL — stays whole so it still copies cleanly.
@@ -223,6 +243,13 @@ impl Painter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fit_cuts_to_the_width_counting_wide_characters() {
+        assert_eq!(fit("short", 10), "short");
+        assert_eq!(fit("builds the interface", 12), "builds the…");
+        assert_eq!(visible_len(&fit("에이전트가 파일을 고쳤어요", 9)), 9);
+    }
 
     #[test]
     fn wraps_between_words_never_inside_one() {
