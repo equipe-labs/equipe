@@ -16,7 +16,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{
+use crossterm::event::{PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags, 
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event as Input, EventStream,
     KeyEventKind,
 };
@@ -44,16 +44,60 @@ struct TerminalGuard;
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = execute!(std::io::stdout(), DisableBracketedPaste, DisableMouseCapture);
+        let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags, DisableBracketedPaste, DisableMouseCapture);
         ratatui::restore();
     }
+}
+
+/// Ask the terminal to tell modified keys apart (the kitty keyboard protocol),
+/// so Shift-Enter arrives as Shift-Enter — a new line — not a bare Enter that
+/// sends. Terminals without it keep working; `\` then Enter makes a new line
+/// there too.
+fn tell_keys_apart() {
+    if crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false) {
+        let _ = execute!(
+            std::io::stdout(),
+            PushKeyboardEnhancementFlags(crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        );
+    }
+}
+
+/// A ticket's project and branch, when it has work to look at.
+fn ticket_branch(app: &app::App, cwd: &std::path::Path, id: equipe_core::protocol::TicketId) -> Option<(PathBuf, String)> {
+    let ticket = app.tickets.iter().find(|t| t.id == id)?;
+    let dir = ticket.project.clone().or_else(|| app.projects.first().cloned()).unwrap_or_else(|| cwd.to_owned());
+    Some((dir, ticket.branch.clone()?))
+}
+
+/// What the picked ticket's branch changed, as `git diff --stat` counts it —
+/// once per ticket, again whenever the ticket moves.
+fn count_changes(app: &mut app::App, cwd: &std::path::Path) {
+    let Some(id) = app.selected_ticket().map(|t| t.id) else {
+        return;
+    };
+    let Some((dir, branch)) = ticket_branch(app, cwd, id) else {
+        return;
+    };
+    if app.diffs.get(&id).is_some_and(|(b, _)| *b == branch) {
+        return;
+    }
+    let stat = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&dir)
+        .args(["diff", "--stat=200", &format!("HEAD...{branch}")])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+        .unwrap_or_default();
+    app.diffs.insert(id, (branch, stat));
 }
 
 pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
     let (mut client, hello) = daemon::attach(&start.squad).await?;
     let branch = current_branch(&cwd);
     let daemon_build = hello.version.clone();
-    let (mut app, first) = app::App::from_snapshot(cwd, hello.snapshot, &start.members);
+    let (mut app, first) = app::App::from_snapshot(cwd.clone(), hello.snapshot, &start.members);
     first.into_iter().for_each(|c| client.send(c));
     if daemon_build != daemon::build_id() {
         // A daemon from an older build keeps running old code; say so, but don't
@@ -68,6 +112,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
     // In raw mode, before anything else reads the input: ask the terminal its
     // background colour, so the person's messages can sit on a faint wash of it.
     let theme = view::Theme::detect(query_background());
+    tell_keys_apart();
     if app.mouse && first_time("mouse-select") {
         app.flash = Some("The wheel scrolls here. To select text, hold Shift (Option in iTerm2) while dragging — or /mouse.".into());
     }
@@ -89,12 +134,13 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         }
         let extent = view::extent(app, theme, ratatui::layout::Rect::new(0, 0, size.width, size.height), layouts);
         app.set_extent(extent.page, extent.conversation_max, extent.board_max);
+        app.set_hits(extent.hits);
         terminal.draw(|f| view::render(f, app, theme, branch.as_deref(), layouts)).map(|_| ())
     };
     draw(&mut terminal, &mut app, &mut layouts)?;
     // While someone works, its dot breathes and its clock ticks; with nobody
     // working, nothing redraws on a timer.
-    let mut clock = tokio::time::interval(Duration::from_millis(100));
+    let mut clock = tokio::time::interval(Duration::from_millis(60));
     loop {
         tokio::select! {
             _ = clock.tick() => {
@@ -141,10 +187,11 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                 Ok((path, editor)) => {
                     if let Some(editor) = editor {
                         // Hand the terminal to the editor, then take it back.
-                        let _ = execute!(std::io::stdout(), DisableBracketedPaste, DisableMouseCapture);
+                        let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags, DisableBracketedPaste, DisableMouseCapture);
                         ratatui::restore();
                         let _ = std::process::Command::new("sh").arg("-c").arg(format!("{editor} \"$1\"")).arg("sh").arg(&path).status();
                         terminal = ratatui::init();
+                        tell_keys_apart();
                         execute!(std::io::stdout(), EnableBracketedPaste)?;
                         if mouse {
                             execute!(std::io::stdout(), EnableMouseCapture)?;
@@ -155,6 +202,30 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                 }
                 Err(err) => app.flash = Some(format!("Couldn't export: {err}")),
             }
+        }
+        if let Some(id) = app.view_diff.take() {
+            // The whole diff in the person's pager, then back.
+            if let Some((dir, branch)) = ticket_branch(&app, &cwd, id) {
+                let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags, DisableBracketedPaste, DisableMouseCapture);
+                ratatui::restore();
+                let _ = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg("git -C \"$1\" diff --color=always \"HEAD...$2\" | ${PAGER:-less -R}")
+                    .arg("sh")
+                    .arg(&dir)
+                    .arg(&branch)
+                    .status();
+                terminal = ratatui::init();
+                tell_keys_apart();
+                execute!(std::io::stdout(), EnableBracketedPaste)?;
+                if mouse {
+                    execute!(std::io::stdout(), EnableMouseCapture)?;
+                }
+                terminal.clear()?;
+            }
+        }
+        if app.pane == app::Pane::Board {
+            count_changes(&mut app, &cwd);
         }
         if app.mouse != mouse {
             mouse = app.mouse;
@@ -255,7 +326,10 @@ fn on_input(app: &mut app::App, client: &equipe_core::gateway::Client, event: In
             }
         }
         Input::Paste(text) => app.on_paste(&text),
-        Input::Mouse(event) => app.on_mouse(event.kind, Instant::now()),
+        Input::Mouse(event) => match event.kind {
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => app.on_click(event.column, event.row),
+            kind => app.on_mouse(kind, Instant::now()),
+        },
         Input::Resize(..) => {}
         _ => return false,
     }

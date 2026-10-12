@@ -469,6 +469,26 @@ async fn talking_to_a_member_directly_keeps_the_pm_in_the_loop() {
     assert_eq!(arg(&calls(&recorded)[2], "-p"), Some("thanks"));
 }
 
+#[tokio::test]
+async fn the_squad_writes_for_the_person_in_their_language() {
+    let repo = repo();
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    handle.send(Command::Submit { session: 1, text: "랜딩 페이지 만들자".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().language().as_deref(), Some("Korean"));
+    // The PM's own turn already knows, and so does a member handed a ticket.
+    let pm = arg(&calls(&recorded)[0], "--append-system-prompt").unwrap().to_owned();
+    assert!(pm.contains("The person writes in Korean"), "{pm}");
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "히어로", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let work = calls(&recorded).pop().unwrap();
+    assert!(arg(&work, "-p").unwrap().ends_with("Write your summary and anything else for the person in Korean."));
+}
+
 // ── the board ──
 
 /// A turn that takes a moment and writes `file` where it runs.

@@ -43,6 +43,11 @@ impl Composer {
         self.cursor += clean.len();
     }
 
+    /// The text up to the cursor.
+    pub fn before_cursor(&self) -> &str {
+        &self.text[..self.cursor]
+    }
+
     pub fn newline(&mut self) {
         self.insert_char('\n');
     }

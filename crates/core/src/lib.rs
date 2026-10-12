@@ -13,6 +13,7 @@
 pub mod board;
 pub mod gateway;
 pub mod journal;
+pub mod language;
 pub mod mcp;
 pub mod permissions;
 pub mod mock;

@@ -130,6 +130,9 @@ pub struct Ticket {
     pub depends_on: Vec<TicketId>,
     /// Where an editing member's work lives.
     pub branch: Option<String>,
+    /// Its checkout, while there is one — the person can look at the work there.
+    #[serde(default)]
+    pub worktree: Option<PathBuf>,
     /// `you`, or the member who wrote it.
     pub created_by: String,
     /// The latest word on it: a hand-in summary, why it was reopened.
@@ -508,6 +511,7 @@ mod tests {
             project: Some("/site".into()),
             depends_on: vec![1],
             branch: None,
+            worktree: None,
             created_by: "pm".into(),
             note: None,
         }

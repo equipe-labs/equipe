@@ -158,7 +158,7 @@ It waits on the board as a proposal until the PM or the person accepts it."
 Your changes are committed to the ticket's branch and the person reviews them. Then end your turn.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "summary": { "type": "string", "description": "What you did and how to check it, in a few lines." } },
+                "properties": { "summary": { "type": "string", "description": "What you did and how to check it, in a few lines — in the person's language." } },
                 "required": ["summary"],
             },
         }),
@@ -238,6 +238,7 @@ mod tests {
             project: Some("/site".into()),
             depends_on: vec![],
             branch: None,
+            worktree: None,
             created_by: "pm".into(),
             note: None,
         }

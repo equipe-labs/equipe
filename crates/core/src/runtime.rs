@@ -715,6 +715,13 @@ impl Runtime {
             return;
         }
         self.publish(Event::UserMessage { session: id, text: text.clone() });
+        // What the person writes in is what the squad writes for them.
+        if let (Some(squad), Some(language)) = (self.sessions.get(&id).and_then(|s| s.squad.clone()), crate::language::detect(&text))
+            && let Some(journal) = self.journal(&squad)
+            && journal.language().as_deref() != Some(language)
+        {
+            let _ = journal.set_language(language);
+        }
         self.tell_the_pm(id, |name| format!("The person told {name}: {text}"), Some(&text));
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
@@ -740,11 +747,13 @@ impl Runtime {
         let squad = session.squad.clone();
         let projects = squad.as_deref().map(|s| self.projects_cached(s)).unwrap_or_default();
         let board_tools = session.member.is_some() && session.engine == Engine::Claude && self.config.equipe_binary.is_some();
+        let language = squad.as_deref().and_then(|s| self.journals.get(s)).and_then(Journal::language);
         let charter = session.member.as_ref().map(|m| {
             let team = squad.as_deref().map(|s| self.team(s)).unwrap_or_default();
             let mates: Vec<Teammate> = team.iter().map(|(_, name, role)| Teammate { name, role }).collect();
             let names: Vec<String> = projects.iter().map(|p| board::project_name(p)).collect();
-            roles::charter(roles::role_or_custom(&m.role), &m.name, &roles::Context { team: &mates, projects: &names, board_tools })
+            let ctx = roles::Context { team: &mates, projects: &names, board_tools, language: language.as_deref() };
+            roles::charter(roles::role_or_custom(&m.role), &m.name, &ctx)
         });
         let mcp_config = match (&squad, &session.member, &self.config.equipe_binary) {
             (Some(squad), Some(m), Some(binary)) if board_tools => Some(
@@ -1088,6 +1097,7 @@ impl Runtime {
         ticket.status = TicketStatus::InProgress;
         ticket.assignee = Some(name.clone());
         ticket.branch = sandbox.as_ref().map(|s| s.branch.clone()).or(ticket.branch);
+        ticket.worktree = sandbox.as_ref().map(|s| s.path.clone());
         let reopened = ticket.note.as_ref().filter(|n| n.starts_with("Reopened")).cloned();
         if let Some(journal) = self.journal(&squad) {
             let _ = journal.save_ticket(&ticket);
@@ -1121,7 +1131,8 @@ impl Runtime {
             workspace: sandbox.as_ref().map(workspace_of),
         });
         self.brief_pm(&squad, format!("{name} picked up T-{ticket_id} ({}).", ticket.title), None);
-        let prompt = work_prompt(&ticket, &project, sandbox.as_ref(), reopened.as_deref(), board_tools);
+        let language = self.journal(&squad).and_then(Journal::language);
+        let prompt = work_prompt(&ticket, &project, sandbox.as_ref(), reopened.as_deref(), board_tools, language.as_deref());
         self.start_turn(id, prompt);
     }
 
@@ -1170,6 +1181,7 @@ impl Runtime {
             } else {
                 ticket.branch = release(sandbox);
             }
+            ticket.worktree = kept_worktree.clone();
         }
         let (by, event, line) = match how {
             WorkEnd::HandedIn => {
@@ -1244,6 +1256,7 @@ impl Runtime {
             ticket.branch = release(&Sandbox { repo, path: path.clone(), branch: branch.clone(), base: base.clone() });
         }
         ticket.status = status;
+        ticket.worktree = None;
         let verb = if status == TicketStatus::Done { "accepted" } else { "cancelled" };
         if let Some(journal) = self.journal(squad) {
             let _ = journal.save_ticket(&ticket);
@@ -1364,6 +1377,14 @@ impl Runtime {
         let fenced = self.sessions.get(&id).is_some_and(|s| {
             s.mode.unwrap_or(squad_mode) == Mode::Auto && s.work.as_ref().is_some_and(|w| w.sandbox.is_some())
         });
+        // Looking changes nothing: in auto a member reads, lists and searches
+        // anywhere — its own screenshots in the temp folder, another project —
+        // without asking. Credentials still ask.
+        let auto = self.sessions.get(&id).is_some_and(|s| s.mode.unwrap_or(squad_mode) == Mode::Auto);
+        if auto && permissions::only_reads(&tool, &action, &input) {
+            let _ = reply.send(verdict(Decision::Allow, &input, ""));
+            return;
+        }
         if fenced && permissions::stays_in_sandbox(&tool, &input) && !permissions::outward(&tool, &action) {
             let _ = reply.send(verdict(Decision::Allow, &input, ""));
             return;
@@ -1490,6 +1511,7 @@ impl Runtime {
                     project,
                     depends_on,
                     branch: None,
+                    worktree: None,
                     created_by: member.clone(),
                     note: None,
                 };
@@ -1757,7 +1779,14 @@ fn restore_work(journal: &Journal, ticket: &Ticket, projects: &[PathBuf], edits:
 }
 
 /// What a member is told when it picks up a ticket.
-fn work_prompt(ticket: &Ticket, project: &Path, sandbox: Option<&Sandbox>, reopened: Option<&str>, board_tools: bool) -> String {
+fn work_prompt(
+    ticket: &Ticket,
+    project: &Path,
+    sandbox: Option<&Sandbox>,
+    reopened: Option<&str>,
+    board_tools: bool,
+    language: Option<&str>,
+) -> String {
     let mut out = format!("[equipe] You're on T-{}: {}\n", ticket.id, ticket.title);
     out.push_str(&format!("Project: {} ({}).", board::project_name(project), project.display()));
     if let Some(sandbox) = sandbox {
@@ -1779,6 +1808,10 @@ If you are blocked or need a decision, say so and end your turn — the person a
     } else {
         "\nWhen it's done, say so plainly; the person accepts it. If you are blocked or need a decision, say so."
     });
+    // This prompt is in English; what the person reads is not.
+    if let Some(language) = language {
+        out.push_str(&format!("\nWrite your summary and anything else for the person in {language}."));
+    }
     out
 }
 

@@ -338,13 +338,31 @@ fn tool_uses(event: &Value) -> Vec<Activity> {
         .filter_map(|block| {
             let name = block.get("name").and_then(Value::as_str)?.to_owned();
             let input = block.get("input");
-            let target = ["file_path", "path", "notebook_path", "pattern", "command", "url"]
-                .iter()
-                .find_map(|key| input?.get(*key).and_then(Value::as_str))
-                .map(|t| t.lines().next().unwrap_or("").chars().take(120).collect());
+            let target = board_target(&name, input).or_else(|| {
+                ["file_path", "path", "notebook_path", "pattern", "command", "url"]
+                    .iter()
+                    .find_map(|key| input?.get(*key).and_then(Value::as_str))
+                    .map(|t| t.lines().next().unwrap_or("").chars().take(120).collect())
+            });
             Some(Activity::Tool { name, target })
         })
         .collect()
+}
+
+/// What one of equipe's board tools acts on, as the person reads it: the
+/// ticket's number and title, an owner, a new status.
+fn board_target(name: &str, input: Option<&Value>) -> Option<String> {
+    let tool = name.strip_prefix("mcp__equipe__")?;
+    let input = input?;
+    let text = |key: &str| input.get(key).and_then(Value::as_str).map(|t| t.lines().next().unwrap_or("").chars().take(100).collect::<String>());
+    let id = input.get("id").and_then(Value::as_u64).map(|id| format!("T-{id}"));
+    let parts: Vec<String> = match tool {
+        "create_ticket" => [text("title"), text("owner").map(|o| format!("→ {o}"))].into_iter().flatten().collect(),
+        "update_ticket" => [id, text("status"), text("owner").map(|o| format!("→ {o}")), text("title")].into_iter().flatten().collect(),
+        "comment" | "submit_for_review" => [id, text("text").or_else(|| text("summary"))].into_iter().flatten().collect(),
+        _ => Vec::new(),
+    };
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 fn message_text(event: &Value) -> String {
@@ -565,6 +583,19 @@ mod tests {
             let args = turn_args(&TurnRequest { prompt: "x", access, ..Default::default() });
             assert!(args.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == mode), "{mode}");
         }
+    }
+
+    #[test]
+    fn board_tools_name_the_ticket() {
+        let target = |name: &str, input: Value| board_target(name, Some(&input));
+        assert_eq!(
+            target("mcp__equipe__create_ticket", json!({ "title": "다국어 구조", "owner": "frontend", "body": "…" })).as_deref(),
+            Some("다국어 구조 · → frontend")
+        );
+        assert_eq!(target("mcp__equipe__update_ticket", json!({ "id": 4, "status": "cancelled" })).as_deref(), Some("T-4 · cancelled"));
+        assert_eq!(target("mcp__equipe__comment", json!({ "id": 2, "text": "done\nmore" })).as_deref(), Some("T-2 · done"));
+        assert_eq!(target("mcp__equipe__board", json!({})), None);
+        assert_eq!(target("Read", json!({ "file_path": "/a" })), None);
     }
 
     #[test]

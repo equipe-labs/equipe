@@ -261,6 +261,20 @@ impl Journal {
             .unwrap_or_default()
     }
 
+    /// The language the person writes in, as last detected.
+    pub fn language(&self) -> Option<String> {
+        self.conn
+            .query_row("SELECT value FROM meta WHERE key = 'language'", [], |r| r.get::<_, String>(0))
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    pub fn set_language(&self, language: &str) -> Result<()> {
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('language', ?1)", [language])?;
+        Ok(())
+    }
+
     pub fn set_mode(&self, mode: Mode) -> Result<()> {
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('mode', ?1)", [mode_str(mode)])?;
         Ok(())
@@ -365,7 +379,7 @@ impl Journal {
 
     fn query_tickets(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<Ticket>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note
+            "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree
              FROM tickets {filter} ORDER BY id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -381,6 +395,7 @@ impl Journal {
                 branch: r.get(8)?,
                 created_by: r.get(9)?,
                 note: r.get(10)?,
+                worktree: r.get::<_, Option<String>>(11)?.map(PathBuf::from),
             })
         })?;
         rows.collect()
@@ -778,6 +793,7 @@ mod tests {
             project: Some("/code/site".into()),
             depends_on: vec![],
             branch: None,
+            worktree: None,
             created_by: "pm".into(),
             note: None,
         }

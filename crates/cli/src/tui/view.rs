@@ -18,9 +18,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use equipe_core::board::project_name;
-use equipe_core::protocol::{Entry, SessionId, Ticket, TicketStatus};
+use equipe_core::protocol::{Entry, SessionId, TicketStatus};
 
-use super::app::{Agent, AgentState, App, Pane, elapsed, relative, tool_verb};
+use super::app::{Agent, AgentState, App, Hit, Pane, elapsed, relative, tool_verb};
 use super::markdown;
 use crate::ui;
 
@@ -75,23 +75,67 @@ impl Theme {
         Some(Color::Rgb(mix(r), mix(g), mix(b)))
     }
 
-    /// The working dot's slow breath: from dim to the accent and back, every
-    /// 1.6 seconds. Without truecolor it alternates; without colour it stays bold.
-    fn pulse(self, now: Instant) -> Style {
+    /// Time since the first frame drawn: every animation runs off one clock.
+    fn since_start(now: Instant) -> u128 {
         static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-        let start = *START.get_or_init(|| now);
-        let ms = now.saturating_duration_since(start).as_millis() % 1600;
-        let wave = if ms < 800 { ms as f32 / 800.0 } else { (1600 - ms) as f32 / 800.0 };
+        now.saturating_duration_since(*START.get_or_init(|| now)).as_millis()
+    }
+
+    /// The working mark: a star that opens and closes — `· ✢ ✳ ✶ ✻ ✽` and back —
+    /// while its colour breathes from dim to the accent and back every two
+    /// seconds, eased. Without truecolor the colour steps; without colour the
+    /// star still turns.
+    fn spinner(self, now: Instant) -> Span<'static> {
+        const FRAMES: [&str; 10] = ["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"];
+        let ms = Self::since_start(now);
+        let frame = FRAMES[(ms / 120) as usize % FRAMES.len()];
+        Span::styled(frame, self.breath(now))
+    }
+
+    /// From dim to the accent and back every two seconds, on a sine — no
+    /// blinking, a breath.
+    fn breath(self, now: Instant) -> Style {
+        let phase = (Self::since_start(now) % 2000) as f32 / 2000.0;
+        let wave = 0.5 - 0.5 * (phase * std::f32::consts::TAU).cos();
         match (self.color, self.truecolor) {
-            (true, true) => {
-                let (from, to) = if self.light { ((106, 108, 116), (46, 92, 138)) } else { ((92, 100, 112), (180, 205, 230)) };
-                let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * wave).round() as u8;
-                Style::new().fg(Color::Rgb(mix(from.0, to.0), mix(from.1, to.1), mix(from.2, to.2)))
-            }
+            (true, true) => Style::new().fg(self.blend(wave)),
             (true, false) if wave < 0.5 => self.dim(),
             (true, false) => self.accent(),
             _ => self.bold(),
         }
+    }
+
+    /// The dim grey at 0, the accent at 1, a little past it — near white, or
+    /// near black on a light terminal — at 2.
+    fn blend(self, at: f32) -> Color {
+        let (dim, accent, glint) = if self.light {
+            ((106., 108., 116.), (46., 92., 138.), (10., 40., 80.))
+        } else {
+            ((92., 100., 112.), (180., 205., 230.), (240., 248., 255.))
+        };
+        let (from, to, t) = if at <= 1.0 { (dim, accent, at) } else { (accent, glint, at - 1.0) };
+        let mix = |a: f32, b: f32| (a + (b - a) * t.clamp(0.0, 1.0)).round() as u8;
+        Color::Rgb(mix(from.0, to.0), mix(from.1, to.1), mix(from.2, to.2))
+    }
+
+    /// A word with light passing over it, letter by letter, left to right every
+    /// 1.8 seconds — what is working shimmers. Plain accent without truecolor.
+    fn shimmer(self, word: &str, now: Instant) -> Vec<Span<'static>> {
+        if !(self.color && self.truecolor) {
+            return vec![Span::styled(word.to_owned(), self.accent())];
+        }
+        let letters: Vec<char> = word.chars().collect();
+        // The light enters before the first letter and leaves after the last.
+        let span = letters.len() as f32 + 8.0;
+        let at = (Self::since_start(now) % 1800) as f32 / 1800.0 * span - 4.0;
+        letters
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let near = (-((i as f32 - at) / 1.6).powi(2)).exp();
+                Span::styled(c.to_string(), Style::new().fg(self.blend(1.0 + near)))
+            })
+            .collect()
     }
 
     fn accent(self) -> Style {
@@ -274,15 +318,30 @@ pub struct Extent {
     pub page: usize,
     pub conversation_max: usize,
     pub board_max: usize,
+    /// Where the clickable things are: the pane switch, the board's ticket rows.
+    pub hits: Vec<(u16, u16, u16, Hit)>,
 }
 
 pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Extent {
     let (_, _, right) = columns(rows(app, theme, screen).body);
     let board = under_title(right);
-    let board_width = (board.width as usize).saturating_sub(1).min(PROSE_MAX);
-    let board_max = board_lines(app, theme, board_width).len().saturating_sub(board.height as usize);
+    // The switch at the title's right: clicking it changes panes.
+    let switch: usize = switch_label(app, app.pane, theme).iter().map(Span::width).sum();
+    let other = if app.pane == Pane::Board { Pane::Conversation } else { Pane::Board };
+    let mut hits = vec![(right.x + right.width.saturating_sub(switch as u16), right.x + right.width, right.y, Hit::Pane(other))];
+    if app.pane == Pane::Board {
+        let width = (board.width as usize).saturating_sub(1).min(PROSE_MAX + 20);
+        let rows = board_list(app, theme, width);
+        let (list, _) = board_areas(board, rows.len());
+        let top = list_top(&rows, app.selected_ticket().map(|t| t.id), list.height as usize);
+        for (i, (_, id)) in rows.iter().enumerate().skip(top).take(list.height as usize) {
+            if let Some(id) = id {
+                hits.push((list.x, list.x + list.width, list.y + (i - top) as u16, Hit::Ticket(*id)));
+            }
+        }
+    }
     let Some(agent) = app.selected() else {
-        return Extent { page: board.height as usize / 2, conversation_max: 0, board_max };
+        return Extent { page: board.height as usize / 2, conversation_max: 0, board_max: 0, hits };
     };
     let text = conversation_text(right, agent);
     let width = (text.width as usize).saturating_sub(1).min(PROSE_MAX);
@@ -290,7 +349,8 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
     Extent {
         page: text.height as usize / 2,
         conversation_max: lines.saturating_sub(text.height as usize),
-        board_max,
+        board_max: 0,
+        hits,
     }
 }
 
@@ -358,9 +418,30 @@ fn glyph(app: &App, agent: &Agent, theme: Theme) -> Span<'static> {
     match agent.state {
         AgentState::Starting => Span::styled("…", theme.dim()),
         AgentState::Ready => Span::styled("○", theme.dim()),
-        AgentState::Working => Span::styled("●", theme.pulse(Instant::now())),
+        AgentState::Working => theme.spinner(Instant::now()),
         AgentState::Closing | AgentState::Closed => Span::styled("·", theme.dim()),
         AgentState::Failed => Span::styled("✗", theme.bold()),
+    }
+}
+
+/// What a working member is doing right now, from its latest step: reading,
+/// editing, running — or thinking, between steps.
+fn doing(agent: &Agent) -> &'static str {
+    match agent.transcript.entries().last() {
+        Some(Entry::Tool { tool, .. }) => match tool_verb(tool) {
+            "read" => "reading",
+            "edit" | "write" => "editing",
+            "run" => "running",
+            "search" => "searching",
+            "fetch" => "looking it up",
+            "board" => "checking the board",
+            "ticket" => "updating the board",
+            "comment" => "commenting",
+            "hand in" => "handing in",
+            _ => "working",
+        },
+        Some(Entry::Reply { .. }) => "writing",
+        _ => "thinking",
     }
 }
 
@@ -600,10 +681,39 @@ You can talk to it directly — the PM hears about it."
 }
 
 /// The pane's title line: who, in bold, and what they are on, dim.
-fn pane_title(spans: Vec<Span<'static>>, area: Rect, frame: &mut Frame) -> Rect {
+fn pane_title(spans: Vec<Span<'static>>, switch: Vec<Span<'static>>, area: Rect, frame: &mut Frame) -> Rect {
     let [title, _, rest] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]).areas(area);
-    frame.render_widget(Paragraph::new(Line::from(spans)), title);
+    // The way to the other pane sits at the title's right, always in sight.
+    let used: usize = spans.iter().map(Span::width).sum();
+    let switch_width: usize = switch.iter().map(Span::width).sum();
+    let mut line = spans;
+    let room = title.width as usize;
+    if used + switch_width + 3 <= room {
+        line.push(Span::raw(" ".repeat(room - used - switch_width)));
+        line.extend(switch);
+    }
+    frame.render_widget(Paragraph::new(Line::from(line)), title);
     rest
+}
+
+/// The way from `pane` to the other one: the board's count of reviews, or back to
+/// the member's conversation — and the key, Ctrl-B.
+fn switch_label(app: &App, pane: Pane, theme: Theme) -> Vec<Span<'static>> {
+    match pane {
+        Pane::Conversation => {
+            let review = app.to_review().len();
+            let mut spans = vec![Span::styled("Board", theme.bold())];
+            if review > 0 {
+                spans.push(Span::styled(format!(" · {review} to review"), theme.accent()));
+            }
+            spans.push(Span::styled("  ctrl-b", theme.dim()));
+            spans
+        }
+        Pane::Board => {
+            let who = app.selected().map(Agent::label).unwrap_or_else(|| "conversation".into());
+            vec![Span::styled(format!("← {who}"), theme.bold()), Span::styled("  ctrl-b", theme.dim())]
+        }
+    }
 }
 
 fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, layouts: &Layouts) {
@@ -615,7 +725,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
         Some(ticket) => title.push(Span::styled(format!("  ·  T-{} {}", ticket.id, ticket.title), theme.dim())),
         None => title.push(Span::styled(format!("  ·  {}", agent.engine_label()), theme.dim())),
     }
-    let area = pane_title(title, area, frame);
+    let area = pane_title(title, switch_label(app, Pane::Conversation, theme), area, frame);
 
     // At the bottom, when it applies: the live working row, or what arrived
     // while the person was scrolled up.
@@ -626,12 +736,14 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
             Span::styled(" · End", theme.dim()),
         ]));
     } else if agent.state == AgentState::Working {
-        let took = agent.working_since.map(|since| elapsed(Instant::now().duration_since(since))).unwrap_or_default();
-        footer.push(Line::from(vec![
-            Span::styled("● ", theme.pulse(Instant::now())),
-            Span::styled("working", theme.accent()),
+        let now = Instant::now();
+        let took = agent.working_since.map(|since| elapsed(now.duration_since(since))).unwrap_or_default();
+        let mut row = vec![theme.spinner(now), Span::raw(" ")];
+        row.extend(theme.shimmer(doing(agent), now));
+        row.extend([
             Span::styled(format!(" · {took} · esc to stop"), theme.dim()),
-        ]));
+        ]);
+        footer.push(Line::from(row));
     }
     let [text, _, live] = Layout::vertical([
         Constraint::Min(1),
@@ -686,79 +798,85 @@ fn render_scrollbar(frame: &mut Frame, area: Rect, top: usize, height: usize, to
     frame.render_widget(Paragraph::new(rows), column);
 }
 
-/// The board, grouped by what needs whom: the person's reviews first.
-fn board_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
-    let groups: [(&str, &[TicketStatus]); 5] = [
-        ("YOUR REVIEW", &[TicketStatus::Review]),
-        ("IN PROGRESS", &[TicketStatus::InProgress]),
-        ("TO DO", &[TicketStatus::Todo]),
-        ("PROPOSED", &[TicketStatus::Proposed]),
-        ("DONE", &[TicketStatus::Done, TicketStatus::Cancelled]),
-    ];
+/// The board's list: a heading per group, one row per ticket — the person's
+/// reviews first. Returns the rows, and which ticket each row is.
+fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Option<u32>)> {
+    let order = app.board_order();
+    let picked = app.selected_ticket().map(|t| t.id);
     let several_projects = app.projects.len() > 1;
-    let mut lines = Vec::new();
-    for (label, statuses) in groups {
-        let mut tickets: Vec<&Ticket> = app.tickets.iter().filter(|t| statuses.contains(&t.status)).collect();
-        if tickets.is_empty() {
+    let heading = |status: TicketStatus| match status {
+        TicketStatus::Review => "YOUR REVIEW",
+        TicketStatus::InProgress => "IN PROGRESS",
+        TicketStatus::Todo => "TO DO",
+        TicketStatus::Proposed => "PROPOSED",
+        TicketStatus::Done | TicketStatus::Cancelled => "DONE",
+    };
+    let mut rows: Vec<(Line<'static>, Option<u32>)> = Vec::new();
+    let mut current: Option<&str> = None;
+    for id in &order {
+        let Some(t) = app.tickets.iter().find(|t| t.id == *id) else {
             continue;
+        };
+        let label = heading(t.status);
+        if current != Some(label) {
+            if current.is_some() {
+                rows.push((Line::raw(""), None));
+            }
+            let count = order
+                .iter()
+                .filter_map(|id| app.tickets.iter().find(|t| t.id == *id))
+                .filter(|t| heading(t.status) == label)
+                .count();
+            let style = if t.status == TicketStatus::Review { theme.accent().add_modifier(Modifier::BOLD) } else { theme.dim() };
+            rows.push((Line::from(Span::styled(format!("{label}  {count}"), style)), None));
+            current = Some(label);
         }
-        if label == "DONE" {
-            // The latest few; the rest is history.
-            tickets.reverse();
-            tickets.truncate(5);
-        }
-        if !lines.is_empty() {
-            lines.push(Line::raw(""));
-        }
-        let heading = if label == "YOUR REVIEW" { theme.accent().add_modifier(Modifier::BOLD) } else { theme.dim() };
-        lines.push(Line::from(Span::styled(format!("{label}  {}", tickets.len()), heading)));
-        lines.push(Line::raw(""));
-        for (n, t) in tickets.into_iter().enumerate() {
-            // Work in flight says more than its title: each stands apart from the next.
-            if n > 0 && matches!(t.status, TicketStatus::Review | TicketStatus::InProgress) {
-                lines.push(Line::raw(""));
+        let selected = picked == Some(t.id);
+        let who = t.assignee.as_ref().or(t.owner.as_ref()).cloned().unwrap_or_default();
+        let state = match t.status {
+            TicketStatus::Review => "waits for you".to_owned(),
+            TicketStatus::InProgress => "working".to_owned(),
+            TicketStatus::Todo if !t.depends_on.is_empty() => {
+                format!("after {}", t.depends_on.iter().map(|d| format!("T-{d}")).collect::<Vec<_>>().join(", "))
             }
-            let id_style = if t.status == TicketStatus::Review { theme.bold() } else { theme.dim() };
-            let id = Span::styled(format!("{:<5}", format!("T-{}", t.id)), id_style);
-            let title_style = if t.status.is_closed() { theme.dim() } else { Style::new() };
-            lines.extend(wrapped(vec![id], &t.title, title_style, 5, width));
-            let mut facts = Vec::new();
-            if let Some(who) = t.assignee.as_ref().or(t.owner.as_ref()) {
-                facts.push(who.clone());
-            }
-            if several_projects && let Some(project) = &t.project {
-                facts.push(project_name(project));
-            }
-            if !t.depends_on.is_empty() && t.status == TicketStatus::Todo {
-                let ids: Vec<String> = t.depends_on.iter().map(|d| format!("T-{d}")).collect();
-                facts.push(format!("after {}", ids.join(", ")));
-            }
-            if t.status == TicketStatus::Cancelled {
-                facts.push("cancelled".into());
-            }
-            if t.status == TicketStatus::Done
-                && let Some(branch) = &t.branch
-            {
-                facts.push(format!("git merge {branch}"));
-            }
-            if !facts.is_empty() {
-                lines.extend(wrapped(vec![Span::raw(" ".repeat(5))], &facts.join(" · "), theme.dim(), 5, width));
-            }
-            if let Some(note) = &t.note
-                && !t.status.is_closed()
-            {
-                lines.extend(wrapped(vec![Span::raw(" ".repeat(5))], note, theme.dim(), 5, width));
-            }
-            if t.status == TicketStatus::Review {
-                lines.push(Line::from(vec![
-                    Span::raw(" ".repeat(5)),
-                    Span::styled(format!("/accept T-{}", t.id), theme.bold()),
-                    Span::styled(format!("  or  /reopen T-{} <what to change>", t.id), theme.dim()),
-                ]));
-            }
-        }
+            TicketStatus::Todo => "to do".to_owned(),
+            TicketStatus::Proposed => "proposed".to_owned(),
+            TicketStatus::Done => "done".to_owned(),
+            TicketStatus::Cancelled => "cancelled".to_owned(),
+        };
+        let place = if several_projects { t.project.as_deref().map(project_name).map(|p| format!(" · {p}")).unwrap_or_default() } else { String::new() };
+        // Columns: marker, id, title (what's left), owner, state.
+        // Fixed columns, so owners and states line up down the list.
+        let tail_width = (12 + 14 + if several_projects { 14 } else { 0 }).min(width / 2);
+        let title_room = width.saturating_sub(2 + 6 + 2 + tail_width);
+        let title = ui::fit(&t.title, title_room);
+        let pad = title_room.saturating_sub(unicode_width::UnicodeWidthStr::width(title.as_str()));
+        let closed = t.status.is_closed();
+        let title_style = match (selected, closed) {
+            (true, _) => theme.bold(),
+            (false, true) => theme.dim(),
+            (false, false) => Style::new(),
+        };
+        let state_style = if t.status == TicketStatus::Review { theme.accent() } else { theme.dim() };
+        rows.push((
+            Line::from(vec![
+                if selected { Span::styled("› ", theme.accent()) } else { Span::raw("  ") },
+                Span::styled(format!("{:<6}", format!("T-{}", t.id)), if selected { theme.bold() } else { theme.dim() }),
+                Span::styled(title, title_style),
+                Span::raw(" ".repeat(pad + 2)),
+                Span::styled(format!("{who:<10}  "), theme.dim()),
+                Span::styled(ui::fit(&format!("{state}{place}"), tail_width.saturating_sub(12)), state_style),
+            ]),
+            Some(t.id),
+        ));
     }
-    if lines.is_empty() {
+    rows
+}
+
+/// The picked ticket in full: what it is, who, what changed, where to look at
+/// it, and the keys that act on it.
+fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
+    let Some(t) = app.selected_ticket() else {
         return wrapped(
             Vec::new(),
             "The board is empty. Tell the PM what you want to build — it puts the work here.",
@@ -766,17 +884,118 @@ fn board_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
             0,
             width,
         );
+    };
+    let mut lines = wrapped(vec![Span::styled(format!("T-{}  ", t.id), theme.bold())], &t.title, theme.bold(), 0, width);
+    let mut facts = Vec::new();
+    if let Some(who) = t.assignee.as_ref().or(t.owner.as_ref()) {
+        facts.push(who.clone());
     }
+    facts.push(
+        match t.status {
+            TicketStatus::Review => "handed in — waits for your review",
+            TicketStatus::InProgress => "in progress",
+            TicketStatus::Todo => "to do",
+            TicketStatus::Proposed => "proposed",
+            TicketStatus::Done => "done",
+            TicketStatus::Cancelled => "cancelled",
+        }
+        .to_owned(),
+    );
+    if let Some(project) = t.project.as_deref().filter(|_| app.projects.len() > 1) {
+        facts.push(project_name(project));
+    }
+    lines.extend(wrapped(Vec::new(), &facts.join(" · "), theme.dim(), 0, width));
+    if let Some(note) = &t.note {
+        lines.push(Line::raw(""));
+        lines.extend(markdown::lines(note, width, &theme.markdown()));
+    } else if !t.body.is_empty() {
+        lines.push(Line::raw(""));
+        lines.extend(markdown::lines(&t.body, width, &theme.markdown()));
+    }
+    // What changed, and where to see it.
+    let key = |k: &str| Span::styled(format!("{k:<9}"), theme.dim());
+    let mut place = Vec::new();
+    if let Some((branch, stat)) = app.diffs.get(&t.id).filter(|(b, _)| Some(b) == t.branch.as_ref()) {
+        let files: Vec<&str> = stat.lines().filter(|l| l.contains('|')).map(|l| l.split('|').next().unwrap_or("").trim()).collect();
+        let summary = stat.lines().last().map(str::trim).unwrap_or("").to_owned();
+        if !summary.is_empty() {
+            place.push(Line::from(vec![key("changed"), Span::raw(summary)]));
+            let shown: Vec<&str> = files.iter().take(4).copied().collect();
+            let more = if files.len() > 4 { format!(" +{}", files.len() - 4) } else { String::new() };
+            place.push(Line::from(vec![key(""), Span::styled(ui::fit(&format!("{}{more}", shown.join(" · ")), width.saturating_sub(9)), theme.dim())]));
+        }
+        place.push(Line::from(vec![key("branch"), Span::styled(branch.clone(), theme.dim())]));
+    } else if let Some(branch) = &t.branch {
+        place.push(Line::from(vec![key("branch"), Span::styled(branch.clone(), theme.dim())]));
+    }
+    if let Some(worktree) = &t.worktree {
+        place.push(Line::from(vec![key("look in"), Span::styled(display_path(worktree), theme.dim())]));
+    }
+    if !place.is_empty() {
+        lines.push(Line::raw(""));
+        lines.extend(place);
+    }
+    // What the person can do with it, key by key.
+    let who = t.assignee.as_ref().or(t.owner.as_ref());
+    let mut actions: Vec<(&str, String)> = Vec::new();
+    match t.status {
+        TicketStatus::Review => {
+            actions.push(("a", "accept".into()));
+            actions.push(("r", "ask for changes".into()));
+        }
+        TicketStatus::Done => actions.push(("r", "reopen".into())),
+        TicketStatus::InProgress | TicketStatus::Todo | TicketStatus::Proposed => actions.push(("a", "mark done".into())),
+        TicketStatus::Cancelled => {}
+    }
+    if t.branch.is_some() {
+        actions.push(("d", "see the diff".into()));
+    }
+    if let Some(who) = who {
+        actions.push(("enter", format!("talk to {who}")));
+    }
+    actions.push(("↑↓", "tickets".into()));
+    let mut keys = Vec::new();
+    for (i, (k, what)) in actions.into_iter().enumerate() {
+        if i > 0 {
+            keys.push(Span::raw("   "));
+        }
+        keys.push(Span::styled(k.to_owned(), theme.bold()));
+        keys.push(Span::styled(format!(" {what}"), theme.dim()));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(keys));
     lines
 }
 
+/// The board pane split: the list on top — as tall as it needs, up to half —
+/// and the picked ticket's detail below.
+fn board_areas(area: Rect, list_rows: usize) -> (Rect, Rect) {
+    let list_height = (list_rows as u16).min(area.height / 2).max(3.min(area.height));
+    let [list, _, detail] =
+        Layout::vertical([Constraint::Length(list_height), Constraint::Length(1), Constraint::Min(1)]).areas(area);
+    (list, detail)
+}
+
+/// Where the list starts, so the picked ticket's row is always in sight.
+fn list_top(rows: &[(Line<'static>, Option<u32>)], picked: Option<u32>, height: usize) -> usize {
+    let at = rows.iter().position(|(_, id)| id.is_some() && *id == picked).unwrap_or(0);
+    if at < height { 0 } else { at + 1 - height }
+}
+
 fn render_board(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
-    let title = vec![Span::styled("Board", theme.bold()), Span::styled("  ·  ctrl-b or esc to go back", theme.dim())];
-    let area = pane_title(title, area, frame);
-    let width = (area.width as usize).saturating_sub(1).min(PROSE_MAX);
-    let lines = board_lines(app, theme, width);
-    let top = app.board_scroll.min(lines.len().saturating_sub(1));
-    frame.render_widget(Paragraph::new(lines).scroll((top as u16, 0)), area);
+    let title = vec![Span::styled("Board", theme.bold())];
+    let area = pane_title(title, switch_label(app, Pane::Board, theme), area, frame);
+    let width = (area.width as usize).saturating_sub(1).min(PROSE_MAX + 20);
+    let rows = board_list(app, theme, width);
+    let (list, detail) = board_areas(area, rows.len());
+    let top = list_top(&rows, app.selected_ticket().map(|t| t.id), list.height as usize);
+    let shown: Vec<Line> = rows.into_iter().skip(top).take(list.height as usize).map(|(line, _)| line).collect();
+    frame.render_widget(Paragraph::new(shown), list);
+    // A hairline between the list and the ticket open below it.
+    let [rule, body] = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(detail);
+    frame.render_widget(Paragraph::new(Span::styled("─".repeat(width.min(rule.width as usize)), theme.dim())), rule);
+    let detail_width = (body.width as usize).saturating_sub(1).min(PROSE_MAX);
+    frame.render_widget(Paragraph::new(ticket_detail(app, theme, detail_width)), body);
 }
 
 /// The oldest request for permission, held in place above the composer behind
@@ -818,20 +1037,34 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     if let Some(reason) = &approval.reason {
         lines.push(Line::from(vec![bar(), Span::styled(ui::fit(reason, width), theme.dim())]));
     }
-    let mut keys = vec![
-        bar(),
-        Span::styled("y", theme.bold()),
-        Span::styled(" allow   ", theme.dim()),
-        Span::styled("a", theme.bold()),
-        Span::styled(" always allow   ", theme.dim()),
-        Span::styled("n", theme.bold()),
-        Span::styled(" decline", theme.dim()),
-    ];
+    // "Always" only where it can become a rule — a chain, an edit outside the
+    // worktree, is allowed once at a time; offering more would be a promise
+    // equipe can't keep.
+    if app.pane == Pane::Board {
+        // On the board these keys act on tickets; answers wait for the conversation.
+        lines.push(Line::from(vec![bar(), Span::styled("ctrl-b", theme.bold()), Span::styled(" to answer", theme.dim())]));
+        return lines;
+    }
+    let mut keys = vec![bar(), Span::styled("y", theme.bold()), Span::styled(" allow   ", theme.dim())];
+    if let Some(rule) = equipe_core::permissions::rule_for(&approval.tool, &approval.action) {
+        keys.push(Span::styled("a", theme.bold()));
+        keys.push(Span::styled(format!(" always allow {}   ", always_label(&rule)), theme.dim()));
+    }
+    keys.extend([Span::styled("n", theme.bold()), Span::styled(" decline", theme.dim())]);
     if app.approvals.len() > 1 {
         keys.push(Span::styled(format!("   · {} more waiting", app.approvals.len() - 1), theme.dim()));
     }
     lines.push(Line::from(keys));
     lines
+}
+
+/// What an "always" answer would allow from now on, in short: `npm install`,
+/// `docs.rs`, a folder.
+fn always_label(rule: &str) -> String {
+    let inner = rule.split_once('(').and_then(|(_, r)| r.strip_suffix(')')).unwrap_or(rule);
+    let short = inner.trim_end_matches(":*").trim_start_matches("domain:");
+    let short = short.strip_prefix('/').and_then(|p| p.strip_suffix("/**")).map_or_else(|| short.to_owned(), |dir| format!("{}/", display_path(std::path::Path::new(dir))));
+    ui::fit(&short, 40)
 }
 
 /// The files a shell script writes with `cat > file`, `cat >> file` or `tee file`.
@@ -980,7 +1213,7 @@ fn display_path(path: &std::path::Path) -> String {
 mod tests {
     use super::*;
     use crate::tui::app::App;
-    use equipe_core::protocol::{Command, Engine, Event, Member, Snapshot, TicketId, TurnOutcome, Usage, Workspace};
+    use equipe_core::protocol::{Command, Engine, Event, Member, Snapshot, Ticket, TicketId, TurnOutcome, Usage, Workspace};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -1039,6 +1272,7 @@ mod tests {
             project: Some("/repo".into()),
             depends_on: vec![],
             branch: None,
+            worktree: None,
             created_by: "pm".into(),
             note: None,
         }
@@ -1059,7 +1293,7 @@ mod tests {
     #[test]
     fn shows_the_squad_the_conversation_and_what_the_member_does() {
         let shot = screen(&working().0, 100, 22);
-        for expected in ["equipe.", "acme", "/repo · main", "SQUAD", "› ● pm", " │", "pm  ·  claude code", "› fix the bug", "Looking now.", "✎ edit   src/auth.rs", "● working", "esc to stop", "→ pm · auto", "enter send"] {
+        for expected in ["equipe.", "acme", "/repo · main", "SQUAD", "pm    haiku", " │", "pm  ·  claude code", "› fix the bug", "Looking now.", "✎ edit   src/auth.rs", "editing · 0s", "esc to stop", "Board  ctrl-b", "→ pm · auto", "enter send"] {
             assert!(shot.contains(expected), "missing {expected:?} in:\n{shot}");
         }
         assert!(!shot.contains("**"), "Markdown is drawn, not shown:\n{shot}");
@@ -1170,7 +1404,7 @@ mod tests {
         app.on_event(Event::MessageQueued { session: pm, text: "and the footer".into() });
         let shot = screen(&app, 100, 24);
         assert!(shot.contains("○ frontend  sonnet-5-5"), "{shot}");
-        assert!(shot.contains("● pm        1 memo"), "{shot}");
+        assert!(shot.contains("pm        1 memo"), "{shot}");
         assert!(shot.contains("› and the footer"), "{shot}");
         assert!(shot.contains("memo · read when this turn ends"), "{shot}");
 
@@ -1184,7 +1418,7 @@ mod tests {
         app.selected = 1;
         let shot = screen(&app, 100, 24);
         assert!(shot.contains("→ frontend · the PM hears about it"), "{shot}");
-        assert!(shot.contains("● frontend  T-3"), "{shot}");
+        assert!(shot.contains("frontend  T-3"), "{shot}");
         assert!(shot.contains("── T-3 · Hero — on branch equipe/frontend-t3"), "{shot}");
     }
 
@@ -1226,9 +1460,20 @@ mod tests {
         let at = |text: &str| shot.find(text).unwrap_or_else(|| panic!("missing {text:?} in:\n{shot}"));
         assert!(at("YOUR REVIEW  1") < at("IN PROGRESS  1"), "{shot}");
         assert!(at("IN PROGRESS") < at("TO DO") && at("TO DO") < at("DONE"), "{shot}");
-        assert!(shot.contains("T-3  Pricing section"), "{shot}");
-        assert!(shot.contains("/accept T-3"), "{shot}");
+        // One row a ticket, the review picked first; its columns line up.
+        let row = |id: &str| shot.lines().find(|l| l.contains(id)).unwrap_or_else(|| panic!("no {id} in:\n{shot}")).to_owned();
+        assert!(row("T-3").contains("› T-3   Pricing section"), "{shot}");
+        let column = |id: &str| { let r = row(id); r[..r.find("frontend").unwrap()].chars().count() };
+        assert!(["T-2", "T-4", "T-1"].iter().all(|id| column(id) == column("T-3")), "owners in one column:\n{shot}");
+        // Below, the picked ticket in full with the keys that act on it.
+        assert!(shot.contains("handed in — waits for your review"), "{shot}");
+        assert!(shot.contains("a accept   r ask for changes"), "{shot}");
+        assert!(shot.contains("← pm  ctrl-b"), "the way back is in sight:\n{shot}");
         assert!(shot.lines().last().unwrap().contains("1 to review"), "{shot}");
+        // ↓ picks the next ticket, and the detail follows.
+        app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Down), Instant::now());
+        let shot = screen(&app, 100, 34);
+        assert!(shot.contains("› T-2") && shot.contains("in progress"), "{shot}");
     }
 
     #[test]
@@ -1245,7 +1490,7 @@ mod tests {
         asking.reason = Some("Release the package".into());
         app.on_event(Event::ApprovalRequested { squad: "acme".into(), approval: asking });
         let shot = screen(&app, 100, 26);
-        for expected in ["▎ frontend asks · T-3", "▎ run  npm publish", "▎ Release the package", "▎ y allow   a always allow   n decline"] {
+        for expected in ["▎ frontend asks · T-3", "▎ run  npm publish", "▎ Release the package", "▎ y allow   a always allow npm publish   n decline"] {
             assert!(shot.contains(expected), "missing {expected:?} in:\n{shot}");
         }
     }
@@ -1346,13 +1591,29 @@ mod tests {
     }
 
     #[test]
-    fn the_working_dot_breathes() {
+    fn the_working_mark_turns_breathes_and_shimmers() {
         let theme = Theme { color: true, truecolor: true, light: false, background: None };
         let start = Instant::now();
-        let a = theme.pulse(start);
-        let b = theme.pulse(start + std::time::Duration::from_millis(800));
-        assert_ne!(a.fg, b.fg, "dim at one moment, bright at another");
-        assert_eq!(theme.pulse(start + std::time::Duration::from_millis(1600)).fg, a.fg, "and back");
+        let _ = Theme::since_start(start);
+        let at = |ms: u64| start + std::time::Duration::from_millis(ms);
+        // The star turns, frame by frame, and comes back.
+        assert_ne!(theme.spinner(at(0)).content, theme.spinner(at(120)).content);
+        assert_eq!(theme.spinner(at(0)).content, theme.spinner(at(1200)).content);
+        // Its colour breathes — dim, then the accent, then dim again.
+        assert_ne!(theme.breath(at(0)).fg, theme.breath(at(1000)).fg);
+        assert_eq!(theme.breath(at(0)).fg, theme.breath(at(2000)).fg);
+        // Light passes over the word: its brightest letter moves.
+        let brightest = |ms: u64| {
+            let spans = theme.shimmer("working", at(ms));
+            let level = |s: &Span| match s.style.fg {
+                Some(Color::Rgb(r, g, b)) => r as u32 + g as u32 + b as u32,
+                _ => 0,
+            };
+            (0..spans.len()).max_by_key(|&i| level(&spans[i])).unwrap()
+        };
+        assert!(brightest(500) < brightest(1000), "left to right");
+        // Without truecolor it holds still in the accent.
+        assert_eq!(Theme { truecolor: false, ..theme }.shimmer("working", at(500)).len(), 1);
     }
 
     #[test]

@@ -7,6 +7,7 @@
 //! conversations, and the board. It starts from a snapshot, follows events, and
 //! leaving it changes nothing — the squad keeps working.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -39,6 +40,13 @@ pub enum AgentState {
     Closed,
     /// It never started; the transcript says why.
     Failed,
+}
+
+/// Something on screen a click acts on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hit {
+    Pane(Pane),
+    Ticket(TicketId),
 }
 
 /// What the right-hand pane shows.
@@ -240,6 +248,14 @@ pub struct App {
     last_wheel: Option<(Instant, bool)>,
     /// The selected member's conversation, asked for as a file (`/export`).
     pub export: bool,
+    /// The ticket picked on the board.
+    pub board_selected: Option<TicketId>,
+    /// What each ticket's branch changed (`git diff --stat`), by ticket and branch.
+    pub diffs: HashMap<TicketId, (String, String)>,
+    /// A ticket whose whole diff the person asked to see.
+    pub view_diff: Option<TicketId>,
+    /// Where clickable things were drawn, as `(from column, to column, row, what)`.
+    hits: Vec<(u16, u16, u16, Hit)>,
     quit_armed: Option<Instant>,
 }
 
@@ -279,6 +295,10 @@ impl App {
             board_max: usize::MAX,
             last_wheel: None,
             export: false,
+            board_selected: None,
+            diffs: HashMap::new(),
+            view_diff: None,
+            hits: Vec::new(),
             quit_armed: None,
         };
         // Talk to the PM first: it is the main contact.
@@ -338,6 +358,95 @@ impl App {
         agent.mode.unwrap_or(self.mode)
     }
 
+    /// The board's tickets in the order they are listed: the person's reviews,
+    /// work in progress, to do, proposed, then the latest few finished.
+    pub fn board_order(&self) -> Vec<TicketId> {
+        let group = |statuses: &[TicketStatus]| -> Vec<TicketId> {
+            self.tickets.iter().filter(|t| statuses.contains(&t.status)).map(|t| t.id).collect()
+        };
+        let mut order = group(&[TicketStatus::Review]);
+        order.extend(group(&[TicketStatus::InProgress]));
+        order.extend(group(&[TicketStatus::Todo]));
+        order.extend(group(&[TicketStatus::Proposed]));
+        let mut done = group(&[TicketStatus::Done, TicketStatus::Cancelled]);
+        done.reverse();
+        done.truncate(5);
+        order.extend(done);
+        order
+    }
+
+    /// The ticket picked on the board — the first listed until one is picked.
+    pub fn selected_ticket(&self) -> Option<&Ticket> {
+        let order = self.board_order();
+        let id = self.board_selected.filter(|id| order.contains(id)).or_else(|| order.first().copied())?;
+        self.tickets.iter().find(|t| t.id == id)
+    }
+
+    fn move_ticket(&mut self, step: isize) {
+        let order = self.board_order();
+        if order.is_empty() {
+            return;
+        }
+        let at = self.selected_ticket().and_then(|t| order.iter().position(|id| *id == t.id)).unwrap_or(0) as isize;
+        self.board_selected = Some(order[(at + step).clamp(0, order.len() as isize - 1) as usize]);
+    }
+
+    /// Where the screen put its clickable things, as last drawn.
+    pub fn set_hits(&mut self, hits: Vec<(u16, u16, u16, Hit)>) {
+        self.hits = hits;
+    }
+
+    /// A click: on a tab, it switches panes; on a ticket, it picks it.
+    pub fn on_click(&mut self, column: u16, row: u16) {
+        let hit = self.hits.iter().find(|(from, to, y, _)| *y == row && (*from..*to).contains(&column)).map(|h| h.3);
+        match hit {
+            Some(Hit::Pane(pane)) => {
+                self.pane = pane;
+                self.board_scroll = 0;
+            }
+            Some(Hit::Ticket(id)) => {
+                self.pane = Pane::Board;
+                self.board_selected = Some(id);
+            }
+            None => {}
+        }
+    }
+
+    /// The board's keys, while nothing is typed: ↑↓ pick a ticket; a accepts,
+    /// r asks for changes, d shows the diff, Enter talks to whoever owns it.
+    fn on_board_key(&mut self, code: KeyCode) -> Option<Vec<Command>> {
+        let ticket = self.selected_ticket().cloned();
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => self.move_ticket(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_ticket(1),
+            KeyCode::Char('a') => {
+                let ticket = ticket.filter(|t| !t.status.is_closed())?;
+                self.flash = Some(format!("Accepted T-{} · /reopen T-{0} brings it back", ticket.id));
+                return Some(vec![Command::Accept { squad: self.squad.clone(), ticket: ticket.id }]);
+            }
+            KeyCode::Char('r') => {
+                let ticket = ticket.filter(|t| matches!(t.status, TicketStatus::Review | TicketStatus::Done))?;
+                self.composer.insert_str(&format!("/reopen T-{} ", ticket.id));
+                self.flash = Some("Say what to change, then Enter.".into());
+            }
+            KeyCode::Char('d') => {
+                let ticket = ticket.filter(|t| t.branch.is_some())?;
+                self.view_diff = Some(ticket.id);
+            }
+            KeyCode::Enter => {
+                let ticket = ticket?;
+                let who = ticket.assignee.as_ref().or(ticket.owner.as_ref())?.clone();
+                let at = self.agents.iter().position(|a| {
+                    a.is_open() && a.member.as_ref().is_some_and(|m| m.name == who || m.role == who)
+                })?;
+                self.selected = at;
+                self.pane = Pane::Conversation;
+            }
+            _ => return None,
+        }
+        Some(Vec::new())
+    }
+
     /// Tickets waiting for the person to accept or send back.
     pub fn to_review(&self) -> Vec<&Ticket> {
         self.tickets.iter().filter(|t| t.status == TicketStatus::Review).collect()
@@ -376,6 +485,8 @@ impl App {
     pub fn on_event(&mut self, event: Event) -> Vec<Command> {
         match event {
             Event::TicketChanged { ticket, .. } => {
+                // Its work may have moved on: count the changes again when shown.
+                self.diffs.remove(&ticket.id);
                 self.on_ticket(ticket);
                 return Vec::new();
             }
@@ -508,6 +619,13 @@ impl App {
         // A trackpad's stream of events moves a line each; a lone notch, three.
         let in_gesture = self.last_wheel.is_some_and(|(at, was_up)| was_up == up && now.duration_since(at) < WHEEL_GESTURE);
         self.last_wheel = Some((now, up));
+        // On the board the wheel walks the tickets, a notch at a time.
+        if self.pane == Pane::Board {
+            if !in_gesture {
+                self.move_ticket(if up { -1 } else { 1 });
+            }
+            return;
+        }
         let lines = if in_gesture { 1 } else { WHEEL_NOTCH };
         self.scroll(if up { lines } else { -lines });
     }
@@ -533,8 +651,12 @@ impl App {
             self.quit_armed = None;
             self.flash = None;
         }
-        // A request for permission answers to one key — while nothing is being typed.
-        if let (Some(approval), true, false, false) = (self.approvals.first(), self.composer.is_empty(), ctrl, alt) {
+        // A request for permission answers to one key — while nothing is being
+        // typed, and not on the board, where the same keys act on tickets: an
+        // "a" meant to accept a ticket must never allow a command for good.
+        if let (Some(approval), true, false, false, Pane::Conversation) =
+            (self.approvals.first(), self.composer.is_empty(), ctrl, alt, self.pane)
+        {
             let decision = match key.code {
                 KeyCode::Char('y') => Some(Decision::Allow),
                 KeyCode::Char('a') => Some(Decision::Always),
@@ -544,6 +666,12 @@ impl App {
             if let Some(decision) = decision {
                 return vec![Command::Decide { squad: self.squad.clone(), approval: approval.id, decision }];
             }
+        }
+        // On the board, with nothing typed, single keys act on the picked ticket.
+        if self.pane == Pane::Board && self.composer.is_empty() && !ctrl && !alt
+            && let Some(commands) = self.on_board_key(key.code)
+        {
+            return commands;
         }
         // Ctrl-O unfolds (and folds again) long runs of tool use.
         if key.code == KeyCode::Char('o') && ctrl && self.pane == Pane::Conversation {
@@ -557,6 +685,12 @@ impl App {
             KeyCode::Char('b') if ctrl => self.toggle_board(),
             KeyCode::Enter if alt || shift => self.composer.newline(),
             KeyCode::Char('j') if ctrl => self.composer.newline(),
+            // A line ending in `\` continues: the way to a new line in terminals
+            // that can't tell Shift-Enter from Enter.
+            KeyCode::Enter if self.composer.before_cursor().ends_with('\\') => {
+                self.composer.backspace();
+                self.composer.newline();
+            }
             KeyCode::Enter => return self.submit(),
             KeyCode::Esc if self.pane == Pane::Board => self.pane = Pane::Conversation,
             KeyCode::Esc => return self.interrupt(),
@@ -774,6 +908,12 @@ impl App {
             });
             return Vec::new();
         };
+        // Sent back with no word, the member can only guess what to change.
+        if verb == "reopen" && note.trim().is_empty() {
+            self.composer.insert_str(&format!("/reopen T-{ticket} "));
+            self.flash = Some(format!("What should change on T-{ticket}? Write it after /reopen T-{ticket} — that's what the member works from."));
+            return Vec::new();
+        }
         let squad = self.squad.clone();
         match verb {
             "accept" => vec![Command::Accept { squad, ticket }],
@@ -994,6 +1134,7 @@ mod tests {
             project: Some("/repo".into()),
             depends_on: vec![],
             branch: None,
+            worktree: None,
             created_by: "pm".into(),
             note: None,
         }
@@ -1090,7 +1231,11 @@ mod tests {
         type_text(&mut app, "b");
         app.on_key(ctrl('j'), Instant::now());
         type_text(&mut app, "c");
-        assert_eq!(app.composer.text(), "a\nb\nc");
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT), Instant::now());
+        type_text(&mut app, "d\\");
+        assert!(enter(&mut app).is_empty(), "a line ending in a backslash continues");
+        type_text(&mut app, "e");
+        assert_eq!(app.composer.text(), "a\nb\nc\nd\ne");
     }
 
     #[test]
@@ -1295,6 +1440,12 @@ mod tests {
         assert_eq!(enter(&mut app), vec![Command::Accept { squad: "acme".into(), ticket: 4 }]);
         type_text(&mut app, "/reopen 4 make the button blue");
         assert_eq!(enter(&mut app), vec![Command::Reopen { squad: "acme".into(), ticket: 4, note: "make the button blue".into() }]);
+        // Without a word on what to change it stays in the composer, asking.
+        type_text(&mut app, "/reopen T-4");
+        assert!(enter(&mut app).is_empty());
+        assert!(app.flash.as_deref().unwrap().contains("What should change on T-4"), "{:?}", app.flash);
+        assert_eq!(app.composer.text(), "/reopen T-4 ");
+        app.composer.clear();
         type_text(&mut app, "/cancel t4");
         assert_eq!(enter(&mut app), vec![Command::Cancel { squad: "acme".into(), ticket: 4 }]);
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(5, TicketStatus::Review) });

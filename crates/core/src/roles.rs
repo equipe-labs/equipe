@@ -158,6 +158,8 @@ pub struct Context<'a> {
     pub projects: &'a [String],
     /// Whether the member's engine has equipe's board tools.
     pub board_tools: bool,
+    /// The language the person writes in, once known.
+    pub language: Option<&'a str>,
 }
 
 /// What an engine is told about who it is on the team.
@@ -196,11 +198,18 @@ it meets its acceptance criteria.",
         (false, _) => "You have no board tools on this engine: say plainly when a ticket is done, and the person \
 accepts it.",
     };
+    let language = match ctx.language {
+        Some(language) => format!(
+            "The person writes in {language}: write everything meant for them in {language} — replies, ticket \
+titles and bodies, hand-in summaries, comments — whatever language this prompt is in."
+        ),
+        None => "Write for the person in the language they write in.".to_owned(),
+    };
     format!(
         "You are {name}, the {title} on a software squad that equipe runs for one person, who leads it. \
 Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}\n\nYou run inside equipe, without a screen of your own: the person can't press keys \
 or change your permission mode, so never ask them to. When something you need is denied, say plainly what you \
-need and why. Reply in the language the person writes in. Be concise.",
+need and why. {language} Be concise.",
         role.duties
     )
 }
@@ -253,7 +262,17 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, board_tools }
+        Context { team, projects, board_tools, language: None }
+    }
+
+    #[test]
+    fn everything_for_the_person_is_written_in_their_language() {
+        let team = [Teammate { name: "pm", role: "pm" }];
+        let text = charter(role(PM).unwrap(), "pm", &Context { language: Some("Korean"), ..ctx(&team, &[], true) });
+        assert!(text.contains("The person writes in Korean: write everything meant for them in Korean"), "{text}");
+        assert!(text.contains("hand-in summaries"), "{text}");
+        let unknown = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
+        assert!(unknown.contains("in the language they write in"), "{unknown}");
     }
 
     #[test]
@@ -267,7 +286,7 @@ mod tests {
         assert!(text.contains("Your teammates: pm, frontend-2 (frontend)."), "{text}");
         assert!(text.contains("pm (the PM) keeps the plan"), "{text}");
         assert!(text.contains("new ticket"), "{text}");
-        assert!(text.contains("language the person writes in"), "{text}");
+        assert!(text.contains("language they write in"), "{text}");
     }
 
     #[test]
