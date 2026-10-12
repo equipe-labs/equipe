@@ -160,6 +160,8 @@ pub struct Context<'a> {
     pub board_tools: bool,
     /// The language the person writes in, once known.
     pub language: Option<&'a str>,
+    /// Whether the member has a browser, signed in as the person.
+    pub browser: bool,
 }
 
 /// What an engine is told about who it is on the team.
@@ -198,6 +200,17 @@ it meets its acceptance criteria.",
         (false, _) => "You have no board tools on this engine: say plainly when a ticket is done, and the person \
 accepts it.",
     };
+    let browser = if ctx.browser {
+        "\n\nYou have a real browser (the `browser` tools), signed in as the person wherever they signed in. Use \
+it for what has no CLI or API — a dashboard, creating a project, connecting a domain, finding a key — rather than \
+asking the person to click through it. It acts as them, so stop and ask the person, and wait for their yes, \
+before creating an account, accepting terms, starting a trial or a paid plan, inviting anyone, or deleting, \
+transferring or changing security or billing settings. Never type a password, a card number or a one-time code, \
+and never try to get past a CAPTCHA: hand those to the person. Where a site isn't signed in, ask the person to \
+run `equipe browser` and sign in there. Put keys you find in the project's environment config, never in code."
+    } else {
+        ""
+    };
     let language = match ctx.language {
         Some(language) => format!(
             "The person writes in {language}: write everything meant for them in {language} — replies, ticket \
@@ -207,7 +220,7 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
     };
     format!(
         "You are {name}, the {title} on a software squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}\n\nYou run inside equipe, without a screen of your own: the person can't press keys \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{browser}\n\nYou run inside equipe, without a screen of your own: the person can't press keys \
 or change your permission mode, so never ask them to. When something you need is denied, say plainly what you \
 need and why. {language} Be concise.",
         role.duties
@@ -262,7 +275,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, board_tools, language: None }
+        Context { team, projects, board_tools, language: None, browser: false }
     }
 
     #[test]

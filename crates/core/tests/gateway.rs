@@ -58,6 +58,7 @@ fn config(home: &Path, claude: &Path) -> Config {
         persist: true,
         retention_days: 90,
         equipe_binary: None,
+        npx: None,
     }
 }
 

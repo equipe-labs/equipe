@@ -99,6 +99,14 @@ enum Command {
         #[arg(long)]
         home: std::path::PathBuf,
     },
+    /// Sign in to sites in a browser, for the squad to work in as you
+    Browser {
+        /// Where to start (default: a page of sites squads often need)
+        url: Option<String>,
+        /// Forget every sign-in: members have no browser until you sign in again
+        #[arg(long)]
+        forget: bool,
+    },
     /// Update equipe to the latest release
     Update,
     /// The background daemon the team lives in
@@ -171,6 +179,7 @@ async fn main() -> ExitCode {
         Command::Try { prompt, engine, model, edit } => app.run_try(&prompt, engine, model.as_deref(), edit).await,
         Command::Daemon { action } => daemon_command(action).await,
         Command::Update => update(),
+        Command::Browser { url, forget } => sign_in(url, forget),
         Command::Mcp { squad, member, role, home } => serve_mcp(squad, member, role, home).await,
         Command::Squads => {
             let p = ui::out();
@@ -247,6 +256,80 @@ async fn serve_mcp(squad: String, member: String, role: String, home: std::path:
         }
     }
     Ok(())
+}
+
+/// `equipe browser`: a browser window for the person to sign in (or sign up)
+/// where the squad should work. What they sign in to is kept as Playwright
+/// storage state; members start their own browsers from it.
+fn sign_in(url: Option<String>, forget: bool) -> CmdResult {
+    use equipe_core::browser;
+    let p = ui::out();
+    let home = equipe_providers::credentials::equipe_home();
+    let state = browser::state_file(&home);
+    if forget {
+        let _ = std::fs::remove_file(&state);
+        println!("{}", p.ok_line("Signed out everywhere. Members have no browser until you sign in again."));
+        return Ok(());
+    }
+    let npx = browser::find_npx().ok_or_else(|| Failure::new("The browser runs on Node.js, which isn't installed.").next("brew install node"))?;
+    let dir = state.parent().expect("the state file has a folder");
+    std::fs::create_dir_all(dir).map_err(|err| Failure::new(format!("Couldn't make {}: {err}", dir.display())))?;
+    let _ = std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700));
+
+    println!("{}\n", p.kicker("browser"));
+    println!("{}", p.note(2, "A browser opens. Sign in — or sign up — wherever your squad should work: Vercel, PostHog, GitHub…"));
+    println!("{}", p.note(2, "Close the window when you're done. Members then work there signed in as you, and ask you before"));
+    println!("{}", p.note(2, "creating accounts, accepting terms, paying, or deleting anything."));
+    if std::env::var_os("SSH_CONNECTION").is_some() {
+        println!("\n{}", p.note(2, "You're connected over SSH: the window opens on this machine's own screen. Reach it with Screen Sharing."));
+    }
+    let mut open = std::process::Command::new(npx);
+    open.args(["-y", browser::PLAYWRIGHT_PACKAGE, "open", "--channel", "chrome", "--save-storage"]).arg(&state);
+    if state.is_file() {
+        open.arg("--load-storage").arg(&state);
+    }
+    open.arg(url.unwrap_or_else(start_page));
+    let status = open.status().map_err(|err| Failure::new(format!("Couldn't open the browser: {err}")))?;
+    let _ = std::fs::set_permissions(&state, std::os::unix::fs::PermissionsExt::from_mode(0o600));
+    if !status.success() {
+        return Err(Failure::new("The browser closed with an error — needs Google Chrome installed.").next("equipe browser"));
+    }
+    let sites = browser::sites(&std::fs::read_to_string(&state).unwrap_or_default());
+    println!();
+    if sites.is_empty() {
+        println!("{}", p.note(2, "Nothing signed in yet. Run equipe browser again whenever you're ready."));
+    } else {
+        println!("{}", p.ok_line(&format!("Members can work signed in on: {}", sites.join(", "))));
+        println!("{}", p.note(2, "equipe browser --forget signs them out everywhere."));
+    }
+    Ok(())
+}
+
+/// The page the sign-in window opens on: a few sites squads often need.
+fn start_page() -> String {
+    let sites = [
+        ("GitHub", "https://github.com/login"),
+        ("Vercel", "https://vercel.com/login"),
+        ("PostHog", "https://app.posthog.com/login"),
+        ("Supabase", "https://supabase.com/dashboard/sign-in"),
+        ("Cloudflare", "https://dash.cloudflare.com/login"),
+        ("Netlify", "https://app.netlify.com/login"),
+        ("Google Search Console", "https://search.google.com/search-console"),
+    ];
+    let links: String = sites.iter().map(|(name, url)| format!("<li><a href='{url}'>{name}</a></li>")).collect();
+    let html = format!(
+        "<!doctype html><meta charset=utf-8><title>equipe · sign in</title>\
+<body style='font:16px -apple-system,system-ui,sans-serif;max-width:560px;margin:64px auto;line-height:1.6;color:#111'>\
+<h1 style='font-size:22px'>equipe<span style='color:#8f9aa8'>.</span> sign in for your squad</h1>\
+<p>Sign in, or sign up, wherever your squad should work. Open as many tabs as you like; close the window when \
+you're done.</p><ul>{links}</ul><p style='color:#666'>Members work there signed in as you. They ask you before \
+creating accounts, accepting terms, paying, or deleting anything.</p>"
+    );
+    let encoded: String = html
+        .bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b".-_~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect();
+    format!("data:text/html,{encoded}")
 }
 
 /// Where every release's install script lives; it also updates.

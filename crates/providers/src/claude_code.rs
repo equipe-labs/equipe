@@ -118,6 +118,8 @@ pub struct Sandbox<'a> {
     /// Commands that ask anyway, sandboxed or not — whatever reaches outside
     /// (`Bash(git push:*)`).
     pub ask: &'a [String],
+    /// Paths no fenced command may read: the person's sign-ins and logins.
+    pub deny_read: &'a [String],
 }
 
 /// Arguments for one headless turn.
@@ -166,6 +168,7 @@ pub fn turn_args(request: &TurnRequest<'_>) -> Vec<String> {
                 // everyday work; on macOS that needs local ports, else every
                 // preview leaves the sandbox and asks the person.
                 "network": { "allowedDomains": sandbox.allowed_domains, "allowLocalBinding": true },
+                "filesystem": { "denyRead": sandbox.deny_read },
             }),
         );
         if !sandbox.ask.is_empty() {
@@ -563,7 +566,7 @@ mod tests {
             prompt: "x",
             access: Access::EditFiles,
             memory: Some(Path::new("/m")),
-            sandbox: Some(Sandbox { allowed_domains: &domains, ask: &ask }),
+            sandbox: Some(Sandbox { allowed_domains: &domains, ask: &ask, deny_read: &["/h/browser".to_owned()] }),
             prompt_tool: Some("mcp__equipe__approve"),
             disallowed_tools: &blocked,
             ..Default::default()
@@ -575,6 +578,7 @@ mod tests {
         assert_eq!(settings["sandbox"]["allowUnsandboxedCommands"], true, "leaving the fence asks, never happens silently");
         assert_eq!(settings["sandbox"]["network"]["allowedDomains"], json!(["registry.npmjs.org"]));
         assert_eq!(settings["sandbox"]["network"]["allowLocalBinding"], true, "a local preview server stays in the sandbox");
+        assert_eq!(settings["sandbox"]["filesystem"]["denyRead"], json!(["/h/browser"]), "the person's sign-ins stay unread");
         assert_eq!(settings["permissions"]["ask"], json!(["Bash(git push:*)"]));
         assert!(args.windows(2).any(|w| w[0] == "--permission-prompts" && w[1] == "host"));
         assert!(args.windows(2).any(|w| w[0] == "--permission-prompt-tool" && w[1] == "mcp__equipe__approve"));

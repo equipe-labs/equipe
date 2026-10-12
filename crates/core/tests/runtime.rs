@@ -98,6 +98,7 @@ fn config(claude: &Path, home: &Path, persist: bool) -> Config {
         persist,
         retention_days: 90,
         equipe_binary: None,
+        npx: None,
     }
 }
 
@@ -861,6 +862,53 @@ async fn first_ticket_turn(handle: &Handle, events: &mut UnboundedReceiver<Event
 }
 
 #[tokio::test]
+async fn once_the_person_signs_in_members_browse_as_them() {
+    let repo = repo();
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    let config = Config { npx: Some("/opt/npx".into()), ..with_tools(&claude, &home) };
+    let (handle, mut events) = runtime::start(config);
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    let browser_of = |call: &[String]| {
+        let mcp: serde_json::Value = serde_json::from_str(arg(call, "--mcp-config").unwrap()).unwrap();
+        mcp["mcpServers"]["browser"].clone()
+    };
+    let turn = async |handle: &Handle, events: &mut UnboundedReceiver<Event>| {
+        handle.send(Command::Submit { session: 1, text: "go".into() });
+        until(events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+        calls(&recorded).pop().unwrap()
+    };
+
+    // Signed in nowhere yet: no browser.
+    let call = turn(&handle, &mut events).await;
+    assert!(browser_of(&call).is_null(), "{call:?}");
+
+    // The person signs in through `equipe browser`, which keeps the sign-ins here.
+    let state = equipe_core::browser::state_file(&home);
+    std::fs::create_dir_all(state.parent().unwrap()).unwrap();
+    std::fs::write(&state, "{}").unwrap();
+    let call = turn(&handle, &mut events).await;
+    let server = browser_of(&call);
+    assert_eq!(server["command"], "/opt/npx");
+    let args: Vec<&str> = server["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+    assert!(args.contains(&equipe_core::browser::MCP_PACKAGE), "{args:?}");
+    assert!(args.windows(2).any(|w| w == ["--storage-state", &*state.to_string_lossy()]), "signed in as the person: {args:?}");
+    assert!(args.contains(&"--headless") && args.contains(&"--isolated"), "{args:?}");
+    assert!(call.iter().any(|a| a == "mcp__browser"), "in auto it browses without asking");
+    assert!(call.iter().any(|a| a == "mcp__browser__browser_run_code_unsafe"), "but never runs code outside the sandbox");
+    let output = args.windows(2).find(|w| w[0] == "--output-dir").unwrap()[1];
+    assert!(output.starts_with(&*std::env::temp_dir().to_string_lossy()), "pages it saves stay out of the project: {output}");
+    let charter = arg(&call, "--append-system-prompt").unwrap();
+    assert!(charter.contains("accepting terms") && charter.contains("CAPTCHA"), "what it must leave to the person: {charter}");
+
+    // Plan changes nothing anywhere — not on a website either.
+    handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::Plan) });
+    until(&mut events, |e| matches!(e, Event::ModeChanged { member: None, .. })).await;
+    let call = turn(&handle, &mut events).await;
+    assert!(browser_of(&call).is_null(), "{call:?}");
+}
+
+#[tokio::test]
 async fn in_auto_a_member_on_a_ticket_is_fenced_in_and_asks_for_the_rest() {
     let repo = repo();
     let (claude, recorded) = recording_claude(&answering("ok"));
@@ -877,6 +925,8 @@ async fn in_auto_a_member_on_a_ticket_is_fenced_in_and_asks_for_the_rest() {
     assert!(settings["permissions"]["ask"].as_array().unwrap().iter().any(|r| r == "Bash(git push:*)"), "pushing asks");
     assert_eq!(arg(&call, "--permission-prompt-tool"), Some("mcp__equipe__approve"));
     assert!(call.iter().any(|a| a == "Bash(sudo:*)"), "the blocklist travels with every member turn");
+    let unread = settings["sandbox"]["filesystem"]["denyRead"].as_array().unwrap();
+    assert!(unread.iter().any(|p| p.as_str().unwrap().ends_with("/browser")), "the person's sign-ins: {unread:?}");
 }
 
 #[tokio::test]

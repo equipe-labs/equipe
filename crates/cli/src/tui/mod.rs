@@ -231,6 +231,23 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                 terminal.clear()?;
             }
         }
+        if std::mem::take(&mut app.open_browser) {
+            // `equipe browser` in the terminal, then back: the person signs in there.
+            let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags, DisableBracketedPaste, DisableMouseCapture);
+            ratatui::restore();
+            let signed_in = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg("browser").status());
+            terminal = ratatui::init();
+            tell_keys_apart();
+            execute!(std::io::stdout(), EnableBracketedPaste)?;
+            if mouse {
+                execute!(std::io::stdout(), EnableMouseCapture)?;
+            }
+            terminal.clear()?;
+            app.flash = Some(match signed_in {
+                Ok(status) if status.success() => "Signed in. Members use the browser from their next turn.".into(),
+                _ => "The browser didn't open — run `equipe browser` in a terminal to see why.".into(),
+            });
+        }
         if app.pane == app::Pane::Board {
             count_changes(&mut app, &cwd);
         }

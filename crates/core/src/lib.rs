@@ -11,6 +11,7 @@
 //!   rows it is about to draw, addressed by a per-agent `seq`.
 
 pub mod board;
+pub mod browser;
 pub mod gateway;
 pub mod journal;
 pub mod language;

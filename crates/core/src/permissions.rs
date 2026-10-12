@@ -51,7 +51,7 @@ pub const OUTWARD: [&str; 11] = [
 ];
 
 /// Never, in any mode, whoever asks: the hard floor.
-pub const BLOCKED: [&str; 12] = [
+pub const BLOCKED: [&str; 13] = [
     "Bash(sudo:*)",
     "Bash(su:*)",
     "Bash(rm -rf /:*)",
@@ -64,6 +64,8 @@ pub const BLOCKED: [&str; 12] = [
     "Bash(reboot:*)",
     "Bash(git push --force:*)",
     "Bash(git push -f:*)",
+    // The browser's escape hatch: arbitrary code in its own process, outside any sandbox.
+    "mcp__browser__browser_run_code_unsafe",
 ];
 
 /// Where credentials live. Reading is free in auto — except these: a member

@@ -248,6 +248,8 @@ pub struct App {
     last_wheel: Option<(Instant, bool)>,
     /// The selected member's conversation, asked for as a file (`/export`).
     pub export: bool,
+    /// Asked to open the sign-in browser (`/browser`).
+    pub open_browser: bool,
     /// The ticket picked on the board.
     pub board_selected: Option<TicketId>,
     /// What each ticket's branch changed (`git diff --stat`), by ticket and branch.
@@ -281,7 +283,8 @@ End jumps to the latest line · Ctrl-C twice leaves — the squad keeps working.
 /add <role…> [codex|claude] brings in teammates: pm, designer, frontend, backend, qa, data, or custom <name> · \
 /accept T-3 approves handed-in work · /reopen T-3 <what to change> sends it back · /cancel T-3 drops it · \
 /board · /mode [member] plan|ask|auto|full sets how much members do on their own — y/a/n answers a request \
-for permission (allow, always allow, decline) · Ctrl-O unfolds long runs of tool use · /export opens the conversation in your editor · /mouse lets the terminal select text (or hold Shift — Option in iTerm2 — while dragging) · /close removes the selected \
+for permission (allow, always allow, decline) · Ctrl-O unfolds long runs of tool use · /browser opens a browser to sign in to sites (Vercel, PostHog…) \
+that members then work in as you · /export opens the conversation in your editor · /mouse lets the terminal select text (or hold Shift — Option in iTerm2 — while dragging) · /close removes the selected \
 member · /quit leaves.";
 
 impl App {
@@ -312,6 +315,7 @@ impl App {
             board_selected: None,
             diffs: HashMap::new(),
             view_diff: None,
+            open_browser: false,
             hits: Vec::new(),
             squad_width: None,
             divider: None,
@@ -913,6 +917,10 @@ impl App {
                 self.export = true;
                 Vec::new()
             }
+            "browser" => {
+                self.open_browser = true;
+                Vec::new()
+            }
             "mouse" => {
                 self.mouse = !self.mouse;
                 self.flash = Some(if self.mouse {
@@ -1475,6 +1483,14 @@ mod tests {
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(4, TicketStatus::Review) });
         assert!(app.flash.as_deref().unwrap().contains("/accept T-4"), "{:?}", app.flash);
         assert_eq!(app.to_review().len(), 1);
+    }
+
+    #[test]
+    fn browser_opens_the_sign_in_window() {
+        let (mut app, _, _) = team();
+        type_text(&mut app, "/browser");
+        assert!(enter(&mut app).is_empty());
+        assert!(app.open_browser);
     }
 
     #[test]

@@ -33,6 +33,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::board::{self, Candidate};
+use crate::browser;
 use crate::journal::{self, Journal, SessionRecord, TicketWork};
 use crate::permissions;
 use crate::roles::{self, Role, Teammate};
@@ -69,6 +70,8 @@ pub struct Config {
     /// The equipe executable, run as `equipe mcp` to give Claude Code members
     /// their board tools. `None`: members get no tools.
     pub equipe_binary: Option<PathBuf>,
+    /// Node's `npx`, which runs the members' browser. `None`: no browser.
+    pub npx: Option<PathBuf>,
 }
 
 impl Config {
@@ -82,6 +85,7 @@ impl Config {
             persist: false,
             retention_days: journal::DEFAULT_RETENTION_DAYS,
             equipe_binary: std::env::current_exe().ok(),
+            npx: crate::browser::find_npx(),
         }
     }
 
@@ -771,26 +775,42 @@ impl Runtime {
         let projects = squad.as_deref().map(|s| self.projects_cached(s)).unwrap_or_default();
         let board_tools = session.member.is_some() && session.engine == Engine::Claude && self.config.equipe_binary.is_some();
         let language = squad.as_deref().and_then(|s| self.journals.get(s)).and_then(Journal::language);
+        let edits = session.edits();
+        let mode = session.mode.or_else(|| squad.as_deref().and_then(|s| self.journals.get(s)).map(Journal::mode)).unwrap_or_default();
+        // A browser once the person has signed in somewhere — in any mode that
+        // may change things. In Auto and Full it browses freely; in Ask each
+        // step comes to the person.
+        let browser = match (&self.config.npx, &squad, &session.member) {
+            (Some(npx), Some(squad), Some(m)) if board_tools && mode != Mode::Plan && browser::signed_in(&self.config.home) => {
+                // Page snapshots and screenshots: in the temp folder, readable without
+                // asking, and never in the project.
+                let output = std::env::temp_dir().join("equipe-browser").join(squad).join(&m.name);
+                Some(browser::server(npx, &self.config.home, &output))
+            }
+            _ => None,
+        };
+        let browses_freely = browser.is_some() && matches!(mode, Mode::Auto | Mode::Full);
+        let mcp_config = match (&squad, &session.member, &self.config.equipe_binary) {
+            (Some(squad), Some(m), Some(binary)) if board_tools => {
+                let mut servers = json!({ MCP_SERVER: {
+                    "type": "stdio",
+                    "command": binary,
+                    "args": ["mcp", "--squad", squad, "--member", m.name, "--role", m.role, "--home", self.config.home],
+                }});
+                if let Some(browser) = &browser {
+                    servers[browser::SERVER] = browser.clone();
+                }
+                Some(json!({ "mcpServers": servers }).to_string())
+            }
+            _ => None,
+        };
         let charter = session.member.as_ref().map(|m| {
             let team = squad.as_deref().map(|s| self.team(s)).unwrap_or_default();
             let mates: Vec<Teammate> = team.iter().map(|(_, name, role)| Teammate { name, role }).collect();
             let names: Vec<String> = projects.iter().map(|p| board::project_name(p)).collect();
-            let ctx = roles::Context { team: &mates, projects: &names, board_tools, language: language.as_deref() };
+            let ctx = roles::Context { team: &mates, projects: &names, board_tools, language: language.as_deref(), browser: browser.is_some() };
             roles::charter(roles::role_or_custom(&m.role), &m.name, &ctx)
         });
-        let mcp_config = match (&squad, &session.member, &self.config.equipe_binary) {
-            (Some(squad), Some(m), Some(binary)) if board_tools => Some(
-                json!({ "mcpServers": { MCP_SERVER: {
-                    "type": "stdio",
-                    "command": binary,
-                    "args": ["mcp", "--squad", squad, "--member", m.name, "--role", m.role, "--home", self.config.home],
-                }}})
-                .to_string(),
-            ),
-            _ => None,
-        };
-        let edits = session.edits();
-        let mode = session.mode.or_else(|| squad.as_deref().and_then(|s| self.journals.get(s)).map(Journal::mode)).unwrap_or_default();
         let (cwd, access, resume, history, ticket, add_dirs) = match &session.work {
             Some(work) => {
                 (work.cwd.clone(), access_for(mode, edits && work.sandbox.is_some()), work.claude_session.clone(), work.history.clone(), Some(work.ticket), Vec::new())
@@ -843,6 +863,9 @@ impl Runtime {
                 let model = session.model.clone();
                 let memory = session.memory.clone();
                 let mut allowed: Vec<String> = mcp_config.iter().map(|_| format!("mcp__{MCP_SERVER}")).collect();
+                if browses_freely {
+                    allowed.push(format!("mcp__{}", browser::SERVER));
+                }
                 if member_rules {
                     allowed.extend(squad_rules);
                 }
@@ -850,6 +873,11 @@ impl Runtime {
                     if member_rules { permissions::BLOCKED.iter().map(|r| (*r).to_owned()).collect() } else { Vec::new() };
                 let domains: Vec<String> = permissions::ALLOWED_DOMAINS.iter().map(|d| (*d).to_owned()).collect();
                 let outward: Vec<String> = permissions::OUTWARD.iter().map(|r| (*r).to_owned()).collect();
+                // The person's browser sign-ins and equipe's logins: no fenced command reads them.
+                let private: Vec<String> = [self.config.home.join("browser"), self.config.home.join("credentials")]
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
                 tokio::spawn(async move {
                     let emit = |event| {
                         let _ = internal.send(Internal::Event(event));
@@ -866,7 +894,7 @@ impl Runtime {
                         mcp_config: mcp_config.as_deref(),
                         allowed_tools: &allowed,
                         disallowed_tools: &blocked,
-                        sandbox: fenced.then_some(claude_code::Sandbox { allowed_domains: &domains, ask: &outward }),
+                        sandbox: fenced.then_some(claude_code::Sandbox { allowed_domains: &domains, ask: &outward, deny_read: &private }),
                         prompt_tool: prompt_tool.as_deref(),
                     };
                     let outcome = claude_code::run_turn(&binary, &cwd, request, |activity| match activity {
