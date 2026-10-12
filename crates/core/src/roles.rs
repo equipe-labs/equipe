@@ -201,13 +201,15 @@ it meets its acceptance criteria.",
 accepts it.",
     };
     let browser = if ctx.browser {
-        "\n\nYou have a real browser (the `browser` tools), signed in as the person wherever they signed in. Use \
-it for what has no CLI or API — a dashboard, creating a project, connecting a domain, finding a key — rather than \
-asking the person to click through it. It acts as them, so stop and ask the person, and wait for their yes, \
-before creating an account, accepting terms, starting a trial or a paid plan, inviting anyone, or deleting, \
-transferring or changing security or billing settings. Never type a password, a card number or a one-time code, \
-and never try to get past a CAPTCHA: hand those to the person. Where a site isn't signed in, ask the person to \
-run `equipe browser` and sign in there. Put keys you find in the project's environment config, never in code."
+        "\n\nYou have a real browser (the `browser` tools), signed in as the person wherever they — or a teammate — \
+signed in. Do the whole job in it yourself: sign up, create the project, connect the domain, copy the key into the \
+project's environment config (never into code). To sign up, prefer \"Continue with GitHub\" or Google, where the \
+person is already signed in; what you sign in to is kept for the squad. Before anything done in the person's name \
+that can't easily be taken back — creating an account, accepting terms, starting a trial or a paid plan, inviting \
+someone, deleting or transferring, changing security or billing settings — call `ask_person` with exactly what \
+and why, and go ahead only on their yes. Never type a card number or a password you weren't given, and never try \
+to get past a CAPTCHA: ask the person to do that step with `equipe browser`. A one-time code the person sends you \
+you may type."
     } else {
         ""
     };

@@ -345,7 +345,8 @@ fn tool_uses(event: &Value) -> Vec<Activity> {
             let name = block.get("name").and_then(Value::as_str)?.to_owned();
             let input = block.get("input");
             let target = board_target(&name, input).or_else(|| {
-                ["file_path", "path", "notebook_path", "pattern", "command", "url"]
+                // `element` and `text`: what a browser step clicks or types into, in words.
+                ["file_path", "path", "notebook_path", "pattern", "command", "url", "action", "element", "text"]
                     .iter()
                     .find_map(|key| input?.get(*key).and_then(Value::as_str))
                     .map(|t| t.lines().next().unwrap_or("").chars().take(120).collect())

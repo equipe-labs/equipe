@@ -1095,6 +1095,9 @@ pub fn tool_verb(name: &str) -> &str {
             Some("update_ticket") => "ticket",
             Some("comment") => "comment",
             Some("submit_for_review") => "hand in",
+            Some("ask_person") => "ask you",
+            // The member's browser: every step reads as browsing.
+            _ if other.starts_with("mcp__browser__") => "browse",
             _ => other,
         },
     }

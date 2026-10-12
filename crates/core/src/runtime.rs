@@ -50,6 +50,8 @@ const CLOSED_TICKETS_SHOWN: usize = 20;
 
 /// The MCP server equipe gives members; its tools are `mcp__equipe__*`.
 const MCP_SERVER: &str = "equipe";
+/// The tool name a member's own question shows under, among approvals.
+const CONFIRM: &str = "Confirm";
 
 /// How long a member waits for the person to answer a request for permission
 /// before it is declined.
@@ -1387,6 +1389,9 @@ impl Runtime {
         if call.name == permissions::APPROVE_TOOL {
             return self.ask_permission(call, reply);
         }
+        if call.name == board::ASK_PERSON {
+            return self.ask_person(call, reply);
+        }
         let squad = call.squad.clone();
         let result = self.run_tool(call);
         // Whatever changed, the rules look again.
@@ -1456,6 +1461,36 @@ impl Runtime {
         });
     }
 
+    /// A member asks the person's yes before acting in their name — signing up,
+    /// accepting terms, paying. Put to the person in every mode, never made a rule.
+    fn ask_person(&mut self, call: ToolCall, reply: oneshot::Sender<ToolResult>) {
+        let text = |key: &str| call.arguments.get(key).and_then(Value::as_str).map(str::trim).unwrap_or_default().to_owned();
+        let (action, why) = (text("action"), text("why"));
+        let Some(id) = self.member_id(&call.squad, &call.member).filter(|_| !action.is_empty()) else {
+            let _ = reply.send(ToolResult { text: "Say what you'll do in `action`.".into(), is_error: true });
+            return;
+        };
+        let ticket = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
+        let approval_id = self.next_approval;
+        self.next_approval += 1;
+        let approval = Approval {
+            id: approval_id,
+            session: id,
+            member: call.member.clone(),
+            ticket,
+            tool: CONFIRM.to_owned(),
+            action,
+            reason: (!why.is_empty()).then_some(why),
+        };
+        self.pending.insert(approval_id, Pending { squad: call.squad.clone(), approval: approval.clone(), input: json!({}), reply });
+        self.publish(Event::ApprovalRequested { squad: call.squad.clone(), approval });
+        let internal = self.internal.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(APPROVAL_WAIT).await;
+            let _ = internal.send(Internal::ApprovalTimedOut(approval_id));
+        });
+    }
+
     /// Answer a waiting request for permission. "Always" also becomes one of the
     /// squad's rules, so the same kind of thing doesn't ask again.
     fn answer(&mut self, approval_id: u64, decision: Decision, why: &str) {
@@ -1477,7 +1512,16 @@ impl Runtime {
             }
         }
         let why = if why.is_empty() && decision == Decision::Deny { "The person declined." } else { why };
-        let _ = reply.send(verdict(decision, &input, why));
+        let _ = reply.send(if approval.tool == CONFIRM {
+            // A question the member asked itself: an answer in words, not a permission verdict.
+            let text = match decision {
+                Decision::Allow | Decision::Always => format!("The person said yes. Go ahead: {}", approval.action),
+                Decision::Deny => format!("The person said no ({why}). Don't do it; carry on without it, or say what you need."),
+            };
+            ToolResult { text, is_error: false }
+        } else {
+            verdict(decision, &input, why)
+        });
         let line = match (decision, &rule) {
             (Decision::Always, Some(rule)) => format!("✓ You always allow {rule} for the squad · {}", approval.action),
             (Decision::Allow | Decision::Always, _) => format!("✓ You allowed: {}", approval.action),

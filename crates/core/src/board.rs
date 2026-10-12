@@ -109,6 +109,8 @@ pub const CREATE_TICKET: &str = "create_ticket";
 pub const UPDATE_TICKET: &str = "update_ticket";
 pub const COMMENT: &str = "comment";
 pub const SUBMIT_FOR_REVIEW: &str = "submit_for_review";
+/// A member asks the person's yes before something done in their name.
+pub const ASK_PERSON: &str = "ask_person";
 
 /// The tools a member gets, as MCP tool definitions. Everyone reads the board,
 /// writes tickets (a member's are proposals until the PM or the person accepts
@@ -163,6 +165,21 @@ Your changes are committed to the ticket's branch and the person reviews them. T
             },
         }),
     ];
+    tools.push(json!({
+        "name": ASK_PERSON,
+        "description": "Ask the person's yes before something done in their name that they can't take back \
+easily: creating an account or signing up, accepting terms, starting a trial or a paid plan, inviting someone, \
+deleting or transferring something, changing security or billing settings. The person sees exactly what you \
+wrote and answers yes or no; wait for the answer and do only what they said yes to.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": { "type": "string", "description": "Exactly what you will do, where — in the person's language." },
+                "why": { "type": "string", "description": "Why the work needs it, in one line." },
+            },
+            "required": ["action", "why"],
+        },
+    }));
     // Claude Code's permission prompts come here (`--permission-prompt-tool`):
     // equipe answers from its rules, or asks the person.
     tools.push(json!({

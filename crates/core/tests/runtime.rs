@@ -899,13 +899,48 @@ async fn once_the_person_signs_in_members_browse_as_them() {
     let output = args.windows(2).find(|w| w[0] == "--output-dir").unwrap()[1];
     assert!(output.starts_with(&*std::env::temp_dir().to_string_lossy()), "pages it saves stay out of the project: {output}");
     let charter = arg(&call, "--append-system-prompt").unwrap();
-    assert!(charter.contains("accepting terms") && charter.contains("CAPTCHA"), "what it must leave to the person: {charter}");
+    assert!(charter.contains("`ask_person`") && charter.contains("CAPTCHA"), "what it asks the person first: {charter}");
 
     // Plan changes nothing anywhere — not on a website either.
     handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::Plan) });
     until(&mut events, |e| matches!(e, Event::ModeChanged { member: None, .. })).await;
     let call = turn(&handle, &mut events).await;
     assert!(browser_of(&call).is_null(), "{call:?}");
+}
+
+#[tokio::test]
+async fn a_member_asks_the_person_before_doing_something_on_their_behalf() {
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&repo])));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "backend")).await;
+    // Even in full access: this is the person's call, not the mode's.
+    handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::Full) });
+    until(&mut events, |e| matches!(e, Event::ModeChanged { .. })).await;
+
+    let ask = |action: &str| {
+        let handle = handle.clone();
+        let arguments = serde_json::json!({ "action": action, "why": "T-10 needs a project key" });
+        tokio::spawn(async move { tool(&handle, "backend", "ask_person", arguments).await })
+    };
+    let waiting = ask("Sign up for PostHog with GitHub (EU region)");
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    assert_eq!((approval.member.as_str(), approval.tool.as_str()), ("backend", "Confirm"));
+    assert_eq!(approval.action, "Sign up for PostHog with GitHub (EU region)");
+    assert_eq!(approval.reason.as_deref(), Some("T-10 needs a project key"));
+    assert!(equipe_core::permissions::rule_for(&approval.tool, &approval.action).is_none(), "never an \"always\"");
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow });
+    let answer = waiting.await.unwrap();
+    assert!(!answer.is_error && answer.text.contains("yes"), "{}", answer.text);
+
+    let waiting = ask("Start the Vercel Pro trial");
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny });
+    let answer = waiting.await.unwrap();
+    assert!(answer.text.contains("no"), "{}", answer.text);
 }
 
 #[tokio::test]

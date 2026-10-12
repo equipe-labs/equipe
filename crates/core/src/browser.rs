@@ -3,9 +3,10 @@
 //! way a person would — open a dashboard, create a project, connect a domain,
 //! find a key — on the person's own accounts.
 //!
-//! The person signs in (and signs up) themselves: terms, CAPTCHAs, one-time
-//! codes and payment stay with them. Members see only the resulting session,
-//! as Playwright storage state, each in its own in-memory browser.
+//! Each member gets its own in-memory browser, started from the squad's
+//! sign-ins (Playwright storage state). Whatever it signs in to — an account it
+//! made with the person's yes — goes back into them, so the next turn, and the
+//! next member, are signed in too.
 
 use std::path::{Path, PathBuf};
 
@@ -30,8 +31,23 @@ pub fn signed_in(home: &Path) -> bool {
     state_file(home).is_file()
 }
 
+/// The script that hands a member's sign-ins back, with the state file's path
+/// written in. Written next to the state when it changed.
+const KEEP_SIGN_INS: &str = include_str!("../assets/keep-sign-ins.ts");
+
+fn keeper(home: &Path) -> PathBuf {
+    let path = home.join("browser").join("keep-sign-ins.ts");
+    let state = serde_json::to_string(&state_file(home).to_string_lossy()).unwrap_or_default();
+    let script = KEEP_SIGN_INS.replace("__STATE__", &state);
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(script.as_str()) {
+        let _ = std::fs::write(&path, script);
+    }
+    path
+}
+
 /// One member's browser server: headless, in memory, starting from the
-/// person's sign-ins; what it saves (screenshots) goes to `output`.
+/// squad's sign-ins and handing new ones back; what it saves (snapshots,
+/// screenshots) goes to `output`.
 pub fn server(npx: &Path, home: &Path, output: &Path) -> Value {
     json!({
         "type": "stdio",
@@ -42,6 +58,7 @@ pub fn server(npx: &Path, home: &Path, output: &Path) -> Value {
             "--isolated",
             "--storage-state", state_file(home),
             "--output-dir", output,
+            "--init-page", keeper(home),
         ],
     })
 }
@@ -90,6 +107,18 @@ mod tests {
         let server = server(Path::new("/bin/npx"), Path::new("/h"), Path::new("/out"));
         let args: Vec<&str> = server["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
         assert!(args.windows(2).any(|w| w == ["--storage-state", "/h/browser/state.json"]));
-        assert!(args.contains(&"--isolated"), "members never write over the person's sign-ins");
+        assert!(args.contains(&"--isolated"));
+    }
+
+    #[test]
+    fn what_a_member_signs_in_to_goes_back_to_the_squad() {
+        let home = std::env::temp_dir().join(format!("equipe-keeper-{}", std::process::id()));
+        std::fs::create_dir_all(home.join("browser")).unwrap();
+        let server = server(Path::new("/bin/npx"), &home, Path::new("/out"));
+        let args: Vec<&str> = server["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+        let script = args.windows(2).find(|w| w[0] == "--init-page").unwrap()[1];
+        let text = std::fs::read_to_string(script).unwrap();
+        assert!(text.contains(&*state_file(&home).to_string_lossy()) && !text.contains("__STATE__"), "{text}");
+        std::fs::remove_dir_all(&home).unwrap();
     }
 }

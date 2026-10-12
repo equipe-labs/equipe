@@ -513,6 +513,8 @@ fn doing(agent: &Agent) -> &'static str {
             "ticket" => "updating the board",
             "comment" => "commenting",
             "hand in" => "handing in",
+            "browse" => "browsing",
+            "ask you" => "waiting for you",
             _ => "working",
         },
         Some(Entry::Reply { .. }) => "writing",
@@ -698,7 +700,7 @@ You can talk to it directly — the PM hears about it."
                     }
                 };
                 // Looking around — reads, searches, fetches — merges into one line.
-                let merges = matches!(verb.as_str(), "read" | "search" | "fetch" | "recall");
+                let merges = matches!(verb.as_str(), "read" | "search" | "fetch" | "recall" | "browse");
                 match run.last_mut() {
                     Some(line) if merges && line.verb == verb => {
                         if !target.is_empty() && !line.targets.contains(&target) {
@@ -1094,6 +1096,7 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         "Bash" => "run",
         "Write" | "Edit" | "MultiEdit" => "edit",
         "WebFetch" => "fetch",
+        "Confirm" => "do",
         other => other,
     };
     let bar = || Span::styled("▎ ", theme.accent());
