@@ -62,6 +62,10 @@ pub struct Agent {
     pub tokens: u64,
     /// Lines scrolled up from the bottom; 0 follows new output.
     pub scroll_back: usize,
+    /// Lines that arrived while the person was scrolled up.
+    pub unseen: usize,
+    /// When its current turn started, for the elapsed time shown while it works.
+    pub working_since: Option<Instant>,
     /// Where it works now; tool paths are shown relative to it.
     pub base: PathBuf,
     /// Its desk, where it works between tickets.
@@ -87,6 +91,8 @@ impl Agent {
             queued: Vec::new(),
             tokens: 0,
             scroll_back: 0,
+            unseen: 0,
+            working_since: None,
             desk: base.clone(),
             base,
             pending: None,
@@ -116,6 +122,9 @@ impl Agent {
             queued: info.queued,
             tokens: info.tokens,
             scroll_back: 0,
+            unseen: 0,
+            // Attached mid-turn: the clock starts now, not when the turn did.
+            working_since: (info.state == SessionState::Working).then(Instant::now),
             base,
             desk: info.project,
             pending: None,
@@ -151,6 +160,44 @@ impl Agent {
     pub fn is_open(&self) -> bool {
         !matches!(self.state, AgentState::Closed | AgentState::Failed)
     }
+
+    /// It is busy now: start the clock, unless it is already running.
+    fn start_working(&mut self) {
+        self.state = AgentState::Working;
+        self.working_since.get_or_insert_with(Instant::now);
+    }
+
+    /// Its turn ended: leave a quiet line saying how long it took.
+    fn stop_working(&mut self) {
+        if let Some(since) = self.working_since.take() {
+            let took = since.elapsed();
+            if took >= Duration::from_secs(1) {
+                let at = clock_time();
+                self.transcript.push_local(Entry::Note { text: format!("─ worked {}{at}", elapsed(took)) });
+            }
+        }
+    }
+}
+
+/// `1m 05s`, `42s`, `1h 02m` — how long something has been going.
+pub fn elapsed(took: Duration) -> String {
+    let s = took.as_secs();
+    match s {
+        0..=59 => format!("{s}s"),
+        60..=3599 => format!("{}m {:02}s", s / 60, s % 60),
+        _ => format!("{}h {:02}m", s / 3600, (s % 3600) / 60),
+    }
+}
+
+/// ` · 14:32`, the local time, when the system can tell it.
+fn clock_time() -> String {
+    std::process::Command::new("date")
+        .arg("+%H:%M")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| format!(" · {}", String::from_utf8_lossy(&o.stdout).trim()))
+        .unwrap_or_default()
 }
 
 pub struct App {
@@ -184,11 +231,11 @@ const HELP: &str = "The PM is your main contact: tell it what you want; it puts 
 equipe hands each ticket to its owner. Talk to anyone directly — Tab or @name — and the PM hears about it.\n\
 Enter sends; while a member works, a message waits as a memo until its turn ends · Esc stops it (a waiting \
 memo goes in at once) · Alt-Enter or Ctrl-J adds a line · PgUp/PgDn or the wheel scroll · Ctrl-B shows the board · \
-Ctrl-C twice leaves — the squad keeps working.\n\
+End jumps to the latest line · Ctrl-C twice leaves — the squad keeps working.\n\
 /add <role…> [codex|claude] brings in teammates: pm, designer, frontend, backend, qa, data, or custom <name> · \
 /accept T-3 approves handed-in work · /reopen T-3 <what to change> sends it back · /cancel T-3 drops it · \
 /board · /mode [member] plan|ask|auto|full sets how much members do on their own — y/a/n answers a request \
-for permission (allow, always allow, decline) · /mouse lets the terminal select text · /close removes the selected \
+for permission (allow, always allow, decline) · /mouse lets the terminal select text (or hold Shift — Option in iTerm2 — while dragging) · /close removes the selected \
 member · /quit leaves.";
 
 impl App {
@@ -236,13 +283,33 @@ impl App {
     }
 
     /// A member's conversation grew by `lines`. Someone scrolled up to read keeps
-    /// their place instead of being carried along.
+    /// their place instead of being carried along, and is told what arrived.
     pub fn grew(&mut self, id: SessionId, lines: usize) {
         if let Some(agent) = self.agents.iter_mut().find(|a| a.id == id)
             && agent.scroll_back > 0
         {
             agent.scroll_back += lines;
+            agent.unseen += lines;
         }
+    }
+
+    /// Whether a member waits for the person — a request for permission.
+    pub fn needs_you(&self, agent: &Agent) -> bool {
+        self.approvals.iter().any(|a| a.session == agent.id)
+    }
+
+    /// The order the squad is listed in: whoever needs the person first, then
+    /// who is working, then the rest — each group in the order they joined.
+    pub fn display_order(&self) -> Vec<usize> {
+        let rank = |agent: &Agent| match agent.state {
+            _ if self.needs_you(agent) => 0,
+            AgentState::Working => 1,
+            AgentState::Starting | AgentState::Ready => 2,
+            AgentState::Closing | AgentState::Closed | AgentState::Failed => 3,
+        };
+        let mut order: Vec<usize> = (0..self.agents.len()).collect();
+        order.sort_by_key(|&i| rank(&self.agents[i]));
+        order
     }
 
     /// The mode a member works in: its own, or the squad's.
@@ -340,14 +407,15 @@ impl App {
                 agent.base = project.clone();
                 agent.desk = project;
                 if let Some(text) = agent.pending.take() {
-                    agent.state = AgentState::Working;
+                    agent.start_working();
                     commands.push(Command::Submit { session: id, text });
                 }
             }
             Event::UserMessage { .. } => {
                 // Typed on another screen, perhaps: either way it is busy now.
-                agent.state = AgentState::Working;
+                agent.start_working();
                 agent.scroll_back = 0;
+                agent.unseen = 0;
                 // Waiting memos are delivered together as one message.
                 agent.queued.clear();
             }
@@ -357,8 +425,9 @@ impl App {
                 agent.base = workspace.as_ref().map_or(project, |ws| ws.path.clone());
                 agent.branch = workspace.map(|ws| ws.branch);
                 // Its first turn on the ticket starts right away.
-                agent.state = AgentState::Working;
+                agent.start_working();
                 agent.scroll_back = 0;
+                agent.unseen = 0;
             }
             Event::WorkEnded { .. } => {
                 agent.ticket = None;
@@ -370,6 +439,7 @@ impl App {
                 if agent.state == AgentState::Working {
                     agent.state = AgentState::Ready;
                 }
+                agent.stop_working();
                 if let Some(u) = usage {
                     agent.tokens += u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0);
                 }
@@ -454,6 +524,8 @@ impl App {
             KeyCode::Left => self.composer.left(),
             KeyCode::Right => self.composer.right(),
             KeyCode::Home => self.composer.home(),
+            // With nothing typed, End jumps back to the latest line.
+            KeyCode::End if self.composer.is_empty() => self.jump_to_latest(),
             KeyCode::End => self.composer.end(),
             KeyCode::Char('a') if ctrl => self.composer.home(),
             KeyCode::Char('e') if ctrl => self.composer.end(),
@@ -496,12 +568,22 @@ impl App {
     }
 
     fn cycle(&mut self, step: isize) {
-        let n = self.agents.len() as isize;
+        // Tab walks the squad in the order it is listed.
+        let order = self.display_order();
+        let n = order.len() as isize;
         if n > 0 {
-            self.selected = (self.selected as isize + step).rem_euclid(n) as usize;
+            let at = order.iter().position(|&i| i == self.selected).unwrap_or(0) as isize;
+            self.selected = order[(at + step).rem_euclid(n) as usize];
         }
         // Picking someone means talking to them.
         self.pane = Pane::Conversation;
+    }
+
+    fn jump_to_latest(&mut self) {
+        if let Some(agent) = self.agents.get_mut(self.selected) {
+            agent.scroll_back = 0;
+            agent.unseen = 0;
+        }
     }
 
     fn scroll(&mut self, lines: isize) {
@@ -512,6 +594,9 @@ impl App {
             Pane::Conversation => {
                 if let Some(agent) = self.agents.get_mut(self.selected) {
                     agent.scroll_back = scrolled(agent.scroll_back);
+                    if agent.scroll_back == 0 {
+                        agent.unseen = 0;
+                    }
                 }
             }
         }
@@ -1218,6 +1303,43 @@ mod tests {
         app.on_event(Event::ModeChanged { squad: "acme".into(), member: None, mode: Some(Mode::Ask) });
         assert_eq!(app.mode_of(&app.agents[1]), Mode::Plan);
         assert_eq!(app.mode_of(&app.agents[0]), Mode::Ask);
+    }
+
+    #[test]
+    fn a_turn_leaves_how_long_it_took_and_elapsed_reads_like_a_clock() {
+        assert_eq!(elapsed(Duration::from_secs(42)), "42s");
+        assert_eq!(elapsed(Duration::from_secs(65)), "1m 05s");
+        assert_eq!(elapsed(Duration::from_secs(3720)), "1h 02m");
+        let (mut app, id) = ready();
+        app.on_event(Event::UserMessage { session: id, text: "go".into() });
+        assert!(app.agents[0].working_since.is_some());
+        app.agents[0].working_since = Some(Instant::now() - Duration::from_secs(125));
+        app.on_event(Event::TurnEnded { session: id, outcome: TurnOutcome::Completed, usage: None });
+        assert!(app.agents[0].working_since.is_none());
+        assert!(matches!(app.agents[0].transcript.entries().last(), Some(Entry::Note { text }) if text.starts_with("─ worked 2m 05s")));
+    }
+
+    #[test]
+    fn whoever_needs_the_person_is_listed_first_and_tab_follows_the_list() {
+        let (mut app, pm, frontend) = team();
+        app.on_event(Event::UserMessage { session: frontend, text: "go".into() });
+        assert_eq!(app.display_order(), [1, 0], "working before ready");
+        app.on_event(Event::ApprovalRequested { squad: "acme".into(), approval: approval(1) });
+        assert_eq!(app.display_order(), [1, 0]);
+        assert!(app.needs_you(&app.agents[1]));
+        assert_eq!(app.selected().unwrap().id, pm);
+        app.on_key(key(KeyCode::Tab), Instant::now());
+        assert_eq!(app.selected().unwrap().id, frontend, "Tab wraps round the listed order");
+    }
+
+    #[test]
+    fn scrolled_up_new_lines_are_counted_and_end_jumps_back() {
+        let (mut app, pm, _) = team();
+        app.on_mouse(MouseEventKind::ScrollUp);
+        app.grew(pm, 4);
+        assert_eq!(app.agents[0].unseen, 4);
+        app.on_key(key(KeyCode::End), Instant::now());
+        assert_eq!((app.agents[0].scroll_back, app.agents[0].unseen), (0, 0));
     }
 
     #[test]

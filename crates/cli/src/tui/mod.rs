@@ -14,7 +14,7 @@ mod view;
 
 use std::io::Write as _;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event as Input, EventStream,
@@ -85,8 +85,15 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         terminal.draw(|f| view::render(f, app, theme, branch.as_deref(), layouts)).map(|_| ())
     };
     draw(&mut terminal, &mut app, &mut layouts)?;
+    // A working member's clock ticks; with nobody working, nothing redraws on a timer.
+    let mut clock = tokio::time::interval(Duration::from_secs(1));
     loop {
         tokio::select! {
+            _ = clock.tick() => {
+                if app.working() == 0 {
+                    continue;
+                }
+            }
             Some(Ok(event)) = input.next() => {
                 if !on_input(&mut app, &client, event) {
                     continue;
