@@ -25,6 +25,12 @@ pub struct Start {
 const STARTERS: [(&str, bool); 5] =
     [("designer", true), ("frontend", true), ("backend", false), ("qa", false), ("data", false)];
 
+/// The team from the onboarding menu's picks: item 0 is the PM, who joins
+/// whether or not it was left ticked; the rest are the starters.
+fn team_from_picks(picked: &[usize]) -> Vec<&'static str> {
+    std::iter::once(equipe_core::roles::PM).chain(picked.iter().filter(|&&i| i > 0).map(|&i| STARTERS[i - 1].0)).collect()
+}
+
 /// The team a squad started from the console begins with: the PM, then the
 /// roles ticked by default.
 pub fn starting_team() -> Vec<String> {
@@ -102,15 +108,15 @@ pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
         })
         .interact_text()
         .map_err(|err| err.to_string())?;
-    let labels: Vec<String> = STARTERS
-        .iter()
-        .map(|(id, _)| {
-            let role = equipe_core::roles::role(id).expect("a built-in role");
-            menu_item(&format!("{id:<10}{}", role.summary), menu)
-        })
-        .collect();
-    let ticked: Vec<bool> = STARTERS.iter().map(|(_, on)| *on).collect();
-    eprintln!("{}", e.note(2, "The PM joins first. Space toggles, enter confirms."));
+    // The PM heads the list, ticked, so the person sees who leads the team; it
+    // joins whatever is toggled — a squad always has its PM.
+    let mut labels = vec![menu_item(&format!("{:<10}your main contact — plans the work · always on the team", "pm"), menu)];
+    labels.extend(STARTERS.iter().map(|(id, _)| {
+        let role = equipe_core::roles::role(id).expect("a built-in role");
+        menu_item(&format!("{id:<10}{}", role.summary), menu)
+    }));
+    let ticked: Vec<bool> = std::iter::once(true).chain(STARTERS.iter().map(|(_, on)| *on)).collect();
+    eprintln!("{}", e.note(2, "Space toggles, enter confirms. The PM is always on the team."));
     let picked = dialoguer::MultiSelect::with_theme(&*theme)
         .with_prompt(ui::fit("Who's on the team?", menu))
         .items(&labels)
@@ -119,8 +125,8 @@ pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
         .interact_opt()
         .map_err(|err| err.to_string())?
         .ok_or("Nothing changed.")?;
+    let team = team_from_picks(&picked);
     // The answer in a line, not the whole menu again.
-    let team: Vec<&str> = std::iter::once("pm").chain(picked.iter().map(|&i| STARTERS[i].0)).collect();
     eprintln!("{} {} {} {}", e.accent("✓"), e.bold("Team"), e.dim("·"), team.join(", "));
     // How much the squad does on its own: Auto unless the person says otherwise.
     let modes: Vec<String> = Mode::ALL
@@ -128,7 +134,7 @@ pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
         .map(|m| {
             // Up front, so a narrow terminal cuts the description, not the advice.
             let note = if *m == Mode::Auto { "recommended · " } else { "" };
-            menu_item(&format!("{:<13}{note}{}", m.label(), m.summary()), menu)
+            menu_item(&format!("{:<13}{note}{}", m.label(), m.short()), menu)
         })
         .collect();
     let auto = Mode::ALL.iter().position(|m| *m == Mode::Auto).unwrap_or(0);
@@ -147,8 +153,7 @@ pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
     equipe_core::journal::Journal::for_squad(&home, &squad)
         .and_then(|j| j.set_mode(mode))
         .map_err(|err| err.to_string())?;
-    let mut members = vec![equipe_core::roles::PM.to_owned()];
-    members.extend(picked.into_iter().map(|i| STARTERS[i].0.to_owned()));
+    let members: Vec<String> = team.iter().map(|r| (*r).to_owned()).collect();
     eprintln!();
     Ok(Start { squad, members })
 }

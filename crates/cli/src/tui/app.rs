@@ -1254,7 +1254,7 @@ impl App {
     fn set_mode(&mut self, rest: &str) -> Vec<Command> {
         let words: Vec<&str> = rest.split_whitespace().collect();
         let usage = || {
-            let modes: Vec<String> = Mode::ALL.iter().map(|m| format!("{} ({})", m.label(), m.summary())).collect();
+            let modes: Vec<String> = Mode::ALL.iter().map(|m| format!("{} ({})", m.label(), m.short())).collect();
             format!("Modes: {} · /mode <mode> for the squad, /mode <member> <mode> for one", modes.join(" · "))
         };
         let squad = self.squad.clone();

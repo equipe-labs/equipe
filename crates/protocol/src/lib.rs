@@ -168,7 +168,17 @@ impl Mode {
         }
     }
 
-    /// What it means, in a line.
+    /// What it means, short enough for a menu line.
+    pub fn short(self) -> &'static str {
+        match self {
+            Mode::ReadOnly => "reads and plans; changes nothing",
+            Mode::Ask => "asks before every edit and command",
+            Mode::Auto => "works alone, sandboxed; asks for anything beyond",
+            Mode::Full => "asks nothing, except to act in your name",
+        }
+    }
+
+    /// What it means, in full.
     pub fn summary(self) -> &'static str {
         match self {
             Mode::ReadOnly => "reads and plans — changes nothing, runs nothing but looking around",

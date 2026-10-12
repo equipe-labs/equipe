@@ -163,7 +163,7 @@ fn mode_about(word: &str, now: Option<Mode>, who: &str) -> String {
         return String::new();
     };
     let on = if now == Some(mode) { format!("now, for {who} · ") } else { String::new() };
-    format!("{on}{}", mode.summary())
+    format!("{on}{}", mode.short())
 }
 
 /// Folders that complete a typed path — `~/Pro` → `~/Projects/` — not the
@@ -233,7 +233,7 @@ mod tests {
         assert_eq!(texts(&complete("/mode f", &ctx())), ["/mode full", "/mode frontend "]);
         assert_eq!(texts(&complete("/mode frontend a", &ctx())), ["/mode frontend ask", "/mode frontend auto"]);
         let modes = complete("/mode ", &ctx());
-        assert!(modes[2].about.starts_with("now, for the squad · edits, installs"), "{:?}", modes[2]);
+        assert!(modes[2].about.starts_with("now, for the squad · works alone, sandboxed"), "{:?}", modes[2]);
         assert!(modes.iter().any(|c| c.label == "frontend" && c.about.contains("full access of its own")), "{modes:?}");
         assert!(complete("/mode pm s", &ctx()).iter().any(|c| c.about.contains("back on the squad's mode (auto)")));
         assert_eq!(texts(&complete("/add designer q", &ctx())), ["/add designer qa "]);
