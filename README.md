@@ -135,7 +135,13 @@ curl -fsSL https://github.com/equipe-labs/equipe/releases/latest/download/instal
 ```
 
 That puts a prebuilt `equipe` in `~/.local/bin` (checked against its SHA-256)
-and adds it to your PATH. Then, in your project:
+and adds it to your PATH. Or with Homebrew:
+
+```bash
+brew install equipe-labs/tap/equipe
+```
+
+Then, in your project:
 
 ```bash
 equipe
@@ -145,7 +151,7 @@ The first run sets up your squad. Members run on
 [Claude Code](https://code.claude.com/docs/en/setup) with your own plan, or on a
 ChatGPT plan with `equipe login codex`.
 
-**Update** with `equipe update`. When a squad is running, `equipe daemon restart`
+**Update** with `equipe update` (or `brew upgrade equipe`). When a squad is running, `equipe daemon restart`
 once no one is working puts it on the new build.
 
 <details>
