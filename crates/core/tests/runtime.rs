@@ -738,6 +738,41 @@ async fn a_restarted_runtime_resumes_a_member_on_its_ticket() {
 }
 
 #[tokio::test]
+async fn memos_and_the_pms_briefing_survive_a_restart() {
+    // The PM says whether it was briefed; the designer's work runs long.
+    let claude = fake_claude(
+        true,
+        &format!(
+            "case \"$*\" in *\"since your last turn\"*) T=briefed;; *\"long job\"*|*footer*) exec sleep 30;; *) T=plain;; esac\n{}",
+            answering("$T")
+        ),
+    );
+    let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
+    {
+        let (handle, mut events) = runtime::start(config(&claude, &home, true));
+        add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+        add(&handle, &mut events, 2, member(&cwd, "designer")).await;
+        handle.send(Command::Submit { session: 2, text: "long job".into() });
+        until(&mut events, |e| matches!(e, Event::UserMessage { session: 2, .. })).await;
+        handle.send(Command::Submit { session: 2, text: "and the footer".into() });
+        until(&mut events, |e| matches!(e, Event::MessageQueued { .. })).await;
+        handle.shutdown().await;
+    }
+
+    let (handle, mut events) = runtime::start(config(&claude, &home, true));
+    // The memo waited for a turn that the restart ended: it goes in now.
+    let snapshot = handle.snapshot("acme").await;
+    let designer = snapshot.sessions.iter().find(|s| s.session == 2).unwrap();
+    assert!(designer.queued.is_empty(), "{:?}", designer.queued);
+    assert!(text_entries(&designer.recent).contains(&"user: and the footer".to_owned()), "{:?}", designer.recent);
+    // And the PM still hears what the person told the designer.
+    handle.send(Command::Submit { session: 1, text: "status?".into() });
+    let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    assert_eq!(text_of(&turn), "briefed");
+}
+
+#[tokio::test]
 async fn the_journal_keeps_finished_replies_not_streaming_fragments() {
     // Three fragments stream; one reply is kept.
     let claude = fake_claude(

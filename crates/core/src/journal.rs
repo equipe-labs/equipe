@@ -227,7 +227,14 @@ impl Journal {
         // Columns added after the first release; a journal that has them already
         // refuses the ALTER, which is fine.
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS allowed (
+            "CREATE TABLE IF NOT EXISTS waiting (
+               session INTEGER NOT NULL,
+               kind TEXT NOT NULL,
+               seq INTEGER NOT NULL,
+               text TEXT NOT NULL,
+               PRIMARY KEY (session, kind, seq)
+             ) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS allowed (
                rule TEXT PRIMARY KEY,
                by TEXT NOT NULL,
                added_at INTEGER NOT NULL
@@ -507,7 +514,27 @@ impl Journal {
     }
 
     pub fn close_session(&self, id: SessionId) -> Result<()> {
+        self.conn.execute("DELETE FROM waiting WHERE session = ?1", params![id as i64])?;
         self.touch(id, "open", false)
+    }
+
+    /// What waits for a member's next turn, as it stands now: `memo`s from the
+    /// person, the PM's `briefing`. Kept so a restart loses none of it.
+    pub fn set_waiting(&self, id: SessionId, kind: &str, texts: &[String]) -> Result<()> {
+        self.conn.execute("DELETE FROM waiting WHERE session = ?1 AND kind = ?2", params![id as i64, kind])?;
+        for (seq, text) in texts.iter().enumerate() {
+            self.conn.execute(
+                "INSERT INTO waiting (session, kind, seq, text) VALUES (?1, ?2, ?3, ?4)",
+                params![id as i64, kind, seq as i64, text],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn waiting(&self, id: SessionId, kind: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT text FROM waiting WHERE session = ?1 AND kind = ?2 ORDER BY seq")?;
+        let rows = stmt.query_map(params![id as i64, kind], |r| r.get::<_, String>(0))?;
+        rows.collect()
     }
 
     /// Append one conversation line.

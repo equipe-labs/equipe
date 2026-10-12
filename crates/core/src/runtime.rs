@@ -162,13 +162,19 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         pending: HashMap::new(),
         next_approval: 1,
     };
+    let mut memos = Vec::new();
     if runtime.config.persist {
         runtime.restore();
         runtime.prune();
-        runtime.resume_work();
+        memos = runtime.resume_work();
     }
     tokio::spawn(run(runtime, req_rx, internal_rx));
-    (Handle { requests: req_tx }, evt_rx)
+    let handle = Handle { requests: req_tx };
+    // Memos for a turn the restart ended go in first, as if just sent.
+    for (session, text) in memos {
+        handle.send(Command::Submit { session, text });
+    }
+    (handle, evt_rx)
 }
 
 /// The project a directory belongs to: its repository root, or itself.
@@ -417,6 +423,20 @@ impl Runtime {
 
     // ── squads ──
 
+    /// Keep what waits for `id`'s next turn in its journal.
+    fn save_waiting(&mut self, id: SessionId) {
+        let Some(session) = self.sessions.get(&id) else {
+            return;
+        };
+        let (Some(squad), queued, briefing) = (session.squad.clone(), session.queued.clone(), session.briefing.clone()) else {
+            return;
+        };
+        if let Some(journal) = self.journal(&squad) {
+            let _ = journal.set_waiting(id, "memo", &queued);
+            let _ = journal.set_waiting(id, "briefing", &briefing);
+        }
+    }
+
     fn journal(&mut self, squad: &str) -> Option<&Journal> {
         journal_for(&mut self.journals, &self.config.home, squad)
     }
@@ -478,6 +498,7 @@ impl Runtime {
         if let Some(session) = self.sessions.get_mut(&pm) {
             session.briefing.push(line);
         }
+        self.save_waiting(pm);
         if let Some(text) = shown {
             self.publish(Event::Notice { session: pm, text });
         }
@@ -709,6 +730,7 @@ impl Runtime {
         if session.is_working() {
             // A memo: it waits for the turn to end rather than cutting in.
             session.queued.push(text.clone());
+            self.save_waiting(id);
             return self.publish(Event::MessageQueued { session: id, text });
         }
         if !self.ensure_codex(id).await {
@@ -735,6 +757,7 @@ impl Runtime {
                 briefing.iter().map(|line| format!("- {line}")).collect::<Vec<_>>().join("\n")
             ),
         };
+        self.save_waiting(id);
         self.start_turn(id, prompt);
     }
 
@@ -962,6 +985,7 @@ impl Runtime {
             && !session.queued.is_empty()
         {
             let text = std::mem::take(&mut session.queued).join("\n\n");
+            self.save_waiting(id);
             Box::pin(self.submit(id, text)).await;
         }
         if let Some(squad) = squad {
@@ -1703,8 +1727,8 @@ End your turn now with a short summary.",
                         tokens: record.tokens,
                         transcript: Transcript::from_entries(conversation),
                         turn: None,
-                        queued: Vec::new(),
-                        briefing: Vec::new(),
+                        queued: journal.waiting(record.id, "memo").unwrap_or_default(),
+                        briefing: journal.waiting(record.id, "briefing").unwrap_or_default(),
                         memory,
                         mode: record.mode,
                     },
@@ -1717,13 +1741,28 @@ End your turn now with a short summary.",
     /// Members that were on a ticket when the daemon stopped carry on with it —
     /// a squad keeps working through a restart. (Codex members wait for their
     /// next message: their login loads on first use.)
-    fn resume_work(&mut self) {
+    fn resume_work(&mut self) -> Vec<(SessionId, String)> {
         let on_tickets: Vec<(SessionId, TicketId)> = self
             .sessions
             .iter()
             .filter(|(_, s)| s.engine == Engine::Claude)
             .filter_map(|(&id, s)| s.work.as_ref().map(|w| (id, w.ticket)))
             .collect();
+        // Memos for a turn the restart ended are handed back to be sent; a
+        // member back on its ticket gets them when that turn ends, as before.
+        let idle: Vec<SessionId> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.engine == Engine::Claude && s.work.is_none() && !s.queued.is_empty())
+            .map(|(&id, _)| id)
+            .collect();
+        let mut memos = Vec::new();
+        for id in idle {
+            if let Some(session) = self.sessions.get_mut(&id) {
+                memos.push((id, std::mem::take(&mut session.queued).join("\n\n")));
+            }
+            self.save_waiting(id);
+        }
         for (id, ticket) in on_tickets {
             self.publish(Event::Notice { session: id, text: format!("equipe restarted; picking T-{ticket} up again.") });
             self.start_turn(
@@ -1734,6 +1773,7 @@ check what is already done in your worktree first."
                 ),
             );
         }
+        memos
     }
 
     /// Prune conversations past the retention window in every journal.
