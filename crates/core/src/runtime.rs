@@ -419,6 +419,7 @@ impl Runtime {
             Command::Reopen { squad, ticket, note } => self.reopen(&squad, ticket, note).await,
             Command::Cancel { squad, ticket } => self.cancel(&squad, ticket).await,
             Command::SetMode { squad, member, mode } => self.set_mode(&squad, member, mode),
+            Command::ShowBrowser { squad, member, show } => self.show_browser(&squad, member, show),
             Command::Decide { squad, approval, decision } => {
                 if self.pending.get(&approval).is_some_and(|p| p.squad == squad) {
                     self.answer(approval, decision, "");
@@ -787,11 +788,16 @@ impl Runtime {
                 // Page snapshots and screenshots: in the temp folder, readable without
                 // asking, and never in the project.
                 let output = std::env::temp_dir().join("equipe-browser").join(squad).join(&m.name);
-                Some(browser::server(npx, &self.config.home, &output))
+                let shown = self.journals.get(squad).is_some_and(|j| j.browser_shown(&m.name));
+                Some(browser::server(npx, &self.config.home, &output, shown))
             }
             _ => None,
         };
         let browses_freely = browser.is_some() && matches!(mode, Mode::Auto | Mode::Full);
+        // Code run in the browser's own process is outside any sandbox: in auto
+        // the person sees the code and says yes; in full it runs.
+        let ask_tools: Vec<String> =
+            if browser.is_some() && mode == Mode::Auto { vec![permissions::BROWSER_CODE.to_owned()] } else { Vec::new() };
         let mcp_config = match (&squad, &session.member, &self.config.equipe_binary) {
             (Some(squad), Some(m), Some(binary)) if board_tools => {
                 let mut servers = json!({ MCP_SERVER: {
@@ -896,6 +902,7 @@ impl Runtime {
                         mcp_config: mcp_config.as_deref(),
                         allowed_tools: &allowed,
                         disallowed_tools: &blocked,
+                        ask_tools: &ask_tools,
                         sandbox: fenced.then_some(claude_code::Sandbox { allowed_domains: &domains, ask: &outward, deny_read: &private }),
                         prompt_tool: prompt_tool.as_deref(),
                     };
@@ -1542,6 +1549,17 @@ impl Runtime {
     fn audit(&mut self, squad: &str, ticket: Option<TicketId>, by: &str, what: &str, action: &str) {
         if let (Some(ticket), Some(journal)) = (ticket, self.journal(squad)) {
             let _ = journal.ticket_event(ticket, by, what, action);
+        }
+    }
+
+    /// Members' browsers on screen or hidden, from their next turn.
+    fn show_browser(&mut self, squad: &str, member: Option<String>, show: bool) {
+        let team: Vec<String> = self.team(squad).into_iter().map(|(_, name, _)| name.to_owned()).collect();
+        if let Some(name) = member.as_deref().filter(|name| !team.iter().any(|t| t == name)) {
+            return self.squad_error(squad, format!("No one called {name} on the squad."));
+        }
+        if let Some(journal) = self.journal(squad) {
+            let _ = journal.show_browser(member.as_deref(), show, &team);
         }
     }
 

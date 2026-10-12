@@ -895,7 +895,11 @@ async fn once_the_person_signs_in_members_browse_as_them() {
     assert!(args.windows(2).any(|w| w == ["--storage-state", &*state.to_string_lossy()]), "signed in as the person: {args:?}");
     assert!(args.contains(&"--headless") && args.contains(&"--isolated"), "{args:?}");
     assert!(call.iter().any(|a| a == "mcp__browser"), "in auto it browses without asking");
-    assert!(call.iter().any(|a| a == "mcp__browser__browser_run_code_unsafe"), "but never runs code outside the sandbox");
+    let settings: serde_json::Value = serde_json::from_str(arg(&call, "--settings").unwrap()).unwrap();
+    assert!(
+        settings["permissions"]["ask"].as_array().unwrap().iter().any(|r| r == "mcp__browser__browser_run_code_unsafe"),
+        "but code outside the sandbox asks first: {settings}"
+    );
     let output = args.windows(2).find(|w| w[0] == "--output-dir").unwrap()[1];
     assert!(output.starts_with(&*std::env::temp_dir().to_string_lossy()), "pages it saves stay out of the project: {output}");
     let charter = arg(&call, "--append-system-prompt").unwrap();
@@ -906,6 +910,81 @@ async fn once_the_person_signs_in_members_browse_as_them() {
     until(&mut events, |e| matches!(e, Event::ModeChanged { member: None, .. })).await;
     let call = turn(&handle, &mut events).await;
     assert!(browser_of(&call).is_null(), "{call:?}");
+}
+
+#[tokio::test]
+async fn the_browser_shows_on_screen_when_asked_and_its_code_tool_follows_the_mode() {
+    let repo = repo();
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    let state = equipe_core::browser::state_file(&home);
+    std::fs::create_dir_all(state.parent().unwrap()).unwrap();
+    std::fs::write(&state, "{}").unwrap();
+    let (handle, mut events) = runtime::start(Config { npx: Some("/opt/npx".into()), ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    let turn = async |handle: &Handle, events: &mut UnboundedReceiver<Event>, session: u64| {
+        handle.send(Command::Submit { session, text: "go".into() });
+        until(events, |e| matches!(e, Event::TurnEnded { session: s, .. } if *s == session)).await;
+        let call = calls(&recorded).pop().unwrap();
+        let mcp: serde_json::Value = serde_json::from_str(arg(&call, "--mcp-config").unwrap()).unwrap();
+        let args: Vec<String> =
+            mcp["mcpServers"]["browser"]["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().to_owned()).collect();
+        let settings: serde_json::Value = arg(&call, "--settings").map_or(serde_json::Value::Null, |s| serde_json::from_str(s).unwrap());
+        (call, args, settings)
+    };
+    let asks_for_code = |settings: &serde_json::Value| {
+        settings["permissions"]["ask"].as_array().is_some_and(|a| a.iter().any(|r| r == "mcp__browser__browser_run_code_unsafe"))
+    };
+
+    // Headless by default; in auto, running code in the browser asks first.
+    let (call, args, settings) = turn(&handle, &mut events, 1).await;
+    assert!(args.iter().any(|a| a == "--headless"), "{args:?}");
+    assert!(asks_for_code(&settings), "{settings}");
+    assert!(!call.iter().any(|a| a == "mcp__browser__browser_run_code_unsafe"), "not blocked: {call:?}");
+
+    // On screen for one member, the rest stay hidden.
+    handle.send(Command::ShowBrowser { squad: "acme".into(), member: Some("pm".into()), show: true });
+    let (_, args, _) = turn(&handle, &mut events, 1).await;
+    assert!(!args.iter().any(|a| a == "--headless"), "{args:?}");
+    let (_, args, _) = turn(&handle, &mut events, 2).await;
+    assert!(args.iter().any(|a| a == "--headless"), "frontend's stays hidden: {args:?}");
+    // For everyone, then hidden again — and kept in the squad's journal.
+    handle.send(Command::ShowBrowser { squad: "acme".into(), member: None, show: true });
+    let (_, args, _) = turn(&handle, &mut events, 2).await;
+    assert!(!args.iter().any(|a| a == "--headless"), "{args:?}");
+    handle.send(Command::ShowBrowser { squad: "acme".into(), member: Some("frontend".into()), show: false });
+    let (_, args, _) = turn(&handle, &mut events, 2).await;
+    assert!(args.iter().any(|a| a == "--headless"), "{args:?}");
+    let (_, args, _) = turn(&handle, &mut events, 1).await;
+    assert!(!args.iter().any(|a| a == "--headless"), "pm still shows: {args:?}");
+    assert!(Journal::for_squad(&home, "acme").unwrap().browser_shown("pm"));
+
+    // In full, the code runs without asking.
+    handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::Full) });
+    until(&mut events, |e| matches!(e, Event::ModeChanged { .. })).await;
+    let (_, _, settings) = turn(&handle, &mut events, 1).await;
+    assert!(!asks_for_code(&settings), "{settings}");
+}
+
+#[tokio::test]
+async fn running_code_in_the_browser_shows_the_code_to_the_person() {
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&repo])));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    let code = "async (page) => {\n  await page.goto('https://vercel.com');\n  return page.title();\n}";
+    let handle2 = handle.clone();
+    let arguments = serde_json::json!({ "tool_name": "mcp__browser__browser_run_code_unsafe", "input": { "code": code } });
+    let waiting = tokio::spawn(async move { tool(&handle2, "frontend", "approve", arguments).await });
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    assert_eq!(approval.action, code, "the person sees the code itself");
+    assert!(approval.reason.as_deref().is_some_and(|r| r.contains("outside the sandbox")), "{:?}", approval.reason);
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow });
+    let verdict: serde_json::Value = serde_json::from_str(&waiting.await.unwrap().text).unwrap();
+    assert_eq!(verdict["behavior"], "allow");
 }
 
 #[tokio::test]

@@ -277,6 +277,43 @@ impl Journal {
             .flatten()
     }
 
+    /// Whose browser opens on screen: everyone's, or the members named.
+    fn shown_browsers(&self) -> (bool, Vec<String>) {
+        let value: Option<String> =
+            self.conn.query_row("SELECT value FROM meta WHERE key = 'browser_shown'", [], |r| r.get(0)).optional().ok().flatten();
+        let value: serde_json::Value = value.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default();
+        let members = value["members"].as_array().into_iter().flatten().filter_map(|m| m.as_str().map(str::to_owned)).collect();
+        (value["all"].as_bool().unwrap_or(false), members)
+    }
+
+    /// Whether `member`'s browser opens on screen rather than hidden.
+    pub fn browser_shown(&self, member: &str) -> bool {
+        let (all, members) = self.shown_browsers();
+        all || members.iter().any(|m| m == member)
+    }
+
+    /// Show or hide one member's browser, or everyone's; `team` is who is on
+    /// the squad, so hiding one of "everyone" leaves the others shown.
+    pub fn show_browser(&self, member: Option<&str>, show: bool, team: &[String]) -> Result<()> {
+        let (all, mut members) = self.shown_browsers();
+        let (all, members) = match (member, show) {
+            (None, show) => (show, Vec::new()),
+            (Some(name), true) => {
+                if !members.iter().any(|m| m == name) {
+                    members.push(name.to_owned());
+                }
+                (all, members)
+            }
+            (Some(name), false) => {
+                let shown: Vec<String> = if all { team.to_vec() } else { members };
+                (false, shown.into_iter().filter(|m| m != name).collect())
+            }
+        };
+        let value = serde_json::json!({ "all": all, "members": members }).to_string();
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('browser_shown', ?1)", [value])?;
+        Ok(())
+    }
+
     pub fn set_language(&self, language: &str) -> Result<()> {
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('language', ?1)", [language])?;
         Ok(())

@@ -265,6 +265,9 @@ pub enum Command {
     SetMode { squad: SquadName, member: Option<String>, mode: Option<Mode> },
     /// The person answers a member's request for permission.
     Decide { squad: SquadName, approval: u64, decision: Decision },
+    /// Members' browsers open on screen (`show`) or run hidden: one member's,
+    /// or (`member: None`) everyone's. Kept for the squad.
+    ShowBrowser { squad: SquadName, member: Option<String>, show: bool },
 }
 
 /// Token counts for one turn.

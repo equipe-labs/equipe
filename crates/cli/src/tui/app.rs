@@ -284,7 +284,7 @@ End jumps to the latest line · Ctrl-C twice leaves — the squad keeps working.
 /accept T-3 approves handed-in work · /reopen T-3 <what to change> sends it back · /cancel T-3 drops it · \
 /board · /mode [member] plan|ask|auto|full sets how much members do on their own — y/a/n answers a request \
 for permission (allow, always allow, decline) · Ctrl-O unfolds long runs of tool use · /browser opens a browser to sign in to sites (Vercel, PostHog…) \
-that members then work in as you · /export opens the conversation in your editor · /mouse lets the terminal select text (or hold Shift — Option in iTerm2 — while dragging) · /close removes the selected \
+that members then work in as you; /browser show [member] puts their browsers on this Mac's screen, /browser hide hides them · /export opens the conversation in your editor · /mouse lets the terminal select text (or hold Shift — Option in iTerm2 — while dragging) · /close removes the selected \
 member · /quit leaves.";
 
 impl App {
@@ -917,10 +917,7 @@ impl App {
                 self.export = true;
                 Vec::new()
             }
-            "browser" => {
-                self.open_browser = true;
-                Vec::new()
-            }
+            "browser" => self.browser(rest),
             "mouse" => {
                 self.mouse = !self.mouse;
                 self.flash = Some(if self.mouse {
@@ -946,6 +943,31 @@ impl App {
                 Vec::new()
             }
         }
+    }
+
+    /// `/browser` opens the sign-in window; `/browser show [member]` puts members'
+    /// browsers on this Mac's screen, `/browser hide [member]` hides them again.
+    fn browser(&mut self, rest: &str) -> Vec<Command> {
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        let (show, member) = match words.as_slice() {
+            [] => {
+                self.open_browser = true;
+                return Vec::new();
+            }
+            ["show", rest @ ..] if rest.len() <= 1 => (true, rest.first()),
+            ["hide", rest @ ..] if rest.len() <= 1 => (false, rest.first()),
+            _ => {
+                self.flash = Some("/browser signs you in · /browser show [member] puts browsers on screen · /browser hide [member]".into());
+                return Vec::new();
+            }
+        };
+        let whose = member.map_or_else(|| "Members' browsers".to_owned(), |m| format!("{m}'s browser"));
+        self.flash = Some(if show {
+            format!("{whose} open on this Mac's screen from the next turn · /browser hide to stop")
+        } else {
+            format!("{whose} run hidden from the next turn")
+        });
+        vec![Command::ShowBrowser { squad: self.squad.clone(), member: member.map(|m| (*m).to_owned()), show }]
     }
 
     /// `/accept T-3`, `/reopen T-3 what to change`, `/cancel T-3`: the person's
@@ -1494,6 +1516,11 @@ mod tests {
         type_text(&mut app, "/browser");
         assert!(enter(&mut app).is_empty());
         assert!(app.open_browser);
+        type_text(&mut app, "/browser show frontend");
+        assert_eq!(enter(&mut app), vec![Command::ShowBrowser { squad: "acme".into(), member: Some("frontend".into()), show: true }]);
+        type_text(&mut app, "/browser hide");
+        assert_eq!(enter(&mut app), vec![Command::ShowBrowser { squad: "acme".into(), member: None, show: false }]);
+        assert!(app.flash.as_deref().unwrap().contains("hidden"));
     }
 
     #[test]

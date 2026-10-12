@@ -45,22 +45,24 @@ fn keeper(home: &Path) -> PathBuf {
     path
 }
 
-/// One member's browser server: headless, in memory, starting from the
-/// squad's sign-ins and handing new ones back; what it saves (snapshots,
-/// screenshots) goes to `output`.
-pub fn server(npx: &Path, home: &Path, output: &Path) -> Value {
-    json!({
-        "type": "stdio",
-        "command": npx,
-        "args": [
-            "-y", MCP_PACKAGE,
-            "--headless",
-            "--isolated",
-            "--storage-state", state_file(home),
-            "--output-dir", output,
-            "--init-page", keeper(home),
-        ],
-    })
+/// One member's browser server: in memory, starting from the squad's
+/// sign-ins and handing new ones back; on screen when `shown`, hidden
+/// otherwise. What it saves (snapshots, screenshots) goes to `output`.
+pub fn server(npx: &Path, home: &Path, output: &Path, shown: bool) -> Value {
+    let mut args = vec![json!("-y"), json!(MCP_PACKAGE)];
+    if !shown {
+        args.push(json!("--headless"));
+    }
+    args.extend([
+        json!("--isolated"),
+        json!("--storage-state"),
+        json!(state_file(home)),
+        json!("--output-dir"),
+        json!(output),
+        json!("--init-page"),
+        json!(keeper(home)),
+    ]);
+    json!({ "type": "stdio", "command": npx, "args": args })
 }
 
 /// `npx` on PATH: the browser needs Node.js.
@@ -104,7 +106,7 @@ mod tests {
 
     #[test]
     fn a_member_starts_from_the_persons_sign_ins_in_a_browser_of_its_own() {
-        let server = server(Path::new("/bin/npx"), Path::new("/h"), Path::new("/out"));
+        let server = server(Path::new("/bin/npx"), Path::new("/h"), Path::new("/out"), false);
         let args: Vec<&str> = server["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
         assert!(args.windows(2).any(|w| w == ["--storage-state", "/h/browser/state.json"]));
         assert!(args.contains(&"--isolated"));
@@ -114,7 +116,7 @@ mod tests {
     fn what_a_member_signs_in_to_goes_back_to_the_squad() {
         let home = std::env::temp_dir().join(format!("equipe-keeper-{}", std::process::id()));
         std::fs::create_dir_all(home.join("browser")).unwrap();
-        let server = server(Path::new("/bin/npx"), &home, Path::new("/out"));
+        let server = server(Path::new("/bin/npx"), &home, Path::new("/out"), true);
         let args: Vec<&str> = server["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
         let script = args.windows(2).find(|w| w[0] == "--init-page").unwrap()[1];
         let text = std::fs::read_to_string(script).unwrap();

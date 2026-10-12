@@ -171,9 +171,12 @@ pub fn turn_args(request: &TurnRequest<'_>) -> Vec<String> {
                 "filesystem": { "denyRead": sandbox.deny_read },
             }),
         );
-        if !sandbox.ask.is_empty() {
-            settings.insert("permissions".into(), serde_json::json!({ "ask": sandbox.ask }));
-        }
+    }
+    // What asks each time: whatever reaches outward from the sandbox, and tools
+    // asked about by name. An ask rule outranks an allow rule.
+    let ask: Vec<&String> = request.sandbox.iter().flat_map(|s| s.ask.iter()).chain(request.ask_tools).collect();
+    if !ask.is_empty() {
+        settings.insert("permissions".into(), serde_json::json!({ "ask": ask }));
     }
     if !settings.is_empty() {
         args.extend(["--settings".to_owned(), Value::Object(settings).to_string()]);
@@ -224,6 +227,8 @@ pub struct TurnRequest<'a> {
     pub allowed_tools: &'a [String],
     /// Tools never allowed, whatever the mode: `Bash(sudo:*)`.
     pub disallowed_tools: &'a [String],
+    /// Tools that ask each time even where a wider rule allows them.
+    pub ask_tools: &'a [String],
     pub sandbox: Option<Sandbox<'a>>,
     /// The MCP tool that answers permission prompts (`mcp__equipe__approve`).
     pub prompt_tool: Option<&'a str>,

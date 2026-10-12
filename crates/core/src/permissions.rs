@@ -51,7 +51,7 @@ pub const OUTWARD: [&str; 11] = [
 ];
 
 /// Never, in any mode, whoever asks: the hard floor.
-pub const BLOCKED: [&str; 13] = [
+pub const BLOCKED: [&str; 12] = [
     "Bash(sudo:*)",
     "Bash(su:*)",
     "Bash(rm -rf /:*)",
@@ -64,8 +64,6 @@ pub const BLOCKED: [&str; 13] = [
     "Bash(reboot:*)",
     "Bash(git push --force:*)",
     "Bash(git push -f:*)",
-    // The browser's escape hatch: arbitrary code in its own process, outside any sandbox.
-    "mcp__browser__browser_run_code_unsafe",
 ];
 
 /// Where credentials live. Reading is free in auto — except these: a member
@@ -104,7 +102,16 @@ pub const APPROVE_TOOL: &str = "approve";
 
 /// What a permission prompt asks for, in words a person can judge: the command,
 /// the file, the address — and the member's reason, when it gave one.
+/// The browser's code tool: Playwright code run in the browser server's own
+/// process, on this Mac and outside any sandbox. In auto it asks, showing the
+/// code; in full it runs.
+pub const BROWSER_CODE: &str = "mcp__browser__browser_run_code_unsafe";
+
 pub fn describe(tool: &str, input: &Value) -> (String, Option<String>) {
+    if tool == BROWSER_CODE {
+        let code = input.get("code").and_then(Value::as_str).unwrap_or_default().to_owned();
+        return (code, Some("Runs code on this Mac, outside the sandbox".into()));
+    }
     let field = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_owned);
     let action = match tool {
         "Bash" => field("command"),

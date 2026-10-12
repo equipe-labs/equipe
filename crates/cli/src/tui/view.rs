@@ -1317,6 +1317,7 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         "Write" | "Edit" | "MultiEdit" => "edit",
         "WebFetch" => "fetch",
         "Confirm" => "do",
+        equipe_core::permissions::BROWSER_CODE => "code",
         other => other,
     };
     let bar = || Span::styled("▎ ", theme.accent());
@@ -1329,9 +1330,10 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     ])];
     // A few lines of the command, never the whole script: the conversation keeps
     // its room, and the keys always show.
-    const SHOWN: usize = 3;
+    // Code is what's being allowed: more of it shows.
+    let shown = if approval.tool == equipe_core::permissions::BROWSER_CODE { 12 } else { 3 };
     let rows: Vec<&str> = approval.action.lines().collect();
-    for (i, row) in rows.iter().take(SHOWN).enumerate() {
+    for (i, row) in rows.iter().take(shown).enumerate() {
         let lead = if i == 0 { format!("{verb}  ") } else { " ".repeat(verb.chars().count() + 2) };
         let room = width.saturating_sub(lead.chars().count());
         lines.push(Line::from(vec![bar(), Span::styled(lead, theme.dim()), Span::styled(ui::fit(row, room), theme.bold())]));
@@ -1340,8 +1342,8 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     if !writes.is_empty() {
         lines.push(Line::from(vec![bar(), Span::styled(ui::fit(&format!("writes {}", writes.join(", ")), width), theme.dim())]));
     }
-    if rows.len() > SHOWN {
-        lines.push(Line::from(vec![bar(), Span::styled(format!("… {} more lines", rows.len() - SHOWN), theme.dim())]));
+    if rows.len() > shown {
+        lines.push(Line::from(vec![bar(), Span::styled(format!("… {} more lines", rows.len() - shown), theme.dim())]));
     }
     if let Some(reason) = &approval.reason {
         lines.push(Line::from(vec![bar(), Span::styled(ui::fit(reason, width), theme.dim())]));
