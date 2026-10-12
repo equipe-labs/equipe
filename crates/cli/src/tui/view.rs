@@ -905,6 +905,37 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         facts.push(project_name(project));
     }
     lines.extend(wrapped(Vec::new(), &facts.join(" · "), theme.dim(), 0, width));
+    // The keys come right under the title, so a long hand-in never pushes
+    // them out of sight.
+    let who = t.assignee.as_ref().or(t.owner.as_ref());
+    let mut actions: Vec<(&str, String)> = Vec::new();
+    match t.status {
+        TicketStatus::Review => {
+            actions.push(("a", "accept".into()));
+            actions.push(("r", "ask for changes".into()));
+        }
+        TicketStatus::Done => actions.push(("r", "reopen".into())),
+        TicketStatus::InProgress | TicketStatus::Todo | TicketStatus::Proposed => actions.push(("a", "mark done".into())),
+        TicketStatus::Cancelled => {}
+    }
+    if t.branch.is_some() {
+        actions.push(("d", "see the diff".into()));
+    }
+    if let Some(who) = who {
+        actions.push(("enter", format!("talk to {who}")));
+    }
+    actions.push(("↑↓", "tickets".into()));
+    let mut keys = Vec::new();
+    for (i, (k, what)) in actions.into_iter().enumerate() {
+        if i > 0 {
+            keys.push(Span::raw("   "));
+        }
+        // The call the person is here to make stands out.
+        let style = if i == 0 && t.status == TicketStatus::Review { theme.accent().add_modifier(Modifier::BOLD) } else { theme.bold() };
+        keys.push(Span::styled(k.to_owned(), style));
+        keys.push(Span::styled(format!(" {what}"), theme.dim()));
+    }
+    lines.push(Line::from(keys));
     if let Some(note) = &t.note {
         lines.push(Line::raw(""));
         lines.extend(markdown::lines(note, width, &theme.markdown()));
@@ -935,35 +966,6 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         lines.push(Line::raw(""));
         lines.extend(place);
     }
-    // What the person can do with it, key by key.
-    let who = t.assignee.as_ref().or(t.owner.as_ref());
-    let mut actions: Vec<(&str, String)> = Vec::new();
-    match t.status {
-        TicketStatus::Review => {
-            actions.push(("a", "accept".into()));
-            actions.push(("r", "ask for changes".into()));
-        }
-        TicketStatus::Done => actions.push(("r", "reopen".into())),
-        TicketStatus::InProgress | TicketStatus::Todo | TicketStatus::Proposed => actions.push(("a", "mark done".into())),
-        TicketStatus::Cancelled => {}
-    }
-    if t.branch.is_some() {
-        actions.push(("d", "see the diff".into()));
-    }
-    if let Some(who) = who {
-        actions.push(("enter", format!("talk to {who}")));
-    }
-    actions.push(("↑↓", "tickets".into()));
-    let mut keys = Vec::new();
-    for (i, (k, what)) in actions.into_iter().enumerate() {
-        if i > 0 {
-            keys.push(Span::raw("   "));
-        }
-        keys.push(Span::styled(k.to_owned(), theme.bold()));
-        keys.push(Span::styled(format!(" {what}"), theme.dim()));
-    }
-    lines.push(Line::raw(""));
-    lines.push(Line::from(keys));
     lines
 }
 
@@ -1468,6 +1470,9 @@ mod tests {
         // Below, the picked ticket in full with the keys that act on it.
         assert!(shot.contains("handed in — waits for your review"), "{shot}");
         assert!(shot.contains("a accept   r ask for changes"), "{shot}");
+        // Right under the title, however long the hand-in below runs.
+        let at = |text: &str| shot.lines().position(|l| l.contains(text)).unwrap();
+        assert_eq!(at("a accept"), at("waits for your review") + 1, "{shot}");
         assert!(shot.contains("← pm  ctrl-b"), "the way back is in sight:\n{shot}");
         assert!(shot.lines().last().unwrap().contains("1 to review"), "{shot}");
         // ↓ picks the next ticket, and the detail follows.
