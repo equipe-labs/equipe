@@ -24,18 +24,50 @@ pub struct TurnRequest<'a> {
     pub model: &'a str,
     /// System-level framing for the turn.
     pub instructions: Option<&'a str>,
+    /// Earlier turns of this conversation, oldest first. The backend keeps
+    /// nothing (`store: false`), so the conversation travels with every turn.
+    pub history: &'a [Message],
+}
+
+/// Who said a line of the conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    User,
+    Assistant,
+}
+
+/// One line of the conversation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Message {
+    pub role: Role,
+    pub text: String,
+}
+
+fn input_item(role: Role, text: &str) -> Value {
+    match role {
+        Role::User => json!({
+            "type": "message", "role": "user",
+            "content": [{ "type": "input_text", "text": text }],
+        }),
+        Role::Assistant => json!({
+            "type": "message", "role": "assistant",
+            "content": [{ "type": "output_text", "text": text }],
+        }),
+    }
 }
 
 /// Body for a single stateless turn.
 pub fn build_turn_request(req: &TurnRequest<'_>) -> Value {
+    let input: Vec<Value> = req
+        .history
+        .iter()
+        .map(|m| input_item(m.role, &m.text))
+        .chain(std::iter::once(input_item(Role::User, req.prompt)))
+        .collect();
     json!({
         "model": req.model,
         "instructions": req.instructions.unwrap_or(DEFAULT_INSTRUCTIONS),
-        "input": [{
-            "type": "message",
-            "role": "user",
-            "content": [{ "type": "input_text", "text": req.prompt }],
-        }],
+        "input": input,
         // The Codex backend rejects `store: true` outright, and equipe keeps turn
         // history on its own board rather than on OpenAI's servers.
         "store": false,
@@ -330,7 +362,7 @@ mod tests {
 
     #[test]
     fn request_matches_what_the_codex_backend_accepts() {
-        let body = build_turn_request(&TurnRequest { prompt: "hello", model: "gpt-5.6", instructions: None });
+        let body = build_turn_request(&TurnRequest { prompt: "hello", model: "gpt-5.6", instructions: None, history: &[] });
         assert_eq!(body["model"], "gpt-5.6");
         // The backend rejects `store: true` and serves this endpoint over SSE only.
         assert_eq!(body["store"], false);
@@ -344,7 +376,22 @@ mod tests {
 
     #[test]
     fn request_honours_custom_instructions() {
-        let body = build_turn_request(&TurnRequest { prompt: "x", model: "m", instructions: Some("Be terse.") });
+        let body = build_turn_request(&TurnRequest { prompt: "x", model: "m", instructions: Some("Be terse."), history: &[] });
         assert_eq!(body["instructions"], "Be terse.");
+    }
+
+    #[test]
+    fn request_carries_the_conversation_so_far() {
+        let history = [
+            Message { role: Role::User, text: "my name is abel".into() },
+            Message { role: Role::Assistant, text: "hi abel".into() },
+        ];
+        let body = build_turn_request(&TurnRequest { prompt: "what's my name?", model: "m", instructions: None, history: &history });
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 3);
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(input[1]["role"], "assistant");
+        assert_eq!(input[1]["content"][0]["type"], "output_text");
+        assert_eq!(input[2]["content"][0]["text"], "what's my name?");
     }
 }

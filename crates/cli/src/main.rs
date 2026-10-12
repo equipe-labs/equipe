@@ -6,7 +6,6 @@
 //!   never sees Claude credentials (see `equipe_providers::claude_code`).
 
 mod ui;
-mod worktree;
 
 use std::io::{IsTerminal as _, Write as _};
 use std::process::ExitCode;
@@ -14,9 +13,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use equipe_providers::claude_code::{self, Access, Activity, AuthStatus};
-use equipe_providers::openai::{codex, login, responses};
-use equipe_providers::turn::TurnResult;
+use equipe_core::protocol::{self, Command as Cmd, Event, SessionSpec, TurnOutcome, Usage};
+use equipe_core::runtime;
+use equipe_providers::claude_code::{self, AuthStatus};
+use equipe_providers::openai::{codex, login};
 use equipe_providers::{AuthMethod, CredentialStore, Credentials};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -36,11 +36,11 @@ enum Engine {
     Claude,
 }
 
-impl Engine {
-    fn label(self) -> &'static str {
-        match self {
-            Engine::Codex => "codex",
-            Engine::Claude => "claude code",
+impl From<Engine> for protocol::Engine {
+    fn from(engine: Engine) -> Self {
+        match engine {
+            Engine::Codex => protocol::Engine::Codex,
+            Engine::Claude => protocol::Engine::Claude,
         }
     }
 }
@@ -429,145 +429,77 @@ impl App {
 
     // ── try ──
 
+    /// One turn, as a client of the runtime: send commands, render events.
     async fn run_try(&self, prompt: &str, engine: Option<Engine>, model: Option<&str>, edit: bool) -> CmdResult {
         if prompt.trim().is_empty() {
             return Err(Failure::new("try needs a prompt").next("equipe try \"summarize this repo\""));
         }
-        if edit {
-            return match engine {
-                Some(Engine::Codex) => Err(Failure::new(
-                    "--edit runs on Claude Code for now; Codex edits arrive with its ACP engine",
-                )
-                .next("equipe try --edit --engine claude \"…\"")),
-                _ => self.run_edit(prompt, model).await,
-            };
-        }
-        let engine = match engine {
-            Some(engine) => engine,
-            None => self.first_ready_engine().await?,
-        };
+        let cwd = std::env::current_dir().map_err(|err| Failure::new(err.to_string()))?;
+        let access = if edit { protocol::Access::EditFiles } else { protocol::Access::ReadOnly };
+        // An edit needs Claude Code for now; don't let auto-selection pick Codex.
+        let engine = engine.map(protocol::Engine::from).or(edit.then_some(protocol::Engine::Claude));
+
+        let (core, mut events) = runtime::start(runtime::Config::for_user(VERSION));
+        const ID: protocol::SessionId = 1;
+        core.send(Cmd::Start {
+            session: ID,
+            spec: SessionSpec { engine, model: model.map(str::to_owned), access, cwd: cwd.clone() },
+        });
 
         let e = ui::err();
-        let cwd = std::env::current_dir().map_err(|err| Failure::new(err.to_string()))?;
-        let mut printer = Printer::new(&cwd);
-
-        let result: TurnResult = match engine {
-            Engine::Codex => {
-                let cred = self.codex_credentials().await?;
-                // Ask the backend what this account has rather than hardcoding an id.
-                let model = match model {
-                    Some(model) => model.to_owned(),
-                    None => codex::list_models(&self.client, &cred, VERSION)
-                        .await?
-                        .into_iter()
-                        .next()
-                        .ok_or_else(|| Failure::new("the backend offered no models").next("equipe try --model <id> \"…\""))?,
-                };
-                eprintln!("{}\n", e.dim(&format!("{} · {model}", engine.label())));
-                let request = responses::TurnRequest { prompt, model: &model, instructions: None };
-                responses::run_turn(&self.client, &cred, VERSION, request, |d| printer.text(d)).await?
-            }
-            Engine::Claude => {
-                let label = model.map(|m| format!("{} · {m}", engine.label())).unwrap_or_else(|| engine.label().to_owned());
-                eprintln!("{}\n", e.dim(&label));
-                claude_code::run_turn(claude_code::DEFAULT_BINARY, &cwd, prompt, model, Access::ReadOnly, |a| printer.activity(a))
-                    .await
-                    .map_err(claude_failure)?
-            }
-        };
-        printer.finish(&result);
-        Ok(())
-    }
-
-    /// One turn that may edit files: on a new branch, in a worktree, through Claude Code.
-    async fn run_edit(&self, prompt: &str, model: Option<&str>) -> CmdResult {
-        let e = ui::err();
-        match claude_code::auth_status(claude_code::DEFAULT_BINARY).await {
-            Ok(Some(status)) if status.logged_in => {}
-            Ok(None) => return Err(claude_missing()),
-            _ => return Err(Failure::new("Claude Code isn't signed in").next("equipe login claude")),
-        }
-
-        let cwd = std::env::current_dir().map_err(|err| Failure::new(err.to_string()))?;
-        let repo = worktree::repo_root(&cwd).map_err(Failure::new)?;
-        let id = format!("{:x}", now_secs());
-        let sandbox = worktree::create(&repo, &equipe_providers::credentials::equipe_home(), &id).map_err(Failure::new)?;
-
-        let short_base = &sandbox.base[..sandbox.base.len().min(7)];
-        let model_label = model.map(|m| format!(" · {m}")).unwrap_or_default();
-        eprintln!("{}", e.dim(&format!("claude code{model_label} · may edit files")));
-        eprintln!("{}", e.row("branch", &format!("{}  {}", e.bold(&sandbox.branch), e.dim(&format!("from {short_base}")))));
-        eprintln!("{}\n", e.row("", &e.dim("Your checkout stays untouched.")));
-
-        let mut printer = Printer::new(&sandbox.path);
-        let outcome = claude_code::run_turn(
-            claude_code::DEFAULT_BINARY,
-            &sandbox.path,
-            prompt,
-            model,
-            Access::EditFiles,
-            |a| printer.activity(a),
-        )
-        .await;
-
-        let subject: String = prompt.lines().next().unwrap_or("").chars().take(60).collect();
-        let result = match outcome {
-            Ok(result) => result,
-            Err(err) => {
-                // Keep whatever the agent managed to change before it stopped.
-                let kept = sandbox
-                    .commit_all(&format!("equipe try (incomplete): {subject}"))
-                    .ok()
-                    .flatten();
-                let _ = if kept.is_some() { sandbox.remove_worktree() } else { sandbox.discard() };
-                let failure = claude_failure(err);
-                return Err(match kept {
-                    Some(_) => Failure::new(format!("{} — partial changes kept on {}", failure.message, sandbox.branch)),
-                    None => failure,
-                });
-            }
-        };
-        printer.finish(&result);
-
-        let message = format!("equipe try: {subject}\n\nPrompt:\n{prompt}\n\nRun by equipe through Claude Code.");
-        let committed = sandbox.commit_all(&message).map_err(Failure::new)?;
         let p = ui::out();
-        match committed {
-            None => {
-                sandbox.discard().map_err(Failure::new)?;
-                println!("\n{}", p.note(0, "No files changed, so no branch was kept."));
-            }
-            Some(_) => {
-                let stat = sandbox.diff_stat().unwrap_or_default();
-                sandbox.remove_worktree().map_err(Failure::new)?;
-                println!("\n{}", p.ok_line(&format!("Changes committed to {}", p.bold(&sandbox.branch))));
-                for line in stat.lines() {
-                    println!("  {}", p.dim(line.trim()));
+        let mut printer = Printer::new(&cwd);
+        let mut started = false;
+        let mut failure: Option<Failure> = None;
+        while let Some(event) = events.recv().await {
+            match event {
+                Event::SessionStarted { engine, model, workspace, .. } => {
+                    started = true;
+                    let model = model.map(|m| format!(" · {m}")).unwrap_or_default();
+                    match &workspace {
+                        Some(ws) => {
+                            eprintln!("{}", e.dim(&format!("{}{model} · may edit files", engine.label())));
+                            let base = &ws.base[..ws.base.len().min(7)];
+                            eprintln!("{}", e.row("branch", &format!("{}  {}", e.bold(&ws.branch), e.dim(&format!("from {base}")))));
+                            eprintln!("{}\n", e.row("", &e.dim("Your checkout stays untouched.")));
+                            printer = Printer::new(&ws.path);
+                        }
+                        None => eprintln!("{}\n", e.dim(&format!("{}{model}", engine.label()))),
+                    }
+                    core.send(Cmd::Submit { session: ID, text: prompt.to_owned() });
                 }
-                println!();
-                println!("{}", p.row("review", &p.bold(&format!("git show {}", sandbox.branch))));
-                println!("{}", p.row("keep", &p.bold(&format!("git merge {}", sandbox.branch))));
-                println!("{}", p.row("discard", &p.bold(&format!("git branch -D {}", sandbox.branch))));
+                Event::TextDelta { text, .. } => printer.text(&text),
+                Event::ToolUse { tool, target, .. } => printer.tool(&tool, target),
+                Event::ModelKnown { .. } => {}
+                Event::TurnEnded { outcome, usage, .. } => {
+                    printer.end(outcome, usage);
+                    core.send(Cmd::Close { session: ID });
+                }
+                Event::BranchLanded { branch, stat, .. } => {
+                    println!("\n{}", p.ok_line(&format!("Changes committed to {}", p.bold(&branch))));
+                    for line in stat.lines() {
+                        println!("  {}", p.dim(line.trim()));
+                    }
+                    println!();
+                    println!("{}", p.row("review", &p.bold(&format!("git show {branch}"))));
+                    println!("{}", p.row("keep", &p.bold(&format!("git merge {branch}"))));
+                    println!("{}", p.row("discard", &p.bold(&format!("git branch -D {branch}"))));
+                }
+                Event::NothingChanged { .. } => println!("\n{}", p.note(0, "No files changed, so no branch was kept.")),
+                Event::SessionClosed { .. } => break,
+                Event::Error { message, next, .. } => {
+                    failure.get_or_insert(Failure { message, next });
+                    // A session that never opened won't send anything more.
+                    if !started {
+                        break;
+                    }
+                }
             }
         }
-        Ok(())
-    }
-
-    /// Codex if signed in, else Claude Code if signed in.
-    async fn first_ready_engine(&self) -> Result<Engine, Failure> {
-        if matches!(self.store.load("openai"), Ok(Some(_))) {
-            return Ok(Engine::Codex);
-        }
-        if let Ok(Some(status)) = claude_code::auth_status(claude_code::DEFAULT_BINARY).await
-            && status.logged_in
-        {
-            return Ok(Engine::Claude);
-        }
-        Err(Failure::new("No engine is ready. Sign in to Codex or Claude Code first.").next("equipe status"))
+        failure.map_or(Ok(()), Err)
     }
 }
 
-/// "Max plan", "Pro plan" — or how a non-subscription login is billed.
 fn plan_label(status: &AuthStatus) -> String {
     if status.uses_subscription() {
         let plan = status.subscription_type.as_deref().unwrap_or("claude.ai");
@@ -601,24 +533,10 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-/// Point Claude Code failures at the command that fixes them.
-fn claude_failure(err: equipe_providers::Error) -> Failure {
-    let failure = Failure::from(err);
-    let lower = failure.message.to_lowercase();
-    if lower.contains("not installed") {
-        failure.next("see https://code.claude.com/docs/en/setup")
-    } else if lower.contains("login") || lower.contains("logged in") {
-        failure.next("equipe login claude")
-    } else {
-        failure
-    }
-}
-
 /// Streams a turn to the terminal: the answer on stdout, what the agent is doing
 /// as dim lines on stderr, so `equipe try … > answer.txt` keeps only the answer.
 struct Printer {
     base: std::path::PathBuf,
-    streamed: bool,
     mid_line: bool,
 }
 
@@ -627,42 +545,27 @@ impl Printer {
         Self {
             // Canonical, so tool paths under a symlinked temp dir still shorten.
             base: base.canonicalize().unwrap_or_else(|_| base.to_owned()),
-            streamed: false,
             mid_line: false,
         }
     }
 
     fn text(&mut self, text: &str) {
-        self.streamed = true;
         self.mid_line = !text.ends_with('\n');
         let mut out = std::io::stdout().lock();
         let _ = out.write_all(text.as_bytes());
         let _ = out.flush();
     }
 
-    fn activity(&mut self, activity: Activity) {
-        match activity {
-            Activity::Text(text) => self.text(&text),
-            Activity::Tool { name, target } => {
-                if self.mid_line {
-                    println!();
-                    self.mid_line = false;
-                }
-                let verb = match name.as_str() {
-                    "Read" => "read",
-                    "Edit" | "MultiEdit" | "NotebookEdit" => "edit",
-                    "Write" => "write",
-                    "Bash" => "run",
-                    "Glob" | "Grep" => "search",
-                    "WebFetch" | "WebSearch" => "fetch",
-                    other => other,
-                };
-                let target = target.map(|t| self.relative(&t)).unwrap_or_default();
-                let e = ui::err();
-                let mark = if matches!(verb, "edit" | "write") { e.accent("✎") } else { e.dim("·") };
-                eprintln!("{mark} {}", e.dim(&format!("{verb:<6} {target}")));
-            }
+    fn tool(&mut self, name: &str, target: Option<String>) {
+        if self.mid_line {
+            println!();
+            self.mid_line = false;
         }
+        let verb = tool_verb(name);
+        let target = target.map(|t| self.relative(&t)).unwrap_or_default();
+        let e = ui::err();
+        let mark = if matches!(verb, "edit" | "write") { e.accent("✎") } else { e.dim("·") };
+        eprintln!("{mark} {}", e.dim(&format!("{verb:<6} {target}")));
     }
 
     fn relative(&self, target: &str) -> String {
@@ -674,26 +577,37 @@ impl Printer {
     }
 
     /// Close the answer and print the footer.
-    fn finish(&mut self, result: &TurnResult) {
-        // A turn that sent only a terminal event streamed nothing — print it now.
-        if !self.streamed {
-            print!("{}", result.text);
-            self.mid_line = !result.text.ends_with('\n');
-        }
-        if self.mid_line || !self.streamed {
+    fn end(&mut self, outcome: TurnOutcome, usage: Option<Usage>) {
+        if self.mid_line {
             println!();
+            self.mid_line = false;
         }
         let e = ui::err();
         let mut footer = Vec::new();
-        if result.status != "completed" {
-            footer.push(format!("ended {}", result.status));
+        match outcome {
+            TurnOutcome::Completed | TurnOutcome::Failed => {}
+            TurnOutcome::Incomplete => footer.push("ended early".to_owned()),
+            TurnOutcome::Interrupted => footer.push("interrupted".to_owned()),
         }
-        if let Some(usage) = &result.usage {
+        if let Some(usage) = usage {
             let n = |v: Option<u64>| v.map_or("?".into(), |v| v.to_string());
             footer.push(format!("{} in · {} out tokens", n(usage.input_tokens), n(usage.output_tokens)));
         }
         if !footer.is_empty() {
             eprintln!("\n{}", e.dim(&footer.join(" · ")));
         }
+    }
+}
+
+/// How a tool use reads in one word.
+fn tool_verb(name: &str) -> &str {
+    match name {
+        "Read" => "read",
+        "Edit" | "MultiEdit" | "NotebookEdit" => "edit",
+        "Write" => "write",
+        "Bash" => "run",
+        "Glob" | "Grep" => "search",
+        "WebFetch" | "WebSearch" => "fetch",
+        other => other,
     }
 }

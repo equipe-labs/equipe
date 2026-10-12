@@ -5,4 +5,8 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+equipe-protocol = { version = "0.0.1", path = "../protocol" }
+equipe-providers = { version = "0.0.1", path = "../providers" }
+reqwest = { version = "0.13.5", default-features = false }
 rusqlite = { version = "0.37", features = ["bundled"] }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "sync", "time"] }

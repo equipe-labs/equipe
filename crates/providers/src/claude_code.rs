@@ -105,7 +105,7 @@ impl Access {
 ///
 /// `--bare` is deliberately absent: bare mode never reads the subscription login,
 /// which is the whole point of bringing your own Claude Code.
-pub fn turn_args(prompt: &str, model: Option<&str>, access: Access) -> Vec<String> {
+pub fn turn_args(prompt: &str, model: Option<&str>, access: Access, resume: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = [
         "-p",
         prompt,
@@ -122,7 +122,27 @@ pub fn turn_args(prompt: &str, model: Option<&str>, access: Access) -> Vec<Strin
     if let Some(model) = model {
         args.extend(["--model".to_owned(), model.to_owned()]);
     }
+    // Continue the conversation Claude Code already holds, rather than resending it.
+    if let Some(id) = resume {
+        args.extend(["--resume".to_owned(), id.to_owned()]);
+    }
     args
+}
+
+/// One turn's input.
+pub struct TurnRequest<'a> {
+    pub prompt: &'a str,
+    pub model: Option<&'a str>,
+    pub access: Access,
+    /// Claude Code's session id from an earlier turn, to continue that conversation.
+    pub resume: Option<&'a str>,
+}
+
+/// One turn's outcome, with the id that continues the conversation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Turn {
+    pub result: TurnResult,
+    pub session_id: Option<String>,
 }
 
 /// Something worth showing while a turn runs.
@@ -132,6 +152,8 @@ pub enum Activity {
     Text(String),
     /// Claude Code is using a tool, e.g. `Edit` on a file.
     Tool { name: String, target: Option<String> },
+    /// The model Claude Code is running, reported at startup.
+    Model(String),
 }
 
 /// Folds Claude Code's `stream-json` lines into one turn.
@@ -140,6 +162,7 @@ pub struct TurnCollector {
     streamed: String,
     last_message: String,
     model: Option<String>,
+    session_id: Option<String>,
     result: Option<Result<TurnResult>>,
 }
 
@@ -153,12 +176,20 @@ impl TurnCollector {
         self.model.as_deref()
     }
 
+    /// The id that continues this conversation with `--resume`, once reported.
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+
     /// Apply one event. Returns what it shows: answer text and tool use.
     pub fn on_event(&mut self, event: &Value) -> Vec<Activity> {
+        if let Some(id) = event.get("session_id").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+            self.session_id = Some(id.to_owned());
+        }
         match event.get("type").and_then(Value::as_str).unwrap_or("") {
             "system" if event.get("subtype").and_then(Value::as_str) == Some("init") => {
                 self.model = event.get("model").and_then(Value::as_str).map(str::to_owned);
-                Vec::new()
+                self.model.clone().map(Activity::Model).into_iter().collect()
             }
             "stream_event" => text_delta(event)
                 .map(|text| {
@@ -183,8 +214,9 @@ impl TurnCollector {
 
     /// The turn, once the stream has ended. `diagnostics` is what to show when
     /// Claude Code exited without ever reporting a result.
-    pub fn finish(self, diagnostics: &str) -> Result<TurnResult> {
-        match self.result {
+    pub fn finish(self, diagnostics: &str) -> Result<Turn> {
+        let session_id = self.session_id;
+        let result = match self.result {
             Some(result) => result,
             None if !self.streamed.is_empty() => Ok(TurnResult {
                 text: self.streamed,
@@ -195,7 +227,8 @@ impl TurnCollector {
                 "Claude Code ended without a result{}",
                 if diagnostics.is_empty() { String::new() } else { format!(": {diagnostics}") }
             ))),
-        }
+        };
+        result.map(|result| Turn { result, session_id })
     }
 }
 
@@ -275,13 +308,11 @@ fn result_from(event: &Value, streamed: &str, last_message: &str) -> Result<Turn
 pub async fn run_turn(
     binary: &str,
     cwd: &Path,
-    prompt: &str,
-    model: Option<&str>,
-    access: Access,
+    request: TurnRequest<'_>,
     mut on_activity: impl FnMut(Activity),
-) -> Result<TurnResult> {
+) -> Result<Turn> {
     let mut child = Command::new(binary)
-        .args(turn_args(prompt, model, access))
+        .args(turn_args(request.prompt, request.model, request.access, request.resume))
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -343,10 +374,10 @@ mod tests {
             .flat_map(|e| collector.on_event(e))
             .filter_map(|a| match a {
                 Activity::Text(t) => Some(t),
-                Activity::Tool { .. } => None,
+                _ => None,
             })
             .collect();
-        (deltas, collector.finish(""))
+        (deltas, collector.finish("").map(|turn| turn.result))
     }
 
     fn text_delta(text: &str) -> Value {
@@ -393,7 +424,7 @@ mod tests {
 
     #[test]
     fn runs_headless_with_streaming_json_and_no_edits() {
-        let args = turn_args("hello", None, Access::ReadOnly);
+        let args = turn_args("hello", None, Access::ReadOnly, None);
         let has = |pair: [&str; 2]| args.windows(2).any(|w| w[0] == pair[0] && w[1] == pair[1]);
         assert!(has(["-p", "hello"]));
         assert!(has(["--output-format", "stream-json"]));
@@ -406,13 +437,13 @@ mod tests {
     #[test]
     fn never_uses_bare_mode_which_skips_the_subscription_login() {
         for access in [Access::ReadOnly, Access::EditFiles] {
-            assert!(!turn_args("x", Some("opus"), access).iter().any(|a| a == "--bare"));
+            assert!(!turn_args("x", Some("opus"), access, None).iter().any(|a| a == "--bare"));
         }
     }
 
     #[test]
     fn edit_access_lets_claude_write_files_without_asking() {
-        let args = turn_args("x", None, Access::EditFiles);
+        let args = turn_args("x", None, Access::EditFiles, None);
         assert!(args.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "acceptEdits"));
         assert!(!args.iter().any(|a| a == "bypassPermissions" || a == "--dangerously-skip-permissions"));
     }
@@ -433,8 +464,26 @@ mod tests {
     }
 
     #[test]
+    fn resumes_an_earlier_conversation() {
+        let args = turn_args("x", None, Access::ReadOnly, Some("sess-1"));
+        assert!(args.windows(2).any(|w| w[0] == "--resume" && w[1] == "sess-1"));
+        assert!(!turn_args("x", None, Access::ReadOnly, None).iter().any(|a| a == "--resume"));
+    }
+
+    #[test]
+    fn remembers_the_session_id_and_reports_the_model() {
+        let mut collector = TurnCollector::new();
+        let activity = collector.on_event(&json!({
+            "type": "system", "subtype": "init", "model": "claude-haiku-4-5", "session_id": "sess-9"
+        }));
+        assert_eq!(activity, vec![Activity::Model("claude-haiku-4-5".into())]);
+        let _ = collector.on_event(&success("ok"));
+        assert_eq!(collector.finish("").unwrap().session_id.as_deref(), Some("sess-9"));
+    }
+
+    #[test]
     fn passes_the_model_through() {
-        let args = turn_args("x", Some("opus"), Access::ReadOnly);
+        let args = turn_args("x", Some("opus"), Access::ReadOnly, None);
         assert!(args.windows(2).any(|w| w[0] == "--model" && w[1] == "opus"));
     }
 
@@ -527,7 +576,8 @@ mod tests {
 EOF"#,
         );
         let mut seen = String::new();
-        let result = run_turn(bin.to_str().unwrap(), &dir, "ping", None, Access::ReadOnly, |a| {
+        let request = TurnRequest { prompt: "ping", model: None, access: Access::ReadOnly, resume: None };
+        let turn = run_turn(bin.to_str().unwrap(), &dir, request, |a| {
             if let Activity::Text(t) = a {
                 seen.push_str(&t)
             }
@@ -535,14 +585,15 @@ EOF"#,
         .await
         .unwrap();
         assert_eq!(seen, "pong");
-        assert_eq!(result.text, "pong");
+        assert_eq!(turn.result.text, "pong");
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn reports_stderr_when_the_binary_fails_without_a_result() {
         let (bin, dir) = fake_claude("echo 'boom: config is broken' >&2\nexit 3");
-        let err = run_turn(bin.to_str().unwrap(), &dir, "ping", None, Access::ReadOnly, |_| {})
+        let request = TurnRequest { prompt: "ping", model: None, access: Access::ReadOnly, resume: None };
+        let err = run_turn(bin.to_str().unwrap(), &dir, request, |_| {})
             .await
             .unwrap_err()
             .to_string();
@@ -561,7 +612,8 @@ EOF"#,
     #[tokio::test]
     async fn a_missing_binary_is_not_installed_rather_than_an_error() {
         assert_eq!(auth_status("equipe-no-such-claude-binary").await.unwrap(), None);
-        let err = run_turn("equipe-no-such-claude-binary", Path::new("."), "x", None, Access::ReadOnly, |_| {})
+        let request = TurnRequest { prompt: "x", model: None, access: Access::ReadOnly, resume: None };
+        let err = run_turn("equipe-no-such-claude-binary", Path::new("."), request, |_| {})
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not installed"));
