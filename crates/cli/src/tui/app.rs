@@ -23,8 +23,9 @@ use super::composer::Composer;
 /// How long a first Ctrl-C waits for a second before it stops meaning "leave".
 const QUIT_WINDOW: Duration = Duration::from_secs(2);
 
-/// Lines one notch of the mouse wheel scrolls.
-const WHEEL_LINES: isize = 3;
+/// Lines one wheel event scrolls. A trackpad sends many small events; two
+/// lines each reads as smooth there and still moves a mouse wheel along.
+const WHEEL_LINES: isize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
@@ -232,6 +233,16 @@ impl App {
 
     pub fn working(&self) -> usize {
         self.agents.iter().filter(|a| a.state == AgentState::Working).count()
+    }
+
+    /// A member's conversation grew by `lines`. Someone scrolled up to read keeps
+    /// their place instead of being carried along.
+    pub fn grew(&mut self, id: SessionId, lines: usize) {
+        if let Some(agent) = self.agents.iter_mut().find(|a| a.id == id)
+            && agent.scroll_back > 0
+        {
+            agent.scroll_back += lines;
+        }
     }
 
     /// The mode a member works in: its own, or the squad's.
@@ -1213,7 +1224,12 @@ mod tests {
     fn the_wheel_scrolls_the_conversation_and_mouse_can_be_released() {
         let (mut app, _, _) = team();
         app.on_mouse(MouseEventKind::ScrollUp);
-        assert_eq!(app.agents[0].scroll_back, 3);
+        assert_eq!(app.agents[0].scroll_back, 2);
+        app.grew(1, 5);
+        assert_eq!(app.agents[0].scroll_back, 7, "scrolled up, it keeps its place as lines arrive");
+        app.on_mouse(MouseEventKind::ScrollDown);
+        app.on_mouse(MouseEventKind::ScrollDown);
+        app.on_mouse(MouseEventKind::ScrollDown);
         app.on_mouse(MouseEventKind::ScrollDown);
         assert_eq!(app.agents[0].scroll_back, 0);
         type_text(&mut app, "/mouse");

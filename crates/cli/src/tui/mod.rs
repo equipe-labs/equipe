@@ -21,7 +21,7 @@ use crossterm::event::{
     KeyEventKind,
 };
 use crossterm::execute;
-use futures_util::StreamExt as _;
+use futures_util::{FutureExt as _, StreamExt as _};
 
 use crate::onboard::Start;
 use crate::{daemon, ui};
@@ -76,20 +76,27 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
 
     let mut input = EventStream::new();
     let mut daemon_lost = false;
-    terminal.draw(|f| view::render(f, &app, theme, branch.as_deref()))?;
+    let mut layouts = view::Layouts::default();
+    let draw = |terminal: &mut ratatui::DefaultTerminal, app: &mut app::App, layouts: &mut view::Layouts| {
+        let width = terminal.size()?.width;
+        if let Some((id, lines)) = layouts.prepare(app, theme, width) {
+            app.grew(id, lines);
+        }
+        terminal.draw(|f| view::render(f, app, theme, branch.as_deref(), layouts)).map(|_| ())
+    };
+    draw(&mut terminal, &mut app, &mut layouts)?;
     loop {
         tokio::select! {
-            Some(Ok(event)) = input.next() => match event {
-                Input::Key(key) if key.kind != KeyEventKind::Release => {
-                    for command in app.on_key(key, Instant::now()) {
-                        client.send(command);
-                    }
+            Some(Ok(event)) = input.next() => {
+                if !on_input(&mut app, &client, event) {
+                    continue;
                 }
-                Input::Paste(text) => app.on_paste(&text),
-                Input::Mouse(event) => app.on_mouse(event.kind),
-                Input::Resize(..) => {}
-                _ => continue,
-            },
+                // A trackpad sends a burst of events per gesture: take them all,
+                // then draw once.
+                while let Some(Some(Ok(event))) = input.next().now_or_never() {
+                    on_input(&mut app, &client, event);
+                }
+            }
             event = client.next_event() => match event {
                 Some(event) => {
                     for command in app.on_event(event) {
@@ -120,7 +127,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
             }
         }
         // Drawn only after something changed — nothing redraws on a timer.
-        terminal.draw(|f| view::render(f, &app, theme, branch.as_deref()))?;
+        draw(&mut terminal, &mut app, &mut layouts)?;
     }
 
     Ok(Summary {
@@ -132,6 +139,22 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         to_review: app.to_review().len(),
         daemon_lost,
     })
+}
+
+/// Apply one terminal event. Returns whether it could have changed the screen.
+fn on_input(app: &mut app::App, client: &equipe_core::gateway::Client, event: Input) -> bool {
+    match event {
+        Input::Key(key) if key.kind != KeyEventKind::Release => {
+            for command in app.on_key(key, Instant::now()) {
+                client.send(command);
+            }
+        }
+        Input::Paste(text) => app.on_paste(&text),
+        Input::Mouse(event) => app.on_mouse(event.kind),
+        Input::Resize(..) => {}
+        _ => return false,
+    }
+    true
 }
 
 /// What happened, printed to the normal screen so it stays in the terminal's history.

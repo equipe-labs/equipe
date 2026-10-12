@@ -9,8 +9,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
+use std::collections::HashMap;
+
 use equipe_core::board::project_name;
-use equipe_core::protocol::{Entry, Ticket, TicketStatus};
+use equipe_core::protocol::{Entry, SessionId, Ticket, TicketStatus};
 
 use super::app::{Agent, AgentState, App, Pane, relative, tool_verb};
 use super::markdown;
@@ -75,7 +77,67 @@ fn composer_height(app: &App, width: u16) -> u16 {
     rows.len().clamp(1, 8) as u16 + 2
 }
 
-pub fn render(frame: &mut Frame, app: &App, theme: Theme, branch: Option<&str>) {
+/// What a laid-out conversation depends on: the width it was laid out for, and
+/// enough of the conversation to notice it changed — its length, the length of
+/// its last line (a reply grows as it streams), the memos waiting.
+type LayoutKey = (usize, usize, usize, usize);
+
+/// Conversations already laid out, per member. Laying one out means reading all
+/// of its Markdown; scrolling must not do that again for every wheel event.
+#[derive(Default)]
+pub struct Layouts {
+    laid_out: HashMap<SessionId, (LayoutKey, Vec<Line<'static>>)>,
+}
+
+impl Layouts {
+    /// Lay out the selected member's conversation for a terminal `width` columns
+    /// wide, reusing the last layout when nothing changed. Returns the member and
+    /// how many lines its conversation grew by, so a view scrolled up can stay put.
+    pub fn prepare(&mut self, app: &App, theme: Theme, width: u16) -> Option<(SessionId, usize)> {
+        if app.pane != Pane::Conversation {
+            return None;
+        }
+        let agent = app.selected()?;
+        let text_width = transcript_width(width);
+        let key = layout_key(agent, text_width);
+        let previous = match self.laid_out.get(&agent.id) {
+            Some((k, _)) if *k == key => return None,
+            Some((k, lines)) if k.0 == text_width => Some(lines.len()),
+            _ => None,
+        };
+        let lines = transcript_lines(agent, theme, text_width);
+        let grew = previous.map(|before| lines.len().saturating_sub(before));
+        self.laid_out.insert(agent.id, (key, lines));
+        grew.filter(|n| *n > 0).map(|n| (agent.id, n))
+    }
+
+    fn get(&self, agent: &Agent, width: usize) -> Option<&[Line<'static>]> {
+        match self.laid_out.get(&agent.id) {
+            Some((key, lines)) if *key == layout_key(agent, width) => Some(lines),
+            _ => None,
+        }
+    }
+}
+
+fn layout_key(agent: &Agent, width: usize) -> LayoutKey {
+    let entries = agent.transcript.entries();
+    let last = entries.last().map_or(0, |entry| match entry {
+        Entry::User { text } | Entry::Reply { text } | Entry::Note { text } => text.len(),
+        Entry::Tool { tool, target } => tool.len() + target.as_ref().map_or(0, String::len),
+        Entry::Error { message, .. } => message.len(),
+        Entry::Landed { stat, .. } => stat.len(),
+    });
+    (width, entries.len(), last, agent.queued.len())
+}
+
+/// The width a conversation is laid out at, in a terminal `total` columns wide:
+/// what the squad pane and the borders leave.
+fn transcript_width(total: u16) -> usize {
+    let team = if total >= 72 { 28 } else { 0 };
+    (total.saturating_sub(team) as usize).saturating_sub(3)
+}
+
+pub fn render(frame: &mut Frame, app: &App, theme: Theme, branch: Option<&str>, layouts: &Layouts) {
     let area = frame.area();
     let asking = approval_lines(app, theme, area.width.saturating_sub(4) as usize);
     let asking_height = if asking.is_empty() { 0 } else { asking.len() as u16 + 2 };
@@ -95,7 +157,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: Theme, branch: Option<&str>) 
         render_team(frame, team, app, theme);
     }
     match app.pane {
-        Pane::Conversation => render_transcript(frame, right, app, theme),
+        Pane::Conversation => render_transcript(frame, right, app, theme, layouts),
         Pane::Board => render_board(frame, right, app, theme),
     }
     if asking_height > 0 {
@@ -254,6 +316,13 @@ You can talk to it directly — the PM hears about it."
                 lines.extend(wrapped(vec![Span::styled("› ", theme.accent())], text, theme.bold(), 2, width));
             }
             Entry::Reply { text } => lines.extend(markdown::lines(text, width, &theme.markdown())),
+            // Claude Code loading tool descriptions: its business, not the person's.
+            Entry::Tool { tool, .. } if tool == "ToolSearch" => {}
+            // A member writing down what it learned, in its own memory.
+            Entry::Tool { tool, target: Some(target) } if is_memory(tool, target) => {
+                let note = std::path::Path::new(target).file_name().map_or_else(|| target.clone(), |n| n.to_string_lossy().into_owned());
+                lines.extend(wrapped(vec![Span::styled("· ", theme.dim())], &format!("{:<6} {note}", "recall"), theme.dim(), 2, width));
+            }
             Entry::Tool { tool, target } => {
                 let verb = tool_verb(tool);
                 let target = target.as_deref().map(|t| relative(t, &agent.base)).unwrap_or_default();
@@ -302,7 +371,13 @@ You can talk to it directly — the PM hears about it."
     lines
 }
 
-fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
+/// Whether a tool use is a member writing to its own memory — Claude Code's
+/// auto memory, which equipe keeps under the squad's members.
+fn is_memory(tool: &str, target: &str) -> bool {
+    matches!(tool, "Write" | "Edit" | "MultiEdit") && target.contains("/.equipe/") && target.contains("/members/") && target.contains("/memory/")
+}
+
+fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, layouts: &Layouts) {
     let Some(agent) = app.selected() else {
         return;
     };
@@ -312,7 +387,11 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     }
     let block = Block::bordered().border_style(theme.border()).title(Span::styled(title, theme.dim()));
     let inner = block.inner(area);
-    let lines = transcript_lines(agent, theme, inner.width.saturating_sub(1) as usize);
+    let width = inner.width.saturating_sub(1) as usize;
+    let lines = match layouts.get(agent, width) {
+        Some(lines) => lines.to_vec(),
+        None => transcript_lines(agent, theme, width),
+    };
     // Follow the bottom unless the person scrolled up.
     let height = inner.height as usize;
     let bottom = lines.len().saturating_sub(height);
@@ -531,7 +610,7 @@ mod tests {
 
     fn screen(app: &App, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|f| render(f, app, Theme::plain(), Some("main"))).unwrap();
+        terminal.draw(|f| render(f, app, Theme::plain(), Some("main"), &Layouts::default())).unwrap();
         let buffer = terminal.backend().buffer();
         (0..height)
             .map(|y| {
@@ -746,6 +825,30 @@ mod tests {
             assert!(shot.contains(expected), "missing {expected:?} in:\n{shot}");
         }
         assert!(shot.lines().last().unwrap().contains("pm · haiku · auto"), "{shot}");
+    }
+
+    #[test]
+    fn engine_housekeeping_stays_out_and_memory_reads_as_memory() {
+        let (mut app, id) = working();
+        app.on_event(Event::ToolUse { session: id, tool: "ToolSearch".into(), target: None });
+        app.on_event(Event::ToolUse {
+            session: id,
+            tool: "Write".into(),
+            target: Some("/Users/a/.equipe/squads/acme/members/pm/memory/site.md".into()),
+        });
+        let shot = screen(&app, 100, 20);
+        assert!(!shot.contains("ToolSearch"), "{shot}");
+        assert!(shot.contains("· recall site.md"), "{shot}");
+    }
+
+    #[test]
+    fn a_laid_out_conversation_is_reused_and_reports_how_much_it_grew() {
+        let (mut app, id) = working();
+        let mut layouts = Layouts::default();
+        assert_eq!(layouts.prepare(&app, Theme::plain(), 100), None, "the first layout has nothing to compare with");
+        assert_eq!(layouts.prepare(&app, Theme::plain(), 100), None, "nothing changed, nothing laid out again");
+        app.on_event(Event::TextDelta { session: id, text: "\n\nmore\n\nand more".into() });
+        assert_eq!(layouts.prepare(&app, Theme::plain(), 100), Some((id, 3)));
     }
 
     #[test]
