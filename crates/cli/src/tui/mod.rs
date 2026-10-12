@@ -21,7 +21,7 @@ use crossterm::event::{
     KeyEventKind,
 };
 use crossterm::execute;
-use futures_util::{FutureExt as _, StreamExt as _};
+use futures_util::StreamExt as _;
 
 use crate::onboard::Start;
 use crate::{daemon, ui};
@@ -98,9 +98,12 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                 if !on_input(&mut app, &client, event) {
                     continue;
                 }
-                // A trackpad sends a burst of events per gesture: take them all,
-                // then draw once.
-                while let Some(Some(Ok(event))) = input.next().now_or_never() {
+                // A trackpad sends a burst of events per gesture: take the ones
+                // already here, then draw once. (A zero timeout polls with this
+                // task's own waker, so the stream keeps waking it afterwards — a
+                // no-op waker would leave later input unread until something else
+                // woke the loop.)
+                while let Ok(Some(Ok(event))) = tokio::time::timeout(Duration::ZERO, input.next()).await {
                     on_input(&mut app, &client, event);
                 }
             }
