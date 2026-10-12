@@ -1123,6 +1123,12 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         keys.push(Span::styled(format!("   · {} more waiting", app.approvals.len() - 1), theme.dim()));
     }
     lines.push(Line::from(keys));
+    // Asked too often? The way to stop it, right where the asking is.
+    let member = &approval.member;
+    lines.push(Line::from(vec![
+        bar(),
+        Span::styled(ui::fit(&format!("/mode {member} full stops {member} asking · /mode for all modes"), width), theme.dim()),
+    ]));
     lines
 }
 
@@ -1562,7 +1568,7 @@ mod tests {
         asking.reason = Some("Release the package".into());
         app.on_event(Event::ApprovalRequested { squad: "acme".into(), approval: asking });
         let shot = screen(&app, 100, 26);
-        for expected in ["▎ frontend asks · T-3", "▎ run  npm publish", "▎ Release the package", "▎ y allow   a always allow npm publish   n decline"] {
+        for expected in ["▎ frontend asks · T-3", "▎ run  npm publish", "▎ Release the package", "▎ y allow   a always allow npm publish   n decline", "▎ /mode frontend full stops frontend asking"] {
             assert!(shot.contains(expected), "missing {expected:?} in:\n{shot}");
         }
     }
