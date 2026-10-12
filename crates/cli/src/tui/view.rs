@@ -20,7 +20,7 @@ use ratatui::widgets::Paragraph;
 use equipe_core::board::project_name;
 use equipe_core::protocol::{Entry, SessionId, TicketStatus};
 
-use super::app::{Agent, AgentState, App, Hit, Pane, elapsed, relative, tool_verb};
+use super::app::{Agent, AgentState, App, Divider, Hit, Pane, elapsed, relative, tool_verb};
 use super::markdown;
 use crate::ui;
 
@@ -29,9 +29,8 @@ const PROSE_MAX: usize = 96;
 
 /// The squad pane's width — wider on a wide terminal — and the gap holding the
 /// hairline beside it.
-const SQUAD_WIDTH: u16 = 26;
-const SQUAD_WIDE: u16 = 32;
-const WIDE_BODY: u16 = 116;
+/// The squad pane's narrowest and, as a share of the body, widest.
+const SQUAD_MIN: u16 = 14;
 const GAP: u16 = 4;
 
 /// Below this width the squad pane gives way to the conversation.
@@ -213,21 +212,33 @@ fn content(area: Rect) -> Rect {
     Rect { x: area.x + margin, width: area.width.saturating_sub(2 * margin), ..area }
 }
 
+/// How wide the squad pane is: where the person dragged its edge, or else just
+/// wide enough for its names and what follows them.
+fn squad_width(app: &App, body: Rect) -> u16 {
+    let fit = || {
+        let name = app.agents.iter().map(|a| a.label().chars().count()).max().unwrap_or(4).clamp(4, 12);
+        let detail = app.agents.iter().filter_map(|a| a.short_model()).map(|m| m.chars().count()).max().unwrap_or(0).max(9);
+        // marker, mark and a space, the name, two spaces, the detail, a spare column.
+        (2 + 2 + name + 2 + detail + 1) as u16
+    };
+    app.squad_width.unwrap_or_else(fit).clamp(SQUAD_MIN, (body.width / 2).max(SQUAD_MIN))
+}
+
 /// The squad pane, the hairline gap, and the conversation, side by side.
-fn columns(body: Rect) -> (Option<Rect>, Option<Rect>, Rect) {
+fn columns(app: &App, body: Rect) -> (Option<Rect>, Option<Rect>, Rect) {
     if body.width + 4 < SQUAD_MIN_TOTAL {
         return (None, None, body);
     }
-    let squad_width = if body.width >= WIDE_BODY { SQUAD_WIDE } else { SQUAD_WIDTH };
+    let squad_width = squad_width(app, body);
     let [squad, gap, right] =
         Layout::horizontal([Constraint::Length(squad_width), Constraint::Length(GAP), Constraint::Min(20)]).areas(body);
     (Some(squad), Some(gap), right)
 }
 
 /// The width a conversation is laid out at, in a terminal `total` columns wide.
-fn transcript_width(total: u16) -> usize {
+fn transcript_width(app: &App, total: u16) -> usize {
     let body = content(Rect::new(0, 0, total, 1));
-    let (_, _, right) = columns(body);
+    let (_, _, right) = columns(app, body);
     (right.width as usize).saturating_sub(1).min(PROSE_MAX)
 }
 
@@ -254,7 +265,7 @@ impl Layouts {
             return None;
         }
         let agent = app.selected()?;
-        let text_width = transcript_width(width);
+        let text_width = transcript_width(app, width);
         let key = layout_key(agent, text_width);
         let previous = match self.laid_out.get(&agent.id) {
             Some((k, _)) if *k == key => return None,
@@ -345,10 +356,14 @@ pub struct Extent {
     pub board_max: usize,
     /// Where the clickable things are: the pane switch, the board's ticket rows.
     pub hits: Vec<(u16, u16, u16, Hit)>,
+    pub divider: Option<Divider>,
 }
 
 pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Extent {
-    let (_, _, right) = columns(rows(app, theme, screen).body);
+    let body = rows(app, theme, screen).body;
+    let (_, gap, right) = columns(app, body);
+    // The hairline between the squad and the rest: drag it to resize.
+    let divider = gap.map(|gap| Divider { x: gap.x + 1, top: body.y, bottom: body.y + body.height, body_x: body.x });
     let board = under_title(right);
     // The switch at the title's right: clicking it changes panes.
     let switch: usize = switch_label(app, app.pane, theme).iter().map(Span::width).sum();
@@ -366,7 +381,7 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
         }
     }
     let Some(agent) = app.selected() else {
-        return Extent { page: board.height as usize / 2, conversation_max: 0, board_max: 0, hits };
+        return Extent { page: board.height as usize / 2, conversation_max: 0, board_max: 0, hits, divider };
     };
     let text = conversation_text(right, agent);
     let width = (text.width as usize).saturating_sub(1).min(PROSE_MAX);
@@ -376,6 +391,7 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
         conversation_max: lines.saturating_sub(text.height as usize),
         board_max: 0,
         hits,
+        divider,
     }
 }
 
@@ -383,11 +399,11 @@ pub fn render(frame: &mut Frame, app: &App, theme: Theme, branch: Option<&str>, 
     let Rows { header, body, approval, rule, composer, footer, asking } = rows(app, theme, frame.area());
     let asking_height = approval.height;
 
-    let (squad, gap, right) = columns(body);
+    let (squad, gap, right) = columns(app, body);
     render_header(frame, header, app, theme, branch, squad.is_none());
     if let (Some(squad), Some(gap)) = (squad, gap) {
         render_squad(frame, squad, app, theme);
-        render_hairline(frame, gap, theme);
+        render_hairline(frame, gap, app.is_dragging(), theme);
     }
     match app.pane {
         Pane::Conversation => render_transcript(frame, right, app, theme, layouts),
@@ -532,8 +548,10 @@ fn render_squad(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn render_hairline(frame: &mut Frame, area: Rect, theme: Theme) {
-    let lines: Vec<Line> = (0..area.height).map(|_| Line::from(Span::styled(" │", theme.dim()))).collect();
+/// The squad's edge; lit while the person drags it.
+fn render_hairline(frame: &mut Frame, area: Rect, held: bool, theme: Theme) {
+    let style = if held { theme.accent() } else { theme.dim() };
+    let lines: Vec<Line> = (0..area.height).map(|_| Line::from(Span::styled(" │", style))).collect();
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -1519,6 +1537,33 @@ mod tests {
     }
 
     #[test]
+    fn the_squad_pane_fits_its_names_and_its_edge_drags() {
+        let (mut app, _) = working();
+        let edge = |shot: &str| shot.lines().find(|l| l.contains("SQUAD")).and_then(|l| l.chars().position(|c| c == '│')).unwrap();
+        let shot = screen(&app, 120, 24);
+        let fitted = edge(&shot);
+        assert!(fitted < 30, "no wider than its names need:\n{shot}");
+
+        // The person takes the edge and drags it to column 50.
+        let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 120, 24), &Layouts::default());
+        let divider = laid.divider.unwrap();
+        assert_eq!(divider.x as usize, fitted);
+        app.set_hits(laid.hits, laid.divider);
+        app.on_click(divider.x, divider.top + 3);
+        assert!(app.is_dragging());
+        app.on_drag(50);
+        app.on_mouse(crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left), Instant::now());
+        assert!(!app.is_dragging());
+        assert_eq!(edge(&screen(&app, 120, 24)), 50);
+        // Never past half the screen; and a drag without hold does nothing.
+        app.on_drag(110);
+        assert_eq!(edge(&screen(&app, 120, 24)), 50);
+        app.on_click(divider.x, divider.top + 3);
+        app.on_drag(110);
+        assert_eq!(edge(&screen(&app, 120, 24)), 2 + 58 + 1, "half of the 116-column body");
+    }
+
+    #[test]
     fn the_board_puts_the_persons_reviews_first() {
         let (mut app, _) = working();
         for t in [
@@ -1711,11 +1756,11 @@ mod tests {
     }
 
     #[test]
-    fn a_wide_terminal_gives_the_squad_more_room() {
+    fn the_squad_pane_is_as_wide_on_any_terminal_and_the_conversation_takes_the_rest() {
         let narrow = screen(&working().0, 110, 20);
         let wide = screen(&working().0, 160, 20);
         let bar = |shot: &str| shot.lines().nth(2).unwrap().find('│').unwrap();
-        assert!(bar(&wide) > bar(&narrow), "{wide}");
+        assert_eq!(bar(&wide), bar(&narrow), "{wide}");
     }
 
     #[test]

@@ -256,7 +256,21 @@ pub struct App {
     pub view_diff: Option<TicketId>,
     /// Where clickable things were drawn, as `(from column, to column, row, what)`.
     hits: Vec<(u16, u16, u16, Hit)>,
+    /// The squad pane's width, once the person dragged its edge.
+    pub squad_width: Option<u16>,
+    divider: Option<Divider>,
+    dragging: bool,
     quit_armed: Option<Instant>,
+}
+
+/// The hairline between the squad and the conversation, as last drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Divider {
+    pub x: u16,
+    pub top: u16,
+    pub bottom: u16,
+    /// Where the body starts, so a drag to column c makes the pane c - body_x wide.
+    pub body_x: u16,
 }
 
 const HELP: &str = "The PM is your main contact: tell it what you want; it puts the work on the board and \
@@ -299,6 +313,9 @@ impl App {
             diffs: HashMap::new(),
             view_diff: None,
             hits: Vec::new(),
+            squad_width: None,
+            divider: None,
+            dragging: false,
             quit_armed: None,
         };
         // Talk to the PM first: it is the main contact.
@@ -392,12 +409,23 @@ impl App {
     }
 
     /// Where the screen put its clickable things, as last drawn.
-    pub fn set_hits(&mut self, hits: Vec<(u16, u16, u16, Hit)>) {
+    pub fn set_hits(&mut self, hits: Vec<(u16, u16, u16, Hit)>, divider: Option<Divider>) {
         self.hits = hits;
+        self.divider = divider;
     }
 
-    /// A click: on a tab, it switches panes; on a ticket, it picks it.
+    /// A click: on a tab, it switches panes; on a ticket, it picks it; on the
+    /// squad's edge, it takes hold of it to drag.
     pub fn on_click(&mut self, column: u16, row: u16) {
+        // A column either side of the hairline, so it isn't a pixel hunt.
+        if let Some(d) = self.divider
+            && (d.top..d.bottom).contains(&row)
+            && column + 1 >= d.x
+            && column <= d.x + 1
+        {
+            self.dragging = true;
+            return;
+        }
         let hit = self.hits.iter().find(|(from, to, y, _)| *y == row && (*from..*to).contains(&column)).map(|h| h.3);
         match hit {
             Some(Hit::Pane(pane)) => {
@@ -611,6 +639,10 @@ impl App {
     }
 
     pub fn on_mouse(&mut self, kind: MouseEventKind, now: Instant) {
+        if let MouseEventKind::Up(_) = kind {
+            self.dragging = false;
+            return;
+        }
         let up = match kind {
             MouseEventKind::ScrollUp => true,
             MouseEventKind::ScrollDown => false,
@@ -628,6 +660,18 @@ impl App {
         }
         let lines = if in_gesture { 1 } else { WHEEL_NOTCH };
         self.scroll(if up { lines } else { -lines });
+    }
+
+    pub fn is_dragging(&self) -> bool {
+        self.dragging
+    }
+
+    /// The squad's edge follows the mouse while held; the view keeps it within
+    /// bounds.
+    pub fn on_drag(&mut self, column: u16) {
+        if let (true, Some(d)) = (self.dragging, self.divider) {
+            self.squad_width = Some(column.saturating_sub(d.body_x).saturating_sub(1));
+        }
     }
 
     /// What the screen holds, as last drawn: the page size, and how far the

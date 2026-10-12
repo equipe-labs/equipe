@@ -98,6 +98,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
     let branch = current_branch(&cwd);
     let daemon_build = hello.version.clone();
     let (mut app, first) = app::App::from_snapshot(cwd.clone(), hello.snapshot, &start.members);
+    app.squad_width = saved_squad_width();
     first.into_iter().for_each(|c| client.send(c));
     if daemon_build != daemon::build_id() {
         // A daemon from an older build keeps running old code; say so, but don't
@@ -125,6 +126,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
     }
 
     let mut input = EventStream::new();
+    let mut saved_width = app.squad_width;
     let mut daemon_lost = false;
     let mut layouts = view::Layouts::default();
     let draw = |terminal: &mut ratatui::DefaultTerminal, app: &mut app::App, layouts: &mut view::Layouts| {
@@ -134,7 +136,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         }
         let extent = view::extent(app, theme, ratatui::layout::Rect::new(0, 0, size.width, size.height), layouts);
         app.set_extent(extent.page, extent.conversation_max, extent.board_max);
-        app.set_hits(extent.hits);
+        app.set_hits(extent.hits, extent.divider);
         terminal.draw(|f| view::render(f, app, theme, branch.as_deref(), layouts)).map(|_| ())
     };
     draw(&mut terminal, &mut app, &mut layouts)?;
@@ -159,6 +161,11 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                 // woke the loop.)
                 while let Ok(Some(Ok(event))) = tokio::time::timeout(Duration::ZERO, input.next()).await {
                     on_input(&mut app, &client, event);
+                }
+                // A width the person dragged to is kept for next time.
+                if !app.is_dragging() && app.squad_width != saved_width {
+                    saved_width = app.squad_width;
+                    save_squad_width(saved_width);
                 }
             }
             event = client.next_event() => match event {
@@ -265,6 +272,23 @@ fn export(app: &app::App) -> std::io::Result<(PathBuf, Option<String>)> {
 
 /// Whether this is the first time the hint `name` is shown on this machine — and
 /// remember that it was.
+/// The squad pane's width as the person last dragged it, kept beside the hints.
+fn squad_width_file() -> PathBuf {
+    equipe_providers::credentials::equipe_home().join("hints").join("squad-width")
+}
+
+fn saved_squad_width() -> Option<u16> {
+    std::fs::read_to_string(squad_width_file()).ok()?.trim().parse().ok()
+}
+
+fn save_squad_width(width: Option<u16>) {
+    let file = squad_width_file();
+    if let Some(width) = width {
+        let _ = std::fs::create_dir_all(file.parent().expect("hints has a parent"));
+        let _ = std::fs::write(&file, width.to_string());
+    }
+}
+
 fn first_time(name: &str) -> bool {
     let marker = equipe_providers::credentials::equipe_home().join("hints").join(name);
     if marker.exists() {
@@ -328,6 +352,7 @@ fn on_input(app: &mut app::App, client: &equipe_core::gateway::Client, event: In
         Input::Paste(text) => app.on_paste(&text),
         Input::Mouse(event) => match event.kind {
             crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => app.on_click(event.column, event.row),
+            crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left) => app.on_drag(event.column),
             kind => app.on_mouse(kind, Instant::now()),
         },
         Input::Resize(..) => {}
