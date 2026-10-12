@@ -148,6 +148,31 @@ impl Theme {
         }
     }
 
+    /// A member's own colour (see `look`): soft on a dark terminal, deeper on
+    /// a light one, the nearest of 256 without truecolor, none without colour.
+    fn member(self, hue: usize) -> Style {
+        const DARK: [(u8, u8, u8); 8] = [
+            (232, 190, 120), // amber
+            (236, 150, 190), // pink
+            (120, 190, 240), // sky
+            (140, 208, 150), // green
+            (182, 162, 242), // violet
+            (110, 212, 200), // teal
+            (240, 160, 110), // orange
+            (205, 212, 120), // lime
+        ];
+        const LIGHT: [(u8, u8, u8); 8] =
+            [(160, 104, 20), (176, 50, 110), (30, 104, 170), (40, 128, 60), (100, 70, 190), (20, 128, 120), (180, 80, 30), (110, 120, 20)];
+        const INDEXED: [u8; 8] = [179, 175, 74, 108, 141, 73, 173, 149];
+        let hue = hue % DARK.len();
+        match (self.color, self.truecolor, self.light) {
+            (true, true, false) => Style::new().fg(Color::Rgb(DARK[hue].0, DARK[hue].1, DARK[hue].2)),
+            (true, true, true) => Style::new().fg(Color::Rgb(LIGHT[hue].0, LIGHT[hue].1, LIGHT[hue].2)),
+            (true, false, _) => Style::new().fg(Color::Indexed(INDEXED[hue])),
+            _ => Style::new(),
+        }
+    }
+
     fn dim(self) -> Style {
         match (self.color, self.truecolor, self.light) {
             (true, true, false) => Style::new().fg(Color::Rgb(124, 126, 133)),
@@ -410,15 +435,49 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App, theme: Theme, branch:
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// Who it is right now, as a glyph: needs the person, working, ready…
+/// Each member's own mark and colour, so the squad tells apart at a glance.
+/// The built-in roles have theirs; anyone else gets one from their name.
+fn look(role: &str, name: &str) -> (&'static str, usize) {
+    match role {
+        "pm" => ("◆", 0),
+        "designer" => ("✦", 1),
+        "frontend" => ("●", 2),
+        "backend" => ("■", 3),
+        "qa" => ("◎", 4),
+        "data" => ("▲", 5),
+        _ => {
+            const MARKS: [&str; 4] = ["◇", "★", "▼", "✚"];
+            let h = name.bytes().fold(7usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));
+            (MARKS[h % MARKS.len()], 6 + h % 2)
+        }
+    }
+}
+
+fn agent_look(agent: &Agent) -> (&'static str, usize) {
+    let name = agent.label();
+    look(agent.member.as_ref().map_or("", |m| m.role.as_str()), &name)
+}
+
+/// A member's colour by the name the person knows it by.
+fn member_style(app: &App, name: &str, theme: Theme) -> Style {
+    let hue = match app.agents.iter().find(|a| a.label() == name) {
+        Some(agent) => agent_look(agent).1,
+        None => look(name, name).1,
+    };
+    theme.member(hue)
+}
+
+/// Who it is right now, as a glyph: needs the person, working (turning, in its
+/// colour), or at rest — its own mark.
 fn glyph(app: &App, agent: &Agent, theme: Theme) -> Span<'static> {
     if app.needs_you(agent) {
         return Span::styled("✻", theme.accent().add_modifier(Modifier::BOLD));
     }
+    let (mark, hue) = agent_look(agent);
     match agent.state {
         AgentState::Starting => Span::styled("…", theme.dim()),
-        AgentState::Ready => Span::styled("○", theme.dim()),
-        AgentState::Working => theme.spinner(Instant::now()),
+        AgentState::Ready => Span::styled(mark, theme.member(hue)),
+        AgentState::Working => Span::styled(theme.spinner(Instant::now()).content, theme.member(hue).add_modifier(Modifier::BOLD)),
         AgentState::Closing | AgentState::Closed => Span::styled("·", theme.dim()),
         AgentState::Failed => Span::styled("✗", theme.bold()),
     }
@@ -453,7 +512,8 @@ fn render_squad(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         let selected = i == app.selected && app.pane == Pane::Conversation;
         let marker = if selected { Span::styled("› ", theme.accent()) } else { Span::raw("  ") };
         let name = ui::fit(&agent.label(), name_width);
-        let name = Span::styled(format!("{name:<name_width$}"), if selected { theme.bold() } else { Style::new() });
+        let style = theme.member(agent_look(agent).1);
+        let name = Span::styled(format!("{name:<name_width$}"), if selected { style.add_modifier(Modifier::BOLD) } else { style });
         // What it is doing, the most pressing first: needs you, a memo waiting,
         // its ticket, its model.
         let detail = if app.needs_you(agent) {
@@ -710,8 +770,14 @@ fn switch_label(app: &App, pane: Pane, theme: Theme) -> Vec<Span<'static>> {
             spans
         }
         Pane::Board => {
-            let who = app.selected().map(Agent::label).unwrap_or_else(|| "conversation".into());
-            vec![Span::styled(format!("← {who}"), theme.bold()), Span::styled("  ctrl-b", theme.dim())]
+            let Some(agent) = app.selected() else {
+                return vec![Span::styled("← conversation", theme.bold()), Span::styled("  ctrl-b", theme.dim())];
+            };
+            vec![
+                Span::styled("← ", theme.bold()),
+                Span::styled(agent.label(), theme.member(agent_look(agent).1).add_modifier(Modifier::BOLD)),
+                Span::styled("  ctrl-b", theme.dim()),
+            ]
         }
     }
 }
@@ -720,7 +786,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
     let Some(agent) = app.selected() else {
         return;
     };
-    let mut title = vec![Span::styled(agent.label(), theme.bold())];
+    let mut title = vec![Span::styled(agent.label(), theme.member(agent_look(agent).1).add_modifier(Modifier::BOLD))];
     match agent.ticket.and_then(|id| app.tickets.iter().find(|t| t.id == id)) {
         Some(ticket) => title.push(Span::styled(format!("  ·  T-{} {}", ticket.id, ticket.title), theme.dim())),
         None => title.push(Span::styled(format!("  ·  {}", agent.engine_label()), theme.dim())),
@@ -864,7 +930,7 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
                 Span::styled(format!("{:<6}", format!("T-{}", t.id)), if selected { theme.bold() } else { theme.dim() }),
                 Span::styled(title, title_style),
                 Span::raw(" ".repeat(pad + 2)),
-                Span::styled(format!("{who:<10}  "), theme.dim()),
+                Span::styled(format!("{who:<10}  "), if closed { theme.dim() } else { member_style(app, &who, theme) }),
                 Span::styled(ui::fit(&format!("{state}{place}"), tail_width.saturating_sub(12)), state_style),
             ]),
             Some(t.id),
@@ -1130,7 +1196,8 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let left: Vec<Span> = match (&app.flash, app.addressee()) {
         (Some(flash), _) => vec![Span::styled(flash.clone(), theme.bold())],
         (None, Some((name, direct))) => {
-            let mut spans = vec![Span::styled("→ ", theme.dim()), Span::styled(name, theme.bold())];
+            let style = member_style(app, &name, theme).add_modifier(Modifier::BOLD);
+            let mut spans = vec![Span::styled("→ ", theme.dim()), Span::styled(name, style)];
             if direct {
                 spans.push(Span::styled(" · the PM hears about it", theme.dim()));
             }
@@ -1321,7 +1388,7 @@ mod tests {
         });
         let shot = screen(&app, 100, 22);
         assert!(shot.contains("1,234 tokens"), "{shot}");
-        assert!(shot.contains("○ pm"), "{shot}");
+        assert!(shot.contains("◆ pm"), "at rest, its own mark:\n{shot}");
         assert!(shot.contains("─ worked 1m 05s"), "{shot}");
         assert!(!shot.contains("● working"), "{shot}");
     }
@@ -1405,7 +1472,7 @@ mod tests {
         });
         app.on_event(Event::MessageQueued { session: pm, text: "and the footer".into() });
         let shot = screen(&app, 100, 24);
-        assert!(shot.contains("○ frontend  sonnet-5-5"), "{shot}");
+        assert!(shot.contains("● frontend  sonnet-5-5"), "{shot}");
         assert!(shot.contains("pm        1 memo"), "{shot}");
         assert!(shot.contains("› and the footer"), "{shot}");
         assert!(shot.contains("memo · read when this turn ends"), "{shot}");
@@ -1593,6 +1660,22 @@ mod tests {
         assert_eq!(buffer[(x, row)].bg, Color::Rgb(36, 36, 40));
         // Without the terminal's answer there is no wash: a guess would show as a slab.
         assert_eq!(Theme { background: None, ..theme }.tint(), None);
+    }
+
+    #[test]
+    fn every_member_has_a_mark_and_colour_of_its_own() {
+        let roles = ["pm", "designer", "frontend", "backend", "qa", "data"];
+        let looks: Vec<_> = roles.iter().map(|r| look(r, r)).collect();
+        for (i, a) in looks.iter().enumerate() {
+            for b in &looks[i + 1..] {
+                assert!(a.0 != b.0 && a.1 != b.1, "{looks:?}");
+            }
+        }
+        // Anyone else is told apart from the built-in roles, and keeps theirs.
+        assert!(look("writer", "writer").1 >= 6);
+        assert_eq!(look("writer", "writer"), look("writer", "writer"));
+        let theme = Theme { color: true, truecolor: true, light: false, background: None };
+        assert_ne!(theme.member(0), theme.member(2));
     }
 
     #[test]
