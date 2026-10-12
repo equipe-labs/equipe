@@ -8,6 +8,7 @@
 //! normal screen so it stays in the terminal's history.
 
 mod app;
+mod commands;
 mod composer;
 mod markdown;
 mod view;

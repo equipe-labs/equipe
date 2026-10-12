@@ -508,6 +508,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: Theme, branch: Option<&str>, 
         render_hairline(frame, gap, app.is_dragging(), theme);
     }
     match app.pane {
+        Pane::Conversation if app.help_open => render_help(frame, right, theme),
         Pane::Conversation => render_transcript(frame, right, app, theme, layouts),
         Pane::Board => render_board(frame, right, app, theme),
     }
@@ -518,6 +519,96 @@ pub fn render(frame: &mut Frame, app: &App, theme: Theme, branch: Option<&str>, 
     frame.render_widget(Paragraph::new(Span::styled("─".repeat(rule.width as usize), theme.dim())), rule);
     render_composer(frame, composer, app, theme);
     render_footer(frame, footer, app, theme);
+    render_choices(frame, Rect { height: rule.y.saturating_sub(body.y), ..body }, app, theme);
+}
+
+/// Completions, just above the composer and over whatever is there: the picked
+/// one marked, each with what it does.
+fn render_choices(frame: &mut Frame, above: Rect, app: &App, theme: Theme) {
+    const SHOWN: usize = 8;
+    let choices = app.choices();
+    if choices.is_empty() || above.height < 3 {
+        return;
+    }
+    let picked = app.pick.min(choices.len() - 1);
+    let first = (picked + 1).saturating_sub(SHOWN);
+    let label_width = choices.iter().map(|c| c.label.chars().count()).max().unwrap_or(0).min(40) + 3;
+    let mut lines: Vec<Line> = vec![Line::from(Span::styled("─".repeat(above.width as usize), theme.dim()))];
+    for (i, choice) in choices.iter().enumerate().skip(first).take(SHOWN) {
+        let (mark, label_style) =
+            if i == picked { (Span::styled("› ", theme.accent()), theme.accent().add_modifier(Modifier::BOLD)) } else { (Span::raw("  "), theme.bold()) };
+        lines.push(Line::from(vec![
+            mark,
+            Span::styled(format!("{:<label_width$}", ui::fit(&choice.label, label_width - 3)), label_style),
+            Span::styled(ui::fit(&choice.about, (above.width as usize).saturating_sub(label_width + 2)), theme.dim()),
+        ]));
+    }
+    let more = choices.len().saturating_sub(first + SHOWN);
+    lines.push(Line::from(Span::styled(
+        format!("  ↑↓ pick · tab or enter takes it · esc closes{}", if more > 0 { format!(" · {more} more") } else { String::new() }),
+        theme.dim(),
+    )));
+    let height = (lines.len() as u16).min(above.height);
+    let area = Rect { y: above.y + above.height - height, height, ..above };
+    frame.render_widget(ratatui::widgets::Clear, area);
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// `/help`: what the console does, grouped — talking, looking around,
+/// answering — and every command, from the list completion uses.
+fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
+    let title = vec![Span::styled("Help", theme.bold())];
+    let area = pane_title(title, vec![Span::styled("esc closes", theme.dim())], area, frame);
+    let width = (area.width as usize).saturating_sub(1);
+    let commands: Vec<(String, &str)> =
+        super::commands::COMMANDS.iter().map(|c| (format!("/{} {}", c.name, c.args).trim_end().to_owned(), c.about)).collect();
+    // Keys and commands each line up in a column as wide as their longest.
+    let rows = |pairs: &[(String, &str)], column: usize| -> Vec<Line<'static>> {
+        let column = column.min(width / 2) + 3;
+        pairs
+            .iter()
+            .flat_map(|(k, what)| {
+                wrapped(vec![Span::styled(format!("  {:<column$}", ui::fit(k, column - 1)), theme.bold())], what, theme.dim(), column + 2, width)
+            })
+            .collect()
+    };
+    let heading = |h: &str| vec![Line::raw(""), Line::from(Span::styled(h.to_owned(), theme.accent().add_modifier(Modifier::BOLD)))];
+    let pairs = |list: &[(&str, &'static str)]| -> Vec<(String, &'static str)> { list.iter().map(|(k, w)| ((*k).to_owned(), *w)).collect() };
+    let mut lines = wrapped(
+        Vec::new(),
+        "The PM is your main contact: tell it what you want, it plans the work on the board, and equipe hands each ticket to its owner.",
+        Style::new(),
+        0,
+        width,
+    );
+    lines.extend(heading("TALK"));
+    // The keys of all three groups share one column.
+    let keys = 19;
+    lines.extend(rows(&pairs(&[
+        ("Enter", "send to the member named under the composer"),
+        ("@name …", "send to someone else — the PM hears about it"),
+        ("Tab · Shift-Tab", "pick who you talk to"),
+        ("Alt-Enter · Ctrl-J", "a new line (or \\ then Enter)"),
+        ("Esc", "stop a member mid-turn; a waiting memo goes in at once"),
+        ("→", "take the greyed suggestion in an empty composer"),
+    ]), keys));
+    lines.extend(heading("LOOK AROUND"));
+    lines.extend(rows(&pairs(&[
+        ("Ctrl-B", "the board, and back"),
+        ("PgUp · PgDn · wheel", "scroll · End for the latest · Ctrl-O unfolds steps"),
+        ("click", "a ticket number opens it · drag the squad's edge to resize it"),
+    ]), keys));
+    lines.extend(heading("ANSWER"));
+    lines.extend(rows(&pairs(&[
+        ("y · a · n", "allow · always allow · decline a request"),
+        ("on the board", "a accept · r ask for changes · d the diff · Enter talk to its owner"),
+    ]), keys));
+    lines.extend(heading("COMMANDS — type / to complete"));
+    let widest = commands.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
+    lines.extend(rows(&commands, widest));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled("Ctrl-C twice leaves — the squad keeps working in the background.", theme.dim())));
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_header(frame: &mut Frame, area: Rect, app: &App, theme: Theme, branch: Option<&str>, narrow: bool) {
@@ -1423,7 +1514,14 @@ fn render_composer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let (rows, (cursor_row, cursor_col)) = app.composer.layout(text_width);
     // Keep the cursor's row in view when the message is taller than the field.
     let first = (cursor_row + 1).saturating_sub(area.height as usize);
-    let content = if app.composer.text().is_empty() {
+    let content = if let (true, Some(hint)) = (app.composer.text().is_empty(), app.hint()) {
+        // What the moment calls for, greyed: → takes it.
+        Paragraph::new(Line::from(vec![
+            Span::styled("› ", theme.accent()),
+            Span::styled(hint, theme.dim().add_modifier(Modifier::ITALIC)),
+            Span::styled("   → to fill in", theme.dim()),
+        ]))
+    } else if app.composer.text().is_empty() {
         let to = app.addressee().map(|(name, _)| name).unwrap_or_else(|| "the squad".into());
         Paragraph::new(Line::from(vec![
             Span::styled("› ", theme.accent()),
@@ -1442,7 +1540,7 @@ fn render_composer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         Paragraph::new(lines)
     };
     frame.render_widget(content, area);
-    frame.set_cursor_position((area.x + 2 + cursor_col as u16, area.y + (cursor_row - first) as u16));
+    frame.set_cursor_position((area.x + 2 + cursor_col as u16, area.y + cursor_row.saturating_sub(first) as u16));
 }
 
 /// The bottom line: who a message goes to (always — nothing reaches the wrong
@@ -1946,6 +2044,14 @@ mod tests {
             app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(id, TicketStatus::Done, "x") });
         }
         assert!(!screen(&app, 100, 30).contains("Waiting for your review"));
+    }
+
+    #[test]
+    fn a_tiny_terminal_draws_without_crashing() {
+        let (app, _) = working();
+        for height in 1..12 {
+            screen(&app, 40, height);
+        }
     }
 
     #[test]

@@ -19,6 +19,7 @@ use equipe_core::protocol::{
 };
 use equipe_core::roles;
 
+use super::commands;
 use super::composer::Composer;
 
 /// How long a first Ctrl-C waits for a second before it stops meaning "leave".
@@ -250,6 +251,13 @@ pub struct App {
     pub export: bool,
     /// Asked to open the sign-in browser (`/browser`).
     pub open_browser: bool,
+    /// The help screen is open over the conversation.
+    pub help_open: bool,
+    /// Which completion is picked, and the text the person closed completion on.
+    pub pick: usize,
+    /// The person moved the pick with ↑↓: Enter takes it even after a space.
+    picked: bool,
+    dismissed: Option<String>,
     /// The ticket picked on the board.
     pub board_selected: Option<TicketId>,
     /// What each ticket's branch changed (`git diff --stat`), by ticket and branch.
@@ -277,17 +285,6 @@ pub struct Divider {
     pub body_x: u16,
 }
 
-const HELP: &str = "The PM is your main contact: tell it what you want; it puts the work on the board and \
-equipe hands each ticket to its owner. Talk to anyone directly — Tab or @name — and the PM hears about it.\n\
-Enter sends; while a member works, a message waits as a memo until its turn ends · Esc stops it (a waiting \
-memo goes in at once) · Alt-Enter or Ctrl-J adds a line · PgUp/PgDn or the wheel scroll · Ctrl-B shows the board · \
-End jumps to the latest line · Ctrl-C twice leaves — the squad keeps working.\n\
-/add <role…> [codex|claude] brings in teammates: pm, designer, frontend, backend, qa, data, or custom <name> · \
-/accept T-3 approves handed-in work · /reopen T-3 <what to change> sends it back · /cancel T-3 drops it · \
-/board · /mode [member] plan|ask|auto|full sets how much members do on their own — y/a/n answers a request \
-for permission (allow, always allow, decline) · Ctrl-O unfolds long runs of tool use · /browser opens a browser to sign in to sites (Vercel, PostHog…) \
-that members then work in as you; /browser show [member] puts their browsers on this Mac's screen, /browser hide hides them · /export opens the conversation in your editor · /mouse lets the terminal select text (or hold Shift — Option in iTerm2 — while dragging) · /close removes the selected \
-member · /quit leaves.";
 
 impl App {
     /// The squad as the daemon has it. `joining` are roles to bring in now (a
@@ -319,6 +316,10 @@ impl App {
             browsers: HashMap::new(),
             view_diff: None,
             open_browser: false,
+            help_open: false,
+            pick: 0,
+            picked: false,
+            dismissed: None,
             hits: Vec::new(),
             squad_width: None,
             divider: None,
@@ -695,12 +696,111 @@ impl App {
     }
 
     pub fn on_key(&mut self, key: KeyEvent, now: Instant) -> Vec<Command> {
+        let before = self.composer.text().to_owned();
+        let commands = self.key(key, now);
+        // A new text starts completion over.
+        if self.composer.text() != before {
+            self.pick = 0;
+            self.picked = false;
+            self.dismissed = None;
+        }
+        commands
+    }
+
+    /// What could complete the composer's text: commands after `/`, their
+    /// arguments from the board and the squad, names after `@`.
+    pub fn choices(&self) -> Vec<commands::Choice> {
+        let text = self.composer.text();
+        if text.is_empty() || text.contains('\n') || self.dismissed.as_deref() == Some(text) {
+            return Vec::new();
+        }
+        let tickets = |statuses: &[TicketStatus]| -> Vec<(TicketId, &str)> {
+            self.tickets.iter().filter(|t| statuses.contains(&t.status)).map(|t| (t.id, t.title.as_str())).collect()
+        };
+        let ctx = commands::Context {
+            review: tickets(&[TicketStatus::Review]),
+            reopenable: tickets(&[TicketStatus::Review, TicketStatus::Done]),
+            open: tickets(&[TicketStatus::Proposed, TicketStatus::Todo, TicketStatus::InProgress, TicketStatus::Review]),
+            members: self.agents.iter().filter_map(|a| a.member.as_ref().map(|m| (m.name.as_str(), m.role.as_str()))).collect(),
+            roles: roles::ROLES.iter().map(|r| r.id).collect(),
+        };
+        commands::complete(text, &ctx)
+    }
+
+    /// What the person would likely type next, offered greyed in the empty
+    /// composer — only when the moment calls for one: work waits for their
+    /// review, or a member asked them to sign in somewhere.
+    pub fn hint(&self) -> Option<String> {
+        if !self.composer.is_empty() || !self.approvals.is_empty() || self.pane != Pane::Conversation || self.help_open {
+            return None;
+        }
+        let asked_to_sign_in = self.selected().and_then(|a| a.transcript.entries().iter().rev().find_map(|e| match e {
+            Entry::Reply { text } => Some(text.contains("equipe browser") || text.contains("/browser")),
+            Entry::User { .. } => Some(false),
+            _ => None,
+        }));
+        if asked_to_sign_in == Some(true) {
+            return Some("/browser".into());
+        }
+        self.to_review().iter().map(|t| t.id).max().map(|id| format!("/accept T-{id}"))
+    }
+
+    fn key(&mut self, key: KeyEvent, now: Instant) -> Vec<Command> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         if !(ctrl && key.code == KeyCode::Char('c')) {
             self.quit_armed = None;
             self.flash = None;
+        }
+        // The help screen closes on Esc, or as soon as the person types.
+        if self.help_open && (key.code == KeyCode::Esc || matches!(key.code, KeyCode::Char(_) | KeyCode::Enter)) {
+            self.help_open = false;
+            if key.code == KeyCode::Esc {
+                return Vec::new();
+            }
+        }
+        // Completion, while it offers something: ↑↓ pick, Tab takes, Enter takes
+        // (and runs what is whole), Esc puts it away.
+        let choices = if ctrl || alt { Vec::new() } else { self.choices() };
+        if !choices.is_empty() {
+            let picked = self.pick.min(choices.len() - 1);
+            match key.code {
+                KeyCode::Up => {
+                    self.pick = (picked + choices.len() - 1) % choices.len();
+                    self.picked = true;
+                    return Vec::new();
+                }
+                KeyCode::Down => {
+                    self.pick = (picked + 1) % choices.len();
+                    self.picked = true;
+                    return Vec::new();
+                }
+                KeyCode::Esc => {
+                    self.dismissed = Some(self.composer.text().to_owned());
+                    return Vec::new();
+                }
+                // Enter after a space sends what is typed, unless a choice was
+                // picked by hand: "/accept " must never accept a ticket nobody chose.
+                KeyCode::Enter if self.composer.text().ends_with(' ') && !self.picked => {}
+                KeyCode::Tab | KeyCode::Enter if !shift => {
+                    let choice = &choices[picked];
+                    self.composer.clear();
+                    self.composer.insert_str(&choice.text);
+                    if key.code == KeyCode::Enter && !choice.text.ends_with(' ') {
+                        return self.submit();
+                    }
+                    return Vec::new();
+                }
+                _ => {}
+            }
+        }
+        // → on an empty composer takes the greyed suggestion.
+        if key.code == KeyCode::Right && self.composer.is_empty()
+            && let Some(hint) = self.hint()
+        {
+            self.composer.insert_str(&hint);
+            return Vec::new();
         }
         // A request for permission answers to one key — while nothing is being
         // typed, and not on the board, where the same keys act on tickets: an
@@ -932,9 +1032,7 @@ impl App {
             }
             "help" => {
                 self.pane = Pane::Conversation;
-                if let Some(agent) = self.agents.get_mut(self.selected) {
-                    agent.transcript.push_local(Entry::Note { text: HELP.into() });
-                }
+                self.help_open = true;
                 Vec::new()
             }
             "quit" | "exit" => {
@@ -1573,6 +1671,59 @@ mod tests {
         let memory = browser_memory(ps, "acme");
         assert_eq!(memory.get("frontend"), Some(&((100000 + 409600 + 204800) / 1024)));
         assert_eq!(memory.len(), 1, "another squad's browser and the person's own Chrome don't count: {memory:?}");
+    }
+
+    #[test]
+    fn completion_offers_commands_their_arguments_and_names() {
+        let (mut app, _, _) = team();
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(8, TicketStatus::Review) });
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(10, TicketStatus::Review) });
+        // A command name: Tab takes it.
+        type_text(&mut app, "/acc");
+        assert_eq!(app.choices()[0].label, "/accept T-n");
+        app.on_key(key(KeyCode::Tab), Instant::now());
+        assert_eq!(app.composer.text(), "/accept ");
+        // After the space, Enter sends what's typed — nobody picked a ticket.
+        assert_eq!(app.choices().len(), 2);
+        assert!(enter(&mut app).is_empty());
+        assert!(app.flash.as_deref().unwrap().contains("Which ticket"), "{:?}", app.flash);
+        // Picked by hand, Enter takes it and runs it.
+        type_text(&mut app, "/accept ");
+        app.on_key(key(KeyCode::Down), Instant::now());
+        assert_eq!(enter(&mut app), vec![Command::Accept { squad: "acme".into(), ticket: 10 }]);
+        // A whole command runs on Enter; Esc puts the list away.
+        type_text(&mut app, "/bo");
+        assert!(enter(&mut app).is_empty());
+        assert_eq!(app.pane, Pane::Board);
+        app.pane = Pane::Conversation;
+        type_text(&mut app, "@fr");
+        app.on_key(key(KeyCode::Tab), Instant::now());
+        assert_eq!(app.composer.text(), "@frontend ");
+        app.composer.clear();
+        type_text(&mut app, "/mo");
+        app.on_key(key(KeyCode::Esc), Instant::now());
+        assert!(app.choices().is_empty());
+    }
+
+    #[test]
+    fn the_empty_composer_suggests_what_the_moment_calls_for() {
+        let (mut app, _, _) = team();
+        assert_eq!(app.hint(), None, "nothing waiting, nothing suggested");
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(8, TicketStatus::Review) });
+        assert_eq!(app.hint().as_deref(), Some("/accept T-8"));
+        app.on_key(key(KeyCode::Right), Instant::now());
+        assert_eq!(app.composer.text(), "/accept T-8");
+        assert_eq!(app.hint(), None, "not while typing");
+    }
+
+    #[test]
+    fn help_opens_over_the_conversation_and_esc_closes_it() {
+        let (mut app, _, _) = team();
+        type_text(&mut app, "/help");
+        assert!(enter(&mut app).is_empty());
+        assert!(app.help_open);
+        app.on_key(key(KeyCode::Esc), Instant::now());
+        assert!(!app.help_open);
     }
 
     #[test]
