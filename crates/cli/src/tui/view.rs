@@ -20,7 +20,7 @@ use ratatui::widgets::Paragraph;
 use equipe_core::board::project_name;
 use equipe_core::protocol::{Entry, SessionId, TicketId, TicketStatus};
 
-use super::app::{Agent, AgentState, App, Divider, Hit, Pane, elapsed, relative, tool_verb};
+use super::app::{Agent, AgentState, App, Divider, Hit, Pane, Spot, TextView, elapsed, relative, tool_verb};
 use super::markdown;
 use crate::ui;
 
@@ -420,6 +420,8 @@ pub struct Extent {
     /// Where the clickable things are: the pane switch, the board's ticket rows.
     pub hits: Vec<(u16, u16, u16, Hit)>,
     pub divider: Option<Divider>,
+    /// Where the conversation's text is, for selecting it.
+    pub text: Option<TextView>,
 }
 
 pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Extent {
@@ -448,7 +450,7 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
         }
     }
     let Some(agent) = app.selected() else {
-        return Extent { page: board.height as usize / 2, conversation_max: 0, board_max: 0, hits, divider };
+        return Extent { page: board.height as usize / 2, conversation_max: 0, board_max: 0, hits, divider, text: None };
     };
     let text = conversation_text(right, app, agent);
     // The waiting card's rows open their tickets too.
@@ -470,12 +472,14 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
         }
     };
     let lines = laid.len();
+    let height = text.height as usize;
+    let bottom = lines.saturating_sub(height);
+    let top = bottom.saturating_sub(agent.scroll_back.min(bottom));
+    let text_view = (app.pane == Pane::Conversation && !app.help_open)
+        .then_some(TextView { x: text.x, y: text.y, width: width as u16, height: text.height, top });
     // Ticket numbers on screen are ways to their tickets: clicking one opens it
     // on the board. Rows as `render_transcript` shows them.
     if app.pane == Pane::Conversation {
-        let height = text.height as usize;
-        let bottom = lines.saturating_sub(height);
-        let top = bottom.saturating_sub(agent.scroll_back.min(bottom));
         let known: Vec<TicketId> = app.tickets.iter().map(|t| t.id).collect();
         for (row, line) in laid[top..lines.min(top + height)].iter().enumerate() {
             let mut x = text.x;
@@ -498,6 +502,7 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
         board_max: 0,
         hits,
         divider,
+        text: text_view,
     }
 }
 
@@ -600,7 +605,7 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
     lines.extend(rows(&pairs(&[
         ("Ctrl-B", "the board, and back"),
         ("PgUp · PgDn · wheel", "scroll · End for the latest · Ctrl-O unfolds steps"),
-        ("click", "a ticket number opens it · drag the squad's edge to resize it"),
+        ("click · drag", "a ticket number opens it · drag over text to copy it · drag the squad's edge to resize it"),
     ]), keys));
     lines.extend(heading("ANSWER"));
     lines.extend(rows(&pairs(&[
@@ -1180,6 +1185,23 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
     let top = bottom.saturating_sub(agent.scroll_back.min(bottom));
     let shown = lines[top..lines.len().min(top + height)].to_vec();
     frame.render_widget(Paragraph::new(shown), text);
+    // What the person is selecting, in reverse.
+    if let Some((from, to)) = app.selection.map(ordered) {
+        let buffer = frame.buffer_mut();
+        for row in 0..text.height {
+            let line = top + row as usize;
+            if line < from.0 || line > to.0 {
+                continue;
+            }
+            let start = if line == from.0 { from.1 } else { 0 };
+            let end = if line == to.0 { to.1 + 1 } else { width as u16 };
+            for column in start..end.min(text.width) {
+                if let Some(cell) = buffer.cell_mut((text.x + column, text.y + row)) {
+                    cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+                }
+            }
+        }
+    }
     // Scrolled up, a thin bar on the right says where in the conversation this is.
     if top < bottom {
         render_scrollbar(frame, text, top, height, lines.len(), theme);
@@ -1187,6 +1209,53 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
     if !footer.is_empty() {
         frame.render_widget(Paragraph::new(footer), live);
     }
+}
+
+/// A selection from where it starts to where it ends, whichever way it was dragged.
+fn ordered((a, b): (Spot, Spot)) -> (Spot, Spot) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+/// The text the person selected in the conversation, as it reads: each line's
+/// selected columns, trailing spaces trimmed, the marks that open a reply or a
+/// step left out.
+pub fn selection_text(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Option<String> {
+    let (from, to) = ordered(app.selection?);
+    let agent = app.selected()?;
+    let body = rows(app, theme, screen).body;
+    let (_, _, right) = columns(app, body);
+    let width = (conversation_text(right, app, agent).width as usize).saturating_sub(1).min(PROSE_MAX);
+    let fresh;
+    let lines: &[Line<'static>] = match layouts.get(agent, width) {
+        Some(lines) => lines,
+        None => {
+            fresh = transcript_lines(agent, &squad_looks(app), theme, width);
+            &fresh
+        }
+    };
+    let mut out = Vec::new();
+    for (i, line) in lines.iter().enumerate().take(to.0 + 1).skip(from.0) {
+        let start = if i == from.0 { from.1 as usize } else { 0 };
+        let end = if i == to.0 { to.1 as usize + 1 } else { usize::MAX };
+        let mut text = String::new();
+        let mut column = 0;
+        for c in line.spans.iter().flat_map(|s| s.content.chars()) {
+            let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            if column >= start && column < end {
+                text.push(c);
+            }
+            column += w;
+        }
+        let text = text.trim_end();
+        let mut chars = text.chars();
+        let text = match (chars.next(), chars.next()) {
+            (Some(mark), Some(' ')) if start == 0 && "◆✦●■◎▲◇★▼✚›·✎".contains(mark) => &text[mark.len_utf8() + 1..],
+            _ => text,
+        };
+        out.push(text.to_owned());
+    }
+    let text = out.join("\n").trim().to_owned();
+    (!text.is_empty()).then_some(text)
 }
 
 /// A one-column scrollbar at the right edge of `area`: the thumb's size is the
@@ -1890,15 +1959,15 @@ mod tests {
         app.set_hits(laid.hits, laid.divider);
         app.on_click(divider.x, divider.top + 3);
         assert!(app.is_dragging());
-        app.on_drag(50);
+        app.on_drag(50, divider.top + 3);
         app.on_mouse(crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left), Instant::now());
         assert!(!app.is_dragging());
         assert_eq!(edge(&screen(&app, 120, 24)), 50);
         // Never past half the screen; and a drag without hold does nothing.
-        app.on_drag(110);
+        app.on_drag(110, divider.top + 3);
         assert_eq!(edge(&screen(&app, 120, 24)), 50);
         app.on_click(divider.x, divider.top + 3);
-        app.on_drag(110);
+        app.on_drag(110, divider.top + 3);
         assert_eq!(edge(&screen(&app, 120, 24)), 2 + 58 + 1, "half of the 116-column body");
     }
 
@@ -2062,6 +2131,33 @@ mod tests {
         for height in 1..12 {
             screen(&app, 40, height);
         }
+    }
+
+    #[test]
+    fn dragging_over_the_conversation_selects_and_copies_its_text() {
+        let (mut app, id) = working();
+        app.on_event(Event::TextDelta { session: id, text: "\n\nSecond line here.".into() });
+        let screen_rect = Rect::new(0, 0, 100, 24);
+        let laid = extent(&app, Theme::plain(), screen_rect, &Layouts::default());
+        app.set_hits(laid.hits, laid.divider);
+        app.set_text_view(laid.text);
+        let shot = screen(&app, 100, 24);
+        let row = |text: &str| shot.lines().position(|l| l.contains(text)).unwrap() as u16;
+        let view = laid.text.unwrap();
+        // From the start of the reply to the end of its second paragraph.
+        app.on_click(view.x, row("Looking now."));
+        app.on_drag(view.x + 40, row("Second line"));
+        app.on_mouse(crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left), Instant::now());
+        assert!(app.copy_selection);
+        let text = selection_text(&app, Theme::plain(), screen_rect, &Layouts::default()).unwrap();
+        assert_eq!(text, "Looking now.\n\nedit   src/auth.rs\n\nSecond line here.", "marks (◆, ✎) stay out");
+        // It shows, reversed, until a key is pressed.
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|f| render(f, &app, Theme::plain(), None, &Layouts::default())).unwrap();
+        let cell = terminal.backend().buffer()[(view.x + 2, row("Looking now."))].clone();
+        assert!(cell.modifier.contains(Modifier::REVERSED));
+        app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('x')), Instant::now());
+        assert!(app.selection.is_none());
     }
 
     #[test]

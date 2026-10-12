@@ -117,7 +117,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
     let theme = view::Theme::detect(query_background());
     tell_keys_apart();
     if app.mouse && first_time("mouse-select") {
-        app.flash = Some("The wheel scrolls here. To select text, hold Shift (Option in iTerm2) while dragging — or /mouse.".into());
+        app.flash = Some("The wheel scrolls here, and dragging over text copies it.".into());
     }
     // Pastes arrive whole, so a newline inside one never sends the message.
     execute!(std::io::stdout(), EnableBracketedPaste)?;
@@ -140,6 +140,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         let extent = view::extent(app, theme, ratatui::layout::Rect::new(0, 0, size.width, size.height), layouts);
         app.set_extent(extent.page, extent.conversation_max, extent.board_max);
         app.set_hits(extent.hits, extent.divider);
+        app.set_text_view(extent.text);
         terminal.draw(|f| view::render(f, app, theme, branch, layouts)).map(|_| ())
     };
     draw(&mut terminal, &mut app, &mut layouts, branch.as_deref())?;
@@ -251,6 +252,20 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                 _ => "The browser didn't open — run `equipe browser` in a terminal to see why.".into(),
             });
         }
+        if std::mem::take(&mut app.copy_selection) {
+            let size = terminal.size()?;
+            if let Some(text) = view::selection_text(&app, theme, ratatui::layout::Rect::new(0, 0, size.width, size.height), &layouts) {
+                copy(&text);
+                let lines = text.lines().count();
+                app.flash = Some(if first_time("copy-osc52") {
+                    "Copied. Over SSH it reaches your Mac's clipboard if iTerm2 allows it: Settings › General › Selection › Applications in terminal may access clipboard.".into()
+                } else if lines > 1 {
+                    format!("Copied {lines} lines")
+                } else {
+                    "Copied".into()
+                });
+            }
+        }
         if let Some((squad, members)) = app.switch_to.take() {
             // Another squad: attach to it and show it in place — this one keeps
             // working in the daemon.
@@ -309,6 +324,26 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         to_review: app.to_review().len(),
         daemon_lost,
     })
+}
+
+/// Put `text` on the clipboard: through the terminal (OSC 52), which reaches
+/// the clipboard of the machine the person sits at — over SSH too — and, run
+/// on this machine's own screen, through `pbcopy` as well.
+fn copy(text: &str) {
+    use base64::Engine as _;
+    use std::io::Write as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text);
+    let mut out = std::io::stdout();
+    let _ = write!(out, "\x1b]52;c;{encoded}\x07");
+    let _ = out.flush();
+    if std::env::var_os("SSH_CONNECTION").is_none()
+        && let Ok(mut child) = std::process::Command::new("pbcopy").stdin(std::process::Stdio::piped()).spawn()
+    {
+        if let Some(stdin) = child.stdin.as_mut() {
+            let _ = stdin.write_all(text.as_bytes());
+        }
+        let _ = child.wait();
+    }
 }
 
 /// Write the selected member's conversation to a Markdown file under
@@ -406,7 +441,7 @@ fn on_input(app: &mut app::App, client: &equipe_core::gateway::Client, event: In
         Input::Paste(text) => app.on_paste(&text),
         Input::Mouse(event) => match event.kind {
             crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => app.on_click(event.column, event.row),
-            crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left) => app.on_drag(event.column),
+            crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left) => app.on_drag(event.column, event.row),
             kind => app.on_mouse(kind, Instant::now()),
         },
         Input::Resize(..) => {}

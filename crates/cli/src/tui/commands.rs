@@ -20,7 +20,7 @@ pub const COMMANDS: [Spec; 13] = [
     Spec { name: "mode", args: "[member] plan|ask|auto|full", about: "How much members do on their own" },
     Spec { name: "browser", args: "[show|hide [member] · max <n>]", about: "Sign in to sites; show, hide or cap members' browsers" },
     Spec { name: "export", args: "", about: "Open the conversation in your editor" },
-    Spec { name: "mouse", args: "", about: "Let the terminal select text" },
+    Spec { name: "mouse", args: "", about: "Hand the mouse to the terminal (dragging over text already copies it)" },
     Spec { name: "help", args: "", about: "Keys and commands" },
     Spec { name: "quit", args: "", about: "Leave — the squad keeps working" },
 ];

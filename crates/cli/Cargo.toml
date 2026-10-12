@@ -5,6 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive"] }
 console = "0.16.6"
 crossterm = { version = "0.29", features = ["event-stream", "bracketed-paste"] }

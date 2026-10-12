@@ -276,8 +276,27 @@ pub struct App {
     pub squad_width: Option<u16>,
     divider: Option<Divider>,
     dragging: bool,
+    text_view: Option<TextView>,
+    /// Where the person pressed in the conversation, and what they dragged over.
+    press: Option<Spot>,
+    pub selection: Option<(Spot, Spot)>,
+    /// A selection was just made: the loop copies it.
+    pub copy_selection: bool,
     quit_armed: Option<Instant>,
 }
+
+/// Where the conversation's text was drawn, and which of its lines is at the top.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextView {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+    pub top: usize,
+}
+
+/// A place in the laid-out conversation: line, and column on it.
+pub type Spot = (usize, u16);
 
 /// The hairline between the squad and the conversation, as last drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,6 +348,10 @@ impl App {
             squad_width: None,
             divider: None,
             dragging: false,
+            text_view: None,
+            press: None,
+            selection: None,
+            copy_selection: false,
             quit_armed: None,
         };
         // Talk to the PM first: it is the main contact.
@@ -427,6 +450,18 @@ impl App {
         self.divider = divider;
     }
 
+    pub fn set_text_view(&mut self, view: Option<TextView>) {
+        self.text_view = view;
+    }
+
+    /// The conversation spot under a screen cell, held to the text's edges.
+    fn spot(&self, column: u16, row: u16) -> Option<Spot> {
+        let v = self.text_view?;
+        let row = row.clamp(v.y, v.y + v.height.saturating_sub(1));
+        let column = column.clamp(v.x, v.x + v.width.saturating_sub(1));
+        Some((v.top + (row - v.y) as usize, column - v.x))
+    }
+
     /// A click: on a tab, it switches panes; on a ticket, it picks it; on the
     /// squad's edge, it takes hold of it to drag.
     pub fn on_click(&mut self, column: u16, row: u16) {
@@ -455,7 +490,12 @@ impl App {
                 self.pane = Pane::Board;
                 self.board_selected = Some(id);
             }
-            None => {}
+            None => {
+                // On the conversation's text: the start of a selection.
+                let inside = self.text_view.is_some_and(|v| (v.x..v.x + v.width).contains(&column) && (v.y..v.y + v.height).contains(&row));
+                self.selection = None;
+                self.press = if inside && self.pane == Pane::Conversation { self.spot(column, row) } else { None };
+            }
         }
     }
 
@@ -660,6 +700,10 @@ impl App {
     pub fn on_mouse(&mut self, kind: MouseEventKind, now: Instant) {
         if let MouseEventKind::Up(_) = kind {
             self.dragging = false;
+            // Letting go after dragging over text copies it.
+            if self.press.take().is_some() && self.selection.is_some_and(|(a, b)| a != b) {
+                self.copy_selection = true;
+            }
             return;
         }
         let up = match kind {
@@ -687,9 +731,22 @@ impl App {
 
     /// The squad's edge follows the mouse while held; the view keeps it within
     /// bounds.
-    pub fn on_drag(&mut self, column: u16) {
+    pub fn on_drag(&mut self, column: u16, row: u16) {
         if let (true, Some(d)) = (self.dragging, self.divider) {
             self.squad_width = Some(column.saturating_sub(d.body_x).saturating_sub(1));
+            return;
+        }
+        // Selecting: past the top or bottom edge the conversation scrolls along.
+        let (Some(anchor), Some(view)) = (self.press, self.text_view) else {
+            return;
+        };
+        if row < view.y {
+            self.scroll(1);
+        } else if row >= view.y + view.height {
+            self.scroll(-1);
+        }
+        if let Some(head) = self.spot(column, row) {
+            self.selection = Some((anchor, head));
         }
     }
 
@@ -761,6 +818,8 @@ impl App {
     }
 
     fn key(&mut self, key: KeyEvent, now: Instant) -> Vec<Command> {
+        // Any key puts a selection away.
+        self.selection = None;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
