@@ -1,0 +1,189 @@
+name: Release
+
+# Push a tag like v0.1.0 (matching the workspace version) to build equipe for
+# macOS and Linux and publish a GitHub Release with the binaries, their
+# checksums and install.sh. Run it by hand to build without publishing.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-14
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} doesn't match the workspace version ${version}"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: musl toolchain
+        if: contains(matrix.target, 'linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked -p equipe --target ${{ matrix.target }}
+
+      - name: Smoke test
+        run: target/${{ matrix.target }}/release/equipe --version
+
+      - name: Package
+        shell: bash
+        run: |
+          name="equipe-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/equipe" LICENSE README.md "dist/$name/"
+          cd dist
+          tar -czf "$name.tar.gz" "$name"
+          if command -v sha256sum >/dev/null; then sha256sum "$name.tar.gz"; else shasum -a 256 "$name.tar.gz"; fi > "$name.tar.gz.sha256"
+          rm -rf "$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: equipe-${{ matrix.target }}
+          path: dist/*
+
+  # The install script against the archive just built, on a clean machine.
+  try-install:
+    needs: build
+    strategy:
+      matrix:
+        include:
+          - os: macos-14
+          - os: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+      - name: install.sh
+        shell: bash
+        run: |
+          EQUIPE_DOWNLOAD_BASE="file://$PWD/dist" sh install.sh
+          ~/.local/bin/equipe --version
+          ~/.local/bin/equipe roles
+          # Again over the top, as an update would.
+          EQUIPE_DOWNLOAD_BASE="file://$PWD/dist" EQUIPE_NO_MODIFY_PATH=1 sh install.sh
+
+  publish:
+    needs: [build, try-install]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp install.sh dist/
+          (cd dist && cat *.sha256 > SHA256SUMS)
+          prerelease=""
+          case "${GITHUB_REF_NAME}" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --title "equipe ${GITHUB_REF_NAME}" --generate-notes --verify-tag $prerelease
+
+  homebrew:
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
+    runs-on: ubuntu-24.04
+    env:
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - uses: actions/download-artifact@v5
+        if: env.TAP_TOKEN != ''
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Update equipe-labs/homebrew-tap
+        if: env.TAP_TOKEN != ''
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          sum() { cut -d' ' -f1 "dist/equipe-$1.tar.gz.sha256"; }
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/equipe-labs/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cat > tap/Formula/equipe.rb <<EOF
+          class Equipe < Formula
+            desc "Full software squad of AI agents, on your own Claude Code and Codex plans"
+            homepage "https://equipe.im"
+            version "${version}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "${url}/equipe-aarch64-apple-darwin.tar.gz"
+                sha256 "$(sum aarch64-apple-darwin)"
+              end
+              on_intel do
+                url "${url}/equipe-x86_64-apple-darwin.tar.gz"
+                sha256 "$(sum x86_64-apple-darwin)"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "${url}/equipe-aarch64-unknown-linux-musl.tar.gz"
+                sha256 "$(sum aarch64-unknown-linux-musl)"
+              end
+              on_intel do
+                url "${url}/equipe-x86_64-unknown-linux-musl.tar.gz"
+                sha256 "$(sum x86_64-unknown-linux-musl)"
+              end
+            end
+
+            def install
+              bin.install "equipe"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/equipe --version")
+            end
+          end
+          EOF
+          cd tap
+          git config user.name "equipe release"
+          git config user.email "release@equipe.im"
+          git add Formula/equipe.rb
+          git commit -m "equipe ${version}"
+          git push

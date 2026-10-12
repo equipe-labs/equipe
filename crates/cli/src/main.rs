@@ -99,6 +99,8 @@ enum Command {
         #[arg(long)]
         home: std::path::PathBuf,
     },
+    /// Update equipe to the latest release
+    Update,
     /// The background daemon the team lives in
     Daemon {
         #[command(subcommand)]
@@ -168,6 +170,7 @@ async fn main() -> ExitCode {
         Command::Status => app.status().await,
         Command::Try { prompt, engine, model, edit } => app.run_try(&prompt, engine, model.as_deref(), edit).await,
         Command::Daemon { action } => daemon_command(action).await,
+        Command::Update => update(),
         Command::Mcp { squad, member, role, home } => serve_mcp(squad, member, role, home).await,
         Command::Squads => {
             let p = ui::out();
@@ -244,6 +247,41 @@ async fn serve_mcp(squad: String, member: String, role: String, home: std::path:
         }
     }
     Ok(())
+}
+
+/// Where every release's install script lives; it also updates.
+const INSTALL_SCRIPT: &str = "https://github.com/equipe-labs/equipe/releases/latest/download/install.sh";
+
+/// `equipe update`: the latest release over this binary, by the same script
+/// that installs it. Homebrew installs are pointed back to Homebrew.
+fn update() -> CmdResult {
+    let p = ui::out();
+    let exe = std::env::current_exe()
+        .and_then(|exe| exe.canonicalize())
+        .map_err(|err| Failure::new(format!("Couldn't tell where equipe is installed: {err}")))?;
+    if update_by_homebrew(&exe) {
+        println!("{}", p.note(0, "equipe came from Homebrew, so Homebrew updates it:"));
+        println!("  {}", p.hint("brew upgrade equipe"));
+        return Ok(());
+    }
+    let dir = exe.parent().ok_or_else(|| Failure::new("Couldn't tell where equipe is installed."))?;
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("curl -fsSL {INSTALL_SCRIPT} | sh"))
+        .env("EQUIPE_INSTALL_DIR", dir)
+        .env("EQUIPE_NO_MODIFY_PATH", "1")
+        .status()
+        .map_err(|err| Failure::new(format!("Couldn't run the installer: {err}")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(Failure::new("The update didn't finish — equipe is unchanged.").next(format!("curl -fsSL {INSTALL_SCRIPT} | sh")))
+    }
+}
+
+fn update_by_homebrew(exe: &std::path::Path) -> bool {
+    let path = exe.to_string_lossy();
+    path.contains("/Cellar/") || path.contains("/homebrew/") || path.contains("/linuxbrew/")
 }
 
 async fn daemon_command(action: DaemonAction) -> CmdResult {
@@ -792,5 +830,17 @@ fn tool_verb(name: &str) -> &str {
         "Glob" | "Grep" => "search",
         "WebFetch" | "WebSearch" => "fetch",
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn homebrew_installs_update_through_homebrew() {
+        assert!(update_by_homebrew(std::path::Path::new("/opt/homebrew/Cellar/equipe/0.1.0/bin/equipe")));
+        assert!(update_by_homebrew(std::path::Path::new("/home/linuxbrew/.linuxbrew/bin/equipe")));
+        assert!(!update_by_homebrew(std::path::Path::new("/Users/me/.local/bin/equipe")));
     }
 }

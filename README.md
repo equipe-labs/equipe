@@ -128,17 +128,37 @@ says whether that's a subscription or per-token API billing.
 
 ## Install
 
-From source, until releases are published. Needs [Rust](https://rustup.rs) 1.88+
-and git; [Claude Code](https://code.claude.com/docs/en/setup) for the `claude` engine.
+macOS and Linux:
+
+```bash
+curl -fsSL https://github.com/equipe-labs/equipe/releases/latest/download/install.sh | sh
+```
+
+That puts a prebuilt `equipe` in `~/.local/bin` (checked against its SHA-256)
+and adds it to your PATH. Then, in your project:
+
+```bash
+equipe
+```
+
+The first run sets up your squad. Members run on
+[Claude Code](https://code.claude.com/docs/en/setup) with your own plan, or on a
+ChatGPT plan with `equipe login codex`.
+
+**Update** with `equipe update`. When a squad is running, `equipe daemon restart`
+once no one is working puts it on the new build.
+
+<details>
+<summary>From source</summary>
+
+Needs [Rust](https://rustup.rs) 1.88+ and git.
 
 ```bash
 git clone https://github.com/equipe-labs/equipe && cd equipe
 cargo install --locked --path crates/cli
 ```
 
-`cargo install` puts `equipe` in `~/.cargo/bin`. To install elsewhere on your PATH,
-add `--root ~/.local` (→ `~/.local/bin/equipe`). Run the same command again to
-update.
+</details>
 
 ## Development
 
