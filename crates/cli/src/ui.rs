@@ -122,8 +122,21 @@ fn detect(is_tty: bool) -> Painter {
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let dumb = std::env::var("TERM").is_ok_and(|t| t == "dumb");
     let color = is_tty && !no_color && !dumb;
-    let truecolor = std::env::var("COLORTERM").is_ok_and(|v| v == "truecolor" || v == "24bit");
+    let var = |name: &str| std::env::var(name).unwrap_or_default();
+    let truecolor = truecolor(&var("COLORTERM"), &var("TERM"), &var("TERM_PROGRAM"), &var("LC_TERMINAL"));
     Painter { color, truecolor }
+}
+
+/// Whether the terminal takes 24-bit colour. `COLORTERM` says so, but SSH
+/// doesn't carry it over; iTerm2's `LC_TERMINAL` does (ssh sends `LC_*`), and
+/// some terminals name themselves in `TERM` or `TERM_PROGRAM`.
+fn truecolor(colorterm: &str, term: &str, program: &str, lc_terminal: &str) -> bool {
+    matches!(colorterm, "truecolor" | "24bit")
+        || term.contains("truecolor")
+        || term.contains("direct")
+        || matches!(term, "xterm-kitty" | "xterm-ghostty" | "wezterm" | "alacritty")
+        || matches!(program, "iTerm.app" | "WezTerm" | "ghostty" | "vscode")
+        || matches!(lc_terminal, "iTerm2")
 }
 
 /// For text written to stdout.
@@ -242,6 +255,14 @@ impl Painter {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn iterm_over_ssh_still_has_truecolor() {
+        assert!(truecolor("", "xterm-256color", "", "iTerm2"), "LC_TERMINAL crosses ssh");
+        assert!(truecolor("truecolor", "xterm-256color", "", ""));
+        assert!(!truecolor("", "xterm-256color", "Apple_Terminal", ""));
+    }
+
     use super::*;
 
     #[test]
