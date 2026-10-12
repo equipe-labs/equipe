@@ -73,7 +73,7 @@ jobs:
           if command -v sha256sum >/dev/null; then sha256sum "$name.tar.gz"; else shasum -a 256 "$name.tar.gz"; fi > "$name.tar.gz.sha256"
           rm -rf "$name"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: equipe-${{ matrix.target }}
           path: dist/*
