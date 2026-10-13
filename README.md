@@ -76,7 +76,7 @@ CLAUDE CODE  your claude · signs itself in
 
 | Command | What it does |
 |---|---|
-| `equipe` | **The squad console.** The first time in a repository it sets up your squad (or adds the repository to it) in under a minute. Then: your squad on the left, the selected member's conversation and work on the right. Tell the PM what you want — it puts tickets on the board, equipe hands each to its owner, engineers work on their own branches and hand the work in; you `/accept` or `/reopen` it (Ctrl-B shows the board). Talk to anyone with Tab or `@name` — the PM hears about it. In **auto** mode members install, build and test inside a sandbox around their worktree; anything beyond — a push, a deploy — waits for your `y` / `a` / `n` (`/mode` switches between read-only, ask me, auto and full access). **The squad lives in a background daemon** — leave, or close the terminal, and it keeps working; run `equipe` again to come back |
+| `equipe` | **The squad console**, from any folder. The first time it sets up your squad in under a minute — no repository needed; after that it opens the squad of the project you're in, else the one you used last (`--squad <name>` picks one), and in a repository no squad has it asks once whether to add it (`n` is remembered). Then: your squad on the left, the selected member's conversation and work on the right. Tell the PM what you want — it puts tickets on the board, equipe hands each to its owner, engineers work on their own branches and hand the work in; you `/accept` or `/reopen` it (Ctrl-B shows the board). Talk to anyone with Tab or `@name` — the PM hears about it. In **auto** mode members install, build and test inside a sandbox around their worktree; anything beyond — a push, a deploy — waits for your `y` / `a` / `n` (`/mode` switches between read-only, ask me, auto and full access). **The squad lives in a background daemon** — leave, or close the terminal, and it keeps working; run `equipe` again to come back |
 | `equipe browser` | A browser window where **you** sign in — or sign up — to the services your squad needs: Vercel, PostHog, GitHub… Every member has a headless browser of its own from the start — signed in as you wherever you signed in — and sets things up there itself (a project, a domain, a key). They ask you before creating accounts, accepting terms, paying or deleting anything, and leave passwords, codes and CAPTCHAs to you. Needs Node.js and Google Chrome; `/browser` opens it from the console, `/browser show [member]` puts members' browsers on screen to watch (`/browser hide` hides them), `--forget` signs everyone out. Code a member runs in its browser's own process asks you first in auto, showing the code |
 | `equipe daemon status\|stop\|restart` | The daemon itself. `equipe` starts it when needed; stopping it keeps open sessions, which resume when it starts again. `restart --when-idle` waits until no member is mid-turn — what to run after `equipe update`. `status` says who is working |
 | `/scale` | When several of a role's tickets are ready at once and its members are busy, equipe brings in extra members of that role (`backend-2`, `backend-3`…) — up to 2 more per role by default, 6 in all — each on its own branch and worktree, sharing the role's memory; they leave after ten idle minutes. `/scale <0-6>` sets how many, `/scale off` none. Members also hand long or independent side work to subagents and keep only their summaries |
@@ -90,7 +90,7 @@ CLAUDE CODE  your claude · signs itself in
 | `equipe status` | Which engines are ready, on which plan, with which models |
 | `equipe roles` | The roles a squad can have, what each does and the model it gets |
 | `equipe squads` | Your squads and the projects each works on |
-| `/squad` · `/project` | In the console: `/squad <name>` switches to another squad (click its name in the header), `/squad new <name> <folder>` starts one, `/squad add <folder>` / `/squad remove <project>` change what a squad works on. With several projects — a product, its site, its app — each shows in the header with who is at work on it (●) and what waits for you there (⚑); members show the project they work in, and the board gives each project a lane below what waits for you. `/project <name>`, a click on it, or **Ctrl-P** (the next one, then all; Alt-1…9 where the terminal sends Alt) puts one in focus — the board, the review card and new requests are about it, and the line under the composer says so. Adding an app suggests a mobile engineer (`/add mobile`) |
+| `/squad` · `/project` | In the console: `/squad <name>` switches to another squad (click its name in the header), `/squad new <name> [folder]` starts one, `/squad add <folder>` / `/squad remove <project>` change what a squad works on. With several projects — a product, its site, its app — each shows in the header with who is at work on it (●) and what waits for you there (⚑); members show the project they work in, and the board gives each project a lane below what waits for you. `/project <name>`, a click on it, or **Ctrl-P** (the next one, then all; Alt-1…9 where the terminal sends Alt) puts one in focus — the board, the review card and new requests are about it, and the line under the composer says so. Adding an app suggests a mobile engineer (`/add mobile`) |
 | `equipe try "…"` | One turn on whichever engine is ready (`--engine`, `--model`) |
 | `equipe try --edit "…"` | An agent edits your repo **on a new branch**, in its own worktree. Your checkout is untouched; you get review / keep / discard commands |
 
@@ -149,13 +149,16 @@ and adds it to your PATH. Or with Homebrew:
 brew install equipe-labs/tap/equipe
 ```
 
-Then, in your project:
+Then, from any folder:
 
 ```bash
 equipe
 ```
 
-The first run sets up your squad. Members run on
+The first run sets up your squad — no repository needed. After that, `equipe`
+opens your squad wherever you run it: inside one of its projects, that project's
+squad; anywhere else, the squad you used last. Run it in a repository no squad
+has yet and the console asks once whether to add it. Members run on
 [Claude Code](https://code.claude.com/docs/en/setup) with your own plan, or on a
 ChatGPT plan with `equipe login codex`.
 

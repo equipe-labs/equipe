@@ -1,13 +1,14 @@
-//! The first `equipe` in a repository: a squad to work in, in under a minute.
+//! Which squad `equipe` opens, wherever it is run — and the first squad, in
+//! under a minute.
 //!
 //! A squad is the person's team, not a repository: the first time, they name it
-//! and pick who is on it; every repository after that just joins it. Engines are
-//! checked first, so nobody builds a team that can't start.
+//! and pick who is on it, from any folder; repositories join it later. Engines
+//! are checked first, so nobody builds a team that can't start.
 
 use std::path::{Path, PathBuf};
 
 use equipe_core::protocol::Mode;
-use equipe_core::{runtime, squads};
+use equipe_core::{runtime, squad_home, squads};
 use equipe_providers::CredentialStore;
 use equipe_providers::claude_code;
 use equipe_providers::credentials::equipe_home;
@@ -15,10 +16,14 @@ use equipe_providers::credentials::equipe_home;
 use crate::ui;
 
 /// The squad to open, and the members to bring in as it opens.
+#[derive(Debug)]
 pub struct Start {
     pub squad: String,
     /// Roles to add, in order — the PM first. Empty when the squad already has its team.
     pub members: Vec<String>,
+    /// The repository it was run in, which no squad has: the console asks once
+    /// whether to add it.
+    pub offer: Option<Folder>,
 }
 
 /// The roles a new squad may start with, besides the PM, and which are ticked.
@@ -105,13 +110,82 @@ pub fn starting_team() -> Vec<String> {
     std::iter::once(equipe_core::roles::PM).chain(STARTERS.iter().filter(|(_, on)| *on).map(|(id, _)| *id)).map(str::to_owned).collect()
 }
 
-/// The squad `cwd` works in — asking, the first time, which one.
-pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
+/// The squad to open from `cwd`, first match wins: the one named; the one
+/// whose project or home `cwd` is in; the one opened last (or the only one, or
+/// the first) — offering to add a repository no squad has; else onboarding.
+pub async fn squad_for(cwd: &Path, named: Option<String>) -> Result<Start, String> {
     let home = equipe_home();
-    let project = runtime::project_of(cwd);
-    if let Some(squad) = squads::find(&home, &project) {
-        return Ok(Start { squad, members: Vec::new() });
+    match pick(&home, cwd, named)? {
+        Pick::Open(start) => Ok(start),
+        Pick::Onboard(repo) => onboard(&home, repo).await,
     }
+}
+
+#[derive(Debug)]
+enum Pick {
+    Open(Start),
+    /// No squad yet; the repository `cwd` is in, if any, to offer at the end.
+    Onboard(Option<Folder>),
+}
+
+/// Which squad opens, decided without asking anything.
+fn pick(home: &Path, cwd: &Path, named: Option<String>) -> Result<Pick, String> {
+    let open = |squad: String, offer: Option<Folder>| Ok(Pick::Open(Start { squad, members: Vec::new(), offer }));
+    if let Some(name) = named {
+        if squads::list(home).iter().any(|s| s.name == name) {
+            return open(name, None);
+        }
+        return Err(format!("No squad called {name} · equipe squads lists yours"));
+    }
+    let project = runtime::project_of(cwd);
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
+    // A worktree is its repository's: a ticket's branch belongs to the squad.
+    let main = main_repository(cwd);
+    let found = squads::find(home, &project)
+        .or_else(|| main.as_deref().and_then(|main| squads::find(home, main)))
+        .or_else(|| squad_home::squad_of(&canon(home), &canon(cwd)))
+        .or_else(|| main.as_deref().and_then(|main| squad_home::squad_of(&canon(home), main)));
+    if let Some(squad) = found {
+        return open(squad, None);
+    }
+    let repo = repository_here(home, cwd);
+    match squads::default_squad(home) {
+        Some(squad) => open(squad, repo.filter(|r| !squads::is_declined(home, &r.path))),
+        None => Ok(Pick::Onboard(repo)),
+    }
+}
+
+/// The git repository `cwd` is in, when it could be a project: not the home
+/// folder or the disk's root (a dotfiles repository), not equipe's own folders.
+fn repository_here(home: &Path, cwd: &Path) -> Option<Folder> {
+    let root = equipe_core::worktree::repo_root(cwd).ok()?;
+    let root = root.canonicalize().unwrap_or(root);
+    if is_too_wide(&root) || root.starts_with(home.canonicalize().unwrap_or_else(|_| home.to_owned())) {
+        return None;
+    }
+    if squads::find(home, &root).is_some() {
+        return None;
+    }
+    let name = equipe_core::board::project_name(&root);
+    let remote = remote_url(&root);
+    Some(Folder { path: root, name, remote, git: true })
+}
+
+/// The repository a worktree was cut from (the repository itself when `dir`
+/// isn't a linked worktree).
+fn main_repository(dir: &Path) -> Option<PathBuf> {
+    let out = std::process::Command::new("git").arg("-C").arg(dir).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let common = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    let common = common.canonicalize().unwrap_or(common);
+    (common.file_name()? == ".git").then(|| common.parent().map(Path::to_owned)).flatten()
+}
+
+/// The first squad, from anywhere: engines, a name, a team, a mode — and, run
+/// inside a repository, whether it joins. Nothing is written into a repository.
+async fn onboard(home: &Path, repo: Option<Folder>) -> Result<Start, String> {
     let e = ui::err();
     let theme = ui::select_theme();
     eprintln!("{}  {}\n", e.wordmark(), e.dim("a software squad of AI agents"));
@@ -130,60 +204,16 @@ pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
     if !claude_ready {
         eprintln!("\n{}", e.note(2, "The PM and the engineers run on Claude Code; without it they can't start."));
     }
-    if equipe_core::worktree::repo_root(&project).is_err() {
-        eprintln!("\n{}", e.note(2, "This folder isn't a git repository: members can read it, but engineers need one to work on branches."));
-    }
     eprintln!();
 
     // Every menu line fits the terminal: a menu that wraps redraws over itself.
     let menu = ui::width().saturating_sub(6).max(20);
-    let name = squads::list(&home);
-    // The home folder isn't a project: open a squad as it is, add nothing.
-    if is_too_wide(&project) {
-        if name.is_empty() {
-            return Err("This is your home folder, not a project. cd into a project and run equipe there.".into());
-        }
-        let items: Vec<String> = name.iter().map(|s| menu_item(&format!("Open {}", s.name), menu)).collect();
-        let picked = dialoguer::Select::with_theme(&*theme)
-            .with_prompt(ui::fit("This is your home folder — a squad works on project folders", menu))
-            .items(&items)
-            .default(0)
-            .interact_opt()
-            .map_err(|err| err.to_string())?
-            .ok_or("Nothing changed.")?;
-        eprintln!();
-        return Ok(Start { squad: name[picked].name.clone(), members: Vec::new() });
-    }
-    let place = equipe_core::board::project_name(&project);
-    if !name.is_empty() {
-        // Most people have one squad: offer it first.
-        let mut items: Vec<String> = name
-            .iter()
-            .map(|s| {
-                let projects: Vec<String> = s.projects.iter().map(|p| equipe_core::board::project_name(p)).collect();
-                menu_item(&format!("Add {place} to {}  · works on {}", s.name, projects.join(", ")), menu)
-            })
-            .collect();
-        items.push("Start a new squad".into());
-        let picked = dialoguer::Select::with_theme(&*theme)
-            .with_prompt(ui::fit(&format!("{place} isn't in a squad yet"), menu))
-            .items(&items)
-            .default(0)
-            .interact_opt()
-            .map_err(|err| err.to_string())?
-            .ok_or("Nothing changed.")?;
-        if let Some(squad) = name.get(picked) {
-            squads::add_project(&home, &squad.name, &project)?;
-            eprintln!();
-            return Ok(Start { squad: squad.name.clone(), members: Vec::new() });
-        }
-    }
-
     // A new squad: a team, named by the person. The repository's owner on its
     // host — an organisation, usually — is the team it most likely belongs to.
-    let owner = remote_url(&project).as_deref().and_then(owner_of).map(str::to_owned);
-    let suggestion = squads::suggest_name(&home, Path::new(&squad_name_for(owner.as_deref())));
-    eprintln!("{}", e.note(2, "A squad is your team, not this repository: it can work on all your projects."));
+    let owner = repo.as_ref().and_then(|r| r.remote.as_deref()).and_then(owner_of).map(str::to_owned);
+    let user = std::env::var("USER").ok();
+    let suggestion = squads::suggest_name(home, Path::new(&squad_name_for(owner.as_deref(), user.as_deref())));
+    eprintln!("{}", e.note(2, "A squad is your team, not one repository: it can work on all your projects."));
     let squad: String = dialoguer::Input::with_theme(&*theme)
         .with_prompt("Name your squad")
         .default(suggestion)
@@ -233,13 +263,28 @@ pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
         .ok_or("Nothing changed.")?;
     let mode = Mode::ALL[picked_mode];
     eprintln!("{} {} {} {}", e.accent("✓"), e.bold("Mode"), e.dim("·"), mode.label());
-    squads::create(&home, &squad, &project)?;
-    equipe_core::journal::Journal::for_squad(&home, &squad)
+    squads::create_without_project(home, &squad)?;
+    equipe_core::journal::Journal::for_squad(home, &squad)
         .and_then(|j| j.set_mode(mode))
         .map_err(|err| err.to_string())?;
+    // Run inside a repository: the one thing left to ask.
+    if let Some(repo) = repo {
+        eprintln!("{}", e.note(2, &format!("{} · {}", repo.path.display(), repo.describe())));
+        let add = dialoguer::Confirm::with_theme(&*theme)
+            .with_prompt(ui::fit(&format!("Add {} to the squad?", repo.name), menu))
+            .default(true)
+            .interact_opt()
+            .map_err(|err| err.to_string())?
+            .unwrap_or(false);
+        if add {
+            squads::add_project(home, &squad, &repo.path)?;
+        } else {
+            let _ = squads::decline(home, &repo.path);
+        }
+    }
     let members: Vec<String> = team.iter().map(|r| (*r).to_owned()).collect();
     eprintln!();
-    Ok(Start { squad, members })
+    Ok(Start { squad, members, offer: None })
 }
 
 /// A menu line that never wraps. dialoguer measures its items in bytes when it
@@ -262,10 +307,11 @@ fn menu_item(text: &str, width: usize) -> String {
 }
 
 /// `equipe-squad` for the owner `equipe-labs`: the team's name with a company
-/// suffix dropped, then `-squad`; `my-squad` when there is no owner.
-fn squad_name_for(owner: Option<&str>) -> String {
+/// suffix dropped, then `-squad`; with no owner, the person's user name; else
+/// `my-squad`.
+fn squad_name_for(owner: Option<&str>, user: Option<&str>) -> String {
     let Some(owner) = owner.map(str::to_lowercase) else {
-        return "my-squad".into();
+        return user.filter(|u| !u.is_empty()).map_or_else(|| "my-squad".into(), str::to_lowercase);
     };
     if owner.ends_with("-squad") || owner.ends_with("squad") {
         return owner;
@@ -390,10 +436,85 @@ mod tests {
 
     #[test]
     fn a_squad_is_named_after_the_team_it_belongs_to() {
-        assert_eq!(squad_name_for(Some("equipe-labs")), "equipe-squad");
-        assert_eq!(squad_name_for(Some("Acme")), "acme-squad");
-        assert_eq!(squad_name_for(Some("rocket-squad")), "rocket-squad");
-        assert_eq!(squad_name_for(None), "my-squad");
+        assert_eq!(squad_name_for(Some("equipe-labs"), None), "equipe-squad");
+        assert_eq!(squad_name_for(Some("Acme"), None), "acme-squad");
+        assert_eq!(squad_name_for(Some("rocket-squad"), None), "rocket-squad");
+        assert_eq!(squad_name_for(None, Some("Abel")), "abel", "no remote: the person's user name");
+        assert_eq!(squad_name_for(None, None), "my-squad");
+        assert_eq!(squad_name_for(Some("acme"), Some("abel")), "acme-squad");
+    }
+
+    fn opens(pick: Result<Pick, String>) -> (String, Option<PathBuf>) {
+        match pick {
+            Ok(Pick::Open(start)) => {
+                assert!(start.members.is_empty(), "an existing squad brings no one in");
+                (start.squad, start.offer.map(|f| f.path))
+            }
+            Ok(Pick::Onboard(_)) => panic!("onboards"),
+            Err(err) => panic!("{err}"),
+        }
+    }
+
+    #[test]
+    fn with_no_squad_it_onboards_from_anywhere() {
+        let dirs = scratch_home("onboard");
+        let home = dirs.join(".equipe");
+        let Ok(Pick::Onboard(None)) = pick(&home, &dirs.join("notes"), None) else { panic!("a plain folder onboards with nothing to add") };
+        let Ok(Pick::Onboard(Some(repo))) = pick(&home, &dirs.join("Abel/equipe/crates"), None) else { panic!("onboards") };
+        assert_eq!(repo.path, dirs.join("Abel/equipe"), "its repository, offered at the end");
+        assert_eq!(repo.remote.as_deref(), Some("https://github.com/equipe-labs/equipe.git"));
+        assert!(!home.join("squads").exists(), "deciding writes nothing");
+        std::fs::remove_dir_all(&dirs).unwrap();
+    }
+
+    #[test]
+    fn anywhere_else_the_squad_opened_last_opens() {
+        let dirs = scratch_home("anywhere");
+        let home = dirs.join(".equipe");
+        let site = dirs.join("Abel/equipe-labs-profile");
+        squads::create(&home, "acme", &site).unwrap();
+        squads::create_without_project(&home, "beta").unwrap();
+        assert_eq!(opens(pick(&home, &dirs.join("notes"), None)), ("acme".into(), None), "none opened yet: the first");
+        squads::remember_last(&home, "beta").unwrap();
+        assert_eq!(opens(pick(&home, &dirs.join("notes"), None)), ("beta".into(), None));
+        assert_eq!(opens(pick(&home, &site, None)), ("acme".into(), None), "a project opens its own squad");
+        let beta_home = squad_home::path(&home, "beta");
+        assert_eq!(opens(pick(&home, &beta_home.join("notes"), None)), ("beta".into(), None), "so does a squad's home");
+        squads::remember_last(&home, "acme").unwrap();
+        assert_eq!(opens(pick(&home, &beta_home, None)), ("beta".into(), None));
+        assert_eq!(opens(pick(&home, &dirs.join("notes"), Some("beta".into()))), ("beta".into(), None), "--squad wins");
+        assert!(pick(&home, &dirs, Some("nope".into())).unwrap_err().contains("No squad called nope"));
+        std::fs::remove_dir_all(&dirs).unwrap();
+    }
+
+    #[test]
+    fn a_repository_no_squad_has_is_offered_until_declined() {
+        let dirs = scratch_home("offer");
+        let home = dirs.join(".equipe");
+        squads::create_without_project(&home, "acme").unwrap();
+        let equipe = dirs.join("Abel/equipe");
+        assert_eq!(opens(pick(&home, &equipe.join("crates"), None)), ("acme".into(), Some(equipe.clone())));
+        squads::decline(&home, &equipe).unwrap();
+        assert_eq!(opens(pick(&home, &equipe, None)), ("acme".into(), None), "no is remembered");
+        squads::add_project(&home, "acme", &equipe).unwrap();
+        assert_eq!(opens(pick(&home, &equipe, None)), ("acme".into(), None));
+        std::fs::remove_dir_all(&dirs).unwrap();
+    }
+
+    #[test]
+    fn a_worktree_opens_its_repositorys_squad() {
+        let dirs = scratch_home("worktree");
+        let home = dirs.join(".equipe");
+        let equipe = dirs.join("Abel/equipe");
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&equipe).args(args).output().unwrap().status.success(), "{args:?}");
+        git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "first"]);
+        let tree = dirs.join("tree");
+        git(&["worktree", "add", "-q", tree.to_str().unwrap()]);
+        squads::create_without_project(&home, "other").unwrap();
+        squads::create(&home, "acme", &equipe).unwrap();
+        squads::remember_last(&home, "other").unwrap();
+        assert_eq!(opens(pick(&home, &tree, None)), ("acme".into(), None));
+        std::fs::remove_dir_all(&dirs).unwrap();
     }
 
     #[test]

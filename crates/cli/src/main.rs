@@ -34,6 +34,9 @@ struct Cli {
     /// With no command: the team console, at a terminal.
     #[command(subcommand)]
     command: Option<Command>,
+    /// With no command: open this squad, wherever equipe is run
+    #[arg(long)]
+    squad: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -196,11 +199,12 @@ async fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        let start = match onboard::squad_for(&cwd).await {
+        let start = match onboard::squad_for(&cwd, cli.squad.clone()).await {
             Ok(start) => start,
             Err(err) => {
                 eprintln!("{}", ui::err().fail_line(&err));
-                eprintln!("  {}", ui::err().hint("equipe login"));
+                let hint = if err.contains("engine") { "equipe login" } else { "equipe squads" };
+                eprintln!("  {}", ui::err().hint(hint));
                 return ExitCode::FAILURE;
             }
         };
@@ -283,7 +287,7 @@ async fn main() -> ExitCode {
             let squads = equipe_core::squads::list(&equipe_providers::credentials::equipe_home());
             println!("{}\n", p.kicker("squads"));
             if squads.is_empty() {
-                println!("{}", p.note(2, "None yet. Run equipe in a repository to start one."));
+                println!("{}", p.note(2, "None yet. Run equipe, from any folder, to start one."));
             }
             for squad in squads {
                 println!("  {}  {}", p.bold(&squad.name), p.dim(&home::dir(&equipe_providers::credentials::equipe_home(), &squad.name).display().to_string()));
