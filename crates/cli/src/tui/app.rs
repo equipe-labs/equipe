@@ -646,7 +646,7 @@ impl App {
                 // On the conversation's text: the start of a selection.
                 let inside = self.text_view.is_some_and(|v| (v.x..v.x + v.width).contains(&column) && (v.y..v.y + v.height).contains(&row));
                 self.selection = None;
-                self.press = if inside && self.pane == Pane::Conversation { self.spot(column, row) } else { None };
+                self.press = if inside { self.spot(column, row) } else { None };
             }
         }
     }

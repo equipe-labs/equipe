@@ -460,6 +460,7 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
     let mut board_max = 0;
     let mut board_page = board.height as usize / 2;
     let mut board_detail = None;
+    let mut board_text = None;
     if app.pane == Pane::Board {
         let width = (board.width as usize).saturating_sub(1).min(PROSE_MAX + 20);
         let rows = board_list(app, theme, width);
@@ -469,6 +470,14 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
         board_max = lines.saturating_sub(body.height as usize);
         board_page = (body.height as usize / 2).max(1);
         board_detail = Some((body.y, body.y + body.height.saturating_sub(1)));
+        // The open ticket's text can be selected, like the conversation's.
+        board_text = (!app.help_open).then_some(TextView {
+            x: body.x,
+            y: body.y,
+            width: detail_width(body) as u16,
+            height: body.height,
+            top: app.board_scroll.min(board_max),
+        });
         let top = list_top(&rows, app.selected_ticket().map(|t| t.id), list.height as usize);
         for (i, (_, id)) in rows.iter().enumerate().skip(top).take(list.height as usize) {
             if let Some(id) = id {
@@ -477,7 +486,7 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
         }
     }
     let Some(agent) = app.selected() else {
-        return Extent { page: board_page, conversation_max: 0, board_max, hits, divider, board_detail, text: None };
+        return Extent { page: board_page, conversation_max: 0, board_max, hits, divider, board_detail, text: board_text };
     };
     let text = conversation_text(right, app, agent);
     // The waiting card's rows open their tickets too.
@@ -530,7 +539,7 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
         hits,
         divider,
         board_detail,
-        text: text_view,
+        text: if app.pane == Pane::Board { board_text } else { text_view },
     }
 }
 
@@ -1376,29 +1385,34 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
     let top = bottom.saturating_sub(agent.scroll_back.min(bottom));
     let shown = lines[top..lines.len().min(top + height)].to_vec();
     frame.render_widget(Paragraph::new(shown), text);
-    // What the person is selecting, in reverse.
-    if let Some((from, to)) = app.selection.map(ordered) {
-        let buffer = frame.buffer_mut();
-        for row in 0..text.height {
-            let line = top + row as usize;
-            if line < from.0 || line > to.0 {
-                continue;
-            }
-            let start = if line == from.0 { from.1 } else { 0 };
-            let end = if line == to.0 { to.1 + 1 } else { width as u16 };
-            for column in start..end.min(text.width) {
-                if let Some(cell) = buffer.cell_mut((text.x + column, text.y + row)) {
-                    cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
-                }
-            }
-        }
-    }
+    reverse_selection(frame, app, text, top, width);
     // Scrolled up, a thin bar on the right says where in the conversation this is.
     if top < bottom {
         render_scrollbar(frame, text, top, height, lines.len(), theme);
     }
     if !footer.is_empty() {
         frame.render_widget(Paragraph::new(footer), live);
+    }
+}
+
+/// What the person is selecting in `area` (showing lines from `top`), in reverse.
+fn reverse_selection(frame: &mut Frame, app: &App, area: Rect, top: usize, width: usize) {
+    let Some((from, to)) = app.selection.map(ordered) else {
+        return;
+    };
+    let buffer = frame.buffer_mut();
+    for row in 0..area.height {
+        let line = top + row as usize;
+        if line < from.0 || line > to.0 {
+            continue;
+        }
+        let start = if line == from.0 { from.1 } else { 0 };
+        let end = if line == to.0 { to.1 + 1 } else { width as u16 };
+        for column in start..end.min(area.width) {
+            if let Some(cell) = buffer.cell_mut((area.x + column, area.y + row)) {
+                cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+            }
+        }
     }
 }
 
@@ -1412,9 +1426,16 @@ fn ordered((a, b): (Spot, Spot)) -> (Spot, Spot) {
 /// step left out.
 pub fn selection_text(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Option<String> {
     let (from, to) = ordered(app.selection?);
-    let agent = app.selected()?;
     let body = rows(app, theme, screen).body;
     let (_, _, right) = columns(app, body);
+    if app.pane == Pane::Board {
+        let board = under_title(right);
+        let width = (board.width as usize).saturating_sub(1).min(PROSE_MAX + 20);
+        let (_, detail) = board_areas(board, board_list(app, theme, width).len());
+        let lines = ticket_detail(app, theme, detail_width(detail_body(detail)));
+        return selected_in(&lines, from, to);
+    }
+    let agent = app.selected()?;
     let width = (conversation_text(right, app, agent).width as usize).saturating_sub(1).min(PROSE_MAX);
     let fresh;
     let lines: &[Line<'static>] = match layouts.get(agent, width) {
@@ -1424,6 +1445,11 @@ pub fn selection_text(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) 
             &fresh
         }
     };
+    selected_in(lines, from, to)
+}
+
+/// The text between two spots of laid-out lines.
+fn selected_in(lines: &[Line<'static>], from: Spot, to: Spot) -> Option<String> {
     let mut out = Vec::new();
     for (i, line) in lines.iter().enumerate().take(to.0 + 1).skip(from.0) {
         let start = if i == from.0 { from.1 as usize } else { 0 };
@@ -1732,6 +1758,7 @@ fn render_board(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         *first = Line::from(vec![Span::styled(format!("↑ {} lines above · ", top + 1), theme.dim()), Span::styled("PgUp", theme.bold())]);
     }
     frame.render_widget(Paragraph::new(shown), body);
+    reverse_selection(frame, app, body, top, detail_width(body));
 }
 
 /// Under the hairline: where the open ticket is shown.
@@ -2502,6 +2529,31 @@ mod tests {
         assert!(cell.modifier.contains(Modifier::REVERSED));
         app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('x')), Instant::now());
         assert!(app.selection.is_none());
+    }
+
+    #[test]
+    fn dragging_over_a_ticket_on_the_board_copies_its_text() {
+        let (mut app, _) = working();
+        let mut t = ticket(20, TicketStatus::Waiting, "Prove the desktop works");
+        t.note = Some("Waiting on you:\n- [ ] Add this file: /private/tmp/probe/desktop-probe".into());
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t });
+        app.pane = Pane::Board;
+        let screen_rect = Rect::new(0, 0, 100, 30);
+        let laid = extent(&app, Theme::plain(), screen_rect, &Layouts::default());
+        app.set_hits(laid.hits, laid.divider);
+        app.set_text_view(laid.text);
+        let shot = screen(&app, 100, 30);
+        let y = shot.lines().position(|l| l.contains("/private/tmp/probe")).unwrap() as u16;
+        let line = shot.lines().nth(y as usize).unwrap();
+        let x = line[..line.find("/private").unwrap()].chars().count() as u16;
+        app.on_click(x, y);
+        app.on_drag(x + 31, y);
+        app.on_mouse(crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left), Instant::now());
+        assert!(app.copy_selection);
+        assert_eq!(selection_text(&app, Theme::plain(), screen_rect, &Layouts::default()).as_deref(), Some("/private/tmp/probe/desktop-probe"));
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| render(f, &app, Theme::plain(), None, &Layouts::default())).unwrap();
+        assert!(terminal.backend().buffer()[(x + 1, y)].modifier.contains(Modifier::REVERSED));
     }
 
     #[test]
