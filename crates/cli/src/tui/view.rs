@@ -1469,6 +1469,7 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
             }
             TicketStatus::Todo => "to do".to_owned(),
             TicketStatus::Proposed => "proposed".to_owned(),
+            TicketStatus::Done if t.not_on_main() => "not on main".to_owned(),
             TicketStatus::Done => "done".to_owned(),
             TicketStatus::Cancelled => "cancelled".to_owned(),
         };
@@ -1536,6 +1537,7 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
             TicketStatus::InProgress => "in progress",
             TicketStatus::Todo => "to do",
             TicketStatus::Proposed => "proposed",
+            TicketStatus::Done if t.not_on_main() => "accepted — not on main yet",
             TicketStatus::Done => "done",
             TicketStatus::Cancelled => "cancelled",
         }
@@ -1554,7 +1556,12 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
             actions.push(("a", "accept".into()));
             actions.push(("r", "ask for changes".into()));
         }
-        TicketStatus::Done => actions.push(("r", "reopen".into())),
+        TicketStatus::Done => {
+            if t.not_on_main() {
+                actions.push(("m", "merge into main".into()));
+            }
+            actions.push(("r", "reopen".into()));
+        }
         TicketStatus::InProgress | TicketStatus::Todo | TicketStatus::Proposed => actions.push(("a", "mark done".into())),
         TicketStatus::Cancelled => {}
     }
@@ -1947,6 +1954,7 @@ mod tests {
             depends_on: vec![],
             branch: None,
             worktree: None,
+            merged: None,
             created_by: "pm".into(),
             note: None,
         }
@@ -2195,6 +2203,22 @@ mod tests {
         app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Down), Instant::now());
         let shot = screen(&app, 100, 34);
         assert!(shot.contains("› T-2") && shot.contains("in progress"), "{shot}");
+    }
+
+    #[test]
+    fn accepted_work_not_on_main_says_so() {
+        let (mut app, _) = working();
+        let mut done = ticket(1, TicketStatus::Done, "Design direction");
+        done.branch = Some("equipe/designer-t1".into());
+        done.merged = Some(false);
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: done.clone() });
+        app.pane = Pane::Board;
+        app.flash = None;
+        let shot = screen(&app, 100, 24);
+        assert!(shot.lines().any(|l| l.contains("T-1") && l.contains("not on main")), "{shot}");
+        assert!(shot.contains("accepted — not on main yet") && shot.contains("m merge into main"), "{shot}");
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: Ticket { merged: Some(true), ..done } });
+        assert!(!screen(&app, 100, 24).contains("not on main"));
     }
 
     #[test]

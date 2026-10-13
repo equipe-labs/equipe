@@ -149,7 +149,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 
 fn repo() -> PathBuf {
     let dir = scratch("repo");
-    git(&dir, &["init", "-q"]);
+    git(&dir, &["init", "-q", "-b", "main"]);
     git(&dir, &["config", "user.name", "Test"]);
     git(&dir, &["config", "user.email", "test@example.com"]);
     std::fs::write(dir.join("README.md"), "hello\n").unwrap();
@@ -554,6 +554,103 @@ async fn a_ticket_goes_to_its_owner_who_hands_it_in_and_the_person_accepts_it() 
     assert!(!ws.path.exists());
     let notices = until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
     assert!(matches!(notices.last(), Some(Event::Notice { text, .. }) if text.starts_with("You accepted T-1")), "{notices:#?}");
+}
+
+#[tokio::test]
+async fn accepted_work_is_where_the_next_ticket_starts_and_lands_on_main_only_when_the_person_merges() {
+    let repo = repo();
+    let (claude, recorded) = recording_claude(&working_turn("HERO.md"));
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&repo]), false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Hero done." })).await;
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
+
+    // Merging waits for acceptance.
+    handle.send(Command::Merge { squad: "acme".into(), ticket: 1, push: false });
+    let refused = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
+    assert!(matches!(refused.last(), Some(Event::Error { message, .. }) if message.contains("isn't accepted yet")), "{refused:#?}");
+
+    // Accepting alone merges nothing, and the board says so.
+    let main_before = git(&repo, &["rev-parse", "main"]);
+    handle.send(Command::Accept { squad: "acme".into(), ticket: 1 });
+    let done =
+        until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Done)).await;
+    assert_eq!(ticket_changed(&done).pop().unwrap().merged, Some(false));
+    assert_eq!(git(&repo, &["rev-parse", "main"]), main_before);
+    assert!(!repo.join("HERO.md").exists());
+
+    // The next ticket starts with it, though it isn't on main.
+    tool(&handle, "pm", "create_ticket", serde_json::json!({
+        "title": "Pricing", "body": "-", "owner": "frontend", "depends_on": [1],
+    }))
+    .await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    assert_eq!(std::fs::read_to_string(ws.path.join("HERO.md")).unwrap().trim(), "made by the squad");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let prompt = arg(&calls(&recorded).pop().unwrap(), "-p").unwrap().to_owned();
+    assert!(prompt.contains("starts from the accepted work of T-1"), "{prompt}");
+
+    // The person merges: main has it, and the board knows.
+    handle.send(Command::Merge { squad: "acme".into(), ticket: 1, push: false });
+    let merged = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.merged == Some(true))).await;
+    assert_eq!(ticket_changed(&merged).pop().unwrap().id, 1);
+    assert_eq!(std::fs::read_to_string(repo.join("HERO.md")).unwrap().trim(), "made by the squad");
+}
+
+#[tokio::test]
+async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
+    let repo = repo();
+    let claude = fake_claude(true, &answering("ok"));
+    let home = squad_home(&[&repo]);
+    // Two accepted tickets whose branches both rewrote the README.
+    for (id, text) in [(1, "one"), (2, "two")] {
+        let branch = format!("equipe/dev-t{id}");
+        git(&repo, &["branch", &branch, "main"]);
+        let path = scratch("wt");
+        git(&repo, &["worktree", "add", "-q", &path.join("w").to_string_lossy(), &branch]);
+        std::fs::write(path.join("w/README.md"), text).unwrap();
+        git(&path.join("w"), &["commit", "-qam", text]);
+    }
+    {
+        let journal = Journal::for_squad(&home, "acme").unwrap();
+        for id in [1, 2] {
+            let made = journal
+                .create_ticket(&Ticket {
+                    id: 0,
+                    title: format!("Piece {id}"),
+                    body: "-".into(),
+                    status: TicketStatus::Done,
+                    owner: Some("frontend".into()),
+                    assignee: None,
+                    project: Some(repo.clone()),
+                    depends_on: Vec::new(),
+                    branch: Some(format!("equipe/dev-t{id}")),
+                    worktree: None,
+                    merged: Some(false),
+                    created_by: "pm".into(),
+                    note: None,
+                })
+                .unwrap();
+            assert_eq!(made, id);
+        }
+    }
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({
+        "title": "Both", "body": "-", "owner": "frontend", "depends_on": [1, 2],
+    }))
+    .await;
+    let held = until(&mut events, |e| {
+        matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 3 && ticket.status == TicketStatus::Proposed)
+    })
+    .await;
+    let note = ticket_changed(&held).pop().unwrap().note.unwrap();
+    assert!(note.starts_with("Couldn't start") && note.contains("T-2") && note.contains("README.md"), "{note}");
 }
 
 #[tokio::test]

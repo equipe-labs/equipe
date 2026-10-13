@@ -243,6 +243,7 @@ impl Journal {
         for column in ["role TEXT", "name TEXT", "joined INTEGER", "mode TEXT"] {
             let _ = conn.execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), []);
         }
+        let _ = conn.execute("ALTER TABLE tickets ADD COLUMN merged INTEGER", []);
         Ok(Self { conn, path: path.to_owned() })
     }
 
@@ -427,7 +428,7 @@ impl Journal {
     pub fn save_ticket(&self, t: &Ticket) -> Result<()> {
         self.conn.execute(
             "UPDATE tickets SET title = ?1, body = ?2, status = ?3, owner = ?4, assignee = ?5, project = ?6,
-                                depends_on = ?7, branch = ?8, note = ?9, updated_at = ?10
+                                depends_on = ?7, branch = ?8, note = ?9, updated_at = ?10, merged = ?12
              WHERE id = ?11",
             params![
                 t.title,
@@ -441,6 +442,7 @@ impl Journal {
                 t.note,
                 now(),
                 t.id,
+                t.merged,
             ],
         )?;
         Ok(())
@@ -457,7 +459,7 @@ impl Journal {
 
     fn query_tickets(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<Ticket>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree
+            "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree, merged
              FROM tickets {filter} ORDER BY id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -474,6 +476,7 @@ impl Journal {
                 created_by: r.get(9)?,
                 note: r.get(10)?,
                 worktree: r.get::<_, Option<String>>(11)?.map(PathBuf::from),
+                merged: r.get(12)?,
             })
         })?;
         rows.collect()
@@ -897,6 +900,7 @@ mod tests {
             depends_on: vec![],
             branch: None,
             worktree: None,
+            merged: None,
             created_by: "pm".into(),
             note: None,
         }
@@ -913,6 +917,7 @@ mod tests {
             let mut t = j.ticket(2).unwrap().unwrap();
             t.status = TicketStatus::InProgress;
             t.assignee = Some("frontend".into());
+            t.merged = Some(false);
             j.save_ticket(&t).unwrap();
             j.set_ticket_work(2, &TicketWork { base: Some("abc".into()), worktree: Some("/w/2".into()), engine_session: Some("s".into()) }).unwrap();
             j.ticket_event(2, "pm", "created", "Pricing").unwrap();
@@ -922,6 +927,7 @@ mod tests {
         let tickets = j.tickets().unwrap();
         assert_eq!(tickets.len(), 2);
         assert_eq!((tickets[1].status, tickets[1].depends_on.clone()), (TicketStatus::InProgress, vec![1]));
+        assert_eq!((tickets[0].merged, tickets[1].merged), (None, Some(false)));
         assert_eq!(j.ticket_work(2).unwrap().worktree, Some(PathBuf::from("/w/2")));
         assert_eq!(j.ticket_history(2).unwrap()[1], ("equipe".into(), "assigned".into(), "frontend".into()));
     }

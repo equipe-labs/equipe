@@ -133,10 +133,21 @@ pub struct Ticket {
     /// Its checkout, while there is one — the person can look at the work there.
     #[serde(default)]
     pub worktree: Option<PathBuf>,
+    /// Whether its branch is in the project's main branch, as of its acceptance
+    /// or merge — `Some(false)`: accepted, but not on main yet. `None`: unknown.
+    #[serde(default)]
+    pub merged: Option<bool>,
     /// `you`, or the member who wrote it.
     pub created_by: String,
     /// The latest word on it: a hand-in summary, why it was reopened.
     pub note: Option<String>,
+}
+
+impl Ticket {
+    /// Accepted, but its work isn't on the main branch yet.
+    pub fn not_on_main(&self) -> bool {
+        self.status == TicketStatus::Done && self.branch.is_some() && self.merged == Some(false)
+    }
 }
 
 /// How much a member may do on its own while it works a ticket. At its desk a
@@ -272,6 +283,10 @@ pub enum Command {
     /// The person accepts a ticket's work: it is done, its branch stays to merge.
     /// Only the person can do this — never a member, the PM included.
     Accept { squad: SquadName, ticket: TicketId },
+    /// The person merges a done ticket's branch into the project's main branch,
+    /// and pushes main to `origin` when `push`. Never without their word: a
+    /// merge is the person's gate. A conflict merges nothing.
+    Merge { squad: SquadName, ticket: TicketId, push: bool },
     /// The person sends a ticket back with what to change.
     Reopen { squad: SquadName, ticket: TicketId, note: String },
     /// The person drops a ticket.
@@ -592,6 +607,7 @@ mod tests {
             depends_on: vec![1],
             branch: None,
             worktree: None,
+            merged: None,
             created_by: "pm".into(),
             note: None,
         }

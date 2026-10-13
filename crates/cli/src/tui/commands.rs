@@ -9,7 +9,7 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-pub const COMMANDS: [Spec; 18] = [
+pub const COMMANDS: [Spec; 19] = [
     Spec { name: "usage", args: "", about: "Plan limits, each member's context and tokens" },
     Spec { name: "scale", args: "[0-6|off]", about: "Extra members a role may get when its work waits" },
     Spec { name: "compact", args: "[member]", about: "Start its next conversation afresh, from a summary of this one" },
@@ -17,6 +17,7 @@ pub const COMMANDS: [Spec; 18] = [
     Spec { name: "squad", args: "[name] · new <name> <folder> · add|remove <folder>", about: "Switch, start, or change what a squad works on" },
     Spec { name: "project", args: "[name|all]", about: "Put one project in focus: board, reviews and new work" },
     Spec { name: "accept", args: "T-n", about: "Approve handed-in work" },
+    Spec { name: "merge", args: "T-n", about: "Merge accepted work into main, and push if you say so" },
     Spec { name: "reopen", args: "T-n <what to change>", about: "Send work back with what to change" },
     Spec { name: "cancel", args: "T-n", about: "Drop a ticket" },
     Spec { name: "board", args: "", about: "The board (Ctrl-B)" },
@@ -46,6 +47,8 @@ pub struct Context<'a> {
     pub review: Vec<(TicketId, &'a str)>,
     /// Tickets that can be sent back: in review or done.
     pub reopenable: Vec<(TicketId, &'a str)>,
+    /// Accepted tickets whose work isn't on main yet, for /merge.
+    pub unmerged: Vec<(TicketId, &'a str)>,
     /// Tickets still open, for /cancel.
     pub open: Vec<(TicketId, &'a str)>,
     /// The squad's members: name and role.
@@ -116,6 +119,7 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
     match (name, words.len()) {
         ("accept", 1) => tickets(&ctx.review, ""),
         ("cancel", 1) => tickets(&ctx.open, ""),
+        ("merge", 1) => tickets(&ctx.unmerged, ""),
         // What to change follows the number.
         ("reopen", 1) => tickets(&ctx.reopenable, " "),
         // Each mode says what it lets members do, and which one is on now.
@@ -227,6 +231,7 @@ mod tests {
             review: vec![(8, "Translations"), (10, "PostHog")],
             reopenable: vec![(8, "Translations"), (10, "PostHog"), (3, "Deploy")],
             open: vec![(5, "SEO check")],
+            unmerged: vec![(3, "Deploy")],
             members: vec![("pm", "pm"), ("frontend", "frontend")],
             roles: vec!["pm", "designer", "frontend", "backend", "qa", "data"],
             squads: vec![("equipe-squad".into(), "equipe-site".into()), ("ios".into(), "app".into())],
@@ -255,6 +260,7 @@ mod tests {
         assert_eq!(texts(&complete("/accept T-1", &ctx())), ["/accept T-10"]);
         assert_eq!(texts(&complete("/accept post", &ctx())), ["/accept T-10"], "a title finds its ticket");
         assert_eq!(texts(&complete("/reopen 3", &ctx())), ["/reopen T-3 "], "what to change comes next");
+        assert_eq!(texts(&complete("/merge ", &ctx())), ["/merge T-3"], "only accepted work not on main yet");
         assert_eq!(texts(&complete("/mode f", &ctx())), ["/mode full", "/mode frontend "]);
         assert_eq!(texts(&complete("/mode frontend a", &ctx())), ["/mode frontend ask", "/mode frontend auto"]);
         let modes = complete("/mode ", &ctx());
