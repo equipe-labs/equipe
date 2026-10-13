@@ -9,7 +9,9 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-pub const COMMANDS: [Spec; 14] = [
+pub const COMMANDS: [Spec; 16] = [
+    Spec { name: "compact", args: "[member]", about: "Start its next conversation afresh, from a summary of this one" },
+    Spec { name: "clear", args: "[member]", about: "Start its next conversation clean — memory and board stay" },
     Spec { name: "squad", args: "[name] · new <name> <folder> · add|remove <folder>", about: "Switch, start, or change what a squad works on" },
     Spec { name: "project", args: "[name|all]", about: "Put one project in focus: board, reviews and new work" },
     Spec { name: "accept", args: "T-n", about: "Approve handed-in work" },
@@ -140,6 +142,7 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             choices
         }
         ("add", _) => ctx.roles.iter().filter(|w| starts(w)).map(|r| word(r, "", " ")).collect(),
+        ("compact" | "clear", 1) => ctx.members.iter().filter(|(m, _)| starts(m)).map(|(m, _)| word(m, "", "")).collect(),
         ("squad", 1) => {
             let mut choices: Vec<Choice> = ctx.squads.iter().filter(|(n, _)| starts(n)).map(|(n, about)| word(n, about, "")).collect();
             if starts("new") {

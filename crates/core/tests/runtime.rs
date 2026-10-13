@@ -1046,6 +1046,65 @@ async fn the_project_in_focus_travels_with_the_persons_message() {
     assert_eq!(arg(calls(&recorded).last().unwrap(), "-p"), Some("and the site?"));
 }
 
+/// A turn that reports how full its context got: `used` of a 200k window.
+fn answering_with_context(text: &str, used: u64) -> String {
+    format!(
+        r#"cat <<EOF
+{{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}}
+{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{text}"}}],"usage":{{"input_tokens":5,"cache_read_input_tokens":{used},"cache_creation_input_tokens":0,"output_tokens":0}}}}}}
+{{"type":"result","subtype":"success","is_error":false,"result":"{text}","usage":{{"input_tokens":5,"cache_read_input_tokens":{used},"output_tokens":2}},"modelUsage":{{"claude-test":{{"contextWindow":200000}}}}}}
+EOF"#
+    )
+}
+
+#[tokio::test]
+async fn a_desk_conversation_grown_too_full_starts_afresh_from_a_summary() {
+    let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
+    let (claude, recorded) = recording_claude(&answering_with_context("noted", 150_000));
+    let (handle, mut events) = runtime::start(Config { persist: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    let turn = async |handle: &Handle, events: &mut UnboundedReceiver<Event>, text: &str| {
+        handle.send(Command::Submit { session: 1, text: text.into() });
+        until(events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await
+    };
+
+    // The turn says it filled 150k of 200k: counted with its cache, and seen.
+    let ended = turn(&handle, &mut events, "plan the launch").await;
+    let Some(Event::TurnEnded { usage: Some(usage), .. }) = ended.last() else { panic!("{ended:?}") };
+    assert_eq!((usage.context_tokens, usage.context_window), (Some(150_005), Some(200_000)));
+    assert_eq!(usage.total(), 5 + 150_000 + 2, "cached input counts");
+    let pm = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 1).unwrap();
+    assert_eq!(pm.context, Some((150_005, 200_000)));
+
+    // 75% full: the next turn starts a fresh conversation, handed where the last left off.
+    let ended = turn(&handle, &mut events, "and the pricing?").await;
+    assert!(ended.iter().any(|e| matches!(e, Event::Notice { text, .. } if text.contains("a fresh conversation: the last one had filled 150k of 200k"))), "{ended:?}");
+    let call = calls(&recorded).pop().unwrap();
+    assert_eq!(arg(&call, "--resume"), None, "not the old conversation");
+    let prompt = arg(&call, "-p").unwrap();
+    assert!(prompt.contains("this is a fresh conversation") && prompt.contains("- the person: plan the launch") && prompt.contains("- you: noted"), "{prompt}");
+    assert!(prompt.ends_with("and the pricing?"), "{prompt}");
+}
+
+#[tokio::test]
+async fn the_person_can_start_a_members_conversation_clean() {
+    let cwd = scratch("cwd");
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&cwd])));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    handle.send(Command::Submit { session: 1, text: "first".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    handle.send(Command::Refresh { session: 1, summary: false });
+    until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("starts clean"))).await;
+    handle.send(Command::Submit { session: 1, text: "second".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let call = calls(&recorded).pop().unwrap();
+    assert_eq!(arg(&call, "--resume"), None);
+    let prompt = arg(&call, "-p").unwrap();
+    assert!(prompt.starts_with("[equipe: this is a fresh conversation. Your memory") && !prompt.contains("first"), "{prompt}");
+}
+
 #[tokio::test]
 async fn a_member_asks_the_person_before_doing_something_on_their_behalf() {
     let repo = repo();

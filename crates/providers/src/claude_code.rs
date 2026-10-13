@@ -259,6 +259,8 @@ pub struct TurnCollector {
     last_message: String,
     model: Option<String>,
     session_id: Option<String>,
+    /// How full the context was at the latest request: its input, cached or not, and output.
+    context: Option<u64>,
     result: Option<Result<TurnResult>>,
 }
 
@@ -294,6 +296,12 @@ impl TurnCollector {
                 })
                 .unwrap_or_default(),
             "assistant" => {
+                if let Some(u) = event.get("message").and_then(|m| m.get("usage")) {
+                    let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
+                    self.context = Some(
+                        n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens") + n("output_tokens"),
+                    );
+                }
                 let text = message_text(event);
                 if !text.is_empty() {
                     self.last_message = text;
@@ -301,7 +309,11 @@ impl TurnCollector {
                 tool_uses(event)
             }
             "result" => {
-                self.result = Some(result_from(event, &self.streamed, &self.last_message));
+                let mut result = result_from(event, &self.streamed, &self.last_message);
+                if let Ok(TurnResult { usage: Some(usage), .. }) = &mut result {
+                    usage.context_tokens = self.context;
+                }
+                self.result = Some(result);
                 Vec::new()
             }
             _ => Vec::new(),
@@ -407,9 +419,18 @@ fn result_from(event: &Value, streamed: &str, last_message: &str) -> Result<Turn
     let usage = event.get("usage").and_then(|u| {
         let input_tokens = u.get("input_tokens").and_then(Value::as_u64);
         let output_tokens = u.get("output_tokens").and_then(Value::as_u64);
+        let cache = ["cache_read_input_tokens", "cache_creation_input_tokens"].iter().filter_map(|k| u.get(*k).and_then(Value::as_u64)).sum::<u64>();
+        // The window of the model that did the work (the first listed).
+        let context_window = event
+            .get("modelUsage")
+            .and_then(Value::as_object)
+            .and_then(|models| models.values().find_map(|m| m.get("contextWindow").and_then(Value::as_u64)));
         (input_tokens.is_some() || output_tokens.is_some()).then_some(TurnUsage {
             input_tokens,
             output_tokens,
+            cache_tokens: (cache > 0).then_some(cache),
+            context_tokens: None,
+            context_window,
         })
     });
     Ok(TurnResult {
@@ -703,7 +724,7 @@ mod tests {
         let result = result.unwrap();
         assert_eq!(result.text, "pong");
         assert_eq!(result.status, "completed");
-        assert_eq!(result.usage, Some(TurnUsage { input_tokens: Some(10), output_tokens: Some(2) }));
+        assert_eq!(result.usage, Some(TurnUsage { input_tokens: Some(10), output_tokens: Some(2), ..Default::default() }));
     }
 
     #[test]

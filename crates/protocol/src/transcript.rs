@@ -124,7 +124,7 @@ mod tests {
         let done = t.apply(&Event::TurnEnded {
             session: 1,
             outcome: TurnOutcome::Completed,
-            usage: Some(Usage { input_tokens: Some(1), output_tokens: Some(1) }),
+            usage: Some(Usage { input_tokens: Some(1), output_tokens: Some(1), ..Default::default() }),
         });
         assert_eq!(done, vec![Entry::Reply { text: "Hello".into() }]);
     }

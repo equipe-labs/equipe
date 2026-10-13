@@ -1213,6 +1213,15 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
         Some(ticket) => title.push(Span::styled(format!("  ·  T-{} {}", ticket.id, ticket.title), theme.dim())),
         None => title.push(Span::styled(format!("  ·  {}", agent.engine_label()), theme.dim())),
     }
+    // How full its conversation is: past half, in the accent, with what to do.
+    if let Some((used, window)) = agent.context.filter(|(_, w)| *w > 0) {
+        let percent = used * 100 / window;
+        let style = if percent >= 50 { theme.accent() } else { theme.dim() };
+        title.push(Span::styled(format!("  ·  context {percent}%"), style));
+        if percent >= 50 {
+            title.push(Span::styled(" · /compact", theme.dim()));
+        }
+    }
     let area = pane_title(title, switch_label(app, Pane::Conversation, theme), area, frame);
 
     // At the bottom, when it applies: the live working row, or what arrived
@@ -1897,7 +1906,7 @@ mod tests {
         app.on_event(Event::TurnEnded {
             session: id,
             outcome: TurnOutcome::Completed,
-            usage: Some(Usage { input_tokens: Some(1200), output_tokens: Some(34) }),
+            usage: Some(Usage { input_tokens: Some(1200), output_tokens: Some(34), ..Default::default() }),
         });
         let shot = screen(&app, 100, 22);
         assert!(shot.contains("1,234 tokens"), "{shot}");
@@ -1962,7 +1971,7 @@ mod tests {
         app.on_event(Event::TurnEnded {
             session: id,
             outcome: TurnOutcome::Completed,
-            usage: Some(Usage { input_tokens: Some(100), output_tokens: Some(20) }),
+            usage: Some(Usage { input_tokens: Some(100), output_tokens: Some(20), ..Default::default() }),
         });
         app.on_paste("one\ntwo\nthree");
         let shot = screen(&app, 60, 22);

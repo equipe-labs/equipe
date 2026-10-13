@@ -535,6 +535,11 @@ impl Journal {
         self.touch(id, "engine_session", engine_session)
     }
 
+    /// Forget the engine's conversation: the next turn starts a fresh one.
+    pub fn clear_engine_session(&self, id: SessionId) -> Result<()> {
+        self.touch(id, "engine_session", None::<String>)
+    }
+
     /// The first message names the session; later ones don't.
     pub fn set_title_if_empty(&self, id: SessionId, title: &str) -> Result<()> {
         self.conn.execute(

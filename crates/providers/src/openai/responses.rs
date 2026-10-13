@@ -171,6 +171,7 @@ fn usage_from(response: &Value) -> Option<TurnUsage> {
     Some(TurnUsage {
         input_tokens,
         output_tokens,
+        ..Default::default()
     })
 }
 
@@ -312,7 +313,7 @@ mod tests {
         let (_, result) = collect(&[event]);
         assert_eq!(
             result.unwrap().usage,
-            Some(TurnUsage { input_tokens: Some(12), output_tokens: Some(3) })
+            Some(TurnUsage { input_tokens: Some(12), output_tokens: Some(3), ..Default::default() })
         );
     }
 

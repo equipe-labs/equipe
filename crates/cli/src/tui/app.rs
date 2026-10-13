@@ -76,6 +76,8 @@ pub struct Agent {
     /// Memos waiting for its turn to end.
     pub queued: Vec<String>,
     pub tokens: u64,
+    /// How full its conversation's context is, and the window.
+    pub context: Option<(u64, u64)>,
     /// Lines scrolled up from the bottom; 0 follows new output.
     pub scroll_back: usize,
     /// Lines that arrived while the person was scrolled up.
@@ -108,6 +110,7 @@ impl Agent {
             transcript: Transcript::default(),
             queued: Vec::new(),
             tokens: 0,
+            context: None,
             scroll_back: 0,
             unseen: 0,
             working_since: None,
@@ -140,6 +143,7 @@ impl Agent {
             transcript: Transcript::from_entries(info.recent),
             queued: info.queued,
             tokens: info.tokens,
+            context: info.context,
             scroll_back: 0,
             unseen: 0,
             // Attached mid-turn: the clock starts now, not when the turn did.
@@ -689,7 +693,10 @@ impl App {
                 }
                 agent.stop_working();
                 if let Some(u) = usage {
-                    agent.tokens += u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0);
+                    agent.tokens += u.total();
+                    if let (Some(used), Some(window)) = (u.context_tokens, u.context_window) {
+                        agent.context = Some((used, window));
+                    }
                 }
             }
             Event::SessionClosed { .. } => agent.state = AgentState::Closed,
@@ -1127,6 +1134,19 @@ impl App {
             "browser" => self.browser(rest),
             "squad" => self.squad_command(rest),
             "project" => self.focus_on(rest),
+            "compact" | "clear" => {
+                let target = match rest.trim() {
+                    "" => self.agents.get(self.selected),
+                    name => self.agents.iter().find(|a| a.member.as_ref().is_some_and(|m| m.name == name)),
+                };
+                match target.filter(|a| a.member.is_some()) {
+                    Some(agent) => vec![Command::Refresh { session: agent.id, summary: name == "compact" }],
+                    None => {
+                        self.flash = Some(format!("Whose? /{name} <member>"));
+                        Vec::new()
+                    }
+                }
+            }
             "mouse" => {
                 self.mouse = !self.mouse;
                 self.flash = Some(if self.mouse {
@@ -1602,6 +1622,7 @@ mod tests {
             state: SessionState::Ready,
             title: None,
             tokens: 0,
+            context: None,
             recent: Vec::new(),
             queued: Vec::new(),
             work: None,
@@ -1762,7 +1783,7 @@ mod tests {
         app.on_event(Event::TurnEnded {
             session: id,
             outcome: TurnOutcome::Completed,
-            usage: Some(Usage { input_tokens: Some(10), output_tokens: Some(5) }),
+            usage: Some(Usage { input_tokens: Some(10), output_tokens: Some(5), ..Default::default() }),
         });
         assert_eq!(app.agents[0].state, AgentState::Ready);
         assert_eq!(app.total_tokens(), 15);
@@ -2046,6 +2067,17 @@ mod tests {
         app.on_click(1, 0);
         assert_eq!(app.outbox, vec![Command::Focus { squad: "acme".into(), project: None }]);
         assert_eq!(app.board_order(), vec![1, 2]);
+    }
+
+    #[test]
+    fn compact_and_clear_start_a_members_next_conversation_afresh() {
+        let (mut app, pm, frontend) = team();
+        type_text(&mut app, "/compact");
+        assert_eq!(enter(&mut app), vec![Command::Refresh { session: pm, summary: true }]);
+        type_text(&mut app, "/clear frontend");
+        assert_eq!(enter(&mut app), vec![Command::Refresh { session: frontend, summary: false }]);
+        type_text(&mut app, "/clear nobody");
+        assert!(enter(&mut app).is_empty());
     }
 
     #[test]

@@ -236,6 +236,15 @@ struct Session {
     prompts: Vec<String>,
     title: Option<String>,
     tokens: u64,
+    /// How full its latest conversation's context was, and the window.
+    context: Option<(u64, u64)>,
+    /// The same for its desk conversation — the one that lives between tickets.
+    desk_context: Option<(u64, u64)>,
+    /// When its latest turn ended.
+    last_turn: Option<std::time::Instant>,
+    /// A fresh conversation asked for at the desk: carrying a summary of the
+    /// last one (`Some(true)`), or starting clean (`Some(false)`).
+    refresh: Option<bool>,
     transcript: Transcript,
     turn: Option<JoinHandle<()>>,
     /// Memos left while a turn ran, delivered together when it ends.
@@ -403,8 +412,17 @@ impl Runtime {
                     session.title = text.lines().next().map(str::to_owned);
                 }
                 Event::ModelKnown { model, .. } => session.model = Some(model.clone()),
-                Event::TurnEnded { usage: Some(u), .. } => {
-                    session.tokens += u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0);
+                Event::TurnEnded { usage, .. } => {
+                    session.last_turn = Some(std::time::Instant::now());
+                    if let Some(u) = usage {
+                        session.tokens += u.total();
+                        if let (Some(used), Some(window)) = (u.context_tokens, u.context_window) {
+                            session.context = Some((used, window));
+                            if session.work.is_none() {
+                                session.desk_context = Some((used, window));
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -446,6 +464,17 @@ impl Runtime {
             Command::Cancel { squad, ticket } => self.cancel(&squad, ticket).await,
             Command::SetMode { squad, member, mode } => self.set_mode(&squad, member, mode),
             Command::ShowBrowser { squad, member, show } => self.show_browser(&squad, member, show),
+            Command::Refresh { session, summary } => {
+                if let Some(s) = self.sessions.get_mut(&session) {
+                    s.refresh = Some(summary);
+                    let text = if summary {
+                        "Its next conversation at the desk starts afresh, from a summary of this one and its memory."
+                    } else {
+                        "Its next conversation at the desk starts clean — its memory and the board carry over."
+                    };
+                    self.publish(Event::Notice { session, text: text.into() });
+                }
+            }
             Command::Focus { squad, project } => match project {
                 Some(name) => {
                     self.focus.insert(squad, name);
@@ -727,6 +756,10 @@ impl Runtime {
                 prompts: Vec::new(),
                 title: None,
                 tokens: 0,
+                context: None,
+                desk_context: None,
+                last_turn: None,
+                refresh: None,
                 transcript: Transcript::default(),
                 turn: None,
                 queued: Vec::new(),
@@ -809,6 +842,11 @@ impl Runtime {
     /// Run a turn with `prompt` in the session's current place: its ticket's
     /// project when it has one, its desk otherwise.
     fn start_turn(&mut self, id: SessionId, prompt: String) {
+        // A desk conversation grown too large, or gone cold, starts afresh.
+        let prompt = match self.refresh_desk(id) {
+            Some(handoff) => format!("{handoff}\n\n{prompt}"),
+            None => prompt,
+        };
         let Some(session) = self.sessions.get(&id) else {
             return;
         };
@@ -904,6 +942,9 @@ impl Runtime {
                 };
                 let model = session.model.clone().unwrap_or_default();
                 let version = self.config.client_version.clone();
+                // Codex gets no conversation of its own: equipe sends the recent
+                // part of it each turn, never more than fits.
+                let history = recent_history(&history);
                 tokio::spawn(async move {
                     let emit = |event| {
                         let _ = internal.send(Internal::Event(event));
@@ -1040,6 +1081,10 @@ impl Runtime {
             };
             history.push(responses::Message { role: responses::Role::User, text: done.prompt.clone() });
             history.push(responses::Message { role: responses::Role::Assistant, text: reply.clone() });
+            // What is kept in memory is bounded too; what lasts is in memory files and on the board.
+            if history.len() > HISTORY_KEPT {
+                history.drain(..history.len() - HISTORY_KEPT);
+            }
         }
         if let Some(engine_session) = done.claude_session {
             match &mut session.work {
@@ -1796,6 +1841,7 @@ End your turn now with a short summary.",
                     state: if s.is_working() { SessionState::Working } else { SessionState::Ready },
                     title: s.title.clone(),
                     tokens: s.tokens,
+                    context: s.context,
                     recent: entries[entries.len().saturating_sub(SNAPSHOT_LINES)..].to_vec(),
                     queued: s.queued.clone(),
                     work: s.work.as_ref().map(|w| WorkInfo {
@@ -1877,6 +1923,10 @@ End your turn now with a short summary.",
                         prompts: Vec::new(),
                         title: record.title,
                         tokens: record.tokens,
+                        context: None,
+                        desk_context: None,
+                        last_turn: None,
+                        refresh: None,
                         transcript: Transcript::from_entries(conversation),
                         turn: None,
                         queued: journal.waiting(record.id, "memo").unwrap_or_default(),
@@ -1926,6 +1976,59 @@ check what is already done in your worktree first."
             );
         }
         memos
+    }
+
+    /// A member's desk conversation (Claude Code) starts afresh when asked, when
+    /// it has filled most of its context window, or when it has gone cold —
+    /// unused past the prompt cache's hour, where carrying it on would make the
+    /// whole of it be processed again. The fresh conversation is handed a short
+    /// summary of the last one's end; the member's memory and the board carry
+    /// what lasts. Returns that hand-off, to open the next prompt with.
+    fn refresh_desk(&mut self, id: SessionId) -> Option<String> {
+        let session = self.sessions.get_mut(&id)?;
+        if session.work.is_some() || session.engine != Engine::Claude || session.claude_session.is_none() {
+            return None;
+        }
+        let (used, window) = session.desk_context.unwrap_or((0, 0));
+        let full = window > 0 && used * 100 / window >= REFRESH_FULL_PERCENT;
+        let cold = used >= REFRESH_COLD_TOKENS && session.last_turn.is_some_and(|t| t.elapsed() > REFRESH_COLD_AFTER);
+        let summary = match session.refresh.take() {
+            Some(summary) => summary,
+            None if full || cold => true,
+            None => return None,
+        };
+        session.claude_session = None;
+        session.desk_context = None;
+        session.context = None;
+        let tail: Vec<String> = session
+            .transcript
+            .entries()
+            .iter()
+            .filter_map(|e| match e {
+                Entry::User { text } => Some(format!("- the person: {}", clip(text, 600))),
+                Entry::Reply { text } => Some(format!("- you: {}", clip(text, 600))),
+                _ => None,
+            })
+            .collect();
+        let tail = tail[tail.len().saturating_sub(REFRESH_TAIL)..].join("\n");
+        let why = match (full, cold) {
+            _ if !summary => "asked for a clean start".to_owned(),
+            (true, _) => format!("the last one had filled {}k of {}k tokens", used / 1000, window / 1000),
+            (_, true) => format!("the last one ({}k tokens) had gone unused for over an hour", used / 1000),
+            _ => "asked for one".to_owned(),
+        };
+        let squad = session.squad.clone();
+        if let Some(journal) = squad.as_deref().and_then(|s| journal_for(&mut self.journals, &self.config.home, s)) {
+            let _ = journal.clear_engine_session(id);
+        }
+        self.publish(Event::Notice { session: id, text: format!("── a fresh conversation: {why} ──") });
+        Some(if summary && !tail.is_empty() {
+            format!(
+                "[equipe: this is a fresh conversation — {why}. Where the last one left off, latest last:\n{tail}\nYour memory and the board hold the rest.]"
+            )
+        } else {
+            "[equipe: this is a fresh conversation. Your memory and the board hold what lasts.]".to_owned()
+        })
     }
 
     /// Close browsers whose member is gone, or hasn't had a turn in half an
@@ -2065,6 +2168,58 @@ fn verdict(decision: Decision, input: &Value, why: &str) -> ToolResult {
     ToolResult { text: text.to_string(), is_error: false }
 }
 
+/// A desk conversation this full of its context window starts afresh.
+const REFRESH_FULL_PERCENT: u64 = 60;
+/// One this big, unused this long, starts afresh rather than being processed
+/// again whole once the prompt cache has expired.
+const REFRESH_COLD_TOKENS: u64 = 60_000;
+const REFRESH_COLD_AFTER: Duration = Duration::from_secs(60 * 60);
+/// How many of the last messages a fresh conversation is handed.
+const REFRESH_TAIL: usize = 12;
+
+/// `text` cut to about `max` characters, on a character boundary.
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    format!("{}…", text.chars().take(max).collect::<String>())
+}
+
+/// Messages of a Codex conversation kept in memory.
+const HISTORY_KEPT: usize = 200;
+/// What a Codex turn is sent of its conversation: the latest messages, up to
+/// this many characters (about 30k tokens) and this many messages.
+const HISTORY_CHARS: usize = 120_000;
+const HISTORY_SENT: usize = 40;
+
+/// The recent part of a conversation, newest kept; when older messages are
+/// left out, a note says so.
+fn recent_history(history: &[responses::Message]) -> Vec<responses::Message> {
+    let mut chars = 0;
+    let mut kept: Vec<responses::Message> = history
+        .iter()
+        .rev()
+        .take(HISTORY_SENT)
+        .take_while(|m| {
+            chars += m.text.len();
+            chars <= HISTORY_CHARS
+        })
+        .cloned()
+        .collect();
+    kept.reverse();
+    // Start on the person's turn, not mid-exchange.
+    while kept.first().is_some_and(|m| m.role == responses::Role::Assistant) {
+        kept.remove(0);
+    }
+    if kept.len() < history.len() {
+        kept.insert(0, responses::Message {
+            role: responses::Role::User,
+            text: "[equipe: the earlier part of this conversation is left out to fit; your memory and the board hold what lasts]".into(),
+        });
+    }
+    kept
+}
+
 /// Remove a ticket's worktree; keep its branch if it has commits, drop it if not.
 /// Returns the branch that remains.
 fn release(sandbox: &Sandbox) -> Option<String> {
@@ -2135,7 +2290,7 @@ fn record(journal: &Journal, id: SessionId, event: &Event, finished: &[Entry], t
             let _ = journal.set_model(id, model);
         }
         Event::TurnEnded { usage: Some(u), .. } => {
-            let _ = journal.add_tokens(id, u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0));
+            let _ = journal.add_tokens(id, u.total());
         }
         Event::BranchLanded { branch, .. } => {
             let _ = journal.set_outcome(id, &format!("landed {branch}"));
@@ -2169,7 +2324,13 @@ fn finish_turn(
                 emit(Event::TextDelta { session: id, text: result.text.clone() });
             }
             let outcome = if result.status == "completed" { TurnOutcome::Completed } else { TurnOutcome::Incomplete };
-            let usage = result.usage.map(|u| Usage { input_tokens: u.input_tokens, output_tokens: u.output_tokens });
+            let usage = result.usage.map(|u| Usage {
+                input_tokens: u.input_tokens,
+                output_tokens: u.output_tokens,
+                cache_tokens: u.cache_tokens,
+                context_tokens: u.context_tokens,
+                context_window: u.context_window,
+            });
             emit(Event::TurnEnded { session: id, outcome, usage });
             Some(result.text)
         }
@@ -2204,4 +2365,39 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn exchange(n: usize, size: usize) -> Vec<responses::Message> {
+        (0..n)
+            .flat_map(|i| {
+                [
+                    responses::Message { role: responses::Role::User, text: format!("q{i} {}", "x".repeat(size)) },
+                    responses::Message { role: responses::Role::Assistant, text: format!("a{i}") },
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_short_conversation_goes_whole() {
+        let history = exchange(3, 10);
+        assert_eq!(recent_history(&history), history);
+    }
+
+    #[test]
+    fn a_long_one_sends_its_latest_part_and_says_so() {
+        let sent = recent_history(&exchange(100, 10));
+        assert!(sent.len() <= HISTORY_SENT + 1);
+        assert!(sent[0].text.contains("left out to fit"));
+        assert_eq!(sent[1].role, responses::Role::User, "starts on the person's turn");
+        assert_eq!(sent.last().unwrap().text, "a99", "the latest is kept");
+        // Big messages: bounded by size too.
+        let sent = recent_history(&exchange(10, 50_000));
+        let chars: usize = sent.iter().skip(1).map(|m| m.text.len()).sum();
+        assert!(chars <= HISTORY_CHARS, "{chars}");
+    }
 }

@@ -281,6 +281,10 @@ pub enum Command {
     SetMode { squad: SquadName, member: Option<String>, mode: Option<Mode> },
     /// The person answers a member's request for permission.
     Decide { squad: SquadName, approval: u64, decision: Decision },
+    /// Start a member's next conversation at its desk afresh: carrying a short
+    /// summary of the last one (`summary`), or clean. Its memory and the board
+    /// carry over either way.
+    Refresh { session: SessionId, summary: bool },
     /// The project the person is looking at, by name — new work goes there
     /// unless they say otherwise; `None`: all of the squad's projects.
     Focus { squad: SquadName, project: Option<String> },
@@ -290,10 +294,26 @@ pub enum Command {
 }
 
 /// Token counts for one turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    /// Input read from or written to the prompt cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_tokens: Option<u64>,
+    /// How full the conversation's context was at the end of the turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<u64>,
+    /// The model's context window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+}
+
+impl Usage {
+    /// Everything the turn processed: input, cached input, and output.
+    pub fn total(&self) -> u64 {
+        self.input_tokens.unwrap_or(0) + self.cache_tokens.unwrap_or(0) + self.output_tokens.unwrap_or(0)
+    }
 }
 
 /// How a turn ended.
@@ -475,6 +495,9 @@ pub struct SessionInfo {
     /// The first line of the first message.
     pub title: Option<String>,
     pub tokens: u64,
+    /// How full its conversation's context was after its latest turn, and the window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<(u64, u64)>,
     /// The latest part of the conversation, oldest first. A reply still
     /// streaming is its last `Reply`.
     pub recent: Vec<Entry>,
@@ -601,7 +624,7 @@ mod tests {
             Event::TurnEnded {
                 session: 1,
                 outcome: TurnOutcome::Interrupted,
-                usage: Some(Usage { input_tokens: Some(3), output_tokens: None }),
+                usage: Some(Usage { input_tokens: Some(3), output_tokens: None, ..Default::default() }),
             },
             Event::Error { session: None, message: "no engine".into(), next: Some("equipe login".into()) },
         ];
@@ -654,6 +677,7 @@ mod tests {
                 state: SessionState::Working,
                 title: Some("fix it".into()),
                 tokens: 12,
+                context: None,
                 recent: vec![Entry::User { text: "fix it".into() }, Entry::Reply { text: "on it".into() }],
                 queued: vec!["and the tests".into()],
                 work: Some(WorkInfo { ticket: 1, project: "/repo".into(), workspace: None }),
