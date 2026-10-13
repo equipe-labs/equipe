@@ -78,6 +78,9 @@ pub struct Agent {
     pub tokens: u64,
     /// How full its conversation's context is, and the window.
     pub context: Option<(u64, u64)>,
+    /// Of the tokens counted while this screen watched: all, and those read
+    /// from or written to the prompt cache.
+    pub seen: (u64, u64),
     /// Lines scrolled up from the bottom; 0 follows new output.
     pub scroll_back: usize,
     /// Lines that arrived while the person was scrolled up.
@@ -111,6 +114,7 @@ impl Agent {
             queued: Vec::new(),
             tokens: 0,
             context: None,
+            seen: (0, 0),
             scroll_back: 0,
             unseen: 0,
             working_since: None,
@@ -144,6 +148,7 @@ impl Agent {
             queued: info.queued,
             tokens: info.tokens,
             context: info.context,
+            seen: (0, 0),
             scroll_back: 0,
             unseen: 0,
             // Attached mid-turn: the clock starts now, not when the turn did.
@@ -700,6 +705,8 @@ impl App {
                 agent.stop_working();
                 if let Some(u) = usage {
                     agent.tokens += u.total();
+                    agent.seen.0 += u.total();
+                    agent.seen.1 += u.cache_tokens.unwrap_or(0);
                     if let (Some(used), Some(window)) = (u.context_tokens, u.context_window) {
                         agent.context = Some((used, window));
                     }

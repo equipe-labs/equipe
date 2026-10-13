@@ -1743,9 +1743,13 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     if draft_lines > 1 {
         facts.push((format!("{draft_lines} lines"), theme.dim()));
     }
+    // Everything the squad's conversations processed — most of it, in a long
+    // one, the cached history read again each turn, which costs a tenth.
     let tokens = app.total_tokens();
     if tokens > 0 {
-        facts.push((format!("{} tokens", group_digits(tokens)), theme.dim()));
+        let (seen, cached) = app.agents.iter().fold((0, 0), |(a, b), agent| (a + agent.seen.0, b + agent.seen.1));
+        let share = if seen > 0 && cached > 0 { format!(" · {}% from cache", cached * 100 / seen) } else { String::new() };
+        facts.push((format!("{} tokens{share}", short_count(tokens)), theme.dim()));
     }
     let left_width: usize = left.iter().map(|s| s.width()).sum();
     // Facts first; the key hints — key in bold, what it does dim — go when space runs short.
@@ -1779,6 +1783,15 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         }
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// A count as it reads at a glance: `1,234`, `812k`, `24.3M`.
+fn short_count(n: u64) -> String {
+    match n {
+        0..10_000 => group_digits(n),
+        10_000..1_000_000 => format!("{}k", n / 1000),
+        _ => format!("{:.1}M", n as f64 / 1_000_000.0),
+    }
 }
 
 fn group_digits(n: u64) -> String {
@@ -2411,6 +2424,13 @@ mod tests {
         let wide = screen(&working().0, 160, 20);
         let bar = |shot: &str| shot.lines().nth(2).unwrap().find('│').unwrap();
         assert_eq!(bar(&wide), bar(&narrow), "{wide}");
+    }
+
+    #[test]
+    fn big_counts_read_at_a_glance() {
+        assert_eq!(short_count(1_234), "1,234");
+        assert_eq!(short_count(812_400), "812k");
+        assert_eq!(short_count(24_288_758), "24.3M");
     }
 
     #[test]
