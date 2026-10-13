@@ -192,8 +192,8 @@ pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
         [one] => format!(" The squad works on one project, {one}."),
         many if role.id == PM => format!(
             " The squad works on several projects: {}. When you report on more than one, give a heading for each \
-project and its tickets under it, so the person sees each at a glance; and put each new ticket in the project \
-it belongs to.",
+project and its tickets under it, so the person sees each at a glance; and put each new code ticket in the \
+project it belongs to.",
             many.join(", ")
         ),
         many => format!(" The squad works on several projects: {}.", many.join(", ")),
@@ -209,8 +209,12 @@ widening your work."
     };
     let tools = match (ctx.board_tools, role.id == PM) {
         (true, true) => "Plan on the board with your equipe tools: `create_ticket` for each piece of work — with an \
-owner and, when there are several projects, the project — `update_ticket` to change a ticket or accept a \
-proposal, and `board` to see where things stand. equipe hands a ticket to its owner as soon as its \
+owner, a kind and, for code when there are several projects, the project — `update_ticket` to change a ticket or \
+accept a proposal, and `board` to see where things stand. Pick the kind by what the work does: changing a \
+repository is `code` (a branch the person merges); finding out, writing, planning or deciding is `task` (files in \
+the squad's folder, which go in when the person accepts); doing something in the world — replying in an app, \
+signing up, filing — is `action` (each outward step asks the person first). A task or action needs no project, \
+and any role can take one. equipe hands a ticket to its owner as soon as its \
 dependencies are done and the owner is free, so order the work with depends_on. Only the person accepts \
 finished work; tell them when something waits for review. Split work into tickets that can run side by side without \
 touching the same files: when several of a role's tickets are ready at once, equipe brings in extra members of that \
@@ -245,7 +249,9 @@ tidying material, making one table: equipe saves each change as soon as your tur
 them take it back, so just say in plain words what you saved where (\"I saved notes/tax-deadline.md\"), never in \
 git's. In conversation the squad's projects are for reading only: a repository changes only on a `code` ticket, in \
 its worktree. Work with several steps, work for a teammate, or a result the person should review before it counts \
-goes on a ticket instead. Anything that reaches outside — sending, submitting, paying — asks the person first, \
+goes on a ticket instead. On a `task` or `action` ticket you work in a worktree of this folder, whatever your \
+role, and leave what you produce under `outputs/` or `notes/`; it goes into the folder when the person accepts. \
+Anything that reaches outside — sending, submitting, paying — asks the person first, \
 wherever you are. Other squads' folders are private."
         ),
         None => String::new(),
@@ -335,6 +341,15 @@ mod tests {
         assert!(text.contains("hand-in summaries"), "{text}");
         let unknown = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
         assert!(unknown.contains("in the language they write in"), "{unknown}");
+    }
+
+    #[test]
+    fn the_pm_is_told_how_to_pick_a_tickets_kind() {
+        let team = [Teammate { name: "pm", role: "pm" }];
+        let text = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
+        for part in ["changing a repository is `code`", "is `task`", "is `action`", "needs no project"] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
     }
 
     #[test]

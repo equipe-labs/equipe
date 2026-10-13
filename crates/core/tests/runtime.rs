@@ -631,6 +631,7 @@ async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
                     branch: Some(format!("equipe/dev-t{id}")),
                     worktree: None,
                     merged: Some(false),
+                    kind: equipe_core::protocol::TicketKind::Code,
                     created_by: "pm".into(),
                     note: None,
                 })
@@ -732,8 +733,10 @@ async fn tools_refuse_what_does_not_make_sense() {
     let claude = fake_claude(true, &answering("ok"));
     let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&site, &app]), false));
     add(&handle, &mut events, 1, member(&site, "pm")).await;
-    let nowhere = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "x", "body": "-" })).await;
+    let nowhere = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "x", "body": "-", "kind": "code" })).await;
     assert!(nowhere.is_error && nowhere.text.contains("several: site, app"), "{nowhere:?}");
+    let odd = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "x", "kind": "chore" })).await;
+    assert!(odd.is_error && odd.text.contains("code, task or action"), "{odd:?}");
     let unknown = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "x", "project": "web" })).await;
     assert!(unknown.is_error && unknown.text.contains("No project called web"), "{unknown:?}");
     let nothing = tool(&handle, "pm", "submit_for_review", serde_json::json!({ "summary": "?" })).await;
@@ -742,7 +745,16 @@ async fn tools_refuse_what_does_not_make_sense() {
         tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "x", "project": "app", "owner": "designer" })).await;
     assert!(!unstaffed.is_error && unstaffed.text.contains("/add designer"), "{unstaffed:?}");
     let board = tool(&handle, "pm", "board", serde_json::json!({})).await;
-    assert_eq!(board.text, "T-1 [todo] x — owner designer, project app\n");
+    assert_eq!(board.text, "T-1 [todo] x — code, owner designer, project app\n");
+    // Without a kind or a project, with several projects, it is a task for the squad's folder.
+    let research = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Research", "owner": "designer" })).await;
+    assert!(research.text.starts_with("Created T-2 (task)."), "{research:?}");
+    let recast = tool(&handle, "pm", "update_ticket", serde_json::json!({ "id": 2, "kind": "code" })).await;
+    assert!(recast.is_error && recast.text.contains("several: site, app"), "{recast:?}");
+    let recast = tool(&handle, "pm", "update_ticket", serde_json::json!({ "id": 2, "kind": "action" })).await;
+    assert!(!recast.is_error, "{recast:?}");
+    let board = tool(&handle, "pm", "board", serde_json::json!({})).await;
+    assert!(board.text.contains("T-2 [todo] Research — action, owner designer\n"), "{}", board.text);
 }
 
 #[tokio::test]
@@ -1647,4 +1659,123 @@ async fn a_squad_from_before_homes_gets_one_and_its_desks_move_there_afresh() {
     let call = calls(&recorded).pop().unwrap();
     assert_eq!(arg(&call, "--resume"), None, "a conversation begun in the project can't go on in the home");
     assert!(arg(&call, "-p").unwrap().contains("fresh conversation"));
+}
+
+// ── tickets that aren't code ──
+
+/// A ticket's turn that writes `file` (relative to its worktree) with `text`.
+fn writing_turn(file: &str, text: &str) -> String {
+    format!(
+        "case \"$*\" in *\"You're on T-\"*) sleep 1; mkdir -p \"$(dirname '{file}')\"; echo '{text}' > '{file}';; esac\n{}",
+        answering("working on it")
+    )
+}
+
+#[tokio::test]
+async fn a_task_with_no_project_runs_in_the_squads_folder_and_goes_in_when_accepted() {
+    let (site, app) = (named("site"), named("app"));
+    let (claude, recorded) = recording_claude(&writing_turn("outputs/T-1 research/report.md", "three competitors"));
+    let home = squad_home(&[&site, &app]);
+    let folder = squads_home(&home);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    // A role that doesn't edit code writes in its worktree of the squad's folder all the same.
+    add(&handle, &mut events, 2, member(&site, "data")).await;
+
+    // Two projects, none named: a task, and it is handed out.
+    let made = tool(&handle, "pm", "create_ticket", serde_json::json!({
+        "title": "Competitor research", "body": "Who else does this?", "owner": "data",
+    }))
+    .await;
+    assert_eq!(made.text, "Created T-1 (task).");
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { session: 2, workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    assert!(ws.path.starts_with(home.join("worktrees/acme.home")), "{}", ws.path.display());
+    assert!(ws.branch.starts_with("equipe/data-t1-"), "{}", ws.branch);
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let call = calls(&recorded).pop().unwrap();
+    let prompt = arg(&call, "-p").unwrap();
+    assert!(prompt.contains("Kind: task") && prompt.contains("outputs/T-1"), "{prompt}");
+    assert_eq!(arg(&call, "--permission-mode"), Some("acceptEdits"));
+    let read: Vec<&str> = call.windows(2).filter(|w| w[0] == "--add-dir").map(|w| w[1].as_str()).collect();
+    for project in [&site, &app] {
+        assert!(read.contains(&project.to_str().unwrap()), "every project is read: {read:?}");
+    }
+
+    // Handed in: the review shows the summary and the files it leaves.
+    tool(&handle, "data", "submit_for_review", serde_json::json!({ "summary": "Three found." })).await;
+    let review =
+        until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
+    let ticket = ticket_changed(&review).pop().unwrap();
+    assert_eq!(ticket.note.as_deref(), Some("Three found.\n\nIn the squad's folder:\n- outputs/T-1 research/report.md"));
+    assert!(!folder.join("outputs/T-1 research/report.md").exists(), "not in the folder before it is accepted");
+
+    // Accepted: in the squad home's main at once — no merge question, no branch left.
+    handle.send(Command::Accept { squad: "acme".into(), ticket: 1 });
+    let done =
+        until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Done)).await;
+    let ticket = ticket_changed(&done).pop().unwrap();
+    assert_eq!((ticket.branch.as_deref(), ticket.merged, ticket.not_on_main()), (None, None, false));
+    assert_eq!(std::fs::read_to_string(folder.join("outputs/T-1 research/report.md")).unwrap().trim(), "three competitors");
+    assert_eq!(git(&folder, &["status", "--porcelain"]), "", "saved in the folder");
+    assert!(!ws.path.exists());
+    assert_eq!(git(&folder, &["branch", "--list", "equipe/*"]), "");
+    let changes = squad_home::changes(&folder, 1).unwrap();
+    assert_eq!(changes[0].by, "data");
+    let notices = until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
+    assert!(
+        matches!(notices.last(), Some(Event::Notice { text, .. }) if text.contains("its work is in the squad's folder")),
+        "{notices:#?}"
+    );
+
+    // Merging is not a thing for it.
+    handle.send(Command::Merge { squad: "acme".into(), ticket: 1, push: false });
+    let refused = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
+    assert!(matches!(refused.last(), Some(Event::Error { message, .. }) if message.contains("went into the squad's folder")), "{refused:#?}");
+}
+
+#[tokio::test]
+async fn a_task_whose_folder_changed_under_it_goes_back_to_its_member_instead_of_closing() {
+    let (site, app) = (named("site"), named("app"));
+    let claude = fake_claude(true, &writing_turn("notes/plan.md", "the squads plan"));
+    let home = squad_home(&[&site, &app]);
+    let folder = squads_home(&home);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Plan", "kind": "task", "owner": "pm" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    tool(&handle, "pm", "submit_for_review", serde_json::json!({ "summary": "Planned." })).await;
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
+
+    // Meanwhile the person wrote the same note themselves.
+    std::fs::write(folder.join("notes/plan.md"), "my plan\n").unwrap();
+    handle.send(Command::Accept { squad: "acme".into(), ticket: 1 });
+    let back = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    assert!(
+        matches!(back.last(), Some(Event::WorkStarted { workspace: Some(again), .. }) if again.path == ws.path),
+        "same worktree: {back:#?}"
+    );
+    let tickets = ticket_changed(&back);
+    assert!(tickets.iter().all(|t| t.status != TicketStatus::Done), "{tickets:#?}");
+    assert!(tickets.iter().any(|t| t.note.as_deref().is_some_and(|n| n.contains("the squad's folder changed"))), "{tickets:#?}");
+    // Nothing of the task went in; the person's note is kept, as theirs.
+    assert_eq!(std::fs::read_to_string(folder.join("notes/plan.md")).unwrap(), "my plan\n");
+    assert_eq!(squad_home::changes(&folder, 1).unwrap()[0].by, squad_home::PERSON);
+}
+
+#[tokio::test]
+async fn a_code_ticket_still_needs_its_project_when_the_squad_has_several() {
+    let (site, app) = (repo(), repo());
+    let claude = fake_claude(true, &answering("ok"));
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&site, &app]), false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "backend")).await;
+    let app_name = app.file_name().unwrap().to_str().unwrap();
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "API", "kind": "code", "project": app_name, "owner": "backend" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(ws), project, .. }) = started.last() else { panic!("{started:#?}") };
+    assert_eq!(project, &app);
+    assert!(ws.path.parent().unwrap().ends_with(Path::new("worktrees").join(app_name)), "{}", ws.path.display());
 }

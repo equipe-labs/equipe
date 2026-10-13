@@ -40,6 +40,7 @@ pub fn others(home: &Path, squad: &str) -> Vec<PathBuf> {
 pub fn ensure(home: &Path, squad: &str, language: Option<&str>) -> Result<bool, String> {
     let dir = path(home, squad);
     if dir.join(".git").exists() {
+        quiet(&dir)?;
         return Ok(false);
     }
     for sub in ["notes", "outputs"] {
@@ -62,9 +63,17 @@ pub fn ensure(home: &Path, squad: &str, language: Option<&str>) -> Result<bool, 
     // Its own name, so it works without the person's git setup and its history never carries theirs.
     git(&dir, &["config", "user.name", "equipe"])?;
     git(&dir, &["config", "user.email", "equipe@localhost"])?;
+    quiet(&dir)?;
     git(&dir, &["add", "-A"])?;
     git(&dir, &["commit", "-q", "-m", "equipe: the squad's folder"])?;
     Ok(true)
+}
+
+/// No signing and no hooks, in the home's own settings too: tickets' worktrees of
+/// it commit and merge with plain git, which reads them.
+fn quiet(dir: &Path) -> Result<(), String> {
+    git(dir, &["config", "commit.gpgsign", "false"])?;
+    git(dir, &["config", "core.hooksPath", "/dev/null"]).map(|_| ())
 }
 
 fn readme_text(squad: &str, language: Option<&str>) -> String {

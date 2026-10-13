@@ -38,6 +38,17 @@ pub fn repo_root(dir: &Path) -> Result<PathBuf> {
         .map_err(|_| "not inside a git repository — `--edit` works on a branch of one".to_owned())
 }
 
+/// The folder under `worktrees/` a repository's worktrees go in: its own name —
+/// or, for a squad home (every one of them is called `home`), `<squad>.home`.
+fn folder_name(repo: &Path) -> String {
+    let name = repo.file_name().map_or_else(|| "repo".into(), |n| n.to_string_lossy().into_owned());
+    let squads = repo.parent().and_then(Path::parent).and_then(Path::file_name);
+    match repo.parent().and_then(Path::file_name) {
+        Some(squad) if name == "home" && squads.is_some_and(|s| s == "squads") => format!("{}.home", squad.to_string_lossy()),
+        _ => name,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Sandbox {
     pub repo: PathBuf,
@@ -52,11 +63,7 @@ pub struct Sandbox {
 pub fn create(repo: &Path, home: &Path, id: &str, label: &str) -> Result<Sandbox> {
     let base = git(repo, &["rev-parse", "HEAD"])
         .map_err(|_| "the repository has no commits yet — commit something first".to_owned())?;
-    let name = repo
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "repo".into());
-    let path = home.join("worktrees").join(&name).join(id);
+    let path = home.join("worktrees").join(folder_name(repo)).join(id);
     let branch = format!("equipe/{label}-{id}");
     std::fs::create_dir_all(path.parent().expect("worktree path has a parent"))
         .map_err(|err| format!("couldn't create {}: {err}", path.display()))?;
@@ -75,8 +82,7 @@ pub fn create(repo: &Path, home: &Path, id: &str, label: &str) -> Result<Sandbox
 /// Check out an existing branch again — a reopened ticket whose worktree was
 /// removed — in a fresh worktree under `home`.
 pub fn resume(repo: &Path, home: &Path, id: &str, branch: &str, base: &str) -> Result<Sandbox> {
-    let name = repo.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "repo".into());
-    let path = home.join("worktrees").join(&name).join(id);
+    let path = home.join("worktrees").join(folder_name(repo)).join(id);
     std::fs::create_dir_all(path.parent().expect("worktree path has a parent"))
         .map_err(|err| format!("couldn't create {}: {err}", path.display()))?;
     git(repo, &["worktree", "add", "-q", &path.to_string_lossy(), branch])?;
@@ -229,6 +235,12 @@ impl Sandbox {
         git(&self.repo, &["diff", "--stat", &format!("{}..{}", self.base, self.branch)])
     }
 
+    /// The files the branch changed since where it started, by path.
+    pub fn changed_files(&self) -> Result<Vec<String>> {
+        let out = git(&self.repo, &["-c", "core.quotePath=false", "diff", "--name-only", &format!("{}..{}", self.base, self.branch)])?;
+        Ok(out.lines().filter(|l| !l.is_empty() && !l.ends_with(".gitkeep")).map(str::to_owned).collect())
+    }
+
     /// Whether the branch has any commit beyond where it started.
     pub fn has_commits(&self) -> bool {
         git(&self.repo, &["rev-list", "--count", &format!("{}..{}", self.base, self.branch)])
@@ -272,6 +284,13 @@ mod tests {
         git(&dir, &["add", "-A"]).unwrap();
         git(&dir, &["commit", "-q", "-m", "init"]).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_squad_homes_worktrees_are_named_by_its_squad() {
+        assert_eq!(folder_name(Path::new("/h/.equipe/squads/acme/home")), "acme.home");
+        assert_eq!(folder_name(Path::new("/code/site")), "site");
+        assert_eq!(folder_name(Path::new("/code/home")), "home");
     }
 
     #[test]

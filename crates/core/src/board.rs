@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use equipe_protocol::{Ticket, TicketId, TicketStatus};
+use equipe_protocol::{Ticket, TicketId, TicketKind, TicketStatus};
 use serde_json::{Value, json};
 
 /// A member as the rules see it.
@@ -30,7 +30,7 @@ pub fn unstaffed(tickets: &[Ticket], members: &[Candidate<'_>], single_project: 
         let Some(owner) = ticket.owner.as_deref().filter(|o| members.iter().any(|m| m.role == *o)) else {
             continue;
         };
-        if (ticket.project.is_none() && !single_project) || !ticket.depends_on.iter().all(finished) {
+        if !knows_where(ticket, single_project) || !ticket.depends_on.iter().all(finished) {
             continue;
         }
         match waiting.iter_mut().find(|(role, _)| role == owner) {
@@ -41,8 +41,15 @@ pub fn unstaffed(tickets: &[Ticket], members: &[Candidate<'_>], single_project: 
     waiting
 }
 
+/// Whether a ticket knows where its work happens: a `code` ticket needs its
+/// project (or the squad's only one); a `task` or `action` works in the squad
+/// home, whatever the squad's projects.
+fn knows_where(ticket: &Ticket, single_project: bool) -> bool {
+    ticket.kind.in_home() || ticket.project.is_some() || single_project
+}
+
 /// Which free member picks up which ready ticket. A ticket is ready when it is
-/// `todo`, has an owner, knows its project, and everything it depends on is
+/// `todo`, has an owner, knows where it works, and everything it depends on is
 /// finished. The oldest ready ticket goes first; a member takes one ticket at a
 /// time; an owner naming a member wins over one naming a role.
 pub fn assignments(tickets: &[Ticket], members: &[Candidate<'_>], single_project: bool) -> Vec<(TicketId, String)> {
@@ -53,7 +60,7 @@ pub fn assignments(tickets: &[Ticket], members: &[Candidate<'_>], single_project
         let Some(owner) = ticket.owner.as_deref() else {
             continue;
         };
-        if (ticket.project.is_none() && !single_project) || !ticket.depends_on.iter().all(finished) {
+        if !knows_where(ticket, single_project) || !ticket.depends_on.iter().all(finished) {
             continue;
         }
         let free = |m: &&Candidate<'_>| !busy.contains(&m.name);
@@ -98,7 +105,7 @@ pub fn render(tickets: &[Ticket]) -> String {
     let mut out = String::new();
     for t in open {
         out.push_str(&format!("T-{} [{}] {}", t.id, t.status.label(), t.title));
-        let mut facts = Vec::new();
+        let mut facts = vec![t.kind.label().to_owned()];
         if let Some(who) = t.assignee.as_ref().or(t.owner.as_ref()) {
             facts.push(format!("owner {who}"));
         }
@@ -135,14 +142,32 @@ pub const BLOCK_ON_PERSON: &str = "block_on_person";
 /// A member asks the person's yes before something done in their name.
 pub const ASK_PERSON: &str = "ask_person";
 
+/// The `kind` argument of `create_ticket` and `update_ticket`.
+static KIND_SCHEMA: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+    json!({
+        "type": "string",
+        "enum": ["code", "task", "action"],
+        "description": "code: changes a repository, on a branch the person merges. task: research, writing, a plan, a \
+decision — files in the squad's folder, which go in when the person accepts. action: doing something in an app or the \
+browser (replying, signing up, filing) — every outward step asks the person first. Left out: code when the ticket has \
+a project, task when it has none.",
+    })
+});
+
+/// The kind a new ticket gets when none is given: `code` when it has a project, `task` when not.
+pub fn default_kind(project: Option<&Path>) -> TicketKind {
+    if project.is_some() { TicketKind::Code } else { TicketKind::Task }
+}
+
 /// The tools a member gets, as MCP tool definitions. Everyone reads the board,
 /// writes tickets (a member's are proposals until the PM or the person accepts
 /// them), comments, and hands in its own work; only the PM edits tickets.
 pub fn tools(is_pm: bool) -> Vec<Value> {
     let create_doc = if is_pm {
-        "Put a ticket on the board. Give it an owner (a role like frontend, or a member's name) and, \
-when the squad has several projects, the project. equipe assigns it to the owner as soon as its \
-dependencies are done and the owner is free."
+        "Put a ticket on the board. Give it an owner (a role like frontend, or a member's name) and a kind: \
+code changes a repository (name the project when the squad has several); task finds out, writes or decides, \
+leaving files in the squad's folder; action does something in an app or the browser. equipe assigns it to \
+the owner as soon as its dependencies are done and the owner is free."
     } else {
         "Propose a ticket — for work outside your current task, or something you noticed. \
 It waits on the board as a proposal until the PM or the person accepts it."
@@ -162,7 +187,8 @@ It waits on the board as a proposal until the PM or the person accepts it."
                     "title": { "type": "string", "description": "One line: what gets done." },
                     "body": { "type": "string", "description": "What to do and the acceptance criteria." },
                     "owner": { "type": "string", "description": "A role (designer, frontend, backend, qa, data) or a member's name." },
-                    "project": { "type": "string", "description": "The project's name, when the squad has several." },
+                    "kind": KIND_SCHEMA.clone(),
+                    "project": { "type": "string", "description": "The project's name: for code, the repository it changes (needed when the squad has several); for a task or action, what it is about, if anything." },
                     "depends_on": { "type": "array", "items": { "type": "integer" }, "description": "Ticket numbers that must be done first." },
                 },
                 "required": ["title", "body"],
@@ -241,7 +267,7 @@ Claude Code calls this itself; there is no need to call it.",
     if is_pm {
         tools.push(json!({
             "name": UPDATE_TICKET,
-            "description": "Change a ticket: its title, body, owner, project or dependencies; accept a proposal \
+            "description": "Change a ticket: its title, body, owner, kind, project or dependencies; accept a proposal \
 (status todo) or drop one (status cancelled). A ticket waiting on the person goes back to its member with status todo, \
 once they have done what it needed. Work in progress and done work are the person's to change.",
             "inputSchema": {
@@ -251,6 +277,7 @@ once they have done what it needed. Work in progress and done work are the perso
                     "title": { "type": "string" },
                     "body": { "type": "string" },
                     "owner": { "type": "string" },
+                    "kind": KIND_SCHEMA.clone(),
                     "project": { "type": "string" },
                     "depends_on": { "type": "array", "items": { "type": "integer" } },
                     "status": { "type": "string", "enum": ["todo", "cancelled"] },
@@ -329,6 +356,7 @@ mod tests {
             merged: None,
             created_by: "pm".into(),
             note: None,
+            kind: TicketKind::Code,
         }
     }
 
@@ -384,6 +412,26 @@ mod tests {
     }
 
     #[test]
+    fn work_for_the_squad_home_needs_no_project_however_many_the_squad_has() {
+        let mut task = ticket(1, "data");
+        task.project = None;
+        task.kind = TicketKind::Task;
+        let mut action = ticket(2, "pm");
+        action.project = None;
+        action.kind = TicketKind::Action;
+        let mut code = ticket(3, "backend");
+        code.project = None;
+        let members = [free("data", "data"), free("pm", "pm"), free("backend", "backend")];
+        let tickets = [task, action, code];
+        assert_eq!(assignments(&tickets, &members, false), [(1, "data".into()), (2, "pm".into())]);
+        assert!(unstaffed(&tickets, &members[..1], false).iter().all(|(role, _)| role != "backend"));
+        let busy = [Candidate { name: "data", role: "data", free: false }, Candidate { name: "pm", role: "pm", free: false }];
+        assert_eq!(unstaffed(&tickets, &busy, false), [("data".into(), 1), ("pm".into(), 1)]);
+        assert_eq!(default_kind(None), TicketKind::Task);
+        assert_eq!(default_kind(Some(Path::new("/site"))), TicketKind::Code);
+    }
+
+    #[test]
     fn ticket_ids_parse_the_ways_people_write_them() {
         for text in ["T-3", "t-3", "T3", "3", " 3 "] {
             assert_eq!(parse_ticket_id(text), Some(3), "{text}");
@@ -399,7 +447,7 @@ mod tests {
         let mut done = ticket(1, "designer");
         done.status = TicketStatus::Done;
         let text = render(&[done, t]);
-        assert_eq!(text, "T-2 [todo] ticket 2 — owner frontend, project site, after T-1\n    note: needs the logo\n");
+        assert_eq!(text, "T-2 [todo] ticket 2 — code, owner frontend, project site, after T-1\n    note: needs the logo\n");
         assert_eq!(render(&[]), "The board is empty.");
     }
 

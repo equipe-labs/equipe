@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-use equipe_protocol::{Access, Engine, Entry, Member, Mode, SessionId, Ticket, TicketId, TicketStatus};
+use equipe_protocol::{Access, Engine, Entry, Member, Mode, SessionId, Ticket, TicketId, TicketKind, TicketStatus};
 use rusqlite::{Connection, OptionalExtension as _, params};
 
 pub use rusqlite::Error;
@@ -246,6 +246,11 @@ impl Journal {
             let _ = conn.execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), []);
         }
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN merged INTEGER", []);
+        // Tickets from before kinds: `code` with a project, `task` without — once,
+        // when the column arrives.
+        if conn.execute("ALTER TABLE tickets ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'", []).is_ok() {
+            conn.execute("UPDATE tickets SET kind = 'task' WHERE project IS NULL", [])?;
+        }
         Ok(Self { conn, path: path.to_owned() })
     }
 
@@ -406,8 +411,8 @@ impl Journal {
         let at = now();
         self.conn.execute(
             "INSERT INTO tickets (id, title, body, status, owner, assignee, project, depends_on, branch, created_by,
-                                  note, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+                                  note, created_at, updated_at, kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13)",
             params![
                 id,
                 t.title,
@@ -421,6 +426,7 @@ impl Journal {
                 t.created_by,
                 t.note,
                 at,
+                t.kind.label(),
             ],
         )?;
         Ok(id as TicketId)
@@ -430,7 +436,7 @@ impl Journal {
     pub fn save_ticket(&self, t: &Ticket) -> Result<()> {
         self.conn.execute(
             "UPDATE tickets SET title = ?1, body = ?2, status = ?3, owner = ?4, assignee = ?5, project = ?6,
-                                depends_on = ?7, branch = ?8, note = ?9, updated_at = ?10, merged = ?12
+                                depends_on = ?7, branch = ?8, note = ?9, updated_at = ?10, merged = ?12, kind = ?13
              WHERE id = ?11",
             params![
                 t.title,
@@ -445,6 +451,7 @@ impl Journal {
                 now(),
                 t.id,
                 t.merged,
+                t.kind.label(),
             ],
         )?;
         Ok(())
@@ -461,7 +468,7 @@ impl Journal {
 
     fn query_tickets(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<Ticket>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree, merged
+            "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree, merged, kind
              FROM tickets {filter} ORDER BY id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -479,6 +486,7 @@ impl Journal {
                 note: r.get(10)?,
                 worktree: r.get::<_, Option<String>>(11)?.map(PathBuf::from),
                 merged: r.get(12)?,
+                kind: TicketKind::parse(&r.get::<_, String>(13)?).unwrap_or_default(),
             })
         })?;
         rows.collect()
@@ -910,7 +918,36 @@ mod tests {
             merged: None,
             created_by: "pm".into(),
             note: None,
+            kind: TicketKind::Code,
         }
+    }
+
+    #[test]
+    fn a_ticket_keeps_its_kind_and_old_tickets_get_one_from_their_project() {
+        let home = temp_home();
+        let path = squad_dir(&home, "acme").join("squad.db");
+        {
+            let j = Journal::for_squad(&home, "acme").unwrap();
+            j.create_ticket(&Ticket { kind: TicketKind::Action, project: None, ..ticket("Reply") }).unwrap();
+            let mut t = j.ticket(1).unwrap().unwrap();
+            assert_eq!(t.kind, TicketKind::Action);
+            t.kind = TicketKind::Task;
+            j.save_ticket(&t).unwrap();
+            assert_eq!(j.ticket(1).unwrap().unwrap().kind, TicketKind::Task);
+            // As a journal from before kinds would have them.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "ALTER TABLE tickets DROP COLUMN kind;
+                 INSERT INTO tickets (id, title, body, status, created_by, created_at, updated_at, project)
+                   VALUES (2, 'Hero', '-', 'todo', 'pm', 1, 1, '/code/site');
+                 INSERT INTO tickets (id, title, body, status, created_by, created_at, updated_at)
+                   VALUES (3, 'Research', '-', 'todo', 'pm', 1, 1);",
+            )
+            .unwrap();
+        }
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        let kinds: Vec<TicketKind> = j.tickets().unwrap().iter().map(|t| t.kind).collect();
+        assert_eq!(kinds, [TicketKind::Task, TicketKind::Code, TicketKind::Task]);
     }
 
     #[test]
