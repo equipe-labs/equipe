@@ -16,7 +16,7 @@ pub const COMMANDS: [Spec; 21] = [
     Spec { name: "clear", args: "[member]", about: "Start its next conversation clean — memory and board stay" },
     Spec { name: "squad", args: "[name] · new <name> [folder] · add|remove <folder>", about: "Switch, start, or change what a squad works on" },
     Spec { name: "home", args: "[changes · undo [n]]", about: "Open the squad's folder, see what changed there, take a change back" },
-    Spec { name: "project", args: "[name|all]", about: "Put one project in focus: board, reviews and new work" },
+    Spec { name: "project", args: "[name|all]", about: "Filter to one project — board, reviews and new work; all takes it off" },
     Spec { name: "accept", args: "T-n", about: "Approve handed-in work" },
     Spec { name: "merge", args: "T-n", about: "Merge accepted work into main, and push if you say so" },
     Spec { name: "reopen", args: "T-n <what to change>", about: "Send work back with what to change" },

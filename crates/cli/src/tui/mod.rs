@@ -104,7 +104,6 @@ fn count_changes(app: &mut app::App, cwd: &std::path::Path) {
 pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
     let mut cwd = cwd;
     let (mut client, hello) = daemon::attach(&start.squad).await?;
-    let mut branch = current_branch(&cwd);
     let daemon_build = hello.version.clone();
     // Where no project says which squad, the one opened last opens.
     let _ = equipe_core::squads::remember_last(&equipe_providers::credentials::equipe_home(), &start.squad);
@@ -113,6 +112,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         app.offer(folder);
     }
     app.squad_width = saved_squad_width();
+    client.send(app.unfiltered());
     first.into_iter().for_each(|c| client.send(c));
     if daemon_build != daemon::build_id() {
         // A daemon from an older build keeps running old code; say so, but don't
@@ -144,7 +144,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
     let mut last_sample = Instant::now();
     let mut daemon_lost = false;
     let mut layouts = view::Layouts::default();
-    let draw = |terminal: &mut ratatui::DefaultTerminal, app: &mut app::App, layouts: &mut view::Layouts, branch: Option<&str>| {
+    let draw = |terminal: &mut ratatui::DefaultTerminal, app: &mut app::App, layouts: &mut view::Layouts| {
         let size = terminal.size()?;
         if let Some((id, lines)) = layouts.prepare(app, theme, size.width) {
             app.grew(id, lines);
@@ -154,9 +154,9 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         app.set_board_detail(extent.board_detail);
         app.set_hits(extent.hits, extent.divider);
         app.set_text_view(extent.text);
-        terminal.draw(|f| view::render(f, app, theme, branch, layouts)).map(|_| ())
+        terminal.draw(|f| view::render(f, app, theme, layouts)).map(|_| ())
     };
-    draw(&mut terminal, &mut app, &mut layouts, branch.as_deref())?;
+    draw(&mut terminal, &mut app, &mut layouts)?;
     // While someone works, its dot breathes and its clock ticks; with nobody
     // working, nothing redraws on a timer.
     let mut clock = tokio::time::interval(Duration::from_millis(60));
@@ -338,8 +338,8 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                     let _ = equipe_core::squads::remember_last(&home, &squad);
                     let first_project = equipe_core::squads::list(&home).into_iter().find(|s| s.name == squad).and_then(|s| s.projects.first().cloned());
                     cwd = first_project.unwrap_or(cwd);
-                    branch = current_branch(&cwd);
                     let (mut fresh, first) = app::App::from_snapshot(cwd.clone(), hello.snapshot, &members);
+                    client.send(fresh.unfiltered());
                     first.into_iter().for_each(|c| client.send(c));
                     fresh.squad_width = app.squad_width;
                     fresh.mouse = app.mouse;
@@ -375,7 +375,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
             }
         }
         // Drawn only after something changed — nothing redraws on a timer.
-        draw(&mut terminal, &mut app, &mut layouts, branch.as_deref())?;
+        draw(&mut terminal, &mut app, &mut layouts)?;
     }
 
     Ok(Summary {
@@ -549,19 +549,6 @@ pub fn print_summary(summary: &Summary) {
         println!("\n  {}", p.hint("equipe   to come back"));
     }
     let _ = std::io::stdout().flush();
-}
-
-fn current_branch(cwd: &std::path::Path) -> Option<String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
-        .filter(|b| !b.is_empty())
 }
 
 #[cfg(test)]
