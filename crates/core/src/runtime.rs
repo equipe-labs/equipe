@@ -795,11 +795,11 @@ impl Runtime {
         let language = squad.as_deref().and_then(|s| self.journals.get(s)).and_then(Journal::language);
         let edits = session.edits();
         let mode = session.mode.or_else(|| squad.as_deref().and_then(|s| self.journals.get(s)).map(Journal::mode)).unwrap_or_default();
-        // A browser once the person has signed in somewhere — in any mode that
-        // may change things. In Auto and Full it browses freely; in Ask each
-        // step comes to the person.
+        // A browser in any mode that may change things — signed in wherever the
+        // person (or a teammate) signed in, if anywhere yet. In Auto and Full
+        // it browses freely; in Ask each step comes to the person.
         let browser = match (&self.config.npx, &squad, &session.member) {
-            (Some(npx), Some(squad), Some(m)) if board_tools && mode != Mode::ReadOnly && browser::signed_in(&self.config.home) => {
+            (Some(npx), Some(squad), Some(m)) if board_tools && mode != Mode::ReadOnly => {
                 // Page snapshots and screenshots: in the temp folder, readable without
                 // asking, and never in the project.
                 let output = std::env::temp_dir().join("equipe-browser").join(squad).join(&m.name);

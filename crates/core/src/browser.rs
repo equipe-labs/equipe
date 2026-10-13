@@ -25,10 +25,24 @@ pub fn state_file(home: &Path) -> PathBuf {
     home.join("browser").join("state.json")
 }
 
-/// Whether the person has signed in anywhere yet. Until then members have no
-/// browser: there would be nothing of theirs to work in.
+/// Whether the person has signed in anywhere yet.
 pub fn signed_in(home: &Path) -> bool {
     state_file(home).is_file()
+}
+
+/// The sign-ins file, made empty if there is none yet: a member's browser
+/// starts from it whether or not the person has signed in anywhere, and keeps
+/// there what it signs in to. Only the person can read it.
+fn ensure_state(home: &Path) -> PathBuf {
+    let dir = home.join("browser");
+    let state = state_file(home);
+    if !state.is_file() {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700));
+        let _ = std::fs::write(&state, r#"{"cookies":[],"origins":[]}"#);
+        let _ = std::fs::set_permissions(&state, std::os::unix::fs::PermissionsExt::from_mode(0o600));
+    }
+    state
 }
 
 /// The script that hands a member's sign-ins back, with the state file's path
@@ -97,7 +111,7 @@ pub fn server(npx: &Path, home: &Path, output: &Path, shown: bool) -> Value {
     args.extend([
         json!("--isolated"),
         json!("--storage-state"),
-        json!(state_file(home)),
+        json!(ensure_state(home)),
         json!("--output-dir"),
         json!(output),
         json!("--init-page"),

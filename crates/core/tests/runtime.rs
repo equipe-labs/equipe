@@ -864,7 +864,7 @@ async fn first_ticket_turn(handle: &Handle, events: &mut UnboundedReceiver<Event
 }
 
 #[tokio::test]
-async fn once_the_person_signs_in_members_browse_as_them() {
+async fn members_browse_from_the_start_and_as_the_person_once_signed_in() {
     let repo = repo();
     let (claude, recorded) = recording_claude(&answering("ok"));
     let home = squad_home(&[&repo]);
@@ -881,13 +881,16 @@ async fn once_the_person_signs_in_members_browse_as_them() {
         calls(&recorded).pop().unwrap()
     };
 
-    // Signed in nowhere yet: no browser.
+    // Signed in nowhere yet: a browser all the same — public pages need no
+    // account — starting from an empty set of sign-ins only the person can read.
     let call = turn(&handle, &mut events).await;
-    assert!(browser_of(&call).is_null(), "{call:?}");
+    assert!(!browser_of(&call).is_null(), "{call:?}");
+    let state = equipe_core::browser::state_file(&home);
+    assert_eq!(std::fs::read_to_string(&state).unwrap(), r#"{"cookies":[],"origins":[]}"#);
+    use std::os::unix::fs::PermissionsExt as _;
+    assert_eq!(std::fs::metadata(&state).unwrap().permissions().mode() & 0o777, 0o600);
 
     // The person signs in through `equipe browser`, which keeps the sign-ins here.
-    let state = equipe_core::browser::state_file(&home);
-    std::fs::create_dir_all(state.parent().unwrap()).unwrap();
     std::fs::write(&state, "{}").unwrap();
     let call = turn(&handle, &mut events).await;
     let server = browser_of(&call);
