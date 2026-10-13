@@ -855,7 +855,12 @@ impl App {
                 }
             }
             Event::SessionClosed { .. } => agent.state = AgentState::Closed,
-            Event::Error { .. } if agent.state == AgentState::Starting => agent.state = AgentState::Failed,
+            Event::Error { message, .. } if agent.state == AgentState::Starting => {
+                agent.state = AgentState::Failed;
+                // Said in the footer too: the member may not be the one on screen.
+                let again = agent.member.as_ref().map(|m| format!(" · /add {} tries again", m.role)).unwrap_or_default();
+                self.flash = Some(format!("{} couldn't join: {message}{again}", agent.label()));
+            }
             _ => {}
         }
         commands
@@ -2333,6 +2338,7 @@ mod tests {
         app.on_event(Event::Error { session: Some(*id), message: "No engine is ready.".into(), next: Some("equipe login".into()) });
         assert_eq!(app.agents[0].state, AgentState::Failed);
         assert!(matches!(app.agents[0].transcript.entries().last(), Some(Entry::Error { next: Some(n), .. }) if n == "equipe login"));
+        assert_eq!(app.flash.as_deref(), Some("pm couldn't join: No engine is ready. · /add pm tries again"));
     }
 
     #[test]

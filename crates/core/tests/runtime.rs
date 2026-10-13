@@ -364,6 +364,23 @@ async fn a_member_needs_a_squad_that_exists() {
 }
 
 #[tokio::test]
+async fn a_squad_with_no_project_yet_gets_its_pm_and_the_pm_answers() {
+    let claude = fake_claude(true, &answering("hello"));
+    let home = scratch("home");
+    squads::create_without_project(&home, "acme").unwrap();
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    // Opened from a folder that is no project of it — a repository elsewhere, say.
+    add(&handle, &mut events, 1, member(&scratch("elsewhere"), "pm")).await;
+    let pm = handle.snapshot("acme").await.sessions.into_iter().next().expect("the PM joined");
+    assert_eq!(pm.member.map(|m| m.name).as_deref(), Some("pm"));
+    assert_eq!(pm.project, squad_home::path(&home, "acme"), "its desk is the squad's home");
+
+    handle.send(Command::Submit { session: 1, text: "hi".into() });
+    let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    assert!(text_of(&turn).contains("hello"));
+}
+
+#[tokio::test]
 async fn a_member_gets_its_charter_a_recommended_model_and_its_own_memory() {
     let (claude, recorded) = recording_claude(&answering("on it"));
     let cwd = scratch("cwd");
