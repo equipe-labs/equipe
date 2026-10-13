@@ -3065,6 +3065,11 @@ fn claude_failure(err: equipe_providers::Error) -> (String, Option<&'static str>
     let lower = message.to_lowercase();
     let next = if lower.contains("not installed") {
         Some("see https://code.claude.com/docs/en/setup")
+    } else if lower.contains("failed to authenticate") || lower.contains("oauth") {
+        // The sign-in Claude Code has expired. Signed in again over SSH, it
+        // lands in a file; a daemon run as a login service reads the Keychain,
+        // which only a sign-in at the Mac's own screen updates.
+        Some("claude auth login — in Terminal on this Mac's own screen (Screen Sharing is fine), not over SSH")
     } else if lower.contains("login") || lower.contains("logged in") {
         Some("equipe login claude")
     } else {
@@ -3083,6 +3088,13 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_expired_claude_sign_in_says_where_to_sign_in_again() {
+        let err = equipe_providers::Error::Backend { message: "Failed to authenticate: OAuth session expired and could not be refreshed".into(), code: None };
+        let (_, next) = claude_failure(err);
+        assert!(next.is_some_and(|n| n.starts_with("claude auth login")), "{next:?}");
+    }
 
     fn exchange(n: usize, size: usize) -> Vec<responses::Message> {
         (0..n)

@@ -199,7 +199,9 @@ pub async fn hold(client: &reqwest::Client, port: u16) -> bool {
 pub async fn ready(port: u16, wait: std::time::Duration) -> bool {
     let until = std::time::Instant::now() + wait;
     while std::time::Instant::now() < until {
-        if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+        // The server listens on "localhost", which Node binds to ::1 first:
+        // try every address the name has, not only 127.0.0.1.
+        if tokio::net::TcpStream::connect(("localhost", port)).await.is_ok() {
             return true;
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -266,6 +268,18 @@ pub fn sites(state: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_server_listening_on_ipv6_localhost_is_seen_ready() {
+        // As Node binds "localhost": ::1 only.
+        let Ok(listener) = tokio::net::TcpListener::bind("[::1]:0").await else {
+            return; // No IPv6 loopback here.
+        };
+        let port = listener.local_addr().unwrap().port();
+        let started = std::time::Instant::now();
+        assert!(ready(port, std::time::Duration::from_secs(5)).await);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
 
     #[test]
     fn the_person_sets_how_many_browsers_open_at_once() {
