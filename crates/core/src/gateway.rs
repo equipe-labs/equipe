@@ -135,6 +135,18 @@ async fn serve_client(stream: UnixStream, core: Handle, version: String, stop: U
                     let _ = out.send(Message::response(id, result));
                 });
             }
+            (Some(rpc::DESKTOP), Some(id)) => {
+                let Some(call) = message.params_as::<ToolCall>() else {
+                    let _ = out_tx.send(Message::failure(id, -32602, "desktop needs { squad, member, name, arguments }"));
+                    continue;
+                };
+                let core = core.clone();
+                let out = out_tx.clone();
+                tokio::spawn(async move {
+                    let result = core.desktop(call).await;
+                    let _ = out.send(Message::response(id, result));
+                });
+            }
             (Some(rpc::BUSY), Some(id)) => {
                 let _ = out_tx.send(Message::response(id, core.busy().await));
             }
@@ -280,9 +292,18 @@ pub async fn busy(socket: &Path) -> io::Result<Option<rpc::Busy>> {
 /// Call a member's board tool on the daemon at `socket` — what `equipe mcp`
 /// does for each call its engine makes.
 pub async fn call_tool(socket: &Path, call: &ToolCall) -> io::Result<ToolResult> {
+    call_on(socket, rpc::TOOL, call).await
+}
+
+/// Call a member's desktop tool through the daemon at `socket`.
+pub async fn call_desktop(socket: &Path, call: &ToolCall) -> io::Result<ToolResult> {
+    call_on(socket, rpc::DESKTOP, call).await
+}
+
+async fn call_on(socket: &Path, method: &str, call: &ToolCall) -> io::Result<ToolResult> {
     let stream = UnixStream::connect(socket).await?;
     let (reader, mut writer) = stream.into_split();
-    write_line(&mut writer, &Message::request(1, rpc::TOOL, call)).await?;
+    write_line(&mut writer, &Message::request(1, method, call)).await?;
     let mut lines = BufReader::new(reader).lines();
     while let Some(line) = lines.next_line().await? {
         let Ok(message) = Message::from_line(&line) else {
@@ -292,7 +313,7 @@ pub async fn call_tool(socket: &Path, call: &ToolCall) -> io::Result<ToolResult>
             continue;
         }
         if let Some(error) = message.error {
-            return Ok(ToolResult { text: error.message, is_error: true });
+            return Ok(ToolResult { text: error.message, is_error: true, image: None });
         }
         return message.result_as::<ToolResult>().ok_or_else(|| io::Error::other("the daemon answered something unexpected"));
     }

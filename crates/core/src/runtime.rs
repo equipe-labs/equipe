@@ -52,6 +52,8 @@ const CLOSED_TICKETS_SHOWN: usize = 20;
 
 /// The MCP server equipe gives members; its tools are `mcp__equipe__*`.
 const MCP_SERVER: &str = "equipe";
+/// The Mac's desktop: its tools are `mcp__desktop__…`.
+pub const DESKTOP_SERVER: &str = "desktop";
 /// The tool name a member's own question shows under, among approvals.
 const CONFIRM: &str = "Confirm";
 
@@ -108,6 +110,8 @@ enum Request {
     Snapshot(String, oneshot::Sender<Snapshot>),
     Subscribe(String, oneshot::Sender<Subscription>),
     Tool(ToolCall, oneshot::Sender<ToolResult>),
+    /// May this member use the desktop: equipe's home if so.
+    Desktop(ToolCall, oneshot::Sender<Result<PathBuf, ToolResult>>),
     Busy(oneshot::Sender<equipe_protocol::rpc::Busy>),
     Shutdown(oneshot::Sender<()>),
 }
@@ -143,7 +147,23 @@ impl Handle {
     pub async fn tool(&self, call: ToolCall) -> ToolResult {
         let (tx, rx) = oneshot::channel();
         let _ = self.requests.send(Request::Tool(call, tx));
-        rx.await.unwrap_or(ToolResult { text: "equipe is shutting down".into(), is_error: true })
+        rx.await.unwrap_or(ToolResult { text: "equipe is shutting down".into(), is_error: true, image: None })
+    }
+
+    /// A member's desktop tool call: the runtime checks the member may, and the
+    /// desktop helper does it — outside the runtime's loop, so a click that
+    /// takes a second holds no one else up.
+    pub async fn desktop(&self, call: ToolCall) -> ToolResult {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.requests.send(Request::Desktop(call.clone(), tx));
+        match rx.await {
+            Ok(Ok(home)) => {
+                let member = format!("{}/{}", call.squad, call.member);
+                equipe_desktop_control::helper::call(&home, &member, &call.name, &call.arguments).await
+            }
+            Ok(Err(refused)) => refused,
+            Err(_) => ToolResult::error("equipe is shutting down"),
+        }
     }
 
     /// Who is mid-turn, and how many requests wait for the person.
@@ -373,6 +393,9 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                     let _ = reply.send((rt.snapshot(&squad), rx));
                 }
                 Some(Request::Tool(call, reply)) => rt.tool(call, reply).await,
+                Some(Request::Desktop(call, reply)) => {
+                    let _ = reply.send(rt.desktop_allowed(&call));
+                }
                 Some(Request::Busy(reply)) => {
                     let mut working: Vec<String> = rt
                         .sessions
@@ -897,6 +920,10 @@ impl Runtime {
         // person (or a teammate) signed in, if anywhere yet. In Auto and Full
         // it browses freely; in Ask each step comes to the person.
         let wants_browser = board_tools && mode != Mode::ReadOnly;
+        // The Mac's desktop: experimental, for the members the person turned it on for.
+        let desktop = wants_browser
+            && cfg!(target_os = "macos")
+            && squad.as_deref().zip(session.member.as_ref()).is_some_and(|(s, m)| self.journals.get(s).is_some_and(|j| j.desktop_enabled(&m.name)));
         let browser = match (self.config.npx.clone(), squad.clone(), session.member.as_ref().map(|m| m.name.clone())) {
             (Some(npx), Some(squad), Some(name)) if wants_browser => {
                 // Page snapshots and screenshots: in the temp folder, readable without
@@ -939,6 +966,13 @@ impl Runtime {
                 if let Some(port) = browser {
                     servers[browser::SERVER] = browser::entry(port);
                 }
+                if desktop {
+                    servers[DESKTOP_SERVER] = json!({
+                        "type": "stdio",
+                        "command": binary,
+                        "args": ["mcp", "--server", DESKTOP_SERVER, "--squad", squad, "--member", m.name, "--role", m.role, "--home", self.config.home],
+                    });
+                }
                 Some(json!({ "mcpServers": servers }).to_string())
             }
             _ => None,
@@ -956,6 +990,7 @@ impl Runtime {
                 board_tools,
                 language: language.as_deref(),
                 browser: browser.is_some(),
+                desktop,
                 home: home.as_deref(),
                 memory: memory.as_deref(),
                 facts: facts.len(),
@@ -1045,6 +1080,9 @@ impl Runtime {
                 if browses_freely {
                     allowed.push(format!("mcp__{}", browser::SERVER));
                 }
+                if desktop && matches!(mode, Mode::Auto | Mode::Full) {
+                    allowed.push(format!("mcp__{DESKTOP_SERVER}"));
+                }
                 if member_rules {
                     allowed.extend(squad_rules);
                 }
@@ -1054,7 +1092,9 @@ impl Runtime {
                 let outward: Vec<String> = permissions::OUTWARD.iter().map(|r| (*r).to_owned()).collect();
                 // The person's browser sign-ins and equipe's logins: no fenced command reads them.
                 // Nor other squads' homes.
-                let private: Vec<String> = [self.config.home.join("browser"), self.config.home.join("credentials")]
+                // The desktop helper's token and signing key too.
+                let private: Vec<String> =
+                    [self.config.home.join("browser"), self.config.home.join("credentials"), equipe_desktop_control::helper::dir(&self.config.home)]
                     .iter()
                     .chain(&other_homes)
                     .map(|p| p.to_string_lossy().into_owned())
@@ -1956,8 +1996,8 @@ impl Runtime {
         // Whatever changed, the rules look again.
         self.dispatch(&squad).await;
         let _ = reply.send(match result {
-            Ok(text) => ToolResult { text, is_error: false },
-            Err(text) => ToolResult { text, is_error: true },
+            Ok(text) => ToolResult { text, is_error: false, image: None },
+            Err(text) => ToolResult { text, is_error: true, image: None },
         });
     }
 
@@ -2070,7 +2110,7 @@ impl Runtime {
         let text = |key: &str| call.arguments.get(key).and_then(Value::as_str).map(str::trim).unwrap_or_default().to_owned();
         let (action, why) = (text("action"), text("why"));
         let Some(id) = self.member_id(&call.squad, &call.member).filter(|_| !action.is_empty()) else {
-            let _ = reply.send(ToolResult { text: "Say what you'll do in `action`.".into(), is_error: true });
+            let _ = reply.send(ToolResult { text: "Say what you'll do in `action`.".into(), is_error: true, image: None });
             return;
         };
         let ticket = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
@@ -2121,7 +2161,7 @@ impl Runtime {
                 Decision::Allow | Decision::Always => format!("The person said yes. Go ahead: {}", approval.action),
                 Decision::Deny => format!("The person said no ({why}). Don't do it; carry on without it, or say what you need."),
             };
-            ToolResult { text, is_error: false }
+            ToolResult { text, is_error: false, image: None }
         } else {
             verdict(decision, &input, why)
         });
@@ -2145,6 +2185,20 @@ impl Runtime {
     fn audit(&mut self, squad: &str, ticket: Option<TicketId>, by: &str, what: &str, action: &str) {
         if let (Some(ticket), Some(journal)) = (ticket, self.journal(squad)) {
             let _ = journal.ticket_event(ticket, by, what, action);
+        }
+    }
+
+    /// Whether a member may use the desktop: only one the person turned it on for.
+    fn desktop_allowed(&self, call: &ToolCall) -> Result<PathBuf, ToolResult> {
+        let on = self.team(&call.squad).iter().any(|(_, name, _)| *name == call.member)
+            && self.journals.get(&call.squad).is_some_and(|j| j.desktop_enabled(&call.member));
+        if on {
+            Ok(self.config.home.clone())
+        } else {
+            Err(ToolResult::error(format!(
+                "The Mac's desktop is off for {}. Only the person turns it on (`equipe desktop on {} --experimental`).",
+                call.member, call.member
+            )))
         }
     }
 
@@ -2828,7 +2882,7 @@ fn verdict(decision: Decision, input: &Value, why: &str) -> ToolResult {
         Decision::Allow | Decision::Always => json!({ "behavior": "allow", "updatedInput": input }),
         Decision::Deny => json!({ "behavior": "deny", "message": why }),
     };
-    ToolResult { text: text.to_string(), is_error: false }
+    ToolResult { text: text.to_string(), is_error: false, image: None }
 }
 
 /// The most helpers a squad has at once, whatever its scale.

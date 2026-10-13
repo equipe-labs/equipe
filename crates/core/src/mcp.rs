@@ -23,8 +23,32 @@ pub enum Step {
     Nothing,
 }
 
+/// How a server introduces itself: its name and what it is for.
+#[derive(Debug, Clone, Copy)]
+pub struct Server {
+    pub name: &'static str,
+    pub instructions: &'static str,
+}
+
+/// The board's server: `mcp__equipe__…`.
+pub const BOARD: Server =
+    Server { name: "equipe", instructions: "The squad's board. Read it, put work on it, and hand in your ticket here." };
+
+/// The Mac's desktop: `mcp__desktop__…`.
+pub const DESKTOP: Server = Server {
+    name: "desktop",
+    instructions: "The Mac's desktop, as the person sees it: screenshot, elements, click, type. Coordinates are pixels \
+of your last screenshot. Each click and keystroke is checked against the app you mean; when one is refused, look again \
+instead of retrying.",
+};
+
 /// Decide what one client line asks for. `tools` is what `tools/list` offers.
 pub fn handle(line: &str, tools: &[Value], version: &str) -> Step {
+    handle_for(&BOARD, line, tools, version)
+}
+
+/// [`handle`] for one of equipe's servers.
+pub fn handle_for(server: &Server, line: &str, tools: &[Value], version: &str) -> Step {
     let Ok(message) = serde_json::from_str::<Value>(line) else {
         return Step::Nothing;
     };
@@ -36,8 +60,8 @@ pub fn handle(line: &str, tools: &[Value], version: &str) -> Step {
         "initialize" => json!({
             "protocolVersion": params.get("protocolVersion").and_then(Value::as_str).unwrap_or(PROTOCOL_VERSION),
             "capabilities": { "tools": { "listChanged": false } },
-            "serverInfo": { "name": "equipe", "version": version },
-            "instructions": "The squad's board. Read it, put work on it, and hand in your ticket here.",
+            "serverInfo": { "name": server.name, "version": version },
+            "instructions": server.instructions,
         }),
         "tools/list" => json!({ "tools": tools }),
         "tools/call" => {
@@ -59,13 +83,14 @@ pub fn handle(line: &str, tools: &[Value], version: &str) -> Step {
 
 /// The answer to a tool call.
 pub fn call_reply(id: Value, result: &ToolResult) -> Value {
+    let mut content = vec![json!({ "type": "text", "text": result.text })];
+    if let Some(image) = &result.image {
+        content.push(json!({ "type": "image", "data": image.data, "mimeType": image.mime }));
+    }
     json!({
         "jsonrpc": "2.0",
         "id": id,
-        "result": {
-            "content": [{ "type": "text", "text": result.text }],
-            "isError": result.is_error,
-        },
+        "result": { "content": content, "isError": result.is_error },
     })
 }
 
@@ -98,9 +123,22 @@ mod tests {
     fn a_tool_call_is_handed_on_and_its_result_comes_back_as_text() {
         let line = r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"board","arguments":{}}}"#;
         assert_eq!(handle(line, &[], "1"), Step::Call { id: json!(7), name: "board".into(), arguments: json!({}) });
-        let reply = call_reply(json!(7), &ToolResult { text: "The board is empty.".into(), is_error: false });
+        let reply = call_reply(json!(7), &ToolResult { text: "The board is empty.".into(), is_error: false, image: None });
         assert_eq!(reply["result"]["content"][0]["text"], "The board is empty.");
         assert_eq!(reply["result"]["isError"], false);
+        assert_eq!(reply["result"]["content"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_screenshot_comes_back_as_an_image_block() {
+        let image = equipe_protocol::rpc::Image { mime: "image/jpeg".into(), data: "AAAA".into() };
+        let result = ToolResult { image: Some(image), ..ToolResult::ok("Screen 1440×900 pt") };
+        let reply = call_reply(json!(1), &result);
+        assert_eq!(reply["result"]["content"][1]["type"], "image");
+        assert_eq!(reply["result"]["content"][1]["mimeType"], "image/jpeg");
+        let line = r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}"#;
+        let Step::Reply(hello) = handle_for(&DESKTOP, line, &[], "1") else { panic!() };
+        assert_eq!(hello["result"]["serverInfo"]["name"], "desktop");
     }
 
     #[test]

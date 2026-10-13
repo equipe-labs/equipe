@@ -2020,6 +2020,7 @@ dependencies = [
  "dialoguer",
  "dirs 7.0.0",
  "equipe-core",
+ "equipe-desktop-control",
  "equipe-protocol",
  "equipe-providers",
  "futures-util",
@@ -2042,6 +2043,7 @@ dependencies = [
 name = "equipe-core"
 version = "0.10.0"
 dependencies = [
+ "equipe-desktop-control",
  "equipe-protocol",
  "equipe-providers",
  "reqwest",
@@ -2058,6 +2060,22 @@ dependencies = [
  "equipe-core",
  "gpui-kit",
  "libc",
+]
+
+[[package]]
+name = "equipe-desktop-control"
+version = "0.10.0"
+dependencies = [
+ "base64 0.23.1",
+ "block2 0.6.2",
+ "equipe-protocol",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "objc2-screen-capture-kit",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -5333,6 +5351,7 @@ dependencies = [
  "block2 0.6.2",
  "dispatch2",
  "objc2 0.6.5",
+ "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-core-media",
  "objc2-foundation 0.3.2",

@@ -7,6 +7,7 @@
 
 mod clip;
 mod daemon;
+mod desktop;
 mod home;
 mod onboard;
 mod remote;
@@ -113,6 +114,9 @@ enum Command {
     /// Serve a member's board tools over MCP (equipe starts this for its engines)
     #[command(hide = true)]
     Mcp {
+        /// `equipe` (the board) or `desktop`
+        #[arg(long, default_value = "equipe")]
+        server: String,
         #[arg(long)]
         squad: String,
         #[arg(long)]
@@ -129,6 +133,11 @@ enum Command {
         /// Forget every sign-in: members have no browser until you sign in again
         #[arg(long)]
         forget: bool,
+    },
+    /// Members working this Mac's desktop apps (experimental, macOS)
+    Desktop {
+        #[command(subcommand)]
+        action: Option<DesktopAction>,
     },
     /// Send this Mac's clipboard image to the equipe console on another machine
     SendImage {
@@ -173,6 +182,42 @@ enum DevicesAction {
 }
 
 #[derive(Subcommand)]
+enum DesktopAction {
+    /// Install the desktop helper and check what it needs: permissions, the GUI session
+    Setup {
+        /// Sign the helper with this identity ("Developer ID Application: …"), or `self`
+        /// for a certificate made on this Mac (the default)
+        #[arg(long)]
+        sign: Option<String>,
+    },
+    /// What the desktop helper has and lacks, changing nothing
+    Status,
+    /// Let a member work the desktop
+    On {
+        member: String,
+        /// Desktop control is experimental: say so
+        #[arg(long)]
+        experimental: bool,
+        #[arg(long)]
+        squad: Option<String>,
+    },
+    /// Take the desktop back from a member
+    Off {
+        member: String,
+        #[arg(long)]
+        squad: Option<String>,
+    },
+    /// Stop the helper and remove it
+    Remove,
+    /// Run the helper (what its LaunchAgent starts)
+    #[command(hide = true)]
+    Serve {
+        #[arg(long)]
+        home: std::path::PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum TelegramAction {
     /// Connect a bot of your own, paired with your Telegram account
     Setup,
@@ -206,6 +251,12 @@ enum DaemonAction {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
+    // The helper's copy of equipe holds the person's desktop permissions: it
+    // runs the helper and nothing else.
+    if desktop::is_helper_copy() && !matches!(cli.command, Some(Command::Desktop { action: Some(DesktopAction::Serve { .. }) })) {
+        eprintln!("This is equipe's desktop helper; it only runs as `desktop serve`.");
+        return ExitCode::FAILURE;
+    }
     let app = App {
         store: CredentialStore::default_location(),
         client: reqwest::Client::new(),
@@ -297,7 +348,17 @@ async fn main() -> ExitCode {
             }
         }
         Command::Browser { url, forget } => sign_in(url, forget),
-        Command::Mcp { squad, member, role, home } => serve_mcp(squad, member, role, home).await,
+        Command::Mcp { server, squad, member, role, home } => serve_mcp(&server, squad, member, role, home).await,
+        Command::Desktop { action } => desktop::run(action.map(|a| match a {
+            DesktopAction::Setup { sign } => desktop::Action::Setup { sign },
+            DesktopAction::Status => desktop::Action::Status,
+            DesktopAction::On { member, experimental, squad } => desktop::Action::On { member, experimental, squad },
+            DesktopAction::Off { member, squad } => desktop::Action::Off { member, squad },
+            DesktopAction::Remove => desktop::Action::Remove,
+            DesktopAction::Serve { home } => desktop::Action::Serve { home },
+        }))
+        .await
+        .map_err(Failure::new),
         Command::Home { words, squad } => {
             let home = equipe_providers::credentials::equipe_home();
             let cwd = std::env::current_dir().unwrap_or_default();
@@ -387,21 +448,31 @@ async fn main() -> ExitCode {
 
 /// `equipe mcp`: a member's board tools, as a stdio MCP server. Every call goes
 /// to the daemon, which decides; stdout carries only the protocol.
-async fn serve_mcp(squad: String, member: String, role: String, home: std::path::PathBuf) -> CmdResult {
+async fn serve_mcp(server: &str, squad: String, member: String, role: String, home: std::path::PathBuf) -> CmdResult {
     use equipe_core::mcp::{self, Step};
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
     let socket = equipe_core::gateway::socket_path(&home);
-    let tools = equipe_core::board::tools(role == equipe_core::roles::PM);
+    let desktop = server == equipe_core::runtime::DESKTOP_SERVER;
+    let (info, tools) = if desktop {
+        (mcp::DESKTOP, equipe_desktop_control::tools::tools())
+    } else {
+        (mcp::BOARD, equipe_core::board::tools(role == equipe_core::roles::PM))
+    };
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let mut out = tokio::io::stdout();
     while let Ok(Some(line)) = lines.next_line().await {
-        let reply = match mcp::handle(&line, &tools, VERSION) {
+        let reply = match mcp::handle_for(&info, &line, &tools, VERSION) {
             Step::Reply(reply) => reply,
             Step::Call { id, name, arguments } => {
                 let call = protocol::rpc::ToolCall { squad: squad.clone(), member: member.clone(), name, arguments };
-                let result = equipe_core::gateway::call_tool(&socket, &call).await.unwrap_or_else(|err| {
-                    protocol::rpc::ToolResult { text: format!("equipe's daemon didn't answer: {err}"), is_error: true }
+                let result = if desktop {
+                    equipe_core::gateway::call_desktop(&socket, &call).await
+                } else {
+                    equipe_core::gateway::call_tool(&socket, &call).await
+                };
+                let result = result.unwrap_or_else(|err| {
+                    protocol::rpc::ToolResult { text: format!("equipe's daemon didn't answer: {err}"), is_error: true, image: None }
                 });
                 mcp::call_reply(id, &result)
             }

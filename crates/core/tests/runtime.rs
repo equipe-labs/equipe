@@ -531,7 +531,7 @@ async fn a_ticket_goes_to_its_owner_who_hands_it_in_and_the_person_accepts_it() 
         "title": "Landing hero", "body": "A headline and one button.", "owner": "frontend",
     }))
     .await;
-    assert_eq!(made, ToolResult { text: "Created T-1.".into(), is_error: false });
+    assert_eq!(made, ToolResult { text: "Created T-1.".into(), is_error: false, image: None });
     let started = until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
     let Some(Event::WorkStarted { session: 2, ticket: 1, workspace: Some(ws), .. }) = started.last() else {
         panic!("{started:#?}")
@@ -1883,4 +1883,38 @@ async fn a_secret_value_is_refused_and_another_squad_never_sees_the_memory() {
     assert!(!charter.contains("id-copy") && charter.contains("remembers nothing yet"), "{charter}");
     let deny = settings_of(&call)["permissions"]["deny"].to_string();
     assert!(deny.contains(&format!("Read(/{}/**)", squads_home(&home).display())), "{deny}");
+}
+
+#[tokio::test]
+async fn the_desktop_is_only_for_members_the_person_turned_it_on_for() {
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&cwd, "frontend")).await;
+    let desktop = |member: &str| ToolCall { squad: "acme".into(), member: member.into(), name: "screenshot".into(), arguments: serde_json::json!({}) };
+    let servers = |call: &[String]| -> serde_json::Value {
+        serde_json::from_str::<serde_json::Value>(arg(call, "--mcp-config").unwrap()).unwrap()["mcpServers"].clone()
+    };
+
+    // Off by default: no tools, and a call made anyway is refused.
+    handle.send(Command::Submit { session: 1, text: "go".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(servers(&calls(&recorded)[0]).get("desktop").is_none());
+    let refused = handle.desktop(desktop("frontend")).await;
+    assert!(refused.is_error && refused.text.contains("off for frontend"), "{}", refused.text);
+
+    // Turned on: the next turn has them, and a call goes on to the helper — not installed here.
+    Journal::for_squad(&home, "acme").unwrap().set_desktop("frontend", true).unwrap();
+    handle.send(Command::Submit { session: 1, text: "go".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let call = calls(&recorded).pop().unwrap();
+    if cfg!(target_os = "macos") {
+        let args: Vec<String> = servers(&call)["desktop"]["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().to_owned()).collect();
+        assert_eq!(&args[..3], ["mcp", "--server", "desktop"]);
+        assert!(call.iter().any(|a| a == "mcp__desktop"), "used without asking in auto: {call:?}");
+    }
+    let helper = handle.desktop(desktop("frontend")).await;
+    assert!(helper.is_error && helper.text.contains("equipe desktop setup"), "{}", helper.text);
+    assert!(handle.desktop(desktop("nobody")).await.text.contains("off for nobody"));
 }

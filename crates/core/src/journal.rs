@@ -322,6 +322,26 @@ impl Journal {
         Ok(())
     }
 
+    /// The members allowed the Mac's desktop (experimental; nobody by default).
+    pub fn desktop_members(&self) -> Vec<String> {
+        let value: serde_json::Value = self.meta("desktop_members").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default();
+        value.as_array().into_iter().flatten().filter_map(|m| m.as_str().map(str::to_owned)).collect()
+    }
+
+    /// Whether `member` works the Mac's desktop.
+    pub fn desktop_enabled(&self, member: &str) -> bool {
+        self.desktop_members().iter().any(|m| m == member)
+    }
+
+    /// Allow `member` the desktop, or take it back.
+    pub fn set_desktop(&self, member: &str, on: bool) -> Result<()> {
+        let mut members: Vec<String> = self.desktop_members().into_iter().filter(|m| m != member).collect();
+        if on {
+            members.push(member.to_owned());
+        }
+        self.set_meta("desktop_members", &serde_json::json!(members).to_string())
+    }
+
     fn meta(&self, key: &str) -> Option<String> {
         self.conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0)).optional().ok().flatten()
     }

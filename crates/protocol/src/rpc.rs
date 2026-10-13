@@ -6,6 +6,8 @@
 //! - `event` (notification, daemon → screen): an [`Event`](crate::Event)
 //! - `tool` (request): a member's board tool call, from the MCP server equipe
 //!   gives its engine → [`ToolResult`]
+//! - `desktop` (request): a member's desktop tool call (`equipe mcp --server
+//!   desktop`) → [`ToolResult`], answered by the desktop helper
 //! - `shutdown` (request): stop the daemon; sessions stay restorable
 
 use serde::{Deserialize, Serialize};
@@ -18,6 +20,7 @@ pub const COMMAND: &str = "command";
 pub const EVENT: &str = "event";
 pub const SHUTDOWN: &str = "shutdown";
 pub const TOOL: &str = "tool";
+pub const DESKTOP: &str = "desktop";
 /// Who is busy: members mid-turn and requests waiting for the person.
 pub const BUSY: &str = "busy";
 
@@ -61,11 +64,31 @@ pub struct ToolCall {
     pub arguments: Value,
 }
 
-/// What a tool call returns: text for the model, and whether it failed.
+/// What a tool call returns: text for the model, whether it failed, and — for
+/// a desktop screenshot — an image, which is never written anywhere.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolResult {
     pub text: String,
     pub is_error: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<Image>,
+}
+
+impl ToolResult {
+    pub fn ok(text: impl Into<String>) -> Self {
+        Self { text: text.into(), is_error: false, image: None }
+    }
+
+    pub fn error(text: impl Into<String>) -> Self {
+        Self { text: text.into(), is_error: true, image: None }
+    }
+}
+
+/// An image in a tool result: its MIME type and its bytes in base64.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Image {
+    pub mime: String,
+    pub data: String,
 }
 
 /// The daemon's answer to `hello`.
