@@ -274,12 +274,16 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                 let _ = out.write_all(crate::clip::upload_request().as_bytes());
                 let _ = out.flush();
                 app.upload = Some(app::Upload::default());
-                app.flash = Some("Pick the image in the window iTerm2 opened on your Mac · Esc cancels".into());
+                app.flash = Some(if first_time("paste-over-ssh") {
+                    "Pick the image in the window iTerm2 opened on your Mac · Esc cancels. Quicker: run `equipe paste-setup` on your Mac once, then ⌃⇧V pastes a screenshot straight in.".into()
+                } else {
+                    "Pick the image in the window iTerm2 opened on your Mac · Esc cancels · ⌃⇧V pastes it directly once `equipe paste-setup` ran there".into()
+                });
             } else {
                 match crate::clip::clipboard_image() {
                     Ok(path) => app.attach_image(&path),
                     Err(_) if over_ssh => {
-                        app.flash = Some("The clipboard here isn't your Mac's. On your Mac: equipe send-image <this machine> — it lands in this message.".into())
+                        app.flash = Some("The clipboard here isn't your Mac's. In iTerm2 on your Mac, run `equipe paste-setup` once — then ⌃⇧V pastes its screenshot here.".into())
                     }
                     Err(why) => app.flash = Some(why),
                 }

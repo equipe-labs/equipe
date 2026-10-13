@@ -35,4 +35,4 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      - run: shellcheck -s sh install.sh
+      - run: shellcheck -s sh install.sh paste-setup.sh

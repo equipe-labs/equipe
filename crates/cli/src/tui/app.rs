@@ -771,7 +771,12 @@ impl App {
             self.attach_image(&path);
             return;
         }
-        self.composer.insert_str(text);
+        // A screenshot typed down the terminal (⌃⇧V from the person's Mac).
+        match crate::clip::pasted_image(text) {
+            Some(Ok(path)) => self.attach_image(&path),
+            Some(Err(why)) => self.flash = Some(why),
+            None => self.composer.insert_str(text),
+        }
     }
 
     /// Put an image in the message: the member looks at it when it reads it.
@@ -2251,6 +2256,17 @@ mod tests {
         app.on_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL), Instant::now());
         assert!(app.paste_image);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_image_typed_down_the_terminal_is_attached() {
+        let (mut app, _, _) = team();
+        // ⌃⇧V on the person's Mac types the screenshot as a data: URL.
+        app.on_paste("data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==");
+        let text = app.composer.text();
+        let path = text.strip_prefix("[image: ").and_then(|t| t.strip_suffix("] ")).expect("attached");
+        assert!(path.ends_with(".png"));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

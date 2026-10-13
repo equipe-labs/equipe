@@ -113,6 +113,13 @@ enum Command {
         /// The machine, as ssh knows it (`abel-macmini`, `me@host`)
         host: String,
     },
+    /// On the Mac you type on: make ⌃⇧V in iTerm2 paste the clipboard's
+    /// screenshot into equipe, here or over SSH
+    PasteSetup {
+        /// Give ⌃⇧V back to iTerm2
+        #[arg(long)]
+        remove: bool,
+    },
     /// Update equipe to the latest release
     Update,
     /// The background daemon the team lives in
@@ -200,6 +207,14 @@ async fn main() -> ExitCode {
             }
             Err(why) => Err(Failure::new(why)),
         },
+        Command::PasteSetup { remove } => {
+            let ran = std::process::Command::new("sh").arg("-c").arg(clip::PASTE_SETUP).arg("sh").args(remove.then_some("--remove")).status();
+            match ran {
+                Ok(status) if status.success() => Ok(()),
+                Ok(_) => Err(Failure::new("The paste setup didn't finish")),
+                Err(err) => Err(Failure::new(format!("Couldn't run sh: {err}"))),
+            }
+        }
         Command::Browser { url, forget } => sign_in(url, forget),
         Command::Mcp { squad, member, role, home } => serve_mcp(squad, member, role, home).await,
         Command::Squads => {

@@ -116,7 +116,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp install.sh dist/
+          cp install.sh paste-setup.sh dist/
           (cd dist && cat *.sha256 > SHA256SUMS)
           prerelease=""
           case "${GITHUB_REF_NAME}" in *-*) prerelease="--prerelease" ;; esac

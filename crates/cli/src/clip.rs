@@ -1,6 +1,7 @@
 //! Images for messages: from this machine's clipboard, from a laptop over SSH
 //! (`equipe send-image` drops them in an inbox here), or uploaded through
-//! iTerm2 when the console runs over SSH.
+//! iTerm2 when the console runs over SSH, or typed down the terminal as a
+//! paste by the ⌃⇧V helper `equipe paste-setup` puts on the person's Mac.
 
 use std::path::{Path, PathBuf};
 
@@ -85,6 +86,64 @@ pub fn send_image(host: &str) -> Result<(), String> {
     if status.success() { Ok(()) } else { Err(format!("ssh to {host} didn't take the image")) }
 }
 
+/// `equipe paste-setup`, for the Mac the person types on: ⌃⇧V in iTerm2 types
+/// the clipboard's image down the terminal as a paste.
+pub const PASTE_SETUP: &str = include_str!("../../../paste-setup.sh");
+
+/// Pastes bigger than this aren't taken for an image (≈ 30 MB of picture).
+const PASTE_MAX: usize = 40 << 20;
+
+/// A paste that is an image typed as text — a `data:image/…;base64,` URL from
+/// the ⌃⇧V helper, or bare base64 from iTerm2's Paste File Base64-Encoded —
+/// saved where attachments are kept. `None` when the paste is just text.
+pub fn pasted_image(text: &str) -> Option<Result<PathBuf, String>> {
+    use base64::Engine as _;
+    let text = text.trim();
+    if text.len() > PASTE_MAX {
+        return None;
+    }
+    let (claimed, body) = match text.strip_prefix("data:image/") {
+        Some(rest) => {
+            let (kind, body) = rest.split_once(";base64,")?;
+            (Some(kind), body)
+        }
+        None => (None, text),
+    };
+    let base64_only = |b: &str| b.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'/' | b'=' | b'\n' | b'\r'));
+    if claimed.is_none() && (body.len() < 64 || !base64_only(body)) {
+        return None;
+    }
+    let compact: String = body.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    let bytes = match base64::engine::general_purpose::STANDARD.decode(&compact) {
+        Ok(bytes) => bytes,
+        Err(_) if claimed.is_some() => return Some(Err("That image didn't come through whole — try ⌃⇧V again".into())),
+        Err(_) => return None,
+    };
+    let Some(extension) = image_kind(&bytes) else {
+        return claimed.map(|_| Err("That paste isn't an image equipe can attach".into()));
+    };
+    Some(pastes_dir().and_then(|dir| {
+        let path = dir.join(format!("paste-{}.{extension}", stamp()));
+        std::fs::write(&path, &bytes).map_err(|err| err.to_string())?;
+        Ok(path)
+    }))
+}
+
+/// The file extension for an image, by its first bytes.
+fn image_kind(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        Some("jpg")
+    } else if bytes.starts_with(b"GIF8") {
+        Some("gif")
+    } else if bytes.len() > 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("webp")
+    } else {
+        None
+    }
+}
+
 /// The escape sequence asking iTerm2 to let the person pick files on their
 /// own Mac and send them here, as a tar.gz in base64 (iTerm2's `it2ul`).
 pub fn upload_request() -> String {
@@ -154,5 +213,85 @@ mod tests {
         assert!(images[0].ends_with("Screen Shot.png"));
         assert!(upload_request().starts_with("\x1b]1337;RequestUpload=format=tgz;version="));
         std::fs::remove_dir_all(&src).unwrap();
+    }
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+    const JPEG: &[u8] = b"\xff\xd8\xff\xe0\0\x10JFIF";
+
+    #[test]
+    fn a_pasted_image_comes_back_as_a_file() {
+        use base64::Engine as _;
+        let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+        // As equipe's ⌃⇧V helper types it: a data: URL.
+        let png = pasted_image(&format!("data:image/png;base64,{}", encode(PNG))).unwrap().unwrap();
+        assert!(png.extension().is_some_and(|e| e == "png"));
+        assert_eq!(std::fs::read(&png).unwrap(), PNG);
+        let jpeg = pasted_image(&format!("data:image/jpeg;base64,{}", encode(JPEG))).unwrap().unwrap();
+        assert!(jpeg.extension().is_some_and(|e| e == "jpg"));
+        // As iTerm2's Paste File Base64-Encoded types it: bare, in lines.
+        let wrapped = encode(&[PNG, &[0u8; 200]].concat()).as_bytes().chunks(76).map(|c| String::from_utf8_lossy(c).into_owned()).collect::<Vec<_>>().join("\n");
+        let bare = pasted_image(&wrapped).unwrap().unwrap();
+        assert_eq!(std::fs::read(&bare).unwrap()[..PNG.len()], *PNG);
+        // A broken one says so rather than pasting a wall of letters.
+        assert!(pasted_image("data:image/png;base64,@@@").unwrap().is_err());
+        // Anything else is text.
+        assert!(pasted_image("hello world").is_none());
+        assert!(pasted_image(&encode(b"just some words, base64 encoded, nothing more to see here")).is_none());
+        assert!(pasted_image("data:text/plain;base64,aGk=").is_none());
+        for path in [png, jpeg, bare] {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn paste_setup_binds_ctrl_shift_v_to_a_helper_that_types_the_image() {
+        use base64::Engine as _;
+        let dir = std::env::temp_dir().join(format!("equipe paste setup {}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        let domain = dir.join("iterm");
+        let home = dir.join("home");
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(PASTE_SETUP)
+                .arg("sh")
+                .args(args)
+                .env("EQUIPE_PASTE_HOME", &home)
+                .env("EQUIPE_ITERM_DOMAIN", &domain)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        };
+        let bindings = || {
+            let out = std::process::Command::new("defaults").arg("read").arg(&domain).arg("GlobalKeyMap").output().unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        run(&[]);
+        let helper = home.join("paste-image");
+        let map = bindings();
+        assert!(map.contains("\"0x56-0x60000\"") && map.contains("Action = 35"), "{map}");
+        assert!(map.contains(&helper.display().to_string()), "{map}");
+
+        // The helper, with a clipboard holding a screenshot — a real one, 1×1.
+        let png = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+            .unwrap();
+        std::fs::write(dir.join("shot.png"), &png).unwrap();
+        let fake = dir.join("bin/pngpaste");
+        std::fs::write(&fake, format!("#!/bin/sh\ncp '{}' \"$1\"\n", dir.join("shot.png").display())).unwrap();
+        std::process::Command::new("chmod").arg("+x").arg(&fake).status().unwrap();
+        let path = format!("{}:{}", dir.join("bin").display(), std::env::var("PATH").unwrap_or_default());
+        let typed = std::process::Command::new("/bin/sh").arg(&helper).env("PATH", path).output().unwrap().stdout;
+        let typed = String::from_utf8(typed).unwrap();
+        let inner = typed.strip_prefix("\x1b[200~").and_then(|t| t.strip_suffix("\x1b[201~")).expect("one bracketed paste");
+        let encoded = inner.strip_prefix("data:image/png;base64,").expect("a data: URL");
+        assert_eq!(base64::engine::general_purpose::STANDARD.decode(encoded).unwrap(), png);
+
+        run(&["--remove"]);
+        assert!(!bindings().contains("0x56-0x60000"));
+        assert!(!helper.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

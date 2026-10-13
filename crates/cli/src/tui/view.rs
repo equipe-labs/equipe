@@ -664,6 +664,7 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
         ("Alt-Enter · Ctrl-J", "a new line (or \\ then Enter)"),
         ("Esc", "stop a member mid-turn; a waiting memo goes in at once"),
         ("Ctrl-V", "attach the clipboard's image — or drop an image file on the terminal"),
+        ("⌃⇧V", "over SSH: your Mac's screenshot (once `equipe paste-setup` ran there)"),
         ("→", "take the greyed suggestion in an empty composer"),
     ]), keys));
     lines.extend(heading("LOOK AROUND"));
