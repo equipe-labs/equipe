@@ -21,8 +21,12 @@ pub fn inbox() -> PathBuf {
     equipe_providers::credentials::equipe_home().join("inbox")
 }
 
-fn stamp() -> u128 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+/// A name part no other image gets: the time, and a count for two in the same
+/// millisecond.
+fn stamp() -> String {
+    static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    format!("{millis}-{}", COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
 /// Save this machine's clipboard image as a PNG, ready to attach.
@@ -228,6 +232,9 @@ mod tests {
         assert_eq!(std::fs::read(&png).unwrap(), PNG);
         let jpeg = pasted_image(&format!("data:image/jpeg;base64,{}", encode(JPEG))).unwrap().unwrap();
         assert!(jpeg.extension().is_some_and(|e| e == "jpg"));
+        // Two at once don't overwrite each other.
+        let again = pasted_image(&format!("data:image/png;base64,{}", encode(PNG))).unwrap().unwrap();
+        assert_ne!(again, png);
         // As iTerm2's Paste File Base64-Encoded types it: bare, in lines.
         let wrapped = encode(&[PNG, &[0u8; 200]].concat()).as_bytes().chunks(76).map(|c| String::from_utf8_lossy(c).into_owned()).collect::<Vec<_>>().join("\n");
         let bare = pasted_image(&wrapped).unwrap().unwrap();
@@ -238,7 +245,7 @@ mod tests {
         assert!(pasted_image("hello world").is_none());
         assert!(pasted_image(&encode(b"just some words, base64 encoded, nothing more to see here")).is_none());
         assert!(pasted_image("data:text/plain;base64,aGk=").is_none());
-        for path in [png, jpeg, bare] {
+        for path in [png, jpeg, again, bare] {
             std::fs::remove_file(path).unwrap();
         }
     }
