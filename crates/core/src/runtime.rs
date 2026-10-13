@@ -828,11 +828,15 @@ impl Runtime {
                 // asking, and never in the project.
                 let output = std::env::temp_dir().join("equipe-browser").join(&squad).join(&name);
                 let shown = self.journals.get(&squad).is_some_and(|j| j.browser_shown(&name));
+                let profile = browser::profile(&self.config.home, &squad, &name);
                 let key = (squad, name);
-                // The browser it had, if still running and showing as asked; else a new one.
+                // The browser it had, if still running and showing as asked; else a new one,
+                // which equipe holds open so it outlives each turn.
                 if !self.browsers.get_mut(&key).is_some_and(|b| b.fits(shown))
-                    && let Ok(running) = browser::launch(&npx, &self.config.home, &output, shown)
+                    && let Ok(running) = browser::launch(&npx, &self.config.home, &profile, &output, shown)
                 {
+                    let (client, port) = (self.client.clone(), running.port);
+                    tokio::spawn(async move { browser::hold(&client, port).await });
                     self.browsers.insert(key.clone(), running);
                 }
                 self.browsers.get_mut(&key).map(|b| {

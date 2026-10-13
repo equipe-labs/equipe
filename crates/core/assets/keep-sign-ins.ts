@@ -48,6 +48,12 @@ export default async ({ page }: { page: any }) => {
   const context = page.context();
   if (context.__equipe) return;
   context.__equipe = true;
+  // Start from the squad's sign-ins — the person's, and what teammates signed in to.
+  try {
+    const kept = JSON.parse(fs.readFileSync(STATE, 'utf8'));
+    const now = Date.now() / 1000;
+    await context.addCookies((kept.cookies || []).filter((c: any) => c.expires === -1 || c.expires > now));
+  } catch {}
   const place = await takePlace();
   process.on('exit', () => leave(place));
   const save = async () => {

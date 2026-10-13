@@ -3,10 +3,10 @@
 //! way a person would — open a dashboard, create a project, connect a domain,
 //! find a key — on the person's own accounts.
 //!
-//! Each member gets its own in-memory browser, started from the squad's
-//! sign-ins (Playwright storage state). Whatever it signs in to — an account it
-//! made with the person's yes — goes back into them, so the next turn, and the
-//! next member, are signed in too.
+//! Each member gets a browser of its own, with a profile kept on disk, that
+//! starts from the squad's sign-ins (Playwright storage state). Whatever it
+//! signs in to — an account it made with the person's yes — goes back into
+//! them, so the next member is signed in too.
 
 use std::path::{Path, PathBuf};
 
@@ -111,6 +111,16 @@ pub struct Running {
     pub last_used: std::time::Instant,
 }
 
+/// Closing a member's browser closes everything it started: `npx`, the
+/// server under it, and Chrome under that — they share a process group.
+impl Drop for Running {
+    fn drop(&mut self) {
+        if let Some(pid) = self.child.id() {
+            let _ = std::process::Command::new("kill").args(["-TERM", &format!("-{pid}")]).status();
+        }
+    }
+}
+
 impl Running {
     /// Still running, and showing as asked.
     pub fn fits(&mut self, shown: bool) -> bool {
@@ -119,9 +129,10 @@ impl Running {
 }
 
 /// Start a member's browser server on a free local port.
-pub fn launch(npx: &Path, home: &Path, output: &Path, shown: bool) -> std::io::Result<Running> {
+pub fn launch(npx: &Path, home: &Path, profile: &Path, output: &Path, shown: bool) -> std::io::Result<Running> {
     let port = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
-    let mut args: Vec<String> = server(npx, home, output, shown)["args"]
+    std::fs::create_dir_all(profile)?;
+    let mut args: Vec<String> = server(npx, home, profile, output, shown)["args"]
         .as_array()
         .into_iter()
         .flatten()
@@ -134,6 +145,7 @@ pub fn launch(npx: &Path, home: &Path, output: &Path, shown: bool) -> std::io::R
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        .process_group(0)
         .kill_on_drop(true)
         .spawn()?;
     Ok(Running { child, port, shown, last_used: std::time::Instant::now() })
@@ -142,6 +154,44 @@ pub fn launch(npx: &Path, home: &Path, output: &Path, shown: bool) -> std::io::R
 /// How a turn reaches a member's running browser.
 pub fn entry(port: u16) -> Value {
     json!({ "type": "http", "url": format!("http://localhost:{port}/mcp") })
+}
+
+/// Hold a connection of equipe's own open on a member's browser server. The
+/// server closes its browser when its last client leaves, which every turn's
+/// does when it ends; held, the browser — its window, its tabs, a sign-in the
+/// person is in the middle of — stays between turns.
+pub async fn hold(client: &reqwest::Client, port: u16) -> bool {
+    if !ready(port, std::time::Duration::from_secs(90)).await {
+        return false;
+    }
+    let url = format!("http://localhost:{port}/mcp");
+    let post = |body: &'static str, session: Option<&str>| {
+        let mut request = client
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(60))
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(body);
+        if let Some(session) = session {
+            request = request.header("mcp-session-id", session);
+        }
+        request.send()
+    };
+    let initialize = r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"equipe","version":"1"}}}"#;
+    let Ok(response) = post(initialize, None).await else {
+        return false;
+    };
+    let Some(session) = response.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()).map(str::to_owned) else {
+        return false;
+    };
+    let _ = response.bytes().await;
+    let _ = post(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#, Some(&session)).await;
+    // A first call makes this connection one of the browser's clients.
+    let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_tabs","arguments":{"action":"list"}}}"#;
+    match post(list, Some(&session)).await {
+        Ok(response) => response.bytes().await.is_ok(),
+        Err(_) => false,
+    }
 }
 
 /// Wait until the browser server on `port` takes connections — the first
@@ -157,18 +207,24 @@ pub async fn ready(port: u16, wait: std::time::Duration) -> bool {
     false
 }
 
-/// One member's browser server: in memory, starting from the squad's
-/// sign-ins and handing new ones back; on screen when `shown`, hidden
+/// Where a member's browser keeps its profile, between turns and restarts.
+pub fn profile(home: &Path, squad: &str, member: &str) -> PathBuf {
+    home.join("browser").join("profiles").join(squad).join(member)
+}
+
+/// One member's browser server: its own profile on disk, starting from the
+/// squad's sign-ins and handing new ones back; on screen when `shown`, hidden
 /// otherwise. What it saves (snapshots, screenshots) goes to `output`.
-pub fn server(npx: &Path, home: &Path, output: &Path, shown: bool) -> Value {
+pub fn server(npx: &Path, home: &Path, profile: &Path, output: &Path, shown: bool) -> Value {
+    // The sign-ins file must exist before the first page reads it.
+    ensure_state(home);
     let mut args = vec![json!("-y"), json!(MCP_PACKAGE)];
     if !shown {
         args.push(json!("--headless"));
     }
     args.extend([
-        json!("--isolated"),
-        json!("--storage-state"),
-        json!(ensure_state(home)),
+        json!("--user-data-dir"),
+        json!(profile),
         json!("--output-dir"),
         json!(output),
         json!("--init-page"),
@@ -229,17 +285,20 @@ mod tests {
 
     #[test]
     fn a_member_starts_from_the_persons_sign_ins_in_a_browser_of_its_own() {
-        let server = server(Path::new("/bin/npx"), Path::new("/h"), Path::new("/out"), false);
+        let home = std::env::temp_dir().join(format!("equipe-server-{}", std::process::id()));
+        let server = server(Path::new("/bin/npx"), &home, Path::new("/p/pm"), Path::new("/out"), false);
         let args: Vec<&str> = server["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
-        assert!(args.windows(2).any(|w| w == ["--storage-state", "/h/browser/state.json"]));
-        assert!(args.contains(&"--isolated"));
+        assert!(args.windows(2).any(|w| w == ["--user-data-dir", "/p/pm"]), "a profile of its own, kept between turns");
+        assert!(!args.contains(&"--isolated"));
+        assert!(state_file(&home).is_file(), "the sign-ins it starts from");
+        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]
     fn what_a_member_signs_in_to_goes_back_to_the_squad() {
         let home = std::env::temp_dir().join(format!("equipe-keeper-{}", std::process::id()));
         std::fs::create_dir_all(home.join("browser")).unwrap();
-        let server = server(Path::new("/bin/npx"), &home, Path::new("/out"), true);
+        let server = server(Path::new("/bin/npx"), &home, Path::new("/p/pm"), Path::new("/out"), true);
         let args: Vec<&str> = server["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
         let script = args.windows(2).find(|w| w[0] == "--init-page").unwrap()[1];
         let text = std::fs::read_to_string(script).unwrap();

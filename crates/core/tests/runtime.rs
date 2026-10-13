@@ -933,8 +933,9 @@ async fn members_browse_from_the_start_and_as_the_person_once_signed_in() {
     let args = &all[0];
     let has = |flag: &str| args.iter().any(|a| a == flag);
     assert!(has(equipe_core::browser::MCP_PACKAGE), "{args:?}");
-    assert!(args.windows(2).any(|w| w[0] == "--storage-state" && w[1] == *state.to_string_lossy()), "signed in as the person: {args:?}");
-    assert!(has("--headless") && has("--isolated") && has("--shared-browser-context"), "{args:?}");
+    let profile = equipe_core::browser::profile(&home, "acme", "pm");
+    assert!(args.windows(2).any(|w| w[0] == "--user-data-dir" && w[1] == *profile.to_string_lossy()), "a profile of its own: {args:?}");
+    assert!(has("--headless") && has("--shared-browser-context") && !has("--isolated"), "{args:?}");
     assert!(url.ends_with(&format!(":{}/mcp", args.windows(2).find(|w| w[0] == "--port").unwrap()[1])), "{url} {args:?}");
     assert!(call.iter().any(|a| a == "mcp__browser"), "in auto it browses without asking");
     let settings: serde_json::Value = serde_json::from_str(arg(&call, "--settings").unwrap()).unwrap();
