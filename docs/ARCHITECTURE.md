@@ -394,7 +394,7 @@ equipe keeps for it and never shows as one. It is where members are by default,
 and where the squad's work that isn't code lives — research, notes, drafts,
 reports, the things a task produces.
 
-- **Made** with the squad (`squads::ensure_home`, idempotent): `git init -b main`,
+- **Made** with the squad (`squad_home::ensure`, idempotent): `git init -b main`,
   a local `user.name equipe` / `user.email equipe@localhost` (so it works without
   the person's git config, and its commits never carry their name), and a first
   commit with:
@@ -406,14 +406,34 @@ reports, the things a task produces.
   .gitignore    .DS_Store, *.tmp
   ```
 
+  (`notes/` and `outputs/` hold a `.gitkeep`, since git keeps no empty folder.)
+  equipe's own git calls in the home pass `commit.gpgsign=false`,
+  `core.hooksPath=/dev/null` and its own name, so the person's git setup never
+  gets in the way.
+
   Folders other than these are fine; the charter tells members the layout, and
   equipe writes no `CLAUDE.md` there — one the person or the PM adds is theirs,
   and every member reads it, since the home is their working directory.
+- **Members write it in conversation** (decided 2026-10-13, changing T-25's
+  "desk never writes"): the person wants work that isn't development to just
+  happen, so a short thing asked at the desk — save a note, tidy material, make
+  one table — is written straight into the home, with no ticket. Each change is
+  **saved as soon as the turn ends** (`squad_home::save`), one line saying who and
+  why: `pm: 세금 마감일 메모해줘` — the member's name and the person's words. The
+  member's conversation shows *"✎ pm saved notes/tax-deadline.md in the squad's
+  folder · /home undo takes it back"*.
+- **Every change can be taken back.** `/home changes` (and `equipe home changes`)
+  lists the latest ten — when, who, which files, why — numbered; `/home undo [n]`
+  takes back the latest or the n-th (`git revert`, saved as a change of its own by
+  the person, so an undo can be undone). A change that later ones built on is left
+  as it is, and the person told why.
 - **The person may open it.** `/home` in the console (and `equipe home`) opens it
   in Finder (`open`, `xdg-open`) and prints its path; outputs are named for people
-  to find. The person may edit or drop files there. Before equipe merges anything
-  into the home it commits whatever the person changed (`"the person's changes"`),
-  so nothing they did is lost and they never need git.
+  to find. The person may edit or drop files there. Before equipe saves, takes
+  back or merges anything in the home, it saves whatever the person changed as
+  theirs (`the person: changed in the squad's folder`) — before each desk turn,
+  when no member is mid-turn at its desk — so nothing they did is lost or
+  credited to a member, and they never need git.
 - **No git words reach the person.** Branches, merges and commits of the home
   appear in the console as "T-12's work is in the squad's folder", never as a
   branch name; the board shows no "not on main" for it.
@@ -423,22 +443,32 @@ reports, the things a task produces.
   (Time Machine covers it). Adding a remote later is an outward step that asks.
   Removing a squad keeps its home unless the person confirms deleting it.
 - **Other squads' homes are private.** A member's fenced commands can't read
-  another squad's home (`deny_read`, beside credentials and the browser).
+  another squad's home (`deny_read`, beside credentials and the browser), its
+  file tools are denied it (`Read(//<home>/**)`, `Edit(//<home>/**)` deny rules),
+  and a request through `approve` that names it is refused without asking.
 
 ### Where a member works
 
 | Where | Working directory (`cwd`) | Read too (`--add-dir`) | Writes |
 |---|---|---|---|
-| At its desk | the squad home (main) | every project | nothing |
+| At its desk | the squad home (main) | every project | the squad home, each change saved |
 | On a `code` ticket | the project's worktree | the squad home | the worktree |
 | On a `task` / `action` ticket | a worktree of the squad home | every project | the worktree |
 
-- A desk never writes, as before; the home changes only through tickets, so
-  everything in it was reviewed by the person.
-- A directory added for reading is **for reading only** in every access: on a
-  ticket in `acceptEdits`, Claude Code would otherwise accept edits there too, so
-  each one also gets deny rules (`Edit(//<dir>/**)`, `Write(//<dir>/**)`) next to
-  `BLOCKED`. The sandbox already confines shell writes to the `cwd`.
+- **At the desk, by mode**: read-only writes nothing; ask puts each change to the
+  person; auto writes the home on its own (`acceptEdits`), fenced in by the
+  sandbox like a ticket; full writes freely. Repositories are read in every mode
+  — code changes only on a `code` ticket, in its worktree.
+- **What stays a ticket**: work of several steps, work handed to a teammate, and
+  anything whose result the person should review before it counts (T-28's
+  `task`). Anything reaching outside — sending, submitting, paying — asks the
+  person first, at the desk or on a ticket. The charter tells members all this.
+- A directory added for reading is **for reading only** in every access, bypass
+  included: Claude Code would otherwise accept edits there too, so each one gets
+  deny rules (`Edit(//<dir>/**)`, `Write(//<dir>/**)`, in the turn's
+  `permissions.deny`), the sandbox's `denyWrite`, and equipe refuses through
+  `approve` an edit — or, at the desk, a shell command that doesn't only look —
+  naming it, without asking the person.
 - A project's `CLAUDE.md` is loaded from an added directory only when
   `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` is set: equipe sets it for
   members (adding a variable, not removing the person's), so the desk still knows
@@ -483,7 +513,7 @@ approval does (`Ticket.kind`, `equipe_protocol::TicketKind`):
   `task` reads the outcome in the home.
 
 **Moving existing squads.** On the first start of a daemon that knows the home,
-each squad without `home/.git` gets one (`ensure_home`) and a note in its record.
+each squad without `home/.git` gets one (`squad_home::ensure`, in `restore`).
 Projects, tickets, branches and worktrees stay as they are. Existing tickets get a
 kind: `code` if they have a project, `task` if not (`kind TEXT NOT NULL DEFAULT
 'code'` plus that backfill). A member's desk conversation was opened in a project,
@@ -495,8 +525,8 @@ conversations continue in their worktrees untouched.
 
 A **member** is a long-lived session with a role in a squad: a charter, an engine,
 a model, its own memory, and — while on a ticket — that ticket's worktree (see
-*Where a member works*). Between tickets it sits at its desk, in the squad home,
-reading every project. Roles live in `equipe_core::roles`:
+*Where a member works*). Between tickets it sits at its desk, in the squad home —
+writing there, reading every project. Roles live in `equipe_core::roles`:
 
 | Role | Does | Edits files | Model tier |
 |---|---|---|---|
@@ -543,7 +573,8 @@ agent's word — the PM's included — can authorize a merge or a deploy.
 
 How much a member may do on its own while it works a ticket — the squad's
 default, or one member's (`/mode`, chosen at onboarding). At its desk a member
-always only reads, and a role that doesn't edit never writes, whatever the mode.
+writes only the squad home, as the mode allows (see *Where a member works*), and
+a role that doesn't edit never writes a repository, whatever the mode.
 
 | Mode | A member on a ticket | Claude Code |
 |---|---|---|

@@ -155,8 +155,8 @@ impl Ticket {
     }
 }
 
-/// How much a member may do on its own while it works a ticket. At its desk a
-/// member always only reads.
+/// How much a member may do on its own while it works a ticket — and, at its
+/// desk, in the squad's home; repositories it only reads there.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {

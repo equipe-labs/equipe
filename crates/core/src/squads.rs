@@ -68,7 +68,7 @@ pub fn suggest_name(home: &Path, project: &Path) -> String {
         .expect("some name is free")
 }
 
-/// Start a squad with its first project.
+/// Start a squad with its first project, and its home.
 pub fn create(home: &Path, name: &str, project: &Path) -> Result<(), String> {
     if !valid_name(name) {
         return Err(format!("'{name}' isn't a squad name — use lowercase letters, digits and dashes"));
@@ -76,7 +76,8 @@ pub fn create(home: &Path, name: &str, project: &Path) -> Result<(), String> {
     if squad_dir(home, name).join("squad.db").exists() {
         return Err(format!("there is already a squad called {name}"));
     }
-    add_project(home, name, project)
+    add_project(home, name, project)?;
+    crate::squad_home::ensure(home, name, None).map(|_| ())
 }
 
 /// Add a project to a squad. A project belongs to one squad.
@@ -112,6 +113,7 @@ mod tests {
     fn one_squad_works_on_several_projects() {
         let home = home();
         create(&home, "acme", Path::new("/code/app")).unwrap();
+        assert!(crate::squad_home::path(&home, "acme").join(".git").is_dir(), "a new squad has its home");
         add_project(&home, "acme", Path::new("/code/site")).unwrap();
         assert_eq!(find(&home, Path::new("/code/site")).as_deref(), Some("acme"));
         assert_eq!(find(&home, Path::new("/code/other")), None);

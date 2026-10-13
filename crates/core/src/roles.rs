@@ -173,6 +173,8 @@ pub struct Context<'a> {
     pub language: Option<&'a str>,
     /// Whether the member has a browser, signed in as the person.
     pub browser: bool,
+    /// The squad's home, where the member sits between tickets.
+    pub home: Option<&'a str>,
 }
 
 /// What an engine is told about who it is on the team.
@@ -234,6 +236,20 @@ you may type."
     } else {
         ""
     };
+    let home = match ctx.home {
+        Some(home) => format!(
+            "\n\nThe squad's folder is {home} — your working directory between tickets, a folder the person can open \
+too: `notes/` for research, findings and references, `outputs/` for what tasks hand over (`outputs/T-12 title/…`), \
+and a README. In conversation you may write there directly for short things the person asks — saving a note, \
+tidying material, making one table: equipe saves each change as soon as your turn ends, tells the person, and lets \
+them take it back, so just say in plain words what you saved where (\"I saved notes/tax-deadline.md\"), never in \
+git's. In conversation the squad's projects are for reading only: a repository changes only on a `code` ticket, in \
+its worktree. Work with several steps, work for a teammate, or a result the person should review before it counts \
+goes on a ticket instead. Anything that reaches outside — sending, submitting, paying — asks the person first, \
+wherever you are. Other squads' folders are private."
+        ),
+        None => String::new(),
+    };
     let language = match ctx.language {
         Some(language) => format!(
             "The person writes in {language}: write everything meant for them in {language} — replies, ticket \
@@ -243,7 +259,7 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
     };
     format!(
         "You are {name}, the {title} on a software squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{browser}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
@@ -308,7 +324,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, board_tools, language: None, browser: false }
+        Context { team, projects, board_tools, language: None, browser: false, home: None }
     }
 
     #[test]
@@ -319,6 +335,16 @@ mod tests {
         assert!(text.contains("hand-in summaries"), "{text}");
         let unknown = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
         assert!(unknown.contains("in the language they write in"), "{unknown}");
+    }
+
+    #[test]
+    fn a_charter_says_what_the_squads_folder_is_for_and_what_needs_a_ticket() {
+        let team = [Teammate { name: "pm", role: "pm" }];
+        let text = charter(role("backend").unwrap(), "backend", &Context { home: Some("/h/squads/acme/home"), ..ctx(&team, &[], true) });
+        for part in ["The squad's folder is /h/squads/acme/home", "`notes/`", "`outputs/`", "write there directly", "for reading only", "goes on a ticket", "asks the person first", "Other squads' folders are private"] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+        assert!(!charter(role("backend").unwrap(), "backend", &ctx(&team, &[], true)).contains("squad's folder"));
     }
 
     #[test]
