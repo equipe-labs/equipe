@@ -1,0 +1,188 @@
+# Desktop control
+
+Members working desktop apps (Microsoft Teams, say) the way they work the
+browser: see the screen, click and type, open apps. This is the T-20 spike
+(ROADMAP principle 2): before building the tools, learn whether equipe's daemon,
+running as a launchd login service, can do any of that — and what it costs the
+person to allow it.
+
+Directions already set by the person: equipe builds the tools itself; the daemon
+runs in the Mac's login session; one member uses the screen at a time; sending
+anything to others in the person's name needs their yes.
+
+Probe: [`research/desktop-control/probe`](./research/desktop-control/probe) (not
+product code, not in the workspace). `agent.sh` loads it as a throwaway
+LaunchAgent (`im.equipe.probe-t20`) in `gui/<uid>`, the way `equipe daemon
+install` loads the daemon, runs it once and unloads it.
+
+## What the probe showed
+
+Mac mini M4 Pro (`Mac16,11`), macOS 26.2, the person logged in at the console
+and working over SSH (Tailscale) and Jump Desktop. 2026-10-13.
+
+| Question | Result |
+|---|---|
+| A LaunchAgent bootstrapped into `gui/501` — from an SSH shell — runs in the GUI session | ✅ `launchctl managername` → `Aqua`; on console, login done |
+| Its child processes are in the same session | ✅ `Aqua` |
+| The daemon running the squad right now | ❌ `Background`: it was started by `spawn_detached` from an SSH shell, not by the service (`im.equipe.daemon` isn't installed on this Mac) |
+| A display exists without a monitor | ✅ here, but only because something provides one: display 5, 1472×828 pt at **1×** (Jump Desktop's virtual display, most likely) |
+| Window titles of other apps, without Screen Recording | 3 of 25 — the permission gate is real |
+| Screen Recording / Accessibility / Post Event granted | ❌ not yet — needs the person (below) |
+| Capture, click at a point, type text (incl. Korean), open TextEdit, read it back through AX | ⏳ **not run**: needs the two grants and the screen to be free for ~15 s. `desktop-probe run` does all of it in one go and checks the typed text through Accessibility |
+| A rebuilt binary keeps its grant | ⏳ not run; expected **no** (ad-hoc signature, see TCC) |
+
+To finish the proof (the person, once):
+
+1. `./agent.sh <probe> request <out>` — macOS adds `desktop-probe` to the lists.
+2. On the Mac's screen: System Settings › Privacy & Security › **Screen & System
+   Audio Recording** → turn on `desktop-probe`; › **Accessibility** → turn on
+   `desktop-probe`.
+3. `./agent.sh <probe> run <out>` — leave the screen alone for ~15 s.
+4. Rebuild the probe, `./agent.sh <probe> status <out>` — do the grants survive?
+5. Remove `desktop-probe` from both lists (the "−" button).
+
+## Decisions
+
+### APIs
+
+- **Screen: ScreenCaptureKit** (`SCScreenshotManager`, macOS 14+). It renders
+  straight to the size the model gets (`SCStreamConfiguration` width/height), so
+  there's no resize on our side. `CGDisplayCreateImage` / `CGWindowListCreateImage`
+  are deprecated (obsoleted in the macOS 15 SDK) — kept in the probe only as a
+  comparison, not for product use.
+- **Input: CGEvent** posted at the HID tap. Text goes in as Unicode
+  (`CGEventKeyboardSetUnicodeString`), so it doesn't depend on the input source
+  — Korean types without switching the IME. Shortcuts (⌘V, ⏎) as key codes.
+- **Apps: `open -a` / `open -b <bundle id>`** (what NSWorkspace does, no extra
+  permission), and the app's pid from `NSRunningApplication`/`pgrep`.
+- **Accessibility (AXUIElement): yes, as the first way to aim.** It gives roles,
+  titles and frames of buttons and fields, `AXPress`, and setting `AXValue` —
+  steadier than coordinates when a window moves or the scale changes, and it
+  lets the tool *check* what happened (the probe reads TextEdit's text back).
+  Coordinates stay as the fallback for whatever AX doesn't expose. Risk: Teams is
+  a Chromium/WebView app — its web content shows up in the AX tree only after the
+  app is told an assistive client is present (`AXManualAccessibility` /
+  `AXEnhancedUserInterface` set on the app element). To verify on Teams in T-21.
+- **Bindings: the `objc2` family** — `objc2-screen-capture-kit`,
+  `objc2-core-graphics`, `objc2-foundation`, `objc2-application-services` (AX;
+  the probe declares the few AX functions itself). Same family GPUI already
+  pulls in; no `xcap`/`enigo`-style wrappers, whose capture paths are the
+  deprecated ones and whose text input goes through key codes.
+
+### TCC permissions
+
+- **What needs what.** Screen: *Screen & System Audio Recording*. Clicks and
+  keys: *Accessibility* (it also covers posting events; the probe checks
+  `CGPreflightPostEventAccess` separately). AX tree: *Accessibility*. Opening
+  apps: nothing.
+- **Who it attaches to.** TCC checks the *responsible* process: for a launchd
+  job, the job's own executable; every child (and grandchild) is charged to it
+  unless spawned with responsibility disclaimed. So under the daemon, the grant
+  belongs to the `equipe` binary — and every member's `claude`, every Bash
+  command it runs, every MCP server inherits it. A member could then run
+  `screencapture` from Bash, outside the one-at-a-time lease and outside any
+  approval. **That's not acceptable.**
+- **What survives an update.** TCC records the binary's code requirement. equipe
+  ships ad-hoc, linker-signed (`flags=adhoc,linker-signed`, no team): the
+  requirement is the **cdhash**, which changes with every build — each update
+  silently drops the grant (System Settings may still show it on). A stable path
+  (Homebrew `bin/equipe`, `~/.local/bin/equipe`) doesn't help; the signature does.
+  Fix: sign with a **Developer ID** under a fixed identifier (requirement becomes
+  "identifier X + Apple-issued cert of team T"), which holds across versions.
+  Notarization isn't needed for TCC but comes with it for Gatekeeper.
+- **Decision: a separate helper, its own binary and its own LaunchAgent.**
+  `equipe-desktop` (identifier `im.equipe.desktop`), loaded as
+  `im.equipe.desktop` in `gui/<uid>` with `LimitLoadToSessionType=Aqua`. Only it
+  holds the grants; the daemon and the members never do. It is small and changes
+  rarely, so even before Developer ID signing a grant lasts until the helper
+  itself changes — and `equipe` can say so ("the desktop helper was updated:
+  allow it again") by checking `CGPreflightScreenCaptureAccess` /
+  `AXIsProcessTrusted` through the helper at start. One grant per helper
+  version, made by the person with two toggles; `equipe desktop allow` opens the
+  two Settings panes (`x-apple.systempreferences:` URLs) and waits.
+
+### Session
+
+- **Aqua, required.** Only a job in `gui/<uid>` sees the window server. The daemon
+  itself doesn't need it once the helper exists — which is good, because today
+  the daemon is easily in `Background` (started from SSH, or `daemon install`
+  falling back to `user/<uid>` when nobody is at the console).
+- **Login.** The helper only runs while the person is logged in at the console.
+  After a reboot that needs automatic login — and macOS disables automatic login
+  when **FileVault** is on, so a FileVault Mac mini waits at the unlock screen
+  until a person logs in (Screen Sharing/Jump Desktop can do it remotely). The
+  helper reports "no GUI session" instead of failing silently.
+- **Lock screen.** While locked, capture shows the lock screen and input goes
+  nowhere useful. Detectable: `CGSessionCopyCurrentDictionary` →
+  `CGSSessionScreenIsLocked`. → T-22.
+- **Sleep.** System sleep must be off (`pmset sleep 0`; here Amphetamine already
+  keeps it). Display sleep is fine for capture on a virtual display; to verify on
+  a physical one.
+- **No monitor.** ScreenCaptureKit captures *displays*; with none attached there
+  is nothing to capture (a headless Mac mini usually still has a 1× fallback
+  framebuffer, but at a resolution that makes apps cramped). This Mac has one
+  only because a virtual display is present. Recommend an HDMI dummy plug
+  (≈₩10,000) or a virtual display (BetterDisplay / Jump Desktop) at 1920×1080;
+  `equipe doctor` should report the display's size and scale.
+
+### Images
+
+- Capture at the model's size, not the screen's: long edge ≤ 1568 px (≈1.15 MP
+  for Claude's vision; computer-use guidance prefers ~1280×800). ScreenCaptureKit
+  does the scaling.
+- Coordinates: the model answers in image pixels; the tool converts to screen
+  points, `x_pt = display.x + x_img × (display.width_pt / image.width)`, same for
+  y. CGEvent works in points, so Retina scale cancels out; the probe prints the
+  factor. Multiple displays: main display only, at first.
+- **Never written to disk** (ROADMAP Storage): the PNG/JPEG lives in memory and
+  goes out as the MCP tool result. equipe's journal records one line ("screenshot
+  1280×720"). Caveat: the engine keeps its own transcript, and Claude Code's
+  JSONL stores tool-result images base64 — equipe can't prevent that, but should
+  say so in `equipe storage`.
+
+### Tool shape
+
+- **MCP, like the browser:** members get `mcp__desktop__…` — `screenshot`,
+  `elements` (AX tree of an app/window: role, title, frame, id), `click`
+  (element id or x,y), `type`, `key`, `scroll`, `open_app`, `release`.
+- **Served by the helper, reached through the daemon.** The helper listens on a
+  Unix socket in `~/.equipe/`; the daemon gives each member an MCP endpoint
+  (like `browser`) that forwards to it. The daemon holds the **lease**: one member
+  has the screen; others get "the screen is busy (frontend is using it)" and
+  can wait. The lease ends on `release`, end of turn, or idle timeout.
+- Not in the daemon (it would need the grant → everyone inherits it), not a
+  per-member child process (same problem, and no single lease).
+
+## Remaining risks
+
+1. **Not yet proven end to end:** capture, click, type, open — waiting on the
+   person's two grants (steps above). Everything else here stands on it.
+2. **Unsigned releases** → each helper update asks the person again. Developer ID
+   signing costs the Apple Developer Program ($99/yr) and a signing step in
+   `release.yml`. Decision for the person.
+3. **Teams' AX tree** may be thin until Chromium accessibility is switched on;
+   then coordinates only, which are brittle.
+4. **FileVault + reboot** stops the desktop until someone logs in.
+5. **Engine transcripts keep screenshots** (Claude Code) even though equipe doesn't.
+6. A member clicking in the person's session while they use the Mac collides with
+   them: the lease should also yield when the person is active (HID idle time <
+   N s), not only to other members.
+
+## Notes for the follow-up tickets
+
+- **T-21 (tools):** build `equipe-desktop` as its own binary + LaunchAgent
+  (`im.equipe.desktop`, `LimitLoadToSessionType=Aqua`), not tools inside the
+  daemon. AX first, coordinates as fallback. Images sized by ScreenCaptureKit,
+  never on disk. Lease in the daemon, also yielding to the person (HID idle).
+  `equipe desktop allow` / doctor checks for grants, session, display size.
+  Verify Teams' AX tree with `AXManualAccessibility`.
+- **T-22 (lock screen):** detect with `CGSSessionScreenIsLocked`; the helper
+  can't unlock (and mustn't hold the password). Tools return "the Mac is locked"
+  and the member asks the person. Also cover "no GUI session" (logged out,
+  FileVault after reboot).
+- **T-23 (send approval):** with AX we can see *what* is about to be sent — the
+  text in the compose field and the conversation title — so the approval shows
+  the exact message and recipient, and the send (⏎ / Send button) is a separate
+  tool call the daemon holds until the yes. Typing into the field is free; the
+  send key in a messaging app is not.
+- **New (proposed):** Developer ID signing + notarization in `release.yml`.

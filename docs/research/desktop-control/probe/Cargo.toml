@@ -1,0 +1,25 @@
+[package]
+name = "desktop-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "T-20 spike: can a LaunchAgent-started process see the screen, click, type and open apps? Not product code."
+
+# Standalone: not a member of the equipe workspace.
+[workspace]
+
+[dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGImage"] }
+objc2-screen-capture-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
+    "SCShareableContent",
+    "SCScreenshotManager",
+    "SCStream",
+] }
+png = "0.17"
