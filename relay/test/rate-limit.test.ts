@@ -1,7 +1,7 @@
 import { runDurableObjectAlarm } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { REGISTRATIONS_PER_HOUR } from "../src/index";
+import { REGISTRATIONS_PER_HOUR } from "../src/rate-limit";
 import { newIp, request } from "./helpers";
 
 const registerFrom = (ip: string) =>

@@ -4,12 +4,12 @@
 
 import { randomBytes, sha256Hex, toB64url, toHex } from "./encoding";
 import type { Env } from "./env";
+import { REGISTRATIONS_PER_HOUR } from "./rate-limit";
 import { plain, route } from "./routes";
 
 export { Daemon } from "./daemon";
 export { RateLimit } from "./rate-limit";
 
-export const REGISTRATIONS_PER_HOUR = 20;
 const HOUR_MS = 60 * 60 * 1000;
 
 export default {

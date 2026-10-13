@@ -1,3 +1,7 @@
+/** Registrations one address may make in an hour. Not exported from the
+ * entry module: workerd takes every export there for an entrypoint. */
+export const REGISTRATIONS_PER_HOUR = 20;
+
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env";
 
