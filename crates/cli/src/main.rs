@@ -9,6 +9,7 @@ mod clip;
 mod daemon;
 mod home;
 mod onboard;
+mod remote;
 mod telegram;
 mod tui;
 mod ui;
@@ -130,6 +131,13 @@ enum Command {
         #[arg(long)]
         remove: bool,
     },
+    /// Pair a phone running the equipe app with this machine
+    Pair,
+    /// The phones paired with this machine
+    Devices {
+        #[command(subcommand)]
+        action: Option<DevicesAction>,
+    },
     /// Your squads from Telegram: requests, reviews and replies on your phone
     Telegram {
         #[command(subcommand)]
@@ -141,6 +149,15 @@ enum Command {
     Daemon {
         #[command(subcommand)]
         action: DaemonAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum DevicesAction {
+    /// Forget a device: it can't reach this machine any more
+    Remove {
+        /// Its name, as `equipe devices` lists it
+        name: String,
     },
 }
 
@@ -236,6 +253,20 @@ async fn main() -> ExitCode {
                 Ok(status) if status.success() => Ok(()),
                 Ok(_) => Err(Failure::new("The paste setup didn't finish")),
                 Err(err) => Err(Failure::new(format!("Couldn't run sh: {err}"))),
+            }
+        }
+        Command::Pair | Command::Devices { .. } => {
+            let said = match command {
+                Command::Pair => remote::cli::pair().await,
+                Command::Devices { action: Some(DevicesAction::Remove { name }) } => remote::cli::remove(&name).await,
+                _ => remote::cli::list().await,
+            };
+            match said {
+                Ok(text) => {
+                    println!("{}", ui::out().ok_line(&text));
+                    Ok(())
+                }
+                Err(why) => Err(Failure::new(why)),
             }
         }
         Command::Telegram { action } => {

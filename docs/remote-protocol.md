@@ -90,7 +90,7 @@ relay drop it (`device_remove`) — its socket is closed at once.
 
 ## Relay API
 
-Base URL: the relay's (`https://relay.equipe.im` once deployed; `EQUIPE_RELAY` overrides it).
+Base URL: the relay's, as deployed (the `equipe-relay` Worker on Cloudflare; `EQUIPE_RELAY` overrides it).
 
 ### HTTP
 
