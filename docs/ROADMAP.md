@@ -157,6 +157,17 @@ the human-readable conversation in its largest session was 3.4% of its size.)
   member's own worktree, so "accept edits" and "auto" would be the same.
 - **2026-10-12 — members keep their own memory.** Claude Code's auto memory is moved
   per member, so the person's own notes never leak into a squad, or a squad's into them.
+- **2026-10-13 — the squad, not the repository, is where work starts.** The person
+  wants "OpenClaw/Hermes as a squad": reached from anywhere, not only from inside a
+  repository, doing work that isn't code too. So `equipe` opens a squad wherever it
+  runs (the one opened last; asking only "add this repository?" inside a new one),
+  a squad may have no project, and each squad gets a **squad home** — an internal
+  git repository the person never sees as one — where members sit and non-code work
+  lands. Tickets get a kind: `code` (project worktree, merge on the person's yes),
+  `task` (home worktree, merged into the home on `/accept`), `action` (as task,
+  each outward step approved first). The home is git so a task is reviewable and
+  revertible exactly like code, with the same worktree and merge code, and the
+  same fence. See ARCHITECTURE "The squad".
 
 ## Current status
 
