@@ -341,6 +341,21 @@ pub struct Workspace {
     pub path: PathBuf,
 }
 
+/// One of the Claude plan's usage windows: how much of it is used, in
+/// percent, and when it starts over (Unix seconds).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanWindow {
+    pub used_percent: u8,
+    pub resets_at: i64,
+}
+
+/// The Claude plan's usage, as Claude Code last reported it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanUsage {
+    pub five_hour: Option<PlanWindow>,
+    pub seven_day: Option<PlanWindow>,
+}
+
 /// Core → screen: "this happened".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -383,6 +398,10 @@ pub enum Event {
     ApprovalRequested { squad: SquadName, approval: Approval },
     /// It was answered — by the person, or by nobody in time (`Deny`).
     ApprovalResolved { squad: SquadName, approval: u64, decision: Decision },
+    /// The plan's usage windows — for every screen, whichever squad it follows.
+    PlanUsage { usage: PlanUsage },
+    /// Output a member's turn has produced so far, in tokens.
+    Output { session: SessionId, tokens: u64 },
     /// What the person asked — sent to every screen, not only the one it was typed in.
     UserMessage { session: SessionId, text: String },
     /// A message left while the agent works. It becomes a [`Event::UserMessage`]
@@ -452,13 +471,20 @@ impl Event {
             | Event::NothingChanged { session }
             | Event::SessionClosed { session }
             | Event::WorkStarted { session, .. }
-            | Event::WorkEnded { session, .. } => Some(*session),
+            | Event::WorkEnded { session, .. }
+            | Event::Output { session, .. } => Some(*session),
             Event::Error { session, .. } => *session,
             Event::TicketChanged { .. }
             | Event::ModeChanged { .. }
             | Event::ApprovalRequested { .. }
-            | Event::ApprovalResolved { .. } => None,
+            | Event::ApprovalResolved { .. }
+            | Event::PlanUsage { .. } => None,
         }
+    }
+
+    /// Whether every screen gets it, whatever squad it follows.
+    pub fn for_everyone(&self) -> bool {
+        matches!(self, Event::PlanUsage { .. })
     }
 }
 
@@ -544,6 +570,9 @@ pub struct Snapshot {
     /// How many extra members of a role equipe may bring in when its work waits.
     #[serde(default)]
     pub scale: Option<usize>,
+    /// The plan's usage, as last reported.
+    #[serde(default)]
+    pub plan: Option<PlanUsage>,
 }
 
 #[cfg(test)]
@@ -673,6 +702,7 @@ mod tests {
             mode: Mode::ReadOnly,
             approvals: Vec::new(),
             scale: Some(2),
+            plan: None,
             sessions: vec![SessionInfo {
                 session: 9,
                 project: "/repo".into(),

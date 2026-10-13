@@ -177,6 +177,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         next_approval: 1,
         focus: HashMap::new(),
         browsers: HashMap::new(),
+        plan: None,
     };
     let mut memos = Vec::new();
     if runtime.config.persist {
@@ -342,6 +343,8 @@ struct Runtime {
     focus: HashMap<String, String>,
     /// Members' browsers, kept between turns: by squad and member.
     browsers: HashMap<(String, String), browser::Running>,
+    /// The Claude plan's usage, as Claude Code last reported it.
+    plan: Option<equipe_protocol::PlanUsage>,
 }
 
 async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut internal: UnboundedReceiver<Internal>) {
@@ -441,8 +444,12 @@ impl Runtime {
         if let Some(name) = event.squad() {
             squad = Some(name.to_owned());
         }
+        if let Event::PlanUsage { usage } = &event {
+            self.plan = Some(*usage);
+        }
+        let everyone = event.for_everyone();
         self.subscribers.retain(|(follows, screen)| match follows {
-            Some(follows) if squad.as_ref() != Some(follows) => !screen.is_closed(),
+            Some(follows) if squad.as_ref() != Some(follows) && !everyone => !screen.is_closed(),
             _ => screen.send(event.clone()).is_ok(),
         });
     }
@@ -1026,6 +1033,18 @@ impl Runtime {
                         }
                         Activity::Tool { name, target } => emit(Event::ToolUse { session: id, tool: name, target }),
                         Activity::Model(model) => emit(Event::ModelKnown { session: id, model }),
+                        Activity::Output(tokens) => emit(Event::Output { session: id, tokens }),
+                        Activity::Plan { five_hour, seven_day } => {
+                            let window = |w: Option<(f64, i64)>| {
+                                w.map(|(used, resets_at)| equipe_protocol::PlanWindow {
+                                    used_percent: (used * 100.0).round().clamp(0.0, 100.0) as u8,
+                                    resets_at,
+                                })
+                            };
+                            emit(Event::PlanUsage {
+                                usage: equipe_protocol::PlanUsage { five_hour: window(five_hour), seven_day: window(seven_day) },
+                            })
+                        }
                     })
                     .await;
                     let claude_session = outcome.as_ref().ok().and_then(|turn| turn.session_id.clone());
@@ -1965,7 +1984,7 @@ End your turn now with a short summary.",
             self.pending.values().filter(|p| p.squad == squad).map(|p| p.approval.clone()).collect();
         approvals.sort_by_key(|a| a.id);
         let scale = self.journals.get(squad).map(Journal::scale);
-        Snapshot { squad: squad.to_owned(), projects, sessions, tickets, mode, approvals, scale }
+        Snapshot { squad: squad.to_owned(), projects, sessions, tickets, mode, approvals, scale, plan: self.plan }
     }
 
     /// Bring back every squad's members, and the tickets they were on.

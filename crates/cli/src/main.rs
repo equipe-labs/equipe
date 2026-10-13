@@ -852,6 +852,8 @@ impl App {
                 Event::SessionClosed { .. } => break,
                 // One prompt, one turn: no memos, no squad, no board.
                 Event::MessageQueued { .. }
+                | Event::PlanUsage { .. }
+                | Event::Output { .. }
                 | Event::Notice { .. }
                 | Event::WorkStarted { .. }
                 | Event::WorkEnded { .. }

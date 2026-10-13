@@ -218,6 +218,9 @@ fn squad_width(app: &App, body: Rect) -> u16 {
     let fit = || {
         let name = app.agents.iter().map(|a| a.label().chars().count()).max().unwrap_or(4).clamp(4, 12);
         let detail = app.agents.iter().filter_map(|a| a.short_model()).map(|m| m.chars().count()).max().unwrap_or(0).max(9);
+        // Room for " · 65%" once a conversation is past half full.
+        let full = app.agents.iter().any(|a| a.context.is_some_and(|(u, w)| w > 0 && u * 2 >= w));
+        let detail = detail + if full { 6 } else { 0 };
         // marker, mark and a space, the name, two spaces, the detail, a spare column.
         (2 + 2 + name + 2 + detail + 1) as u16
     };
@@ -525,6 +528,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: Theme, branch: Option<&str>, 
     }
     match app.pane {
         Pane::Conversation if app.help_open => render_help(frame, right, theme),
+        Pane::Conversation if app.usage_open => render_usage(frame, right, app, theme),
         Pane::Conversation => render_transcript(frame, right, app, theme, layouts),
         Pane::Board => render_board(frame, right, app, theme),
     }
@@ -567,6 +571,59 @@ fn render_choices(frame: &mut Frame, above: Rect, app: &App, theme: Theme) {
     let height = (lines.len() as u16).min(above.height);
     let area = Rect { y: above.y + above.height - height, height, ..above };
     frame.render_widget(ratatui::widgets::Clear, area);
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// A moment as the person's clock reads it: `14:30` today, `10/20 14:30` later.
+fn local_time(unix: i64) -> String {
+    let format = |fmt: &str| -> Option<String> {
+        // BSD date takes -r seconds; GNU date takes -d @seconds.
+        [vec!["-r".to_owned(), unix.to_string()], vec!["-d".to_owned(), format!("@{unix}")]].into_iter().find_map(|args| {
+            let out = std::process::Command::new("date").args(&args).arg(fmt).output().ok()?;
+            out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+        })
+    };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    let fmt = if unix - now < 20 * 60 * 60 { "+%H:%M" } else { "+%m/%d %H:%M" };
+    format(fmt).unwrap_or_default()
+}
+
+/// `/usage`: the plan's windows, then each member — how full its context is,
+/// what it has processed, how much of that came from the cache.
+fn render_usage(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
+    let area = pane_title(vec![Span::styled("Usage", theme.bold())], vec![Span::styled("esc closes", theme.dim())], area, frame);
+    let width = (area.width as usize).saturating_sub(1);
+    let heading = |h: &str| Line::from(Span::styled(h.to_owned(), theme.accent().add_modifier(Modifier::BOLD)));
+    let row = |k: &str, what: String| wrapped(vec![Span::styled(format!("  {:<14}", ui::fit(k, 13)), theme.bold())], &what, theme.dim(), 16, width);
+    let mut lines = vec![heading("CLAUDE PLAN")];
+    match app.plan {
+        Some(plan) => {
+            for (label, window) in [("5-hour", plan.five_hour), ("week", plan.seven_day)] {
+                if let Some(w) = window {
+                    lines.extend(row(label, format!("{}% used · starts over {}", w.used_percent, local_time(w.resets_at))));
+                }
+            }
+        }
+        None => lines.extend(row("—", "reported after a member's next turn on Claude Code".into())),
+    }
+    lines.push(Line::raw(""));
+    lines.push(heading("MEMBERS"));
+    for agent in app.agents.iter().filter(|a| a.is_open()) {
+        let context = agent
+            .context
+            .filter(|(_, w)| *w > 0)
+            .map_or_else(|| "context —".to_owned(), |(u, w)| format!("context {}% ({}k of {}k)", u * 100 / w, u / 1000, w / 1000));
+        let cache = (agent.seen.1 * 100).checked_div(agent.seen.0).map_or_else(String::new, |p| format!(" · {p}% from cache"));
+        lines.extend(row(&agent.label(), format!("{context} · {} tokens{cache}", short_count(agent.tokens))));
+    }
+    lines.push(Line::raw(""));
+    lines.extend(wrapped(
+        Vec::new(),
+        "Tokens count everything a member's turns processed, the cached history read again each turn among them — at about a tenth of the price. A desk conversation starts afresh past 60% full; /compact or /clear does it now.",
+        theme.dim(),
+        0,
+        width,
+    ));
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -821,6 +878,11 @@ fn render_squad(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
                     None => format!("T-{ticket}"),
                 },
                 (0, None) => agent.short_model().unwrap_or_default(),
+            };
+            // A conversation past half its context, in sight.
+            let text = match agent.context.filter(|(_, w)| *w > 0).map(|(u, w)| u * 100 / w) {
+                Some(p) if p >= 50 => format!("{text} · {p}%"),
+                _ => text,
             };
             // An open browser, and what it costs in memory.
             let text = match app.browsers.get(&agent.label()) {
@@ -1240,7 +1302,10 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
         let mut row = vec![theme.spinner(now), Span::raw(" ")];
         row.extend(theme.shimmer(doing(agent), now));
         row.extend([
-            Span::styled(format!(" · {took} · esc to stop"), theme.dim()),
+            Span::styled(format!(" · {took}"), theme.dim()),
+            // What it has written so far, as Claude Code shows it.
+            Span::styled(if agent.output > 0 { format!(" · ↓ {}", short_count(agent.output)) } else { String::new() }, theme.dim()),
+            Span::styled(" · esc to stop", theme.dim()),
         ]);
         footer.push(Line::from(row));
     }
@@ -1743,13 +1808,15 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     if draft_lines > 1 {
         facts.push((format!("{draft_lines} lines"), theme.dim()));
     }
-    // Everything the squad's conversations processed — most of it, in a long
-    // one, the cached history read again each turn, which costs a tenth.
-    let tokens = app.total_tokens();
-    if tokens > 0 {
-        let (seen, cached) = app.agents.iter().fold((0, 0), |(a, b), agent| (a + agent.seen.0, b + agent.seen.1));
-        let share = if seen > 0 && cached > 0 { format!(" · {}% from cache", cached * 100 / seen) } else { String::new() };
-        facts.push((format!("{} tokens{share}", short_count(tokens)), theme.dim()));
+    // What counts on a subscription: how much of the plan's windows is used.
+    // Tokens and context are on /usage.
+    if let Some(plan) = app.plan {
+        for (label, window) in [("5h", plan.five_hour), ("week", plan.seven_day)] {
+            if let Some(w) = window {
+                let style = if w.used_percent >= 80 { theme.accent().add_modifier(Modifier::BOLD) } else { theme.dim() };
+                facts.push((format!("{label} {}%", w.used_percent), style));
+            }
+        }
     }
     let left_width: usize = left.iter().map(|s| s.width()).sum();
     // Facts first; the key hints — key in bold, what it does dim — go when space runs short.
@@ -1915,16 +1982,33 @@ mod tests {
     }
 
     #[test]
-    fn a_finished_turn_shows_tokens_how_long_it_took_and_a_ready_member() {
+    fn a_finished_turn_shows_how_long_it_took_a_ready_member_and_its_usage() {
         let (mut app, id) = working();
         app.agents[0].working_since = Some(Instant::now() - std::time::Duration::from_secs(65));
         app.on_event(Event::TurnEnded {
             session: id,
             outcome: TurnOutcome::Completed,
-            usage: Some(Usage { input_tokens: Some(1200), output_tokens: Some(34), ..Default::default() }),
+            usage: Some(Usage {
+                input_tokens: Some(1200),
+                output_tokens: Some(34),
+                cache_tokens: Some(98_766),
+                context_tokens: Some(130_000),
+                context_window: Some(200_000),
+            }),
         });
+        let plan = equipe_core::protocol::PlanWindow { used_percent: 84, resets_at: 0 };
+        app.on_event(Event::PlanUsage { usage: equipe_core::protocol::PlanUsage { five_hour: Some(plan), seven_day: None } });
         let shot = screen(&app, 100, 22);
-        assert!(shot.contains("1,234 tokens"), "{shot}");
+        // On a subscription what counts is the plan: in the footer, not a token total.
+        assert!(shot.lines().last().unwrap().contains("5h 84%"), "{shot}");
+        assert!(!shot.contains("tokens"), "{shot}");
+        // A conversation past half its context shows it in the squad list.
+        assert!(shot.contains("pm    haiku · 65%"), "{shot}");
+        // The totals are on /usage.
+        app.usage_open = true;
+        let usage = screen(&app, 100, 22);
+        assert!(usage.contains("context 65% (130k of 200k) · 100k tokens · 98%"), "{usage}");
+        app.usage_open = false;
         assert!(shot.contains("◆ pm"), "at rest, its own mark:\n{shot}");
         assert!(shot.contains("─ worked 1m 05s"), "{shot}");
         assert!(!shot.contains("● working"), "{shot}");
@@ -1989,9 +2073,9 @@ mod tests {
             usage: Some(Usage { input_tokens: Some(100), output_tokens: Some(20), ..Default::default() }),
         });
         app.on_paste("one\ntwo\nthree");
-        let shot = screen(&app, 60, 22);
+        let shot = screen(&app, 44, 22);
         let footer = shot.lines().last().unwrap();
-        assert!(footer.contains("3 lines") && footer.contains("120 tokens"), "{footer:?}");
+        assert!(footer.contains("3 lines"), "{footer:?}");
         assert!(!footer.contains("enter send"), "{footer:?}");
     }
 

@@ -81,6 +81,8 @@ pub struct Agent {
     /// Of the tokens counted while this screen watched: all, and those read
     /// from or written to the prompt cache.
     pub seen: (u64, u64),
+    /// Output its current turn has produced so far, in tokens.
+    pub output: u64,
     /// Lines scrolled up from the bottom; 0 follows new output.
     pub scroll_back: usize,
     /// Lines that arrived while the person was scrolled up.
@@ -115,6 +117,7 @@ impl Agent {
             tokens: 0,
             context: None,
             seen: (0, 0),
+            output: 0,
             scroll_back: 0,
             unseen: 0,
             working_since: None,
@@ -149,6 +152,7 @@ impl Agent {
             tokens: info.tokens,
             context: info.context,
             seen: (0, 0),
+            output: 0,
             scroll_back: 0,
             unseen: 0,
             // Attached mid-turn: the clock starts now, not when the turn did.
@@ -198,6 +202,7 @@ impl Agent {
 
     /// Its turn ended: leave a quiet line saying how long it took.
     fn stop_working(&mut self) {
+        self.output = 0;
         if let Some(since) = self.working_since.take() {
             let took = since.elapsed();
             if took >= Duration::from_secs(1) {
@@ -253,6 +258,10 @@ pub struct App {
     pub mode: Mode,
     /// How many extra members of a role equipe may bring in when its work waits.
     pub scale: usize,
+    /// The Claude plan's usage windows, as last reported.
+    pub plan: Option<equipe_core::protocol::PlanUsage>,
+    /// The usage screen is open over the conversation.
+    pub usage_open: bool,
     /// Requests for permission waiting for the person, oldest first.
     pub approvals: Vec<Approval>,
     /// Lines a page key moves: half the conversation's height on screen.
@@ -349,6 +358,8 @@ impl App {
             accepted: Vec::new(),
             mode: snapshot.mode,
             scale: snapshot.scale.unwrap_or(2),
+            plan: snapshot.plan,
+            usage_open: false,
             approvals: snapshot.approvals,
             page: 10,
             conversation_max: usize::MAX,
@@ -615,6 +626,10 @@ impl App {
 
     pub fn on_event(&mut self, event: Event) -> Vec<Command> {
         match event {
+            Event::PlanUsage { usage } => {
+                self.plan = Some(usage);
+                return Vec::new();
+            }
             Event::TicketChanged { ticket, .. } => {
                 // Its work may have moved on: count the changes again when shown.
                 self.diffs.remove(&ticket.id);
@@ -683,6 +698,7 @@ impl App {
                 agent.queued.clear();
             }
             Event::MessageQueued { text, .. } => agent.queued.push(text),
+            Event::Output { tokens, .. } => agent.output = tokens,
             Event::WorkStarted { ticket, project, workspace, .. } => {
                 agent.ticket = Some(ticket);
                 agent.base = workspace.as_ref().map_or(project, |ws| ws.path.clone());
@@ -888,9 +904,10 @@ impl App {
             self.quit_armed = None;
             self.flash = None;
         }
-        // The help screen closes on Esc, or as soon as the person types.
-        if self.help_open && (key.code == KeyCode::Esc || matches!(key.code, KeyCode::Char(_) | KeyCode::Enter)) {
+        // The help and usage screens close on Esc, or as soon as the person types.
+        if (self.help_open || self.usage_open) && (key.code == KeyCode::Esc || matches!(key.code, KeyCode::Char(_) | KeyCode::Enter)) {
             self.help_open = false;
+            self.usage_open = false;
             if key.code == KeyCode::Esc {
                 return Vec::new();
             }
@@ -1209,6 +1226,12 @@ impl App {
             "help" => {
                 self.pane = Pane::Conversation;
                 self.help_open = true;
+                Vec::new()
+            }
+            "usage" => {
+                self.pane = Pane::Conversation;
+                self.help_open = false;
+                self.usage_open = true;
                 Vec::new()
             }
             "quit" | "exit" => {

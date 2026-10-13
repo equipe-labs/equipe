@@ -242,7 +242,7 @@ pub struct Turn {
 }
 
 /// Something worth showing while a turn runs.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Activity {
     /// A fragment of the answer.
     Text(String),
@@ -250,6 +250,11 @@ pub enum Activity {
     Tool { name: String, target: Option<String> },
     /// The model Claude Code is running, reported at startup.
     Model(String),
+    /// The plan's usage windows: five-hour and seven-day, each as the share
+    /// used (0–1) and when it resets (Unix seconds).
+    Plan { five_hour: Option<(f64, i64)>, seven_day: Option<(f64, i64)> },
+    /// Output the turn has produced so far, in tokens.
+    Output(u64),
 }
 
 /// Folds Claude Code's `stream-json` lines into one turn.
@@ -261,6 +266,8 @@ pub struct TurnCollector {
     session_id: Option<String>,
     /// How full the context was at the latest request: its input, cached or not, and output.
     context: Option<u64>,
+    /// Output tokens of the turn's finished requests.
+    output: u64,
     result: Option<Result<TurnResult>>,
 }
 
@@ -288,6 +295,31 @@ impl TurnCollector {
             "system" if event.get("subtype").and_then(Value::as_str) == Some("init") => {
                 self.model = event.get("model").and_then(Value::as_str).map(str::to_owned);
                 self.model.clone().map(Activity::Model).into_iter().collect()
+            }
+            "rate_limit_event" => {
+                let windows = event.get("rate_limit_info").and_then(|i| i.get("unifiedWindows"));
+                let window = |name: &str| {
+                    let w = windows?.get(name)?;
+                    Some((w.get("utilization")?.as_f64()?, w.get("resetsAt")?.as_i64()?))
+                };
+                let (five_hour, seven_day) = (window("five_hour"), window("seven_day"));
+                if five_hour.is_none() && seven_day.is_none() {
+                    return Vec::new();
+                }
+                vec![Activity::Plan { five_hour, seven_day }]
+            }
+            // A request finished: its output counts toward the turn's.
+            "stream_event"
+                if event.get("event").and_then(|e| e.get("type")).and_then(Value::as_str) == Some("message_delta") =>
+            {
+                let tokens = event.get("event").and_then(|e| e.get("usage")).and_then(|u| u.get("output_tokens")).and_then(Value::as_u64);
+                match tokens {
+                    Some(n) => {
+                        self.output += n;
+                        vec![Activity::Output(self.output)]
+                    }
+                    None => Vec::new(),
+                }
             }
             "stream_event" => text_delta(event)
                 .map(|text| {
@@ -788,6 +820,20 @@ mod tests {
         assert!(std::process::Command::new("cp").arg(&draft).arg(&bin).status().unwrap().success());
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         (bin, dir)
+    }
+
+    #[test]
+    fn the_plans_windows_and_the_turns_output_are_reported() {
+        let mut collector = TurnCollector::new();
+        let plan = json!({"type":"rate_limit_event","rate_limit_info":{"status":"allowed","unifiedWindows":{
+            "five_hour":{"utilization":0.06,"resetsAt":1791871800},"seven_day":{"utilization":0.03,"resetsAt":1792454400}}}});
+        assert_eq!(
+            collector.on_event(&plan),
+            vec![Activity::Plan { five_hour: Some((0.06, 1791871800)), seven_day: Some((0.03, 1792454400)) }]
+        );
+        let delta = |n: u64| json!({"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":n}}});
+        assert_eq!(collector.on_event(&delta(120)), vec![Activity::Output(120)]);
+        assert_eq!(collector.on_event(&delta(30)), vec![Activity::Output(150)], "summed over the turn's requests");
     }
 
     #[cfg(unix)]
