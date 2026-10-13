@@ -1430,6 +1430,16 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
 /// it, and the keys that act on it.
 fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     let Some(t) = app.selected_ticket() else {
+        // Empty because of the focus, not because there's no work.
+        if let Some(focus) = app.focus.as_deref().filter(|_| !app.tickets.is_empty()) {
+            return wrapped(
+                Vec::new(),
+                &format!("Nothing on the board for {} · /project all shows every project.", project_name(focus)),
+                theme.dim(),
+                0,
+                width,
+            );
+        }
         return wrapped(
             Vec::new(),
             "The board is empty. Tell the PM what you want to build — it puts the work here.",
@@ -2250,6 +2260,19 @@ mod tests {
         let chip = laid.hits.iter().find(|h| h.3 == Hit::Project(Some(1))).copied().unwrap();
         let row: String = shot.lines().next().unwrap().chars().skip(chip.0 as usize).take(3).collect();
         assert_eq!(row, "app");
+    }
+
+    #[test]
+    fn a_board_empty_under_a_focus_says_so() {
+        let (mut app, _) = working();
+        app.projects = vec!["/code/site".into(), "/code/app".into()];
+        let mut t = ticket(1, TicketStatus::Todo, "Hero");
+        t.project = Some("/code/site".into());
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t });
+        app.focus = Some("/code/app".into());
+        app.pane = Pane::Board;
+        let shot = screen(&app, 100, 24);
+        assert!(shot.contains("Nothing on the board for app · /project all"), "{shot}");
     }
 
     #[test]

@@ -1209,6 +1209,10 @@ impl App {
                     return Vec::new();
                 };
                 let project = equipe_core::runtime::project_of(&path);
+                if crate::onboard::is_too_wide(&project) {
+                    self.flash = Some("That's your home folder — a squad works on project folders".into());
+                    return Vec::new();
+                }
                 match equipe_core::squads::add_project(&home, &self.squad, &project) {
                     Ok(()) => {
                         if !self.projects.contains(&project) {

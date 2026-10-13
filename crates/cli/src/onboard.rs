@@ -25,6 +25,11 @@ pub struct Start {
 const STARTERS: [(&str, bool); 5] =
     [("designer", true), ("frontend", true), ("backend", false), ("qa", false), ("data", false)];
 
+/// A folder too wide to be a project: the home folder, or the disk's root.
+pub fn is_too_wide(project: &Path) -> bool {
+    project == Path::new("/") || dirs::home_dir().is_some_and(|home| project == home)
+}
+
 /// The team from the onboarding menu's picks: item 0 is the PM, who joins
 /// whether or not it was left ticked; the rest are the starters.
 fn team_from_picks(picked: &[usize]) -> Vec<&'static str> {
@@ -70,6 +75,22 @@ pub async fn squad_for(cwd: &Path) -> Result<Start, String> {
     // Every menu line fits the terminal: a menu that wraps redraws over itself.
     let menu = ui::width().saturating_sub(6).max(20);
     let name = squads::list(&home);
+    // The home folder isn't a project: open a squad as it is, add nothing.
+    if is_too_wide(&project) {
+        if name.is_empty() {
+            return Err("This is your home folder, not a project. cd into a project and run equipe there.".into());
+        }
+        let items: Vec<String> = name.iter().map(|s| menu_item(&format!("Open {}", s.name), menu)).collect();
+        let picked = dialoguer::Select::with_theme(&*theme)
+            .with_prompt(ui::fit("This is your home folder — a squad works on project folders", menu))
+            .items(&items)
+            .default(0)
+            .interact_opt()
+            .map_err(|err| err.to_string())?
+            .ok_or("Nothing changed.")?;
+        eprintln!();
+        return Ok(Start { squad: name[picked].name.clone(), members: Vec::new() });
+    }
     let place = equipe_core::board::project_name(&project);
     if !name.is_empty() {
         // Most people have one squad: offer it first.
@@ -216,6 +237,20 @@ fn owner_of(url: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pm_is_on_every_team_ticked_or_not() {
+        assert_eq!(team_from_picks(&[0, 2, 3]), ["pm", "frontend", "backend"]);
+        assert_eq!(team_from_picks(&[2]), ["pm", "frontend"], "unticking the PM doesn't leave it out");
+        assert_eq!(team_from_picks(&[]), ["pm"]);
+    }
+
+    #[test]
+    fn home_and_root_are_never_projects() {
+        assert!(is_too_wide(&dirs::home_dir().unwrap()));
+        assert!(is_too_wide(Path::new("/")));
+        assert!(!is_too_wide(&dirs::home_dir().unwrap().join("code/app")));
+    }
 
     #[test]
     fn a_menu_item_fits_in_bytes_as_well_as_columns() {
