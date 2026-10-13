@@ -160,16 +160,17 @@ can't go on without the person.
 | `done` / `cancelled` | closed | the person can reopen |
 
 - **The PM writes the board** through tools; a ticket has an owner (a role or a
-  member), a project when the squad has several, dependencies, and acceptance
-  criteria. A ticket from any other member is a *proposal* until the PM or the
+  member), a kind (`code`, `task`, `action` — see *Ticket kinds*), a project for
+  `code`, dependencies, and acceptance criteria. A ticket from any other member is a *proposal* until the PM or the
   person makes it `todo`.
 - **equipe's rules hand out the work** (`equipe_core::board::assignments`, plain
   code): a `todo` ticket whose dependencies are finished goes to a free member who
   owns it, oldest first, one ticket per member. The rules run whenever something
   changes — a ticket, a member joining or finishing a turn.
-- **A member works on its ticket** in the ticket's project: an editing member in a
-  worktree of its own on `equipe/<name>-t<id>-…`, in a conversation of its own
-  for that ticket; its desk conversation waits.
+- **A member works on its ticket** in a worktree of its own on
+  `equipe/<name>-t<id>-…` — of the ticket's project for `code`, of the squad home
+  for `task` and `action` — in a conversation of its own for that ticket; its
+  desk conversation waits.
 - **It hands the work in** (`submit_for_review`): at the end of the turn its
   changes are committed to the branch and the ticket goes to `review`. The
   worktree stays, so the work can be sent back.
@@ -188,7 +189,8 @@ can't go on without the person.
   goes, the branch stays); `/reopen T-3 <what to change>` gives it back to
   its member on the same branch and conversation; `/cancel T-3` drops it. These are
   commands from the person's screen straight to equipe — no member can send them.
-- **Merging is the person's too** (principle 4). Right after `/accept` the screen
+- **Merging is the person's too** (principle 4), for `code`; a `task` merges
+  into the squad home as part of `/accept` (see *Ticket kinds*). Right after `/accept` the screen
   asks "merge it into main now? y/n", then whether to push main to `origin`; only
   their yes sends `merge`. `/merge T-3` (or `m` on the board) does it later. The
   merge is worked out apart from any checkout (`git merge-tree`) and a conflict
@@ -250,6 +252,11 @@ runs the engine there, commits what changed to the branch and removes the worktr
 What remains is one reviewable branch. A run that changes nothing leaves no branch;
 a run that fails keeps its partial changes on it.
 
+The squad home is a repository like any other to this code: `task` and `action`
+tickets get worktrees of it under `~/.equipe/worktrees/<squad>.home/` (named by
+squad, since every home's folder is called `home`), cut and merged by the same
+functions.
+
 ## Terminal
 
 The command line is a product surface, styled per [BRAND.md](./BRAND.md):
@@ -271,12 +278,12 @@ background by `equipe` when none is answering and detached from the terminal
 
 - **The door** is a Unix socket, `~/.equipe/equipe.sock` (0600 in a 0700
   directory): no network port, and only its owner can drive the squad. Messages
-  are the protocol in JSON-RPC 2.0, one per line — `hello` (attach to a project,
+  are the protocol in JSON-RPC 2.0, one per line — `hello` (attach to a squad,
   get its snapshot), `command`, `event`, `shutdown`.
 - **Attaching** is one step of the runtime loop: the snapshot and the
   subscription to everything after it are taken together, so no event is missed
-  or doubled. A screen follows one project (its repository root); sessions opened
-  there from any screen appear on all of them.
+  or doubled. A screen follows one squad, wherever it was opened; sessions opened
+  in it from any screen appear on all of them.
 - **The journal** keeps one SQLite database per project under
   `~/.equipe/projects/<name>-<hash>/`: the session record (engine, model, branch,
   title, tokens, the engine's own conversation id) and the conversation — messages,
@@ -325,20 +332,171 @@ who is still working, branches landed — is printed to the normal screen.
 A **squad** is the person's team, not a repository: the way a company's squad
 owns a product's app, API and site at once, one squad works on several projects
 (`equipe_core::squads`). Everything it keeps lives in `~/.equipe/squads/<squad>/`;
-each project belongs to one squad. A screen follows a squad, whichever of its
-repositories it was opened in.
+each project belongs to one squad. **Work starts at the squad, not at a
+repository** (decided 2026-10-13): `equipe` opens a squad wherever it is run, a
+squad can exist with no project at all, and work that isn't code has a place of
+its own — the squad home. The picture is an assistant like OpenClaw or Hermes,
+reached from anywhere, that happens to be a team and happens to also write code.
 
-**Onboarding** is the first `equipe` in a repository, under a minute: engines are
-checked (a squad needs one to run on), then the repository joins an existing squad
-— most people have one — or starts a new one, which the person names and staffs
-(the PM, plus designer and frontend ticked by default). Nothing is written into
-the repository.
+```
+~/.equipe/
+  state.json                 last squad opened; repositories the person said no to
+  squads/<squad>/
+    squad.db                 board, record, projects, rules
+    home/                    the squad home: an internal git repository (main)
+    members/<name>/memory/   each member's own memory
+  worktrees/<repo>/…         code tickets, one per ticket (as before)
+  worktrees/<squad>.home/…   task and action tickets, one per ticket
+```
+
+### Where equipe starts
+
+`equipe` with no command picks the squad to show, first match wins
+(`onboard::squad_for`):
+
+1. `equipe --squad <name>` — the one named.
+2. The current directory is inside one of a squad's projects — that squad (as
+   today).
+3. It is inside a squad home or one of its worktrees — that squad.
+4. The squad opened last (`state.json` → `last_squad`, written on every attach)
+   — or, if that one is gone, the only squad, or the first by name.
+5. No squad at all — onboarding.
+
+No directory is special any more: the home folder, `/`, Downloads and a plain
+folder are all simply "not a project", and the squad opens as in 4. Nothing is
+asked there.
+
+**A repository no squad has.** When the directory is inside a git repository that
+belongs to no squad, the squad from step 4 opens and the console asks once, in
+the approval slot above the composer: *"equipe-site isn't in a squad. Add it to
+acme? y/n"* (with several squads, `y` adds to the one shown; `/squad add` puts it
+elsewhere). `n` is remembered in `state.json` (`declined`, by repository root) and
+never asked again for that repository; `/squad add .` still adds it. Only a git
+repository is offered: a plain folder joins only when typed (`/squad add <folder>`).
+
+**Onboarding without a repository**, under a minute, from anywhere: engines are
+checked (a squad needs one to run on), then the person names the squad (suggested:
+the git remote's owner when run inside a repository, else their user name, slugged
+— `abel` → `abel`, taken → `abel-2`), staffs it (the PM, plus designer and
+frontend ticked by default) and picks the mode. The squad and its home are created
+with **no project**. If it was run inside a repository, one last question: *"Add
+equipe-site to the squad? Y/n"*. Nothing is ever written into a repository.
+
+**Switching**: `/squad <name>` (as today) re-attaches the console to another
+squad and records it as the last; `/squad new <name> [folder]` starts one, the
+folder now optional; `equipe squads` lists them with their homes. A squad with no
+project is valid everywhere: `/squad remove` may take its last project away.
+
+### The squad home
+
+Every squad has a **home**, `~/.equipe/squads/<squad>/home`: a git repository
+equipe keeps for it and never shows as one. It is where members are by default,
+and where the squad's work that isn't code lives — research, notes, drafts,
+reports, the things a task produces.
+
+- **Made** with the squad (`squads::ensure_home`, idempotent): `git init -b main`,
+  a local `user.name equipe` / `user.email equipe@localhost` (so it works without
+  the person's git config, and its commits never carry their name), and a first
+  commit with:
+
+  ```
+  README.md     what this folder is, in the person's language, for Finder
+  notes/        research, findings, references — the squad's notebook
+  outputs/      what tasks hand over: outputs/T-12 teams-reply/…
+  .gitignore    .DS_Store, *.tmp
+  ```
+
+  Folders other than these are fine; the charter tells members the layout, and
+  equipe writes no `CLAUDE.md` there — one the person or the PM adds is theirs,
+  and every member reads it, since the home is their working directory.
+- **The person may open it.** `/home` in the console (and `equipe home`) opens it
+  in Finder (`open`, `xdg-open`) and prints its path; outputs are named for people
+  to find. The person may edit or drop files there. Before equipe merges anything
+  into the home it commits whatever the person changed (`"the person's changes"`),
+  so nothing they did is lost and they never need git.
+- **No git words reach the person.** Branches, merges and commits of the home
+  appear in the console as "T-12's work is in the squad's folder", never as a
+  branch name; the board shows no "not on main" for it.
+- **Storage.** The home is the person's data, like a repository: never pruned by
+  the retention window, not counted against the journal's size cap, listed with
+  its size in `equipe storage`. It has no remote; backing it up is the person's
+  (Time Machine covers it). Adding a remote later is an outward step that asks.
+  Removing a squad keeps its home unless the person confirms deleting it.
+- **Other squads' homes are private.** A member's fenced commands can't read
+  another squad's home (`deny_read`, beside credentials and the browser).
+
+### Where a member works
+
+| Where | Working directory (`cwd`) | Read too (`--add-dir`) | Writes |
+|---|---|---|---|
+| At its desk | the squad home (main) | every project | nothing |
+| On a `code` ticket | the project's worktree | the squad home | the worktree |
+| On a `task` / `action` ticket | a worktree of the squad home | every project | the worktree |
+
+- A desk never writes, as before; the home changes only through tickets, so
+  everything in it was reviewed by the person.
+- A directory added for reading is **for reading only** in every access: on a
+  ticket in `acceptEdits`, Claude Code would otherwise accept edits there too, so
+  each one also gets deny rules (`Edit(//<dir>/**)`, `Write(//<dir>/**)`) next to
+  `BLOCKED`. The sandbox already confines shell writes to the `cwd`.
+- A project's `CLAUDE.md` is loaded from an added directory only when
+  `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` is set: equipe sets it for
+  members (adding a variable, not removing the person's), so the desk still knows
+  each project's conventions.
+- **A folder the squad doesn't have** is asked for: a read outside the `cwd` and
+  the added directories goes to the person through `approve` ("backend wants to
+  read ~/Documents/plan.pdf"); `a` allows that folder for the squad
+  (`Read(//<folder>/**)`), never write.
+
+### Ticket kinds
+
+A ticket has a **kind**, which says where its work happens and what the person's
+approval does (`Ticket.kind`, `equipe_protocol::TicketKind`):
+
+| Kind | Work happens in | Hand-in | `/accept` |
+|---|---|---|---|
+| `code` | a worktree of the ticket's project, on `equipe/<name>-t<id>-…` | a branch | `done`; then the merge question (as today) |
+| `task` | a worktree of the squad home, same branch naming | files under `outputs/` or `notes/` | merges into the home's main at once, then `done` — no question, no git words |
+| `action` | as `task`, plus doing something in an app or the browser | what was done, and its notes | as `task`; each outward step was approved before it happened (T-23's gate) |
+
+- **Choosing the kind.** `create_ticket` takes `kind`. Left out, it is `code`
+  when a `project` is named and `task` otherwise, so a ticket with no project is
+  never stuck. `code` needs a project: named, or the squad's only one; with
+  several and none named, the tool answers "name the project", as today. A `task` or `action` may name a
+  project as what it is *about* (the console filters by it), but never writes to
+  it. The PM's charter says: changing a repository → `code`; finding out,
+  writing, deciding → `task`; doing something in the world → `action`.
+- **Assignment** (`board::assignments`): a `code` ticket is ready when it knows its
+  project (or the squad has one); a `task` or `action` ticket needs no project.
+- **Who may write.** `Role.edits` is about repositories: on a `task` or `action`,
+  every role writes in its home worktree (a data member writes its report, the PM
+  its plan), within the mode — plan still changes nothing.
+- **Approval of a task.** equipe commits the person's own changes in the home,
+  then merges the branch into main (`worktree::merge_into_main`, as for code). A
+  conflict merges nothing and closes nothing: the ticket goes back to its member
+  (`in_progress`, same worktree and conversation) with the note "the squad's
+  folder changed under this work; bring it up to date and hand it in again" —
+  the member merges main into its branch inside its fence. Only a clean merge
+  makes it `done`. Worktree and branch then go.
+- **Dependencies** work across kinds: a `task` cut after a done `task` starts from
+  the home with that work in (it is on main already); a `code` ticket after a
+  `task` reads the outcome in the home.
+
+**Moving existing squads.** On the first start of a daemon that knows the home,
+each squad without `home/.git` gets one (`ensure_home`) and a note in its record.
+Projects, tickets, branches and worktrees stay as they are. Existing tickets get a
+kind: `code` if they have a project, `task` if not (`kind TEXT NOT NULL DEFAULT
+'code'` plus that backfill). A member's desk conversation was opened in a project,
+and Claude Code resumes a conversation only from the directory it began in, so
+each desk starts afresh in the home from a summary (`refresh_desk`), once; ticket
+conversations continue in their worktrees untouched.
+
+### Members and roles
 
 A **member** is a long-lived session with a role in a squad: a charter, an engine,
-a model, its own memory, and — while on a ticket — that ticket's project and, for
-roles that edit, a worktree. Between tickets it sits at its desk: it reads every
-project of the squad (`--add-dir`) and writes nowhere. Roles live in
-`equipe_core::roles`:
+a model, its own memory, and — while on a ticket — that ticket's worktree (see
+*Where a member works*). Between tickets it sits at its desk, in the squad home,
+reading every project. Roles live in `equipe_core::roles`:
 
 | Role | Does | Edits files | Model tier |
 |---|---|---|---|
@@ -409,6 +567,10 @@ permission modes), with the presets on top (`equipe_core::permissions`):
   that reach outside — `git push`, publishing, deploying (`OUTWARD`) — ask even
   inside the fence. A command that must leave the fence asks too, and runs
   outside only when allowed.
+- **The fence is the same in the squad home.** A `task` or `action` member in Auto
+  writes only inside its worktree of the home — not the home's main, not a
+  project; the directories added for reading stay read-only (deny rules), and a
+  folder the squad doesn't have is a question, not a read.
 - **"Always allow"** becomes a rule for the whole squad (`Bash(npm install:*)`,
   `WebFetch(domain:docs.rs)`), kept in its database and passed to every member's
   turn. A chained command (`a && b`) is allowed once, never as a pattern.
