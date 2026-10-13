@@ -1,0 +1,850 @@
+{
+  "about": "What the daemon sends and does, screen by screen: each example ran through the daemon's code (remote::core) with the vectors' keys. sends: the plaintext the phone seals. daemon: what came of it — answers (the plaintext it sealed back, ts set to now), to_squad (the command the squad got), or nothing. receives: an event as the phone opens it. The hello snapshot is a made-up squad, serialized by the daemon.",
+  "examples": {
+    "a command for a squad not followed": {
+      "daemon": "nothing: dropped without an answer",
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "squad": "home",
+            "ticket": 1,
+            "type": "accept"
+          }
+        },
+        "seq": 14,
+        "squad": "home",
+        "ts": 1760000000000
+      }
+    },
+    "a command for another squad than the frame's": {
+      "daemon": "nothing: dropped without an answer",
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "squad": "home",
+            "ticket": 1,
+            "type": "accept"
+          }
+        },
+        "seq": 13,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "a method a device may not use": {
+      "daemon": {
+        "answers": {
+          "rpc": {
+            "error": {
+              "code": -32601,
+              "message": "not something a device may ask"
+            },
+            "id": 4,
+            "jsonrpc": "2.0"
+          },
+          "seq": 5,
+          "ts": 1760000000000
+        }
+      },
+      "sends": {
+        "rpc": {
+          "id": 4,
+          "jsonrpc": "2.0",
+          "method": "shutdown"
+        },
+        "seq": 4,
+        "ts": 1760000000000
+      }
+    },
+    "accept": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "squad": "acme",
+            "ticket": 38,
+            "type": "accept"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "squad": "acme",
+            "ticket": 38,
+            "type": "accept"
+          }
+        },
+        "seq": 8,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "decide: allow": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "approval": 17,
+            "decision": "allow",
+            "squad": "acme",
+            "type": "decide"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "approval": 17,
+            "decision": "allow",
+            "squad": "acme",
+            "type": "decide"
+          }
+        },
+        "seq": 5,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "decide: always is sent as allow": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "approval": 17,
+            "decision": "allow",
+            "squad": "acme",
+            "type": "decide"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "approval": 17,
+            "decision": "always",
+            "squad": "acme",
+            "type": "decide"
+          }
+        },
+        "seq": 6,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "decide: deny": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "approval": 17,
+            "decision": "deny",
+            "squad": "acme",
+            "type": "decide"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "approval": 17,
+            "decision": "deny",
+            "squad": "acme",
+            "type": "decide"
+          }
+        },
+        "seq": 7,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: approval requested": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "approval": {
+              "action": "git push origin main",
+              "id": 17,
+              "member": "backend",
+              "reason": "배포 브랜치에 올립니다",
+              "session": 4242,
+              "ticket": 38,
+              "tool": "Bash"
+            },
+            "squad": "acme",
+            "type": "approval_requested"
+          }
+        },
+        "seq": 7,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: approval resolved": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "approval": 17,
+            "decision": "allow",
+            "squad": "acme",
+            "type": "approval_resolved"
+          }
+        },
+        "seq": 8,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: error": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "message": "Claude Code isn't signed in",
+            "next": "claude login",
+            "session": 1001,
+            "type": "error"
+          }
+        },
+        "seq": 17,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: message queued": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "session": 1001,
+            "text": "그리고 테스트도",
+            "type": "message_queued"
+          }
+        },
+        "seq": 11,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: notice": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "session": 1001,
+            "text": "↪ You → backend: 로그인 API 먼저",
+            "type": "notice"
+          }
+        },
+        "seq": 16,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: text delta": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "session": 1001,
+            "text": "보드를 보면",
+            "type": "text_delta"
+          }
+        },
+        "seq": 12,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: ticket accepted": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "squad": "acme",
+            "ticket": {
+              "assignee": "backend",
+              "body": "이메일 로그인, 토큰 발급.",
+              "branch": "equipe/backend-t38-1a2b3c4d",
+              "created_by": "pm",
+              "depends_on": [],
+              "id": 38,
+              "kind": "code",
+              "merged": false,
+              "note": "로그인 API와 테스트",
+              "owner": "backend",
+              "project": "/Users/you/projects/api",
+              "status": "done",
+              "title": "로그인 API",
+              "worktree": "/Users/you/.equipe/worktrees/api/t38-1a2b3c4d"
+            },
+            "type": "ticket_changed"
+          }
+        },
+        "seq": 9,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: ticket changed": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "squad": "acme",
+            "ticket": {
+              "assignee": "backend",
+              "body": "이메일 로그인, 토큰 발급.",
+              "branch": "equipe/backend-t38-1a2b3c4d",
+              "created_by": "pm",
+              "depends_on": [],
+              "id": 38,
+              "kind": "code",
+              "merged": null,
+              "note": null,
+              "owner": "backend",
+              "project": "/Users/you/projects/api",
+              "status": "review",
+              "title": "로그인 API",
+              "worktree": "/Users/you/.equipe/worktrees/api/t38-1a2b3c4d"
+            },
+            "type": "ticket_changed"
+          }
+        },
+        "seq": 6,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: tool use": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "session": 1001,
+            "target": null,
+            "tool": "board",
+            "type": "tool_use"
+          }
+        },
+        "seq": 13,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: turn ended": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "outcome": "completed",
+            "session": 1001,
+            "type": "turn_ended",
+            "usage": {
+              "input_tokens": 1200,
+              "output_tokens": 340
+            }
+          }
+        },
+        "seq": 14,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: turn interrupted": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "outcome": "interrupted",
+            "session": 1001,
+            "type": "turn_ended",
+            "usage": null
+          }
+        },
+        "seq": 15,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: user message": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "session": 1001,
+            "text": "로그인 화면 다음에 뭐 할까?",
+            "type": "user_message"
+          }
+        },
+        "seq": 10,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "hello": {
+      "daemon": {
+        "answers": {
+          "rpc": {
+            "id": 2,
+            "jsonrpc": "2.0",
+            "result": {
+              "snapshot": {
+                "approvals": [
+                  {
+                    "action": "git push origin main",
+                    "id": 17,
+                    "member": "backend",
+                    "reason": "배포 브랜치에 올립니다",
+                    "session": 4242,
+                    "ticket": 38,
+                    "tool": "Bash"
+                  }
+                ],
+                "mode": "auto",
+                "plan": null,
+                "projects": [
+                  "/Users/you/projects/site",
+                  "/Users/you/projects/api"
+                ],
+                "scale": 0,
+                "sessions": [
+                  {
+                    "access": "read_only",
+                    "context": [
+                      41000,
+                      200000
+                    ],
+                    "engine": "claude",
+                    "member": {
+                      "name": "pm",
+                      "role": "pm"
+                    },
+                    "mode": null,
+                    "model": "claude-opus-5-5",
+                    "project": "/Users/you/.equipe/squads/acme/home",
+                    "queued": [],
+                    "recent": [
+                      {
+                        "kind": "user",
+                        "text": "이번 주 계획 정리해 줘"
+                      },
+                      {
+                        "kind": "reply",
+                        "text": "보드에 세 장 올렸어요."
+                      }
+                    ],
+                    "session": 1001,
+                    "state": "ready",
+                    "title": "이번 주 계획",
+                    "tokens": 18200,
+                    "work": null,
+                    "workspace": null
+                  },
+                  {
+                    "access": "edit_files",
+                    "engine": "claude",
+                    "member": {
+                      "name": "backend",
+                      "role": "backend"
+                    },
+                    "mode": null,
+                    "model": "claude-sonnet-5-5",
+                    "project": "/Users/you/projects/api",
+                    "queued": [],
+                    "recent": [
+                      {
+                        "kind": "tool",
+                        "target": "cargo test",
+                        "tool": "Bash"
+                      }
+                    ],
+                    "session": 4242,
+                    "state": "working",
+                    "title": null,
+                    "tokens": 5300,
+                    "work": {
+                      "project": "/Users/you/projects/api",
+                      "ticket": 38,
+                      "workspace": null
+                    },
+                    "workspace": null
+                  }
+                ],
+                "squad": "acme",
+                "tickets": [
+                  {
+                    "assignee": "backend",
+                    "body": "이메일 로그인, 토큰 발급.",
+                    "branch": "equipe/backend-t38-1a2b3c4d",
+                    "created_by": "pm",
+                    "depends_on": [],
+                    "id": 38,
+                    "kind": "code",
+                    "merged": null,
+                    "note": null,
+                    "owner": "backend",
+                    "project": "/Users/you/projects/api",
+                    "status": "in_progress",
+                    "title": "로그인 API",
+                    "worktree": "/Users/you/.equipe/worktrees/api/t38-1a2b3c4d"
+                  }
+                ]
+              },
+              "version": "0.10.1"
+            }
+          },
+          "seq": 2,
+          "squad": "acme",
+          "ts": 1760000000000
+        },
+        "answers_later": 2,
+        "follows": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "id": 2,
+          "jsonrpc": "2.0",
+          "method": "hello",
+          "params": {
+            "squad": "acme",
+            "version": "equipe-app/1.0 (ios)"
+          }
+        },
+        "seq": 2,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "hello: no such squad": {
+      "daemon": {
+        "answers": {
+          "rpc": {
+            "error": {
+              "code": -32602,
+              "message": "no such squad"
+            },
+            "id": 3,
+            "jsonrpc": "2.0"
+          },
+          "seq": 3,
+          "squad": "nope",
+          "ts": 1760000000000
+        }
+      },
+      "sends": {
+        "rpc": {
+          "id": 3,
+          "jsonrpc": "2.0",
+          "method": "hello",
+          "params": {
+            "squad": "nope",
+            "version": "equipe-app/1.0 (ios)"
+          }
+        },
+        "seq": 3,
+        "squad": "nope",
+        "ts": 1760000000000
+      }
+    },
+    "hello: the daemon can't follow the squad": {
+      "receives": {
+        "rpc": {
+          "error": {
+            "code": -32000,
+            "message": "the daemon couldn't follow home"
+          },
+          "id": 9,
+          "jsonrpc": "2.0"
+        },
+        "seq": 4,
+        "squad": "home",
+        "ts": 1760000000000
+      }
+    },
+    "interrupt": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "session": 1001,
+            "type": "interrupt"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "session": 1001,
+            "type": "interrupt"
+          }
+        },
+        "seq": 11,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "merge is refused": {
+      "daemon": "nothing: dropped without an answer",
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "push": true,
+            "squad": "acme",
+            "ticket": 38,
+            "type": "merge"
+          }
+        },
+        "seq": 12,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "push: approval": {
+      "daemon_sends": {
+        "body": "acme · T-38",
+        "category": "approval",
+        "collapse": "approval-17",
+        "data": "<sealed daemon-to-device frame: data_opened>",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "title": "backend asks to run a command",
+        "type": "push"
+      },
+      "data_opened": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "approval": {
+              "action": "git push origin main",
+              "id": 17,
+              "member": "backend",
+              "reason": "배포 브랜치에 올립니다",
+              "session": 4242,
+              "ticket": 38,
+              "tool": "Bash"
+            },
+            "squad": "acme",
+            "type": "approval_requested"
+          }
+        },
+        "seq": 0,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "push: review": {
+      "daemon_sends": {
+        "body": "T-38 · acme",
+        "category": "review",
+        "collapse": "ticket-38",
+        "data": "<sealed daemon-to-device frame: data_opened>",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "title": "backend handed in work to review",
+        "type": "push"
+      },
+      "data_opened": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "squad": "acme",
+            "ticket": {
+              "assignee": "backend",
+              "body": "",
+              "branch": "equipe/backend-t38-1a2b3c4d",
+              "created_by": "pm",
+              "depends_on": [],
+              "id": 38,
+              "kind": "code",
+              "merged": null,
+              "note": null,
+              "owner": "backend",
+              "project": "/Users/you/projects/api",
+              "status": "review",
+              "title": "로그인 API",
+              "worktree": "/Users/you/.equipe/worktrees/api/t38-1a2b3c4d"
+            },
+            "type": "ticket_changed"
+          }
+        },
+        "seq": 0,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "push: waiting": {
+      "daemon_sends": {
+        "body": "T-38 · acme",
+        "category": "waiting",
+        "collapse": "ticket-38",
+        "data": "<sealed daemon-to-device frame: data_opened>",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "title": "backend needs you",
+        "type": "push"
+      },
+      "data_opened": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "squad": "acme",
+            "ticket": {
+              "assignee": "backend",
+              "body": "",
+              "branch": "equipe/backend-t38-1a2b3c4d",
+              "created_by": "pm",
+              "depends_on": [],
+              "id": 38,
+              "kind": "code",
+              "merged": null,
+              "note": null,
+              "owner": "backend",
+              "project": "/Users/you/projects/api",
+              "status": "waiting",
+              "title": "로그인 API",
+              "worktree": "/Users/you/.equipe/worktrees/api/t38-1a2b3c4d"
+            },
+            "type": "ticket_changed"
+          }
+        },
+        "seq": 0,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "reopen": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "note": "에러 메시지를 한국어로",
+            "squad": "acme",
+            "ticket": 38,
+            "type": "reopen"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "note": "에러 메시지를 한국어로",
+            "squad": "acme",
+            "ticket": 38,
+            "type": "reopen"
+          }
+        },
+        "seq": 9,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "squads": {
+      "daemon": {
+        "answers": {
+          "rpc": {
+            "id": 1,
+            "jsonrpc": "2.0",
+            "result": [
+              {
+                "name": "acme",
+                "projects": [
+                  "site",
+                  "api"
+                ]
+              },
+              {
+                "name": "home",
+                "projects": []
+              }
+            ]
+          },
+          "seq": 1,
+          "ts": 1760000000000
+        }
+      },
+      "sends": {
+        "rpc": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "method": "squads"
+        },
+        "seq": 1,
+        "ts": 1760000000000
+      }
+    },
+    "submit": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "session": 1001,
+            "text": "로그인 화면 다음에 뭐 할까?",
+            "type": "submit"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "session": 1001,
+            "text": "로그인 화면 다음에 뭐 할까?",
+            "type": "submit"
+          }
+        },
+        "seq": 10,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    }
+  },
+  "now": 1760000000000
+}

@@ -54,16 +54,47 @@ Plaintext is UTF-8 JSON:
 - `ts` — sender's clock, Unix ms. Frames more than 5 minutes off are dropped.
 - `seq` — starts at 1 on each WebSocket connection and goes up by one per frame, each
   direction; a frame whose `seq` isn't above the last one seen on that connection is dropped.
-  The `data` of a push has `seq` 0: it travels outside the connection, and is only shown.
+  It may skip (only "above" is checked); a dropped frame doesn't move it. The daemon starts
+  both directions over when the relay tells it the device connected or left (`presence`), so
+  the app starts both over on each new device socket. The `data` of a push has `seq` 0: it
+  travels outside the connection, and is only shown.
 - `squad` — which squad the `rpc` is about (absent for `squads`).
 - `rpc` — a JSON-RPC 2.0 message of the daemon's own protocol (`crates/protocol/src/rpc.rs`):
-  the same `hello` / `command` / `event` the terminal console speaks.
+  the same `hello` / `command` / `event` the terminal console speaks. `id`s are integers.
+
+### What a device asks, and what comes back
+
+| `rpc` | answer |
+|---|---|
+| `{ "id", "method": "squads" }` (no `squad`) | `result`: `[{ "name", "projects": [<project names>] }]` |
+| `{ "id", "method": "hello", "params": { "version", "squad" } }`, `squad` set too | `result`: `{ "version", "snapshot" }`; from then on the squad's `event`s, with `squad` set. A device may follow several squads; a second `hello` for one replaces the first. Error `-32602` "no such squad"; `-32000` when the daemon couldn't follow it |
+| `{ "method": "command", "params": <Command> }` — a notification, no `id` | none: what it did shows in events. Dropped without a word when it isn't one a device may send, its squad isn't the frame's, or the frame's squad isn't followed |
+| anything else with an `id` | error `-32601` "not something a device may ask" |
+
+A frame that doesn't open, is off by more than 5 minutes, repeats a `seq` or doesn't parse is
+dropped without an answer.
+
+A push's `data` carries an `approval_requested` event with `action` cut to 800 characters, or a
+`ticket_changed` event (to `review` or `waiting`) with the ticket's `body` left empty.
+
+### Conformance vectors
+
+`docs/remote-vectors/` holds frames sealed with fixed keys and fixed ephemeral keys, QR codes
+good and bad, one pairing start to end, `seq` and `ts` cases, and the JSON the daemon sends,
+screen by screen — all made by the daemon's code and checked against it:
+`cargo test -p equipe vectors` (`EQUIPE_WRITE_VECTORS=1` writes them again). The equipe app
+keeps a copy in its `docs/vectors/`.
 
 ## The QR code
 
 ```
 equipe://pair?r=<relay base URL, urlencoded>&d=<daemon id>&k=<b64 daemon public key>&s=<b64 pairing secret>&n=<machine name, urlencoded>
 ```
+
+Every parameter is there once, in any order; the app ignores ones it doesn't know. Values are
+percent-encoded UTF-8: the daemon escapes every byte but `A-Z a-z 0-9 - _ . ~` and never
+writes `+`. `r` is `https://` (or `http://localhost` / `127.0.0.1`, for development), `d` 32
+lowercase hex, `k` and `s` unpadded base64url of 32 bytes.
 
 The pairing **slot** is the first 32 hex chars of `SHA-256(pairing secret)`.
 
@@ -76,6 +107,9 @@ The pairing **slot** is the first 32 hex chars of `SHA-256(pairing secret)`.
    ```json
    { "type": "pair_request", "name": "Abel's iPhone", "platform": "ios", "key": "<b64 device public key>" }
    ```
+   The daemon keeps the first 60 characters of `name` (control characters dropped) and the
+   first 20 ASCII letters and digits of `platform`; a request whose `key` isn't 32 bytes is
+   ignored.
 3. The daemon asks the person at the terminal: `Pair Abel's iPhone (ios)? y/n`.
 4. On yes, it makes the device id and relay token, registers them with the relay
    (`device_add`), keeps the device, and answers on the slot:

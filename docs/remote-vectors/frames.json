@@ -1,0 +1,347 @@
+{
+  "about": "seq and ts, as the daemon applies them to a device's frames (device_to_daemon, run in order on one daemon — checked against it) and as the phone must apply them to the daemon's (daemon_to_device, in order). The clock is now for both. Keys and ids are seal.json's; aad is <daemon id>:<device id>.",
+  "clock_skew_ms": 300000,
+  "daemon_to_device": [
+    {
+      "accepted": true,
+      "device_receives": {
+        "data": "FQ2R4K4wZuITRd3u89dwEYyce_DqWJr4lnLBiGUt-WPTN9fUHrp_QwjIqYxgm7L_HVhQR1GGFith68SzCCgD9hpyrV9qW408bnQlWwsxxyhSGFb4Ir574Bccw3_yAAVeeK9gx2a-0Mqfd1VarVUOoWV6tQPqetKGQ5fSC_gB7w0EwGAnbY6M338-a1oocNO1qvWXiyz9SQcFGJBmOrumtcfioHXkPFWWGVtc1QVBfzFAgu604L6jWnMrgTcI4g",
+        "type": "recv"
+      },
+      "name": "daemon seq 1",
+      "plaintext": "{\"rpc\":{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":[{\"name\":\"acme\",\"projects\":[\"site\",\"api\"]},{\"name\":\"home\",\"projects\":[]}]},\"seq\":1,\"ts\":1760000000000}",
+      "why": "the first frame on the connection"
+    },
+    {
+      "accepted": false,
+      "device_receives": {
+        "data": "FQ2R4K4wZuITRd3u89dwEYyce_DqWJr4lnLBiGUt-WPTN9fUHrp_QwjIqYxgm7L_HVhQR1GGFith68SzCCgD9hpyrV9qW408bnQlWwsxxyhSGFb4Ir574Bccw3_yAAVeeK9gx2a-0Mqfd1VarVUOoWV6tQPqetKGQ5fSC_gB7w0EwGAnbY6M338-a1oocNO1qvWXiyz9SQcFGJBmOrumtcfioHXkPFWWGVtc1QVBfzFAgu604L6jWnMrgTcI4g",
+        "type": "recv"
+      },
+      "name": "daemon seq 1 again",
+      "plaintext": "{\"rpc\":{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":[{\"name\":\"acme\",\"projects\":[\"site\",\"api\"]},{\"name\":\"home\",\"projects\":[]}]},\"seq\":1,\"ts\":1760000000000}",
+      "why": "not above the last seq seen"
+    },
+    {
+      "accepted": true,
+      "device_receives": {
+        "data": "r7z0DgorR9X4hriJhT3Jrfr-DxqPMYov73wDu5x9IX2pHmGk_ebiKLpNyP1TldA4-aHUIVMZJMipFcOSQ-lYlxemmAoXgzXn5ODI9bDqM48l77j7io27ffBrLPtdI1mEvqQ0OTgGCSmBgjWRTSUgWkWBd770GqHfyWMEu07Lc7kNGtobOsNOzX_CWYeMPFarta6ix9Tu2M_3ZW3_ayQ13oSBfqDI9dew48PIBrkuq9GLYZthFQhj0AaJjBFmKg",
+        "type": "recv"
+      },
+      "name": "daemon seq 3",
+      "plaintext": "{\"rpc\":{\"id\":3,\"jsonrpc\":\"2.0\",\"result\":[{\"name\":\"acme\",\"projects\":[\"site\",\"api\"]},{\"name\":\"home\",\"projects\":[]}]},\"seq\":3,\"ts\":1760000000000}",
+      "why": "seq may skip"
+    },
+    {
+      "accepted": false,
+      "device_receives": {
+        "data": "hxVH-R84eBtB97Aq-7MndewC0uE2e6ld2RGSl7Yhxw2eLS1_xUBRmfIWjd0TEGppamh-xWDrG0AKEPHdt0bKEsPWnIITe7XNMfg0RI-6p91Av9s_lRWlb975fUYw5M1xc29rG3arM5_eZeo_Vr2ndTSYxx4fvUP9lWjY6y3odTBHLCuiSvPQiSq8zUeFsSy7zY3tILSC5uNIOHWScuPuzNcG-Z_xkNKrSTrq5IzfonzIgw8VHkM9okPlq_SAwQ",
+        "type": "recv"
+      },
+      "name": "daemon seq 2",
+      "plaintext": "{\"rpc\":{\"id\":2,\"jsonrpc\":\"2.0\",\"result\":[{\"name\":\"acme\",\"projects\":[\"site\",\"api\"]},{\"name\":\"home\",\"projects\":[]}]},\"seq\":2,\"ts\":1760000000000}",
+      "why": "below the last seq seen"
+    },
+    {
+      "accepted": false,
+      "device_receives": {
+        "data": "-49D4RuX6-gbB_yAg4VaS4c0taMRULA7r_KsOsSp6XgYJMOiHfQdibtquAg6sQDw-UBf5TIqJ84taJRvXzyelsJSoAaOVsrELwfEVRig116lKwARLmpcscDJYFc0oH-Fpfm6nyb1_K7oOa9XrU4NKA6hzg-1C5rS1WAcskxd01SBMVBkavZefCmECyFC3Nq2ddvfuNKq4c8gkP7cwlw7RJYLnZTuS_ywBL-eE-PotaLWPBRS4hSUBbfoUwi_bA",
+        "type": "recv"
+      },
+      "name": "daemon seq 4 from too long ago",
+      "plaintext": "{\"rpc\":{\"id\":3,\"jsonrpc\":\"2.0\",\"result\":[{\"name\":\"acme\",\"projects\":[\"site\",\"api\"]},{\"name\":\"home\",\"projects\":[]}]},\"seq\":4,\"ts\":1759999699999}",
+      "why": "ts more than 5 minutes off the phone's clock"
+    },
+    {
+      "accepted": false,
+      "device_receives": {
+        "data": "6I5JWAv5C4GmUP0VBXyDFHJgAhfE40Np2JrdXn3E3TJ0xOjlrR9aiDLIGVcGCskMFUZJTcl-cSnDYywOS-WBvUd8ndjTO3okZRXq7kce34axPRAo3z1aHRTc37yp-E8in7GXjqCEuFdhy565HK-wzOK9X_hqch5ADUMTqLPlBbhEjlUmavD-vbR1oS1F0gQ0MSgjW6imhDz-iWky90cL47_alN3UuCNo",
+        "type": "recv"
+      },
+      "name": "seq 4 sealed by a stranger",
+      "plaintext": "{\"rpc\":{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"session\":1,\"text\":\"hi\",\"type\":\"notice\"}},\"seq\":4,\"ts\":1760000000000}",
+      "why": "doesn't open with the daemon's key"
+    }
+  ],
+  "device_to_daemon": [
+    {
+      "accepted": true,
+      "daemon_answers": {
+        "rpc": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": [
+            {
+              "name": "acme",
+              "projects": [
+                "site",
+                "api"
+              ]
+            },
+            {
+              "name": "home",
+              "projects": []
+            }
+          ]
+        },
+        "seq": 1,
+        "ts": 1760000000000
+      },
+      "daemon_receives": {
+        "data": "dYNGxR01ggcworihTKezWmow3qmWyFWzJXpkpIpx5lbxJeKfyDHBxhEcMJHEpGvCkQDvLvJ44Fn-NSXy4WhxQH8DJLZKd3yIG9rBnQldhO32-LGrcZB9A5sxj-p0iCRNso9njAQmbH2wr2_2EBlJtcb4GRp8EbieXwIGKZ4",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "type": "recv"
+      },
+      "name": "seq 1",
+      "plaintext": "{\"rpc\":{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"squads\"},\"seq\":1,\"ts\":1760000000000}",
+      "why": "the first frame on the connection"
+    },
+    {
+      "accepted": false,
+      "daemon_answers": null,
+      "daemon_receives": {
+        "data": "P7fIQdJM1shfOPYyUrk7i_BBpD4Lb613gY66rs-CcEinlYtk-QPnSIVmMGq5oNI7TPZSAPbc_TFANXA_HzAXK-nv_t7q8B13ErE6uhGtZtpaQ2Kz9Rh5kzomaM3bfHfyP57plzl4NURwy7lF4HE7nbkpGvGUc0bWwUlQTUA",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "type": "recv"
+      },
+      "name": "seq 1 again",
+      "plaintext": "{\"rpc\":{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"squads\"},\"seq\":1,\"ts\":1760000000000}",
+      "why": "not above the last seq seen"
+    },
+    {
+      "accepted": false,
+      "daemon_answers": null,
+      "daemon_receives": {
+        "data": "r5THfFNnWYWqhKjt2CJNcm5lwSJUqAx89OPT8cbbOFxZhAlTv76FTrV9_vnQLY6ap5rQP6PLMrnCbeFylVistQKSkKDDOx4t12-Nrd-sD1NlqNi4oBrF5AYl0SQbxBmmFUw-k-waViT71ITWSKlvkJs3WoFAJYbFUqMWSCA",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "type": "recv"
+      },
+      "name": "seq 2, from too long ago",
+      "plaintext": "{\"rpc\":{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"squads\"},\"seq\":2,\"ts\":1759999699999}",
+      "why": "ts more than 5 minutes off; a dropped frame doesn't move seq"
+    },
+    {
+      "accepted": false,
+      "daemon_answers": null,
+      "daemon_receives": {
+        "data": "gwGdlylBE8-iXkm_POScbczh_hxy6tRHVNqBiv_M3GhJ_kAHJdP4WKXK6gYACw81YltktcqA5tLt4SmBzVw6uB6RIAT34r6zCo0PWjCC434yQfCZN7ixhxKCUs_X3bjBzeDu0GTwCKNU06t4ck1CDOaDL2hBuFqLs0pf7oM",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "type": "recv"
+      },
+      "name": "seq 2, from too far ahead",
+      "plaintext": "{\"rpc\":{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"squads\"},\"seq\":2,\"ts\":1760000300001}",
+      "why": "ts more than 5 minutes off"
+    },
+    {
+      "accepted": true,
+      "daemon_answers": {
+        "rpc": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": [
+            {
+              "name": "acme",
+              "projects": [
+                "site",
+                "api"
+              ]
+            },
+            {
+              "name": "home",
+              "projects": []
+            }
+          ]
+        },
+        "seq": 2,
+        "ts": 1760000000000
+      },
+      "daemon_receives": {
+        "data": "6iie_i0b6eL726TmjqP43PyHer8azzmY2Kd5SqpL1yOhC56axNDoLrU1NB-cDCcXdHugznjiDcLR22k12XMw-jtoBRakflW3slwecXOMV46ApWwTk1tzbNRRIkVEaVSiSr4Ilbv08WQIpaWNp60BwewlAxZOEb7nBi69rCw",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "type": "recv"
+      },
+      "name": "seq 2, 5 minutes off exactly",
+      "plaintext": "{\"rpc\":{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"squads\"},\"seq\":2,\"ts\":1759999700000}",
+      "why": "5 minutes off is still in"
+    },
+    {
+      "accepted": true,
+      "daemon_answers": {
+        "rpc": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": [
+            {
+              "name": "acme",
+              "projects": [
+                "site",
+                "api"
+              ]
+            },
+            {
+              "name": "home",
+              "projects": []
+            }
+          ]
+        },
+        "seq": 3,
+        "ts": 1760000000000
+      },
+      "daemon_receives": {
+        "data": "Fg9tLltgYXxgFU2QRy1uRM8eFr96PKZKPgsYHjZJDSyi4S5Wy7pzD47mexNfUdNq4aMSJ11KTjm5HfZHeEyaBr8ha5SGbjzhcKZE8CczF6cYbLSaaT5C2p6eFVJLU0Za-VCLjca85tJrplzbQYXDmgCTMZ6pSRp0b8F97zo",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "type": "recv"
+      },
+      "name": "seq 5",
+      "plaintext": "{\"rpc\":{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"squads\"},\"seq\":5,\"ts\":1760000000000}",
+      "why": "seq may skip; it only has to go up"
+    },
+    {
+      "accepted": false,
+      "daemon_answers": null,
+      "daemon_receives": {
+        "data": "jlguG8PRfYfKA_Sp7PjPsieWnpItoJDFc-V7FdPYXgdd9ka8w0e05FUvDcwY9TdqVJcMd1EobHf_Ch0mxp8HeBMB5QAiWWVbzNlL7QEl_Axfe2cJCvz2zYLLTUCOqAn3mASfH-y4hrGxaOZgfHn3VBI44YYBeecMOCCnw5Q",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "type": "recv"
+      },
+      "name": "seq 4",
+      "plaintext": "{\"rpc\":{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"squads\"},\"seq\":4,\"ts\":1760000000000}",
+      "why": "below the last seq seen"
+    },
+    {
+      "accepted": false,
+      "daemon_answers": null,
+      "daemon_receives": {
+        "data": "Ltajan8bZs5DGOtnHZTRjWTJSBTTzcfms2hKv9d7hHbXvn904iAbG5Gj2u6kMu8ubYdYtWsSzVOZIEDpQZtY1m5ohhsvA4t30nk_6PGdmpCmcHV7oaH9tXOJrQWbh0qXsP_Kk3jZHNgASIyQ8ffiSTcUl0G1jpPR-Ye61Jk",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "type": "recv"
+      },
+      "name": "seq 6 sealed by a stranger",
+      "plaintext": "{\"rpc\":{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"squads\"},\"seq\":6,\"ts\":1760000000000}",
+      "why": "doesn't open with the device's key"
+    },
+    {
+      "accepted": true,
+      "daemon_answers": {
+        "rpc": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": [
+            {
+              "name": "acme",
+              "projects": [
+                "site",
+                "api"
+              ]
+            },
+            {
+              "name": "home",
+              "projects": []
+            }
+          ]
+        },
+        "seq": 4,
+        "ts": 1760000000000
+      },
+      "daemon_receives": {
+        "data": "tY_ur34j4OZTGhAc_9S8AL562Nav987QLtH7kebwyzUW8KVQ57LMPXMXqxs_uVADs2l-gcDheEOuQnxR4zWz1AkLWBJM-F1355Tw8cZDHccJSuXQsmABmYfYVMgoPx6sXq7KR0DNQoO2CFPzRH6GMuLaPNKW3J2QumlIts4",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "type": "recv"
+      },
+      "name": "seq 6",
+      "plaintext": "{\"rpc\":{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"squads\"},\"seq\":6,\"ts\":1760000000000}",
+      "why": "the stranger's frame didn't move seq"
+    },
+    {
+      "name": "the phone reconnects",
+      "relay_tells_daemon": [
+        {
+          "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+          "online": false,
+          "type": "presence"
+        },
+        {
+          "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+          "online": true,
+          "type": "presence"
+        }
+      ],
+      "why": "a new WebSocket: both directions count from 1 again"
+    },
+    {
+      "accepted": true,
+      "daemon_answers": {
+        "rpc": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": [
+            {
+              "name": "acme",
+              "projects": [
+                "site",
+                "api"
+              ]
+            },
+            {
+              "name": "home",
+              "projects": []
+            }
+          ]
+        },
+        "seq": 1,
+        "ts": 1760000000000
+      },
+      "daemon_receives": {
+        "data": "GqWTgkseLFwSzsTG4Tu6HwpoM8Y7AKdMoAHVu5lrWFfW54KB9hA3KSRtlvIya9hK7oDG22qkoGPPYUj_OruewpFKW7FUbmcl4EJ_zIK8jMRHlxiMPuhXXxdUIEr-rP-W4HFa0WDjX0502Ql7QagedhxgANTOI4ke8DN2hT8",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "type": "recv"
+      },
+      "name": "seq 1 on the new connection",
+      "plaintext": "{\"rpc\":{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"squads\"},\"seq\":1,\"ts\":1760000000000}",
+      "why": "counting starts over; the daemon's answer is its seq 1 too"
+    },
+    {
+      "accepted": false,
+      "daemon_answers": null,
+      "daemon_receives": {
+        "data": "CyMsf16lL7twzy96v_w8gLf20AzbMN9mZJEcERmAfnCMDLCOkmoijzXo0rMSmpREmMPMes67NZixpmI3E9_UH1OLcUzskqhrDq7AwkVpZ_iIdjdC5FWJeYvBBLDOdVchlm-dIxPADtwUKQiCXKx2C7MpvjAbxpYbEC0np1s",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "type": "recv"
+      },
+      "name": "seq 0",
+      "plaintext": "{\"rpc\":{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"squads\"},\"seq\":0,\"ts\":1760000000000}",
+      "why": "seq starts at 1"
+    }
+  ],
+  "now": 1760000000000,
+  "push": {
+    "about": "A push's data is a daemon-to-device frame with seq 0: shown, not counted, and not checked against the connection's seq.",
+    "daemon_sends": {
+      "body": "acme · T-38",
+      "category": "approval",
+      "collapse": "approval-17",
+      "data": "sVIMslxblKo5CBjDHqcO735TLDiphuX1kPK7DU1zvwOT3h9G19-55NoTe-pFXLlOLe142sD19mqoPX-uMhvGsRkih51V7GZOCnp8CIHr8veUB4Dq42ez3ogUUPAnjQptZTGqBhIlaK2xZMXBhZHiHbl1ezLyRaNkTnbinX5ePL0xLTdAG1gOPZenkyXRbC9r28qBw76TfJ6t5jGREGs_YfB-BdzhKRRLPmjfaPy7KzGkvyGMrnnI0kUv99Cn4j9USQFCFLDswfE4II7winpuHROKlJhM-9f80wu-R8L1avqPYIggqB5MpuiS85AzcMUewTVI1fnmcinGiLlomERrHq73bRDmW9BWKJA78fedHfK2ekdYkAo2jLjqDXg8vQR_0OTvwWI4q-va2hyMR7Ng1X_wZVMHTADEOOEv5Fus6BSdoOT8KPfBluECzon1i5QQiaYW6umkLg",
+      "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+      "title": "backend asks to run a command",
+      "type": "push"
+    },
+    "plaintext": "{\"rpc\":{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"approval\":{\"action\":\"git push origin main\",\"id\":17,\"member\":\"backend\",\"reason\":\"배포 브랜치에 올립니다\",\"session\":4242,\"ticket\":38,\"tool\":\"Bash\"},\"squad\":\"acme\",\"type\":\"approval_requested\"}},\"seq\":0,\"squad\":\"acme\",\"ts\":1760000000000}",
+    "sealed": {
+      "aad": "4e03a65cc601c4c9135d6c771cd878e9:b9e7dbfc95945ac17102665e1cc82fa6",
+      "ciphertext": "k94fRtffueTaE3vqRVy5Ti3teNrA9fZqqD1_rjIbxrEZIoedVexmTgp6fAiB6_L3lAeA6uNns96IFFDwJ40KbWUxqgYSJWitsWTFwYWR4h25dXsy8kWjZE524p1-Xjy9MS03QBtYDj2Xp5Ml0Wwva9vKgcO-k3yereYxkRBrP2HwfgXc4SkUSz5o32j8uysxpL8hjK55yNJFL_fQp-I_VEkBQhSw7MHxOCCO8Ip6bh0TipSYTPvX_NMLvkfC9Wr6j2CIIKgeTKbokvOQM3DFHsE1SNX55nIpxoi5aJhEax6u920Q5lvQViiQO_H3nR3ytnpHWJAKNoy46g14PL0Ef9Dk78FiOKvr2tocjEezYNV_8GVTB0wAxDjhL-RbrOgUnaDk_Cj3wZbhAs6J9YuUEImmFurppC4",
+      "enc": "sVIMslxblKo5CBjDHqcO735TLDiphuX1kPK7DU1zvwM",
+      "ikm_e": "2E3wrlpe5Z-o59xyuvlqylJ0wQrR68YelimPs3fNU-U",
+      "info": "equipe/1 daemon-to-device",
+      "kind": "daemon_to_device",
+      "mode": "auth",
+      "name": "push data",
+      "pk_e": "sVIMslxblKo5CBjDHqcO735TLDiphuX1kPK7DU1zvwM",
+      "plaintext": "{\"rpc\":{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"approval\":{\"action\":\"git push origin main\",\"id\":17,\"member\":\"backend\",\"reason\":\"배포 브랜치에 올립니다\",\"session\":4242,\"ticket\":38,\"tool\":\"Bash\"},\"squad\":\"acme\",\"type\":\"approval_requested\"}},\"seq\":0,\"squad\":\"acme\",\"ts\":1760000000000}",
+      "psk": false,
+      "recipient": "device",
+      "sealed": "sVIMslxblKo5CBjDHqcO735TLDiphuX1kPK7DU1zvwOT3h9G19-55NoTe-pFXLlOLe142sD19mqoPX-uMhvGsRkih51V7GZOCnp8CIHr8veUB4Dq42ez3ogUUPAnjQptZTGqBhIlaK2xZMXBhZHiHbl1ezLyRaNkTnbinX5ePL0xLTdAG1gOPZenkyXRbC9r28qBw76TfJ6t5jGREGs_YfB-BdzhKRRLPmjfaPy7KzGkvyGMrnnI0kUv99Cn4j9USQFCFLDswfE4II7winpuHROKlJhM-9f80wu-R8L1avqPYIggqB5MpuiS85AzcMUewTVI1fnmcinGiLlomERrHq73bRDmW9BWKJA78fedHfK2ekdYkAo2jLjqDXg8vQR_0OTvwWI4q-va2hyMR7Ng1X_wZVMHTADEOOEv5Fus6BSdoOT8KPfBluECzon1i5QQiaYW6umkLg",
+      "sender": "daemon",
+      "sk_e": "HPS2EQLMNjTM6icVz7TCYe7cggVxLCeTDzRCHcGYV6w"
+    }
+  }
+}

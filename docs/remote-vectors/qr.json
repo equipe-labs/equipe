@@ -1,0 +1,112 @@
+{
+  "about": "equipe://pair?r=&d=&k=&s=&n= — every parameter required, each once, in any order; unknown ones ignored. Values are percent-decoded (UTF-8); the daemon escapes every byte but A-Z a-z 0-9 - _ . ~, and never writes +. r: https://, or http:// only to localhost / 127.0.0.1 (development). d: 32 lowercase hex. k, s: unpadded base64url of exactly 32 bytes. slot = first 32 hex chars of SHA-256(secret).",
+  "invalid": [
+    {
+      "name": "another scheme",
+      "uri": "https://pair?r=https%3A%2F%2Frelay.equipe.im&d=4e03a65cc601c4c9135d6c771cd878e9&k=8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik&s=PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg&n=abel-macmini",
+      "why": "not equipe://pair?"
+    },
+    {
+      "name": "another host",
+      "uri": "equipe://pairing?r=https%3A%2F%2Frelay.equipe.im&d=4e03a65cc601c4c9135d6c771cd878e9&k=8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik&s=PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg&n=abel-macmini",
+      "why": "not equipe://pair?"
+    },
+    {
+      "name": "no relay",
+      "uri": "equipe://pair?d=4e03a65cc601c4c9135d6c771cd878e9&k=8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik&s=PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg&n=abel-macmini",
+      "why": "no r"
+    },
+    {
+      "name": "no daemon id",
+      "uri": "equipe://pair?r=https%3A%2F%2Frelay.equipe.im&k=8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik&s=PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg&n=abel-macmini",
+      "why": "no d"
+    },
+    {
+      "name": "no key",
+      "uri": "equipe://pair?r=https%3A%2F%2Frelay.equipe.im&d=4e03a65cc601c4c9135d6c771cd878e9&s=PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg&n=abel-macmini",
+      "why": "no k"
+    },
+    {
+      "name": "no secret",
+      "uri": "equipe://pair?r=https%3A%2F%2Frelay.equipe.im&d=4e03a65cc601c4c9135d6c771cd878e9&k=8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik&n=abel-macmini",
+      "why": "no s"
+    },
+    {
+      "name": "no machine name",
+      "uri": "equipe://pair?r=https%3A%2F%2Frelay.equipe.im&d=4e03a65cc601c4c9135d6c771cd878e9&k=8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik&s=PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg",
+      "why": "no n"
+    },
+    {
+      "name": "the relay over plain http",
+      "uri": "equipe://pair?r=http%3A%2F%2Frelay.equipe.im&d=4e03a65cc601c4c9135d6c771cd878e9&k=8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik&s=PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg&n=abel-macmini",
+      "why": "the relay isn't https"
+    },
+    {
+      "name": "a daemon id in uppercase",
+      "uri": "equipe://pair?r=https%3A%2F%2Frelay.equipe.im&d=4E03A65CC601C4C9135D6C771CD878E9&k=8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik&s=PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg&n=abel-macmini",
+      "why": "d isn't 32 lowercase hex"
+    },
+    {
+      "name": "a daemon id too short",
+      "uri": "equipe://pair?r=https%3A%2F%2Frelay.equipe.im&d=4e03a65cc601c4c9135d6c771cd878&k=8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik&s=PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg&n=abel-macmini",
+      "why": "d isn't 32 lowercase hex"
+    },
+    {
+      "name": "a key of 31 bytes",
+      "uri": "equipe://pair?r=https%3A%2F%2Frelay.equipe.im&d=4e03a65cc601c4c9135d6c771cd878e9&k=8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4g&s=PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg&n=abel-macmini",
+      "why": "k isn't 32 bytes"
+    },
+    {
+      "name": "a secret of 33 bytes",
+      "uri": "equipe://pair?r=https%3A%2F%2Frelay.equipe.im&d=4e03a65cc601c4c9135d6c771cd878e9&k=8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik&s=PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNgA&n=abel-macmini",
+      "why": "s isn't 32 bytes"
+    },
+    {
+      "name": "a secret in standard base64",
+      "uri": "equipe://pair?r=https%3A%2F%2Frelay.equipe.im&d=4e03a65cc601c4c9135d6c771cd878e9&k=8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik&s=+M49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg&n=abel-macmini",
+      "why": "s isn't unpadded base64url"
+    },
+    {
+      "name": "the daemon id twice",
+      "uri": "equipe://pair?r=https%3A%2F%2Frelay.equipe.im&d=4e03a65cc601c4c9135d6c771cd878e9&k=8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik&s=PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg&n=abel-macmini&d=4e03a65cc601c4c9135d6c771cd878e9",
+      "why": "d twice"
+    },
+    {
+      "name": "a broken % escape",
+      "uri": "equipe://pair?r=https%3A%2F%2Frelay.equipe.im&d=4e03a65cc601c4c9135d6c771cd878e9&k=8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik&s=PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg&n=abel%2",
+      "why": "a cut % escape"
+    }
+  ],
+  "valid": [
+    {
+      "daemon": "4e03a65cc601c4c9135d6c771cd878e9",
+      "key": "8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik",
+      "machine": "abel-macmini",
+      "name": "the daemon's code",
+      "relay": "https://relay.equipe.im",
+      "secret": "PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg",
+      "slot": "bca9359074636a24d0cef7187b181a21",
+      "uri": "equipe://pair?r=https%3A%2F%2Frelay.equipe.im&d=4e03a65cc601c4c9135d6c771cd878e9&k=8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik&s=PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg&n=abel-macmini"
+    },
+    {
+      "daemon": "4e03a65cc601c4c9135d6c771cd878e9",
+      "key": "8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik",
+      "machine": "Abel의 Mac mini's",
+      "name": "a name with spaces, an apostrophe and Hangul",
+      "relay": "https://relay.equipe.im",
+      "secret": "PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg",
+      "slot": "bca9359074636a24d0cef7187b181a21",
+      "uri": "equipe://pair?r=https%3A%2F%2Frelay.equipe.im&d=4e03a65cc601c4c9135d6c771cd878e9&k=8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik&s=PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg&n=Abel%EC%9D%98%20Mac%20mini%27s"
+    },
+    {
+      "daemon": "4e03a65cc601c4c9135d6c771cd878e9",
+      "key": "8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik",
+      "machine": "abel-macmini",
+      "name": "a relay on this machine, for development",
+      "relay": "http://localhost:8787",
+      "secret": "PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg",
+      "slot": "bca9359074636a24d0cef7187b181a21",
+      "uri": "equipe://pair?r=http%3A%2F%2Flocalhost%3A8787&d=4e03a65cc601c4c9135d6c771cd878e9&k=8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik&s=PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg&n=abel-macmini"
+    }
+  ]
+}

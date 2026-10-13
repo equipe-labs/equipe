@@ -81,6 +81,12 @@ fn encode(text: &str) -> String {
         .collect()
 }
 
+/// The QR code's address: where the relay is, which daemon, its key, the
+/// pairing secret and the machine's name.
+pub fn pairing_url(relay: &str, id: &str, public: &str, secret: &[u8], name: &str) -> String {
+    format!("equipe://pair?r={}&d={id}&k={public}&s={}&n={}", encode(relay), super::b64(secret), encode(name))
+}
+
 /// The commands a phone may send, as it may send them: from a phone a request
 /// is allowed once, never always; starting, closing, merging and changing
 /// modes stay at the console.
@@ -144,14 +150,7 @@ impl Core {
         let secret = super::random::<32>();
         let slot = slot(&secret);
         let expires = now + PAIRING_MS;
-        let url = format!(
-            "equipe://pair?r={}&d={}&k={}&s={}&n={}",
-            encode(&config.relay),
-            config.id,
-            config.public,
-            super::b64(&secret),
-            encode(&super::hostname())
-        );
+        let url = pairing_url(&config.relay, &config.id, &config.public, &secret, &super::hostname());
         self.pairing = Some(Pairing { slot: slot.clone(), secret, expires, request: None, url: url.clone(), started: now, shown: false });
         Ok((url, vec![Action::Relay(json!({ "type": "pair_open", "slot": slot, "expires": expires }))]))
     }
@@ -464,6 +463,11 @@ impl Core {
         out
     }
 }
+
+/// The conformance vectors the equipe app is built against.
+#[cfg(test)]
+#[path = "vectors.rs"]
+mod vectors;
 
 #[cfg(test)]
 pub(crate) mod tests {
