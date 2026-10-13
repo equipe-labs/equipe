@@ -629,6 +629,15 @@ permission modes), with the presets on top (`equipe_core::permissions`):
 - **Nobody answering is a no.** A request waits 30 minutes for the person, then is
   declined; stopping the member withdraws it. Every answer is noted on the ticket's
   record.
+- **Sending in the person's name from a desktop app** (`equipe_core::desktop_gate`).
+  Before the desktop helper makes an input, the daemon asks `Handle::desktop_gate`.
+  In one of the squad's messaging apps (`/send-apps`; Teams, Slack, Mail… by
+  default) whatever may send — Return, a click on a button that isn't plainly
+  harmless, a drag — waits for the person, in every mode, with the draft, the
+  conversation and a screenshot to open (`o`); `a` is never offered. Typing a
+  draft, looking and scrolling go ahead; other apps never ask. Payment, account
+  deletion, password fields and security settings take no input at all. See
+  [DESKTOP-CONTROL.md](./DESKTOP-CONTROL.md#send-gate-t-23).
 
 ### Memory
 

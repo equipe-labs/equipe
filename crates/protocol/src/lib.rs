@@ -281,6 +281,10 @@ pub struct Approval {
     pub action: String,
     /// Why, in the member's words, when it gave one.
     pub reason: Option<String>,
+    /// A picture of what's being allowed — the screen before a send from a
+    /// desktop app: a file on this Mac, deleted once answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
 }
 
 /// The person's answer to an [`Approval`].
@@ -692,6 +696,7 @@ mod tests {
                 tool: "Bash".into(),
                 action: "npm publish".into(),
                 reason: None,
+                preview: None,
             },
         };
         assert_eq!(event.squad(), Some("acme"));

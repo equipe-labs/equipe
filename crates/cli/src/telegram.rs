@@ -1005,7 +1005,7 @@ mod tests {
     #[test]
     fn a_request_comes_with_buttons_and_says_how_it_was_answered() {
         let mut b = bridge();
-        let approval = Approval { id: 7, session: 2, member: "frontend".into(), ticket: Some(3), tool: "Bash".into(), action: "npm i <pkg>".into(), reason: None };
+        let approval = Approval { id: 7, session: 2, member: "frontend".into(), ticket: Some(3), tool: "Bash".into(), action: "npm i <pkg>".into(), reason: None, preview: None };
         let outs = b.on_event("acme", &Event::ApprovalRequested { squad: "acme".into(), approval });
         assert_eq!(outs.len(), 1);
         assert!(text(&outs[0]).contains("<b>frontend</b> asks to run · T-3") && text(&outs[0]).contains("npm i &lt;pkg&gt;"), "{outs:?}");

@@ -34,6 +34,7 @@ use tokio::task::JoinHandle;
 
 use crate::board::{self, Candidate};
 use crate::browser;
+use crate::desktop_gate::{self, Act, Verdict};
 use crate::journal::{self, Journal, SessionRecord, TicketWork};
 use crate::permissions;
 use crate::roles::{self, Role, Teammate};
@@ -108,6 +109,7 @@ enum Request {
     Snapshot(String, oneshot::Sender<Snapshot>),
     Subscribe(String, oneshot::Sender<Subscription>),
     Tool(ToolCall, oneshot::Sender<ToolResult>),
+    DesktopGate(Box<desktop_gate::Check>, oneshot::Sender<ToolResult>),
     Busy(oneshot::Sender<equipe_protocol::rpc::Busy>),
     Shutdown(oneshot::Sender<()>),
 }
@@ -143,6 +145,15 @@ impl Handle {
     pub async fn tool(&self, call: ToolCall) -> ToolResult {
         let (tx, rx) = oneshot::channel();
         let _ = self.requests.send(Request::Tool(call, tx));
+        rx.await.unwrap_or(ToolResult { text: "equipe is shutting down".into(), is_error: true })
+    }
+
+    /// Whether a member's desktop input may go ahead: at once, after the
+    /// person's yes when it may send in their name, or never. `is_error` means
+    /// no, with why in `text`; the input must not reach the screen.
+    pub async fn desktop_gate(&self, check: desktop_gate::Check) -> ToolResult {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.requests.send(Request::DesktopGate(Box::new(check), tx));
         rx.await.unwrap_or(ToolResult { text: "equipe is shutting down".into(), is_error: true })
     }
 
@@ -373,6 +384,7 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                     let _ = reply.send((rt.snapshot(&squad), rx));
                 }
                 Some(Request::Tool(call, reply)) => rt.tool(call, reply).await,
+                Some(Request::DesktopGate(check, reply)) => rt.gate_desktop(*check, reply),
                 Some(Request::Busy(reply)) => {
                     let mut working: Vec<String> = rt
                         .sessions
@@ -2012,7 +2024,7 @@ impl Runtime {
         }
         let approval_id = self.next_approval;
         self.next_approval += 1;
-        let approval = Approval { id: approval_id, session: id, member: call.member.clone(), ticket, tool, action, reason };
+        let approval = Approval { id: approval_id, session: id, member: call.member.clone(), ticket, tool, action, reason, preview: None };
         self.pending.insert(
             approval_id,
             Pending { squad: call.squad.clone(), approval: approval.clone(), input, reply },
@@ -2083,9 +2095,68 @@ impl Runtime {
             tool: CONFIRM.to_owned(),
             action,
             reason: (!why.is_empty()).then_some(why),
+            preview: None,
         };
         self.pending.insert(approval_id, Pending { squad: call.squad.clone(), approval: approval.clone(), input: json!({}), reply });
         self.publish(Event::ApprovalRequested { squad: call.squad.clone(), approval });
+        let internal = self.internal.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(APPROVAL_WAIT).await;
+            let _ = internal.send(Internal::ApprovalTimedOut(approval_id));
+        });
+    }
+
+    /// A member's input on the desktop, before the helper makes it. In a
+    /// messaging app, what may send in the person's name waits for their yes —
+    /// every time, never a rule; some screens take no input at all. The rules
+    /// are [`desktop_gate`]'s.
+    fn gate_desktop(&mut self, check: desktop_gate::Check, reply: oneshot::Sender<ToolResult>) {
+        let refuse = |text: String| ToolResult { text, is_error: true };
+        let Some(id) = self.member_id(&check.squad, &check.member) else {
+            let _ = reply.send(refuse("Unknown member.".into()));
+            return;
+        };
+        let act = Act::of(&check.tool, &check.input);
+        let apps = self.journal(&check.squad).map(Journal::messaging_apps).unwrap_or_default();
+        let ticket = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
+        let action = desktop_gate::describe(&act, &check.scene);
+        let why = match desktop_gate::judge(&act, &check.scene, &apps) {
+            Verdict::Free => {
+                let _ = reply.send(ToolResult { text: String::new(), is_error: false });
+                return;
+            }
+            Verdict::Blocked(why) => {
+                let _ = reply.send(refuse(format!("{why} Ask the person to do it.")));
+                self.publish(Event::Notice { session: id, text: format!("✗ equipe blocked: {}", first_line(&action)) });
+                self.audit(&check.squad, ticket, "equipe", "blocked", &action);
+                return;
+            }
+            Verdict::Ask(why) => why,
+        };
+        let said = check.input.get("why").and_then(Value::as_str).map(str::trim).unwrap_or_default().to_owned();
+        if said.is_empty() {
+            let _ = reply.send(refuse(format!(
+                "This may send in the person's name ({why} in {}), so the person says yes first. \
+                 Call it again with `why`: what you're sending, and to whom, in a line.",
+                check.scene.app.name
+            )));
+            return;
+        }
+        let approval_id = self.next_approval;
+        self.next_approval += 1;
+        let preview = check.screen.as_deref().and_then(|png| save_preview(approval_id, png));
+        let approval = Approval {
+            id: approval_id,
+            session: id,
+            member: check.member.clone(),
+            ticket,
+            tool: desktop_gate::SEND.to_owned(),
+            action,
+            reason: Some(said),
+            preview,
+        };
+        self.pending.insert(approval_id, Pending { squad: check.squad.clone(), approval: approval.clone(), input: check.input, reply });
+        self.publish(Event::ApprovalRequested { squad: check.squad, approval });
         let internal = self.internal.clone();
         tokio::spawn(async move {
             tokio::time::sleep(APPROVAL_WAIT).await;
@@ -2114,7 +2185,16 @@ impl Runtime {
             }
         }
         let why = if why.is_empty() && decision == Decision::Deny { "The person declined." } else { why };
-        let _ = reply.send(if approval.tool == CONFIRM {
+        if let Some(preview) = &approval.preview {
+            let _ = std::fs::remove_file(preview);
+        }
+        let _ = reply.send(if approval.tool == desktop_gate::SEND {
+            // The desktop tool waits on this: nothing reaches the screen on a no.
+            match decision {
+                Decision::Allow | Decision::Always => ToolResult { text: String::new(), is_error: false },
+                Decision::Deny => ToolResult { text: format!("Not sent: {why} Leave the draft as it is and say so."), is_error: true },
+            }
+        } else if approval.tool == CONFIRM {
             // A question the member asked itself: an answer in words, not a permission verdict.
             let text = match decision {
                 Decision::Allow | Decision::Always => format!("The person said yes. Go ahead: {}", approval.action),
@@ -2822,6 +2902,23 @@ fn plain_access(access: Access) -> claude_code::Access {
 }
 
 /// What the engine's permission prompt tool answers: Claude Code reads it as JSON.
+/// The screen before a send, where the person can open it while asked: in
+/// the temp folder, readable by them alone, deleted once answered.
+fn save_preview(id: u64, png: &[u8]) -> Option<String> {
+    use std::io::Write;
+    let path = std::env::temp_dir().join(format!("equipe-send-{}-{id}.png", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(&path).and_then(|mut f| f.write_all(png)).ok()?;
+    Some(path.to_string_lossy().into_owned())
+}
+
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or_default()
+}
+
 fn verdict(decision: Decision, input: &Value, why: &str) -> ToolResult {
     let text = match decision {
         Decision::Allow | Decision::Always => json!({ "behavior": "allow", "updatedInput": input }),

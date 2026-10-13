@@ -1180,6 +1180,13 @@ impl App {
             if let Some(decision) = decision {
                 return vec![Command::Decide { squad: self.squad.clone(), approval: approval.id, decision }];
             }
+            // The screen a send would go from, in Preview.
+            if key.code == KeyCode::Char('o')
+                && let Some(preview) = &approval.preview
+            {
+                let _ = std::process::Command::new("open").arg(preview).spawn();
+                return Vec::new();
+            }
         }
         // On the board, with nothing typed, single keys act on the picked ticket.
         if self.pane == Pane::Board && self.composer.is_empty() && !ctrl && !alt
@@ -1400,6 +1407,10 @@ impl App {
                 Vec::new()
             }
             "browser" => self.browser(rest),
+            "send-apps" => {
+                self.flash = Some(send_apps(&self.squad, rest));
+                Vec::new()
+            }
             "squad" => self.squad_command(rest),
             "home" => {
                 let dir = crate::home::dir(&equipe_providers::credentials::equipe_home(), &self.squad);
@@ -1979,6 +1990,29 @@ pub fn image_path(text: &str) -> Option<PathBuf> {
 }
 
 /// The built-in roles, as `/add` takes them.
+/// `/send-apps`: the apps where a member's send waits for the person's yes —
+/// shown, or changed — kept in the squad's journal, which the daemon reads at
+/// each input.
+fn send_apps(squad: &str, words: &str) -> String {
+    let journal = match equipe_core::journal::Journal::for_squad(&equipe_providers::credentials::equipe_home(), squad) {
+        Ok(journal) => journal,
+        Err(err) => return format!("Couldn't open the squad's settings: {err}"),
+    };
+    let apps = journal.messaging_apps();
+    if words.trim().is_empty() {
+        let list = if apps.is_empty() { "no app".to_owned() } else { apps.join(", ") };
+        return format!("Sends from {list} wait for your yes · /send-apps add|remove <app> · reset");
+    }
+    match equipe_core::desktop_gate::edit_apps(&apps, words) {
+        Ok(apps) => match journal.set_messaging_apps(&apps) {
+            Ok(()) if apps.is_empty() => "No app asks before a send now · /send-apps reset brings the usual ones back".into(),
+            Ok(()) => format!("Sends wait for your yes in: {}", apps.join(", ")),
+            Err(err) => format!("Couldn't keep it: {err}"),
+        },
+        Err(why) => why,
+    }
+}
+
 fn role_names() -> String {
     roles::ROLES.iter().map(|r| r.id).collect::<Vec<_>>().join(" ")
 }
@@ -3001,6 +3035,7 @@ mod tests {
             tool: "Bash".into(),
             action: "npm install".into(),
             reason: None,
+            preview: None,
         }
     }
 

@@ -1799,6 +1799,7 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         "Write" | "Edit" | "MultiEdit" => "edit",
         "WebFetch" => "fetch",
         "Confirm" => "do",
+        equipe_core::desktop_gate::SEND => "send",
         equipe_core::permissions::BROWSER_CODE => "code",
         other => other,
     };
@@ -1813,7 +1814,12 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     // A few lines of the command, never the whole script: the conversation keeps
     // its room, and the keys always show.
     // Code is what's being allowed: more of it shows.
-    let shown = if approval.tool == equipe_core::permissions::BROWSER_CODE { 12 } else { 3 };
+    // A send shows its draft: the person reads what goes out.
+    let shown = match approval.tool.as_str() {
+        equipe_core::permissions::BROWSER_CODE => 12,
+        equipe_core::desktop_gate::SEND => 8,
+        _ => 3,
+    };
     let rows: Vec<&str> = approval.action.lines().collect();
     for (i, row) in rows.iter().take(shown).enumerate() {
         let lead = if i == 0 { format!("{verb}  ") } else { " ".repeat(verb.chars().count() + 2) };
@@ -1829,6 +1835,15 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     }
     if let Some(reason) = &approval.reason {
         lines.push(Line::from(vec![bar(), Span::styled(ui::fit(reason, width), theme.dim())]));
+    }
+    if let Some(preview) = &approval.preview {
+        lines.push(Line::from(vec![
+            bar(),
+            Span::styled("screen  ", theme.dim()),
+            Span::styled(ui::fit(preview, width.saturating_sub(20)), theme.dim()),
+            Span::styled("  o", theme.bold()),
+            Span::styled(" open", theme.dim()),
+        ]));
     }
     // "Always" only where it can become a rule — a chain, an edit outside the
     // worktree, is allowed once at a time; offering more would be a promise
@@ -1848,6 +1863,10 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         keys.push(Span::styled(format!("   · {} more waiting", app.approvals.len() - 1), theme.dim()));
     }
     lines.push(Line::from(keys));
+    // A send asks in every mode: no mode stops it.
+    if approval.tool == equipe_core::desktop_gate::SEND {
+        return lines;
+    }
     // Asked too often? The way to stop it, right where the asking is.
     let member = &approval.member;
     lines.push(Line::from(vec![
@@ -2120,6 +2139,7 @@ mod tests {
             tool: "Bash".into(),
             action: action.into(),
             reason: None,
+            preview: None,
         }
     }
 
@@ -2407,6 +2427,21 @@ mod tests {
         for expected in ["▎ frontend asks · T-3", "▎ run  npm publish", "▎ Release the package", "▎ y allow   a always allow npm publish   n decline", "▎ /mode frontend full stops frontend asking"] {
             assert!(shot.contains(expected), "missing {expected:?} in:\n{shot}");
         }
+    }
+
+    #[test]
+    fn a_send_shows_the_draft_and_the_screen_and_is_only_ever_once() {
+        let (mut app, _) = working();
+        let mut asking = approval("press return in Microsoft Teams · Chat | Kim Minji\n내일 회의 3시로 옮겨요");
+        asking.tool = equipe_core::desktop_gate::SEND.into();
+        asking.reason = Some("Reply to Kim Minji about the meeting".into());
+        asking.preview = Some("/tmp/equipe-send-1-1.png".into());
+        app.on_event(Event::ApprovalRequested { squad: "acme".into(), approval: asking });
+        let shot = screen(&app, 100, 26);
+        for expected in ["▎ send  press return in Microsoft Teams", "내일 회의 3시로 옮겨요", "▎ screen  /tmp/equipe-send-1-1.png  o open", "▎ y allow   n decline"] {
+            assert!(shot.contains(expected), "missing {expected:?} in:\n{shot}");
+        }
+        assert!(!shot.contains("always") && !shot.contains("/mode"), "no mode stops a send:\n{shot}");
     }
 
     #[test]

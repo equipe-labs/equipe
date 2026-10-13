@@ -632,7 +632,7 @@ pub(crate) mod tests {
     fn a_device_away_gets_a_push_that_names_who_not_what() {
         let (mut core, phone, now) = core_with_phone();
         let c = core.config.clone().unwrap();
-        let approval = Approval { id: 9, session: 2, member: "backend".into(), ticket: Some(4), tool: "Bash".into(), action: "rm -rf build".into(), reason: None };
+        let approval = Approval { id: 9, session: 2, member: "backend".into(), ticket: Some(4), tool: "Bash".into(), action: "rm -rf build".into(), reason: None, preview: None };
         let event = Event::ApprovalRequested { squad: "acme".into(), approval };
         // Connected, it hears it over the socket instead.
         assert!(core.on_squad_event("acme", &event).is_empty());
