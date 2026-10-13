@@ -91,7 +91,7 @@ CLAUDE CODE  your claude · signs itself in
 | `equipe status` | Which engines are ready, on which plan, with which models |
 | `equipe roles` | The roles a squad can have, what each does and the model it gets |
 | `equipe squads` | Your squads and the projects each works on |
-| `/squad` · `/project` | In the console: `/squad <name>` switches to another squad (click its name in the header), `/squad new <name> [folder]` starts one, `/squad add <folder>` / `/squad remove <project>` change what a squad works on. With several projects — a product, its site, its app — each shows in the header with who is at work on it (●) and what waits for you there (⚑); members show the project they work in, and the board gives each project a lane below what waits for you. `/project <name>`, a click on it, or **Ctrl-P** (the next one, then all; Alt-1…9 where the terminal sends Alt) puts one in focus — the board, the review card and new requests are about it, and the line under the composer says so. Adding an app suggests a mobile engineer (`/add mobile`) |
+| `/squad` · `/project` | In the console: `/squad <name>` switches to another squad (click its name in the header), `/squad new <name> [folder]` starts one, `/squad add <folder>` / `/squad remove <project>` change what a squad works on. The console is about the whole squad, wherever you run it — in one of its repositories or not, the same screen opens: the header shows the squad, its home folder, and a chip per project with who is at work on it (●) and what waits for you there (⚑), then **all**, where it starts. The board tags every ticket with its project — `home` for work in the squad home — and its kind (`code`, `task`, `action`), and with work in several places gives each a lane below what waits for you; members show the project they work in. `/project <name>`, a click on its chip, or **Ctrl-P** (the next one, then all; Alt-1…9 where the terminal sends Alt, Alt-0 all) filters to one project — the board, the review card and new requests are about it, and the line under the composer says so; `/project all` takes the filter off. Without a filter, what you tell the PM is for the squad, and the PM decides where it goes. Adding an app suggests a mobile engineer (`/add mobile`) |
 | `equipe try "…"` | One turn on whichever engine is ready (`--engine`, `--model`) |
 | `equipe try --edit "…"` | An agent edits your repo **on a new branch**, in its own worktree. Your checkout is untouched; you get review / keep / discard commands |
 
@@ -159,7 +159,9 @@ equipe
 The first run sets up your squad — no repository needed. After that, `equipe`
 opens your squad wherever you run it: inside one of its projects, that project's
 squad; anywhere else, the squad you used last. Run it in a repository no squad
-has yet and the console asks once whether to add it. Members run on
+has yet and the console asks once whether to add it. Either way it opens on the
+whole squad — every project and the squad home — not on the folder you ran it
+in; a project's chip filters to it. Members run on
 [Claude Code](https://code.claude.com/docs/en/setup) with your own plan, or on a
 ChatGPT plan with `equipe login codex`.
 

@@ -48,7 +48,7 @@ pub enum AgentState {
 pub enum Hit {
     /// The squad's name in the header: lists the other squads.
     Squads,
-    /// A project's chip in the header — or "all" (`None`): puts it in focus.
+    /// A project's chip in the header — or "all" (`None`): filters to it.
     Project(Option<usize>),
     Pane(Pane),
     Ticket(TicketId),
@@ -436,6 +436,12 @@ impl App {
         (app, commands)
     }
 
+    /// The console opens on the whole squad, whatever folder it was run in:
+    /// a filter an earlier console left in the daemon is taken off.
+    pub fn unfiltered(&self) -> Command {
+        Command::Focus { squad: self.squad.clone(), project: None }
+    }
+
     pub fn selected(&self) -> Option<&Agent> {
         self.agents.get(self.selected)
     }
@@ -519,9 +525,9 @@ impl App {
         }
     }
 
-    /// Ctrl-P: the next project in focus — after the last, all of them.
+    /// Ctrl-P: filter to the next project — after the last, the whole squad.
     fn next_project(&mut self) -> Vec<Command> {
-        if self.projects.len() < 2 {
+        if self.projects.is_empty() {
             return Vec::new();
         }
         let at = self.focus.as_ref().and_then(|f| self.projects.iter().position(|p| p == f));
@@ -533,17 +539,24 @@ impl App {
         self.focus_on(&name)
     }
 
-    /// Work waiting for the person's review, in the project in focus.
+    /// Work waiting for the person's review, under the project filter.
     pub fn to_review_here(&self) -> Vec<&Ticket> {
         self.to_review().into_iter().filter(|t| self.in_focus(t)).collect()
     }
 
-    /// Everything waiting on the person in the project in focus: work to
+    /// Everything waiting on the person under the project filter: work to
     /// review, then tickets a member put down until the person does their part.
     pub fn for_you_here(&self) -> Vec<&Ticket> {
         let mut out = self.to_review_here();
         out.extend(self.tickets.iter().filter(|t| t.status == TicketStatus::Waiting && self.in_focus(t)));
         out
+    }
+
+    /// Whether open work goes in a lane per project — the squad home's last:
+    /// with no filter, and work in more than one of them.
+    pub fn lanes(&self) -> bool {
+        let home_work = self.tickets.iter().any(|t| !t.status.is_closed() && self.ticket_project(t).is_none());
+        self.focus.is_none() && self.projects.len() + usize::from(home_work) > 1
     }
 
     pub fn board_order(&self) -> Vec<TicketId> {
@@ -553,12 +566,12 @@ impl App {
         let mut order = group(&[TicketStatus::Review]);
         order.extend(group(&[TicketStatus::Waiting]));
         let open = [TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed];
-        if self.focus.is_none() && self.projects.len() > 1 {
-            // A lane for each project, its work in the same order.
-            for project in &self.projects {
+        if self.lanes() {
+            // A lane for each project, then the squad home's, its work in the same order.
+            for lane in self.projects.iter().map(Some).chain([None]) {
                 for status in open {
                     order.extend(group(&[status]).into_iter().filter(|id| {
-                        self.tickets.iter().find(|t| t.id == *id).and_then(|t| self.ticket_project(t)).as_ref() == Some(project)
+                        self.tickets.iter().find(|t| t.id == *id).and_then(|t| self.ticket_project(t)).as_ref() == lane
                     }));
                 }
             }
@@ -1184,11 +1197,11 @@ impl App {
         match key.code {
             KeyCode::Char('c') if ctrl => return self.ctrl_c(now),
             KeyCode::Char('b') if ctrl => self.toggle_board(),
-            // Ctrl-P walks the projects in focus, then all of them.
+            // Ctrl-P walks the projects as filters, then the whole squad.
             KeyCode::Char('p') if ctrl => return self.next_project(),
-            // Alt-1…9 puts a project in focus at once, Alt-0 all — where the
-            // terminal sends Alt (iTerm2's Option sends Esc+).
-            KeyCode::Char(c @ '0'..='9') if alt && self.projects.len() > 1 => {
+            // Alt-1…9 filters to a project at once, Alt-0 the whole squad —
+            // where the terminal sends Alt (iTerm2's Option sends Esc+).
+            KeyCode::Char(c @ '0'..='9') if alt && !self.projects.is_empty() => {
                 let name = match c.to_digit(10).and_then(|n| (n as usize).checked_sub(1)) {
                     Some(at) => match self.projects.get(at) {
                         Some(project) => board::project_name(project),
@@ -1467,8 +1480,9 @@ impl App {
         }
     }
 
-    /// `/project <name>` puts one project in focus — the board, the review card
-    /// and new requests are about it; `/project all` (or no name) shows them all.
+    /// `/project <name>` filters to one project — the board, the review card
+    /// and new requests are about it; `/project all` (or no name) takes the
+    /// filter off: the whole squad, which is where the console starts.
     pub fn focus_on(&mut self, name: &str) -> Vec<Command> {
         let name = name.trim();
         let project = match name {
@@ -1486,8 +1500,8 @@ impl App {
         self.board_selected = None;
         let label = project.as_deref().map(equipe_core::board::project_name);
         self.flash = Some(match &label {
-            Some(name) => format!("{name} in focus: the board and reviews show it, and new work goes there · /project all"),
-            None => "All projects".to_owned(),
+            Some(name) => format!("Only {name}: the board and reviews show it, and new work goes there · /project all"),
+            None => format!("All of {}: every project and the squad home", self.squad),
         });
         vec![Command::Focus { squad: self.squad.clone(), project: label }]
     }
@@ -2684,9 +2698,10 @@ mod tests {
         // Alt and a number goes straight to one, where the terminal sends it.
         let alt_2 = KeyEvent::new(KeyCode::Char('2'), KeyModifiers::ALT);
         assert_eq!(app.on_key(alt_2, Instant::now()), vec![Command::Focus { squad: "acme".into(), project: Some("app".into()) }]);
-        // With one project there is nothing to walk.
+        // One project is a filter too, on and off.
         let (mut one, _, _) = team();
-        assert!(one.on_key(ctrl_p, Instant::now()).is_empty());
+        assert_eq!(one.on_key(ctrl_p, Instant::now()), vec![Command::Focus { squad: "acme".into(), project: Some("repo".into()) }]);
+        assert_eq!(one.on_key(ctrl_p, Instant::now()), vec![Command::Focus { squad: "acme".into(), project: None }]);
     }
 
     #[test]
