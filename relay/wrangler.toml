@@ -1,0 +1,22 @@
+name = "equipe-relay"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+# One Durable Object per daemon (keyed by daemon id) holds its sockets, device
+# registrations and pairing slots.
+[[durable_objects.bindings]]
+name = "DAEMONS"
+class_name = "Daemon"
+
+# One per client IP, counting daemon registrations.
+[[durable_objects.bindings]]
+name = "RATE_LIMITS"
+class_name = "RateLimit"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Daemon", "RateLimit"]
+
+# Secrets (wrangler secret put …), all optional; pushes answer ok:false without them:
+#   APNS_KEY, APNS_KEY_ID, APNS_TEAM_ID, APNS_TOPIC
+#   FCM_SERVICE_ACCOUNT
