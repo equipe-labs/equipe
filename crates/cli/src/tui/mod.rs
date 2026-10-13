@@ -106,7 +106,12 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
     let (mut client, hello) = daemon::attach(&start.squad).await?;
     let mut branch = current_branch(&cwd);
     let daemon_build = hello.version.clone();
+    // Where no project says which squad, the one opened last opens.
+    let _ = equipe_core::squads::remember_last(&equipe_providers::credentials::equipe_home(), &start.squad);
     let (mut app, first) = app::App::from_snapshot(cwd.clone(), hello.snapshot, &start.members);
+    if let Some(folder) = start.offer {
+        app.offer(folder);
+    }
     app.squad_width = saved_squad_width();
     first.into_iter().for_each(|c| client.send(c));
     if daemon_build != daemon::build_id() {
@@ -318,6 +323,11 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                 });
             }
         }
+        if let Some(repo) = app.declined.take()
+            && let Err(err) = equipe_core::squads::decline(&equipe_providers::credentials::equipe_home(), &repo)
+        {
+            app.flash = Some(format!("Couldn't remember that: {err}"));
+        }
         if let Some((squad, members)) = app.switch_to.take() {
             // Another squad: attach to it and show it in place — this one keeps
             // working in the daemon.
@@ -325,6 +335,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                 Ok((next, hello)) => {
                     client = next;
                     let home = equipe_providers::credentials::equipe_home();
+                    let _ = equipe_core::squads::remember_last(&home, &squad);
                     let first_project = equipe_core::squads::list(&home).into_iter().find(|s| s.name == squad).and_then(|s| s.projects.first().cloned());
                     cwd = first_project.unwrap_or(cwd);
                     branch = current_branch(&cwd);

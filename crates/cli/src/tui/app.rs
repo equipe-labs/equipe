@@ -315,6 +315,8 @@ pub struct App {
     pub switch_to: Option<(String, Vec<String>)>,
     /// A folder waiting for the person's `y` before it joins a squad.
     pub confirming: Option<Adding>,
+    /// A repository the person said not to add: the loop remembers it.
+    pub declined: Option<PathBuf>,
     /// Which completion is picked, and the text the person closed completion on.
     pub pick: usize,
     /// The person moved the pick with ↑↓: Enter takes it even after a space.
@@ -408,6 +410,7 @@ impl App {
             uploaded: None,
             switch_to: None,
             confirming: None,
+            declined: None,
             focus: None,
             outbox: Vec::new(),
             pick: 0,
@@ -1078,13 +1081,24 @@ impl App {
             self.flash = None;
         }
         // A folder waiting to be added: `y` adds it, any other key leaves it out.
+        // The repository equipe was run in is only offered: `n` is remembered,
+        // and any other key goes on to do what it does.
         if let Some(adding) = self.confirming.take() {
-            if key.code == KeyCode::Char('y') && !ctrl && !alt {
+            let plain = !ctrl && !alt;
+            if key.code == KeyCode::Char('y') && plain {
                 self.add_folder(adding);
-            } else {
-                self.flash = Some(format!("Not added: {}", adding.folder.path.display()));
+                return Vec::new();
             }
-            return Vec::new();
+            let path = adding.folder.path.display().to_string();
+            if !adding.offered {
+                self.flash = Some(format!("Not added: {path}"));
+                return Vec::new();
+            }
+            if key.code == KeyCode::Char('n') && plain {
+                self.flash = Some(format!("Not added, and not asked again · /squad add {path} adds it"));
+                self.declined = Some(adding.folder.path);
+                return Vec::new();
+            }
         }
         // The help and usage screens close on Esc, or as soon as the person types.
         if (self.help_open || self.usage_open) && (key.code == KeyCode::Esc || matches!(key.code, KeyCode::Char(_) | KeyCode::Enter)) {
@@ -1491,8 +1505,8 @@ impl App {
             .collect()
     }
 
-    /// `/squad <name>` shows another squad; `/squad new <name> <folder>` starts
-    /// one on that folder, with the PM and the usual team.
+    /// `/squad <name>` shows another squad; `/squad new <name> [folder]` starts
+    /// one, on that folder if one is given, with the PM and the usual team.
     fn squad_command(&mut self, rest: &str) -> Vec<Command> {
         let home = equipe_providers::credentials::equipe_home();
         let words: Vec<&str> = rest.split_whitespace().collect();
@@ -1500,7 +1514,7 @@ impl App {
             [] => {
                 let others: Vec<String> = self.other_squads().into_iter().map(|(name, _)| name).collect();
                 self.flash = Some(match others.as_slice() {
-                    [] => format!("This is {}, your only squad · /squad new <name> <folder> starts another", self.squad),
+                    [] => format!("This is {}, your only squad · /squad new <name> [folder] starts another", self.squad),
                     names => format!("On {} · also {} · /squad <name> switches, /squad new starts one", self.squad, names.join(", ")),
                 });
             }
@@ -1520,17 +1534,13 @@ impl App {
                     self.flash = Some(format!("{} already belongs to the squad {owner}", folder.path.display()));
                     return Vec::new();
                 }
-                self.ask_to_add(Adding { new_squad: None, folder });
+                self.ask_to_add(Adding { new_squad: None, folder, offered: false });
             }
             ["remove", name] => {
                 let Some(project) = self.projects.iter().find(|p| equipe_core::board::project_name(p) == *name || p.to_string_lossy() == *name).cloned() else {
                     self.flash = Some(format!("{} doesn't work on {name}", self.squad));
                     return Vec::new();
                 };
-                if self.projects.len() == 1 {
-                    self.flash = Some("A squad works on at least one project · /squad add another first".into());
-                    return Vec::new();
-                }
                 match equipe_core::squads::remove_project(&home, &self.squad, &project) {
                     Ok(()) => {
                         self.projects.retain(|p| *p != project);
@@ -1543,9 +1553,13 @@ impl App {
                 }
             }
             ["add"] | ["remove"] => self.flash = Some("/squad add <folder> · /squad remove <project>".into()),
-            ["new"] | ["new", _] => {
-                self.flash = Some("A name and the folder it works in: /squad new shop ~/Projects/shop".into());
+            ["new"] => {
+                self.flash = Some("A name, and the folder it works in if any: /squad new shop ~/Projects/shop".into());
             }
+            ["new", name] => match equipe_core::squads::create_without_project(&home, name) {
+                Ok(()) => self.switch_to = Some(((*name).to_owned(), crate::onboard::starting_team())),
+                Err(err) => self.flash = Some(err),
+            },
             ["new", name, folder] => {
                 let folder = match typed_folder(folder) {
                     Ok(folder) => folder,
@@ -1558,17 +1572,17 @@ impl App {
                     self.flash = Some(format!("{} is already {owner}'s · /squad {owner}", folder.name));
                     return Vec::new();
                 }
-                self.ask_to_add(Adding { new_squad: Some((*name).to_owned()), folder });
+                self.ask_to_add(Adding { new_squad: Some((*name).to_owned()), folder, offered: false });
             }
             [name] if *name == self.squad => self.flash = Some(format!("Already on {name}")),
             [name] => {
                 if equipe_core::squads::list(&home).iter().any(|s| s.name == *name) {
                     self.switch_to = Some(((*name).to_owned(), Vec::new()));
                 } else {
-                    self.flash = Some(format!("No squad called {name} · /squad new {name} <folder> starts it"));
+                    self.flash = Some(format!("No squad called {name} · /squad new {name} starts it"));
                 }
             }
-            _ => self.flash = Some("/squad <name> switches · /squad new <name> <folder> starts one".into()),
+            _ => self.flash = Some("/squad <name> switches · /squad new <name> [folder] starts one".into()),
         }
         Vec::new()
     }
@@ -1579,6 +1593,12 @@ impl App {
         self.confirming = Some(adding);
     }
 
+    /// Offer the repository equipe was run in, which no squad has: asked once,
+    /// in the footer, and never in the way of typing.
+    pub fn offer(&mut self, folder: crate::onboard::Folder) {
+        self.confirming = Some(Adding { new_squad: None, folder, offered: true });
+    }
+
     /// The question while a folder waits: its full path first, where it can't
     /// be cut off, then the keys, its name and its remote.
     pub fn confirm_prompt(&self) -> Option<String> {
@@ -1586,6 +1606,15 @@ impl App {
         let folder = &adding.folder;
         let question = match &adding.new_squad {
             Some(name) => format!("Start the squad {name} on {}?", folder.path.display()),
+            None if adding.offered => {
+                return Some(format!(
+                    "{} isn't in a squad. Add {} to {}? y adds, n never asks again · {}",
+                    folder.name,
+                    folder.path.display(),
+                    self.squad,
+                    folder.describe()
+                ));
+            }
             None => format!("Add {} to {}?", folder.path.display(), self.squad),
         };
         Some(format!("{question} y adds, any other key cancels · {}", folder.describe()))
@@ -1957,6 +1986,8 @@ pub struct Adding {
     /// The squad it would start, for `/squad new`; `None` adds to this one.
     pub new_squad: Option<String>,
     pub folder: crate::onboard::Folder,
+    /// The repository equipe was run in, offered rather than typed.
+    pub offered: bool,
 }
 
 /// The memory each member's browser takes, from `ps -axo pid=,ppid=,rss=,command=`:
@@ -2023,6 +2054,7 @@ pub fn relative(target: &str, base: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use equipe_core::protocol::{TurnOutcome, Usage, WorkInfo, Workspace};
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -2471,7 +2503,10 @@ mod tests {
         assert!(app.switch_to.is_none());
         type_text(&mut app, "/squad new");
         enter(&mut app);
-        assert!(app.flash.as_deref().unwrap().contains("the folder it works in"), "{:?}", app.flash);
+        assert!(app.flash.as_deref().unwrap().contains("the folder it works in if any"), "{:?}", app.flash);
+        type_text(&mut app, "/squad new Bad!");
+        enter(&mut app);
+        assert!(app.flash.as_deref().unwrap().contains("isn't a squad name"), "{:?}", app.flash);
         type_text(&mut app, "/squad new shop /no/such/folder");
         enter(&mut app);
         assert!(app.flash.as_deref().unwrap().contains("No folder"), "{:?}", app.flash);
@@ -2505,6 +2540,37 @@ mod tests {
         assert!(app.confirming.is_none());
         assert!(app.flash.as_deref().unwrap().starts_with("Not added"), "{:?}", app.flash);
         assert!(!app.projects.contains(&tmp.join("equipe")));
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    fn offered(app: &mut App, tmp: &Path) {
+        let folder = crate::onboard::resolve_folder(&tmp.join("equipe").display().to_string(), Path::new("/nowhere"), tmp).unwrap();
+        app.offer(folder);
+    }
+
+    #[test]
+    fn the_repository_equipe_was_run_in_is_offered_and_no_is_remembered() {
+        let (mut app, _, _) = team();
+        let tmp = siblings("offer");
+        offered(&mut app, &tmp);
+        let prompt = app.confirm_prompt().unwrap();
+        assert!(prompt.starts_with(&format!("equipe isn't in a squad. Add {} to acme? y adds, n never asks again", tmp.join("equipe").display())), "{prompt}");
+        app.on_key(key(KeyCode::Char('n')), Instant::now());
+        assert!(app.confirming.is_none());
+        assert_eq!(app.declined.as_deref(), Some(tmp.join("equipe").as_path()), "the loop remembers the no");
+        assert!(!app.projects.contains(&tmp.join("equipe")));
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn typing_past_an_offer_leaves_it_out_and_keeps_the_key() {
+        let (mut app, _, _) = team();
+        let tmp = siblings("past");
+        offered(&mut app, &tmp);
+        app.on_key(key(KeyCode::Char('h')), Instant::now());
+        assert!(app.confirming.is_none());
+        assert!(app.declined.is_none(), "only n is remembered");
+        assert_eq!(app.composer.text(), "h", "the key goes on to the composer");
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 

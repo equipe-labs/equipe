@@ -70,14 +70,90 @@ pub fn suggest_name(home: &Path, project: &Path) -> String {
 
 /// Start a squad with its first project, and its home.
 pub fn create(home: &Path, name: &str, project: &Path) -> Result<(), String> {
+    start(home, name, Some(project))
+}
+
+/// Start a squad with no project yet: its home is where it works until one joins.
+pub fn create_without_project(home: &Path, name: &str) -> Result<(), String> {
+    start(home, name, None)
+}
+
+fn start(home: &Path, name: &str, project: Option<&Path>) -> Result<(), String> {
     if !valid_name(name) {
         return Err(format!("'{name}' isn't a squad name — use lowercase letters, digits and dashes"));
     }
     if squad_dir(home, name).join("squad.db").exists() {
         return Err(format!("there is already a squad called {name}"));
     }
-    add_project(home, name, project)?;
+    match project {
+        Some(project) => add_project(home, name, project)?,
+        None => drop(Journal::for_squad(home, name).map_err(|err| err.to_string())?),
+    }
     crate::squad_home::ensure(home, name, None).map(|_| ())
+}
+
+/// The squad to open where no project says which: the one opened last, else
+/// the only squad, or the first by name.
+pub fn default_squad(home: &Path) -> Option<String> {
+    let squads = list(home);
+    last_squad(home).filter(|last| squads.iter().any(|s| s.name == *last)).or_else(|| squads.first().map(|s| s.name.clone()))
+}
+
+/// What equipe remembers between runs, in `<home>/state.json`: the squad
+/// opened last, and the repositories the person said not to add.
+fn state(home: &Path) -> serde_json::Map<String, serde_json::Value> {
+    std::fs::read(home.join("state.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|value| match value {
+            serde_json::Value::Object(map) => Some(map),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+fn save_state(home: &Path, state: serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+    std::fs::create_dir_all(home).map_err(|err| err.to_string())?;
+    let text = serde_json::to_string_pretty(&serde_json::Value::Object(state)).map_err(|err| err.to_string())?;
+    // Whole or not at all: two screens may write it at once.
+    let tmp = home.join(format!("state.json.{}", std::process::id()));
+    std::fs::write(&tmp, text).map_err(|err| err.to_string())?;
+    std::fs::rename(&tmp, home.join("state.json")).map_err(|err| err.to_string())
+}
+
+/// The squad opened last, as remembered — it may since be gone.
+pub fn last_squad(home: &Path) -> Option<String> {
+    state(home).get("last_squad")?.as_str().map(str::to_owned)
+}
+
+/// Remember `name` as the squad opened last.
+pub fn remember_last(home: &Path, name: &str) -> Result<(), String> {
+    let mut state = state(home);
+    if state.get("last_squad").and_then(|v| v.as_str()) == Some(name) {
+        return Ok(());
+    }
+    state.insert("last_squad".into(), name.into());
+    save_state(home, state)
+}
+
+/// The person said not to add `repo` to a squad: don't offer it again.
+pub fn is_declined(home: &Path, repo: &Path) -> bool {
+    let repo = repo.to_string_lossy();
+    state(home).get("declined").and_then(|v| v.as_array()).is_some_and(|d| d.iter().any(|r| r.as_str() == Some(&repo)))
+}
+
+/// Remember that `repo` isn't to be offered again.
+pub fn decline(home: &Path, repo: &Path) -> Result<(), String> {
+    if is_declined(home, repo) {
+        return Ok(());
+    }
+    let mut state = state(home);
+    let declined = state.entry("declined").or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    if !declined.is_array() {
+        *declined = serde_json::Value::Array(Vec::new());
+    }
+    declined.as_array_mut().expect("an array").push(repo.to_string_lossy().into_owned().into());
+    save_state(home, state)
 }
 
 /// Add a project to a squad. A project belongs to one squad.
@@ -140,5 +216,41 @@ mod tests {
         assert_eq!(suggest_name(&home, Path::new("/")), "squad");
         assert!(valid_name("equipe-2") && !valid_name("Equipe") && !valid_name("") && !valid_name("a/b"));
         assert!(create(&home, "Bad Name", Path::new("/x")).is_err());
+    }
+
+    #[test]
+    fn a_squad_may_start_with_no_project() {
+        let home = home();
+        create_without_project(&home, "solo").unwrap();
+        assert_eq!(list(&home), [SquadSummary { name: "solo".into(), projects: vec![] }]);
+        assert!(crate::squad_home::path(&home, "solo").join(".git").is_dir(), "it has its home");
+        assert!(create_without_project(&home, "solo").unwrap_err().contains("already a squad"));
+    }
+
+    #[test]
+    fn the_squad_opened_last_opens_where_no_project_says() {
+        let home = home();
+        assert_eq!(default_squad(&home), None, "no squad, nothing to open");
+        create_without_project(&home, "beta").unwrap();
+        create_without_project(&home, "acme").unwrap();
+        assert_eq!(default_squad(&home).as_deref(), Some("acme"), "none opened yet: the first by name");
+        remember_last(&home, "beta").unwrap();
+        assert_eq!(default_squad(&home).as_deref(), Some("beta"));
+        remember_last(&home, "gone").unwrap();
+        assert_eq!(default_squad(&home).as_deref(), Some("acme"), "a squad since removed is passed over");
+    }
+
+    #[test]
+    fn a_repository_said_no_to_is_remembered() {
+        let home = home();
+        remember_last(&home, "acme").unwrap();
+        assert!(!is_declined(&home, Path::new("/code/site")));
+        decline(&home, Path::new("/code/site")).unwrap();
+        decline(&home, Path::new("/code/site")).unwrap();
+        assert!(is_declined(&home, Path::new("/code/site")));
+        assert!(!is_declined(&home, Path::new("/code/app")));
+        assert_eq!(last_squad(&home).as_deref(), Some("acme"), "one remembered thing keeps the other");
+        let text = std::fs::read_to_string(home.join("state.json")).unwrap();
+        assert_eq!(text.matches("/code/site").count(), 1, "{text}");
     }
 }
