@@ -12,6 +12,7 @@
 
 pub mod board;
 pub mod browser;
+pub mod desktop;
 pub mod gateway;
 pub mod journal;
 pub mod language;

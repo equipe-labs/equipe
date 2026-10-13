@@ -362,6 +362,44 @@ pub enum Command {
     /// Members' browsers open on screen (`show`) or run hidden: one member's,
     /// or (`member: None`) everyone's. Kept for the squad.
     ShowBrowser { squad: SquadName, member: Option<String>, show: bool },
+    /// The person takes the Mac's screen back from the members (`open: false`,
+    /// `/desktop stop`): whoever had it loses it at once and nobody gets it
+    /// until they open it again (`open: true`, `/desktop resume`). For every squad.
+    Desktop { open: bool },
+}
+
+/// A member, wherever it is: its squad and its name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct MemberRef {
+    pub squad: SquadName,
+    pub member: String,
+}
+
+impl std::fmt::Display for MemberRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.squad, self.member)
+    }
+}
+
+/// The Mac's screen: one mouse, one keyboard, so one member at a time.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesktopState {
+    /// The member using the screen.
+    #[serde(default)]
+    pub holder: Option<MemberRef>,
+    /// Members waiting for it, next first.
+    #[serde(default)]
+    pub queue: Vec<MemberRef>,
+    /// The person took it back (`/desktop stop`): no member uses it until they reopen it.
+    #[serde(default)]
+    pub stopped: bool,
+}
+
+impl DesktopState {
+    /// Nothing to show: nobody on it, nobody waiting, not stopped.
+    pub fn is_quiet(&self) -> bool {
+        self.holder.is_none() && self.queue.is_empty() && !self.stopped
+    }
 }
 
 /// Token counts for one turn.
@@ -468,6 +506,8 @@ pub enum Event {
     ApprovalResolved { squad: SquadName, approval: u64, decision: Decision },
     /// The plan's usage windows — for every screen, whichever squad it follows.
     PlanUsage { usage: PlanUsage },
+    /// Who has the Mac's screen and who waits for it changed — for every screen.
+    Desktop { desktop: DesktopState },
     /// Output a member's turn has produced so far, in tokens.
     Output { session: SessionId, tokens: u64 },
     /// What the person asked — sent to every screen, not only the one it was typed in.
@@ -546,13 +586,14 @@ impl Event {
             | Event::ModeChanged { .. }
             | Event::ApprovalRequested { .. }
             | Event::ApprovalResolved { .. }
-            | Event::PlanUsage { .. } => None,
+            | Event::PlanUsage { .. }
+            | Event::Desktop { .. } => None,
         }
     }
 
     /// Whether every screen gets it, whatever squad it follows.
     pub fn for_everyone(&self) -> bool {
-        matches!(self, Event::PlanUsage { .. })
+        matches!(self, Event::PlanUsage { .. } | Event::Desktop { .. })
     }
 }
 
@@ -641,6 +682,9 @@ pub struct Snapshot {
     /// The plan's usage, as last reported.
     #[serde(default)]
     pub plan: Option<PlanUsage>,
+    /// Who has the Mac's screen, across squads.
+    #[serde(default)]
+    pub desktop: DesktopState,
 }
 
 #[cfg(test)]
@@ -773,6 +817,7 @@ mod tests {
             approvals: Vec::new(),
             scale: Some(2),
             plan: None,
+            desktop: DesktopState::default(),
             sessions: vec![SessionInfo {
                 session: 9,
                 project: "/repo".into(),

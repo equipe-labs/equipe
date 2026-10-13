@@ -82,6 +82,9 @@ pub struct Busy {
     pub working: Vec<String>,
     /// Requests for permission waiting for the person.
     pub approvals: usize,
+    /// Who has the Mac's screen and who waits for it.
+    #[serde(default)]
+    pub desktop: crate::DesktopState,
 }
 
 impl Busy {

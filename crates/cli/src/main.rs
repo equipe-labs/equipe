@@ -1003,6 +1003,7 @@ impl App {
                 // One prompt, one turn: no memos, no squad, no board.
                 Event::MessageQueued { .. }
                 | Event::PlanUsage { .. }
+                | Event::Desktop { .. }
                 | Event::Output { .. }
                 | Event::Notice { .. }
                 | Event::WorkStarted { .. }

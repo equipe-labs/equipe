@@ -381,7 +381,7 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                         .map(|s| format!("{}/{}", s.squad.as_deref().unwrap_or("-"), s.name().unwrap_or("?")))
                         .collect();
                     working.sort();
-                    let _ = reply.send(equipe_protocol::rpc::Busy { working, approvals: rt.pending.len() });
+                    let _ = reply.send(equipe_protocol::rpc::Busy { working, approvals: rt.pending.len(), desktop: Default::default() });
                 }
                 Some(Request::Shutdown(reply)) => {
                     rt.stop_all_turns();
@@ -485,6 +485,8 @@ impl Runtime {
             Command::Cancel { squad, ticket } => self.cancel(&squad, ticket).await,
             Command::SetMode { squad, member, mode } => self.set_mode(&squad, member, mode),
             Command::ShowBrowser { squad, member, show } => self.show_browser(&squad, member, show),
+            // The screen's lease comes with the desktop tools (T-22 after T-35).
+            Command::Desktop { .. } => {}
             Command::Scale { squad, extra } => {
                 if let Some(journal) = self.journal(&squad) {
                     let _ = journal.set_scale(extra.min(HELPERS_MAX));
@@ -2429,7 +2431,7 @@ it back there once they have done it. End your turn now with a short line on wha
             self.pending.values().filter(|p| p.squad == squad).map(|p| p.approval.clone()).collect();
         approvals.sort_by_key(|a| a.id);
         let scale = self.journals.get(squad).map(Journal::scale);
-        Snapshot { squad: squad.to_owned(), projects, sessions, tickets, mode, approvals, scale, plan: self.plan }
+        Snapshot { squad: squad.to_owned(), projects, sessions, tickets, mode, approvals, scale, plan: self.plan, desktop: Default::default() }
     }
 
     /// Bring back every squad's members, and the tickets they were on.
