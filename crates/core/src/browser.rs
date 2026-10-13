@@ -97,8 +97,65 @@ fn memory_gb() -> usize {
 }
 
 /// A browser left unused this long closes, giving its memory back; the next
-/// step opens a fresh one, still signed in.
-const IDLE_MS: &str = "300000";
+/// step opens a fresh one, still signed in. Long enough for the person to sign
+/// in at a window a member opened for them.
+const IDLE_MS: &str = "900000";
+
+/// One member's browser, kept between its turns: Playwright's MCP server on a
+/// local port, which every turn connects to — so a page, a half-done sign-in,
+/// a tab the person is looking at, all outlive the turn that opened them.
+pub struct Running {
+    child: tokio::process::Child,
+    pub port: u16,
+    shown: bool,
+    pub last_used: std::time::Instant,
+}
+
+impl Running {
+    /// Still running, and showing as asked.
+    pub fn fits(&mut self, shown: bool) -> bool {
+        self.shown == shown && matches!(self.child.try_wait(), Ok(None))
+    }
+}
+
+/// Start a member's browser server on a free local port.
+pub fn launch(npx: &Path, home: &Path, output: &Path, shown: bool) -> std::io::Result<Running> {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
+    let mut args: Vec<String> = server(npx, home, output, shown)["args"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|a| a.as_str().map(str::to_owned))
+        .collect();
+    // Every turn's connection shares the one browser — its tabs and sign-ins.
+    args.extend(["--port".into(), port.to_string(), "--host".into(), "localhost".into(), "--shared-browser-context".into()]);
+    let child = tokio::process::Command::new(npx)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    Ok(Running { child, port, shown, last_used: std::time::Instant::now() })
+}
+
+/// How a turn reaches a member's running browser.
+pub fn entry(port: u16) -> Value {
+    json!({ "type": "http", "url": format!("http://localhost:{port}/mcp") })
+}
+
+/// Wait until the browser server on `port` takes connections — the first
+/// launch may download it — up to `wait`.
+pub async fn ready(port: u16, wait: std::time::Duration) -> bool {
+    let until = std::time::Instant::now() + wait;
+    while std::time::Instant::now() < until {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    false
+}
 
 /// One member's browser server: in memory, starting from the squad's
 /// sign-ins and handing new ones back; on screen when `shown`, hidden

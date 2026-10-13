@@ -176,6 +176,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         pending: HashMap::new(),
         next_approval: 1,
         focus: HashMap::new(),
+        browsers: HashMap::new(),
     };
     let mut memos = Vec::new();
     if runtime.config.persist {
@@ -330,10 +331,13 @@ struct Runtime {
     next_approval: u64,
     /// The project each squad's person is looking at, by name.
     focus: HashMap<String, String>,
+    /// Members' browsers, kept between turns: by squad and member.
+    browsers: HashMap<(String, String), browser::Running>,
 }
 
 async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut internal: UnboundedReceiver<Internal>) {
     let mut daily = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
+    let mut minute = tokio::time::interval(Duration::from_secs(60));
     daily.tick().await; // the first tick is immediate; pruning already ran at start
     loop {
         tokio::select! {
@@ -371,6 +375,7 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                 Internal::ApprovalTimedOut(id) => rt.answer(id, Decision::Deny, "Nobody answered in time."),
             },
             _ = daily.tick(), if rt.config.persist => rt.prune(),
+            _ = minute.tick() => rt.close_idle_browsers(),
         }
     }
     rt.stop_all_turns();
@@ -816,15 +821,29 @@ impl Runtime {
         // A browser in any mode that may change things — signed in wherever the
         // person (or a teammate) signed in, if anywhere yet. In Auto and Full
         // it browses freely; in Ask each step comes to the person.
-        let browser = match (&self.config.npx, &squad, &session.member) {
-            (Some(npx), Some(squad), Some(m)) if board_tools && mode != Mode::ReadOnly => {
+        let wants_browser = board_tools && mode != Mode::ReadOnly;
+        let browser = match (self.config.npx.clone(), squad.clone(), session.member.as_ref().map(|m| m.name.clone())) {
+            (Some(npx), Some(squad), Some(name)) if wants_browser => {
                 // Page snapshots and screenshots: in the temp folder, readable without
                 // asking, and never in the project.
-                let output = std::env::temp_dir().join("equipe-browser").join(squad).join(&m.name);
-                let shown = self.journals.get(squad).is_some_and(|j| j.browser_shown(&m.name));
-                Some(browser::server(npx, &self.config.home, &output, shown))
+                let output = std::env::temp_dir().join("equipe-browser").join(&squad).join(&name);
+                let shown = self.journals.get(&squad).is_some_and(|j| j.browser_shown(&name));
+                let key = (squad, name);
+                // The browser it had, if still running and showing as asked; else a new one.
+                if !self.browsers.get_mut(&key).is_some_and(|b| b.fits(shown))
+                    && let Ok(running) = browser::launch(&npx, &self.config.home, &output, shown)
+                {
+                    self.browsers.insert(key.clone(), running);
+                }
+                self.browsers.get_mut(&key).map(|b| {
+                    b.last_used = std::time::Instant::now();
+                    b.port
+                })
             }
             _ => None,
+        };
+        let Some(session) = self.sessions.get(&id) else {
+            return;
         };
         let browses_freely = browser.is_some() && matches!(mode, Mode::Auto | Mode::Full);
         // Code run in the browser's own process is outside any sandbox: in auto
@@ -838,8 +857,8 @@ impl Runtime {
                     "command": binary,
                     "args": ["mcp", "--squad", squad, "--member", m.name, "--role", m.role, "--home", self.config.home],
                 }});
-                if let Some(browser) = &browser {
-                    servers[browser::SERVER] = browser.clone();
+                if let Some(port) = browser {
+                    servers[browser::SERVER] = browser::entry(port);
                 }
                 Some(json!({ "mcpServers": servers }).to_string())
             }
@@ -941,6 +960,10 @@ impl Runtime {
                         sandbox: fenced.then_some(claude_code::Sandbox { allowed_domains: &domains, ask: &outward, deny_read: &private }),
                         prompt_tool: prompt_tool.as_deref(),
                     };
+                    // A browser just started may still be loading.
+                    if let Some(port) = browser {
+                        browser::ready(port, Duration::from_secs(90)).await;
+                    }
                     let outcome = claude_code::run_turn(&binary, &cwd, request, |activity| match activity {
                         Activity::Text(text) => {
                             streamed = true;
@@ -1899,6 +1922,22 @@ check what is already done in your worktree first."
             );
         }
         memos
+    }
+
+    /// Close browsers whose member is gone, or hasn't had a turn in half an
+    /// hour; the next turn opens a fresh one, still signed in.
+    fn close_idle_browsers(&mut self) {
+        let working: Vec<(String, String)> = self
+            .sessions
+            .values()
+            .filter(|s| s.is_working())
+            .filter_map(|s| Some((s.squad.clone()?, s.name()?.to_owned())))
+            .collect();
+        let present: Vec<(String, String)> =
+            self.sessions.values().filter_map(|s| Some((s.squad.clone()?, s.name()?.to_owned()))).collect();
+        self.browsers.retain(|key, b| {
+            working.contains(key) || (present.contains(key) && b.last_used.elapsed() < Duration::from_secs(30 * 60))
+        });
     }
 
     /// Prune conversations past the retention window in every journal.

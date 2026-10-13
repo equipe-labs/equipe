@@ -862,18 +862,50 @@ async fn first_ticket_turn(handle: &Handle, events: &mut UnboundedReceiver<Event
     all.last().unwrap().clone()
 }
 
+/// A stand-in for `npx`: writes down each launch's arguments, then listens on
+/// the port it was given, as Playwright's MCP server would.
+fn fake_npx() -> (PathBuf, PathBuf) {
+    let dir = scratch("npx");
+    let launches = dir.join("launches");
+    std::fs::create_dir_all(&launches).unwrap();
+    let bin = dir.join("npx");
+    write_script(
+        &bin,
+        &format!(
+            r#"#!/bin/sh
+n=$(ls '{launches}' | wc -l | tr -d ' ')
+for a in "$@"; do printf '%s\n' "$a"; done > '{launches}'/launch-$(printf %03d $n)
+port=""
+while [ $# -gt 0 ]; do [ "$1" = "--port" ] && port="$2"; shift; done
+exec python3 -c 'import socket,sys,time
+s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(); time.sleep(600)' "$port"
+"#,
+            launches = launches.display()
+        ),
+    );
+    (bin, launches)
+}
+
+/// Each browser launch's arguments, oldest first.
+fn launches(dir: &Path) -> Vec<Vec<String>> {
+    let mut files: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.path()).collect();
+    files.sort();
+    files.iter().map(|f| std::fs::read_to_string(f).unwrap().lines().map(str::to_owned).collect()).collect()
+}
+
+fn browser_of(call: &[String]) -> serde_json::Value {
+    let mcp: serde_json::Value = serde_json::from_str(arg(call, "--mcp-config").unwrap()).unwrap();
+    mcp["mcpServers"]["browser"].clone()
+}
+
 #[tokio::test]
 async fn members_browse_from_the_start_and_as_the_person_once_signed_in() {
     let repo = repo();
     let (claude, recorded) = recording_claude(&answering("ok"));
     let home = squad_home(&[&repo]);
-    let config = Config { npx: Some("/opt/npx".into()), ..with_tools(&claude, &home) };
-    let (handle, mut events) = runtime::start(config);
+    let (npx, launched) = fake_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), ..with_tools(&claude, &home) });
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
-    let browser_of = |call: &[String]| {
-        let mcp: serde_json::Value = serde_json::from_str(arg(call, "--mcp-config").unwrap()).unwrap();
-        mcp["mcpServers"]["browser"].clone()
-    };
     let turn = async |handle: &Handle, events: &mut UnboundedReceiver<Event>| {
         handle.send(Command::Submit { session: 1, text: "go".into() });
         until(events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
@@ -883,33 +915,39 @@ async fn members_browse_from_the_start_and_as_the_person_once_signed_in() {
     // Signed in nowhere yet: a browser all the same — public pages need no
     // account — starting from an empty set of sign-ins only the person can read.
     let call = turn(&handle, &mut events).await;
-    assert!(!browser_of(&call).is_null(), "{call:?}");
+    let browser = browser_of(&call);
+    assert_eq!(browser["type"], "http", "{browser}");
+    let url = browser["url"].as_str().unwrap().to_owned();
     let state = equipe_core::browser::state_file(&home);
     assert_eq!(std::fs::read_to_string(&state).unwrap(), r#"{"cookies":[],"origins":[]}"#);
     use std::os::unix::fs::PermissionsExt as _;
     assert_eq!(std::fs::metadata(&state).unwrap().permissions().mode() & 0o777, 0o600);
 
-    // The person signs in through `equipe browser`, which keeps the sign-ins here.
+    // The browser outlives the turn: the next one finds the same, with whatever
+    // the person signed in to meanwhile.
     std::fs::write(&state, "{}").unwrap();
     let call = turn(&handle, &mut events).await;
-    let server = browser_of(&call);
-    assert_eq!(server["command"], "/opt/npx");
-    let args: Vec<&str> = server["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
-    assert!(args.contains(&equipe_core::browser::MCP_PACKAGE), "{args:?}");
-    assert!(args.windows(2).any(|w| w == ["--storage-state", &*state.to_string_lossy()]), "signed in as the person: {args:?}");
-    assert!(args.contains(&"--headless") && args.contains(&"--isolated"), "{args:?}");
+    assert_eq!(browser_of(&call)["url"], url.as_str(), "the same browser, kept between turns");
+    let all = launches(&launched);
+    assert_eq!(all.len(), 1, "launched once: {all:?}");
+    let args = &all[0];
+    let has = |flag: &str| args.iter().any(|a| a == flag);
+    assert!(has(equipe_core::browser::MCP_PACKAGE), "{args:?}");
+    assert!(args.windows(2).any(|w| w[0] == "--storage-state" && w[1] == *state.to_string_lossy()), "signed in as the person: {args:?}");
+    assert!(has("--headless") && has("--isolated") && has("--shared-browser-context"), "{args:?}");
+    assert!(url.ends_with(&format!(":{}/mcp", args.windows(2).find(|w| w[0] == "--port").unwrap()[1])), "{url} {args:?}");
     assert!(call.iter().any(|a| a == "mcp__browser"), "in auto it browses without asking");
     let settings: serde_json::Value = serde_json::from_str(arg(&call, "--settings").unwrap()).unwrap();
     assert!(
         settings["permissions"]["ask"].as_array().unwrap().iter().any(|r| r == "mcp__browser__browser_run_code_unsafe"),
         "but code outside the sandbox asks first: {settings}"
     );
-    let output = args.windows(2).find(|w| w[0] == "--output-dir").unwrap()[1];
+    let output = &args.windows(2).find(|w| w[0] == "--output-dir").unwrap()[1];
     assert!(output.starts_with(&*std::env::temp_dir().to_string_lossy()), "pages it saves stay out of the project: {output}");
     let charter = arg(&call, "--append-system-prompt").unwrap();
     assert!(charter.contains("`ask_person`") && charter.contains("CAPTCHA"), "what it asks the person first: {charter}");
 
-    // Plan changes nothing anywhere — not on a website either.
+    // Read-only changes nothing anywhere — not on a website either.
     handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::ReadOnly) });
     until(&mut events, |e| matches!(e, Event::ModeChanged { member: None, .. })).await;
     let call = turn(&handle, &mut events).await;
@@ -921,19 +959,17 @@ async fn the_browser_shows_on_screen_when_asked_and_its_code_tool_follows_the_mo
     let repo = repo();
     let (claude, recorded) = recording_claude(&answering("ok"));
     let home = squad_home(&[&repo]);
-    let state = equipe_core::browser::state_file(&home);
-    std::fs::create_dir_all(state.parent().unwrap()).unwrap();
-    std::fs::write(&state, "{}").unwrap();
-    let (handle, mut events) = runtime::start(Config { npx: Some("/opt/npx".into()), ..with_tools(&claude, &home) });
+    let (npx, launched) = fake_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), ..with_tools(&claude, &home) });
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
     add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    // A turn, and the arguments of the browser that turn used.
     let turn = async |handle: &Handle, events: &mut UnboundedReceiver<Event>, session: u64| {
         handle.send(Command::Submit { session, text: "go".into() });
         until(events, |e| matches!(e, Event::TurnEnded { session: s, .. } if *s == session)).await;
         let call = calls(&recorded).pop().unwrap();
-        let mcp: serde_json::Value = serde_json::from_str(arg(&call, "--mcp-config").unwrap()).unwrap();
-        let args: Vec<String> =
-            mcp["mcpServers"]["browser"]["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().to_owned()).collect();
+        let port = browser_of(&call)["url"].as_str().unwrap().rsplit(':').next().unwrap().trim_end_matches("/mcp").to_owned();
+        let args = launches(&launched).into_iter().rfind(|a| a.windows(2).any(|w| w[0] == "--port" && w[1] == port)).unwrap();
         let settings: serde_json::Value = arg(&call, "--settings").map_or(serde_json::Value::Null, |s| serde_json::from_str(s).unwrap());
         (call, args, settings)
     };
@@ -947,7 +983,7 @@ async fn the_browser_shows_on_screen_when_asked_and_its_code_tool_follows_the_mo
     assert!(asks_for_code(&settings), "{settings}");
     assert!(!call.iter().any(|a| a == "mcp__browser__browser_run_code_unsafe"), "not blocked: {call:?}");
 
-    // On screen for one member, the rest stay hidden.
+    // On screen for one member — a browser of its own, opened anew — the rest stay hidden.
     handle.send(Command::ShowBrowser { squad: "acme".into(), member: Some("pm".into()), show: true });
     let (_, args, _) = turn(&handle, &mut events, 1).await;
     assert!(!args.iter().any(|a| a == "--headless"), "{args:?}");
