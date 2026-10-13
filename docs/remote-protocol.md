@@ -54,6 +54,7 @@ Plaintext is UTF-8 JSON:
 - `ts` — sender's clock, Unix ms. Frames more than 5 minutes off are dropped.
 - `seq` — starts at 1 on each WebSocket connection and goes up by one per frame, each
   direction; a frame whose `seq` isn't above the last one seen on that connection is dropped.
+  The `data` of a push has `seq` 0: it travels outside the connection, and is only shown.
 - `squad` — which squad the `rpc` is about (absent for `squads`).
 - `rpc` — a JSON-RPC 2.0 message of the daemon's own protocol (`crates/protocol/src/rpc.rs`):
   the same `hello` / `command` / `event` the terminal console speaks.
@@ -118,7 +119,7 @@ relay → daemon
 |---|---|---|
 | `recv` | `device`, `data` | a sealed frame from a device |
 | `pair_recv` | `slot`, `data` | a sealed pairing request |
-| `presence` | `device`, `online` | a device connected or left |
+| `presence` | `device`, `online` | a device connected or left; on connecting, the daemon gets one for each device already there |
 | `push_result` | `device`, `ok`, `error?` | |
 | `error` | `message` | |
 
@@ -139,7 +140,7 @@ The daemon asks for a push when something needs the person and the device isn't 
 a request for permission (`approval`), work to review (`review`), a ticket waiting on them
 (`waiting`), a member's answer to them (`message`).
 
-`title` and `body` are what the lock screen shows — who needs what, never the command or
+`title`, `body` and `category` are plain strings of at most 200 characters. `title` and `body` are what the lock screen shows — who needs what, never the command or
 content ("frontend asks to run a command"). `data` is a sealed frame (daemon → device) the
 app opens on the phone for detail and actions: iOS in a Notification Service Extension
 (`mutable-content: 1`, `category` for the Allow / Decline actions), Android from an FCM data
