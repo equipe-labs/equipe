@@ -2,6 +2,9 @@ name = "equipe-relay"
 main = "src/index.ts"
 compatibility_date = "2026-10-01"
 
+# The relay's address: equipe's own domain (the zone is on this account).
+routes = [{ pattern = "relay.equipe.im", custom_domain = true }]
+
 # One Durable Object per daemon (keyed by daemon id) holds its sockets, device
 # registrations and pairing slots.
 [[durable_objects.bindings]]
