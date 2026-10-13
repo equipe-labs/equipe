@@ -99,6 +99,14 @@ enum Command {
         #[arg(long)]
         squad: Option<String>,
     },
+    /// What the squad remembers about you and the work; `changes` lists what changed there lately
+    Memory {
+        /// `changes`
+        words: Vec<String>,
+        /// The squad (default: the one this folder belongs to, else your first)
+        #[arg(long)]
+        squad: Option<String>,
+    },
     /// Serve a member's board tools over MCP (equipe starts this for its engines)
     #[command(hide = true)]
     Mcp {
@@ -306,6 +314,24 @@ async fn main() -> ExitCode {
                         }
                         Err(why) => Err(Failure::new(why)),
                     }
+                }
+            }
+        }
+        Command::Memory { words, squad } => {
+            let home = equipe_providers::credentials::equipe_home();
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let words: Vec<&str> = words.iter().map(String::as_str).collect();
+            match home::squad_for(&home, &cwd, squad).map(|squad| home::memory(&home::dir(&home, &squad), &words)) {
+                None => Err(Failure::new("No squad yet. Run equipe to start one.")),
+                Some(Err(why)) => Err(Failure::new(why)),
+                Some(Ok(lines)) => {
+                    for line in lines {
+                        println!("  {line}");
+                    }
+                    if words.is_empty() {
+                        println!("  {}", ui::out().hint("equipe memory changes · edit or delete a file to change what the squad knows · equipe home undo [n]"));
+                    }
+                    Ok(())
                 }
             }
         }

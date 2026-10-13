@@ -134,6 +134,10 @@ pub const SUBMIT_FOR_REVIEW: &str = "submit_for_review";
 pub const BLOCK_ON_PERSON: &str = "block_on_person";
 /// A member asks the person's yes before something done in their name.
 pub const ASK_PERSON: &str = "ask_person";
+/// A member writes a fact into the squad's memory.
+pub const REMEMBER: &str = "remember";
+/// A member takes a wrong or stale fact out of the squad's memory.
+pub const FORGET: &str = "forget";
 
 /// The tools a member gets, as MCP tool definitions. Everyone reads the board,
 /// writes tickets (a member's are proposals until the PM or the person accepts
@@ -220,6 +224,33 @@ wrote and answers yes or no; wait for the answer and do only what they said yes 
                 "why": { "type": "string", "description": "Why the work needs it, in one line." },
             },
             "required": ["action", "why"],
+        },
+    }));
+    tools.push(json!({
+        "name": REMEMBER,
+        "description": "Write a fact into the squad's memory, which every member is given each turn: something about \
+the person (a preference, their schedule, a service they use), a decision, a recurring deadline, a term, a contact. \
+One fact per call; the same name updates that fact instead of adding another. Never a secret value — an ID, account \
+or card number, a password: remember where the original file is instead.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "A short kebab-case name, also its file name: tax-filing." },
+                "description": { "type": "string", "description": "The fact in one line — what the index shows — in the person's language." },
+                "kind": { "type": "string", "enum": crate::squad_memory::KINDS },
+                "body": { "type": "string", "description": "More, when one line isn't enough: details, why, where the original is." },
+                "confirmed": { "type": "boolean", "description": "Only when the person agreed to change a fact they wrote last." },
+            },
+            "required": ["name", "description", "kind"],
+        },
+    }));
+    tools.push(json!({
+        "name": FORGET,
+        "description": "Take a fact out of the squad's memory, when it turned out wrong or no longer holds.",
+        "inputSchema": {
+            "type": "object",
+            "properties": { "name": { "type": "string", "description": "The fact's name, as the index shows it." } },
+            "required": ["name"],
         },
     }));
     // Claude Code's permission prompts come here (`--permission-prompt-tool`):

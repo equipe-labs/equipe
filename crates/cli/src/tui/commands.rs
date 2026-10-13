@@ -9,13 +9,14 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-pub const COMMANDS: [Spec; 21] = [
+pub const COMMANDS: [Spec; 22] = [
     Spec { name: "usage", args: "", about: "Plan limits, each member's context and tokens" },
     Spec { name: "scale", args: "[0-6|off]", about: "Extra members a role may get when its work waits" },
     Spec { name: "compact", args: "[member]", about: "Start its next conversation afresh, from a summary of this one" },
     Spec { name: "clear", args: "[member]", about: "Start its next conversation clean — memory and board stay" },
     Spec { name: "squad", args: "[name] · new <name> <folder> · add|remove <folder>", about: "Switch, start, or change what a squad works on" },
     Spec { name: "home", args: "[changes · undo [n]]", about: "Open the squad's folder, see what changed there, take a change back" },
+    Spec { name: "memory", args: "[changes]", about: "What the squad remembers about you and the work — open it to fix, or see what changed" },
     Spec { name: "project", args: "[name|all]", about: "Put one project in focus: board, reviews and new work" },
     Spec { name: "accept", args: "T-n", about: "Approve handed-in work" },
     Spec { name: "merge", args: "T-n", about: "Merge accepted work into main, and push if you say so" },
@@ -155,6 +156,11 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
         ("add", _) => ctx.roles.iter().filter(|w| starts(w)).map(|r| word(r, "", " ")).collect(),
         ("compact" | "clear", 1) => ctx.members.iter().filter(|(m, _)| starts(m)).map(|(m, _)| word(m, "", "")).collect(),
         ("home", 1) => [("changes", "what changed in the squad's folder lately", ""), ("undo", "take the latest change back", "")]
+            .iter()
+            .filter(|(w, _, _)| starts(w))
+            .map(|(w, about, end)| word(w, about, end))
+            .collect(),
+        ("memory", 1) => [("changes", "what changed in the squad's memory lately", "")]
             .iter()
             .filter(|(w, _, _)| starts(w))
             .map(|(w, about, end)| word(w, about, end))

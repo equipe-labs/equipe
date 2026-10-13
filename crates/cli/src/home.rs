@@ -1,9 +1,11 @@
 //! `/home` and `equipe home`: the squad's folder, for the person — open it, see
-//! what changed there lately, take a change back. No git words.
+//! what changed there lately, take a change back. No git words. `/memory` and
+//! `equipe memory`: what the squad remembers, for the person to read and fix.
 
 use std::path::{Path, PathBuf};
 
 use equipe_core::squad_home::{self, Change};
+use equipe_core::squad_memory;
 
 /// The squad `equipe home` is about, run from `cwd`: the one named, the one
 /// whose project or folder `cwd` is in, else the only squad (or the first).
@@ -77,6 +79,40 @@ pub fn run(dir: &Path, words: &[&str]) -> Result<Vec<String>, String> {
     }
 }
 
+/// What `/memory <words>` does: with none, opens the memory's folder and lists
+/// every fact and the latest changes; `changes` lists the latest ten changes.
+/// Undoing one is `/home undo`, like any change to the squad's folder.
+pub fn memory(dir: &Path, words: &[&str]) -> Result<Vec<String>, String> {
+    if !dir.join(".git").exists() {
+        return Err("The squad's folder isn't made yet — it is when equipe's daemon next starts.".into());
+    }
+    let now = now();
+    match words {
+        [] => {
+            let folder = squad_memory::dir(dir);
+            std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+            open(&folder);
+            let facts = squad_memory::facts(dir);
+            let mut lines = vec![match facts.len() {
+                0 => format!("The squad remembers nothing yet: {}", folder.display()),
+                n => format!("The squad remembers {n} {}: {}", if n == 1 { "thing" } else { "things" }, folder.display()),
+            }];
+            lines.extend(facts.iter().map(|f| format!("{} — {}", f.name, f.description)));
+            let recent = squad_memory::changes(dir, 3)?;
+            lines.extend(recent.iter().enumerate().map(|(i, c)| format!("lately: {}", line(i + 1, c, now))));
+            Ok(lines)
+        }
+        ["changes"] | ["recent"] => {
+            let changes = squad_memory::changes(dir, 10)?;
+            if changes.is_empty() {
+                return Ok(vec!["Nothing has changed in the squad's memory yet.".into()]);
+            }
+            Ok(changes.iter().enumerate().map(|(i, c)| line(i + 1, c, now)).collect())
+        }
+        _ => Err("/memory opens what the squad remembers · /memory changes".into()),
+    }
+}
+
 fn undo(dir: &Path, n: usize) -> Result<Vec<String>, String> {
     let change = squad_home::undo(dir, n)?;
     Ok(vec![format!("Taken back: {} · /home undo brings it back", change.what())])
@@ -106,6 +142,29 @@ mod tests {
         assert!(!dir.join("notes/plan.md").exists());
         assert!(run(&dir, &["undo", "x"]).unwrap_err().contains("/home undo 2"));
         assert!(!list.concat().contains("commit"), "no git words");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn the_person_reads_what_the_squad_remembers_and_what_changed() {
+        let home = std::env::temp_dir().join(format!("equipe-cli-memory-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        squad_home::ensure(&home, "acme", None).unwrap();
+        let dir = dir(&home, "acme");
+        assert_eq!(memory(&dir, &["changes"]).unwrap(), ["Nothing has changed in the squad's memory yet."]);
+        let fact = squad_memory::Remember { name: "tax-filing", description: "매년 5월 종합소득세 직접 신고", kind: "deadline", ..Default::default() };
+        squad_memory::remember(&dir, "backend", &fact, "2026-10-13", None).unwrap();
+        // A change elsewhere in the folder isn't the memory's.
+        std::fs::write(dir.join("notes/plan.md"), "x").unwrap();
+        squad_home::save(&dir, "pm", "write the plan down").unwrap();
+        assert_eq!(
+            memory(&dir, &["changes"]).unwrap(),
+            ["1 · just now · backend saved memory/tax-filing.md — remembered tax-filing: 매년 5월 종합소득세 직접 신고"]
+        );
+        let all = memory(&dir, &[]).unwrap();
+        assert!(all[0].starts_with("The squad remembers 1 thing: "), "{all:?}");
+        assert_eq!(all[1], "tax-filing — 매년 5월 종합소득세 직접 신고");
+        assert!(all[2].starts_with("lately: 1 · just now · backend saved memory/tax-filing.md"), "{all:?}");
         let _ = std::fs::remove_dir_all(&home);
     }
 }

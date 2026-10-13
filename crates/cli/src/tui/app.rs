@@ -1380,6 +1380,20 @@ impl App {
                 });
                 Vec::new()
             }
+            "memory" => {
+                let dir = crate::home::dir(&equipe_providers::credentials::equipe_home(), &self.squad);
+                let words: Vec<&str> = rest.split_whitespace().collect();
+                self.flash = Some(match crate::home::memory(&dir, &words) {
+                    // The folder is open in Finder; the line says how much is there and what changed last.
+                    Ok(lines) if words.is_empty() => {
+                        let latest = lines.iter().find(|l| l.starts_with("lately: ")).map(|l| format!(" · {l}")).unwrap_or_default();
+                        format!("{}{latest} · /memory changes", lines[0])
+                    }
+                    Ok(lines) => lines.join("  ·  "),
+                    Err(why) => why,
+                });
+                Vec::new()
+            }
             "project" => self.focus_on(rest),
             "scale" => match rest.trim() {
                 "" => {
