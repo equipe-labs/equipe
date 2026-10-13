@@ -31,6 +31,8 @@ and working over SSH (Tailscale) and Jump Desktop. 2026-10-13.
 | **Capture from the LaunchAgent** | ✅ ScreenCaptureKit 1568×882 (sized by SCK) in 80–125 ms; `CGDisplayCreateImage` 5120×2880 in 13–30 ms. The image shows real app windows, not just wallpaper |
 | macOS 26 asks again on first direct capture | ⚠️ a second dialog appears: *"desktop-probe wants to bypass the system private window picker and directly access your screen"* (Allow / Open System Settings). Capture already worked while it was up |
 | Click and type **without** Accessibility | ❌ silently dropped: no error, the pointer doesn't move, nothing typed. TextEdit opened fine (`open -a` needs nothing) |
+| A bare executable in Accessibility | ❌ the person added it with "+", it never showed in the list. Screen Recording took it; Accessibility wants an **app bundle** |
+| App bundle, fixed bundle id, fixed signature | `bundle.sh`: `~/Applications/equipe Desktop Probe.app`, `im.equipe.desktop-probe`, signed with a self-signed certificate kept in a keychain of its own → designated requirement `identifier "im.equipe.desktop-probe" and certificate leaf = H"9510…"` instead of a cdhash. `request` puts it in both lists by itself |
 | Display after the person connected with Jump Desktop | 2560×1440 pt at **2×** (5120×2880 px) — it was 1472×828 @1× earlier: the virtual display changes with the remote client |
 | Capture, click at a point, type text (incl. Korean), open TextEdit, read it back through AX | ⏳ **not run**: needs the two grants and the screen to be free for ~15 s. `desktop-probe run` does all of it in one go and checks the typed text through Accessibility |
 | A rebuilt binary keeps its grant | ⏳ not run; expected **no** (ad-hoc signature, see TCC) |
