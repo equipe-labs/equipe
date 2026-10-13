@@ -432,6 +432,8 @@ pub struct Extent {
     /// Where the clickable things are: the pane switch, the board's ticket rows.
     pub hits: Vec<(u16, u16, u16, Hit)>,
     pub divider: Option<Divider>,
+    /// On the board: the rows the open ticket is shown in (first, last).
+    pub board_detail: Option<(u16, u16)>,
     /// Where the conversation's text is, for selecting it.
     pub text: Option<TextView>,
 }
@@ -455,10 +457,18 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
     for (from, to, hit) in header(app, theme, None, narrow, top.width as usize).1 {
         hits.push((top.x + from, top.x + to, top.y, hit));
     }
+    let mut board_max = 0;
+    let mut board_page = board.height as usize / 2;
+    let mut board_detail = None;
     if app.pane == Pane::Board {
         let width = (board.width as usize).saturating_sub(1).min(PROSE_MAX + 20);
         let rows = board_list(app, theme, width);
-        let (list, _) = board_areas(board, rows.len());
+        let (list, detail) = board_areas(board, rows.len());
+        let body = detail_body(detail);
+        let lines = ticket_detail(app, theme, detail_width(body)).len();
+        board_max = lines.saturating_sub(body.height as usize);
+        board_page = (body.height as usize / 2).max(1);
+        board_detail = Some((body.y, body.y + body.height.saturating_sub(1)));
         let top = list_top(&rows, app.selected_ticket().map(|t| t.id), list.height as usize);
         for (i, (_, id)) in rows.iter().enumerate().skip(top).take(list.height as usize) {
             if let Some(id) = id {
@@ -467,7 +477,7 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
         }
     }
     let Some(agent) = app.selected() else {
-        return Extent { page: board.height as usize / 2, conversation_max: 0, board_max: 0, hits, divider, text: None };
+        return Extent { page: board_page, conversation_max: 0, board_max, hits, divider, board_detail, text: None };
     };
     let text = conversation_text(right, app, agent);
     // The waiting card's rows open their tickets too.
@@ -514,11 +524,12 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
         }
     }
     Extent {
-        page: text.height as usize / 2,
+        page: if app.pane == Pane::Board { board_page } else { text.height as usize / 2 },
         conversation_max: lines.saturating_sub(text.height as usize),
-        board_max: 0,
+        board_max,
         hits,
         divider,
+        board_detail,
         text: text_view,
     }
 }
@@ -1697,10 +1708,39 @@ fn render_board(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let shown: Vec<Line> = rows.into_iter().skip(top).take(list.height as usize).map(|(line, _)| line).collect();
     frame.render_widget(Paragraph::new(shown), list);
     // A hairline between the list and the ticket open below it.
-    let [rule, body] = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(detail);
+    let [rule, _] = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(detail);
     frame.render_widget(Paragraph::new(Span::styled("─".repeat(width.min(rule.width as usize)), theme.dim())), rule);
-    let detail_width = (body.width as usize).saturating_sub(1).min(PROSE_MAX);
-    frame.render_widget(Paragraph::new(ticket_detail(app, theme, detail_width)), body);
+    let body = detail_body(detail);
+    let lines = ticket_detail(app, theme, detail_width(body));
+    let height = body.height as usize;
+    let top = app.board_scroll.min(lines.len().saturating_sub(height));
+    let below = lines.len().saturating_sub(top + height);
+    let mut shown: Vec<Line> = lines.into_iter().skip(top).take(height).collect();
+    // A ticket longer than its room says so, at the edge where more is.
+    if below > 0 && height > 2
+        && let Some(last) = shown.last_mut()
+    {
+        *last = Line::from(vec![
+            Span::styled(format!("↓ {} more lines · ", below + 1), theme.accent()),
+            Span::styled("PgDn", theme.bold()),
+            Span::styled(" or scroll here", theme.dim()),
+        ]);
+    }
+    if top > 0 && height > 2
+        && let Some(first) = shown.first_mut()
+    {
+        *first = Line::from(vec![Span::styled(format!("↑ {} lines above · ", top + 1), theme.dim()), Span::styled("PgUp", theme.bold())]);
+    }
+    frame.render_widget(Paragraph::new(shown), body);
+}
+
+/// Under the hairline: where the open ticket is shown.
+fn detail_body(detail: Rect) -> Rect {
+    Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas::<2>(detail)[1]
+}
+
+fn detail_width(body: Rect) -> usize {
+    (body.width as usize).saturating_sub(1).min(PROSE_MAX)
 }
 
 /// The oldest request for permission, held in place above the composer behind
@@ -2536,6 +2576,25 @@ mod tests {
         app.pane = Pane::Conversation;
         app.help_open = true;
         assert!(screen(&app, 120, 60).contains("Ctrl-P"));
+    }
+
+    #[test]
+    fn a_long_ticket_scrolls_and_says_there_is_more() {
+        let (mut app, _) = working();
+        let mut t = ticket(20, TicketStatus::Waiting, "Prove the desktop works");
+        let steps: Vec<String> = (1..=30).map(|n| format!("- [ ] step {n}")).collect();
+        t.note = Some(format!("Waiting on you:\n{}", steps.join("\n")));
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t });
+        app.pane = Pane::Board;
+        let screen_rect = Rect::new(0, 0, 100, 30);
+        let shot = screen(&app, 100, 30);
+        assert!(shot.contains("more lines") && !shot.contains("step 30"), "{shot}");
+        let laid = extent(&app, Theme::plain(), screen_rect, &Layouts::default());
+        assert!(laid.board_max > 0);
+        assert!(laid.board_detail.is_some());
+        app.board_scroll = laid.board_max;
+        let shot = screen(&app, 100, 30);
+        assert!(shot.contains("step 30") && !shot.contains("more lines"), "{shot}");
     }
 
     #[test]

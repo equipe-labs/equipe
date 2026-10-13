@@ -140,6 +140,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         }
         let extent = view::extent(app, theme, ratatui::layout::Rect::new(0, 0, size.width, size.height), layouts);
         app.set_extent(extent.page, extent.conversation_max, extent.board_max);
+        app.set_board_detail(extent.board_detail);
         app.set_hits(extent.hits, extent.divider);
         app.set_text_view(extent.text);
         terminal.draw(|f| view::render(f, app, theme, branch, layouts)).map(|_| ())
@@ -486,7 +487,7 @@ fn on_input(app: &mut app::App, client: &equipe_core::gateway::Client, event: In
         Input::Mouse(event) => match event.kind {
             crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => app.on_click(event.column, event.row),
             crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left) => app.on_drag(event.column, event.row),
-            kind => app.on_mouse(kind, Instant::now()),
+            kind => app.on_mouse_at(kind, event.row, Instant::now()),
         },
         Input::Resize(..) => {}
         _ => return false,

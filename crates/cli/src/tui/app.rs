@@ -289,6 +289,8 @@ pub struct App {
     /// How far the selected conversation and the board can scroll, as last drawn.
     conversation_max: usize,
     board_max: usize,
+    /// The rows the open ticket shows in on the board.
+    board_detail: Option<(u16, u16)>,
     /// The last wheel event: when, and which way.
     last_wheel: Option<(Instant, bool)>,
     /// The selected member's conversation, asked for as a file (`/export`).
@@ -392,6 +394,7 @@ impl App {
             page: 10,
             conversation_max: usize::MAX,
             board_max: usize::MAX,
+            board_detail: None,
             last_wheel: None,
             export: false,
             board_selected: None,
@@ -577,7 +580,12 @@ impl App {
             return;
         }
         let at = self.selected_ticket().and_then(|t| order.iter().position(|id| *id == t.id)).unwrap_or(0) as isize;
-        self.board_selected = Some(order[(at + step).clamp(0, order.len() as isize - 1) as usize]);
+        let next = order[(at + step).clamp(0, order.len() as isize - 1) as usize];
+        // Another ticket reads from its top.
+        if self.board_selected != Some(next) {
+            self.board_scroll = 0;
+        }
+        self.board_selected = Some(next);
     }
 
     /// Where the screen put its clickable things, as last drawn.
@@ -629,6 +637,9 @@ impl App {
             }
             Some(Hit::Ticket(id)) => {
                 self.pane = Pane::Board;
+                if self.board_selected != Some(id) {
+                    self.board_scroll = 0;
+                }
                 self.board_selected = Some(id);
             }
             None => {
@@ -875,6 +886,29 @@ impl App {
     pub fn attach_image(&mut self, path: &std::path::Path) {
         self.composer.insert_str(&format!("[image: {}] ", path.display()));
         self.flash = Some("Image attached — the member looks at it with your message".into());
+    }
+
+    /// The rows the open ticket shows in on the board, as last drawn.
+    pub fn set_board_detail(&mut self, rows: Option<(u16, u16)>) {
+        self.board_detail = rows;
+    }
+
+    /// The wheel (or a button) at screen row `row`: on the board, over the
+    /// open ticket it reads on; anywhere else it is `on_mouse`.
+    pub fn on_mouse_at(&mut self, kind: MouseEventKind, row: u16, now: Instant) {
+        let up = match kind {
+            MouseEventKind::ScrollUp => true,
+            MouseEventKind::ScrollDown => false,
+            _ => return self.on_mouse(kind, now),
+        };
+        if self.pane == Pane::Board && self.board_detail.is_some_and(|(top, bottom)| (top..=bottom).contains(&row)) {
+            let in_gesture = self.last_wheel.is_some_and(|(at, was_up)| was_up == up && now.duration_since(at) < WHEEL_GESTURE);
+            self.last_wheel = Some((now, up));
+            let lines = if in_gesture { 1 } else { WHEEL_NOTCH };
+            self.scroll(if up { lines } else { -lines });
+            return;
+        }
+        self.on_mouse(kind, now);
     }
 
     pub fn on_mouse(&mut self, kind: MouseEventKind, now: Instant) {
@@ -2600,6 +2634,29 @@ mod tests {
         assert!(looks_like_an_app(&dir));
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(role_names().contains("mobile"));
+    }
+
+    #[test]
+    fn on_the_board_the_wheel_walks_tickets_over_the_list_and_reads_the_ticket_below() {
+        let (mut app, _, _) = team();
+        for id in [1, 2] {
+            app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(id, TicketStatus::Todo) });
+        }
+        app.pane = Pane::Board;
+        app.set_extent(5, 0, 40);
+        app.set_board_detail(Some((10, 20)));
+        let t0 = Instant::now();
+        // Over the open ticket: it scrolls.
+        app.on_mouse_at(MouseEventKind::ScrollDown, 12, t0);
+        assert_eq!(app.board_scroll, 3);
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(1));
+        // Over the list: the next ticket, read from its top.
+        app.on_mouse_at(MouseEventKind::ScrollDown, 3, t0 + Duration::from_secs(1));
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(2));
+        assert_eq!(app.board_scroll, 0);
+        // PgDn reads on too.
+        app.on_key(KeyEvent::from(KeyCode::PageDown), t0);
+        assert_eq!(app.board_scroll, 5);
     }
 
     #[test]
