@@ -1744,7 +1744,7 @@ impl App {
         }
         let wanted: Vec<String> = match words.as_slice() {
             [] => {
-                self.flash = Some("Who? /add designer frontend · roles: pm designer frontend backend qa data, or custom <name>".into());
+                self.flash = Some(format!("Who? /add designer frontend · roles: {}, or custom <name>", role_names()));
                 return Vec::new();
             }
             ["custom"] => {
@@ -1758,9 +1758,7 @@ impl App {
                     match roles::role(id) {
                         Some(role) => wanted.push(role.id.to_owned()),
                         None => {
-                            self.flash = Some(format!(
-                                "No role '{id}'. Roles: pm designer frontend backend qa data — or /add custom {id}"
-                            ));
+                            self.flash = Some(format!("No role '{id}'. Roles: {} — or /add custom {id}", role_names()));
                             return Vec::new();
                         }
                     }
@@ -1869,6 +1867,11 @@ pub fn image_path(text: &str) -> Option<PathBuf> {
     let unquoted = text.trim_matches(|c| c == '\'' || c == '"');
     let path = PathBuf::from(unquoted.replace("\\ ", " "));
     (is_image(&path) && path.is_absolute() && path.is_file()).then_some(path)
+}
+
+/// The built-in roles, as `/add` takes them.
+fn role_names() -> String {
+    roles::ROLES.iter().map(|r| r.id).collect::<Vec<_>>().join(" ")
 }
 
 /// Whether a folder holds a mobile app: an Xcode project, Flutter, React
@@ -2596,6 +2599,7 @@ mod tests {
         std::fs::write(dir.join("pubspec.yaml"), "name: acme").unwrap();
         assert!(looks_like_an_app(&dir));
         std::fs::remove_dir_all(&dir).unwrap();
+        assert!(role_names().contains("mobile"));
     }
 
     #[test]
