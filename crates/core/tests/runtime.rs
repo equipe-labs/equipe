@@ -13,7 +13,7 @@ use equipe_core::protocol::{
     Access, Command, Engine, Entry, Event, SessionSpec, SessionState, Ticket, TicketStatus, TurnOutcome,
 };
 use equipe_core::runtime::{self, Config, Handle};
-use equipe_core::squads;
+use equipe_core::{squad_home, squads};
 use equipe_providers::CredentialStore;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -420,11 +420,11 @@ async fn at_its_desk_a_member_reads_every_project_and_gets_only_equipes_tools() 
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
 
     let call = &calls(&recorded)[0];
-    // At its desk it reads on its own; anything more — a fetch, an edit — asks
-    // the person rather than being refused unseen.
-    assert_eq!(arg(call, "--permission-mode"), Some("manual"));
+    // At its desk it reads on its own and writes only the squad's home; anything
+    // more — a fetch, a write elsewhere — asks the person rather than being refused unseen.
+    assert_eq!(arg(call, "--permission-mode"), Some("acceptEdits"));
     assert_eq!(arg(call, "--permission-prompt-tool"), Some("mcp__equipe__approve"));
-    assert_eq!(arg(call, "--add-dir"), Some(&*app.to_string_lossy()));
+    assert_eq!(arg(call, "--add-dir"), Some(&*site.to_string_lossy()));
     let mcp: serde_json::Value = serde_json::from_str(arg(call, "--mcp-config").unwrap()).unwrap();
     let server = &mcp["mcpServers"]["equipe"];
     assert_eq!(server["command"], "/opt/equipe");
@@ -1526,4 +1526,125 @@ fn write_script(path: &std::path::Path, script: &str) {
     let copied = std::process::Command::new("cp").arg(&draft).arg(path).status().unwrap();
     assert!(copied.success());
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+// ── the squad home ──
+
+/// The settings a recorded turn passed to Claude Code.
+fn settings_of(call: &[String]) -> serde_json::Value {
+    serde_json::from_str(arg(call, "--settings").unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn at_its_desk_a_member_writes_the_squads_home_each_change_saved_and_taken_back() {
+    let (claude, recorded) = recording_claude(&format!("mkdir -p notes && printf '5월 31일\\n' > notes/tax-deadline.md\n{}", answering("saved")));
+    let (site, app) = (named("site"), named("app"));
+    let home = squad_home(&[&site, &app]);
+    let folder = squads_home(&home);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    // The person edits in Finder before the turn: that is theirs, kept apart.
+    std::fs::write(folder.join("notes/mine.md"), "mine\n").unwrap();
+    handle.send(Command::Submit { session: 1, text: "세금 마감일 메모해줘".into() });
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.starts_with("✎"))).await;
+    assert!(
+        seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text }
+            if text == "✎ pm saved notes/tax-deadline.md in the squad's folder · /home undo takes it back")),
+        "{seen:#?}"
+    );
+
+    let call = &calls(&recorded)[0];
+    assert_eq!(arg(call, "--permission-mode"), Some("acceptEdits"), "in auto it writes its home on its own");
+    let changes = squad_home::changes(&folder, 10).unwrap();
+    let saved: Vec<(&str, &str, String)> = changes.iter().map(|c| (c.by.as_str(), c.why.as_str(), c.what())).collect();
+    assert_eq!(
+        saved,
+        [
+            ("pm", "세금 마감일 메모해줘", "saved notes/tax-deadline.md".to_owned()),
+            (squad_home::PERSON, "changed in the squad's folder", "saved notes/mine.md".to_owned()),
+        ]
+    );
+
+    // The person takes it back; their own note stays.
+    squad_home::undo(&folder, 1).unwrap();
+    assert!(!folder.join("notes/tax-deadline.md").exists() && folder.join("notes/mine.md").exists());
+}
+
+fn squads_home(home: &Path) -> PathBuf {
+    squad_home::path(home, "acme")
+}
+
+#[tokio::test]
+async fn at_its_desk_the_projects_are_only_read_and_other_squads_folders_not_at_all() {
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let (site, app) = (named("site"), named("app"));
+    let home = squad_home(&[&site, &app]);
+    squads::create(&home, "beta", &named("beta-app")).unwrap();
+    let beta = squad_home::path(&home, "beta");
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "frontend")).await;
+    handle.send(Command::Submit { session: 2, text: "look around".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+
+    let call = &calls(&recorded)[0];
+    let added: Vec<&str> = call.windows(2).filter(|w| w[0] == "--add-dir").map(|w| w[1].as_str()).collect();
+    assert_eq!(added, [site.to_str().unwrap(), app.to_str().unwrap()], "every project, read from the home");
+    let settings = settings_of(call);
+    let deny: Vec<&str> = settings["permissions"]["deny"].as_array().unwrap().iter().map(|r| r.as_str().unwrap()).collect();
+    for rule in [
+        format!("Edit(/{}/**)", site.display()),
+        format!("Write(/{}/**)", app.display()),
+        format!("Read(/{}/**)", beta.display()),
+    ] {
+        assert!(deny.contains(&rule.as_str()), "{rule} in {deny:?}");
+    }
+    assert!(!deny.iter().any(|r| r.contains("/acme/home")), "its own home is its to write");
+    assert_eq!(settings["sandbox"]["filesystem"]["denyWrite"], serde_json::json!([site, app]));
+    assert!(settings["sandbox"]["filesystem"]["denyRead"].as_array().unwrap().contains(&serde_json::json!(beta)));
+
+    // Asked through equipe, the same: refused in any mode, never put to the person.
+    handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::Full) });
+    until(&mut events, |e| matches!(e, Event::ModeChanged { .. })).await;
+    let approve = |tool_name: &str, input: serde_json::Value| {
+        tool(&handle, "frontend", "approve", serde_json::json!({ "tool_name": tool_name, "input": input, "tool_use_id": "t" }))
+    };
+    let edit = approve("Edit", serde_json::json!({ "file_path": site.join("README.md") })).await;
+    let edit: serde_json::Value = serde_json::from_str(&edit.text).unwrap();
+    assert_eq!(edit["behavior"], "deny");
+    assert!(edit["message"].as_str().unwrap().contains("only read"), "{edit}");
+    let shell = approve("Bash", serde_json::json!({ "command": format!("echo x > {}/a.txt", app.display()) })).await;
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&shell.text).unwrap()["behavior"], "deny");
+    let peek = approve("Read", serde_json::json!({ "file_path": beta.join("README.md") })).await;
+    let peek: serde_json::Value = serde_json::from_str(&peek.text).unwrap();
+    assert_eq!(peek["behavior"], "deny");
+    assert!(peek["message"].as_str().unwrap().contains("private"), "{peek}");
+    assert!(handle.snapshot("acme").await.approvals.is_empty(), "nothing was put to the person");
+}
+
+#[tokio::test]
+async fn a_squad_from_before_homes_gets_one_and_its_desks_move_there_afresh() {
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let site = named("site");
+    let home = squad_home(&[&site]);
+    let folder = squads_home(&home);
+    {
+        let (handle, mut events) = runtime::start(config(&claude, &home, true));
+        add(&handle, &mut events, 1, member(&site, "pm")).await;
+        handle.send(Command::Submit { session: 1, text: "hello".into() });
+        until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+        handle.shutdown().await;
+    }
+    // As it was before squad homes: no home, and a desk opened in the project.
+    std::fs::remove_dir_all(&folder).unwrap();
+    Journal::for_squad(&home, "acme").unwrap().set_cwd(1, &site).unwrap();
+
+    let (handle, mut events) = runtime::start(config(&claude, &home, true));
+    assert!(folder.join(".git").is_dir() && folder.join("notes").is_dir(), "made on start");
+    assert_eq!(handle.snapshot("acme").await.sessions[0].project, folder);
+    handle.send(Command::Submit { session: 1, text: "again".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let call = calls(&recorded).pop().unwrap();
+    assert_eq!(arg(&call, "--resume"), None, "a conversation begun in the project can't go on in the home");
+    assert!(arg(&call, "-p").unwrap().contains("fresh conversation"));
 }
