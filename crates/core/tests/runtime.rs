@@ -38,13 +38,11 @@ fn named(name: &str) -> PathBuf {
 
 /// A stand-in `claude`: answers `auth status`, and runs `turn` for a turn.
 fn fake_claude(logged_in: bool, turn: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let bin = scratch("bin").join("claude");
     let script = format!(
         "#!/bin/sh\nif [ \"$1\" = \"auth\" ]; then echo '{{\"loggedIn\":{logged_in},\"authMethod\":\"claude.ai\"}}'; exit 0; fi\n{turn}\n"
     );
-    std::fs::write(&bin, script).unwrap();
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&bin, &script);
     bin
 }
 
@@ -1201,4 +1199,17 @@ async fn stopping_a_member_withdraws_what_it_was_waiting_for() {
     assert_eq!(serde_json::from_str::<serde_json::Value>(&waiting.await.unwrap().text).unwrap()["behavior"], "deny");
     assert!(handle.snapshot("acme").await.approvals.is_empty());
     handle.shutdown().await;
+}
+
+/// Write an executable script without this process ever holding it open for
+/// writing: on Linux, a test thread forking at that moment would carry the
+/// open file into its child, and running the script would fail with "Text
+/// file busy". The script is written beside it and copied in by `cp`.
+fn write_script(path: &std::path::Path, script: &str) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let draft = path.with_extension("draft");
+    std::fs::write(&draft, script).unwrap();
+    let copied = std::process::Command::new("cp").arg(&draft).arg(path).status().unwrap();
+    assert!(copied.success());
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }

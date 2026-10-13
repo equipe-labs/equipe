@@ -759,7 +759,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("equipe-fake-claude-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let bin = dir.join("claude");
-        std::fs::write(&bin, format!("#!/bin/sh\n{script_body}\n")).unwrap();
+        // Written beside it and copied in by `cp`: this process never holds the
+        // script open for writing, so a test thread forking meanwhile can't
+        // leave it "busy" when it runs.
+        let draft = dir.join("claude.draft");
+        std::fs::write(&draft, format!("#!/bin/sh\n{script_body}\n")).unwrap();
+        assert!(std::process::Command::new("cp").arg(&draft).arg(&bin).status().unwrap().success());
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         (bin, dir)
     }
