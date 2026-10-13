@@ -87,7 +87,7 @@ Flutter) — screens, navigation, state, device features, and the app's use of t
 You edit files on your own branch, in a worktree of your own. Build and run it in a simulator where you can, \
 and say how to see it working.",
         edits: true,
-        tier: Tier::Upper,
+        tier: Tier::Top,
     },
     Role {
         id: "qa",

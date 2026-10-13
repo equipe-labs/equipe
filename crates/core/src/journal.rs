@@ -11,6 +11,7 @@
 //! The database is created in incremental-vacuum mode, so pruning gives the
 //! space back to the disk instead of leaving the file at its high-water mark.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use equipe_protocol::{Access, Engine, Entry, Member, Mode, SessionId, Ticket, TicketId, TicketKind, TicketStatus};
@@ -329,6 +330,20 @@ impl Journal {
     fn set_meta(&self, key: &str, value: &str) -> Result<()> {
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", [key, value])?;
         Ok(())
+    }
+
+    /// The PM's conversation threads: the project its desk conversation is
+    /// about now (`None`: the whole squad), and each other thread's
+    /// conversation id, put aside — keyed by project, `""` for the squad's.
+    pub fn desk_threads(&self, id: SessionId) -> (Option<String>, HashMap<String, String>) {
+        let value: serde_json::Value = self.meta(&format!("threads:{id}")).and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default();
+        let current = value["current"].as_str().map(str::to_owned);
+        let others = value["others"].as_object().map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect()).unwrap_or_default();
+        (current, others)
+    }
+
+    pub fn set_desk_threads(&self, id: SessionId, current: Option<&str>, others: &HashMap<String, String>) -> Result<()> {
+        self.set_meta(&format!("threads:{id}"), &serde_json::json!({ "current": current, "others": others }).to_string())
     }
 
     /// How many extra members of a role equipe may bring in when its work

@@ -250,7 +250,7 @@ fn transcript_width(app: &App, total: u16) -> usize {
 /// What a laid-out conversation depends on: the width it was laid out for, and
 /// enough of the conversation to notice it changed — its length, the length of
 /// its last line (a reply grows as it streams), the memos waiting.
-type LayoutKey = (usize, usize, usize, usize, bool);
+type LayoutKey = (usize, usize, usize, usize, bool, Option<String>);
 
 /// Conversations already laid out, per member. Laying one out means reading all
 /// of its Markdown; scrolling must not do that again for every wheel event.
@@ -290,14 +290,15 @@ impl Layouts {
 }
 
 fn layout_key(agent: &Agent, width: usize) -> LayoutKey {
-    let entries = agent.transcript.entries();
+    let entries = agent.shown();
     let last = entries.last().map_or(0, |entry| match entry {
         Entry::User { text } | Entry::Reply { text } | Entry::Note { text } => text.len(),
         Entry::Tool { tool, target } => tool.len() + target.as_ref().map_or(0, String::len),
         Entry::Error { message, .. } => message.len(),
         Entry::Landed { stat, .. } => stat.len(),
+        Entry::Thread { .. } => 0,
     });
-    (width, entries.len(), last, agent.queued.len(), agent.expanded)
+    (width, entries.len(), last, agent.queued.len(), agent.expanded, agent.thread_view.clone())
 }
 
 // ── the screen ──
@@ -704,7 +705,7 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
     lines.extend(heading("LOOK AROUND"));
     lines.extend(rows(&pairs(&[
         ("Ctrl-B", "the board, and back"),
-        ("Ctrl-P", "pick a project to filter to — Enter takes the next, typing finds one · Alt-1…9 one at once, Alt-0 all"),
+        ("Ctrl-P", "pick a project — the board, and the PM's conversation about it, follow · Enter takes the next, typing finds one"),
         ("PgUp · PgDn · wheel", "scroll · End for the latest · Ctrl-O unfolds steps"),
         ("click · drag", "a ticket number opens it · drag over text to copy it · drag the squad's edge to resize it"),
     ]), keys));
@@ -1193,8 +1194,15 @@ fn news_lines(text: &str, looks: &Looks, theme: Theme, width: usize) -> Option<V
 
 fn transcript_lines(agent: &Agent, looks: &Looks, theme: Theme, width: usize) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    if agent.transcript.is_empty() && agent.queued.is_empty() {
-        let hello = if agent.is_pm() {
+    if agent.shown().is_empty() && agent.queued.is_empty() {
+        let thread_hello;
+        let hello = if let Some(project) = agent.thread_view.as_deref().filter(|_| agent.is_pm()) {
+            thread_hello = format!(
+                "The PM's conversation about {project} — its own, apart from the other projects' and the whole squad's. \
+Write to start it; the PM knows the board and what the squad remembers. Ctrl-P picks another project."
+            );
+            thread_hello.as_str()
+        } else if agent.is_pm() {
             "Tell the PM what you want to build — it plans the work and puts it on the board, and equipe hands \
 each ticket to its owner. Tab or @name talks to anyone directly; Ctrl-B shows the board."
         } else if agent.edit {
@@ -1214,8 +1222,9 @@ You can talk to it directly — the PM hears about it."
             lines.extend(tool_run(std::mem::take(run), agent.expanded, theme, width));
         }
     };
-    for entry in agent.transcript.entries() {
+    for entry in agent.shown() {
         match entry {
+            Entry::Thread { .. } => {}
             // Claude Code loading tool descriptions: its business, not the person's.
             Entry::Tool { tool, .. } if tool == "ToolSearch" => {}
             Entry::Tool { tool, target } => {
@@ -1246,6 +1255,7 @@ You can talk to it directly — the PM hears about it."
             _ => flush(&mut run, &mut lines, &mut last),
         }
         match entry {
+            Entry::Thread { .. } => {}
             Entry::User { text } => {
                 begin(Block::User, &mut lines, &mut last);
                 gap(&mut lines);

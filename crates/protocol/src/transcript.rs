@@ -73,6 +73,7 @@ closing the session lands the branch.",
             }),
             Event::UserMessage { text, .. } => Some(Entry::User { text: text.clone() }),
             Event::Notice { text, .. } => Some(Entry::Note { text: text.clone() }),
+            Event::Thread { project, .. } => Some(Entry::Thread { project: project.clone() }),
             Event::WorkStarted { ticket, title, workspace, .. } => Some(Entry::Note {
                 text: match workspace {
                     Some(ws) => format!("── T-{ticket} · {title} — on branch {}", ws.branch),

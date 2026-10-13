@@ -107,6 +107,9 @@ pub struct Agent {
     desk: PathBuf,
     /// Its own mode; `None` follows the squad's.
     pub mode: Option<Mode>,
+    /// For the PM: the thread on screen — the project in focus, `None` for the
+    /// whole squad's. Each is a conversation of its own.
+    pub thread_view: Option<String>,
     /// A message to send once the session has started.
     pending: Option<String>,
 }
@@ -136,7 +139,23 @@ impl Agent {
             base,
             pending: None,
             mode: None,
+            thread_view: None,
         }
+    }
+
+    /// The conversation as it shows: for the PM, only the thread on screen
+    /// (what came before any thread was the whole squad's); never the markers.
+    pub fn shown(&self) -> Vec<&Entry> {
+        let mut current: Option<&str> = None;
+        let mut out = Vec::new();
+        for entry in self.transcript.entries() {
+            match entry {
+                Entry::Thread { project } => current = project.as_deref(),
+                _ if !self.is_pm() || current == self.thread_view.as_deref() => out.push(entry),
+                _ => {}
+            }
+        }
+        out
     }
 
     fn from_info(info: SessionInfo) -> Self {
@@ -172,6 +191,7 @@ impl Agent {
             desk: info.project,
             pending: None,
             mode: info.mode,
+            thread_view: None,
         }
     }
 
@@ -1071,6 +1091,8 @@ impl App {
                 })
                 .collect(),
             member_modes: self.agents.iter().filter_map(|a| Some((a.member.as_ref()?.name.as_str(), a.mode?))).collect(),
+            member_models: self.agents.iter().filter_map(|a| Some((a.member.as_ref()?.name.as_str(), engine_models(a)))).collect(),
+            selected_models: self.agents.get(self.selected).map(engine_models).unwrap_or_default(),
         };
         commands::complete(text, &ctx)
     }
@@ -1507,6 +1529,27 @@ impl App {
                     }
                 }
             }
+            "model" => {
+                let words: Vec<&str> = rest.split_whitespace().collect();
+                let (target, model) = match words.as_slice() {
+                    [name, model] => (self.agents.iter().find(|a| a.member.as_ref().is_some_and(|m| m.name == *name)), *model),
+                    [model] => (self.agents.get(self.selected), *model),
+                    _ => {
+                        self.flash = Some("/model [member] <model> — e.g. /model mobile opus".into());
+                        return Vec::new();
+                    }
+                };
+                match target.filter(|a| a.member.is_some()) {
+                    Some(agent) => {
+                        self.flash = Some(format!("{} works on {model} from its next turn", agent.label()));
+                        vec![Command::SetModel { session: agent.id, model: model.to_owned() }]
+                    }
+                    None => {
+                        self.flash = Some(format!("No member called {} · /model [member] <model>", words[0]));
+                        Vec::new()
+                    }
+                }
+            }
             "mouse" => {
                 self.mouse = !self.mouse;
                 self.flash = Some(if self.mouse {
@@ -1555,6 +1598,14 @@ impl App {
             },
         };
         self.focus = project.clone();
+        // The PM's conversation on screen is its thread for that project.
+        let thread = project.as_deref().map(equipe_core::board::project_name);
+        for agent in self.agents.iter_mut().filter(|a| a.is_pm()) {
+            if agent.thread_view != thread {
+                agent.thread_view = thread.clone();
+                agent.scroll_back = 0;
+            }
+        }
         self.board_selected = None;
         let label = project.as_deref().map(equipe_core::board::project_name);
         self.flash = Some(match &label {
@@ -1945,6 +1996,7 @@ pub fn transcript_markdown(agent: &Agent, squad: &str) -> String {
                 out.push_str(&format!("- {} {}\n", tool_verb(tool), target.as_deref().unwrap_or("")));
             }
             Entry::Note { text } => out.push_str(&format!("_{text}_\n\n")),
+            Entry::Thread { project } => out.push_str(&format!("## {}\n\n", project.as_deref().unwrap_or("The whole squad"))),
             Entry::Error { message, next } => {
                 out.push_str(&format!("> ✗ {message}{}\n\n", next.as_ref().map(|n| format!(" → `{n}`")).unwrap_or_default()))
             }
@@ -2028,6 +2080,19 @@ pub fn image_path(text: &str) -> Option<PathBuf> {
     let unquoted = text.trim_matches(|c| c == '\'' || c == '"');
     let path = PathBuf::from(unquoted.replace("\\ ", " "));
     (is_image(&path) && path.is_absolute() && path.is_file()).then_some(path)
+}
+
+/// The models a member's engine takes, for completion: Claude Code's aliases;
+/// for other engines, what it runs now (any name the engine knows works).
+fn engine_models(agent: &Agent) -> Vec<String> {
+    let mut models: Vec<String> = match agent.engine {
+        Some(Engine::Claude) => ["opus", "sonnet", "haiku"].iter().map(|m| (*m).to_owned()).collect(),
+        _ => Vec::new(),
+    };
+    if let Some(current) = agent.model.as_ref().filter(|m| !models.contains(m)) {
+        models.push(current.clone());
+    }
+    models
 }
 
 /// Past six projects, a word that unrelated ones may do better in a squad of
@@ -2825,6 +2890,53 @@ mod tests {
         app.set_hits(vec![(0, 3, 0, Hit::Projects)], None);
         app.on_click(1, 0);
         assert_eq!(app.composer.text(), "/project ");
+    }
+
+    #[test]
+    fn model_sets_a_members_model_from_its_next_turn_on_any_engine() {
+        let (mut app, pm, frontend) = team();
+        type_text(&mut app, "/model frontend opus");
+        assert_eq!(enter(&mut app), vec![Command::SetModel { session: frontend, model: "opus".into() }]);
+        // Without a name: the member selected.
+        type_text(&mut app, "/model gpt-5-codex");
+        assert_eq!(enter(&mut app), vec![Command::SetModel { session: pm, model: "gpt-5-codex".into() }]);
+        // Completion offers members, then the models of that member's engine.
+        app.composer.clear();
+        app.composer.insert_str("/model frontend ");
+        let models: Vec<String> = app.choices().into_iter().map(|c| c.label).collect();
+        assert!(models.contains(&"opus".to_owned()) && models.contains(&"sonnet".to_owned()), "{models:?}");
+        app.composer.clear();
+        type_text(&mut app, "/model nobody opus");
+        assert!(enter(&mut app).is_empty());
+    }
+
+    #[test]
+    fn the_pm_shows_the_thread_of_the_project_in_focus() {
+        let mut app = two_projects();
+        let pm = app.agents.iter().find(|a| a.is_pm()).unwrap().id;
+        for event in [
+            Event::UserMessage { session: pm, text: "about the squad".into() },
+            Event::Thread { session: pm, project: Some("app".into()) },
+            Event::UserMessage { session: pm, text: "about the app".into() },
+            Event::Thread { session: pm, project: Some("site".into()) },
+            Event::UserMessage { session: pm, text: "about the site".into() },
+        ] {
+            app.on_event(event);
+        }
+        let said = |app: &App| -> Vec<String> {
+            app.agents.iter().find(|a| a.id == pm).unwrap().shown().iter().filter_map(|e| match e {
+                Entry::User { text } => Some(text.clone()),
+                _ => None,
+            }).collect()
+        };
+        assert_eq!(said(&app), ["about the squad"]);
+        app.focus_on("app");
+        assert_eq!(said(&app), ["about the app"]);
+        app.focus_on("site");
+        assert_eq!(said(&app), ["about the site"]);
+        // Members' conversations are theirs, whatever the focus.
+        let frontend = app.agents.iter().find(|a| !a.is_pm()).unwrap();
+        assert!(frontend.shown().len() == frontend.transcript.entries().len());
     }
 
     #[test]

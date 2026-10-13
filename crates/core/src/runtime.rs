@@ -230,6 +230,14 @@ struct Work {
     waiting: Option<String>,
 }
 
+/// One of the PM's conversations at its desk, while another is the current one.
+#[derive(Default)]
+struct DeskThread {
+    claude_session: Option<String>,
+    history: Vec<responses::Message>,
+    desk_context: Option<(u64, u64)>,
+}
+
 struct Session {
     squad: Option<String>,
     /// For a member, its desk: the squad's home; otherwise where it was opened.
@@ -273,6 +281,10 @@ struct Session {
     briefing: Vec<String>,
     /// Where a member's engine keeps what it learns (Claude Code's auto memory).
     memory: Option<PathBuf>,
+    /// For the PM: the project its desk conversation is about now (`None`:
+    /// the whole squad's), and the other threads' conversations, put aside.
+    thread: Option<String>,
+    threads: HashMap<Option<String>, DeskThread>,
     /// Its own mode; `None` follows the squad's.
     mode: Option<Mode>,
 }
@@ -511,6 +523,18 @@ impl Runtime {
                         "Its next conversation at the desk starts clean — its memory and the board carry over."
                     };
                     self.publish(Event::Notice { session, text: text.into() });
+                }
+            }
+            Command::SetModel { session, model } => {
+                let model = model.trim().to_owned();
+                if let Some(s) = self.sessions.get_mut(&session).filter(|_| !model.is_empty()) {
+                    s.model = Some(model.clone());
+                    let squad = s.squad.clone();
+                    if let Some(journal) = squad.as_deref().and_then(|q| journal_for(&mut self.journals, &self.config.home, q)) {
+                        let _ = journal.set_model(session, &model);
+                    }
+                    self.publish(Event::ModelKnown { session, model: model.clone() });
+                    self.publish(Event::Notice { session, text: format!("From its next turn: {model}. Its conversation carries on.") });
                 }
             }
             Command::Focus { squad, project } => match project {
@@ -815,6 +839,8 @@ impl Runtime {
                 briefing: Vec::new(),
                 memory,
                 mode: None,
+                thread: None,
+                threads: HashMap::new(),
             },
         );
         self.publish(Event::SessionStarted { session: id, project, engine, model, workspace, member, squad: squad.clone() });
@@ -859,6 +885,9 @@ impl Runtime {
         if !self.ensure_codex(id).await {
             return;
         }
+        // The PM talks about the project the person is looking at in that
+        // project's own conversation.
+        self.enter_thread(id);
         self.publish(Event::UserMessage { session: id, text: text.clone() });
         // What the person writes in is what the squad writes for them.
         if let (Some(squad), Some(language)) = (self.sessions.get(&id).and_then(|s| s.squad.clone()), crate::language::detect(&text))
@@ -882,10 +911,65 @@ impl Runtime {
         };
         // With several projects, which one the person is looking at.
         if let Some(project) = session.squad.as_ref().and_then(|s| self.focus.get(s)) {
-            prompt = format!("[equipe: the person is looking at the project {project} — new work is for it unless they say otherwise]\n\n{prompt}");
+            prompt = if session.is_pm() && session.work.is_none() {
+                format!(
+                    "[equipe: this is your conversation about the project {project} — the whole squad's, and each other \
+project's, are conversations of their own. New work is for {project} unless the person says otherwise; what \
+should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
+                )
+            } else {
+                format!("[equipe: the person is looking at the project {project} — new work is for it unless they say otherwise]\n\n{prompt}")
+            };
         }
         self.save_waiting(id);
         self.start_turn(id, prompt);
+    }
+
+    /// Move the PM's desk conversation to its thread for the project the person
+    /// looks at (the whole squad's when none): the current one is put aside,
+    /// the thread's own taken up — or started — so what's said about one
+    /// project never fills another's conversation.
+    fn enter_thread(&mut self, id: SessionId) {
+        let Some(session) = self.sessions.get(&id) else {
+            return;
+        };
+        if !session.is_pm() || session.work.is_some() {
+            return;
+        }
+        let wanted = session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned();
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        if session.thread == wanted {
+            return;
+        }
+        let current = DeskThread {
+            claude_session: session.claude_session.take(),
+            history: std::mem::take(&mut session.history),
+            desk_context: session.desk_context.take(),
+        };
+        let left = std::mem::replace(&mut session.thread, wanted.clone());
+        session.threads.insert(left, current);
+        let next = session.threads.remove(&wanted).unwrap_or_default();
+        session.claude_session = next.claude_session;
+        session.history = next.history;
+        session.desk_context = next.desk_context;
+        session.context = session.desk_context;
+        let others: HashMap<String, String> = session
+            .threads
+            .iter()
+            .filter_map(|(project, t)| Some((project.clone().unwrap_or_default(), t.claude_session.clone()?)))
+            .collect();
+        let resume = session.claude_session.clone();
+        let squad = session.squad.clone();
+        if let Some(journal) = squad.as_deref().and_then(|s| journal_for(&mut self.journals, &self.config.home, s)) {
+            let _ = journal.set_desk_threads(id, wanted.as_deref(), &others);
+            let _ = match &resume {
+                Some(claude) => journal.set_engine_session(id, claude),
+                None => journal.clear_engine_session(id),
+            };
+        }
+        self.publish(Event::Thread { session: id, project: wanted });
     }
 
     /// Run a turn with `prompt` in the session's current place: its ticket's
@@ -2592,6 +2676,15 @@ it back there once they have done it. End your turn now with a short line on wha
                     }
                 }
                 let memory = Some(journal::member_memory_dir(&self.config.home, &squad, &member.name));
+                // The PM's other conversations, by project, as they were left.
+                let (thread, others) = journal.desk_threads(record.id);
+                let threads: HashMap<Option<String>, DeskThread> = others
+                    .into_iter()
+                    .map(|(project, id)| {
+                        let key = (!project.is_empty()).then_some(project);
+                        (key, DeskThread { claude_session: Some(id), ..DeskThread::default() })
+                    })
+                    .collect();
                 let joined = self.next_join;
                 self.next_join += 1;
                 self.sessions.insert(
@@ -2623,6 +2716,8 @@ it back there once they have done it. End your turn now with a short line on wha
                         briefing: journal.waiting(record.id, "briefing").unwrap_or_default(),
                         memory,
                         mode: record.mode,
+                        thread,
+                        threads,
                     },
                 );
             }

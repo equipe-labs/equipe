@@ -9,10 +9,11 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-pub const COMMANDS: [Spec; 23] = [
+pub const COMMANDS: [Spec; 24] = [
     Spec { name: "usage", args: "", about: "Plan limits, each member's context and tokens" },
     Spec { name: "scale", args: "[0-6|off]", about: "Extra members a role may get when its work waits" },
     Spec { name: "compact", args: "[member]", about: "Start its next conversation afresh, from a summary of this one" },
+    Spec { name: "model", args: "[member] <model>", about: "The model a member works on from its next turn — any its engine offers" },
     Spec { name: "clear", args: "[member]", about: "Start its next conversation clean — memory and board stay" },
     Spec { name: "squad", args: "[name] · new <name> [folder] · add|remove <folder>", about: "Switch, start, or change what a squad works on" },
     Spec { name: "home", args: "[changes · undo [n]]", about: "Open the squad's folder, see what changed there, take a change back" },
@@ -67,6 +68,9 @@ pub struct Context<'a> {
     /// The squad's projects: name, and how each is doing.
     pub projects: Vec<(String, String)>,
     pub member_modes: Vec<(&'a str, Mode)>,
+    /// The models each member's engine offers, and the selected member's.
+    pub member_models: Vec<(&'a str, Vec<String>)>,
+    pub selected_models: Vec<String>,
 }
 
 const MODES: [&str; 4] = ["read-only", "ask", "auto", "full"];
@@ -156,6 +160,18 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
         }
         ("add", _) => ctx.roles.iter().filter(|w| starts(w)).map(|r| word(r, "", " ")).collect(),
         ("compact" | "clear", 1) => ctx.members.iter().filter(|(m, _)| starts(m)).map(|(m, _)| word(m, "", "")).collect(),
+        // A member, then a model of its engine — or straight a model, for the member selected.
+        ("model", 1) => {
+            let mut choices: Vec<Choice> = ctx.members.iter().filter(|(m, _)| starts(m)).map(|(m, role)| word(m, role, " ")).collect();
+            choices.extend(ctx.selected_models.iter().filter(|m| starts(m)).map(|m| word(m, "for the member selected", "")));
+            choices
+        }
+        ("model", 2) => ctx
+            .member_models
+            .iter()
+            .find(|(name, _)| *name == words[0])
+            .map(|(_, models)| models.iter().filter(|m| starts(m)).map(|m| word(m, "", "")).collect())
+            .unwrap_or_default(),
         ("home", 1) => [("changes", "what changed in the squad's folder lately", ""), ("undo", "take the latest change back", "")]
             .iter()
             .filter(|(w, _, _)| starts(w))
@@ -258,6 +274,8 @@ mod tests {
             mode: Some(Mode::Auto),
             projects: vec![("site".into(), String::new()), ("app".into(), String::new())],
             member_modes: vec![("frontend", Mode::Full)],
+            member_models: Vec::new(),
+            selected_models: Vec::new(),
         }
     }
 

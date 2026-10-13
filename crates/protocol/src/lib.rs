@@ -363,6 +363,9 @@ pub enum Command {
     /// The project the person is looking at, by name — new work goes there
     /// unless they say otherwise; `None`: all of the squad's projects.
     Focus { squad: SquadName, project: Option<String> },
+    /// The model a member's turns run on from now — any its engine offers.
+    /// Its conversation carries on.
+    SetModel { session: SessionId, model: String },
     /// Members' browsers open on screen (`show`) or run hidden: one member's,
     /// or (`member: None`) everyone's. Kept for the squad.
     ShowBrowser { squad: SquadName, member: Option<String>, show: bool },
@@ -490,8 +493,12 @@ pub enum Event {
         tool: String,
         target: Option<String>,
     },
-    /// The engine named its model (Claude Code does on its first turn).
+    /// The engine named its model (Claude Code does on its first turn), or the
+    /// person changed it.
     ModelKnown { session: SessionId, model: String },
+    /// The PM's conversation moved to its thread for `project` (`None`: the
+    /// whole squad's). Each thread is a conversation of its own.
+    Thread { session: SessionId, project: Option<String> },
     TurnEnded {
         session: SessionId,
         outcome: TurnOutcome,
@@ -538,6 +545,7 @@ impl Event {
             | Event::TextDelta { session, .. }
             | Event::ToolUse { session, .. }
             | Event::ModelKnown { session, .. }
+            | Event::Thread { session, .. }
             | Event::TurnEnded { session, .. }
             | Event::BranchLanded { session, .. }
             | Event::NothingChanged { session }
@@ -572,6 +580,9 @@ pub enum Entry {
     Note { text: String },
     Error { message: String, next: Option<String> },
     Landed { branch: String, stat: String },
+    /// What follows is the PM's conversation about `project` — or, with
+    /// `None`, about the whole squad. Screens show one thread at a time.
+    Thread { project: Option<String> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

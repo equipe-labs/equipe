@@ -1254,7 +1254,7 @@ async fn the_project_in_focus_travels_with_the_persons_message() {
     handle.send(Command::Submit { session: 1, text: "add an onboarding screen".into() });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     let prompt = arg(&calls(&recorded)[0], "-p").unwrap().to_owned();
-    assert!(prompt.contains("looking at the project app") && prompt.ends_with("add an onboarding screen"), "{prompt}");
+    assert!(prompt.contains("your conversation about the project app") && prompt.ends_with("add an onboarding screen"), "{prompt}");
     // Back to all: nothing added.
     handle.send(Command::Focus { squad: "acme".into(), project: None });
     handle.send(Command::Submit { session: 1, text: "and the site?".into() });
@@ -2055,4 +2055,59 @@ async fn a_custom_role_edits_a_projects_files_only_when_the_person_says_so() {
     };
     assert!(of("writer").contains("you don't change their files"), "{}", of("writer"));
     assert!(of("editor").contains("You may change a project's files on a code ticket"), "{}", of("editor"));
+}
+
+/// A turn that answers `text` with a conversation id of its own call's number,
+/// so a test can see which conversation the next turn continues.
+fn answering_per_call(text: &str) -> String {
+    answering(text).replace("\"session_id\":\"sess-1\"", "\"session_id\":\"sess-$n\"")
+}
+
+#[tokio::test]
+async fn the_pm_keeps_a_conversation_for_each_project_and_one_for_the_squad() {
+    let site = named("site");
+    let app = named("app");
+    let (claude, recorded) = recording_claude(&answering_per_call("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    let say = |project: Option<&str>, text: &str| {
+        handle.send(Command::Focus { squad: "acme".into(), project: project.map(str::to_owned) });
+        handle.send(Command::Submit { session: 1, text: text.into() });
+    };
+    say(Some("app"), "app one");
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::Thread { session: 1, project: Some(p) } if p == "app")), "{seen:?}");
+    say(Some("site"), "site one");
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    say(Some("app"), "app two");
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    say(None, "squad one");
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    say(None, "squad two");
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let all = calls(&recorded);
+    let resumed: Vec<Option<&str>> = all.iter().map(|c| arg(c, "--resume")).collect();
+    // app starts afresh; site afresh; app carries on its own (call 0); the squad
+    // starts afresh; and carries on its own (call 3).
+    assert_eq!(resumed, [None, None, Some("sess-0"), None, Some("sess-3")]);
+    // What one thread said never reaches another's prompt.
+    assert!(!arg(&all[2], "-p").unwrap().contains("site one"));
+}
+
+#[tokio::test]
+async fn a_members_model_changes_between_turns_and_its_conversation_carries_on() {
+    let cwd = scratch("model");
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&cwd])));
+    add(&handle, &mut events, 1, member(&cwd, "frontend")).await;
+    handle.send(Command::Submit { session: 1, text: "one".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    handle.send(Command::SetModel { session: 1, model: "opus".into() });
+    until(&mut events, |e| matches!(e, Event::ModelKnown { session: 1, model } if model == "opus")).await;
+    handle.send(Command::Submit { session: 1, text: "two".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let all = calls(&recorded);
+    assert_eq!(arg(&all[0], "--model"), Some("sonnet"));
+    assert_eq!(arg(&all[1], "--model"), Some("opus"));
+    assert_eq!(arg(&all[1], "--resume"), Some("sess-1"));
 }
