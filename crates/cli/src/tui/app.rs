@@ -486,11 +486,20 @@ impl App {
         self.to_review().into_iter().filter(|t| self.in_focus(t)).collect()
     }
 
+    /// Everything waiting on the person in the project in focus: work to
+    /// review, then tickets a member put down until the person does their part.
+    pub fn for_you_here(&self) -> Vec<&Ticket> {
+        let mut out = self.to_review_here();
+        out.extend(self.tickets.iter().filter(|t| t.status == TicketStatus::Waiting && self.in_focus(t)));
+        out
+    }
+
     pub fn board_order(&self) -> Vec<TicketId> {
         let group = |statuses: &[TicketStatus]| -> Vec<TicketId> {
             self.tickets.iter().filter(|t| statuses.contains(&t.status) && self.in_focus(t)).map(|t| t.id).collect()
         };
         let mut order = group(&[TicketStatus::Review]);
+        order.extend(group(&[TicketStatus::Waiting]));
         order.extend(group(&[TicketStatus::InProgress]));
         order.extend(group(&[TicketStatus::Todo]));
         order.extend(group(&[TicketStatus::Proposed]));
@@ -588,6 +597,11 @@ impl App {
             KeyCode::Char('a') => {
                 let ticket = ticket.filter(|t| !t.status.is_closed())?;
                 return Some(self.accept(ticket.id));
+            }
+            KeyCode::Char('r') if ticket.as_ref().is_some_and(|t| t.status == TicketStatus::Waiting) => {
+                let ticket = ticket?;
+                self.composer.insert_str(&format!("/resume T-{} ", ticket.id));
+                self.flash = Some("Done? Say what you did (or nothing), then Enter — it goes back to its member.".into());
             }
             KeyCode::Char('r') => {
                 let ticket = ticket.filter(|t| matches!(t.status, TicketStatus::Review | TicketStatus::Done))?;
@@ -773,6 +787,10 @@ impl App {
         if ticket.status == TicketStatus::Review && was != Some(TicketStatus::Review) {
             self.flash = Some(format!("T-{} is ready for your review · /accept T-{0} or /reopen T-{0} <what to change>", ticket.id));
         }
+        if ticket.status == TicketStatus::Waiting && was != Some(TicketStatus::Waiting) {
+            let needs = ticket.note.as_deref().map(board::waiting_needs).unwrap_or_default().join(", ");
+            self.flash = Some(format!("T-{} waits for you: {needs} · /resume T-{0} when it's done", ticket.id));
+        }
         match self.tickets.iter_mut().find(|t| t.id == ticket.id) {
             Some(slot) => *slot = ticket,
             None => {
@@ -896,7 +914,14 @@ impl App {
         let ctx = commands::Context {
             review: tickets(&[TicketStatus::Review]),
             reopenable: tickets(&[TicketStatus::Review, TicketStatus::Done]),
-            open: tickets(&[TicketStatus::Proposed, TicketStatus::Todo, TicketStatus::InProgress, TicketStatus::Review]),
+            waiting: tickets(&[TicketStatus::Waiting]),
+            open: tickets(&[
+                TicketStatus::Proposed,
+                TicketStatus::Todo,
+                TicketStatus::InProgress,
+                TicketStatus::Waiting,
+                TicketStatus::Review,
+            ]),
             unmerged: self.tickets.iter().filter(|t| t.not_on_main()).map(|t| (t.id, t.title.as_str())).collect(),
             members: self.agents.iter().filter_map(|a| a.member.as_ref().map(|m| (m.name.as_str(), m.role.as_str()))).collect(),
             roles: roles::ROLES.iter().map(|r| r.id).collect(),
@@ -1228,7 +1253,7 @@ impl App {
                 self.toggle_board();
                 Vec::new()
             }
-            "accept" | "merge" | "reopen" | "cancel" => self.decide(name, rest),
+            "accept" | "merge" | "reopen" | "resume" | "cancel" => self.decide(name, rest),
             "mode" => self.set_mode(rest),
             "close" => match self.agents.get_mut(self.selected) {
                 Some(agent) if agent.is_open() => {
@@ -1553,15 +1578,21 @@ impl App {
         Some(commands)
     }
 
-    /// `/accept T-3`, `/reopen T-3 what to change`, `/cancel T-3`: the person's
+    /// `/accept T-3`, `/reopen T-3 what to change`, `/resume T-3 what I did`,
+    /// `/cancel T-3`: the person's
     /// calls, sent straight to equipe — never through a member.
     fn decide(&mut self, verb: &str, rest: &str) -> Vec<Command> {
         let (id, note) = rest.split_once(' ').unwrap_or((rest, ""));
         let Some(ticket) = board::parse_ticket_id(id).filter(|_| !id.is_empty()) else {
-            let waiting: Vec<String> = self.to_review().iter().map(|t| format!("T-{}", t.id)).collect();
+            let (status, what) = match verb {
+                "resume" => (TicketStatus::Waiting, "Waiting on you"),
+                _ => (TicketStatus::Review, "Waiting for your review"),
+            };
+            let waiting: Vec<String> =
+                self.tickets.iter().filter(|t| t.status == status).map(|t| format!("T-{}", t.id)).collect();
             self.flash = Some(match waiting.as_slice() {
                 [] => format!("Which ticket? /{verb} T-3"),
-                ids => format!("Which ticket? Waiting for your review: {}", ids.join(", ")),
+                ids => format!("Which ticket? {what}: {}", ids.join(", ")),
             });
             return Vec::new();
         };
@@ -1579,6 +1610,7 @@ impl App {
                 Vec::new()
             }
             "reopen" => vec![Command::Reopen { squad, ticket, note: note.trim().to_owned() }],
+            "resume" => vec![Command::Resume { squad, ticket, note: note.trim().to_owned() }],
             _ => vec![Command::Cancel { squad, ticket }],
         }
     }
@@ -1711,6 +1743,7 @@ pub fn tool_verb(name: &str) -> &str {
             Some("update_ticket") => "ticket",
             Some("comment") => "comment",
             Some("submit_for_review") => "hand in",
+            Some("block_on_person") => "wait on you",
             Some("ask_person") => "ask you",
             // The member's browser: every step reads as browsing.
             _ if other.starts_with("mcp__browser__") => "browse",
@@ -2565,6 +2598,29 @@ mod tests {
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: Ticket { merged: Some(true), ..done } });
         app.on_key(key(KeyCode::Char('m')), Instant::now());
         assert_eq!(app.question, None);
+    }
+
+    #[test]
+    fn a_ticket_waiting_on_the_person_says_what_it_needs_and_resumes() {
+        let (mut app, _, _) = team();
+        let mut waiting = ticket(6, TicketStatus::Waiting);
+        waiting.note = Some("Waiting on you:\n- [ ] GitHub token\n- [ ] PostHog secrets".into());
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: waiting });
+        let flash = app.flash.clone().unwrap();
+        assert!(flash.contains("T-6 waits for you: GitHub token, PostHog secrets") && flash.contains("/resume T-6"), "{flash}");
+        type_text(&mut app, "/resume");
+        assert!(enter(&mut app).is_empty());
+        assert!(app.flash.as_deref().unwrap().contains("Waiting on you: T-6"), "{:?}", app.flash);
+        // A word on what was done is optional.
+        type_text(&mut app, "/resume T-6");
+        assert_eq!(enter(&mut app), vec![Command::Resume { squad: "acme".into(), ticket: 6, note: String::new() }]);
+        type_text(&mut app, "/resume 6 both in .env.local");
+        assert_eq!(enter(&mut app), vec![Command::Resume { squad: "acme".into(), ticket: 6, note: "both in .env.local".into() }]);
+        // On the board, r on it starts the same.
+        app.pane = Pane::Board;
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(6), "it sits at the top, with what waits for the person");
+        app.on_key(KeyEvent::from(KeyCode::Char('r')), Instant::now());
+        assert_eq!(app.composer.text(), "/resume T-6 ");
     }
 
     #[test]

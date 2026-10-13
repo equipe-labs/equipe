@@ -116,6 +116,7 @@ fn status_str(status: TicketStatus) -> &'static str {
         TicketStatus::Proposed => "proposed",
         TicketStatus::Todo => "todo",
         TicketStatus::InProgress => "in_progress",
+        TicketStatus::Waiting => "waiting",
         TicketStatus::Review => "review",
         TicketStatus::Done => "done",
         TicketStatus::Cancelled => "cancelled",
@@ -126,6 +127,7 @@ fn status_from(s: &str) -> TicketStatus {
     match s {
         "proposed" => TicketStatus::Proposed,
         "in_progress" => TicketStatus::InProgress,
+        "waiting" => TicketStatus::Waiting,
         "review" => TicketStatus::Review,
         "done" => TicketStatus::Done,
         "cancelled" => TicketStatus::Cancelled,

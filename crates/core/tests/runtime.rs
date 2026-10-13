@@ -765,6 +765,96 @@ async fn a_member_who_leaves_puts_its_ticket_back_for_someone_else() {
     handle.shutdown().await;
 }
 
+/// `ticket` has gone to `waiting`.
+fn is_waiting(e: &Event, id: u32) -> bool {
+    matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == id && ticket.status == TicketStatus::Waiting)
+}
+
+#[tokio::test]
+async fn a_member_waiting_on_the_person_takes_its_next_ticket_and_comes_back_to_the_same_worktree() {
+    let repo = repo();
+    let (claude, recorded) = recording_claude(&working_turn("WIP.md"));
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&repo]), false));
+    // One backend, so the next ticket waits for this one.
+    handle.send(Command::Scale { squad: "acme".into(), extra: 0 });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "backend")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Analytics", "body": "-", "owner": "backend" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(first), .. }) = started.last() else { panic!("{started:#?}") };
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Webhooks", "body": "-", "owner": "backend" })).await;
+
+    // It can't go on without the person: the ticket waits, with their checklist.
+    let empty = tool(&handle, "backend", "block_on_person", serde_json::json!({ "needs": [] })).await;
+    assert!(empty.is_error, "{empty:?}");
+    let blocked = tool(&handle, "backend", "block_on_person", serde_json::json!({
+        "needs": ["GitHub token", "PostHog secrets"], "why": "to deploy",
+    }))
+    .await;
+    assert!(!blocked.is_error, "{blocked:?}");
+    let waiting = until(&mut events, |e| is_waiting(e, 1)).await;
+    let ticket = ticket_changed(&waiting).pop().unwrap();
+    assert_eq!(ticket.note.as_deref(), Some("Waiting on you:\n- [ ] GitHub token\n- [ ] PostHog secrets\n(to deploy)"));
+    assert_eq!(ticket.assignee.as_deref(), Some("backend"));
+    assert!(first.path.exists(), "the worktree stays while the ticket waits");
+    let branch = ticket.branch.clone().unwrap();
+    assert_eq!(git(&repo, &["show", &format!("{branch}:WIP.md")]), "made by the squad", "the work so far is kept");
+
+    // The member is free, and takes the next ticket.
+    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 2, .. })).await;
+    tool(&handle, "backend", "submit_for_review", serde_json::json!({ "summary": "Webhooks done." })).await;
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Review))
+        .await;
+
+    // Only a waiting ticket resumes; the person says it's done, and it comes back where it was.
+    handle.send(Command::Resume { squad: "acme".into(), ticket: 2, note: String::new() });
+    let refused = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
+    assert!(matches!(refused.last(), Some(Event::Error { message, .. }) if message.contains("isn't waiting")), "{refused:#?}");
+    handle.send(Command::Resume { squad: "acme".into(), ticket: 1, note: "both are in .env.local".into() });
+    let again = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    assert!(
+        matches!(again.last(), Some(Event::WorkStarted { session: 2, workspace: Some(ws), .. }) if ws.path == first.path && ws.branch == branch),
+        "{again:#?}"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let call = calls(&recorded).pop().unwrap();
+    let prompt = arg(&call, "-p").unwrap();
+    assert!(prompt.contains("it is back. both are in .env.local"), "{prompt}");
+    assert_eq!(arg(&call, "--resume"), Some("sess-1"), "it continues the ticket's conversation");
+}
+
+#[tokio::test]
+async fn a_waiting_ticket_stays_put_through_a_restart_until_the_pm_resumes_it() {
+    let repo = repo();
+    let claude = fake_claude(true, &answering("ok"));
+    let home = squad_home(&[&repo]);
+    {
+        let (handle, mut events) = runtime::start(config(&claude, &home, true));
+        add(&handle, &mut events, 1, member(&repo, "pm")).await;
+        add(&handle, &mut events, 2, member(&repo, "backend")).await;
+        tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Deploy", "body": "-", "owner": "backend" })).await;
+        until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
+        tool(&handle, "backend", "block_on_person", serde_json::json!({ "needs": "a Vercel token" })).await;
+        // The turn may already be over: a new message makes sure one ends after the tool call.
+        handle.send(Command::Submit { session: 2, text: "end your turn".into() });
+        until(&mut events, |e| is_waiting(e, 1)).await;
+        handle.shutdown().await;
+    }
+    let (handle, mut events) = runtime::start(config(&claude, &home, true));
+    let snapshot = handle.snapshot("acme").await;
+    let backend = snapshot.sessions.iter().find(|s| s.session == 2).unwrap();
+    assert!(backend.work.is_none(), "a waiting ticket isn't picked up again");
+    assert_eq!(snapshot.tickets[0].status, TicketStatus::Waiting);
+    let worktree = snapshot.tickets[0].worktree.clone().unwrap();
+    assert!(worktree.exists());
+
+    // The PM opens it again: back to the same member, in the same worktree.
+    let resumed = tool(&handle, "pm", "update_ticket", serde_json::json!({ "id": 1, "status": "todo" })).await;
+    assert!(!resumed.is_error, "{resumed:?}");
+    let again = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    assert!(matches!(again.last(), Some(Event::WorkStarted { session: 2, workspace: Some(ws), .. }) if ws.path == worktree), "{again:#?}");
+}
+
 // ── persistence: the daemon's runtime ──
 
 fn text_entries(entries: &[Entry]) -> Vec<String> {
