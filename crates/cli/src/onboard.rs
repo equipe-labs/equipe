@@ -4,7 +4,7 @@
 //! and pick who is on it; every repository after that just joins it. Engines are
 //! checked first, so nobody builds a team that can't start.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use equipe_core::protocol::Mode;
 use equipe_core::{runtime, squads};
@@ -28,6 +28,69 @@ const STARTERS: [(&str, bool); 5] =
 /// A folder too wide to be a project: the home folder, or the disk's root.
 pub fn is_too_wide(project: &Path) -> bool {
     project == Path::new("/") || dirs::home_dir().is_some_and(|home| project == home)
+}
+
+/// A folder the person typed for `/squad add` or `/squad new`, read exactly as
+/// typed and checked before anything is registered.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Folder {
+    /// Absolute and canonical: what goes into the squad.
+    pub path: PathBuf,
+    pub name: String,
+    /// Where its `origin` points, for the person to recognise it by.
+    pub remote: Option<String>,
+    pub git: bool,
+}
+
+impl Folder {
+    /// Its name and remote, for the person to recognise it by.
+    pub fn describe(&self) -> String {
+        let mut line = self.name.clone();
+        match (&self.remote, self.git) {
+            (Some(remote), _) => line.push_str(&format!(" · {remote}")),
+            (None, true) => line.push_str(" · no remote"),
+            (None, false) => line.push_str(" · not a git repository: engineers can't work on branches there"),
+        }
+        line
+    }
+}
+
+/// Read `typed` — `~`, `~/x`, absolute, or relative to `cwd`, with or without a
+/// trailing `/` — into the folder it names. Never another folder: one inside a
+/// repository is refused with the repository's top to type instead, not quietly
+/// swapped for it. The home folder and `/` are refused outright.
+pub fn resolve_folder(typed: &str, home: &Path, cwd: &Path) -> Result<Folder, String> {
+    let typed = typed.trim();
+    let path = match typed.strip_prefix('~') {
+        Some("") => home.to_owned(),
+        Some(rest) if rest.starts_with('/') => home.join(rest.trim_start_matches('/')),
+        // `~user` isn't read: it would be a guess.
+        Some(_) => return Err(format!("No folder at {typed} · type the full path")),
+        None => cwd.join(typed),
+    };
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
+    let path = match path.canonicalize() {
+        Ok(path) if path.is_dir() => path,
+        Ok(_) => return Err(format!("{typed} is a file, not a folder")),
+        Err(_) => return Err(format!("No folder at {typed}")),
+    };
+    if path == Path::new("/") || path == canon(home) {
+        return Err(format!("{} is your home folder or the disk's root — a squad works on project folders", path.display()));
+    }
+    let git = match equipe_core::worktree::repo_root(&path) {
+        Ok(root) if canon(&root) == path => true,
+        Ok(root) => {
+            let root = canon(&root);
+            if root == Path::new("/") || root == canon(home) {
+                return Err(format!("{} is inside a git repository at {} — a squad works on project folders", path.display(), root.display()));
+            }
+            return Err(format!("{} is inside the repository {} · type {} for the whole repository", path.display(), root.display(), root.display()));
+        }
+        Err(_) => false,
+    };
+    let name = equipe_core::board::project_name(&path);
+    let remote = if git { remote_url(&path) } else { None };
+    Ok(Folder { path, name, remote, git })
 }
 
 /// The team from the onboarding menu's picks: item 0 is the PM, who joins
@@ -250,6 +313,71 @@ mod tests {
         assert!(is_too_wide(&dirs::home_dir().unwrap()));
         assert!(is_too_wide(Path::new("/")));
         assert!(!is_too_wide(&dirs::home_dir().unwrap().join("code/app")));
+    }
+
+    /// A scratch home with `equipe` (a repository) beside `equipe-labs-profile`
+    /// and `notes` (plain folders).
+    fn scratch_home(tag: &str) -> PathBuf {
+        let home = std::env::temp_dir().join(format!("equipe-resolve-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        for dir in ["Abel/equipe/crates", "Abel/equipe-labs-profile", "notes"] {
+            std::fs::create_dir_all(home.join(dir)).unwrap();
+        }
+        std::fs::write(home.join("file.txt"), "").unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(home.join("Abel/equipe")).args(args).output().unwrap().status.success());
+        git(&["init", "-q"]);
+        git(&["remote", "add", "origin", "https://github.com/equipe-labs/equipe.git"]);
+        home.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn a_typed_folder_is_the_folder_typed_never_a_neighbour() {
+        let home = scratch_home("exact");
+        let cwd = home.join("Abel");
+        let equipe = home.join("Abel/equipe");
+        for typed in ["~/Abel/equipe", "~/Abel/equipe/", "~/Abel//equipe", "equipe", "./equipe/", "../Abel/equipe"] {
+            let folder = resolve_folder(typed, &home, &cwd).unwrap_or_else(|err| panic!("{typed}: {err}"));
+            assert_eq!(folder.path, equipe, "{typed}");
+        }
+        let abs = equipe.display().to_string();
+        let folder = resolve_folder(&abs, &home, Path::new("/")).unwrap();
+        assert_eq!(folder.path, equipe);
+        assert_eq!(folder.name, "equipe");
+        assert!(folder.git);
+        assert_eq!(folder.remote.as_deref(), Some("https://github.com/equipe-labs/equipe.git"));
+        assert!(folder.describe().contains("https://github.com/equipe-labs/equipe.git"));
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn home_root_and_missing_folders_are_refused() {
+        let home = scratch_home("refused");
+        for typed in ["~", "~/", " ~ ", "/", "notes/..", "~/Abel/.."] {
+            let err = resolve_folder(typed, &home, &home).unwrap_err();
+            assert!(err.contains("home folder"), "{typed}: {err}");
+        }
+        assert!(resolve_folder("~/Abel/equip", &home, &home).unwrap_err().contains("No folder"), "no prefix guessing");
+        assert!(resolve_folder("~/file.txt", &home, &home).unwrap_err().contains("not a folder"));
+        assert!(resolve_folder("~someone/x", &home, &home).unwrap_err().contains("full path"));
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_folder_inside_a_repository_is_refused_not_swapped_for_its_top() {
+        let home = scratch_home("inside");
+        let err = resolve_folder("~/Abel/equipe/crates", &home, &home).unwrap_err();
+        assert!(err.contains(&format!("type {}", home.join("Abel/equipe").display())), "{err}");
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_plain_folder_is_allowed_with_a_warning() {
+        let home = scratch_home("plain");
+        let folder = resolve_folder("~/Abel/equipe-labs-profile", &home, &home).unwrap();
+        assert_eq!(folder.path, home.join("Abel/equipe-labs-profile"));
+        assert!(!folder.git);
+        assert!(folder.describe().contains("not a git repository"), "{}", folder.describe());
+        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]

@@ -208,11 +208,12 @@ fn folders(typed: &str) -> Vec<String> {
         .filter(|e| e.path().is_dir())
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|name| name.starts_with(prefix) && (prefix.starts_with('.') || !name.starts_with('.')))
-        .map(|name| format!("{dir}{name}/"))
         .collect();
+    // Sorted by name, before the `/`: `equipe` comes ahead of `equipe-site`
+    // (`-` sorts before `/`), so the folder typed whole is the first choice.
     found.sort();
     found.truncate(30);
-    found
+    found.into_iter().map(|name| format!("{dir}{name}/")).collect()
 }
 
 #[cfg(test)]
@@ -274,6 +275,19 @@ mod tests {
         std::fs::create_dir_all(tmp.join(".git")).unwrap();
         let typed = format!("/squad new shop {}/w", tmp.display());
         assert_eq!(complete(&typed, &ctx()).iter().map(|c| c.label.rsplit('/').nth(1).unwrap()).collect::<Vec<_>>(), ["wallet", "web"]);
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn a_folder_typed_whole_comes_before_its_longer_neighbours() {
+        let tmp = std::env::temp_dir().join(format!("equipe-siblings-{}", std::process::id()));
+        for dir in ["equipe", "equipe-labs-profile", "equipe-site"] {
+            std::fs::create_dir_all(tmp.join(dir)).unwrap();
+        }
+        let typed = format!("/squad add {}/equipe", tmp.display());
+        let labels: Vec<String> = complete(&typed, &ctx()).into_iter().map(|c| c.label).collect();
+        let names: Vec<&str> = labels.iter().map(|l| l.rsplit('/').nth(1).unwrap()).collect();
+        assert_eq!(names, ["equipe", "equipe-labs-profile", "equipe-site"]);
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 }
