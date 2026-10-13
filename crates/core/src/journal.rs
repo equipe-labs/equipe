@@ -350,6 +350,19 @@ impl Journal {
         self.set_meta("helpers", &serde_json::to_string(helpers).unwrap_or_default())
     }
 
+    /// The apps where a member's input may send in the person's name, so a
+    /// send waits for their yes: by name or bundle id. The defaults until the
+    /// person changes them.
+    pub fn messaging_apps(&self) -> Vec<String> {
+        self.meta("messaging_apps")
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_else(|| crate::desktop_gate::DEFAULT_APPS.iter().map(|a| (*a).to_owned()).collect())
+    }
+
+    pub fn set_messaging_apps(&self, apps: &[String]) -> Result<()> {
+        self.set_meta("messaging_apps", &serde_json::to_string(apps).unwrap_or_default())
+    }
+
     pub fn set_language(&self, language: &str) -> Result<()> {
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('language', ?1)", [language])?;
         Ok(())

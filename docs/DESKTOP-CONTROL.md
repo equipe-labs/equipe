@@ -192,6 +192,60 @@ unless TextEdit has keyboard focus. Clean-up after the spike: remove
 - Not in the daemon (it would need the grant → everyone inherits it), not a
   per-member child process (same problem, and no single lease).
 
+## Send gate (T-23)
+
+Sending anything to others in the person's name needs their yes. The rules are
+code (`crates/core/src/desktop_gate.rs`), not the model's judgement; the runtime
+puts the question (`Runtime::gate_desktop`, reached by `Handle::desktop_gate`).
+
+**By app, not by keystroke.** A click at (x, y) or a Return doesn't say whether it
+sends. So the gate looks at the app in front, as the helper reads it through AX
+just before the input (`desktop_gate::Scene`: app name and bundle id, front
+window title, the element a click lands on, the focused element and its text).
+
+| In front | Input | Gate |
+|---|---|---|
+| any app | screenshot, `elements`, scroll, list/focus windows, `open_app` | free |
+| a messaging app | `type_text` without a line break | free — a draft |
+| a messaging app | `type_text` with `\n`/`\r`; `key` ending in Return/Enter (⌘↩, ⇧↩ too); ⌘⇧D (Mail) | asks |
+| a messaging app | click on an AX element named Send/Share/Invite/Accept/Join/Call/Upload/…, or 보내기/전송/공유/초대/수락/통화/… | asks |
+| a messaging app | click on an unnamed button, or where AX says nothing | asks |
+| a messaging app | click on a named harmless element (a chat, a tab, the text field), space on a harmless focused element | free |
+| a messaging app | drag | asks — it may drop a file into a conversation |
+| any other app (TextEdit…) | anything | free |
+| any app | typing into an `AXSecureTextField`; anything in Keychain Access, Passwords, 1Password, Bitwarden; a window or element named for payment, account deletion, passwords, security settings | **blocked**, in every mode |
+
+Decisions:
+
+- **Drafts go ahead.** Typing text without a line break only fills a field; the
+  send (Return or the Send button) is the separate input that asks. The person
+  sees the draft in the request (the focused field's AX value).
+- **Asking costs a `why`.** An input that would ask, called without `why` (what's
+  sent, to whom, in a line), is turned back at once without bothering the person;
+  the desktop tools that make inputs take an optional `why`.
+- **Never "always".** A send is asked every time, in every mode: `rule_for` has no
+  rule for `Send`, so `a` isn't offered and an "always" from anywhere becomes once.
+  No mode stops it, so the console doesn't suggest `/mode … full` under it.
+- **The screenshot** goes to a file in the temp folder (mode 600) only while the
+  person is asked — `o` opens it in Preview — and is deleted on the answer,
+  including the 30-minute "nobody answered" no. It is the one image equipe writes,
+  and only for this.
+- **The window title doesn't block in messaging apps.** There it is a conversation's
+  name ("결제팀"): matching it against the hard-block words would lock the person's
+  team chat. Outside messaging apps it does (System Settings → Privacy & Security).
+- **The list is the squad's** (`meta.messaging_apps`), defaulting to
+  `desktop_gate::DEFAULT_APPS`. Entries match by shown name or bundle id; the
+  defaults also match by bundle id, so "Microsoft Teams (work or school)" counts.
+  `/send-apps`, `/send-apps add Notion`, `/send-apps remove Zoom`, `/send-apps reset`
+  in the console. The daemon reads it at each input.
+
+**For T-35 (the desktop tool):** before every `click`/`double_click`/`drag`/
+`type_text`/`key`, read the `Scene` through AX (at the point for a click, the
+focused element for typing), take a screenshot if it's cheap, and call
+`Handle::desktop_gate(Check { … })`. `is_error` means don't make the input; return
+`text` to the member. Inputs that need no AX (looks) may skip the call — `judge`
+answers free for them anyway. A tool not named in `Act::of` is taken for a click.
+
 ## Remaining risks
 
 1. **Clicking into the wrong window.** It happened in the proof: text meant for

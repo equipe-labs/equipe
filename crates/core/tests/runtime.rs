@@ -1884,3 +1884,82 @@ async fn a_secret_value_is_refused_and_another_squad_never_sees_the_memory() {
     let deny = settings_of(&call)["permissions"]["deny"].to_string();
     assert!(deny.contains(&format!("Read(/{}/**)", squads_home(&home).display())), "{deny}");
 }
+
+#[tokio::test]
+async fn a_send_from_a_messaging_app_waits_for_the_persons_yes_every_time() {
+    use equipe_core::desktop_gate::{App, Check, Element, Scene};
+    let repo = repo();
+    let home = squad_home(&[&repo]);
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "backend")).await;
+    // Even in full access.
+    handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::Full) });
+    until(&mut events, |e| matches!(e, Event::ModeChanged { .. })).await;
+
+    let teams = Scene {
+        app: App { name: "Microsoft Teams".into(), bundle_id: Some("com.microsoft.teams2".into()) },
+        window: Some("Chat | Kim Minji".into()),
+        target: None,
+        focused: Some(Element { role: "AXTextArea".into(), value: Some("내일 회의 3시로 옮겨요".into()), ..Default::default() }),
+    };
+    let check = |tool: &str, input: serde_json::Value, scene: &Scene| Check {
+        squad: "acme".into(),
+        member: "backend".into(),
+        tool: tool.into(),
+        input,
+        scene: scene.clone(),
+        screen: Some(b"\x89PNG fake".to_vec()),
+    };
+
+    // Writing the draft goes ahead.
+    let typed = handle.desktop_gate(check("mcp__desktop__type_text", serde_json::json!({ "text": "내일 회의 3시로 옮겨요" }), &teams)).await;
+    assert!(!typed.is_error, "{}", typed.text);
+    // Return without saying what it sends is turned back, unasked.
+    let unsaid = handle.desktop_gate(check("mcp__desktop__key", serde_json::json!({ "keys": "return" }), &teams)).await;
+    assert!(unsaid.is_error && unsaid.text.contains("`why`"), "{}", unsaid.text);
+
+    let send = || {
+        let handle = handle.clone();
+        let check = check("mcp__desktop__key", serde_json::json!({ "keys": "return", "why": "Kim Minji에게 회의 시간 변경 답장" }), &teams);
+        tokio::spawn(async move { handle.desktop_gate(check).await })
+    };
+    // "Always" is only ever once: the next send asks again.
+    for decision in [Decision::Always, Decision::Allow] {
+        let waiting = send();
+        let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+        let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+        assert_eq!((approval.member.as_str(), approval.tool.as_str()), ("backend", "Send"));
+        assert_eq!(approval.action, "press return in Microsoft Teams · Chat | Kim Minji\n내일 회의 3시로 옮겨요");
+        assert_eq!(approval.reason.as_deref(), Some("Kim Minji에게 회의 시간 변경 답장"));
+        let preview = approval.preview.clone().expect("the screen, to open");
+        assert_eq!(std::fs::read(&preview).unwrap(), b"\x89PNG fake");
+        assert!(equipe_core::permissions::rule_for(&approval.tool, &approval.action).is_none(), "never an \"always\"");
+        handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision });
+        let answer = waiting.await.unwrap();
+        assert!(!answer.is_error, "{}", answer.text);
+        assert!(!Path::new(&preview).exists(), "the screenshot is gone once answered");
+    }
+    assert!(Journal::for_squad(&home, "acme").unwrap().allowed().unwrap().is_empty(), "no rule kept");
+
+    // A no: the input never runs, and the member hears why.
+    let waiting = send();
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny });
+    let answer = waiting.await.unwrap();
+    assert!(answer.is_error && answer.text.contains("Not sent"), "{}", answer.text);
+
+    // TextEdit isn't a messaging app: Return goes ahead.
+    let textedit = Scene { app: App { name: "TextEdit".into(), bundle_id: Some("com.apple.TextEdit".into()) }, ..Default::default() };
+    assert!(!handle.desktop_gate(check("key", serde_json::json!({ "keys": "return" }), &textedit)).await.is_error);
+    // A password field takes nothing, anywhere, in any mode.
+    let login = Scene { focused: Some(Element { role: "AXSecureTextField".into(), ..Default::default() }), ..textedit.clone() };
+    let refused = handle.desktop_gate(check("type_text", serde_json::json!({ "text": "hunter2" }), &login)).await;
+    assert!(refused.is_error && refused.text.contains("password"), "{}", refused.text);
+
+    // The person takes Teams off the list: it no longer asks.
+    Journal::for_squad(&home, "acme").unwrap().set_messaging_apps(&["Slack".into()]).unwrap();
+    assert!(!handle.desktop_gate(check("key", serde_json::json!({ "keys": "return" }), &teams)).await.is_error);
+}

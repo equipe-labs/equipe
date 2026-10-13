@@ -9,7 +9,7 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-pub const COMMANDS: [Spec; 22] = [
+pub const COMMANDS: [Spec; 23] = [
     Spec { name: "usage", args: "", about: "Plan limits, each member's context and tokens" },
     Spec { name: "scale", args: "[0-6|off]", about: "Extra members a role may get when its work waits" },
     Spec { name: "compact", args: "[member]", about: "Start its next conversation afresh, from a summary of this one" },
@@ -28,6 +28,7 @@ pub const COMMANDS: [Spec; 22] = [
     Spec { name: "close", args: "", about: "Remove the selected member" },
     Spec { name: "mode", args: "[member] read-only|ask|auto|full", about: "How much members do on their own" },
     Spec { name: "browser", args: "[show|hide [member] · max <n>]", about: "Sign in to sites; show, hide or cap members' browsers" },
+    Spec { name: "send-apps", args: "[add|remove <app> · reset]", about: "Apps where a member's send waits for your yes" },
     Spec { name: "export", args: "", about: "Open the conversation in your editor" },
     Spec { name: "mouse", args: "", about: "Hand the mouse to the terminal (dragging over text already copies it)" },
     Spec { name: "help", args: "", about: "Keys and commands" },
