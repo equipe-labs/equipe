@@ -9,7 +9,7 @@
 //! persistent runtime resumes its squads when it starts again.
 //!
 //! A **member** is a long-lived session with a role in a squad. At its desk it
-//! reads and answers; given a ticket, its turns run in that ticket's project —
+//! works in the squad's home and reads every project; given a ticket, its turns run in that ticket's project —
 //! in a worktree of its own when it edits. Who gets which ticket is decided by
 //! equipe's rules ([`crate::board::assignments`]), never by a model.
 
@@ -37,6 +37,7 @@ use crate::browser;
 use crate::journal::{self, Journal, SessionRecord, TicketWork};
 use crate::permissions;
 use crate::roles::{self, Role, Teammate};
+use crate::squad_home;
 use crate::worktree::{self, Sandbox};
 
 /// How many recent lines a snapshot carries per session.
@@ -218,7 +219,7 @@ struct Work {
 
 struct Session {
     squad: Option<String>,
-    /// For a member, the project its desk is in; otherwise where it was opened.
+    /// For a member, its desk: the squad's home; otherwise where it was opened.
     project: PathBuf,
     /// Who the session is on the team; `None` for a plain agent.
     member: Option<Member>,
@@ -628,17 +629,15 @@ impl Runtime {
             rt.publish_in(squad.as_deref(), Event::Error { session: Some(id), message, next: next.map(str::to_owned) });
         };
         let role = spec.role.as_deref().map(roles::role_or_custom);
-        let projects = match (&squad, role) {
+        match (&squad, role) {
             (Some(squad), _) => {
-                let projects = self.projects(squad);
-                if projects.is_empty() {
+                if self.projects(squad).is_empty() {
                     return fail(self, format!("There is no squad called {squad}."), Some("equipe"));
                 }
-                projects
             }
             (None, Some(_)) => return fail(self, "A member joins a squad; name one.".into(), None),
-            (None, None) => Vec::new(),
-        };
+            (None, None) => {}
+        }
 
         let engine = match spec.engine {
             Some(engine) => engine,
@@ -714,16 +713,20 @@ impl Runtime {
             }
             _ => None,
         };
-        // A member's desk is the project it was added from, when that is the squad's.
-        let project = if member.is_some() && !projects.contains(&opened_in) { projects[0].clone() } else { opened_in };
-        let (cwd, sandbox, access) = match (&member, spec.access) {
-            // At its desk a member reads; it edits only on a ticket, in a worktree.
-            (Some(_), _) => {
+        let (cwd, sandbox, access) = match (&member, spec.access, &squad) {
+            // A member's desk is the squad's home; repositories it edits only on
+            // a ticket, in a worktree.
+            (Some(_), _, Some(squad)) => {
+                let language = self.journal(squad).and_then(Journal::language);
+                if let Err(err) = squad_home::ensure(&self.config.home, squad, language.as_deref()) {
+                    return fail(self, format!("The squad's folder couldn't be made: {err}"), None);
+                }
                 let access = if role.is_some_and(|r| r.edits) { Access::EditFiles } else { Access::ReadOnly };
-                (project.clone(), None, access)
+                (squad_home::path(&self.config.home, squad), None, access)
             }
-            (None, Access::ReadOnly) => (spec.cwd.clone(), None, Access::ReadOnly),
-            (None, Access::EditFiles) => {
+            (Some(_), _, None) => unreachable!("a member joins a squad"),
+            (None, Access::ReadOnly, _) => (spec.cwd.clone(), None, Access::ReadOnly),
+            (None, Access::EditFiles, _) => {
                 let made = worktree::repo_root(&spec.cwd).and_then(|repo| {
                     worktree::create(&repo, &self.config.home, &format!("{:x}-{id:x}", now_secs()), "try")
                 });
@@ -733,6 +736,8 @@ impl Runtime {
                 }
             }
         };
+        // A member is where its desk is, the squad's home; a plain session where it was opened.
+        let project = if member.is_some() { cwd.clone() } else { opened_in };
         let workspace = sandbox.as_ref().map(workspace_of);
         let memory = match (&squad, &member) {
             (Some(squad), Some(m)) => Some(journal::member_memory_dir(&self.config.home, squad, &m.name)),
@@ -872,6 +877,7 @@ impl Runtime {
             Some(handoff) => format!("{handoff}\n\n{prompt}"),
             None => prompt,
         };
+        self.save_persons_changes(id);
         let Some(session) = self.sessions.get(&id) else {
             return;
         };
@@ -931,30 +937,56 @@ impl Runtime {
             }
             _ => None,
         };
+        let home = squad.as_deref().map(|s| squad_home::path(&self.config.home, s));
         let charter = session.member.as_ref().map(|m| {
             let team = squad.as_deref().map(|s| self.team(s)).unwrap_or_default();
             let mates: Vec<Teammate> = team.iter().map(|(_, name, role)| Teammate { name, role }).collect();
             let names: Vec<String> = projects.iter().map(|p| board::project_name(p)).collect();
-            let ctx = roles::Context { team: &mates, projects: &names, board_tools, language: language.as_deref(), browser: browser.is_some() };
+            let home = home.as_ref().map(|h| h.to_string_lossy().into_owned());
+            let ctx = roles::Context {
+                team: &mates,
+                projects: &names,
+                board_tools,
+                language: language.as_deref(),
+                browser: browser.is_some(),
+                home: home.as_deref(),
+            };
             roles::charter(roles::role_or_custom(&m.role), &m.name, &ctx)
         });
         let (cwd, access, resume, history, ticket, add_dirs) = match &session.work {
             Some(work) => {
-                (work.cwd.clone(), access_for(mode, edits && work.sandbox.is_some()), work.claude_session.clone(), work.history.clone(), Some(work.ticket), Vec::new())
+                // On a ticket a member also reads the squad's home.
+                let read = if session.member.is_some() { home.iter().cloned().collect() } else { Vec::new() };
+                (work.cwd.clone(), access_for(mode, edits && work.sandbox.is_some()), work.claude_session.clone(), work.history.clone(), Some(work.ticket), read)
             }
             None => {
-                // At its desk a member reads every project of its squad on its own;
-                // anything more — a fetch, an edit — asks the person (and in plan
-                // is refused), never denied unseen.
+                // At its desk a member works in the squad's home and reads every
+                // project of its squad; anything more — a fetch, a write elsewhere —
+                // asks the person (and in read-only is refused), never denied unseen.
                 let access = if session.member.is_some() { desk_access(mode) } else { plain_access(session.access) };
-                let others: Vec<PathBuf> = projects.iter().filter(|p| **p != session.cwd).cloned().collect();
-                (session.cwd.clone(), access, session.claude_session.clone(), session.history.clone(), None, others)
+                let read: Vec<PathBuf> =
+                    if session.member.is_some() { projects.iter().filter(|p| **p != session.cwd).cloned().collect() } else { Vec::new() };
+                (session.cwd.clone(), access, session.claude_session.clone(), session.history.clone(), None, read)
             }
         };
-        // A member on a ticket, in Auto, is fenced in by the operating system; what it
+        // A member in Auto that may write is fenced in by the operating system; what it
         // can't do inside the fence, and anything Ask needs, goes to the person.
         let member_rules = session.member.is_some();
         let fenced = member_rules && access == claude_code::Access::EditFiles && mode == Mode::Auto;
+        // Directories added for reading stay read-only in every mode, and no other
+        // squad's home is read at all.
+        let other_homes = squad.as_deref().map(|s| squad_home::others(&self.config.home, s)).unwrap_or_default();
+        let deny: Vec<String> = if member_rules {
+            let rule = |tool: &str, dir: &Path| format!("{tool}(/{}/**)", dir.display());
+            add_dirs
+                .iter()
+                .flat_map(|d| [rule("Edit", d), rule("Write", d)])
+                .chain(other_homes.iter().flat_map(|d| [rule("Read", d), rule("Edit", d)]))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let read_only: Vec<String> = add_dirs.iter().map(|p| p.to_string_lossy().into_owned()).collect();
         let prompt_tool = (mcp_config.is_some() && matches!(access, claude_code::Access::EditFiles | claude_code::Access::Ask))
             .then(|| format!("mcp__{MCP_SERVER}__{}", permissions::APPROVE_TOOL));
         let squad_rules = squad.as_deref().and_then(|s| self.journals.get(s)).and_then(|j| j.allowed().ok()).unwrap_or_default();
@@ -1006,8 +1038,10 @@ impl Runtime {
                 let domains: Vec<String> = permissions::ALLOWED_DOMAINS.iter().map(|d| (*d).to_owned()).collect();
                 let outward: Vec<String> = permissions::OUTWARD.iter().map(|r| (*r).to_owned()).collect();
                 // The person's browser sign-ins and equipe's logins: no fenced command reads them.
+                // Nor other squads' homes.
                 let private: Vec<String> = [self.config.home.join("browser"), self.config.home.join("credentials")]
                     .iter()
+                    .chain(&other_homes)
                     .map(|p| p.to_string_lossy().into_owned())
                     .collect();
                 tokio::spawn(async move {
@@ -1027,7 +1061,13 @@ impl Runtime {
                         allowed_tools: &allowed,
                         disallowed_tools: &blocked,
                         ask_tools: &ask_tools,
-                        sandbox: fenced.then_some(claude_code::Sandbox { allowed_domains: &domains, ask: &outward, deny_read: &private }),
+                        deny: &deny,
+                        sandbox: fenced.then_some(claude_code::Sandbox {
+                            allowed_domains: &domains,
+                            ask: &outward,
+                            deny_read: &private,
+                            deny_write: &read_only,
+                        }),
                         prompt_tool: prompt_tool.as_deref(),
                     };
                     // A browser just started may still be loading.
@@ -1064,6 +1104,42 @@ impl Runtime {
         };
         if let Some(session) = self.sessions.get_mut(&id) {
             session.turn = Some(turn);
+        }
+    }
+
+    /// Before a member's desk turn: whatever changed in the squad's home while no
+    /// member was writing there is the person's own, and is saved as theirs.
+    fn save_persons_changes(&mut self, id: SessionId) {
+        let Some(session) = self.sessions.get(&id).filter(|s| s.member.is_some() && s.work.is_none()) else {
+            return;
+        };
+        let Some(squad) = session.squad.clone() else {
+            return;
+        };
+        let busy = self.sessions.values().any(|s| s.squad.as_ref() == Some(&squad) && s.work.is_none() && s.is_working());
+        if !busy {
+            let _ = squad_home::save_persons(&squad_home::path(&self.config.home, &squad));
+        }
+    }
+
+    /// After a member's desk turn: what it changed in the squad's home is saved
+    /// at once, by it and for what the person asked, and the person told — in
+    /// words, never git's — that they can take it back.
+    fn save_desk_changes(&mut self, id: SessionId, prompt: &str) {
+        let Some(session) = self.sessions.get(&id) else {
+            return;
+        };
+        let (Some(squad), Some(name)) = (session.squad.clone(), session.name().map(str::to_owned)) else {
+            return;
+        };
+        let dir = squad_home::path(&self.config.home, &squad);
+        match squad_home::save(&dir, &name, &asked_for(prompt)) {
+            Ok(Some(change)) => self.publish(Event::Notice {
+                session: id,
+                text: format!("✎ {name} {} in the squad's folder · /home undo takes it back", change.what()),
+            }),
+            Ok(None) => {}
+            Err(err) => self.error(Some(id), format!("The squad's folder couldn't be saved: {err}"), None),
         }
     }
 
@@ -1143,6 +1219,9 @@ impl Runtime {
                     None => {}
                 }
             }
+        }
+        if done.ticket.is_none() {
+            self.save_desk_changes(done.session, &done.prompt);
         }
         if let Some(reply) = done.reply.filter(|r| !r.trim().is_empty()) {
             let short: String = reply.chars().take(BRIEF_REPLY_CHARS).collect();
@@ -1771,6 +1850,12 @@ impl Runtime {
             self.audit(&call.squad, ticket, "equipe", "blocked", &action);
             return;
         }
+        if let Some(why) = self.off_limits(id, &call.squad, &tool, &action, &input) {
+            let _ = reply.send(verdict(Decision::Deny, &input, why));
+            self.publish(Event::Notice { session: id, text: format!("✗ {why} Refused: {action}") });
+            self.audit(&call.squad, ticket, "equipe", "refused", &action);
+            return;
+        }
         let rules = self.journal(&call.squad).and_then(|j| j.allowed().ok()).unwrap_or_default();
         if rules.iter().any(|rule| permissions::matches(rule, &tool, &action)) {
             let _ = reply.send(verdict(Decision::Allow, &input, ""));
@@ -1781,7 +1866,7 @@ impl Runtime {
         // the operating system still holds it in.
         let squad_mode = self.journal(&call.squad).map(Journal::mode).unwrap_or_default();
         let fenced = self.sessions.get(&id).is_some_and(|s| {
-            s.mode.unwrap_or(squad_mode) == Mode::Auto && s.work.as_ref().is_some_and(|w| w.sandbox.is_some())
+            s.mode.unwrap_or(squad_mode) == Mode::Auto && s.work.as_ref().is_none_or(|w| w.sandbox.is_some())
         });
         // Looking changes nothing: in auto a member reads, lists and searches
         // anywhere — its own screenshots in the temp folder, another project —
@@ -1808,6 +1893,39 @@ impl Runtime {
             tokio::time::sleep(APPROVAL_WAIT).await;
             let _ = internal.send(Internal::ApprovalTimedOut(approval_id));
         });
+    }
+
+    /// What equipe refuses a member whatever its mode or the person's rules:
+    /// reading another squad's home, and writing where it only reads — the
+    /// squad's projects at its desk, the squad's home on a ticket.
+    fn off_limits(&mut self, id: SessionId, squad: &str, tool: &str, action: &str, input: &Value) -> Option<&'static str> {
+        let session = self.sessions.get(&id)?;
+        let inside = |dir: &Path| {
+            let dir = dir.to_string_lossy();
+            action == dir || action.contains(&format!("{dir}/"))
+        };
+        if squad_home::others(&self.config.home, squad).iter().any(|d| inside(d)) {
+            return Some("Another squad's folder is private.");
+        }
+        let at_desk = session.work.is_none();
+        let read_only: Vec<PathBuf> =
+            if at_desk { self.projects_cached(squad) } else { vec![squad_home::path(&self.config.home, squad)] };
+        let writes = match tool {
+            "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => true,
+            "Bash" => !permissions::only_reads(tool, action, input),
+            _ => false,
+        };
+        // A ticket's own worktree may sit under a read-only directory's name; it is never inside one.
+        let own = session.work.as_ref().map(|w| w.cwd.to_string_lossy().into_owned());
+        let in_own = own.is_some_and(|own| action.starts_with(&format!("{own}/")) || action == own);
+        if writes && !in_own && read_only.iter().any(|d| inside(d)) {
+            return Some(if at_desk {
+                "At the desk the squad's projects are only read: code changes on a ticket, in its worktree."
+            } else {
+                "On a ticket the squad's folder is only read."
+            });
+        }
+        None
     }
 
     /// A member asks the person's yes before acting in their name — signing up,
@@ -2144,9 +2262,14 @@ it back there once they have done it. End your turn now with a short line on wha
             let Some(squad) = journal.squad() else {
                 continue;
             };
+            // A squad from before squad homes gets its home now.
+            let home = squad_home::path(&self.config.home, &squad);
+            if let Err(err) = squad_home::ensure(&self.config.home, &squad, journal.language().as_deref()) {
+                eprintln!("equipe: {squad}'s folder couldn't be made: {err}");
+            }
             let projects = journal.projects().unwrap_or_default();
             let tickets = journal.tickets().unwrap_or_default();
-            for record in journal.open_sessions().unwrap_or_default() {
+            for mut record in journal.open_sessions().unwrap_or_default() {
                 let Some(member) = record.member.clone() else {
                     // Only members live in a squad; anything else can't be resumed.
                     let _ = journal.close_session(record.id);
@@ -2168,6 +2291,17 @@ it back there once they have done it. End your turn now with a short line on wha
                     .iter()
                     .find(|t| t.status == TicketStatus::InProgress && t.assignee.as_deref() == Some(member.name.as_str()))
                     .and_then(|ticket| restore_work(&journal, ticket, &projects, edits));
+                // A desk opened in a project moves to the home. Claude Code resumes a
+                // conversation only where it began, so the desk starts afresh there,
+                // from a summary of the last one — once.
+                let mut refresh = None;
+                if record.cwd != home {
+                    let _ = journal.set_cwd(record.id, &home);
+                    record.cwd = home.clone();
+                    if record.engine == Engine::Claude && record.engine_session.is_some() {
+                        refresh = Some(true);
+                    }
+                }
                 let memory = Some(journal::member_memory_dir(&self.config.home, &squad, &member.name));
                 let joined = self.next_join;
                 self.next_join += 1;
@@ -2193,7 +2327,7 @@ it back there once they have done it. End your turn now with a short line on wha
                         context: None,
                         desk_context: None,
                         last_turn: None,
-                        refresh: None,
+                        refresh,
                         transcript: Transcript::from_entries(conversation),
                         turn: None,
                         queued: journal.waiting(record.id, "memo").unwrap_or_default(),
@@ -2425,13 +2559,15 @@ fn access_for(mode: Mode, may_edit: bool) -> claude_code::Access {
     }
 }
 
-/// A member at its desk, between tickets: it looks around freely; beyond
-/// that, the mode decides — plan refuses, ask and auto put it to the person
-/// (auto still lets looking-only commands through), full lets it.
+/// A member at its desk, between tickets, in the squad's home: it looks around
+/// freely and, in auto, writes the home on its own, fenced in like a ticket;
+/// beyond that, the mode decides — read-only refuses, ask puts every change to
+/// the person, full lets it.
 fn desk_access(mode: Mode) -> claude_code::Access {
     match mode {
         Mode::ReadOnly => claude_code::Access::ReadOnly,
-        Mode::Ask | Mode::Auto => claude_code::Access::Ask,
+        Mode::Ask => claude_code::Access::Ask,
+        Mode::Auto => claude_code::Access::EditFiles,
         Mode::Full => claude_code::Access::Full,
     }
 }
@@ -2457,6 +2593,19 @@ fn verdict(decision: Decision, input: &Value, why: &str) -> ToolResult {
 const HELPERS_MAX: usize = 6;
 /// A helper idle this long, with nothing of its role waiting, leaves.
 const HELPER_IDLE: Duration = Duration::from_secs(10 * 60);
+
+/// What a turn was for, in a line: the person's words, without what equipe
+/// put before them (`[equipe: …]`).
+fn asked_for(prompt: &str) -> String {
+    let mut rest = prompt.trim();
+    while rest.starts_with('[')
+        && let Some(end) = rest.find("]\n\n")
+    {
+        rest = rest[end + 3..].trim_start();
+    }
+    let line = rest.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("on its own");
+    clip(line, 80)
+}
 
 /// A desk conversation this full of its context window starts afresh.
 const REFRESH_FULL_PERCENT: u64 = 60;

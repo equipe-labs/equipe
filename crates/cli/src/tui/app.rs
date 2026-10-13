@@ -1336,6 +1336,16 @@ impl App {
             }
             "browser" => self.browser(rest),
             "squad" => self.squad_command(rest),
+            "home" => {
+                let dir = crate::home::dir(&equipe_providers::credentials::equipe_home(), &self.squad);
+                let words: Vec<&str> = rest.split_whitespace().collect();
+                self.flash = Some(match crate::home::run(&dir, &words) {
+                    Ok(lines) if words.is_empty() => format!("{} · /home changes · /home undo [n]", lines.join(" · ")),
+                    Ok(lines) => lines.join("  ·  "),
+                    Err(why) => why,
+                });
+                Vec::new()
+            }
             "project" => self.focus_on(rest),
             "scale" => match rest.trim() {
                 "" => {

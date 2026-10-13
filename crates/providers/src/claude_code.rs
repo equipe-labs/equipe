@@ -120,6 +120,8 @@ pub struct Sandbox<'a> {
     pub ask: &'a [String],
     /// Paths no fenced command may read: the person's sign-ins and logins.
     pub deny_read: &'a [String],
+    /// Paths no fenced command may write: directories added for reading only.
+    pub deny_write: &'a [String],
 }
 
 /// Arguments for one headless turn.
@@ -168,15 +170,23 @@ pub fn turn_args(request: &TurnRequest<'_>) -> Vec<String> {
                 // everyday work; on macOS that needs local ports, else every
                 // preview leaves the sandbox and asks the person.
                 "network": { "allowedDomains": sandbox.allowed_domains, "allowLocalBinding": true },
-                "filesystem": { "denyRead": sandbox.deny_read },
+                "filesystem": { "denyRead": sandbox.deny_read, "denyWrite": sandbox.deny_write },
             }),
         );
     }
     // What asks each time: whatever reaches outward from the sandbox, and tools
     // asked about by name. An ask rule outranks an allow rule.
     let ask: Vec<&String> = request.sandbox.iter().flat_map(|s| s.ask.iter()).chain(request.ask_tools).collect();
+    let mut permissions = serde_json::Map::new();
     if !ask.is_empty() {
-        settings.insert("permissions".into(), serde_json::json!({ "ask": ask }));
+        permissions.insert("ask".into(), serde_json::json!(ask));
+    }
+    // What is refused in every mode, bypass included: a deny rule outranks all.
+    if !request.deny.is_empty() {
+        permissions.insert("deny".into(), serde_json::json!(request.deny));
+    }
+    if !permissions.is_empty() {
+        settings.insert("permissions".into(), Value::Object(permissions));
     }
     if !settings.is_empty() {
         args.extend(["--settings".to_owned(), Value::Object(settings).to_string()]);
@@ -229,6 +239,9 @@ pub struct TurnRequest<'a> {
     pub disallowed_tools: &'a [String],
     /// Tools that ask each time even where a wider rule allows them.
     pub ask_tools: &'a [String],
+    /// Rules refused in every mode: `Edit(//code/app/**)` for a directory added
+    /// for reading only.
+    pub deny: &'a [String],
     pub sandbox: Option<Sandbox<'a>>,
     /// The MCP tool that answers permission prompts (`mcp__equipe__approve`).
     pub prompt_tool: Option<&'a str>,
@@ -485,7 +498,13 @@ pub async fn run_turn(
     request: TurnRequest<'_>,
     mut on_activity: impl FnMut(Activity),
 ) -> Result<Turn> {
-    let mut child = Command::new(binary)
+    let mut command = Command::new(binary);
+    // A directory added for reading brings its own CLAUDE.md, so the project's
+    // conventions are known from wherever the turn runs.
+    if !request.add_dirs.is_empty() {
+        command.env("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "1");
+    }
+    let mut child = command
         .args(turn_args(&request))
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -631,7 +650,7 @@ mod tests {
             prompt: "x",
             access: Access::EditFiles,
             memory: Some(Path::new("/m")),
-            sandbox: Some(Sandbox { allowed_domains: &domains, ask: &ask, deny_read: &["/h/browser".to_owned()] }),
+            sandbox: Some(Sandbox { allowed_domains: &domains, ask: &ask, deny_read: &["/h/browser".to_owned()], deny_write: &["/code/api".to_owned()] }),
             prompt_tool: Some("mcp__equipe__approve"),
             disallowed_tools: &blocked,
             ..Default::default()
@@ -644,6 +663,7 @@ mod tests {
         assert_eq!(settings["sandbox"]["network"]["allowedDomains"], json!(["registry.npmjs.org"]));
         assert_eq!(settings["sandbox"]["network"]["allowLocalBinding"], true, "a local preview server stays in the sandbox");
         assert_eq!(settings["sandbox"]["filesystem"]["denyRead"], json!(["/h/browser"]), "the person's sign-ins stay unread");
+        assert_eq!(settings["sandbox"]["filesystem"]["denyWrite"], json!(["/code/api"]), "what is only read stays unwritten");
         assert_eq!(settings["permissions"]["ask"], json!(["Bash(git push:*)"]));
         assert!(args.windows(2).any(|w| w[0] == "--permission-prompts" && w[1] == "host"));
         assert!(args.windows(2).any(|w| w[0] == "--permission-prompt-tool" && w[1] == "mcp__equipe__approve"));
@@ -735,13 +755,18 @@ mod tests {
     fn a_member_reads_other_projects_and_uses_only_equipes_tools() {
         let dirs = [std::path::PathBuf::from("/code/api")];
         let allowed = ["mcp__equipe".to_owned()];
+        let deny = ["Edit(//code/api/**)".to_owned()];
         let args = turn_args(&TurnRequest {
             prompt: "x",
             add_dirs: &dirs,
             mcp_config: Some(r#"{"mcpServers":{}}"#),
             allowed_tools: &allowed,
+            deny: &deny,
             ..Default::default()
         });
+        let at = args.iter().position(|a| a == "--settings").expect("settings passed");
+        let settings: Value = serde_json::from_str(&args[at + 1]).unwrap();
+        assert_eq!(settings["permissions"]["deny"], json!(["Edit(//code/api/**)"]), "read, never written");
         assert!(args.windows(2).any(|w| w[0] == "--add-dir" && w[1] == "/code/api"));
         assert!(args.windows(2).any(|w| w[0] == "--mcp-config" && w[1] == r#"{"mcpServers":{}}"#));
         assert!(args.iter().any(|a| a == "--strict-mcp-config"), "the person's own servers stay out");

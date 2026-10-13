@@ -168,6 +168,12 @@ the human-readable conversation in its largest session was 3.4% of its size.)
   each outward step approved first). The home is git so a task is reviewable and
   revertible exactly like code, with the same worktree and merge code, and the
   same fence. See ARCHITECTURE "The squad".
+- **2026-10-13 — members write the squad home in conversation.** Work that isn't
+  development should just happen: a note, a tidy-up, a table asked for at the desk
+  is written straight into the home, saved at once with who and why, told to the
+  person in plain words and undoable (`/home undo`). Several steps, a teammate's
+  work, or a result to review stay tickets; repositories are still written only on
+  a ticket, and outward steps still ask.
 
 ## Current status
 

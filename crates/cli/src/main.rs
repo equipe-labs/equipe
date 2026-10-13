@@ -7,6 +7,7 @@
 
 mod clip;
 mod daemon;
+mod home;
 mod onboard;
 mod tui;
 mod ui;
@@ -88,6 +89,14 @@ enum Command {
     Roles,
     /// Your squads and the projects each works on
     Squads,
+    /// Open the squad's folder; `changes` lists what changed there, `undo [n]` takes a change back
+    Home {
+        /// `changes`, or `undo [n]`
+        words: Vec<String>,
+        /// The squad (default: the one this folder belongs to, else your first)
+        #[arg(long)]
+        squad: Option<String>,
+    },
     /// Serve a member's board tools over MCP (equipe starts this for its engines)
     #[command(hide = true)]
     Mcp {
@@ -217,6 +226,29 @@ async fn main() -> ExitCode {
         }
         Command::Browser { url, forget } => sign_in(url, forget),
         Command::Mcp { squad, member, role, home } => serve_mcp(squad, member, role, home).await,
+        Command::Home { words, squad } => {
+            let home = equipe_providers::credentials::equipe_home();
+            let cwd = std::env::current_dir().unwrap_or_default();
+            match home::squad_for(&home, &cwd, squad) {
+                None => Err(Failure::new("No squad yet. Run equipe to start one.")),
+                Some(squad) => {
+                    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+                    match home::run(&home::dir(&home, &squad), &words) {
+                        Ok(lines) => {
+                            let p = ui::out();
+                            for line in lines {
+                                println!("  {line}");
+                            }
+                            if words.is_empty() {
+                                println!("  {}", p.hint("equipe home changes · equipe home undo [n]"));
+                            }
+                            Ok(())
+                        }
+                        Err(why) => Err(Failure::new(why)),
+                    }
+                }
+            }
+        }
         Command::Squads => {
             let p = ui::out();
             let squads = equipe_core::squads::list(&equipe_providers::credentials::equipe_home());
@@ -225,7 +257,7 @@ async fn main() -> ExitCode {
                 println!("{}", p.note(2, "None yet. Run equipe in a repository to start one."));
             }
             for squad in squads {
-                println!("  {}", p.bold(&squad.name));
+                println!("  {}  {}", p.bold(&squad.name), p.dim(&home::dir(&equipe_providers::credentials::equipe_home(), &squad.name).display().to_string()));
                 for project in squad.projects {
                     println!("{}", p.row("", &format!("{}  {}", equipe_core::board::project_name(&project), p.dim(&project.display().to_string()))));
                 }

@@ -568,6 +568,11 @@ impl Journal {
         self.touch(id, "engine_session", engine_session)
     }
 
+    /// Where a session's desk turns run from now on.
+    pub fn set_cwd(&self, id: SessionId, cwd: &Path) -> Result<()> {
+        self.touch(id, "cwd", cwd.to_string_lossy())
+    }
+
     /// Forget the engine's conversation: the next turn starts a fresh one.
     pub fn clear_engine_session(&self, id: SessionId) -> Result<()> {
         self.touch(id, "engine_session", None::<String>)
