@@ -1783,8 +1783,8 @@ fn render_composer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
 /// The bottom line: who a message goes to (always — nothing reaches the wrong
 /// person), or a passing message; then what waits for the person, and the keys.
 fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
-    let left: Vec<Span> = match (&app.flash, app.addressee()) {
-        (Some(flash), _) => vec![Span::styled(flash.clone(), theme.bold())],
+    let left: Vec<Span> = match (app.confirm_prompt().or_else(|| app.flash.clone()), app.addressee()) {
+        (Some(flash), _) => vec![Span::styled(flash, theme.bold())],
         (None, Some((name, direct))) => {
             let style = member_style(app, &name, theme).add_modifier(Modifier::BOLD);
             let mut spans = vec![Span::styled("→ ", theme.dim()), Span::styled(name, style)];

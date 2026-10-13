@@ -291,6 +291,8 @@ pub struct App {
     pub outbox: Vec<Command>,
     /// Another squad to show, and the roles to start it with when it is new.
     pub switch_to: Option<(String, Vec<String>)>,
+    /// A folder waiting for the person's `y` before it joins a squad.
+    pub confirming: Option<Adding>,
     /// Which completion is picked, and the text the person closed completion on.
     pub pick: usize,
     /// The person moved the pick with ↑↓: Enter takes it even after a space.
@@ -381,6 +383,7 @@ impl App {
             upload: None,
             uploaded: None,
             switch_to: None,
+            confirming: None,
             focus: None,
             outbox: Vec::new(),
             pick: 0,
@@ -931,6 +934,15 @@ impl App {
             self.quit_armed = None;
             self.flash = None;
         }
+        // A folder waiting to be added: `y` adds it, any other key leaves it out.
+        if let Some(adding) = self.confirming.take() {
+            if key.code == KeyCode::Char('y') && !ctrl && !alt {
+                self.add_folder(adding);
+            } else {
+                self.flash = Some(format!("Not added: {}", adding.folder.path.display()));
+            }
+            return Vec::new();
+        }
         // The help and usage screens close on Esc, or as soon as the person types.
         if (self.help_open || self.usage_open) && (key.code == KeyCode::Esc || matches!(key.code, KeyCode::Char(_) | KeyCode::Enter)) {
             self.help_open = false;
@@ -961,7 +973,9 @@ impl App {
                 }
                 // Enter after a space sends what is typed, unless a choice was
                 // picked by hand: "/accept " must never accept a ticket nobody chose.
-                KeyCode::Enter if self.composer.text().ends_with(' ') && !self.picked => {}
+                // So does Enter after a `/`: a folder typed whole is the folder
+                // meant, not its first subfolder.
+                KeyCode::Enter if self.composer.text().ends_with([' ', '/']) && !self.picked => {}
                 KeyCode::Tab | KeyCode::Enter if !shift => {
                     let choice = &choices[picked];
                     self.composer.clear();
@@ -1324,24 +1338,22 @@ impl App {
                 });
             }
             ["add", folder] => {
-                let Some(path) = folder_path(folder) else {
-                    self.flash = Some(format!("No folder at {folder}"));
-                    return Vec::new();
-                };
-                let project = equipe_core::runtime::project_of(&path);
-                if crate::onboard::is_too_wide(&project) {
-                    self.flash = Some("That's your home folder — a squad works on project folders".into());
-                    return Vec::new();
-                }
-                match equipe_core::squads::add_project(&home, &self.squad, &project) {
-                    Ok(()) => {
-                        if !self.projects.contains(&project) {
-                            self.projects.push(project.clone());
-                        }
-                        self.flash = Some(format!("{} works on {} too · members see it from their next turn", self.squad, equipe_core::board::project_name(&project)));
+                let folder = match typed_folder(folder) {
+                    Ok(folder) => folder,
+                    Err(err) => {
+                        self.flash = Some(err);
+                        return Vec::new();
                     }
-                    Err(err) => self.flash = Some(err),
+                };
+                if self.projects.contains(&folder.path) {
+                    self.flash = Some(format!("{} already works on {}", self.squad, folder.path.display()));
+                    return Vec::new();
                 }
+                if let Some(owner) = equipe_core::squads::find(&home, &folder.path).filter(|o| *o != self.squad) {
+                    self.flash = Some(format!("{} already belongs to the squad {owner}", folder.path.display()));
+                    return Vec::new();
+                }
+                self.ask_to_add(Adding { new_squad: None, folder });
             }
             ["remove", name] => {
                 let Some(project) = self.projects.iter().find(|p| equipe_core::board::project_name(p) == *name || p.to_string_lossy() == *name).cloned() else {
@@ -1368,19 +1380,18 @@ impl App {
                 self.flash = Some("A name and the folder it works in: /squad new shop ~/Projects/shop".into());
             }
             ["new", name, folder] => {
-                let Some(path) = folder_path(folder) else {
-                    self.flash = Some(format!("No folder at {folder}"));
-                    return Vec::new();
+                let folder = match typed_folder(folder) {
+                    Ok(folder) => folder,
+                    Err(err) => {
+                        self.flash = Some(err);
+                        return Vec::new();
+                    }
                 };
-                let project = equipe_core::runtime::project_of(&path);
-                if let Some(owner) = equipe_core::squads::find(&home, &project) {
-                    self.flash = Some(format!("{} is already {owner}'s · /squad {owner}", equipe_core::board::project_name(&project)));
+                if let Some(owner) = equipe_core::squads::find(&home, &folder.path) {
+                    self.flash = Some(format!("{} is already {owner}'s · /squad {owner}", folder.name));
                     return Vec::new();
                 }
-                match equipe_core::squads::create(&home, name, &project) {
-                    Ok(()) => self.switch_to = Some(((*name).to_owned(), crate::onboard::starting_team())),
-                    Err(err) => self.flash = Some(err),
-                }
+                self.ask_to_add(Adding { new_squad: Some((*name).to_owned()), folder });
             }
             [name] if *name == self.squad => self.flash = Some(format!("Already on {name}")),
             [name] => {
@@ -1393,6 +1404,46 @@ impl App {
             _ => self.flash = Some("/squad <name> switches · /squad new <name> <folder> starts one".into()),
         }
         Vec::new()
+    }
+
+    /// Wait for `y` before the folder is added; the footer asks.
+    fn ask_to_add(&mut self, adding: Adding) {
+        self.flash = None;
+        self.confirming = Some(adding);
+    }
+
+    /// The question while a folder waits: its full path first, where it can't
+    /// be cut off, then the keys, its name and its remote.
+    pub fn confirm_prompt(&self) -> Option<String> {
+        let adding = self.confirming.as_ref()?;
+        let folder = &adding.folder;
+        let question = match &adding.new_squad {
+            Some(name) => format!("Start the squad {name} on {}?", folder.path.display()),
+            None => format!("Add {} to {}?", folder.path.display(), self.squad),
+        };
+        Some(format!("{question} y adds, any other key cancels · {}", folder.describe()))
+    }
+
+    /// The person said yes: the folder joins this squad, or starts a new one.
+    fn add_folder(&mut self, adding: Adding) {
+        let home = equipe_providers::credentials::equipe_home();
+        let project = adding.folder.path;
+        let Some(name) = adding.new_squad else {
+            match equipe_core::squads::add_project(&home, &self.squad, &project) {
+                Ok(()) => {
+                    if !self.projects.contains(&project) {
+                        self.projects.push(project.clone());
+                    }
+                    self.flash = Some(format!("{} works on {} too · members see it from their next turn", self.squad, project.display()));
+                }
+                Err(err) => self.flash = Some(err),
+            }
+            return;
+        };
+        match equipe_core::squads::create(&home, &name, &project) {
+            Ok(()) => self.switch_to = Some((name, crate::onboard::starting_team())),
+            Err(err) => self.flash = Some(err),
+        }
     }
 
     /// `/browser` opens the sign-in window; `/browser show [member]` puts members'
@@ -1654,14 +1705,18 @@ pub fn is_image(path: &std::path::Path) -> bool {
         .is_some_and(|e| matches!(e.to_lowercase().as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp"))
 }
 
-/// A folder as the person typed it — `~/…` is under home — if it is one.
-fn folder_path(typed: &str) -> Option<PathBuf> {
-    let path = match typed.strip_prefix("~/") {
-        Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
-        None if typed == "~" => dirs::home_dir().unwrap_or_default(),
-        None => PathBuf::from(typed),
-    };
-    path.is_dir().then_some(path)
+/// The folder the person typed, read exactly — see [`crate::onboard::resolve_folder`].
+fn typed_folder(typed: &str) -> Result<crate::onboard::Folder, String> {
+    let home = dirs::home_dir().ok_or("No home folder to read ~ from")?;
+    crate::onboard::resolve_folder(typed, &home, &std::env::current_dir().unwrap_or_default())
+}
+
+/// A folder the person is asked about before it joins a squad.
+#[derive(Debug, Clone)]
+pub struct Adding {
+    /// The squad it would start, for `/squad new`; `None` adds to this one.
+    pub new_squad: Option<String>,
+    pub folder: crate::onboard::Folder,
 }
 
 /// The memory each member's browser takes, from `ps -axo pid=,ppid=,rss=,command=`:
@@ -2178,6 +2233,63 @@ mod tests {
         type_text(&mut app, "/squad new shop /no/such/folder");
         enter(&mut app);
         assert!(app.flash.as_deref().unwrap().contains("No folder"), "{:?}", app.flash);
+        assert!(app.switch_to.is_none());
+    }
+
+    /// `equipe` beside `equipe-labs-profile`, both with a subfolder.
+    fn siblings(tag: &str) -> PathBuf {
+        let tmp = std::env::temp_dir().join(format!("equipe-add-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        for dir in ["equipe/crates", "equipe-labs-profile/a"] {
+            std::fs::create_dir_all(tmp.join(dir)).unwrap();
+        }
+        tmp.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn squad_add_asks_about_exactly_the_folder_typed() {
+        let (mut app, _, _) = team();
+        let tmp = siblings("exact");
+        type_text(&mut app, &format!("/squad add {}/equipe", tmp.display()));
+        assert!(!app.choices().is_empty(), "completion offers the neighbours too");
+        assert!(enter(&mut app).is_empty());
+        let adding = app.confirming.as_ref().expect("asks first");
+        assert_eq!(adding.folder.path, tmp.join("equipe"));
+        let prompt = app.confirm_prompt().unwrap();
+        assert!(prompt.starts_with(&format!("Add {} to acme?", tmp.join("equipe").display())), "{prompt}");
+        assert!(prompt.contains("y adds"), "{prompt}");
+        // Anything but `y` leaves it out, and nothing is added.
+        app.on_key(key(KeyCode::Char('n')), Instant::now());
+        assert!(app.confirming.is_none());
+        assert!(app.flash.as_deref().unwrap().starts_with("Not added"), "{:?}", app.flash);
+        assert!(!app.projects.contains(&tmp.join("equipe")));
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn enter_after_a_slash_sends_the_folder_not_its_first_subfolder() {
+        let (mut app, _, _) = team();
+        let tmp = siblings("slash");
+        type_text(&mut app, &format!("/squad add {}/equipe-labs-profile/", tmp.display()));
+        assert!(!app.choices().is_empty(), "its subfolder is offered");
+        enter(&mut app);
+        assert_eq!(app.confirming.as_ref().unwrap().folder.path, tmp.join("equipe-labs-profile"));
+        app.on_key(key(KeyCode::Esc), Instant::now());
+        assert!(app.confirming.is_none());
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn squad_add_refuses_home_and_missing_folders_without_asking() {
+        let (mut app, _, _) = team();
+        for typed in ["/squad add ~", "/squad add ~/", "/squad add /", "/squad new shop ~", "/squad add /no/such/folder"] {
+            type_text(&mut app, typed);
+            enter(&mut app);
+            assert!(app.confirming.is_none(), "{typed}");
+            let flash = app.flash.clone().unwrap_or_default();
+            assert!(flash.contains("home folder") || flash.contains("No folder"), "{typed}: {flash}");
+            app.composer.clear();
+        }
         assert!(app.switch_to.is_none());
     }
 
