@@ -211,6 +211,25 @@ unless TextEdit has keyboard focus. Clean-up after the spike: remove
    them: the lease should also yield when the person is active (HID idle time <
    N s), not only to other members.
 
+## T-22 on this Mac: the person first
+
+`cargo run -p equipe-core --example desktop_watch -- <seconds>` asks the gate
+twice a second whether a member's input would go in, with this Mac's real
+readings. It posts nothing. Run from a member's turn under the installed daemon
+(`launchctl managername` → `Aqua`), 2026-10-14 00:4x–00:5x:
+
+| Moment | Last input | Lock | Member input |
+|---|---|---|---|
+| The person working the Mac (Jump Desktop) | 0.0–9 s ago, reset at irregular moments | Open | held: "The person is using the Mac… at least 30 s more" |
+| The person away | 32.9 s ago | Open | goes in |
+
+So the idle clock sees the person's input over Jump Desktop, and nothing on this
+Mac (Amphetamine included) resets it on its own: members aren't kept out
+forever. Not yet tried, because no member can post input before T-35: a
+member's own clicks not being taken for the person (unit-tested in
+`desktop::presence`), and input stopping in the middle of a long call (left to
+the helper, below).
+
 ## Notes for the follow-up tickets
 
 - **T-21 (tools):** build `equipe-desktop` as its own binary + LaunchAgent
