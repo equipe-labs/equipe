@@ -2011,7 +2011,7 @@ dependencies = [
 
 [[package]]
 name = "equipe"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -2040,7 +2040,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-core"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "equipe-protocol",
  "equipe-providers",
@@ -2053,7 +2053,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-desktop"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "equipe-core",
  "gpui-kit",
@@ -2062,7 +2062,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-protocol"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2070,7 +2070,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-providers"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "base64 0.23.1",
  "dirs 7.0.0",
