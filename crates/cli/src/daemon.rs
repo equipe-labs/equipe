@@ -38,6 +38,8 @@ pub fn build_id() -> String {
 /// `equipe daemon run`: serve in the foreground until asked to stop.
 pub async fn run_foreground() -> io::Result<()> {
     let config = runtime::Config::for_user(VERSION).persistent();
+    // Telegram, when set up, follows the squads like one more screen.
+    tokio::spawn(crate::telegram::serve_forever(equipe_home(), socket(), build_id()));
     gateway::serve(config, &socket(), &build_id()).await
 }
 

@@ -159,6 +159,16 @@ async fn serve_client(stream: UnixStream, core: Handle, version: String, stop: U
     let _ = writer_task.await;
 }
 
+/// Where a split [`Client`] sends its commands.
+#[derive(Clone)]
+pub struct Commands(UnboundedSender<Message>);
+
+impl Commands {
+    pub fn send(&self, command: Command) {
+        let _ = self.0.send(Message::command(&command));
+    }
+}
+
 /// A screen's side of the socket.
 pub struct Client {
     commands: UnboundedSender<Message>,
@@ -213,6 +223,11 @@ impl Client {
 
     pub fn send(&self, command: Command) {
         let _ = self.commands.send(Message::command(&command));
+    }
+
+    /// Its two directions apart: a sender to keep (and clone), and the events.
+    pub fn split(self) -> (Commands, UnboundedReceiver<Event>) {
+        (Commands(self.commands), self.events)
     }
 
     /// The next event, or `None` once the daemon is gone.

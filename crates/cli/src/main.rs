@@ -8,6 +8,7 @@
 mod clip;
 mod daemon;
 mod onboard;
+mod telegram;
 mod tui;
 mod ui;
 
@@ -120,6 +121,11 @@ enum Command {
         #[arg(long)]
         remove: bool,
     },
+    /// Your squads from Telegram: requests, reviews and replies on your phone
+    Telegram {
+        #[command(subcommand)]
+        action: Option<TelegramAction>,
+    },
     /// Update equipe to the latest release
     Update,
     /// The background daemon the team lives in
@@ -127,6 +133,14 @@ enum Command {
         #[command(subcommand)]
         action: DaemonAction,
     },
+}
+
+#[derive(Subcommand)]
+enum TelegramAction {
+    /// Connect a bot of your own, paired with your Telegram account
+    Setup,
+    /// Disconnect it
+    Off,
 }
 
 #[derive(Subcommand)]
@@ -213,6 +227,21 @@ async fn main() -> ExitCode {
                 Ok(status) if status.success() => Ok(()),
                 Ok(_) => Err(Failure::new("The paste setup didn't finish")),
                 Err(err) => Err(Failure::new(format!("Couldn't run sh: {err}"))),
+            }
+        }
+        Command::Telegram { action } => {
+            let home = equipe_providers::credentials::equipe_home();
+            let said = match action {
+                None => Ok(telegram::status(&home)),
+                Some(TelegramAction::Setup) => telegram::setup(&home).await,
+                Some(TelegramAction::Off) => telegram::off(&home),
+            };
+            match said {
+                Ok(text) => {
+                    println!("{}", ui::out().ok_line(&text));
+                    Ok(())
+                }
+                Err(why) => Err(Failure::new(why)),
             }
         }
         Command::Browser { url, forget } => sign_in(url, forget),
