@@ -118,6 +118,7 @@ relay → daemon
 | `type` | fields | |
 |---|---|---|
 | `recv` | `device`, `data` | a sealed frame from a device |
+| `pair_opened` | `slot` | the slot is open: the daemon shows the QR code only now |
 | `pair_recv` | `slot`, `data` | a sealed pairing request |
 | `presence` | `device`, `online` | a device connected or left; on connecting, the daemon gets one for each device already there |
 | `push_result` | `device`, `ok`, `error?` | |

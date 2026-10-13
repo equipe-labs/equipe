@@ -47,6 +47,10 @@ struct Pairing {
     secret: [u8; 32],
     expires: u64,
     request: Option<Request>,
+    /// The QR code's address, shown once the relay says the slot is open.
+    url: String,
+    started: u64,
+    shown: bool,
 }
 
 #[derive(Debug, Default)]
@@ -148,7 +152,7 @@ impl Core {
             super::b64(&secret),
             encode(&super::hostname())
         );
-        self.pairing = Some(Pairing { slot: slot.clone(), secret, expires, request: None });
+        self.pairing = Some(Pairing { slot: slot.clone(), secret, expires, request: None, url: url.clone(), started: now, shown: false });
         Ok((url, vec![Action::Relay(json!({ "type": "pair_open", "slot": slot, "expires": expires }))]))
     }
 
@@ -208,6 +212,11 @@ impl Core {
             out.push(Action::Local(json!({ "error": "The code expired — run equipe pair again" })));
             return out;
         }
+        // A relay that doesn't say the slot opened: show the code after a moment anyway.
+        if let Some(p) = self.pairing.as_mut().filter(|p| !p.shown && now >= p.started + 3000) {
+            p.shown = true;
+            return vec![Action::Local(json!({ "qr": p.url, "expires": p.expires }))];
+        }
         vec![]
     }
 
@@ -242,6 +251,13 @@ impl Core {
     pub fn on_relay(&mut self, frame: &Value, now: u64) -> Vec<Action> {
         match frame["type"].as_str().unwrap_or_default() {
             "recv" => self.on_device_frame(frame["device"].as_str().unwrap_or_default(), frame["data"].as_str().unwrap_or_default(), now),
+            "pair_opened" => match self.pairing.as_mut().filter(|p| !p.shown && frame["slot"] == p.slot.as_str()) {
+                Some(p) => {
+                    p.shown = true;
+                    vec![Action::Local(json!({ "qr": p.url, "expires": p.expires }))]
+                }
+                None => vec![],
+            },
             "pair_recv" => self.on_pair_request(frame["slot"].as_str().unwrap_or_default(), frame["data"].as_str().unwrap_or_default(), now),
             "presence" => {
                 let device = frame["device"].as_str().unwrap_or_default().to_owned();
@@ -543,6 +559,21 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_code_shows_once_the_relay_has_the_slot_open() {
+        let mut core = Core::new(Some(config()));
+        let (url, _) = core.begin_pairing(1000).unwrap();
+        let slot_now = core.pairing.as_ref().unwrap().slot.clone();
+        assert!(core.on_relay(&json!({ "type": "pair_opened", "slot": "other" }), 1000).is_empty());
+        assert_eq!(core.on_relay(&json!({ "type": "pair_opened", "slot": slot_now }), 1000), vec![Action::Local(json!({ "qr": url, "expires": 1000 + PAIRING_MS }))]);
+        assert!(core.tick(5000).is_empty(), "shown once");
+        // An older relay that never says: shown after a moment.
+        let mut core = Core::new(Some(config()));
+        core.begin_pairing(1000).unwrap();
+        assert!(core.tick(2000).is_empty());
+        assert!(matches!(&core.tick(4000)[..], [Action::Local(v)] if v["qr"].is_string()));
+    }
+
+    #[test]
     fn a_request_without_the_secret_or_after_the_time_is_ignored() {
         let mut core = Core::new(Some(config()));
         let (_, _) = core.begin_pairing(1000).unwrap();
@@ -659,7 +690,6 @@ pub(crate) mod tests {
         let secret = super::super::unb64(&query["s"]).unwrap();
         // The phone, on the pairing slot.
         let phone = Phone::new();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         let (mut slot_ws, _) = tokio_tungstenite::connect_async(format!("{ws_base}/v1/daemons/{daemon}/pair/{}", slot(&secret))).await.unwrap();
         let request = json!({ "type": "pair_request", "name": "e2e phone", "platform": "test", "key": phone.keys.public });
         let data = seal::seal(Kind::PairRequest, &daemon_key, None, Some(&secret), &daemon, request.to_string().as_bytes()).unwrap();

@@ -9,7 +9,7 @@ async function daemonWithSlot(expiresIn = 5 * 60 * 1000) {
   const daemon = await connectDaemon(id, token);
   const slot = newId();
   daemon.send({ type: "pair_open", slot, expires: Date.now() + expiresIn });
-  await daemon.flush();
+  expect(await daemon.next("pair_opened")).toEqual({ type: "pair_opened", slot });
   return { id, daemon, slot };
 }
 

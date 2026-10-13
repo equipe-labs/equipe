@@ -216,6 +216,8 @@ export class Daemon extends DurableObject<Env> {
 
     const alarm = await this.ctx.storage.getAlarm();
     if (alarm === null || until < alarm) await this.ctx.storage.setAlarm(until);
+    // The daemon shows its QR code only now, so a phone quick to scan finds the slot.
+    this.toDaemon({ type: "pair_opened", slot });
   }
 
   private async closeSlot(slot: string, reason: string): Promise<void> {

@@ -115,13 +115,28 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                             }
                         }
                     }
+                    // The code shows only once its slot is open at the relay:
+                    // a phone quick to scan must find it there.
+                    if relay.is_none()
+                        && let Some(config) = &core.config
+                    {
+                        match connect(config, input_tx.clone()).await {
+                            Ok(sender) => {
+                                relay = Some(sender);
+                                backoff = Duration::from_secs(2);
+                            }
+                            Err(err) => {
+                                let _ = conn.send(json!({ "error": format!("Couldn't reach the relay: {err}") }));
+                                continue;
+                            }
+                        }
+                    }
                     match core.begin_pairing(now) {
-                        Ok((url, opened)) => {
-                            let _ = conn.send(json!({ "qr": url, "expires": now + super::core::PAIRING_MS }));
+                        Ok((_, opened)) => {
+                            // The code goes to `equipe pair` when the relay says
+                            // the slot is open (`pair_opened`).
                             pair_conn = Some(conn);
                             actions.extend(opened);
-                            // Pairing needs the relay now, not at the next retry.
-                            retry_at = tokio::time::Instant::now();
                         }
                         Err(why) => {
                             let _ = conn.send(json!({ "error": why }));
