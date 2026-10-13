@@ -48,6 +48,8 @@ pub enum AgentState {
 pub enum Hit {
     /// The squad's name in the header: lists the other squads.
     Squads,
+    /// "+N" in the header, for the projects that didn't fit: the picker.
+    Projects,
     /// A project's chip in the header — or "all" (`None`): filters to it.
     Project(Option<usize>),
     Pane(Pane),
@@ -317,6 +319,8 @@ pub struct App {
     pub confirming: Option<Adding>,
     /// A repository the person said not to add: the loop remembers it.
     pub declined: Option<PathBuf>,
+    /// The key just handled picked a choice itself: keep it.
+    keep_pick: bool,
     /// Which completion is picked, and the text the person closed completion on.
     pub pick: usize,
     /// The person moved the pick with ↑↓: Enter takes it even after a space.
@@ -415,6 +419,7 @@ impl App {
             outbox: Vec::new(),
             pick: 0,
             picked: false,
+            keep_pick: false,
             dismissed: None,
             hits: Vec::new(),
             squad_width: None,
@@ -525,18 +530,21 @@ impl App {
         }
     }
 
-    /// Ctrl-P: filter to the next project — after the last, the whole squad.
-    fn next_project(&mut self) -> Vec<Command> {
+    /// Ctrl-P, or "+N" in the header: the project picker, with the next
+    /// project picked — so Ctrl-P, Enter walks them, and typing finds one.
+    fn pick_project(&mut self) {
         if self.projects.is_empty() {
-            return Vec::new();
+            return;
         }
+        self.pane = Pane::Conversation;
+        self.help_open = false;
+        self.composer.clear();
+        self.composer.insert_str("/project ");
         let at = self.focus.as_ref().and_then(|f| self.projects.iter().position(|p| p == f));
-        let next = match at {
-            None => self.projects.first(),
-            Some(i) => self.projects.get(i + 1),
-        };
-        let name = next.map(|p| board::project_name(p)).unwrap_or_else(|| "all".to_owned());
-        self.focus_on(&name)
+        // Projects, then "all": after the last project comes all, after all the first.
+        self.pick = at.map_or(0, |i| i + 1);
+        self.picked = true;
+        self.keep_pick = true;
     }
 
     /// Work waiting for the person's review, under the project filter.
@@ -649,6 +657,7 @@ impl App {
                 let commands = self.focus_on(&name);
                 self.outbox.extend(commands);
             }
+            Some(Hit::Projects) => self.pick_project(),
             Some(Hit::Squads) => {
                 self.pane = Pane::Conversation;
                 self.help_open = false;
@@ -1005,8 +1014,9 @@ impl App {
     pub fn on_key(&mut self, key: KeyEvent, now: Instant) -> Vec<Command> {
         let before = self.composer.text().to_owned();
         let commands = self.key(key, now);
-        // A new text starts completion over.
-        if self.composer.text() != before {
+        // A new text starts completion over — unless the key itself picked
+        // a choice (Ctrl-P opens the picker on the next project).
+        if self.composer.text() != before && !std::mem::take(&mut self.keep_pick) {
             self.pick = 0;
             self.picked = false;
             self.dismissed = None;
@@ -1041,7 +1051,24 @@ impl App {
             // Read only when it's wanted: it opens every squad's journal.
             squads: if text.starts_with("/squad ") { self.other_squads() } else { Vec::new() },
             mode: Some(self.mode),
-            projects: self.projects.iter().map(|p| equipe_core::board::project_name(p)).collect(),
+            projects: self
+                .projects
+                .iter()
+                .map(|p| {
+                    let status = self.project_status(p);
+                    let mut about = Vec::new();
+                    if status.for_you > 0 {
+                        about.push(format!("⚑{} waiting on you", status.for_you));
+                    }
+                    if status.working > 0 {
+                        about.push(format!("●{} working", status.working));
+                    }
+                    if self.focus.as_ref() == Some(p) {
+                        about.push("in focus".into());
+                    }
+                    (equipe_core::board::project_name(p), about.join(" · "))
+                })
+                .collect(),
             member_modes: self.agents.iter().filter_map(|a| Some((a.member.as_ref()?.name.as_str(), a.mode?))).collect(),
         };
         commands::complete(text, &ctx)
@@ -1202,8 +1229,8 @@ impl App {
         match key.code {
             KeyCode::Char('c') if ctrl => return self.ctrl_c(now),
             KeyCode::Char('b') if ctrl => self.toggle_board(),
-            // Ctrl-P walks the projects as filters, then the whole squad.
-            KeyCode::Char('p') if ctrl => return self.next_project(),
+            // Ctrl-P picks a project to filter to.
+            KeyCode::Char('p') if ctrl => self.pick_project(),
             // Alt-1…9 filters to a project at once, Alt-0 the whole squad —
             // where the terminal sends Alt (iTerm2's Option sends Esc+).
             KeyCode::Char(c @ '0'..='9') if alt && !self.projects.is_empty() => {
@@ -1665,6 +1692,7 @@ impl App {
                     }
                     let has_mobile = self.agents.iter().any(|a| a.member.as_ref().is_some_and(|m| m.role == "mobile"));
                     let tip = if looks_like_an_app(&project) && !has_mobile { " · an app: /add mobile brings in a mobile engineer" } else { "" };
+                    let tip = many_projects_tip(self.projects.len()).unwrap_or(tip);
                     self.flash = Some(format!("{} works on {} too · members see it from their next turn{tip}", self.squad, project.display()));
                 }
                 Err(err) => self.flash = Some(err),
@@ -1981,6 +2009,12 @@ pub fn image_path(text: &str) -> Option<PathBuf> {
     let unquoted = text.trim_matches(|c| c == '\'' || c == '"');
     let path = PathBuf::from(unquoted.replace("\\ ", " "));
     (is_image(&path) && path.is_absolute() && path.is_file()).then_some(path)
+}
+
+/// Past six projects, a word that unrelated ones may do better in a squad of
+/// their own: the PM's priorities and the members' memory stay sharp.
+pub fn many_projects_tip(projects: usize) -> Option<&'static str> {
+    (projects > 6).then_some(" · many projects now: unrelated ones may do better in a squad of their own — /squad new <name> <folder>")
 }
 
 /// The built-in roles, as `/add` takes them.
@@ -2709,19 +2743,43 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_p_walks_the_projects_then_all() {
+    fn ctrl_p_opens_a_project_picker_with_the_next_one_picked() {
         let mut app = two_projects();
         let ctrl_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
-        assert_eq!(app.on_key(ctrl_p, Instant::now()), vec![Command::Focus { squad: "acme".into(), project: Some("site".into()) }]);
-        assert_eq!(app.on_key(ctrl_p, Instant::now()), vec![Command::Focus { squad: "acme".into(), project: Some("app".into()) }]);
-        assert_eq!(app.on_key(ctrl_p, Instant::now()), vec![Command::Focus { squad: "acme".into(), project: None }]);
+        let enter = KeyEvent::from(KeyCode::Enter);
+        // The picker: every project and all, how each is doing, the next one picked.
+        assert!(app.on_key(ctrl_p, Instant::now()).is_empty());
+        assert_eq!(app.composer.text(), "/project ");
+        let choices = app.choices();
+        let texts: Vec<&str> = choices.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, ["/project site", "/project app", "/project all"]);
+        assert!(choices[0].about.contains("⚑1"), "{:?}", choices[0].about);
+        assert!(choices[1].about.contains("●1"), "{:?}", choices[1].about);
+        // So Ctrl-P, Enter walks them as before.
+        assert_eq!(app.on_key(enter, Instant::now()), vec![Command::Focus { squad: "acme".into(), project: Some("site".into()) }]);
+        app.on_key(ctrl_p, Instant::now());
+        assert_eq!(app.on_key(enter, Instant::now()), vec![Command::Focus { squad: "acme".into(), project: Some("app".into()) }]);
+        app.on_key(ctrl_p, Instant::now());
+        assert_eq!(app.on_key(enter, Instant::now()), vec![Command::Focus { squad: "acme".into(), project: None }]);
+        // Typing narrows it — any part of the name.
+        app.on_key(ctrl_p, Instant::now());
+        type_text(&mut app, "pp");
+        let texts: Vec<String> = app.choices().into_iter().map(|c| c.text).collect();
+        assert_eq!(texts, ["/project app"]);
+        app.composer.clear();
         // Alt and a number goes straight to one, where the terminal sends it.
         let alt_2 = KeyEvent::new(KeyCode::Char('2'), KeyModifiers::ALT);
         assert_eq!(app.on_key(alt_2, Instant::now()), vec![Command::Focus { squad: "acme".into(), project: Some("app".into()) }]);
-        // One project is a filter too, on and off.
-        let (mut one, _, _) = team();
-        assert_eq!(one.on_key(ctrl_p, Instant::now()), vec![Command::Focus { squad: "acme".into(), project: Some("repo".into()) }]);
-        assert_eq!(one.on_key(ctrl_p, Instant::now()), vec![Command::Focus { squad: "acme".into(), project: None }]);
+        // The header's "+N" opens the same picker.
+        app.set_hits(vec![(0, 3, 0, Hit::Projects)], None);
+        app.on_click(1, 0);
+        assert_eq!(app.composer.text(), "/project ");
+    }
+
+    #[test]
+    fn a_squad_growing_past_six_projects_is_told_it_could_split() {
+        assert!(many_projects_tip(6).is_none());
+        assert!(many_projects_tip(7).is_some_and(|t| t.contains("/squad new")));
     }
 
     #[test]

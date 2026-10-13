@@ -63,8 +63,8 @@ pub struct Context<'a> {
     pub squads: Vec<(String, String)>,
     /// The squad's mode, and each member's own where it differs.
     pub mode: Option<Mode>,
-    /// The squad's projects, by name.
-    pub projects: Vec<String>,
+    /// The squad's projects: name, and how each is doing.
+    pub projects: Vec<(String, String)>,
     pub member_modes: Vec<(&'a str, Mode)>,
 }
 
@@ -179,10 +179,12 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             choices
         }
         ("squad", 2) if words[0] == "add" => folders(typed).into_iter().map(|f| word(&f, "", "")).collect(),
-        ("squad", 2) if words[0] == "remove" => ctx.projects.iter().filter(|p| starts(p)).map(|p| word(p, "", "")).collect(),
+        ("squad", 2) if words[0] == "remove" => ctx.projects.iter().filter(|(p, _)| starts(p)).map(|(p, _)| word(p, "", "")).collect(),
+        // A picker: any part of the name finds a project.
         ("project", 1) => {
-            let mut choices: Vec<Choice> = ctx.projects.iter().filter(|p| starts(p)).map(|p| word(p, "board, reviews and new work about it", "")).collect();
-            if starts("all") {
+            let wanted = typed.to_lowercase();
+            let mut choices: Vec<Choice> = ctx.projects.iter().filter(|(p, _)| p.to_lowercase().contains(&wanted)).map(|(p, about)| word(p, about, "")).collect();
+            if "all".contains(&wanted) {
                 choices.push(word("all", "every project", ""));
             }
             choices
@@ -253,7 +255,7 @@ mod tests {
             roles: vec!["pm", "designer", "frontend", "backend", "qa", "data"],
             squads: vec![("equipe-squad".into(), "equipe-site".into()), ("ios".into(), "app".into())],
             mode: Some(Mode::Auto),
-            projects: vec!["site".into(), "app".into()],
+            projects: vec![("site".into(), String::new()), ("app".into(), String::new())],
             member_modes: vec![("frontend", Mode::Full)],
         }
     }

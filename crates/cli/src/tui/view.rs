@@ -704,7 +704,7 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
     lines.extend(heading("LOOK AROUND"));
     lines.extend(rows(&pairs(&[
         ("Ctrl-B", "the board, and back"),
-        ("Ctrl-P", "filter to the next project, then the whole squad again · Alt-1…9 one at once, Alt-0 all"),
+        ("Ctrl-P", "pick a project to filter to — Enter takes the next, typing finds one · Alt-1…9 one at once, Alt-0 all"),
         ("PgUp · PgDn · wheel", "scroll · End for the latest · Ctrl-O unfolds steps"),
         ("click · drag", "a ticket number opens it · drag over text to copy it · drag the squad's edge to resize it"),
     ]), keys));
@@ -777,35 +777,66 @@ fn header(app: &App, theme: Theme, narrow: bool, width: usize) -> (Vec<Span<'sta
     let mut chips: Vec<Span<'static>> = Vec::new();
     let mut chip_hits = Vec::new();
     if !app.projects.is_empty() {
-        let mut list: Vec<(String, Option<usize>)> = app.projects.iter().enumerate().map(|(i, p)| (project_name(p), Some(i))).collect();
-        list.push(("all".to_owned(), None));
-        for (n, (name, at)) in list.into_iter().enumerate() {
-            if n > 0 {
+        // Each project's chip: its name (cut when long), how it's doing, and
+        // how much it matters now — in focus, then waiting on the person,
+        // then at work, then quiet.
+        let one = |project: &std::path::PathBuf| -> (Vec<Span<'static>>, u8) {
+            let focused = app.focus.as_ref() == Some(project);
+            let style = if focused {
+                project_style(app, Some(project), theme).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                theme.dim()
+            };
+            let mut spans = vec![Span::styled(ui::fit(&project_name(project), 18), style)];
+            let status = app.project_status(project);
+            if status.working > 0 {
+                spans.push(Span::styled(format!(" ●{}", status.working), project_style(app, Some(project), theme)));
+            }
+            if status.for_you > 0 {
+                spans.push(Span::styled(format!(" ⚑{}", status.for_you), theme.accent().add_modifier(Modifier::BOLD)));
+            }
+            let rank = if focused { 0 } else if status.for_you > 0 { 1 } else if status.working > 0 { 2 } else { 3 };
+            (spans, rank)
+        };
+        let all: Vec<(Vec<Span<'static>>, u8)> = app.projects.iter().map(one).collect();
+        let width_of = |spans: &[Span]| spans.iter().map(Span::width).sum::<usize>();
+        let sep = 3; // " · "
+        let all_chip = 3; // "all"
+        let more = |hidden: usize| if hidden == 0 { 0 } else { sep + format!("+{hidden} ▾").chars().count() };
+        // As much as fits next to the squad's name; the rest behind "+N".
+        let room = width.saturating_sub(used(&spans) + 3);
+        let mut order: Vec<usize> = (0..all.len()).collect();
+        order.sort_by_key(|&i| (all[i].1, i));
+        let mut shown: Vec<usize> = Vec::new();
+        let mut taken = all_chip;
+        for &i in &order {
+            let cost = width_of(&all[i].0) + sep;
+            let hidden_after = all.len() - shown.len() - 1;
+            if taken + cost + more(hidden_after) <= room {
+                shown.push(i);
+                taken += cost;
+            }
+        }
+        shown.sort_unstable();
+        let hidden = all.len() - shown.len();
+        let mut first = true;
+        let mut chip = |chips: &mut Vec<Span<'static>>, parts: Vec<Span<'static>>, hit: Hit| {
+            if !first {
                 chips.push(Span::styled(" · ", theme.dim()));
             }
-            let focused = match at {
-                Some(i) => app.focus.as_ref() == app.projects.get(i),
-                None => app.focus.is_none(),
-            };
-            let style = match (focused, at) {
-                (true, Some(i)) => project_style(app, app.projects.get(i).map(|p| p.as_path()), theme).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                (true, None) => theme.bold().add_modifier(Modifier::UNDERLINED),
-                (false, _) => theme.dim(),
-            };
-            let from = used(&chips);
-            chips.push(Span::styled(name.clone(), style));
-            // How it's doing: members at work on it, and what waits for the person.
-            if let Some(project) = at.and_then(|i| app.projects.get(i)) {
-                let status = app.project_status(project);
-                if status.working > 0 {
-                    chips.push(Span::styled(format!(" ●{}", status.working), project_style(app, Some(project), theme)));
-                }
-                if status.for_you > 0 {
-                    chips.push(Span::styled(format!(" ⚑{}", status.for_you), theme.accent().add_modifier(Modifier::BOLD)));
-                }
-            }
-            chip_hits.push((from, used(&chips), Hit::Project(at)));
+            first = false;
+            let from = used(chips);
+            chips.extend(parts);
+            chip_hits.push((from, used(chips), hit));
+        };
+        for i in shown {
+            chip(&mut chips, all[i].0.clone(), Hit::Project(Some(i)));
         }
+        if hidden > 0 {
+            chip(&mut chips, vec![Span::styled(format!("+{hidden} ▾"), theme.bold())], Hit::Projects);
+        }
+        let style = if app.focus.is_none() { theme.bold().add_modifier(Modifier::UNDERLINED) } else { theme.dim() };
+        chip(&mut chips, vec![Span::styled("all", style)], Hit::Project(None));
     }
     // The squad home, between the name and the chips: what doesn't fit of it
     // goes first, keeping its end.
@@ -2762,6 +2793,26 @@ mod tests {
         app.board_scroll = laid.board_max;
         let shot = screen(&app, 100, 30);
         assert!(shot.contains("step 30") && !shot.contains("more lines"), "{shot}");
+    }
+
+    #[test]
+    fn many_projects_fold_into_more_keeping_what_matters_in_sight() {
+        let (mut app, _) = working();
+        app.projects = (1..=9).map(|n| std::path::PathBuf::from(format!("/code/project-number-{n}"))).collect();
+        let mut waiting = ticket(3, TicketStatus::Review, "Onboarding");
+        waiting.project = Some("/code/project-number-8".into());
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: waiting });
+        app.focus = Some("/code/project-number-6".into());
+        app.flash = None;
+        let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 120, 30), &Layouts::default());
+        let top = screen(&app, 120, 30).lines().next().unwrap().to_owned();
+        // In focus, and waiting on the person: in sight; the rest behind "+N".
+        assert!(top.contains("project-number-6") && top.contains("project-number-8 ⚑1"), "{top}");
+        assert!(top.contains(" ▾ · all") && top.contains('+'), "{top}");
+        assert!(unicode_width::UnicodeWidthStr::width(top.trim_end()) <= 120, "{top}");
+        assert!(laid.hits.iter().any(|h| h.3 == Hit::Projects));
+        // Shown in their own order, not by importance.
+        assert!(top.find("project-number-6").unwrap() < top.find("project-number-8").unwrap());
     }
 
     #[test]
