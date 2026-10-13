@@ -64,11 +64,17 @@ fn tell_keys_apart() {
     }
 }
 
-/// A ticket's project and branch, when it has work to look at.
-fn ticket_branch(app: &app::App, cwd: &std::path::Path, id: equipe_core::protocol::TicketId) -> Option<(PathBuf, String)> {
+/// Where to look at a ticket's work, its branch, and what it is compared with:
+/// a code ticket's project against `HEAD`; a task's or action's own worktree of
+/// the squad's folder against the folder's `main`.
+fn ticket_branch(app: &app::App, cwd: &std::path::Path, id: equipe_core::protocol::TicketId) -> Option<(PathBuf, String, &'static str)> {
     let ticket = app.tickets.iter().find(|t| t.id == id)?;
+    let branch = ticket.branch.clone()?;
+    if ticket.kind.in_home() {
+        return Some((ticket.worktree.clone()?, branch, "main"));
+    }
     let dir = ticket.project.clone().or_else(|| app.projects.first().cloned()).unwrap_or_else(|| cwd.to_owned());
-    Some((dir, ticket.branch.clone()?))
+    Some((dir, branch, "HEAD"))
 }
 
 /// What the picked ticket's branch changed, as `git diff --stat` counts it —
@@ -77,7 +83,7 @@ fn count_changes(app: &mut app::App, cwd: &std::path::Path) {
     let Some(id) = app.selected_ticket().map(|t| t.id) else {
         return;
     };
-    let Some((dir, branch)) = ticket_branch(app, cwd, id) else {
+    let Some((dir, branch, from)) = ticket_branch(app, cwd, id) else {
         return;
     };
     if app.diffs.get(&id).is_some_and(|(b, _)| *b == branch) {
@@ -86,7 +92,7 @@ fn count_changes(app: &mut app::App, cwd: &std::path::Path) {
     let stat = std::process::Command::new("git")
         .arg("-C")
         .arg(&dir)
-        .args(["diff", "--stat=200", &format!("HEAD...{branch}")])
+        .args(["diff", "--stat=200", &format!("{from}...{branch}")])
         .output()
         .ok()
         .filter(|out| out.status.success())
@@ -228,15 +234,16 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         }
         if let Some(id) = app.view_diff.take() {
             // The whole diff in the person's pager, then back.
-            if let Some((dir, branch)) = ticket_branch(&app, &cwd, id) {
+            if let Some((dir, branch, from)) = ticket_branch(&app, &cwd, id) {
                 let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags, DisableBracketedPaste, DisableMouseCapture);
                 ratatui::restore();
                 let _ = std::process::Command::new("sh")
                     .arg("-c")
-                    .arg("git -C \"$1\" diff --color=always \"HEAD...$2\" | ${PAGER:-less -R}")
+                    .arg("git -C \"$1\" diff --color=always \"$3...$2\" | ${PAGER:-less -R}")
                     .arg("sh")
                     .arg(&dir)
                     .arg(&branch)
+                    .arg(from)
                     .status();
                 terminal = ratatui::init();
                 tell_keys_apart();

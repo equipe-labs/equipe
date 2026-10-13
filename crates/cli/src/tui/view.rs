@@ -401,6 +401,8 @@ fn waiting_card(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Op
         let needs = t.note.as_deref().filter(|_| t.status == TicketStatus::Waiting).map(board::waiting_needs).unwrap_or_default();
         let needs = if needs.is_empty() { String::new() } else { format!(" · needs {}", needs.join(", ")) };
         let width_of = |s: &str| unicode_width::UnicodeWidthStr::width(s);
+        let kind = kind_tag(t);
+        let title_room = title_room.saturating_sub(kind.len());
         let title = ui::fit(&t.title, if needs.is_empty() { title_room } else { title_room.min(width_of(&t.title)).min(title_room / 2) });
         let needs = ui::fit(&needs, title_room.saturating_sub(width_of(&title)));
         let pad = title_room.saturating_sub(width_of(&title) + width_of(&needs));
@@ -409,6 +411,7 @@ fn waiting_card(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Op
                 bar(),
                 Span::styled(id, theme.accent()),
                 project_tag(app, t, theme, tags).map_or_else(|| Span::raw(""), |tag| Span::styled(format!("{}  ", tag.content), tag.style)),
+                Span::styled(kind, theme.dim()),
                 Span::styled(title, Style::new()),
                 Span::styled(needs, theme.accent()),
                 Span::raw(" ".repeat(pad + 2)),
@@ -1471,6 +1474,11 @@ fn render_scrollbar(frame: &mut Frame, area: Rect, top: usize, height: usize, to
     frame.render_widget(Paragraph::new(rows), column);
 }
 
+/// A task's or action's tag before its title (`task · `); nothing for code.
+fn kind_tag(t: &equipe_core::protocol::Ticket) -> String {
+    if t.kind.in_home() { format!("{} · ", t.kind.label()) } else { String::new() }
+}
+
 /// A ticket that waits on the person: to review, or for their part done.
 fn for_you(status: TicketStatus) -> bool {
     matches!(status, TicketStatus::Review | TicketStatus::Waiting)
@@ -1490,7 +1498,7 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
             TicketStatus::Review => "YOUR REVIEW".into(),
             TicketStatus::Waiting => "WAITING ON YOU".into(),
             TicketStatus::InProgress | TicketStatus::Todo | TicketStatus::Proposed if lanes => {
-                app.ticket_project(t).as_deref().map(project_name).unwrap_or_default()
+                app.ticket_project(t).as_deref().map_or_else(|| "squad".to_owned(), project_name)
             }
             TicketStatus::InProgress => "IN PROGRESS".into(),
             TicketStatus::Todo => "TO DO".into(),
@@ -1541,8 +1549,10 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
         let tag = project_tag(app, t, theme, tags).map(|tag| vec![tag, Span::raw("  ")]).unwrap_or_default();
         let tail_width = (12 + 14).min(width / 2);
         let title_room = width.saturating_sub(2 + 6 + 2 + tail_width + if several_projects { tags + 2 } else { 0 });
-        let title = ui::fit(&t.title, title_room);
-        let pad = title_room.saturating_sub(unicode_width::UnicodeWidthStr::width(title.as_str()));
+        // Work that isn't code says so before its title.
+        let kind = kind_tag(t);
+        let title = ui::fit(&t.title, title_room.saturating_sub(kind.len()));
+        let pad = title_room.saturating_sub(kind.len() + unicode_width::UnicodeWidthStr::width(title.as_str()));
         let closed = t.status.is_closed();
         let title_style = match (selected, closed) {
             (true, _) => theme.bold(),
@@ -1556,6 +1566,7 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
         ];
         spans.extend(tag);
         spans.extend([
+            Span::styled(kind, theme.dim()),
             Span::styled(title, title_style),
             Span::raw(" ".repeat(pad + 2)),
             Span::styled(format!("{who:<10}  "), if closed { theme.dim() } else { member_style(app, &who, theme) }),
@@ -1589,7 +1600,7 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         );
     };
     let mut lines = wrapped(vec![Span::styled(format!("T-{}  ", t.id), theme.bold())], &t.title, theme.bold(), 0, width);
-    let mut facts = Vec::new();
+    let mut facts = vec![t.kind.label().to_owned()];
     if let Some(who) = t.assignee.as_ref().or(t.owner.as_ref()) {
         facts.push(who.clone());
     }
@@ -1669,8 +1680,11 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
             let more = if files.len() > 4 { format!(" +{}", files.len() - 4) } else { String::new() };
             place.push(Line::from(vec![key(""), Span::styled(ui::fit(&format!("{}{more}", shown.join(" · ")), width.saturating_sub(9)), theme.dim())]));
         }
-        place.push(Line::from(vec![key("branch"), Span::styled(branch.clone(), theme.dim())]));
-    } else if let Some(branch) = &t.branch {
+        // The squad's folder shows no git words.
+        if !t.kind.in_home() {
+            place.push(Line::from(vec![key("branch"), Span::styled(branch.clone(), theme.dim())]));
+        }
+    } else if let Some(branch) = t.branch.as_ref().filter(|_| !t.kind.in_home()) {
         place.push(Line::from(vec![key("branch"), Span::styled(branch.clone(), theme.dim())]));
     }
     if let Some(worktree) = &t.worktree {
@@ -2060,6 +2074,7 @@ mod tests {
             branch: None,
             worktree: None,
             merged: None,
+            kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: None,
         }
@@ -2308,6 +2323,24 @@ mod tests {
         app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Down), Instant::now());
         let shot = screen(&app, 100, 34);
         assert!(shot.contains("› T-2") && shot.contains("in progress"), "{shot}");
+    }
+
+    #[test]
+    fn work_that_isnt_code_wears_its_kind_and_no_git_words() {
+        let (mut app, _) = working();
+        let mut task = ticket(1, TicketStatus::Review, "Competitor research");
+        task.kind = equipe_core::protocol::TicketKind::Task;
+        task.project = None;
+        task.branch = Some("equipe/frontend-t1".into());
+        task.note = Some("Three found.\n\nIn the squad's folder:\n- outputs/T-1 research/report.md".into());
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: task });
+        app.pane = Pane::Board;
+        app.flash = None;
+        let shot = screen(&app, 100, 30);
+        assert!(shot.lines().any(|l| l.contains("T-1") && l.contains("task · Competitor research")), "{shot}");
+        assert!(shot.contains("task · frontend · handed in"), "{shot}");
+        assert!(shot.contains("outputs/T-1 research/report.md"), "{shot}");
+        assert!(!shot.contains("equipe/frontend-t1"), "no branch for the squad's folder:\n{shot}");
     }
 
     #[test]

@@ -484,6 +484,10 @@ impl App {
     /// work in progress, to do, proposed, then the latest few finished.
     /// The project a ticket is in: its own, or the squad's first.
     pub fn ticket_project(&self, ticket: &Ticket) -> Option<PathBuf> {
+        // A task or action without a project is the squad's, not the first project's.
+        if ticket.kind.in_home() {
+            return ticket.project.clone();
+        }
         ticket.project.clone().or_else(|| self.projects.first().cloned())
     }
 
@@ -1652,11 +1656,15 @@ impl App {
         vec![Command::ShowBrowser { squad: self.squad.clone(), member: member.map(|m| (*m).to_owned()), show }]
     }
 
-    /// Accept a ticket; when it has a branch, ask whether to merge it into main.
-    /// Nothing merges unless the person says yes.
+    /// Accept a ticket; when it is code with a branch, ask whether to merge it
+    /// into main. Nothing merges unless the person says yes. A task's or action's
+    /// work goes into the squad's folder with the acceptance, unasked.
     fn accept(&mut self, ticket: TicketId) -> Vec<Command> {
-        if self.tickets.iter().any(|t| t.id == ticket && t.branch.is_some()) {
+        let found = self.tickets.iter().find(|t| t.id == ticket);
+        if found.is_some_and(|t| !t.kind.in_home() && t.branch.is_some()) {
             self.ask(Question::Merge(ticket));
+        } else if found.is_some_and(|t| t.kind.in_home()) {
+            self.flash = Some(format!("Accepted T-{ticket} · its work goes into the squad's folder"));
         } else {
             self.flash = Some(format!("Accepted T-{ticket} · /reopen T-{ticket} brings it back"));
         }
@@ -2088,6 +2096,7 @@ mod tests {
             branch: None,
             worktree: None,
             merged: None,
+            kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: None,
         }
@@ -2766,6 +2775,19 @@ mod tests {
         type_text(&mut app, "/accept");
         assert!(enter(&mut app).is_empty());
         assert!(app.flash.as_deref().unwrap().contains("T-5"), "{:?}", app.flash);
+    }
+
+    #[test]
+    fn accepting_a_task_asks_nothing_its_work_goes_into_the_squads_folder() {
+        let (mut app, _, _) = team();
+        let mut task = ticket(5, TicketStatus::Review);
+        task.kind = equipe_core::protocol::TicketKind::Task;
+        task.branch = Some("equipe/frontend-t5".into());
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: task });
+        type_text(&mut app, "/accept T-5");
+        assert_eq!(enter(&mut app), vec![Command::Accept { squad: "acme".into(), ticket: 5 }]);
+        assert_eq!(app.question, None);
+        assert!(app.flash.as_deref().unwrap().contains("squad's folder"), "{:?}", app.flash);
     }
 
     #[test]
