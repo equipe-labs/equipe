@@ -61,6 +61,14 @@ pub enum Pane {
     Board,
 }
 
+/// How a project is doing: members at work on it, and what in it waits for
+/// the person (work to review, tickets put down until they do their part).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProjectStatus {
+    pub working: usize,
+    pub for_you: usize,
+}
+
 pub struct Agent {
     pub id: SessionId,
     pub member: Option<Member>,
@@ -481,6 +489,40 @@ impl App {
         self.focus.is_none() || self.ticket_project(ticket) == self.focus
     }
 
+    /// The project a member works in: its ticket's.
+    pub fn agent_project(&self, agent: &Agent) -> Option<PathBuf> {
+        let ticket = self.tickets.iter().find(|t| Some(t.id) == agent.ticket)?;
+        self.ticket_project(ticket)
+    }
+
+    /// How a project is doing, for its place in the header: members at work on
+    /// it, and what in it waits for the person.
+    pub fn project_status(&self, project: &std::path::Path) -> ProjectStatus {
+        let here = |t: &Ticket| self.ticket_project(t).as_deref() == Some(project);
+        ProjectStatus {
+            working: self
+                .agents
+                .iter()
+                .filter(|a| a.state == AgentState::Working && self.agent_project(a).as_deref() == Some(project))
+                .count(),
+            for_you: self.tickets.iter().filter(|t| matches!(t.status, TicketStatus::Review | TicketStatus::Waiting) && here(t)).count(),
+        }
+    }
+
+    /// Ctrl-P: the next project in focus — after the last, all of them.
+    fn next_project(&mut self) -> Vec<Command> {
+        if self.projects.len() < 2 {
+            return Vec::new();
+        }
+        let at = self.focus.as_ref().and_then(|f| self.projects.iter().position(|p| p == f));
+        let next = match at {
+            None => self.projects.first(),
+            Some(i) => self.projects.get(i + 1),
+        };
+        let name = next.map(|p| board::project_name(p)).unwrap_or_else(|| "all".to_owned());
+        self.focus_on(&name)
+    }
+
     /// Work waiting for the person's review, in the project in focus.
     pub fn to_review_here(&self) -> Vec<&Ticket> {
         self.to_review().into_iter().filter(|t| self.in_focus(t)).collect()
@@ -500,9 +542,21 @@ impl App {
         };
         let mut order = group(&[TicketStatus::Review]);
         order.extend(group(&[TicketStatus::Waiting]));
-        order.extend(group(&[TicketStatus::InProgress]));
-        order.extend(group(&[TicketStatus::Todo]));
-        order.extend(group(&[TicketStatus::Proposed]));
+        let open = [TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed];
+        if self.focus.is_none() && self.projects.len() > 1 {
+            // A lane for each project, its work in the same order.
+            for project in &self.projects {
+                for status in open {
+                    order.extend(group(&[status]).into_iter().filter(|id| {
+                        self.tickets.iter().find(|t| t.id == *id).and_then(|t| self.ticket_project(t)).as_ref() == Some(project)
+                    }));
+                }
+            }
+        } else {
+            for status in open {
+                order.extend(group(&[status]));
+            }
+        }
         let mut done = group(&[TicketStatus::Done, TicketStatus::Cancelled]);
         done.reverse();
         done.truncate(5);
@@ -1078,6 +1132,20 @@ impl App {
         match key.code {
             KeyCode::Char('c') if ctrl => return self.ctrl_c(now),
             KeyCode::Char('b') if ctrl => self.toggle_board(),
+            // Ctrl-P walks the projects in focus, then all of them.
+            KeyCode::Char('p') if ctrl => return self.next_project(),
+            // Alt-1…9 puts a project in focus at once, Alt-0 all — where the
+            // terminal sends Alt (iTerm2's Option sends Esc+).
+            KeyCode::Char(c @ '0'..='9') if alt && self.projects.len() > 1 => {
+                let name = match c.to_digit(10).and_then(|n| (n as usize).checked_sub(1)) {
+                    Some(at) => match self.projects.get(at) {
+                        Some(project) => board::project_name(project),
+                        None => return Vec::new(),
+                    },
+                    None => "all".to_owned(),
+                };
+                return self.focus_on(&name);
+            }
             KeyCode::Enter if alt || shift => self.composer.newline(),
             KeyCode::Char('j') if ctrl => self.composer.newline(),
             // Ctrl-V: the clipboard's image, if it holds one (the loop reads it).
@@ -1485,7 +1553,9 @@ impl App {
                     if !self.projects.contains(&project) {
                         self.projects.push(project.clone());
                     }
-                    self.flash = Some(format!("{} works on {} too · members see it from their next turn", self.squad, project.display()));
+                    let has_mobile = self.agents.iter().any(|a| a.member.as_ref().is_some_and(|m| m.role == "mobile"));
+                    let tip = if looks_like_an_app(&project) && !has_mobile { " · an app: /add mobile brings in a mobile engineer" } else { "" };
+                    self.flash = Some(format!("{} works on {} too · members see it from their next turn{tip}", self.squad, project.display()));
                 }
                 Err(err) => self.flash = Some(err),
             }
@@ -1799,6 +1869,18 @@ pub fn image_path(text: &str) -> Option<PathBuf> {
     let unquoted = text.trim_matches(|c| c == '\'' || c == '"');
     let path = PathBuf::from(unquoted.replace("\\ ", " "));
     (is_image(&path) && path.is_absolute() && path.is_file()).then_some(path)
+}
+
+/// Whether a folder holds a mobile app: an Xcode project, Flutter, React
+/// Native or Expo, or an Android Gradle project.
+pub fn looks_like_an_app(folder: &std::path::Path) -> bool {
+    let named = |name: &str| folder.join(name).exists();
+    let xcode = std::fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| e.path().extension().is_some_and(|x| x == "xcodeproj" || x == "xcworkspace"));
+    xcode || named("pubspec.yaml") || named("app.json") || (named("ios") && named("android")) || named("app/src/main/AndroidManifest.xml")
 }
 
 /// Whether a file is an image a member can look at, by its extension.
@@ -2441,6 +2523,79 @@ mod tests {
         app.on_click(1, 0);
         assert_eq!(app.outbox, vec![Command::Focus { squad: "acme".into(), project: None }]);
         assert_eq!(app.board_order(), vec![1, 2]);
+    }
+
+    /// A squad on two projects, site and app: frontend works on an app ticket;
+    /// a site ticket waits for review.
+    fn two_projects() -> App {
+        let (mut app, _, frontend) = team();
+        app.projects = vec!["/code/site".into(), "/code/app".into()];
+        let mut review = ticket(1, TicketStatus::Review);
+        review.project = Some("/code/site".into());
+        let mut working = ticket(2, TicketStatus::InProgress);
+        working.project = Some("/code/app".into());
+        for t in [review, working] {
+            app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t });
+        }
+        let agent = app.agents.iter_mut().find(|a| a.id == frontend).unwrap();
+        agent.ticket = Some(2);
+        agent.state = AgentState::Working;
+        app
+    }
+
+    #[test]
+    fn each_project_says_who_works_on_it_and_what_waits_for_the_person() {
+        let app = two_projects();
+        assert_eq!(app.project_status(std::path::Path::new("/code/site")), ProjectStatus { working: 0, for_you: 1 });
+        assert_eq!(app.project_status(std::path::Path::new("/code/app")), ProjectStatus { working: 1, for_you: 0 });
+        let frontend = app.agents.iter().find(|a| a.label() == "frontend").unwrap();
+        assert_eq!(app.agent_project(frontend).as_deref(), Some(std::path::Path::new("/code/app")));
+    }
+
+    #[test]
+    fn ctrl_p_walks_the_projects_then_all() {
+        let mut app = two_projects();
+        let ctrl_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert_eq!(app.on_key(ctrl_p, Instant::now()), vec![Command::Focus { squad: "acme".into(), project: Some("site".into()) }]);
+        assert_eq!(app.on_key(ctrl_p, Instant::now()), vec![Command::Focus { squad: "acme".into(), project: Some("app".into()) }]);
+        assert_eq!(app.on_key(ctrl_p, Instant::now()), vec![Command::Focus { squad: "acme".into(), project: None }]);
+        // Alt and a number goes straight to one, where the terminal sends it.
+        let alt_2 = KeyEvent::new(KeyCode::Char('2'), KeyModifiers::ALT);
+        assert_eq!(app.on_key(alt_2, Instant::now()), vec![Command::Focus { squad: "acme".into(), project: Some("app".into()) }]);
+        // With one project there is nothing to walk.
+        let (mut one, _, _) = team();
+        assert!(one.on_key(ctrl_p, Instant::now()).is_empty());
+    }
+
+    #[test]
+    fn the_board_of_several_projects_has_a_lane_for_each_below_what_waits_for_the_person() {
+        let mut app = two_projects();
+        let mut more = Vec::new();
+        for (id, status, project) in [(3, TicketStatus::Todo, "/code/site"), (4, TicketStatus::Waiting, "/code/app"), (5, TicketStatus::Done, "/code/site"), (6, TicketStatus::Todo, "/code/app")] {
+            let mut t = ticket(id, status);
+            t.project = Some(project.into());
+            more.push(t);
+        }
+        for t in more {
+            app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t });
+        }
+        // What waits for the person, from every project; then site's lane, app's
+        // lane; then what's done.
+        assert_eq!(app.board_order(), vec![1, 4, 3, 2, 6, 5]);
+        app.focus = Some("/code/app".into());
+        assert_eq!(app.board_order(), vec![4, 2, 6]);
+    }
+
+    #[test]
+    fn adding_an_app_suggests_a_mobile_engineer() {
+        let dir = std::env::temp_dir().join(format!("equipe-app-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("Acme.xcodeproj")).unwrap();
+        assert!(looks_like_an_app(&dir));
+        std::fs::remove_dir_all(dir.join("Acme.xcodeproj")).unwrap();
+        assert!(!looks_like_an_app(&dir));
+        std::fs::write(dir.join("pubspec.yaml"), "name: acme").unwrap();
+        assert!(looks_like_an_app(&dir));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

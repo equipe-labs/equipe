@@ -677,6 +677,7 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
     lines.extend(heading("LOOK AROUND"));
     lines.extend(rows(&pairs(&[
         ("Ctrl-B", "the board, and back"),
+        ("Ctrl-P", "with several projects: the next in focus, then all · Alt-1…9 one at once"),
         ("PgUp · PgDn · wheel", "scroll · End for the latest · Ctrl-O unfolds steps"),
         ("click · drag", "a ticket number opens it · drag over text to copy it · drag the squad's edge to resize it"),
     ]), keys));
@@ -768,7 +769,17 @@ fn header(app: &App, theme: Theme, branch: Option<&str>, narrow: bool, width: us
             };
             let from = used(&spans) as u16;
             spans.push(Span::styled(name.clone(), style));
-            hits.push((from, from + unicode_width::UnicodeWidthStr::width(name.as_str()) as u16, Hit::Project(at)));
+            // How it's doing: members at work on it, and what waits for the person.
+            if let Some(project) = at.and_then(|i| app.projects.get(i)) {
+                let status = app.project_status(project);
+                if status.working > 0 {
+                    spans.push(Span::styled(format!(" ●{}", status.working), project_style(app, Some(project), theme)));
+                }
+                if status.for_you > 0 {
+                    spans.push(Span::styled(format!(" ⚑{}", status.for_you), theme.accent().add_modifier(Modifier::BOLD)));
+                }
+            }
+            hits.push((from, used(&spans) as u16, Hit::Project(at)));
         }
         return (spans, hits);
     }
@@ -800,6 +811,7 @@ fn look(role: &str, name: &str) -> (&'static str, usize) {
         "backend" => ("■", 3),
         "qa" => ("◎", 4),
         "data" => ("▲", 5),
+        "mobile" => ("◈", 6),
         _ => {
             const MARKS: [&str; 4] = ["◇", "★", "▼", "✚"];
             let h = name.bytes().fold(7usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));
@@ -880,11 +892,7 @@ fn render_squad(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
             let text = match (agent.queued.len(), agent.ticket) {
                 (1, _) => "1 memo".to_owned(),
                 (n @ 2.., _) => format!("{n} memos"),
-                // With several projects, which one the ticket is in.
-                (0, Some(ticket)) => match app.tickets.iter().find(|t| t.id == ticket).filter(|_| app.projects.len() > 1) {
-                    Some(t) => format!("T-{ticket} {}", app.ticket_project(t).as_deref().map(project_name).unwrap_or_default()),
-                    None => format!("T-{ticket}"),
-                },
+                (0, Some(ticket)) => format!("T-{ticket}"),
                 (0, None) => agent.short_model().unwrap_or_default(),
             };
             // A conversation past half its context, in sight.
@@ -900,7 +908,22 @@ fn render_squad(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
             };
             Span::styled(text, theme.dim())
         };
-        lines.push(Line::from(vec![marker, glyph(app, agent, theme), Span::raw(" "), name, Span::raw("  "), detail]));
+        // With several projects, the one it works in, in its colour, first; a
+        // member busy elsewhere fades while one project is in focus.
+        let project = app.agent_project(agent).filter(|_| app.projects.len() > 1 && agent.queued.is_empty() && !app.needs_you(agent));
+        let elsewhere = app.focus.is_some() && project.is_some() && project != app.focus;
+        let name = if elsewhere { Span::styled(name.content, theme.dim()) } else { name };
+        let mut row = vec![marker, glyph(app, agent, theme), Span::raw(" "), name, Span::raw("  ")];
+        if let Some(project) = &project {
+            // Shortened before the ticket is: in a narrow pane the ticket still shows.
+            let used: usize = row.iter().map(Span::width).sum::<usize>() + detail.width() + 1;
+            let room = (area.width as usize).saturating_sub(used);
+            if room >= 3 {
+                row.push(Span::styled(format!("{} ", ui::fit(&project_name(project), room)), project_style(app, Some(project), theme)));
+            }
+        }
+        row.push(detail);
+        lines.push(Line::from(row));
     }
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -1448,31 +1471,41 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
     let order = app.board_order();
     let picked = app.selected_ticket().map(|t| t.id);
     let several_projects = app.projects.len() > 1;
-    let heading = |status: TicketStatus| match status {
-        TicketStatus::Review => "YOUR REVIEW",
-        TicketStatus::Waiting => "WAITING ON YOU",
-        TicketStatus::InProgress => "IN PROGRESS",
-        TicketStatus::Todo => "TO DO",
-        TicketStatus::Proposed => "PROPOSED",
-        TicketStatus::Done | TicketStatus::Cancelled => "DONE",
+    // With several projects and none in focus, open work goes in a lane for
+    // each project, below what waits for the person.
+    let lanes = several_projects && app.focus.is_none();
+    let heading = |t: &equipe_core::protocol::Ticket| -> String {
+        match t.status {
+            TicketStatus::Review => "YOUR REVIEW".into(),
+            TicketStatus::Waiting => "WAITING ON YOU".into(),
+            TicketStatus::InProgress | TicketStatus::Todo | TicketStatus::Proposed if lanes => {
+                app.ticket_project(t).as_deref().map(project_name).unwrap_or_default()
+            }
+            TicketStatus::InProgress => "IN PROGRESS".into(),
+            TicketStatus::Todo => "TO DO".into(),
+            TicketStatus::Proposed => "PROPOSED".into(),
+            TicketStatus::Done | TicketStatus::Cancelled => "DONE".into(),
+        }
     };
     let mut rows: Vec<(Line<'static>, Option<u32>)> = Vec::new();
-    let mut current: Option<&str> = None;
+    let mut current: Option<String> = None;
     for id in &order {
         let Some(t) = app.tickets.iter().find(|t| t.id == *id) else {
             continue;
         };
-        let label = heading(t.status);
-        if current != Some(label) {
+        let label = heading(t);
+        if current.as_ref() != Some(&label) {
             if current.is_some() {
                 rows.push((Line::raw(""), None));
             }
-            let count = order
-                .iter()
-                .filter_map(|id| app.tickets.iter().find(|t| t.id == *id))
-                .filter(|t| heading(t.status) == label)
-                .count();
-            let style = if for_you(t.status) { theme.accent().add_modifier(Modifier::BOLD) } else { theme.dim() };
+            let count = order.iter().filter_map(|id| app.tickets.iter().find(|t| t.id == *id)).filter(|t| heading(t) == label).count();
+            let style = if for_you(t.status) {
+                theme.accent().add_modifier(Modifier::BOLD)
+            } else if lanes && !t.status.is_closed() {
+                project_style(app, app.ticket_project(t).as_deref(), theme).add_modifier(Modifier::BOLD)
+            } else {
+                theme.dim()
+            };
             rows.push((Line::from(Span::styled(format!("{label}  {count}"), style)), None));
             current = Some(label);
         }
@@ -1818,6 +1851,11 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         (None, Some((name, direct))) => {
             let style = member_style(app, &name, theme).add_modifier(Modifier::BOLD);
             let mut spans = vec![Span::styled("→ ", theme.dim()), Span::styled(name, style)];
+            // Where new work goes, with one project in focus.
+            if let Some(project) = app.focus.as_ref().filter(|_| app.projects.len() > 1) {
+                spans.push(Span::styled(" · ", theme.dim()));
+                spans.push(Span::styled(project_name(project), project_style(app, Some(project), theme).add_modifier(Modifier::BOLD)));
+            }
             if direct {
                 spans.push(Span::styled(" · the PM hears about it", theme.dim()));
             }
@@ -2435,7 +2473,7 @@ mod tests {
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t });
         app.flash = None;
         let shot = screen(&app, 110, 30);
-        assert!(shot.lines().next().unwrap().contains("site · app · all"), "{shot}");
+        assert!(shot.lines().next().unwrap().contains("site · app ⚑1 · all"), "{shot}");
         assert!(shot.contains("T-3   app   Onboarding screens"), "the review card names the project:\n{shot}");
         app.pane = Pane::Board;
         let shot = screen(&app, 110, 30);
@@ -2445,6 +2483,59 @@ mod tests {
         let chip = laid.hits.iter().find(|h| h.3 == Hit::Project(Some(1))).copied().unwrap();
         let row: String = shot.lines().next().unwrap().chars().skip(chip.0 as usize).take(3).collect();
         assert_eq!(row, "app");
+    }
+
+    #[test]
+    fn several_projects_say_where_work_is_and_where_a_message_goes() {
+        let (mut app, pm) = working();
+        app.projects = vec!["/code/site".into(), "/code/app".into()];
+        let mut review = ticket(3, TicketStatus::Review, "Onboarding screens");
+        review.project = Some("/code/app".into());
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: review });
+        let mut hero = ticket(4, TicketStatus::InProgress, "Hero");
+        hero.project = Some("/code/site".into());
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: hero });
+        app.on_event(Event::SessionStarted {
+            session: 9,
+            project: "/code/site".into(),
+            engine: Engine::Claude,
+            model: None,
+            workspace: None,
+            member: Some(Member { role: "frontend".into(), name: "frontend".into() }),
+            squad: Some("acme".into()),
+        });
+        let frontend = app.agents.iter_mut().find(|a| a.id == 9).unwrap();
+        frontend.ticket = Some(4);
+        frontend.state = AgentState::Working;
+        app.selected = app.agents.iter().position(|a| a.id == pm).unwrap();
+        app.flash = None;
+        let shot = screen(&app, 120, 30);
+        // The header: who works where, and what waits for the person.
+        assert!(shot.lines().next().unwrap().contains("site ●1 · app ⚑1 · all"), "{shot}");
+        // The squad: a member's project before its ticket.
+        assert!(shot.contains("site T-4"), "{shot}");
+        // However narrow the squad, the ticket shows.
+        app.projects[0] = "/code/marketing-website".into();
+        app.tickets.iter_mut().find(|t| t.id == 4).unwrap().project = Some("/code/marketing-website".into());
+        let mut squad = Terminal::new(TestBackend::new(30, 10)).unwrap();
+        squad.draw(|f| render_squad(f, f.area(), &app, Theme::plain())).unwrap();
+        let rows: String = squad.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(rows.contains("… T-4"), "{rows}");
+        app.projects[0] = "/code/site".into();
+        app.tickets.iter_mut().find(|t| t.id == 4).unwrap().project = Some("/code/site".into());
+        // In focus, a message says where it goes.
+        app.focus = Some("/code/app".into());
+        let shot = screen(&app, 120, 30);
+        assert!(shot.lines().last().unwrap().contains("→ pm · app"), "{shot}");
+        // The board: a lane for each project.
+        app.focus = None;
+        app.pane = Pane::Board;
+        let shot = screen(&app, 120, 30);
+        assert!(shot.contains("YOUR REVIEW  1") && shot.contains("site  1"), "{shot}");
+        // The help names the key.
+        app.pane = Pane::Conversation;
+        app.help_open = true;
+        assert!(screen(&app, 120, 60).contains("Ctrl-P"));
     }
 
     #[test]

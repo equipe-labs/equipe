@@ -34,7 +34,7 @@ pub struct Role {
 
 pub const PM: &str = "pm";
 
-pub const ROLES: [Role; 6] = [
+pub const ROLES: [Role; 7] = [
     Role {
         id: PM,
         title: "product manager (PM)",
@@ -76,6 +76,17 @@ You edit files on your own branch, in a worktree of your own. Keep changes focus
 with tests where they are practical.",
         edits: true,
         tier: Tier::Top,
+    },
+    Role {
+        id: "mobile",
+        title: "mobile engineer",
+        summary: "builds iOS and Android apps — screens, navigation, device features",
+        duties: "You build the mobile apps: iOS (Swift, SwiftUI) and Android, or cross-platform (React Native, \
+Flutter) — screens, navigation, state, device features, and the app's use of the backend's APIs. \
+You edit files on your own branch, in a worktree of your own. Build and run it in a simulator where you can, \
+and say how to see it working.",
+        edits: true,
+        tier: Tier::Upper,
     },
     Role {
         id: "qa",
@@ -177,6 +188,12 @@ pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
     let projects = match ctx.projects {
         [] => String::new(),
         [one] => format!(" The squad works on one project, {one}."),
+        many if role.id == PM => format!(
+            " The squad works on several projects: {}. When you report on more than one, give a heading for each \
+project and its tickets under it, so the person sees each at a glance; and put each new ticket in the project \
+it belongs to.",
+            many.join(", ")
+        ),
         many => format!(" The squad works on several projects: {}.", many.join(", ")),
     };
     let pm = ctx.team.iter().find(|m| m.role == PM).map(|m| m.name);
@@ -316,6 +333,17 @@ mod tests {
         assert!(text.contains("pm (the PM) keeps the plan"), "{text}");
         assert!(text.contains("new ticket"), "{text}");
         assert!(text.contains("language they write in"), "{text}");
+    }
+
+    #[test]
+    fn with_several_projects_the_pm_reports_by_project_and_apps_have_a_mobile_engineer() {
+        let team = [Teammate { name: "pm", role: "pm" }];
+        let projects = ["site".to_owned(), "app".to_owned()];
+        let text = charter(role(PM).unwrap(), "pm", &ctx(&team, &projects, true));
+        assert!(text.contains("a heading for each project"), "{text}");
+        let one = charter(role(PM).unwrap(), "pm", &ctx(&team, &projects[..1], true));
+        assert!(!one.contains("a heading for each project"), "{one}");
+        assert!(role("mobile").is_some_and(|r| r.edits && r.duties.contains("iOS")));
     }
 
     #[test]

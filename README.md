@@ -51,7 +51,7 @@ worktrees for parallel work, and human approval gates where they matter.
 - **The board is the source of truth.** Agents coordinate through tickets and
   immutable events — not a firehose of chat. Every action ends in a visible outcome.
 - **Roles are data.** The PM turns what you want into tickets; engineers edit code
-  in isolated worktrees; QA reviews; the data analyst answers with numbers. Each
+  (web, backend, mobile) in isolated worktrees; QA reviews; the data analyst answers with numbers. Each
   member gets a model suited to its role, and keeps its own memory.
 - **Engines are borrowed, not rebuilt.** equipe drives mature coding agents —
   Codex and Claude Code today, more over the
@@ -89,7 +89,7 @@ CLAUDE CODE  your claude · signs itself in
 | `equipe status` | Which engines are ready, on which plan, with which models |
 | `equipe roles` | The roles a squad can have, what each does and the model it gets |
 | `equipe squads` | Your squads and the projects each works on |
-| `/squad` · `/project` | In the console: `/squad <name>` switches to another squad (click its name in the header), `/squad new <name> <folder>` starts one, `/squad add <folder>` / `/squad remove <project>` change what a squad works on. With several projects, each shows as a chip in the header and a tag on its tickets; `/project <name>` (or a click on the chip) puts one in focus — the board, the review card and new requests are about it |
+| `/squad` · `/project` | In the console: `/squad <name>` switches to another squad (click its name in the header), `/squad new <name> <folder>` starts one, `/squad add <folder>` / `/squad remove <project>` change what a squad works on. With several projects — a product, its site, its app — each shows in the header with who is at work on it (●) and what waits for you there (⚑); members show the project they work in, and the board gives each project a lane below what waits for you. `/project <name>`, a click on it, or **Ctrl-P** (the next one, then all; Alt-1…9 where the terminal sends Alt) puts one in focus — the board, the review card and new requests are about it, and the line under the composer says so. Adding an app suggests a mobile engineer (`/add mobile`) |
 | `equipe try "…"` | One turn on whichever engine is ready (`--engine`, `--model`) |
 | `equipe try --edit "…"` | An agent edits your repo **on a new branch**, in its own worktree. Your checkout is untouched; you get review / keep / discard commands |
 
