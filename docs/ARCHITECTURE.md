@@ -486,28 +486,46 @@ approval does (`Ticket.kind`, `equipe_protocol::TicketKind`):
 | Kind | Work happens in | Hand-in | `/accept` |
 |---|---|---|---|
 | `code` | a worktree of the ticket's project, on `equipe/<name>-t<id>-…` | a branch | `done`; then the merge question (as today) |
-| `task` | a worktree of the squad home, same branch naming | files under `outputs/` or `notes/` | merges into the home's main at once, then `done` — no question, no git words |
+| `task` | a worktree of the squad home (`worktrees/<squad>.home/`), same branch naming | files under `outputs/` or `notes/` | merges into the home's main at once, then `done` — no question, no git words |
 | `action` | as `task`, plus doing something in an app or the browser | what was done, and its notes | as `task`; each outward step was approved before it happened (T-23's gate) |
 
-- **Choosing the kind.** `create_ticket` takes `kind`. Left out, it is `code`
-  when a `project` is named and `task` otherwise, so a ticket with no project is
-  never stuck. `code` needs a project: named, or the squad's only one; with
-  several and none named, the tool answers "name the project", as today. A `task` or `action` may name a
-  project as what it is *about* (the console filters by it), but never writes to
-  it. The PM's charter says: changing a repository → `code`; finding out,
-  writing, deciding → `task`; doing something in the world → `action`.
+- **Choosing the kind.** `create_ticket` and `update_ticket` take `kind`. Left
+  out, it is `code` when the ticket has a project — named, or the squad's only
+  one — and `task` otherwise, so a ticket with no project is never stuck (a squad
+  with one project keeps today's behaviour). `code` needs a project: named, or
+  the squad's only one; with several and none named, the tool answers "name the
+  project", as today. A `task` or `action` may name a project as what it is
+  *about* (the console files it there), but never writes to it. A ticket that has
+  work under way (a branch) keeps its kind. The PM's charter says: changing a
+  repository → `code`; finding out, writing, deciding → `task`; doing something
+  in the world → `action`.
+- **Shown** on the board as text for models (`T-4 [todo] … — task, owner data`),
+  and in the console as a tag before the title (`task · Competitor research`) and
+  in the ticket's facts. A task's or action's ticket shows no branch and no
+  "not on main"; `d` shows its files against the home's main.
 - **Assignment** (`board::assignments`): a `code` ticket is ready when it knows its
   project (or the squad has one); a `task` or `action` ticket needs no project.
 - **Who may write.** `Role.edits` is about repositories: on a `task` or `action`,
   every role writes in its home worktree (a data member writes its report, the PM
   its plan), within the mode — plan still changes nothing.
-- **Approval of a task.** equipe commits the person's own changes in the home,
-  then merges the branch into main (`worktree::merge_into_main`, as for code). A
-  conflict merges nothing and closes nothing: the ticket goes back to its member
-  (`in_progress`, same worktree and conversation) with the note "the squad's
-  folder changed under this work; bring it up to date and hand it in again" —
-  the member merges main into its branch inside its fence. Only a clean merge
-  makes it `done`. Worktree and branch then go.
+- **Hand-in.** A task's review note is the member's summary followed by the files
+  its branch leaves in the folder (`In the squad's folder: - outputs/T-4 …/report.md`);
+  an action's adds what the person allowed or declined on the way, from the
+  ticket's record (`What you approved on the way: - ✓ …`). The work prompt tells an
+  action's member to wait for the person's yes before anything outward and to
+  hand in a step-by-step log as its summary.
+- **Approval of a task** (`Runtime::land_in_home`). equipe saves the person's own
+  changes in the home (when no member is mid-turn at its desk), then merges the
+  branch into main (`worktree::merge_into_main`, as for code), the commit saying
+  who and which ticket (`data: T-4 Competitor research`, so `/home changes` lists
+  it). A conflict merges nothing and closes nothing: the ticket goes back to its
+  member (`todo` for that member, then `in_progress` in the same worktree and
+  conversation) with the note "the squad's folder changed under this work, so it
+  couldn't go in…" — the member merges main into its branch inside its fence.
+  Only a clean merge makes it `done`. Worktree and branch then go. `/merge` of a
+  task says its work is in the folder already; the console asks no merge
+  question for one. The home's own settings turn off commit signing and hooks
+  (`squad_home::ensure`), since its worktrees commit with plain git.
 - **Dependencies** work across kinds: a `task` cut after a done `task` starts from
   the home with that work in (it is on main already); a `code` ticket after a
   `task` reads the outcome in the home.

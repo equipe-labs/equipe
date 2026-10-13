@@ -116,6 +116,47 @@ impl TicketStatus {
     }
 }
 
+/// What kind of work a ticket is: where it happens and what the person's
+/// approval does.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TicketKind {
+    /// Changing a repository: a worktree of the ticket's project, a branch, and
+    /// the person's merge question once accepted.
+    #[default]
+    Code,
+    /// Finding out, writing, deciding: a worktree of the squad home; accepted,
+    /// it goes into the squad's folder at once.
+    Task,
+    /// Doing something in the world — in an app or the browser — from a worktree
+    /// of the squad home, each outward step approved before it happens.
+    Action,
+}
+
+impl TicketKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            TicketKind::Code => "code",
+            TicketKind::Task => "task",
+            TicketKind::Action => "action",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "code" => Some(TicketKind::Code),
+            "task" => Some(TicketKind::Task),
+            "action" => Some(TicketKind::Action),
+            _ => None,
+        }
+    }
+
+    /// Worked in the squad home rather than a project.
+    pub fn in_home(self) -> bool {
+        self != TicketKind::Code
+    }
+}
+
 /// A unit of work on the squad's board — the board is where the team agrees
 /// on what is being done, by whom, in which project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,11 +166,15 @@ pub struct Ticket {
     /// What to do and how to know it's done.
     pub body: String,
     pub status: TicketStatus,
+    /// Where its work happens and what accepting it does.
+    #[serde(default)]
+    pub kind: TicketKind,
     /// Who it is for: a role (`frontend`) or a member (`frontend-2`).
     pub owner: Option<String>,
     /// The member working on it, once it has been picked up.
     pub assignee: Option<String>,
-    /// The project (repository) it belongs to.
+    /// The project (repository) it belongs to — for a `task` or `action`, what
+    /// it is about, if anything; it never writes there.
     pub project: Option<PathBuf>,
     /// Tickets that must be done first.
     pub depends_on: Vec<TicketId>,
@@ -151,7 +196,7 @@ pub struct Ticket {
 impl Ticket {
     /// Accepted, but its work isn't on the main branch yet.
     pub fn not_on_main(&self) -> bool {
-        self.status == TicketStatus::Done && self.branch.is_some() && self.merged == Some(false)
+        self.kind == TicketKind::Code && self.status == TicketStatus::Done && self.branch.is_some() && self.merged == Some(false)
     }
 }
 
@@ -616,6 +661,7 @@ mod tests {
             branch: None,
             worktree: None,
             merged: None,
+            kind: TicketKind::Code,
             created_by: "pm".into(),
             note: None,
         }

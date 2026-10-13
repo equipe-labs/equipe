@@ -20,7 +20,7 @@ use std::time::Duration;
 use equipe_protocol::rpc::{ToolCall, ToolResult};
 use equipe_protocol::{
     Access, Approval, Command, Decision, Engine, Entry, Event, Member, Mode, SessionId, SessionInfo, SessionSpec,
-    SessionState, Snapshot, Ticket, TicketId, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
+    SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
 };
 use equipe_providers::claude_code::{self, Activity};
 use equipe_providers::credentials::equipe_home;
@@ -203,6 +203,7 @@ pub fn project_of(dir: &Path) -> PathBuf {
 /// A member's current ticket: where its turns run until the ticket is put down.
 struct Work {
     ticket: TicketId,
+    kind: TicketKind,
     project: PathBuf,
     cwd: PathBuf,
     /// For a member that edits: its worktree on the ticket's branch.
@@ -955,9 +956,15 @@ impl Runtime {
         });
         let (cwd, access, resume, history, ticket, add_dirs) = match &session.work {
             Some(work) => {
-                // On a ticket a member also reads the squad's home.
-                let read = if session.member.is_some() { home.iter().cloned().collect() } else { Vec::new() };
-                (work.cwd.clone(), access_for(mode, edits && work.sandbox.is_some()), work.claude_session.clone(), work.history.clone(), Some(work.ticket), read)
+                // On a code ticket a member also reads the squad's home; on a task or
+                // action, worked in a worktree of the home, it reads every project too.
+                let read: Vec<PathBuf> = match &session.member {
+                    Some(_) if work.kind.in_home() => projects.iter().chain(home.iter()).cloned().collect(),
+                    Some(_) => home.iter().cloned().collect(),
+                    None => Vec::new(),
+                };
+                let writes = (edits || work.kind.in_home()) && work.sandbox.is_some();
+                (work.cwd.clone(), access_for(mode, writes), work.claude_session.clone(), work.history.clone(), Some(work.ticket), read)
             }
             None => {
                 // At its desk a member works in the squad's home and reads every
@@ -1359,9 +1366,8 @@ impl Runtime {
     /// A temporary member of `role`, for work that waits: it shares the role's
     /// memory, and leaves when it has been idle a while.
     async fn bring_in_helper(&mut self, squad: &str, role: &str, waiting: usize) {
-        let Some(project) = self.projects(squad).first().cloned() else {
-            return;
-        };
+        // It sits in the squad home like everyone else; this is only where it starts.
+        let project = self.projects(squad).first().cloned().unwrap_or_else(|| squad_home::path(&self.config.home, squad));
         let id = equipe_protocol::new_session_id();
         let spec = SessionSpec {
             engine: None,
@@ -1436,9 +1442,10 @@ impl Runtime {
         let (Some(squad), Some(name)) = (session.squad.clone(), session.name().map(str::to_owned)) else {
             return;
         };
-        let edits = session.edits();
+        let role_edits = session.edits();
         let board_tools = session.engine == Engine::Claude && self.config.equipe_binary.is_some();
         let projects = self.projects(&squad);
+        let home_dir = squad_home::path(&home, &squad);
         let Some(journal) = self.journal(&squad) else {
             return;
         };
@@ -1448,12 +1455,18 @@ impl Runtime {
         let saved = journal.ticket_work(ticket_id).unwrap_or_default();
         let after = work_before(&journal.tickets().unwrap_or_default(), &ticket);
         let fresh = ticket.branch.is_none() || saved.base.is_none();
-        let Some(project) = ticket.project.clone().or_else(|| projects.first().cloned()) else {
+        let kind = ticket.kind;
+        // A task or action is worked in the squad home; what it is about, if anything, is only read.
+        let Some(project) = (if kind.in_home() { ticket.project.clone().or_else(|| Some(home_dir.clone())) } else { ticket.project.clone().or_else(|| projects.first().cloned()) })
+        else {
             return;
         };
+        let workplace = if kind.in_home() { home_dir.clone() } else { project.clone() };
+        // In the squad home every role writes, in its own worktree.
+        let edits = role_edits || kind.in_home();
 
         let sandbox = if edits {
-            let checkout = worktree::repo_root(&project).and_then(|repo| {
+            let checkout = worktree::repo_root(&workplace).and_then(|repo| {
                 let id_part = format!("t{ticket_id}-{:x}", now_secs());
                 match (&saved.worktree, &ticket.branch, &saved.base) {
                     // In review and sent back: the worktree is still there.
@@ -1495,6 +1508,7 @@ impl Runtime {
         if let Some(session) = self.sessions.get_mut(&id) {
             session.work = Some(Work {
                 ticket: ticket_id,
+                kind,
                 project: project.clone(),
                 cwd,
                 sandbox: sandbox.clone(),
@@ -1557,6 +1571,8 @@ impl Runtime {
         };
         let summary = work.handed_in.clone().or_else(|| work.waiting.clone());
         let mut kept_worktree = None;
+        // A task or action accepted goes into the squad's folder now; `Err` when the folder changed under it.
+        let mut landed: Option<Result<(), String>> = None;
         if let Some(sandbox) = &work.sandbox {
             let body = summary.clone().unwrap_or_else(|| ticket.body.clone());
             let message =
@@ -1567,15 +1583,25 @@ impl Runtime {
             }
             if matches!(how, WorkEnd::HandedIn | WorkEnd::Waiting) {
                 kept_worktree = Some(sandbox.path.clone());
+            } else if how == WorkEnd::Accepted && ticket.kind.in_home() {
+                let result = self.land_in_home(&squad, &mut ticket, sandbox);
+                if result.is_err() {
+                    kept_worktree = Some(sandbox.path.clone());
+                }
+                landed = Some(result);
             } else {
                 ticket.branch = release(sandbox);
             }
             ticket.worktree = kept_worktree.clone();
         }
+        let handed_in = match (&how, &summary) {
+            (WorkEnd::HandedIn, Some(summary)) if ticket.kind.in_home() => Some(self.home_hand_in(&squad, &ticket, work.sandbox.as_ref(), summary)),
+            _ => summary.clone(),
+        };
         let (by, event, line) = match how {
             WorkEnd::HandedIn => {
                 ticket.status = TicketStatus::Review;
-                ticket.note = summary.clone();
+                ticket.note = handed_in;
                 (name.as_str(), "handed in", format!("{name} handed in T-{} for your review", ticket.id))
             }
             WorkEnd::Waiting => {
@@ -1583,10 +1609,19 @@ impl Runtime {
                 ticket.note = summary.clone();
                 (name.as_str(), "waiting", format!("T-{} waits for you — {name} needs something only you can do", ticket.id))
             }
+            WorkEnd::Accepted if matches!(landed, Some(Err(_))) => {
+                sent_back_to_update(&mut ticket, &name);
+                ("equipe", "sent back", format!("T-{} went back to {name}: the squad's folder changed under it", ticket.id))
+            }
             WorkEnd::Accepted => {
                 ticket.status = TicketStatus::Done;
                 ticket.merged = merged_state(&ticket);
-                ("you", "accepted", format!("You accepted T-{}", ticket.id))
+                let line = if ticket.kind.in_home() {
+                    format!("You accepted T-{}; its work is in the squad's folder", ticket.id)
+                } else {
+                    format!("You accepted T-{}", ticket.id)
+                };
+                ("you", "accepted", line)
             }
             WorkEnd::Cancelled => {
                 ticket.status = TicketStatus::Cancelled;
@@ -1641,14 +1676,86 @@ impl Runtime {
             .map(|(&id, _)| id)
     }
 
+    /// A task's or action's work, accepted, into the squad home's main: the
+    /// person's own changes there are saved first, then the branch merges — no
+    /// question, no git words — and its worktree and branch go. A conflict merges
+    /// nothing and keeps both.
+    fn land_in_home(&mut self, squad: &str, ticket: &mut Ticket, sandbox: &Sandbox) -> Result<(), String> {
+        // What changed there while no member was writing at its desk is the person's.
+        let desk_busy = self.sessions.values().any(|s| s.squad.as_deref() == Some(squad) && s.work.is_none() && s.is_working());
+        if !desk_busy {
+            let _ = squad_home::save_persons(&sandbox.repo);
+        }
+        let message = format!("{}: T-{} {}", ticket.assignee.as_deref().unwrap_or("equipe"), ticket.id, ticket.title);
+        if let Err(err) = worktree::merge_into_main(&sandbox.repo, &sandbox.branch, &message) {
+            if let Some(journal) = self.journal(squad) {
+                let _ = journal.ticket_event(ticket.id, "equipe", "not merged", &err);
+            }
+            return Err(err);
+        }
+        let _ = sandbox.discard();
+        ticket.branch = None;
+        ticket.worktree = None;
+        Ok(())
+    }
+
+    /// What a task or action hands in for review: the member's summary, the files
+    /// it leaves in the squad's folder, and — for an action — what the person
+    /// allowed or declined on the way.
+    fn home_hand_in(&mut self, squad: &str, ticket: &Ticket, sandbox: Option<&Sandbox>, summary: &str) -> String {
+        let mut out = summary.trim().to_owned();
+        let files = sandbox.and_then(|s| s.changed_files().ok()).unwrap_or_default();
+        if !files.is_empty() {
+            out.push_str("\n\nIn the squad's folder:");
+            for file in &files {
+                out.push_str(&format!("\n- {file}"));
+            }
+        }
+        if ticket.kind == TicketKind::Action {
+            let history = self.journal(squad).and_then(|j| j.ticket_history(ticket.id).ok()).unwrap_or_default();
+            let steps: Vec<String> = history
+                .iter()
+                .filter(|(by, _, _)| by == "you")
+                .filter_map(|(_, what, action)| match what.as_str() {
+                    "allowed" | "always allowed" => Some(format!("- ✓ {action}")),
+                    "declined" => Some(format!("- ✗ {action}")),
+                    _ => None,
+                })
+                .collect();
+            if !steps.is_empty() {
+                out.push_str(&format!("\n\nWhat you approved on the way:\n{}", steps.join("\n")));
+            }
+        }
+        out
+    }
+
     /// Close a ticket no member holds right now (in review, or not started).
     fn close_ticket(&mut self, squad: &str, mut ticket: Ticket, status: TicketStatus) {
         let saved = self.journal(squad).and_then(|j| j.ticket_work(ticket.id).ok()).unwrap_or_default();
-        if let (Some(path), Some(branch), Some(base), Some(project)) =
-            (&saved.worktree, &ticket.branch, &saved.base, &ticket.project)
-            && let Ok(repo) = worktree::repo_root(project)
+        let workplace = if ticket.kind.in_home() { Some(squad_home::path(&self.config.home, squad)) } else { ticket.project.clone() };
+        if let (Some(path), Some(branch), Some(base), Some(workplace)) =
+            (&saved.worktree, &ticket.branch, &saved.base, &workplace)
+            && let Ok(repo) = worktree::repo_root(workplace)
         {
-            ticket.branch = release(&Sandbox { repo, path: path.clone(), branch: branch.clone(), base: base.clone() });
+            let sandbox = Sandbox { repo, path: path.clone(), branch: branch.clone(), base: base.clone() };
+            if status == TicketStatus::Done && ticket.kind.in_home() {
+                let _ = sandbox.commit_all(&format!("equipe: T-{} {}", ticket.id, ticket.title));
+                if self.land_in_home(squad, &mut ticket, &sandbox).is_err() {
+                    let name = ticket.assignee.clone().or(ticket.owner.clone()).unwrap_or_default();
+                    sent_back_to_update(&mut ticket, &name);
+                    let note = ticket.note.clone().unwrap_or_default();
+                    if let Some(journal) = self.journal(squad) {
+                        let _ = journal.save_ticket(&ticket);
+                        let _ = journal.ticket_event(ticket.id, "equipe", "sent back", &note);
+                    }
+                    let line = format!("T-{} went back to {name}: the squad's folder changed under it · {}.", ticket.id, ticket.title);
+                    self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
+                    self.brief_pm(squad, line.clone(), Some(line));
+                    return;
+                }
+            } else {
+                ticket.branch = release(&sandbox);
+            }
         }
         ticket.status = status;
         ticket.worktree = None;
@@ -1661,7 +1768,8 @@ impl Runtime {
             let _ = journal.set_ticket_work(ticket.id, &TicketWork { worktree: None, ..saved });
             let _ = journal.ticket_event(ticket.id, "you", verb, "");
         }
-        let line = format!("You {verb} T-{} · {}.", ticket.id, ticket.title);
+        let landed = if status == TicketStatus::Done && ticket.kind.in_home() { "; its work is in the squad's folder" } else { "" };
+        let line = format!("You {verb} T-{}{landed} · {}.", ticket.id, ticket.title);
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
         self.brief_pm(squad, line.clone(), Some(line));
     }
@@ -1692,6 +1800,9 @@ impl Runtime {
         };
         if found.status != TicketStatus::Done {
             return self.squad_error(squad, format!("T-{ticket} isn't accepted yet — /accept T-{ticket} first."));
+        }
+        if found.kind.in_home() {
+            return self.squad_error(squad, format!("T-{ticket}'s work went into the squad's folder when you accepted it."));
         }
         let (Some(branch), Some(repo)) =
             (found.branch.clone(), found.project.as_deref().and_then(|p| worktree::repo_root(p).ok()))
@@ -1908,8 +2019,11 @@ impl Runtime {
             return Some("Another squad's folder is private.");
         }
         let at_desk = session.work.is_none();
-        let read_only: Vec<PathBuf> =
-            if at_desk { self.projects_cached(squad) } else { vec![squad_home::path(&self.config.home, squad)] };
+        let in_home = session.work.as_ref().is_some_and(|w| w.kind.in_home());
+        let mut read_only: Vec<PathBuf> = if at_desk || in_home { self.projects_cached(squad) } else { Vec::new() };
+        if !at_desk {
+            read_only.push(squad_home::path(&self.config.home, squad));
+        }
         let writes = match tool {
             "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => true,
             "Bash" => !permissions::only_reads(tool, action, input),
@@ -1921,6 +2035,8 @@ impl Runtime {
         if writes && !in_own && read_only.iter().any(|d| inside(d)) {
             return Some(if at_desk {
                 "At the desk the squad's projects are only read: code changes on a ticket, in its worktree."
+            } else if in_home {
+                "On a task or action the squad's projects and its folder are only read: write in your own worktree."
             } else {
                 "On a ticket the squad's folder is only read."
             });
@@ -2062,13 +2178,21 @@ impl Runtime {
             board::CREATE_TICKET => {
                 let title = board::arg_str(&args, "title").ok_or("A ticket needs a title.")?;
                 let body = board::arg_str(&args, "body").unwrap_or_default();
-                let project = match board::arg_str(&args, "project") {
+                let kind = kind_arg(&args)?;
+                let named = match board::arg_str(&args, "project") {
                     Some(arg) => Some(board::resolve_project(arg, &projects).ok_or_else(|| no_project(arg))?),
-                    None if projects.len() > 1 => {
-                        return Err(format!("Name the project — the squad has several: {}.", names.join(", ")));
-                    }
-                    None => projects.first().cloned(),
+                    None => None,
                 };
+                let project = match (kind, named) {
+                    (_, Some(project)) => Some(project),
+                    (Some(kind), None) if kind.in_home() => None,
+                    // A code ticket needs its repository; left out, the squad's only one.
+                    (Some(_), None) => Some(code_project(&projects, &names)?),
+                    // No kind, no project: the only project means code there, otherwise it is a task.
+                    (None, None) if projects.len() == 1 => projects.first().cloned(),
+                    (None, None) => None,
+                };
+                let kind = kind.unwrap_or_else(|| board::default_kind(project.as_deref()));
                 let depends_on = board::arg_ids(&args, "depends_on").unwrap_or_default();
                 let tickets = self.tickets(&squad);
                 if let Some(missing) = depends_on.iter().find(|d| !tickets.iter().any(|t| t.id == **d)) {
@@ -2080,6 +2204,7 @@ impl Runtime {
                     title: title.to_owned(),
                     body: body.to_owned(),
                     status: if is_pm { TicketStatus::Todo } else { TicketStatus::Proposed },
+                    kind,
                     owner: owner.clone(),
                     assignee: None,
                     project,
@@ -2095,6 +2220,9 @@ impl Runtime {
                 let _ = journal.ticket_event(new_id, &member, "created", title);
                 self.publish(Event::TicketChanged { squad: squad.clone(), ticket: Ticket { id: new_id, ..ticket } });
                 let mut reply = format!("Created T-{new_id}.");
+                if kind.in_home() {
+                    reply = format!("Created T-{new_id} ({}).", kind.label());
+                }
                 if !is_pm {
                     reply = format!("Proposed T-{new_id} — it waits for the PM or the person to accept it.");
                     let line = format!("{member} proposed T-{new_id}: {title}");
@@ -2134,6 +2262,16 @@ impl Runtime {
                 }
                 if let Some(arg) = board::arg_str(&args, "project") {
                     ticket.project = Some(board::resolve_project(arg, &projects).ok_or_else(|| no_project(arg))?);
+                }
+                if let Some(kind) = kind_arg(&args)?.filter(|k| *k != ticket.kind) {
+                    // Its work lives where its kind put it: a started ticket keeps its kind.
+                    if ticket.branch.is_some() {
+                        return Err(format!("T-{ticket_id} has work under way as {} — it keeps its kind; cancel it and make a new one.", ticket.kind.label()));
+                    }
+                    if !kind.in_home() && ticket.project.is_none() {
+                        ticket.project = Some(code_project(&projects, &names)?);
+                    }
+                    ticket.kind = kind;
                 }
                 if let Some(ids) = board::arg_ids(&args, "depends_on") {
                     ticket.depends_on = ids;
@@ -2290,7 +2428,7 @@ it back there once they have done it. End your turn now with a short line on wha
                 let work = tickets
                     .iter()
                     .find(|t| t.status == TicketStatus::InProgress && t.assignee.as_deref() == Some(member.name.as_str()))
-                    .and_then(|ticket| restore_work(&journal, ticket, &projects, edits));
+                    .and_then(|ticket| restore_work(&journal, ticket, &projects, &home, edits));
                 // A desk opened in a project moves to the home. Claude Code resumes a
                 // conversation only where it began, so the desk starts afresh there,
                 // from a summary of the last one — once.
@@ -2459,13 +2597,19 @@ check what is already done in your worktree first."
 
 /// A member's ticket as it was when the daemon stopped. A ticket whose worktree
 /// was removed in the meantime goes back on the board instead.
-fn restore_work(journal: &Journal, ticket: &Ticket, projects: &[PathBuf], edits: bool) -> Option<Work> {
-    let project = ticket.project.clone().or_else(|| projects.first().cloned())?;
+fn restore_work(journal: &Journal, ticket: &Ticket, projects: &[PathBuf], home: &Path, edits: bool) -> Option<Work> {
+    let in_home = ticket.kind.in_home();
+    let project = if in_home {
+        ticket.project.clone().unwrap_or_else(|| home.to_owned())
+    } else {
+        ticket.project.clone().or_else(|| projects.first().cloned())?
+    };
+    let workplace = if in_home { home } else { project.as_path() };
     let saved = journal.ticket_work(ticket.id).unwrap_or_default();
-    let sandbox = match (edits, &saved.worktree, &ticket.branch, &saved.base) {
+    let sandbox = match (edits || in_home, &saved.worktree, &ticket.branch, &saved.base) {
         (false, ..) => None,
         (true, Some(path), Some(branch), Some(base)) if path.exists() => Some(Sandbox {
-            repo: worktree::repo_root(&project).ok()?,
+            repo: worktree::repo_root(workplace).ok()?,
             path: path.clone(),
             branch: branch.clone(),
             base: base.clone(),
@@ -2481,6 +2625,7 @@ fn restore_work(journal: &Journal, ticket: &Ticket, projects: &[PathBuf], edits:
     };
     Some(Work {
         ticket: ticket.id,
+        kind: ticket.kind,
         cwd: sandbox.as_ref().map_or_else(|| project.clone(), |s| s.path.clone()),
         project,
         sandbox,
@@ -2501,6 +2646,37 @@ fn back_to_its_member(ticket: &mut Ticket, present: &[String], note: &str) {
     ticket.note = Some(note.to_owned());
 }
 
+/// The `kind` a tool call names, if any.
+fn kind_arg(args: &Value) -> Result<Option<TicketKind>, String> {
+    match board::arg_str(args, "kind") {
+        None => Ok(None),
+        Some(text) => TicketKind::parse(text).map(Some).ok_or_else(|| format!("A ticket's kind is code, task or action, not {text}.")),
+    }
+}
+
+/// The project a `code` ticket that names none works in: the squad's only one.
+fn code_project(projects: &[PathBuf], names: &[String]) -> Result<PathBuf, String> {
+    match projects {
+        [one] => Ok(one.clone()),
+        [] => Err("A code ticket needs a project, and the squad has none: make it a task, or the person adds one with /squad add.".into()),
+        _ => Err(format!("Name the project — the squad has several: {}.", names.join(", "))),
+    }
+}
+
+/// A task or action whose work couldn't go into the squad's folder — it changed
+/// under it — back to `member`, same worktree and conversation, to bring it up
+/// to date and hand it in again. Nothing is closed.
+fn sent_back_to_update(ticket: &mut Ticket, member: &str) {
+    ticket.status = TicketStatus::Todo;
+    ticket.owner = Some(member.to_owned());
+    ticket.assignee = None;
+    ticket.note = Some(
+        "Reopened: the squad's folder changed under this work, so it couldn't go in. Merge main into your branch \
+in your worktree (git merge main), keep both sides' changes, and hand it in again."
+            .to_owned(),
+    );
+}
+
 /// What a member is told when it picks up a ticket.
 fn work_prompt(
     ticket: &Ticket,
@@ -2511,12 +2687,34 @@ fn work_prompt(
     language: Option<&str>,
 ) -> String {
     let mut out = format!("[equipe] You're on T-{}: {}\n", ticket.id, ticket.title);
-    out.push_str(&format!("Project: {} ({}).", board::project_name(project), project.display()));
-    if let Some(sandbox) = sandbox {
-        out.push_str(&format!(
-            " You work in a worktree of your own on branch {}; the person's checkout is untouched.",
-            sandbox.branch
-        ));
+    if ticket.kind.in_home() {
+        out.push_str(&format!("Kind: {} — work for the squad's folder, not a repository.", ticket.kind.label()));
+        if let Some(about) = &ticket.project {
+            out.push_str(&format!(" It is about {} ({}), which you only read.", board::project_name(about), about.display()));
+        }
+        if let Some(sandbox) = sandbox {
+            out.push_str(&format!(
+                " You work in a copy of the squad's folder of your own, {}: leave what you produce under \
+`outputs/T-{} …/` (or `notes/` for findings worth keeping). When the person accepts, it goes into the squad's folder.",
+                sandbox.path.display(),
+                ticket.id
+            ));
+        }
+        if ticket.kind == TicketKind::Action {
+            out.push_str(
+                " This ticket is done by acting — in an app or the browser. Anything that reaches someone else or can't \
+be taken back (sending, posting, submitting, paying, signing up) asks the person first: wait for their yes. \
+Keep a short log of what you did, step by step, and hand it in as your summary.",
+            );
+        }
+    } else {
+        out.push_str(&format!("Project: {} ({}).", board::project_name(project), project.display()));
+        if let Some(sandbox) = sandbox {
+            out.push_str(&format!(
+                " You work in a worktree of your own on branch {}; the person's checkout is untouched.",
+                sandbox.branch
+            ));
+        }
     }
     out.push('\n');
     if let Some(note) = reopened.and_then(|n| n.strip_prefix("Resumed: ")) {
@@ -2664,6 +2862,9 @@ fn recent_history(history: &[responses::Message]) -> Vec<responses::Message> {
 /// Whether a ticket's branch is in its project's main branch; `None` when that
 /// can't be told (no branch, no repository).
 fn merged_state(ticket: &Ticket) -> Option<bool> {
+    if ticket.kind.in_home() {
+        return None;
+    }
     let repo = worktree::repo_root(ticket.project.as_deref()?).ok()?;
     worktree::is_merged(&repo, ticket.branch.as_deref()?).ok()
 }
@@ -2685,7 +2886,8 @@ fn work_before(tickets: &[Ticket], ticket: &Ticket) -> Vec<(String, String)> {
     }
     seen.sort_unstable();
     seen.iter()
-        .filter_map(|id| tickets.iter().find(|t| t.id == *id && t.status == TicketStatus::Done))
+        // Only work from the same place: a task's is in the home's main already, a code ticket's on its branch.
+        .filter_map(|id| tickets.iter().find(|t| t.id == *id && t.status == TicketStatus::Done && t.kind.in_home() == ticket.kind.in_home()))
         .filter_map(|t| Some((format!("T-{}", t.id), t.branch.clone()?)))
         .collect()
 }
