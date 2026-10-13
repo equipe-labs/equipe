@@ -231,6 +231,15 @@ unless TextEdit has keyboard focus. Clean-up after the spike: remove
   can't unlock (and mustn't hold the password). Tools return "the Mac is locked"
   and the member asks the person. Also cover "no GUI session" (logged out,
   FileVault after reboot).
+- **T-22, done — for T-35 to use:** the daemon's gate is
+  `Handle::desktop_ask(member, Use::Look|Input)` before each call goes to the
+  helper, `desktop_done(member, start, input)` after it, and
+  `desktop_release(member)` for the `release` tool; a refusal's text goes back
+  to the model as the tool result. The gate decides *before* a call; a long
+  call (`type` of a paragraph, a drag) must also stop *during* it when the person
+  touches the Mac: the helper checks the last input's age between its own
+  events and stops when the latest event is not one it just posted (same rule as
+  `desktop::presence`).
 - **T-23 (send approval):** with AX we can see *what* is about to be sent — the
   text in the compose field and the conversation title — so the approval shows
   the exact message and recipient, and the send (⏎ / Send button) is a separate

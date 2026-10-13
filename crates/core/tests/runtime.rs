@@ -97,6 +97,7 @@ fn config(claude: &Path, home: &Path, persist: bool) -> Config {
         retention_days: 90,
         equipe_binary: None,
         npx: None,
+        mac: Box::new(equipe_core::desktop::ThisMac),
     }
 }
 
@@ -1883,4 +1884,71 @@ async fn a_secret_value_is_refused_and_another_squad_never_sees_the_memory() {
     assert!(!charter.contains("id-copy") && charter.contains("remembers nothing yet"), "{charter}");
     let deny = settings_of(&call)["permissions"]["deny"].to_string();
     assert!(deny.contains(&format!("Read(/{}/**)", squads_home(&home).display())), "{deny}");
+}
+
+/// A Mac nobody has touched for ten minutes, unlocked.
+struct QuietMac;
+
+impl equipe_core::desktop::Probe for QuietMac {
+    fn idle(&self) -> Option<f64> {
+        Some(600.0)
+    }
+    fn screen(&self) -> equipe_core::desktop::Screen {
+        equipe_core::desktop::Screen::Open
+    }
+}
+
+#[tokio::test]
+async fn two_members_at_the_screen_take_turns_and_desktop_stop_refuses_both() {
+    use equipe_core::desktop::Use;
+    use equipe_core::protocol::{DesktopState, MemberRef};
+
+    let repo = repo();
+    let claude = fake_claude(true, &answering("ok"));
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(Config { mac: Box::new(QuietMac), ..config(&claude, &home, false) });
+    add(&handle, &mut events, 1, member(&repo, "frontend")).await;
+    add(&handle, &mut events, 2, member(&repo, "backend")).await;
+    let who = |name: &str| MemberRef { squad: "acme".into(), member: name.into() };
+    // Every screen is told who has it now.
+    let shows = async |events: &mut UnboundedReceiver<Event>, want: DesktopState| {
+        until(events, |e| matches!(e, Event::Desktop { desktop } if *desktop == want)).await;
+    };
+
+    // Both at once: one has it, the other waits in line.
+    let (a, b) = tokio::join!(handle.desktop_ask(who("frontend"), Use::Input), handle.desktop_ask(who("backend"), Use::Input));
+    let (first, second, start) = match (a, b) {
+        (Ok(start), Err(no)) => (who("frontend"), who("backend"), (start, no)),
+        (Err(no), Ok(start)) => (who("backend"), who("frontend"), (start, no)),
+        other => panic!("exactly one may use the screen: {other:?}"),
+    };
+    let (start, refusal) = start;
+    assert!(refusal.starts_with(&format!("{} is using the screen; you are number 1 in line", first.member)), "{refusal}");
+    shows(&mut events, DesktopState { holder: Some(first.clone()), queue: vec![second.clone()], stopped: false }).await;
+    handle.desktop_done(first.clone(), start, true);
+    assert!(handle.desktop_ask(second.clone(), Use::Look).await.is_err(), "looking waits its turn too");
+
+    // The first one's turn ends: the one waiting carries on.
+    let session = if first.member == "frontend" { 1 } else { 2 };
+    handle.send(Command::Submit { session, text: "go".into() });
+    shows(&mut events, DesktopState { holder: Some(second.clone()), queue: vec![], stopped: false }).await;
+    assert!(handle.desktop_ask(second.clone(), Use::Input).await.is_ok());
+    assert!(handle.desktop_ask(first.clone(), Use::Input).await.is_err());
+
+    // The person takes it back: nobody's click or keystroke goes in, nobody waits.
+    handle.send(Command::Desktop { open: false });
+    shows(&mut events, DesktopState { holder: None, queue: vec![], stopped: true }).await;
+    for member in [&first, &second] {
+        let refusal = handle.desktop_ask(member.clone(), Use::Input).await.unwrap_err();
+        assert!(refusal.contains("/desktop stop"), "{refusal}");
+    }
+    assert_eq!(handle.busy().await.desktop, DesktopState { holder: None, queue: vec![], stopped: true });
+    assert!(handle.snapshot("acme").await.desktop.stopped);
+
+    // Opened again; a member lets go of it itself.
+    handle.send(Command::Desktop { open: true });
+    shows(&mut events, DesktopState::default()).await;
+    assert!(handle.desktop_ask(first.clone(), Use::Input).await.is_ok());
+    assert!(handle.desktop_release(first.clone()).await);
+    assert!(handle.desktop_ask(second, Use::Input).await.is_ok());
 }

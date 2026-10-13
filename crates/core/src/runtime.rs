@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use equipe_protocol::rpc::{ToolCall, ToolResult};
 use equipe_protocol::{
-    Access, Approval, Command, Decision, Engine, Entry, Event, Member, Mode, SessionId, SessionInfo, SessionSpec,
-    SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
+    Access, Approval, Command, Decision, Engine, Entry, Event, Member, MemberRef, Mode, SessionId, SessionInfo,
+    SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
 };
 use equipe_providers::claude_code::{self, Activity};
 use equipe_providers::credentials::equipe_home;
@@ -34,6 +34,7 @@ use tokio::task::JoinHandle;
 
 use crate::board::{self, Candidate};
 use crate::browser;
+use crate::desktop;
 use crate::journal::{self, Journal, SessionRecord, TicketWork};
 use crate::permissions;
 use crate::roles::{self, Role, Teammate};
@@ -76,6 +77,9 @@ pub struct Config {
     pub equipe_binary: Option<PathBuf>,
     /// Node's `npx`, which runs the members' browser. `None`: no browser.
     pub npx: Option<PathBuf>,
+    /// What the Mac says about the person's session: whether they are at it,
+    /// whether it is locked. Asked before every member's desktop input.
+    pub mac: Box<dyn desktop::Probe>,
 }
 
 impl Config {
@@ -90,6 +94,7 @@ impl Config {
             retention_days: journal::DEFAULT_RETENTION_DAYS,
             equipe_binary: std::env::current_exe().ok(),
             npx: crate::browser::find_npx(),
+            mac: Box::new(desktop::ThisMac),
         }
     }
 
@@ -103,12 +108,20 @@ impl Config {
 /// A new screen's view: what's going on now, and every event after that.
 pub type Subscription = (Snapshot, UnboundedReceiver<Event>);
 
+/// A desktop tool call asking for the screen, or done with it.
+enum DesktopRequest {
+    Ask(MemberRef, desktop::Use, oneshot::Sender<Result<f64, String>>),
+    Done { who: MemberRef, start: f64, input: bool },
+    Release(MemberRef, oneshot::Sender<bool>),
+}
+
 enum Request {
     Command(Command),
     Snapshot(String, oneshot::Sender<Snapshot>),
     Subscribe(String, oneshot::Sender<Subscription>),
     Tool(ToolCall, oneshot::Sender<ToolResult>),
     Busy(oneshot::Sender<equipe_protocol::rpc::Busy>),
+    Desktop(DesktopRequest),
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -146,6 +159,29 @@ impl Handle {
         rx.await.unwrap_or(ToolResult { text: "equipe is shutting down".into(), is_error: true })
     }
 
+    /// May `who` make a desktop tool call that does `what`, now? Every desktop
+    /// call asks first: on `Ok(start)` it goes to the Mac, then
+    /// [`Handle::desktop_done`] with `start`; `Err` is what to tell the member
+    /// (another has the screen, the person is at the Mac, it is locked…).
+    pub async fn desktop_ask(&self, who: MemberRef, what: desktop::Use) -> Result<f64, String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.requests.send(Request::Desktop(DesktopRequest::Ask(who, what, tx)));
+        rx.await.unwrap_or_else(|_| Err("equipe is shutting down".into()))
+    }
+
+    /// The desktop call `desktop_ask` let through at `start` has ended;
+    /// `input`: it clicked, typed or scrolled.
+    pub fn desktop_done(&self, who: MemberRef, start: f64, input: bool) {
+        let _ = self.requests.send(Request::Desktop(DesktopRequest::Done { who, start, input }));
+    }
+
+    /// `who` lets go of the screen, or leaves the line. Whether it had either.
+    pub async fn desktop_release(&self, who: MemberRef) -> bool {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.requests.send(Request::Desktop(DesktopRequest::Release(who, tx)));
+        rx.await.unwrap_or(false)
+    }
+
     /// Who is mid-turn, and how many requests wait for the person.
     pub async fn busy(&self) -> equipe_protocol::rpc::Busy {
         let (tx, rx) = oneshot::channel();
@@ -167,7 +203,10 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let (req_tx, req_rx) = mpsc::unbounded_channel();
     let (evt_tx, evt_rx) = mpsc::unbounded_channel();
     let (internal_tx, internal_rx) = mpsc::unbounded_channel();
+    let mut config = config;
+    let mac = std::mem::replace(&mut config.mac, Box::new(desktop::ThisMac));
     let mut runtime = Runtime {
+        desktop: desktop::Desktop::new(mac),
         config,
         client: reqwest::Client::new(),
         subscribers: vec![(None, evt_tx)],
@@ -194,6 +233,11 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         handle.send(Command::Submit { session, text });
     }
     (handle, evt_rx)
+}
+
+/// The member a session is, as the screen's lease knows it.
+fn session_member(session: &Session) -> Option<MemberRef> {
+    Some(MemberRef { squad: session.squad.clone()?, member: session.name()?.to_owned() })
 }
 
 /// The project a directory belongs to: its repository root, or itself.
@@ -354,11 +398,15 @@ struct Runtime {
     browsers: HashMap<(String, String), browser::Running>,
     /// The Claude plan's usage, as Claude Code last reported it.
     plan: Option<equipe_protocol::PlanUsage>,
+    /// The Mac's screen, one member at a time, across squads.
+    desktop: desktop::Desktop,
 }
 
 async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut internal: UnboundedReceiver<Internal>) {
     let mut daily = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
     let mut minute = tokio::time::interval(Duration::from_secs(60));
+    // A screen held by a member that stopped using it goes to the next in line.
+    let mut desktop_tick = tokio::time::interval(Duration::from_secs(5));
     daily.tick().await; // the first tick is immediate; pruning already ran at start
     loop {
         tokio::select! {
@@ -381,8 +429,9 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                         .map(|s| format!("{}/{}", s.squad.as_deref().unwrap_or("-"), s.name().unwrap_or("?")))
                         .collect();
                     working.sort();
-                    let _ = reply.send(equipe_protocol::rpc::Busy { working, approvals: rt.pending.len(), desktop: Default::default() });
+                    let _ = reply.send(equipe_protocol::rpc::Busy { working, approvals: rt.pending.len(), desktop: rt.desktop.state() });
                 }
+                Some(Request::Desktop(request)) => rt.on_desktop(request),
                 Some(Request::Shutdown(reply)) => {
                     rt.stop_all_turns();
                     let _ = reply.send(());
@@ -396,6 +445,11 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                 Internal::ApprovalTimedOut(id) => rt.answer(id, Decision::Deny, "Nobody answered in time."),
             },
             _ = daily.tick(), if rt.config.persist => rt.prune(),
+            _ = desktop_tick.tick() => {
+                if rt.desktop.expire() {
+                    rt.publish_desktop();
+                }
+            }
             _ = minute.tick() => {
                 rt.close_idle_browsers();
                 rt.let_helpers_go().await;
@@ -463,6 +517,33 @@ impl Runtime {
         });
     }
 
+    // ── the Mac's screen ──
+
+    fn on_desktop(&mut self, request: DesktopRequest) {
+        let before = self.desktop.state();
+        match request {
+            DesktopRequest::Ask(who, what, reply) => {
+                let answer = self.desktop.ask(&who, what).map(|()| self.desktop.now());
+                let _ = reply.send(answer.map_err(|refusal| refusal.to_string()));
+            }
+            DesktopRequest::Done { who, start, input } => {
+                let end = self.desktop.now();
+                self.desktop.done(&who, start, end, input);
+            }
+            DesktopRequest::Release(who, reply) => {
+                let _ = reply.send(self.desktop.leave(&who));
+            }
+        }
+        if self.desktop.state() != before {
+            self.publish_desktop();
+        }
+    }
+
+    fn publish_desktop(&mut self) {
+        let desktop = self.desktop.state();
+        self.publish(Event::Desktop { desktop });
+    }
+
     fn error(&mut self, session: Option<SessionId>, message: impl Into<String>, next: Option<&str>) {
         self.publish(Event::Error { session, message: message.into(), next: next.map(str::to_owned) });
     }
@@ -485,8 +566,12 @@ impl Runtime {
             Command::Cancel { squad, ticket } => self.cancel(&squad, ticket).await,
             Command::SetMode { squad, member, mode } => self.set_mode(&squad, member, mode),
             Command::ShowBrowser { squad, member, show } => self.show_browser(&squad, member, show),
-            // The screen's lease comes with the desktop tools (T-22 after T-35).
-            Command::Desktop { .. } => {}
+            Command::Desktop { open } => {
+                let changed = if open { self.desktop.resume() } else { self.desktop.stop() };
+                if changed {
+                    self.publish_desktop();
+                }
+            }
             Command::Scale { squad, extra } => {
                 if let Some(journal) = self.journal(&squad) {
                     let _ = journal.set_scale(extra.min(HELPERS_MAX));
@@ -1213,6 +1298,7 @@ impl Runtime {
         };
         session.turn = None;
         let squad = session.squad.clone();
+        let who = session_member(session);
         let in_work = session.work.as_ref().is_some_and(|w| Some(w.ticket) == done.ticket);
         if let Some(reply) = &done.reply
             && session.engine == Engine::Codex
@@ -1248,6 +1334,12 @@ impl Runtime {
                     None => {}
                 }
             }
+        }
+        // The screen is the member's only while its turn runs.
+        if let Some(who) = who
+            && self.desktop.leave(&who)
+        {
+            self.publish_desktop();
         }
         if done.ticket.is_none() {
             self.save_desk_changes(done.session, &done.prompt);
@@ -1297,7 +1389,11 @@ impl Runtime {
             self.land_plain_session(id, &sandbox);
         }
         self.publish(Event::SessionClosed { session: id });
-        self.sessions.remove(&id);
+        if let Some(who) = self.sessions.remove(&id).as_ref().and_then(session_member)
+            && self.desktop.leave(&who)
+        {
+            self.publish_desktop();
+        }
         // Someone else may take over what it left.
         if let Some(squad) = squad {
             self.dispatch(&squad).await;
@@ -2431,7 +2527,7 @@ it back there once they have done it. End your turn now with a short line on wha
             self.pending.values().filter(|p| p.squad == squad).map(|p| p.approval.clone()).collect();
         approvals.sort_by_key(|a| a.id);
         let scale = self.journals.get(squad).map(Journal::scale);
-        Snapshot { squad: squad.to_owned(), projects, sessions, tickets, mode, approvals, scale, plan: self.plan, desktop: Default::default() }
+        Snapshot { squad: squad.to_owned(), projects, sessions, tickets, mode, approvals, scale, plan: self.plan, desktop: self.desktop.state() }
     }
 
     /// Bring back every squad's members, and the tickets they were on.

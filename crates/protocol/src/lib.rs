@@ -400,6 +400,18 @@ impl DesktopState {
     pub fn is_quiet(&self) -> bool {
         self.holder.is_none() && self.queue.is_empty() && !self.stopped
     }
+
+    /// One line for a screen following squad `here` (members of other squads
+    /// show as `squad/member`); `None` when there is nothing to say.
+    pub fn summary(&self, here: Option<&str>) -> Option<String> {
+        if self.stopped {
+            return Some("screen taken back · /desktop resume".into());
+        }
+        let name = |m: &MemberRef| if here == Some(m.squad.as_str()) { m.member.clone() } else { m.to_string() };
+        let waiting = (!self.queue.is_empty()).then(|| format!("{} waiting", self.queue.len()));
+        let parts: Vec<String> = self.holder.as_ref().map(|m| format!("{} on the screen", name(m))).into_iter().chain(waiting).collect();
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
 }
 
 /// Token counts for one turn.
@@ -691,6 +703,17 @@ pub struct Snapshot {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_screens_line_names_other_squads_members_in_full() {
+        let m = |squad: &str, member: &str| MemberRef { squad: squad.into(), member: member.into() };
+        assert_eq!(DesktopState::default().summary(Some("acme")), None);
+        let desktop = DesktopState { holder: Some(m("acme", "frontend")), queue: vec![m("tax", "pm"), m("acme", "qa")], stopped: false };
+        assert_eq!(desktop.summary(Some("acme")).as_deref(), Some("frontend on the screen · 2 waiting"));
+        assert_eq!(desktop.summary(Some("tax")).as_deref(), Some("acme/frontend on the screen · 2 waiting"));
+        let stopped = DesktopState { stopped: true, ..Default::default() };
+        assert_eq!(stopped.summary(None).as_deref(), Some("screen taken back · /desktop resume"));
+    }
 
     fn ticket(id: TicketId) -> Ticket {
         Ticket {

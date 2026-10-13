@@ -57,6 +57,7 @@ fn config(home: &Path, claude: &Path) -> Config {
         retention_days: 90,
         equipe_binary: None,
         npx: None,
+        mac: Box::new(equipe_core::desktop::ThisMac),
     }
 }
 
