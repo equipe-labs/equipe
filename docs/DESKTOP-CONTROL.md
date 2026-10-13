@@ -18,13 +18,13 @@ install` loads the daemon, runs it once and unloads it.
 ## What the probe showed
 
 Mac mini M4 Pro (`Mac16,11`), macOS 26.2, the person logged in at the console
-and working over SSH (Tailscale) and Jump Desktop. 2026-10-13.
+and working over SSH (Tailscale) and Jump Desktop. 2026-10-13/14.
 
 | Question | Result |
 |---|---|
 | A LaunchAgent bootstrapped into `gui/501` — from an SSH shell — runs in the GUI session | ✅ `launchctl managername` → `Aqua`; on console, login done |
 | Its child processes are in the same session | ✅ `Aqua` |
-| The daemon running the squad right now | ❌ `Background`: it was started by `spawn_detached` from an SSH shell, not by the service (`im.equipe.daemon` isn't installed on this Mac) |
+| The daemon running the squad | ❌ at first `Background`: started by `spawn_detached` from an SSH shell. ✅ `Aqua` once the person ran `equipe daemon install` (`im.equipe.daemon` in `gui/501`) |
 | A display exists without a monitor | ✅ here, but only because something provides one: display 5, 1472×828 pt at **1×** (Jump Desktop's virtual display, most likely) |
 | Window titles of other apps, without Screen Recording | 3 of 25 — the permission gate is real |
 | Screen Recording granted (person added the probe with "+") | ✅ `CGPreflightScreenCaptureAccess` true; 24 of 24 window titles readable |
@@ -34,18 +34,27 @@ and working over SSH (Tailscale) and Jump Desktop. 2026-10-13.
 | A bare executable in Accessibility | ❌ the person added it with "+", it never showed in the list. Screen Recording took it; Accessibility wants an **app bundle** |
 | App bundle, fixed bundle id, fixed signature | `bundle.sh`: `~/Applications/equipe Desktop Probe.app`, `im.equipe.desktop-probe`, signed with a self-signed certificate kept in a keychain of its own → designated requirement `identifier "im.equipe.desktop-probe" and certificate leaf = H"9510…"` instead of a cdhash. `request` puts it in both lists by itself |
 | Display after the person connected with Jump Desktop | 2560×1440 pt at **2×** (5120×2880 px) — it was 1472×828 @1× earlier: the virtual display changes with the remote client |
-| Capture, click at a point, type text (incl. Korean), open TextEdit, read it back through AX | ⏳ **not run**: needs the two grants and the screen to be free for ~15 s. `desktop-probe run` does all of it in one go and checks the typed text through Accessibility |
-| A rebuilt binary keeps its grant | ⏳ not run; expected **no** (ad-hoc signature, see TCC) |
+| A rebuilt, re-signed probe keeps its grants | ✅ rebuilt twice, re-signed with the same certificate: Screen Recording, Accessibility and Post Event all still true, no new prompt |
+| Open TextEdit from the LaunchAgent | ✅ `open -F -a TextEdit <file>` (no permission). ⚠️ it opens **behind** the frontmost app — macOS 14+ cooperative activation doesn't let a background process bring an app forward |
+| **First full run: click + type** | ⚠️ the click went to where TextEdit's window was, but the person's **Ghostty terminal** was on top: the text was typed into their shell prompt (no Enter). Clicking at a window's coordinates is not clicking that window |
+| Bring the app forward | ✅ through Accessibility: `AXFrontmost = true` on the app, `AXRaise` on the window |
+| What a click at (x, y) will reach | Window list (`CGWindowListCopyWindowInfo`) is **wrong** here: BetterDisplay's click-through overlay covers the whole screen. ✅ AX hit test (`AXUIElementCopyElementAtPosition`) answers TextEdit's `AXTextArea` |
+| **Click at a point, type text incl. Korean, read it back** | ✅ pointer moved to (503, 299), keyboard focus on TextEdit (`AXFocusedApplication`), typed `hello from equipe probe 안녕하세요` as Unicode events; AX read back `Hello from equipe probe 안녕하세요` (TextEdit auto-capitalised the first letter). Seen on the capture too |
+| macOS's "bypass the private window picker" dialog | ⚠️ stays up until the person answers; capture, click and type all worked while it was showing |
+| macOS notifications seen during the runs | "Privacy & Security blocked 'equipe' from modifying apps" — **App Management**: a process charged to `equipe` (the squad running under the daemon) rewriting a signed bundle in `~/Applications`. "'equipe' can run in the background" — the login service |
 
-To finish the proof (the person, once):
+**Answer to the spike: yes.** A process launched by launchd in the person's GUI
+session captures the screen, clicks, types (Korean included), opens apps and reads
+apps' UI through Accessibility — once the person grants Screen Recording and
+Accessibility to a **signed app bundle**, and the grant survives rebuilds when the
+signature's identity is fixed.
 
-1. `./agent.sh <probe> request <out>` — macOS adds `desktop-probe` to the lists.
-2. On the Mac's screen: System Settings › Privacy & Security › **Screen & System
-   Audio Recording** → turn on `desktop-probe`; › **Accessibility** → turn on
-   `desktop-probe`.
-3. `./agent.sh <probe> run <out>` — leave the screen alone for ~15 s.
-4. Rebuild the probe, `./agent.sh <probe> status <out>` — do the grants survive?
-5. Remove `desktop-probe` from both lists (the "−" button).
+Reproduce: `bundle.sh <built probe>` → `agent.sh "<app>/Contents/MacOS/desktop-probe" request|status|run <out dir>`.
+The probe refuses to click unless the AX hit test lands in TextEdit, and to type
+unless TextEdit has keyboard focus. Clean-up after the spike: remove
+`equipe Desktop Probe` from both Privacy lists, delete
+`~/Applications/equipe Desktop Probe.app` and
+`~/Library/Application Support/equipe-probe-t20/` (signing keychain, build, logs).
 
 ## Decisions
 
@@ -59,8 +68,17 @@ To finish the proof (the person, once):
 - **Input: CGEvent** posted at the HID tap. Text goes in as Unicode
   (`CGEventKeyboardSetUnicodeString`), so it doesn't depend on the input source
   — Korean types without switching the IME. Shortcuts (⌘V, ⏎) as key codes.
+- **Aiming: never trust coordinates alone.** In the probe the target window's
+  centre was covered by the person's terminal and the typed text went there.
+  Before a click: bring the app forward through AX (`AXFrontmost`, `AXRaise`) and
+  check with the **AX hit test** (`AXUIElementCopyElementAtPosition`) that the
+  point reaches the intended app; the window list can't be used for this
+  (BetterDisplay keeps a click-through overlay over the whole screen). Before
+  typing: check `AXFocusedApplication`. Otherwise refuse and say why.
 - **Apps: `open -a` / `open -b <bundle id>`** (what NSWorkspace does, no extra
-  permission), and the app's pid from `NSRunningApplication`/`pgrep`.
+  permission; `-F` so it doesn't reopen old windows). The app opens *behind* the
+  frontmost one — a background process can't activate it — so raise it via AX.
+  The app's pid from `NSRunningApplication`/`pgrep`.
 - **Accessibility (AXUIElement): yes, as the first way to aim.** It gives roles,
   titles and frames of buttons and fields, `AXPress`, and setting `AXValue` —
   steadier than coordinates when a window moves or the scale changes, and it
@@ -96,6 +114,21 @@ To finish the proof (the person, once):
   Fix: sign with a **Developer ID** under a fixed identifier (requirement becomes
   "identifier X + Apple-issued cert of team T"), which holds across versions.
   Notarization isn't needed for TCC but comes with it for Gatekeeper.
+  **Proven with the probe:** a self-signed certificate with a fixed identity
+  already gives a requirement of the form "identifier + certificate leaf", and the
+  grants held across two rebuilds. Developer ID is what makes that work on every
+  user's Mac without a local certificate.
+- **It has to be an app bundle.** Accessibility's "+" didn't take a bare
+  executable at all; an `.app` with `CFBundleIdentifier`, `LSUIElement` and
+  `NSScreenCaptureUsageDescription` appeared in both lists by itself after one
+  `CGRequestScreenCaptureAccess` / `AXIsProcessTrustedWithOptions(prompt)` call.
+  The LaunchAgent runs `<app>/Contents/MacOS/<exe>` directly — TCC still sees the
+  bundle.
+- **Updating the bundle in place hits App Management.** macOS blocked a process
+  charged to `equipe` from modifying an app bundle (notification "blocked
+  'equipe' from modifying apps"). The updater must either have App Management
+  permission (one more toggle) or install the new bundle beside the old one and
+  swap it (Homebrew's cask way); T-21 picks one.
 - **Decision: a separate helper, its own binary and its own LaunchAgent.**
   `equipe-desktop` (identifier `im.equipe.desktop`), loaded as
   `im.equipe.desktop` in `gui/<uid>` with `LimitLoadToSessionType=Aqua`. Only it
@@ -161,9 +194,13 @@ To finish the proof (the person, once):
 
 ## Remaining risks
 
-1. **Not yet proven end to end:** capture, click, type, open — waiting on the
-   person's two grants (steps above). Everything else here stands on it.
-2. **Unsigned releases** → each helper update asks the person again. Developer ID
+1. **Clicking into the wrong window.** It happened in the proof: text meant for
+   TextEdit went into the person's terminal. The AX hit-test and focus checks
+   stop it in the probe; T-21 must keep them on every click and keystroke, and a
+   keystroke stream must stop the moment focus moves (the person may click
+   elsewhere mid-way).
+2. **Unsigned releases** → each helper update asks the person again (proven the
+   other way round: a fixed signature keeps the grants). Developer ID
    signing costs the Apple Developer Program ($99/yr) and a signing step in
    `release.yml`. Decision for the person.
 3. **Teams' AX tree** may be thin until Chromium accessibility is switched on;
@@ -182,6 +219,14 @@ To finish the proof (the person, once):
   never on disk. Lease in the daemon, also yielding to the person (HID idle).
   `equipe desktop allow` / doctor checks for grants, session, display size.
   Verify Teams' AX tree with `AXManualAccessibility`.
+  From the proof: the helper is an **`.app` bundle** with a fixed bundle id and a
+  fixed signing identity; `request` on first start puts it in both lists. Every
+  click is checked with the AX hit test, every keystroke with
+  `AXFocusedApplication`, else the tool refuses. Apps are brought forward with
+  `AXFrontmost`/`AXRaise`, not by `open`. Compare typed text as the app shows it
+  (autocorrect/capitalisation change it). Plan the bundle update path around
+  App Management. Ask the person to answer macOS's "bypass the private window
+  picker" dialog during `equipe desktop allow`.
 - **T-22 (lock screen):** detect with `CGSSessionScreenIsLocked`; the helper
   can't unlock (and mustn't hold the password). Tools return "the Mac is locked"
   and the member asks the person. Also cover "no GUI session" (logged out,

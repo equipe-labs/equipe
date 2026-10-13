@@ -86,6 +86,11 @@ unsafe extern "C" {
     fn AXIsProcessTrustedWithOptions(options: Ref) -> bool;
     fn AXUIElementCreateApplication(pid: i32) -> Ref;
     fn AXUIElementCopyAttributeValue(element: Ref, attribute: Ref, value: *mut Ref) -> i32;
+    fn AXUIElementSetAttributeValue(element: Ref, attribute: Ref, value: Ref) -> i32;
+    fn AXUIElementPerformAction(element: Ref, action: Ref) -> i32;
+    fn AXUIElementCreateSystemWide() -> Ref;
+    fn AXUIElementCopyElementAtPosition(element: Ref, x: f32, y: f32, hit: *mut Ref) -> i32;
+    fn AXUIElementGetPid(element: Ref, pid: *mut i32) -> i32;
 }
 
 /// Longest edge of the image a model would get.
@@ -394,6 +399,80 @@ fn window_of(pid: i32) -> Option<Rect> {
     }
 }
 
+/// The pid owning the frontmost normal window under a point: what a click there
+/// would actually hit.
+fn owner_at(at: Point) -> Option<(i32, String)> {
+    // SAFETY: window list query, front to back; dictionaries are toll-free bridged.
+    unsafe {
+        let list = owned(CGWindowListCopyWindowInfo(1, 0))?;
+        let list: Retained<NSArray<NSDictionary<NSString, AnyObject>>> = Retained::cast_unchecked(list);
+        for window in list.iter() {
+            let number = |key: &str| window.objectForKey(&ns(key)).and_then(|v| v.downcast::<NSNumber>().ok()).map(|n| n.doubleValue());
+            let layer = number("kCGWindowLayer").unwrap_or(-1.0);
+            if !(0.0..24.0).contains(&layer) && layer < 25.0 || number("kCGWindowAlpha") == Some(0.0) {
+                continue;
+            }
+            let Some(bounds) = window.objectForKey(&ns("kCGWindowBounds")) else { continue };
+            let bounds: Retained<NSDictionary<NSString, NSNumber>> = Retained::cast_unchecked(bounds);
+            let get = |k: &str| bounds.objectForKey(&ns(k)).map_or(0.0, |n| n.doubleValue());
+            let (x, y, w, h) = (get("X"), get("Y"), get("Width"), get("Height"));
+            if at.x >= x && at.x < x + w && at.y >= y && at.y < y + h {
+                let owner = window.objectForKey(&ns("kCGWindowOwnerName")).and_then(|v| v.downcast::<NSString>().ok()).map(|s| s.to_string()).unwrap_or_default();
+                return Some((number("kCGWindowOwnerPID").unwrap_or(0.0) as i32, owner));
+            }
+        }
+        None
+    }
+}
+
+/// What Accessibility says a click at this point reaches: the element's role and
+/// its app's pid. Unlike the window list, it skips windows that let clicks through.
+fn hit_test(at: Point) -> Option<(i32, String)> {
+    // SAFETY: system-wide hit test; the element comes back +1.
+    unsafe {
+        let system = AXUIElementCreateSystemWide();
+        let mut hit: Ref = std::ptr::null();
+        if AXUIElementCopyElementAtPosition(system, at.x as f32, at.y as f32, &mut hit) != 0 {
+            return None;
+        }
+        let mut pid = 0;
+        AXUIElementGetPid(hit, &mut pid);
+        let role = text(hit, "AXRole").unwrap_or_default();
+        CFRelease(hit);
+        Some((pid, role))
+    }
+}
+
+/// The app that has keyboard focus — where typed text goes.
+fn focused_pid() -> i32 {
+    // SAFETY: the system-wide AX element and its focused application.
+    unsafe {
+        let system = AXUIElementCreateSystemWide();
+        let Some(app) = attr(system, "AXFocusedApplication") else { return 0 };
+        let mut pid = 0;
+        AXUIElementGetPid(Retained::as_ptr(&app) as Ref, &mut pid);
+        pid
+    }
+}
+
+/// Brings an app and its first window to the front through Accessibility.
+fn raise(pid: i32) {
+    // SAFETY: AX calls on TextEdit's application element.
+    unsafe {
+        let app = AXUIElementCreateApplication(pid);
+        let yes = NSNumber::new_bool(true);
+        let set = AXUIElementSetAttributeValue(app, Retained::as_ptr(&ns("AXFrontmost")) as Ref, Retained::as_ptr(&yes) as Ref);
+        let mut raised = -1;
+        if let Some(windows) = attr(app, "AXWindows") {
+            let windows: Retained<NSArray<AnyObject>> = Retained::cast_unchecked(windows);
+            if let Some(first) = windows.firstObject() {
+                raised = AXUIElementPerformAction(Retained::as_ptr(&first) as Ref, Retained::as_ptr(&ns("AXRaise")) as Ref);
+            }
+        }
+        println!("raise          AXFrontmost={set} AXRaise={raised}");
+    }
+}
+
 fn attr(element: Ref, name: &str) -> Option<Retained<AnyObject>> {
     let mut value: Ref = std::ptr::null();
     let name = ns(name);
@@ -435,11 +514,11 @@ fn walk(element: Ref, depth: usize, printed: &mut usize, found: &mut Option<Stri
 fn run(dir: &Path) {
     capture_both(dir, "before");
 
-    let doc = dir.join("probe.txt");
+    let doc = dir.join(format!("probe-{}.txt", now()));
     std::fs::write(&doc, "").unwrap();
     let was_running = !sh("pgrep", &["-x", "TextEdit"]).is_empty();
     println!("textedit       running before: {was_running}");
-    println!("open -a        {:?}", sh("open", &["-a", "TextEdit", &doc.to_string_lossy()]));
+    println!("open -a        {:?}", sh("open", &["-F", "-a", "TextEdit", &doc.to_string_lossy()]));
     let mut pid = 0;
     let mut window = None;
     for _ in 0..50 {
@@ -458,13 +537,33 @@ fn run(dir: &Path) {
         return;
     };
     std::thread::sleep(Duration::from_millis(800));
-
     let at = Point { x: window.origin.x + window.size.w / 2.0, y: window.origin.y + window.size.h / 2.0 };
+    println!("under point    before raise: {:?}", owner_at(at));
+    raise(pid);
+    std::thread::sleep(Duration::from_millis(500));
+    let window = window_of(pid).unwrap_or(window);
+    let at = Point { x: window.origin.x + window.size.w / 2.0, y: window.origin.y + window.size.h / 2.0 };
+
+    // Never click or type into something else: the person's terminal is one window away.
+    println!("under point    after raise (window list): {:?}", owner_at(at));
+    let hit = hit_test(at);
+    println!("under point    after raise (AX hit test): {hit:?}");
+    if hit.as_ref().map(|h| h.0) != Some(pid) {
+        println!("RESULT refused: the click would land on {hit:?}, not TextEdit");
+        capture_both(dir, "refused");
+        return;
+    }
     let before = mouse();
     click(at);
     let after = mouse();
     println!("click          at {at:?}; pointer {before:?} -> {after:?}");
     std::thread::sleep(Duration::from_millis(300));
+    let focused = focused_pid();
+    println!("focus          pid {focused} (TextEdit {pid})");
+    if focused != pid {
+        println!("RESULT refused: keyboard focus is on pid {focused}, not TextEdit");
+        return;
+    }
 
     let typed = "hello from equipe probe 안녕하세요";
     type_text(typed);
@@ -477,7 +576,7 @@ fn run(dir: &Path) {
     let mut found = None;
     walk(app, 0, &mut printed, &mut found);
     println!("ax text area   {found:?}");
-    println!("RESULT typed text landed: {}", found.as_deref().is_some_and(|t| t.contains(typed)));
+    println!("RESULT typed text landed: {}", found.as_deref().is_some_and(|t| t.to_lowercase().contains(&typed.to_lowercase())));
 
     capture_both(dir, "after");
 
