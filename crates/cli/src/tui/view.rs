@@ -606,6 +606,7 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
         ("Tab · Shift-Tab", "pick who you talk to"),
         ("Alt-Enter · Ctrl-J", "a new line (or \\ then Enter)"),
         ("Esc", "stop a member mid-turn; a waiting memo goes in at once"),
+        ("Ctrl-V", "attach the clipboard's image — or drop an image file on the terminal"),
         ("→", "take the greyed suggestion in an empty composer"),
     ]), keys));
     lines.extend(heading("LOOK AROUND"));
@@ -787,6 +788,7 @@ fn doing(agent: &Agent) -> &'static str {
             "comment" => "commenting",
             "hand in" => "handing in",
             "browse" => "browsing",
+            "delegate" => "delegating",
             "ask you" => "waiting for you",
             _ => "working",
         },

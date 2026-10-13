@@ -9,7 +9,8 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-pub const COMMANDS: [Spec; 16] = [
+pub const COMMANDS: [Spec; 17] = [
+    Spec { name: "scale", args: "[0-6|off]", about: "Extra members a role may get when its work waits" },
     Spec { name: "compact", args: "[member]", about: "Start its next conversation afresh, from a summary of this one" },
     Spec { name: "clear", args: "[member]", about: "Start its next conversation clean — memory and board stay" },
     Spec { name: "squad", args: "[name] · new <name> <folder> · add|remove <folder>", about: "Switch, start, or change what a squad works on" },

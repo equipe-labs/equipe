@@ -1106,6 +1106,37 @@ async fn the_person_can_start_a_members_conversation_clean() {
 }
 
 #[tokio::test]
+async fn work_that_waits_brings_in_helpers_up_to_the_squads_scale() {
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "backend")).await;
+    for title in ["API", "Webhooks", "Exports", "Billing"] {
+        tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": title, "body": "-", "owner": "backend" })).await;
+    }
+    // backend takes one; two more backend members come for the rest — the default scale.
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.starts_with("Brought in backend-3"))).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { text, .. } if text.starts_with("Brought in backend-2"))), "{seen:?}");
+    let snapshot = handle.snapshot("acme").await;
+    let backends: Vec<_> = snapshot.sessions.iter().filter(|s| s.member.as_ref().is_some_and(|m| m.role == "backend")).collect();
+    assert_eq!(backends.len(), 3, "no more than the scale: {backends:?}");
+    let working = snapshot.tickets.iter().filter(|t| t.status == TicketStatus::InProgress).count();
+    assert_eq!(working, 3, "each on a ticket; the fourth waits");
+    let journal = Journal::for_squad(&home, "acme").unwrap();
+    assert_eq!(journal.helpers().len(), 2);
+    // Helpers keep the role's lessons where the role keeps them.
+    assert_eq!(journal.scale(), 2);
+
+    // Scale 0: nobody more comes, whatever waits.
+    handle.send(Command::Scale { squad: "acme".into(), extra: 0 });
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Search", "body": "-", "owner": "backend" })).await;
+    let snapshot = handle.snapshot("acme").await;
+    assert_eq!(snapshot.sessions.len(), 4, "pm and three backends");
+}
+
+#[tokio::test]
 async fn a_member_asks_the_person_before_doing_something_on_their_behalf() {
     let repo = repo();
     let claude = fake_claude(true, "exec sleep 30");

@@ -384,7 +384,10 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                 Internal::ApprovalTimedOut(id) => rt.answer(id, Decision::Deny, "Nobody answered in time."),
             },
             _ = daily.tick(), if rt.config.persist => rt.prune(),
-            _ = minute.tick() => rt.close_idle_browsers(),
+            _ = minute.tick() => {
+                rt.close_idle_browsers();
+                rt.let_helpers_go().await;
+            }
         }
     }
     rt.stop_all_turns();
@@ -464,6 +467,13 @@ impl Runtime {
             Command::Cancel { squad, ticket } => self.cancel(&squad, ticket).await,
             Command::SetMode { squad, member, mode } => self.set_mode(&squad, member, mode),
             Command::ShowBrowser { squad, member, show } => self.show_browser(&squad, member, show),
+            Command::Scale { squad, extra } => {
+                if let Some(journal) = self.journal(&squad) {
+                    let _ = journal.set_scale(extra.min(HELPERS_MAX));
+                }
+                // More room may be just what waiting work needed.
+                self.dispatch(&squad).await;
+            }
             Command::Refresh { session, summary } => {
                 if let Some(s) = self.sessions.get_mut(&session) {
                     s.refresh = Some(summary);
@@ -1214,6 +1224,98 @@ impl Runtime {
                 self.begin_work(id, ticket);
             }
         }
+        // Work a role has no one free for: bring in extra members of it, up to the
+        // squad's scale. Each joins and picks up a waiting ticket at once.
+        let waiting = board::unstaffed(&tickets, &candidates, single_project);
+        if waiting.is_empty() {
+            return;
+        }
+        let Some(journal) = self.journal(squad) else {
+            return;
+        };
+        let (scale, helpers) = (journal.scale(), journal.helpers());
+        let total = helpers.iter().filter(|id| self.sessions.contains_key(id)).count();
+        // One at a time: the newcomer's own arrival looks again, with it counted.
+        let room = waiting.into_iter().find(|(role, _)| {
+            let of_role = helpers
+                .iter()
+                .filter(|id| self.sessions.get(id).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == *role))
+                .count();
+            of_role < scale && total < HELPERS_MAX
+        });
+        if let Some((role, count)) = room {
+            Box::pin(self.bring_in_helper(squad, &role, count)).await;
+        }
+    }
+
+    /// A temporary member of `role`, for work that waits: it shares the role's
+    /// memory, and leaves when it has been idle a while.
+    async fn bring_in_helper(&mut self, squad: &str, role: &str, waiting: usize) {
+        let Some(project) = self.projects(squad).first().cloned() else {
+            return;
+        };
+        let id = equipe_protocol::new_session_id();
+        let spec = SessionSpec {
+            engine: None,
+            model: None,
+            access: Access::ReadOnly,
+            cwd: project,
+            role: Some(role.to_owned()),
+            squad: Some(squad.to_owned()),
+        };
+        // Recorded first, so the dispatch its start runs counts it.
+        if let Some(journal) = self.journal(squad) {
+            let mut helpers = journal.helpers();
+            helpers.push(id);
+            let _ = journal.set_helpers(&helpers);
+        }
+        Box::pin(self.start(id, spec)).await;
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        // What it learns goes where the role's lessons are kept.
+        session.memory = Some(journal::member_memory_dir(&self.config.home, squad, role));
+        session.last_turn = Some(std::time::Instant::now());
+        let name = session.name().unwrap_or(role).to_owned();
+        if let Some(pm) = self.pm_of(squad) {
+            let text = format!("Brought in {name}: {waiting} {role} ticket{} waiting at once · /scale changes how many", if waiting == 1 { " was" } else { "s were" });
+            self.publish(Event::Notice { session: pm, text });
+        }
+    }
+
+    /// Let go the helpers with nothing to do: free, idle a while, and no work
+    /// of their role waiting.
+    async fn let_helpers_go(&mut self) {
+        let squads: Vec<String> = self.journals.keys().cloned().collect();
+        for squad in squads {
+            let Some(helpers) = self.journals.get(&squad).map(Journal::helpers) else {
+                continue;
+            };
+            if helpers.is_empty() {
+                continue;
+            }
+            let idle: Vec<SessionId> = helpers
+                .iter()
+                .copied()
+                .filter(|id| {
+                    self.sessions.get(id).is_some_and(|s| {
+                        s.is_free() && s.last_turn.is_some_and(|t| t.elapsed() > HELPER_IDLE)
+                    })
+                })
+                .collect();
+            for id in &idle {
+                let name = self.sessions.get(id).and_then(|s| s.name().map(str::to_owned)).unwrap_or_default();
+                Box::pin(self.close(*id)).await;
+                if let Some(pm) = self.pm_of(&squad) {
+                    self.publish(Event::Notice { session: pm, text: format!("{name} left: nothing of theirs is waiting") });
+                }
+            }
+            // Gone or let go: no longer helpers.
+            let kept: Vec<SessionId> = helpers.into_iter().filter(|id| !idle.contains(id) && self.sessions.contains_key(id)).collect();
+            if let Some(journal) = self.journals.get(&squad) {
+                let _ = journal.set_helpers(&kept);
+            }
+        }
     }
 
     /// Put member `id` on `ticket`: a worktree on the ticket's branch when it
@@ -1862,7 +1964,8 @@ End your turn now with a short summary.",
         let mut approvals: Vec<Approval> =
             self.pending.values().filter(|p| p.squad == squad).map(|p| p.approval.clone()).collect();
         approvals.sort_by_key(|a| a.id);
-        Snapshot { squad: squad.to_owned(), projects, sessions, tickets, mode, approvals }
+        let scale = self.journals.get(squad).map(Journal::scale);
+        Snapshot { squad: squad.to_owned(), projects, sessions, tickets, mode, approvals, scale }
     }
 
     /// Bring back every squad's members, and the tickets they were on.
@@ -2167,6 +2270,11 @@ fn verdict(decision: Decision, input: &Value, why: &str) -> ToolResult {
     };
     ToolResult { text: text.to_string(), is_error: false }
 }
+
+/// The most helpers a squad has at once, whatever its scale.
+const HELPERS_MAX: usize = 6;
+/// A helper idle this long, with nothing of its role waiting, leaves.
+const HELPER_IDLE: Duration = Duration::from_secs(10 * 60);
 
 /// A desk conversation this full of its context window starts afresh.
 const REFRESH_FULL_PERCENT: u64 = 60;

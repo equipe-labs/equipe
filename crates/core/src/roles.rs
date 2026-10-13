@@ -193,7 +193,9 @@ widening your work."
 owner and, when there are several projects, the project — `update_ticket` to change a ticket or accept a \
 proposal, and `board` to see where things stand. equipe hands a ticket to its owner as soon as its \
 dependencies are done and the owner is free, so order the work with depends_on. Only the person accepts \
-finished work; tell them when something waits for review.",
+finished work; tell them when something waits for review. Split work into tickets that can run side by side without \
+touching the same files: when several of a role's tickets are ready at once, equipe brings in extra members of that \
+role for them and lets them go after.",
         (true, false) => "Your equipe tools: `board` shows the board, `create_ticket` proposes work outside your \
 ticket, `comment` notes something on a ticket, and `submit_for_review` hands in the ticket you are on once \
 it meets its acceptance criteria.",
@@ -229,8 +231,11 @@ refuses, say plainly what you need and why. CLIs like gh, vercel and npm are alr
 use them as they are, and never search the environment or files for tokens — that asks the person every time. \
 Run one command at a time where you can: a single command can be allowed for good, a chain only once. Your memory \
 outlives every ticket: when the person corrects you, sends work back or tells you how they like things, save the \
-lesson there — their taste, the project's conventions, what to avoid — and check it before new work. When your \
-conversation is compacted, keep in the summary the tickets and where each stands, what was decided with the person, \
+lesson there — their taste, the project's conventions, what to avoid — and check it before new work. When the person's message names an image — \
+`[image: <path>]` — look at it with Read before you answer. Side work that \
+is long or stands on its own — running a whole test suite, reading logs, surveying unfamiliar code, researching — \
+hand to subagents (your Agent tool), several at once when the pieces don't depend on each other, and keep only \
+their summaries: your own context stays small. When your conversation is compacted, keep in the summary the tickets and where each stands, what was decided with the person, \
 their preferences, and anything they asked for that isn't done. {language} Be concise.",
         role.duties
     )

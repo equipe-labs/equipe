@@ -246,6 +246,8 @@ pub struct App {
     pub accepted: Vec<(TicketId, String, String)>,
     /// How much members may do on their own, unless one has its own mode.
     pub mode: Mode,
+    /// How many extra members of a role equipe may bring in when its work waits.
+    pub scale: usize,
     /// Requests for permission waiting for the person, oldest first.
     pub approvals: Vec<Approval>,
     /// Lines a page key moves: half the conversation's height on screen.
@@ -261,6 +263,8 @@ pub struct App {
     pub open_browser: bool,
     /// The help screen is open over the conversation.
     pub help_open: bool,
+    /// Ctrl-V was pressed: attach the clipboard's image.
+    pub paste_image: bool,
     /// The project the board, the review card and new requests are about;
     /// `None` shows all of the squad's projects.
     pub focus: Option<PathBuf>,
@@ -339,6 +343,7 @@ impl App {
             mouse: true,
             accepted: Vec::new(),
             mode: snapshot.mode,
+            scale: snapshot.scale.unwrap_or(2),
             approvals: snapshot.approvals,
             page: 10,
             conversation_max: usize::MAX,
@@ -351,6 +356,7 @@ impl App {
             view_diff: None,
             open_browser: false,
             help_open: false,
+            paste_image: false,
             switch_to: None,
             focus: None,
             outbox: Vec::new(),
@@ -730,7 +736,18 @@ impl App {
 
     pub fn on_paste(&mut self, text: &str) {
         self.flash = None;
+        // An image file dropped on the terminal arrives as its path: attach it.
+        if let Some(path) = image_path(text) {
+            self.attach_image(&path);
+            return;
+        }
         self.composer.insert_str(text);
+    }
+
+    /// Put an image in the message: the member looks at it when it reads it.
+    pub fn attach_image(&mut self, path: &std::path::Path) {
+        self.composer.insert_str(&format!("[image: {}] ", path.display()));
+        self.flash = Some("Image attached — the member looks at it with your message".into());
     }
 
     pub fn on_mouse(&mut self, kind: MouseEventKind, now: Instant) {
@@ -947,6 +964,8 @@ impl App {
             KeyCode::Char('b') if ctrl => self.toggle_board(),
             KeyCode::Enter if alt || shift => self.composer.newline(),
             KeyCode::Char('j') if ctrl => self.composer.newline(),
+            // Ctrl-V: the clipboard's image, if it holds one (the loop reads it).
+            KeyCode::Char('v') if ctrl => self.paste_image = true,
             // A line ending in `\` continues: the way to a new line in terminals
             // that can't tell Shift-Enter from Enter.
             KeyCode::Enter if self.composer.before_cursor().ends_with('\\') => {
@@ -1134,6 +1153,30 @@ impl App {
             "browser" => self.browser(rest),
             "squad" => self.squad_command(rest),
             "project" => self.focus_on(rest),
+            "scale" => match rest.trim() {
+                "" => {
+                    self.flash = Some(format!(
+                        "When several tickets of a role are ready at once, equipe brings in up to {} more of it, and lets them go when idle · /scale <0-6>, /scale off",
+                        self.scale
+                    ));
+                    Vec::new()
+                }
+                word => match if word == "off" { Some(0) } else { word.parse::<usize>().ok().filter(|n| *n <= 6) } {
+                    Some(extra) => {
+                        self.scale = extra;
+                        self.flash = Some(if extra == 0 {
+                            "No extra members: each role's tickets wait for its members".into()
+                        } else {
+                            format!("Up to {extra} more of a role when its work waits")
+                        });
+                        vec![Command::Scale { squad: self.squad.clone(), extra }]
+                    }
+                    None => {
+                        self.flash = Some("A number from 0 to 6: /scale 3 · /scale off".into());
+                        Vec::new()
+                    }
+                },
+            },
             "compact" | "clear" => {
                 let target = match rest.trim() {
                     "" => self.agents.get(self.selected),
@@ -1481,6 +1524,8 @@ pub fn tool_verb(name: &str) -> &str {
         "Bash" => "run",
         "Glob" | "Grep" => "search",
         "WebFetch" | "WebSearch" => "fetch",
+        // A subagent the member handed side work to.
+        "Agent" | "Task" => "delegate",
         other => match other.strip_prefix("mcp__equipe__") {
             // equipe's own board tools read as what they do.
             Some("board") => "board",
@@ -1494,6 +1539,22 @@ pub fn tool_verb(name: &str) -> &str {
             _ => other,
         },
     }
+}
+
+/// The image file a paste names — a path, as terminals paste a dropped file,
+/// spaces escaped or the whole of it quoted — when it is one that exists.
+pub fn image_path(text: &str) -> Option<PathBuf> {
+    let text = text.trim();
+    if text.contains('\n') {
+        return None;
+    }
+    let unquoted = text.trim_matches(|c| c == '\'' || c == '"');
+    let path = PathBuf::from(unquoted.replace("\\ ", " "));
+    let image = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| matches!(e.to_lowercase().as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp"));
+    (image && path.is_absolute() && path.is_file()).then_some(path)
 }
 
 /// A folder as the person typed it — `~/…` is under home — if it is one.
@@ -2078,6 +2139,26 @@ mod tests {
         assert_eq!(enter(&mut app), vec![Command::Refresh { session: frontend, summary: false }]);
         type_text(&mut app, "/clear nobody");
         assert!(enter(&mut app).is_empty());
+    }
+
+    #[test]
+    fn a_dropped_image_file_is_attached_and_ctrl_v_asks_for_the_clipboards() {
+        let dir = std::env::temp_dir().join(format!("equipe drop {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shot = dir.join("Screen Shot 1.png");
+        std::fs::write(&shot, b"png").unwrap();
+        let (mut app, _, _) = team();
+        // As iTerm2 pastes a dropped file: spaces escaped.
+        app.on_paste(&shot.display().to_string().replace(' ', "\\ "));
+        assert_eq!(app.composer.text(), format!("[image: {}] ", shot.display()));
+        // Text that only looks like a path stays text.
+        app.composer.clear();
+        app.on_paste("/no/such/file.png");
+        assert_eq!(app.composer.text(), "/no/such/file.png");
+        app.composer.clear();
+        app.on_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL), Instant::now());
+        assert!(app.paste_image);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

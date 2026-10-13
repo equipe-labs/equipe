@@ -281,6 +281,9 @@ pub enum Command {
     SetMode { squad: SquadName, member: Option<String>, mode: Option<Mode> },
     /// The person answers a member's request for permission.
     Decide { squad: SquadName, approval: u64, decision: Decision },
+    /// How many extra members of a role equipe may bring in when several of
+    /// its tickets are ready at once; 0 brings in none.
+    Scale { squad: SquadName, extra: usize },
     /// Start a member's next conversation at its desk afresh: carrying a short
     /// summary of the last one (`summary`), or clean. Its memory and the board
     /// carry over either way.
@@ -538,6 +541,9 @@ pub struct Snapshot {
     /// Requests for permission waiting for the person, oldest first.
     #[serde(default)]
     pub approvals: Vec<Approval>,
+    /// How many extra members of a role equipe may bring in when its work waits.
+    #[serde(default)]
+    pub scale: Option<usize>,
 }
 
 #[cfg(test)]
@@ -666,6 +672,7 @@ mod tests {
             tickets: vec![ticket(1)],
             mode: Mode::ReadOnly,
             approvals: Vec::new(),
+            scale: Some(2),
             sessions: vec![SessionInfo {
                 session: 9,
                 project: "/repo".into(),

@@ -314,6 +314,34 @@ impl Journal {
         Ok(())
     }
 
+    fn meta(&self, key: &str) -> Option<String> {
+        self.conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0)).optional().ok().flatten()
+    }
+
+    fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", [key, value])?;
+        Ok(())
+    }
+
+    /// How many extra members of a role equipe may bring in when its work
+    /// waits; 2 unless the person set it.
+    pub fn scale(&self) -> usize {
+        self.meta("scale").and_then(|v| v.parse().ok()).unwrap_or(2)
+    }
+
+    pub fn set_scale(&self, extra: usize) -> Result<()> {
+        self.set_meta("scale", &extra.to_string())
+    }
+
+    /// The members equipe brought in to help, which it lets go when idle.
+    pub fn helpers(&self) -> Vec<SessionId> {
+        self.meta("helpers").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    pub fn set_helpers(&self, helpers: &[SessionId]) -> Result<()> {
+        self.set_meta("helpers", &serde_json::to_string(helpers).unwrap_or_default())
+    }
+
     pub fn set_language(&self, language: &str) -> Result<()> {
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('language', ?1)", [language])?;
         Ok(())

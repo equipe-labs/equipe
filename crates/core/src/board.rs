@@ -20,6 +20,27 @@ pub struct Candidate<'a> {
     pub free: bool,
 }
 
+/// Ready tickets owned by a role that no member of it was free to take: how
+/// many wait, per role — the work extra members of that role would start on.
+pub fn unstaffed(tickets: &[Ticket], members: &[Candidate<'_>], single_project: bool) -> Vec<(String, usize)> {
+    let taken: Vec<TicketId> = assignments(tickets, members, single_project).into_iter().map(|(id, _)| id).collect();
+    let finished = |id: &TicketId| tickets.iter().any(|t| t.id == *id && t.status.is_closed());
+    let mut waiting: Vec<(String, usize)> = Vec::new();
+    for ticket in tickets.iter().filter(|t| t.status == TicketStatus::Todo && !taken.contains(&t.id)) {
+        let Some(owner) = ticket.owner.as_deref().filter(|o| members.iter().any(|m| m.role == *o)) else {
+            continue;
+        };
+        if (ticket.project.is_none() && !single_project) || !ticket.depends_on.iter().all(finished) {
+            continue;
+        }
+        match waiting.iter_mut().find(|(role, _)| role == owner) {
+            Some((_, n)) => *n += 1,
+            None => waiting.push((owner.to_owned(), 1)),
+        }
+    }
+    waiting
+}
+
 /// Which free member picks up which ready ticket. A ticket is ready when it is
 /// `todo`, has an owner, knows its project, and everything it depends on is
 /// finished. The oldest ready ticket goes first; a member takes one ticket at a

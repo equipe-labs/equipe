@@ -252,6 +252,12 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                 _ => "The browser didn't open — run `equipe browser` in a terminal to see why.".into(),
             });
         }
+        if std::mem::take(&mut app.paste_image) {
+            match clipboard_image() {
+                Ok(path) => app.attach_image(&path),
+                Err(why) => app.flash = Some(why),
+            }
+        }
         if std::mem::take(&mut app.copy_selection) {
             let size = terminal.size()?;
             if let Some(text) = view::selection_text(&app, theme, ratatui::layout::Rect::new(0, 0, size.width, size.height), &layouts) {
@@ -323,6 +329,40 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         accepted: app.accepted.clone(),
         to_review: app.to_review().len(),
         daemon_lost,
+    })
+}
+
+/// Save the clipboard's image — of the machine equipe runs on — as a PNG in a
+/// folder only the person can read, for a member to look at.
+fn clipboard_image() -> Result<PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = std::env::temp_dir().join("equipe-pastes");
+    std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let path = dir.join(format!("paste-{stamp}.png"));
+    let target = path.to_string_lossy().into_owned();
+    let has = |program: &str| std::process::Command::new("which").arg(program).output().is_ok_and(|o| o.status.success());
+    let shell = |script: &str| std::process::Command::new("sh").arg("-c").arg(script).arg("sh").arg(&target).status();
+    let _ = if cfg!(target_os = "macos") {
+        if has("pngpaste") {
+            shell("pngpaste \"$1\" 2>/dev/null")
+        } else {
+            shell(r#"osascript -e "set f to (open for access POSIX file \"$1\" with write permission)" -e "try" -e "write (the clipboard as «class PNGf») to f" -e "end try" -e "close access f" >/dev/null 2>&1"#)
+        }
+    } else if has("wl-paste") {
+        shell("wl-paste --type image/png > \"$1\" 2>/dev/null")
+    } else {
+        shell("xclip -selection clipboard -t image/png -o > \"$1\" 2>/dev/null")
+    };
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
+        return Ok(path);
+    }
+    let _ = std::fs::remove_file(&path);
+    Err(if std::env::var_os("SSH_CONNECTION").is_some() {
+        "No image on the clipboard here — over SSH, equipe reads the clipboard of the Mac it runs on, not yours. Save the screenshot there and drop or paste its path.".into()
+    } else {
+        "No image on the clipboard. Copy a screenshot (⌃⇧⌘4 on a Mac), then Ctrl-V.".into()
     })
 }
 
