@@ -416,6 +416,12 @@ fn board_target(name: &str, input: Option<&Value>) -> Option<String> {
         "create_ticket" => [text("title"), text("owner").map(|o| format!("→ {o}"))].into_iter().flatten().collect(),
         "update_ticket" => [id, text("status"), text("owner").map(|o| format!("→ {o}")), text("title")].into_iter().flatten().collect(),
         "comment" | "submit_for_review" => [id, text("text").or_else(|| text("summary"))].into_iter().flatten().collect(),
+        "block_on_person" => {
+            let needs = input.get("needs").and_then(Value::as_array).map(|items| {
+                items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ").chars().take(100).collect::<String>()
+            });
+            needs.into_iter().collect()
+        }
         _ => Vec::new(),
     };
     (!parts.is_empty()).then(|| parts.join(" · "))
@@ -661,6 +667,10 @@ mod tests {
         );
         assert_eq!(target("mcp__equipe__update_ticket", json!({ "id": 4, "status": "cancelled" })).as_deref(), Some("T-4 · cancelled"));
         assert_eq!(target("mcp__equipe__comment", json!({ "id": 2, "text": "done\nmore" })).as_deref(), Some("T-2 · done"));
+        assert_eq!(
+            target("mcp__equipe__block_on_person", json!({ "needs": ["GitHub token", "PostHog secrets"] })).as_deref(),
+            Some("GitHub token, PostHog secrets")
+        );
         assert_eq!(target("mcp__equipe__board", json!({})), None);
         assert_eq!(target("Read", json!({ "file_path": "/a" })), None);
     }

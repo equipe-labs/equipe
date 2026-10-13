@@ -9,7 +9,7 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-pub const COMMANDS: [Spec; 18] = [
+pub const COMMANDS: [Spec; 19] = [
     Spec { name: "usage", args: "", about: "Plan limits, each member's context and tokens" },
     Spec { name: "scale", args: "[0-6|off]", about: "Extra members a role may get when its work waits" },
     Spec { name: "compact", args: "[member]", about: "Start its next conversation afresh, from a summary of this one" },
@@ -18,6 +18,7 @@ pub const COMMANDS: [Spec; 18] = [
     Spec { name: "project", args: "[name|all]", about: "Put one project in focus: board, reviews and new work" },
     Spec { name: "accept", args: "T-n", about: "Approve handed-in work" },
     Spec { name: "reopen", args: "T-n <what to change>", about: "Send work back with what to change" },
+    Spec { name: "resume", args: "T-n [what you did]", about: "You did what a waiting ticket needed: it goes back to its member" },
     Spec { name: "cancel", args: "T-n", about: "Drop a ticket" },
     Spec { name: "board", args: "", about: "The board (Ctrl-B)" },
     Spec { name: "add", args: "<role…> [codex|claude]", about: "Bring in teammates" },
@@ -46,6 +47,8 @@ pub struct Context<'a> {
     pub review: Vec<(TicketId, &'a str)>,
     /// Tickets that can be sent back: in review or done.
     pub reopenable: Vec<(TicketId, &'a str)>,
+    /// Tickets waiting on the person.
+    pub waiting: Vec<(TicketId, &'a str)>,
     /// Tickets still open, for /cancel.
     pub open: Vec<(TicketId, &'a str)>,
     /// The squad's members: name and role.
@@ -118,6 +121,7 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
         ("cancel", 1) => tickets(&ctx.open, ""),
         // What to change follows the number.
         ("reopen", 1) => tickets(&ctx.reopenable, " "),
+        ("resume", 1) => tickets(&ctx.waiting, " "),
         // Each mode says what it lets members do, and which one is on now.
         ("mode", 1) => {
             let mut choices: Vec<Choice> =
@@ -225,6 +229,7 @@ mod tests {
         Context {
             review: vec![(8, "Translations"), (10, "PostHog")],
             reopenable: vec![(8, "Translations"), (10, "PostHog"), (3, "Deploy")],
+            waiting: vec![(11, "Analytics")],
             open: vec![(5, "SEO check")],
             members: vec![("pm", "pm"), ("frontend", "frontend")],
             roles: vec!["pm", "designer", "frontend", "backend", "qa", "data"],
@@ -241,7 +246,8 @@ mod tests {
 
     #[test]
     fn a_slash_lists_the_commands_that_fit() {
-        assert_eq!(texts(&complete("/re", &ctx())), ["/reopen "]);
+        assert_eq!(texts(&complete("/reo", &ctx())), ["/reopen "]);
+        assert_eq!(texts(&complete("/resume ", &ctx())), ["/resume T-11 "], "the tickets waiting on the person");
         assert_eq!(complete("/", &ctx()).len(), COMMANDS.len());
         assert_eq!(texts(&complete("/bo", &ctx())), ["/board"], "a command without arguments is whole");
         assert!(complete("/board", &ctx()).is_empty(), "nothing left to complete");

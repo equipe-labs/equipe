@@ -211,6 +211,9 @@ struct Work {
     history: Vec<responses::Message>,
     /// Set by `submit_for_review`; the work is handed in when the turn ends.
     handed_in: Option<String>,
+    /// Set by `block_on_person`: what the person has to do. The ticket waits
+    /// for them when the turn ends.
+    waiting: Option<String>,
 }
 
 struct Session {
@@ -322,6 +325,9 @@ enum WorkEnd {
     Cancelled,
     /// The member left the squad; the ticket goes back on the board.
     Left,
+    /// It called `block_on_person`: the ticket waits for the person, its
+    /// worktree kept, and the member is free for other work.
+    Waiting,
 }
 
 struct Runtime {
@@ -471,6 +477,7 @@ impl Runtime {
             Command::Close { session } => self.close(session).await,
             Command::Accept { squad, ticket } => self.accept(&squad, ticket).await,
             Command::Reopen { squad, ticket, note } => self.reopen(&squad, ticket, note).await,
+            Command::Resume { squad, ticket, note } => self.resume(&squad, ticket, note).await,
             Command::Cancel { squad, ticket } => self.cancel(&squad, ticket).await,
             Command::SetMode { squad, member, mode } => self.set_mode(&squad, member, mode),
             Command::ShowBrowser { squad, member, show } => self.show_browser(&squad, member, show),
@@ -1153,6 +1160,8 @@ impl Runtime {
         let squad = session.squad.clone();
         if session.work.as_ref().is_some_and(|w| w.handed_in.is_some()) {
             self.end_work(id, WorkEnd::HandedIn);
+        } else if session.work.as_ref().is_some_and(|w| w.waiting.is_some()) {
+            self.end_work(id, WorkEnd::Waiting);
         }
         if let Some(session) = self.sessions.get_mut(&id)
             && !session.queued.is_empty()
@@ -1387,7 +1396,7 @@ impl Runtime {
         ticket.assignee = Some(name.clone());
         ticket.branch = sandbox.as_ref().map(|s| s.branch.clone()).or(ticket.branch);
         ticket.worktree = sandbox.as_ref().map(|s| s.path.clone());
-        let reopened = ticket.note.as_ref().filter(|n| n.starts_with("Reopened")).cloned();
+        let reopened = ticket.note.as_ref().filter(|n| n.starts_with("Reopened") || n.starts_with("Resumed")).cloned();
         if let Some(journal) = self.journal(&squad) {
             let _ = journal.save_ticket(&ticket);
             let _ = journal.set_ticket_work(
@@ -1409,6 +1418,7 @@ impl Runtime {
                 claude_session: saved.engine_session,
                 history: Vec::new(),
                 handed_in: None,
+                waiting: None,
             });
         }
         self.publish(Event::TicketChanged { squad: squad.clone(), ticket: ticket.clone() });
@@ -1455,7 +1465,7 @@ impl Runtime {
         let Some(mut ticket) = self.journal(&squad).and_then(|j| j.ticket(work.ticket).ok().flatten()) else {
             return;
         };
-        let summary = work.handed_in.clone();
+        let summary = work.handed_in.clone().or_else(|| work.waiting.clone());
         let mut kept_worktree = None;
         if let Some(sandbox) = &work.sandbox {
             let body = summary.clone().unwrap_or_else(|| ticket.body.clone());
@@ -1465,7 +1475,7 @@ impl Runtime {
                 let message = format!("couldn't commit T-{}: {err} — it is still in {}", ticket.id, sandbox.path.display());
                 self.error(Some(id), message, None);
             }
-            if how == WorkEnd::HandedIn {
+            if matches!(how, WorkEnd::HandedIn | WorkEnd::Waiting) {
                 kept_worktree = Some(sandbox.path.clone());
             } else {
                 ticket.branch = release(sandbox);
@@ -1477,6 +1487,11 @@ impl Runtime {
                 ticket.status = TicketStatus::Review;
                 ticket.note = summary.clone();
                 (name.as_str(), "handed in", format!("{name} handed in T-{} for your review", ticket.id))
+            }
+            WorkEnd::Waiting => {
+                ticket.status = TicketStatus::Waiting;
+                ticket.note = summary.clone();
+                (name.as_str(), "waiting", format!("T-{} waits for you — {name} needs something only you can do", ticket.id))
             }
             WorkEnd::Accepted => {
                 ticket.status = TicketStatus::Done;
@@ -1597,6 +1612,44 @@ impl Runtime {
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: found });
         self.brief_pm(squad, line.clone(), Some(line));
         self.dispatch(squad).await;
+    }
+
+    /// The person did what a `waiting` ticket needed: it goes back to the
+    /// member that put it down, in the same worktree and conversation.
+    async fn resume(&mut self, squad: &str, ticket: TicketId, note: String) {
+        let Some(found) = self.find_ticket(squad, ticket) else {
+            return;
+        };
+        if found.status != TicketStatus::Waiting {
+            let status = found.status.label();
+            return self.squad_error(squad, format!("T-{ticket} isn't waiting on you — it is {status}."));
+        }
+        let found = self.resumed(squad, found, "you", &note);
+        let line = format!("You resumed T-{} · {}", found.id, found.title);
+        self.brief_pm(squad, line.clone(), Some(line));
+        self.dispatch(squad).await;
+    }
+
+    /// `ticket`, waiting, back to `todo` for the member that put it down,
+    /// saved and announced. What was done (`note`) is what the member goes on from.
+    fn resumed(&mut self, squad: &str, mut ticket: Ticket, by: &str, note: &str) -> Ticket {
+        let note = match note.trim() {
+            "" => "Resumed: the person did what you were waiting for.".to_owned(),
+            note => format!("Resumed: {note}"),
+        };
+        let present: Vec<String> = self
+            .sessions
+            .values()
+            .filter(|s| s.squad.as_deref() == Some(squad))
+            .filter_map(|s| s.name().map(str::to_owned))
+            .collect();
+        back_to_its_member(&mut ticket, &present, &note);
+        if let Some(journal) = self.journal(squad) {
+            let _ = journal.save_ticket(&ticket);
+            let _ = journal.ticket_event(ticket.id, by, "resumed", &note);
+        }
+        self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: ticket.clone() });
+        ticket
     }
 
     async fn cancel(&mut self, squad: &str, ticket: TicketId) {
@@ -1878,9 +1931,15 @@ impl Runtime {
                     return Err("Only the PM changes tickets; propose a new one, or comment.".into());
                 }
                 let ticket_id = board::arg_id(&args, "id").ok_or("Which ticket? Give its id.")?;
+                let present: Vec<String> = self
+                    .sessions
+                    .values()
+                    .filter(|s| s.squad.as_deref() == Some(squad.as_str()))
+                    .filter_map(|s| s.name().map(str::to_owned))
+                    .collect();
                 let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
                 let mut ticket = journal.ticket(ticket_id).ok().flatten().ok_or_else(|| format!("There is no T-{ticket_id}."))?;
-                if !matches!(ticket.status, TicketStatus::Proposed | TicketStatus::Todo) {
+                if !matches!(ticket.status, TicketStatus::Proposed | TicketStatus::Todo | TicketStatus::Waiting) {
                     let status = ticket.status.label();
                     return Err(format!("T-{ticket_id} is {status} — from here it's the person's to change."));
                 }
@@ -1899,7 +1958,12 @@ impl Runtime {
                 if let Some(ids) = board::arg_ids(&args, "depends_on") {
                     ticket.depends_on = ids;
                 }
+                let waiting = ticket.status == TicketStatus::Waiting;
                 match board::arg_str(&args, "status") {
+                    // Back to the member that put it down, where it left off.
+                    Some("todo") if waiting => {
+                        back_to_its_member(&mut ticket, &present, "Resumed: the PM says what you were waiting for is done.");
+                    }
                     Some("todo") => {
                         ticket.status = TicketStatus::Todo;
                         ticket.note = None;
@@ -1926,9 +1990,28 @@ impl Runtime {
                 let session = self.sessions.get_mut(&id).ok_or("You're not on the squad.")?;
                 let work = session.work.as_mut().ok_or("You're not on a ticket — there is nothing to hand in.")?;
                 work.handed_in = Some(summary);
+                work.waiting = None;
                 Ok(format!(
                     "Handed in T-{}. Your changes are committed when this turn ends and the person reviews them. \
 End your turn now with a short summary.",
+                    work.ticket
+                ))
+            }
+            board::BLOCK_ON_PERSON => {
+                let needs = board::arg_strs(&args, "needs");
+                if needs.is_empty() {
+                    return Err("List what the person has to do, one thing per item.".into());
+                }
+                let note = board::waiting_note(&needs, board::arg_str(&args, "why"));
+                let session = self.sessions.get_mut(&id).ok_or("You're not on the squad.")?;
+                let work = session.work.as_mut().ok_or("You're not on a ticket — there is nothing to put down.")?;
+                if work.handed_in.is_some() {
+                    return Err(format!("T-{} is already handed in.", work.ticket));
+                }
+                work.waiting = Some(note);
+                Ok(format!(
+                    "T-{} waits for the person when this turn ends; your changes are kept in your worktree and you get \
+it back there once they have done it. End your turn now with a short line on what you need.",
                     work.ticket
                 ))
             }
@@ -2208,7 +2291,18 @@ fn restore_work(journal: &Journal, ticket: &Ticket, projects: &[PathBuf], edits:
         claude_session: saved.engine_session,
         history: Vec::new(),
         handed_in: None,
+        waiting: None,
     })
+}
+
+/// A `waiting` ticket back to `todo`, for the member that put it down while it
+/// is still on the squad (`present`); otherwise for whoever owns it.
+fn back_to_its_member(ticket: &mut Ticket, present: &[String], note: &str) {
+    if let Some(member) = ticket.assignee.take().filter(|a| present.contains(a)) {
+        ticket.owner = Some(member);
+    }
+    ticket.status = TicketStatus::Todo;
+    ticket.note = Some(note.to_owned());
 }
 
 /// What a member is told when it picks up a ticket.
@@ -2229,7 +2323,12 @@ fn work_prompt(
         ));
     }
     out.push('\n');
-    if let Some(note) = reopened {
+    if let Some(note) = reopened.and_then(|n| n.strip_prefix("Resumed: ")) {
+        out.push_str(&format!(
+            "You put this ticket down to wait for the person; it is back. {note}\nCarry on from where you left off — \
+check what is already done in your worktree first.\n"
+        ));
+    } else if let Some(note) = reopened {
         out.push_str(&format!(
             "The person sent it back. {note}\nWhat they asked for says something about how they want work done: save that \
 lesson in your memory before you start, so the next ticket begins with it.\n"
@@ -2240,7 +2339,9 @@ lesson in your memory before you start, so the next ticket begins with it.\n"
     }
     out.push_str(if board_tools {
         "\nWhen it meets the acceptance criteria, call submit_for_review with a short summary, then end your turn. \
-If you are blocked or need a decision, say so and end your turn — the person answers here."
+If you can't go on without something only the person can do (a token, an account, a setting), call block_on_person \
+with what they need to do and end your turn — you are free for other work until they have. If you need a decision, \
+say so and end your turn — the person answers here."
     } else {
         "\nWhen it's done, say so plainly; the person accepts it. If you are blocked or need a decision, say so."
     });

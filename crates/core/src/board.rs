@@ -130,6 +130,8 @@ pub const CREATE_TICKET: &str = "create_ticket";
 pub const UPDATE_TICKET: &str = "update_ticket";
 pub const COMMENT: &str = "comment";
 pub const SUBMIT_FOR_REVIEW: &str = "submit_for_review";
+/// A member puts its ticket down until the person does something only they can.
+pub const BLOCK_ON_PERSON: &str = "block_on_person";
 /// A member asks the person's yes before something done in their name.
 pub const ASK_PERSON: &str = "ask_person";
 
@@ -185,6 +187,25 @@ Your changes are committed to the ticket's branch and the person reviews them. T
                 "required": ["summary"],
             },
         }),
+        json!({
+            "name": BLOCK_ON_PERSON,
+            "description": "Put the ticket you are on down when you can't go on without something only the person \
+can do — a token or secret to issue, an account or a setting to change. The ticket waits for them with what you \
+list as their checklist; you are free for other work meanwhile, and get it back, in the same worktree, once they \
+have done it. Your changes so far are kept. Then end your turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "needs": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Each thing the person has to do, one per item, concrete enough to do without asking — in the person's language.",
+                    },
+                    "why": { "type": "string", "description": "What it is for, in one line — in the person's language." },
+                },
+                "required": ["needs"],
+            },
+        }),
     ];
     tools.push(json!({
         "name": ASK_PERSON,
@@ -221,7 +242,8 @@ Claude Code calls this itself; there is no need to call it.",
         tools.push(json!({
             "name": UPDATE_TICKET,
             "description": "Change a ticket: its title, body, owner, project or dependencies; accept a proposal \
-(status todo) or drop one (status cancelled). Work in progress and done work are the person's to change.",
+(status todo) or drop one (status cancelled). A ticket waiting on the person goes back to its member with status todo, \
+once they have done what it needed. Work in progress and done work are the person's to change.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -238,6 +260,33 @@ Claude Code calls this itself; there is no need to call it.",
         }));
     }
     tools
+}
+
+/// What a `waiting` ticket's note says: the person's checklist, and why.
+pub fn waiting_note(needs: &[String], why: Option<&str>) -> String {
+    let mut out = String::from("Waiting on you:");
+    for need in needs {
+        out.push_str(&format!("\n- [ ] {need}"));
+    }
+    if let Some(why) = why {
+        out.push_str(&format!("\n({why})"));
+    }
+    out
+}
+
+/// What a `waiting` ticket's note asks of the person, item by item.
+pub fn waiting_needs(note: &str) -> Vec<&str> {
+    note.lines().filter_map(|l| l.trim().strip_prefix("- [ ] ")).map(str::trim).collect()
+}
+
+/// A list of strings, blanks dropped; a single string counts as one item.
+pub fn arg_strs(args: &Value, key: &str) -> Vec<String> {
+    let items = match args.get(key) {
+        Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).collect(),
+        Some(Value::String(one)) => vec![one.as_str()],
+        _ => Vec::new(),
+    };
+    items.into_iter().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect()
 }
 
 /// A string argument, if present and not blank.
@@ -359,6 +408,27 @@ mod tests {
         assert!(names(tools(true)).contains(&UPDATE_TICKET.to_owned()));
         assert!(!names(tools(false)).contains(&UPDATE_TICKET.to_owned()));
         assert!(names(tools(false)).contains(&SUBMIT_FOR_REVIEW.to_owned()));
+    }
+
+    #[test]
+    fn a_waiting_ticket_lists_what_the_person_has_to_do() {
+        let needs = arg_strs(&json!({ "needs": ["GitHub token", " ", "PostHog secrets"] }), "needs");
+        assert_eq!(
+            waiting_note(&needs, Some("for the deploy")),
+            "Waiting on you:\n- [ ] GitHub token\n- [ ] PostHog secrets\n(for the deploy)"
+        );
+        assert_eq!(waiting_needs(&waiting_note(&needs, None)), ["GitHub token", "PostHog secrets"]);
+        assert_eq!(arg_strs(&json!({ "needs": "a token" }), "needs"), ["a token"]);
+        assert!(arg_strs(&json!({}), "needs").is_empty());
+    }
+
+    #[test]
+    fn a_waiting_ticket_is_not_picked_up() {
+        let mut t = ticket(1, "backend");
+        t.status = TicketStatus::Waiting;
+        t.assignee = Some("backend".into());
+        let next = ticket(2, "backend");
+        assert_eq!(assignments(&[t, next], &[free("backend", "backend")], true), [(2, "backend".into())]);
     }
 
     #[test]

@@ -198,7 +198,9 @@ touching the same files: when several of a role's tickets are ready at once, equ
 role for them and lets them go after.",
         (true, false) => "Your equipe tools: `board` shows the board, `create_ticket` proposes work outside your \
 ticket, `comment` notes something on a ticket, and `submit_for_review` hands in the ticket you are on once \
-it meets its acceptance criteria.",
+it meets its acceptance criteria. When you can't go on without something only the person can do — a token, an \
+account, a setting — `block_on_person` puts the ticket down with what they need to do, and you take other work \
+until they have; don't keep a ticket open just to wait.",
         (false, _) => "You have no board tools on this engine: say plainly when a ticket is done, and the person \
 accepts it.",
     };

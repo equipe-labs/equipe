@@ -146,7 +146,18 @@ Each squad's board lives in its database (`~/.equipe/squads/<squad>/squad.db`,
 each — created, assigned, handed in, commented, accepted, reopened. Tickets are
 kept forever (a few hundred bytes each); conversations follow the storage policy.
 
-Status flow: `proposed → todo → in_progress → review → done` (or `cancelled`).
+Status flow: `proposed → todo → in_progress → review → done` (or `cancelled`),
+with a side loop `in_progress → waiting → todo → in_progress` for a ticket that
+can't go on without the person.
+
+| Status | Means | Who moves it on |
+|---|---|---|
+| `proposed` | a member's suggestion | the PM or the person makes it `todo`, or drops it |
+| `todo` | ready once its dependencies are done | equipe's rules hand it to a free owner |
+| `in_progress` | a member is on it, in its worktree | the member hands it in or puts it down |
+| `waiting` | put down until the person does their part; the note is their checklist | the person (`/resume T-3`) or the PM (`update_ticket` → `todo`) |
+| `review` | handed in | the person accepts, reopens or cancels |
+| `done` / `cancelled` | closed | the person can reopen |
 
 - **The PM writes the board** through tools; a ticket has an owner (a role or a
   member), a project when the squad has several, dependencies, and acceptance
@@ -162,6 +173,17 @@ Status flow: `proposed → todo → in_progress → review → done` (or `cancel
 - **It hands the work in** (`submit_for_review`): at the end of the turn its
   changes are committed to the branch and the ticket goes to `review`. The
   worktree stays, so the work can be sent back.
+- **It puts the ticket down when it needs the person** (`block_on_person`): a
+  token to issue, an account or a setting to change. At the end of the turn its
+  changes so far are committed, the ticket goes to `waiting` with the person's
+  checklist (`- [ ] …`) as its note, and the member is free — the rules hand it
+  its next ticket. The worktree, the branch and the ticket's conversation stay.
+  The board and the card under every conversation show waiting tickets, and
+  what each needs, beside the reviews. When the person has done it,
+  `/resume T-3 <what I did>` (or the PM setting it back to `todo`) returns it to
+  the member that put it down — while it is still on the squad — in the same
+  worktree and conversation. A restart never picks a `waiting` ticket back up:
+  only `in_progress` tickets resume on their own.
 - **Only the person closes work.** `/accept T-3` makes it `done` (the worktree
   goes, the branch stays to merge); `/reopen T-3 <what to change>` gives it back to
   its member on the same branch and conversation; `/cancel T-3` drops it. These are
@@ -179,9 +201,10 @@ model says.
 |---|---|---|
 | `board` | everyone | the open tickets as text |
 | `create_ticket` | everyone | the PM's are `todo`; anyone else's are proposals |
-| `update_ticket` | the PM | change a `proposed`/`todo` ticket; accept or drop a proposal |
+| `update_ticket` | the PM | change a `proposed`/`todo`/`waiting` ticket; accept or drop a proposal; resume a waiting one |
 | `comment` | everyone | add to a ticket's record |
 | `submit_for_review` | the member on a ticket | hand it in |
+| `block_on_person` | the member on a ticket | put it down until the person does their part |
 
 `--strict-mcp-config` keeps the person's own MCP servers (mail, calendar…) away
 from the squad, and `--allowedTools mcp__equipe` lets a headless run use equipe's

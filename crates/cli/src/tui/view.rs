@@ -17,7 +17,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use equipe_core::board::project_name;
+use equipe_core::board::{self, project_name};
 use equipe_core::protocol::{Entry, SessionId, TicketId, TicketStatus};
 
 use super::app::{Agent, AgentState, App, Divider, Hit, Pane, Spot, TextView, elapsed, relative, tool_verb};
@@ -364,7 +364,7 @@ fn conversation_areas(area: Rect, app: &App, agent: &Agent) -> (Rect, Rect, Rect
 const CARD_SHOWN: usize = 3;
 
 fn waiting_card_height(app: &App, room: u16) -> u16 {
-    let waiting = app.to_review_here().len();
+    let waiting = app.for_you_here().len();
     // Never on a short screen: the conversation comes first.
     if waiting == 0 || room < 16 {
         return 0;
@@ -375,16 +375,17 @@ fn waiting_card_height(app: &App, room: u16) -> u16 {
 /// Work waiting for the person, in sight under any conversation: a heading,
 /// then a row a ticket — each a click from its review on the board.
 fn waiting_card(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Option<TicketId>)> {
-    let waiting = app.to_review_here();
+    let waiting = app.for_you_here();
     if waiting.is_empty() {
         return Vec::new();
     }
     let bar = || Span::styled("▎ ", theme.accent());
     let tags = tag_width(app);
+    let heading = if waiting.iter().all(|t| t.status == TicketStatus::Review) { "Waiting for your review" } else { "Waiting for you" };
     let mut rows = vec![(
         Line::from(vec![
             bar(),
-            Span::styled(format!("Waiting for your review · {}", waiting.len()), theme.accent().add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{heading} · {}", waiting.len()), theme.accent().add_modifier(Modifier::BOLD)),
             Span::styled("   click one, or ctrl-b", theme.dim()),
         ]),
         None,
@@ -396,14 +397,20 @@ fn waiting_card(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Op
         let id = format!("{:<6}", format!("T-{}", t.id));
         // Owners line up: titles take a fixed width.
         let title_room = width.saturating_sub(2 + 6 + 2 + 12 + if tags > 0 { tags + 2 } else { 0 }).min(56);
-        let title = ui::fit(&t.title, title_room);
-        let pad = title_room.saturating_sub(unicode_width::UnicodeWidthStr::width(title.as_str()));
+        // A waiting ticket says what the person has to do, after its title.
+        let needs = t.note.as_deref().filter(|_| t.status == TicketStatus::Waiting).map(board::waiting_needs).unwrap_or_default();
+        let needs = if needs.is_empty() { String::new() } else { format!(" · needs {}", needs.join(", ")) };
+        let width_of = |s: &str| unicode_width::UnicodeWidthStr::width(s);
+        let title = ui::fit(&t.title, if needs.is_empty() { title_room } else { title_room.min(width_of(&t.title)).min(title_room / 2) });
+        let needs = ui::fit(&needs, title_room.saturating_sub(width_of(&title)));
+        let pad = title_room.saturating_sub(width_of(&title) + width_of(&needs));
         rows.push((
             Line::from(vec![
                 bar(),
                 Span::styled(id, theme.accent()),
                 project_tag(app, t, theme, tags).map_or_else(|| Span::raw(""), |tag| Span::styled(format!("{}  ", tag.content), tag.style)),
                 Span::styled(title, Style::new()),
+                Span::styled(needs, theme.accent()),
                 Span::raw(" ".repeat(pad + 2)),
                 Span::styled(who, style),
             ]),
@@ -1248,9 +1255,13 @@ fn switch_label(app: &App, pane: Pane, theme: Theme) -> Vec<Span<'static>> {
     match pane {
         Pane::Conversation => {
             let review = app.to_review().len();
+            let waiting = app.tickets.iter().filter(|t| t.status == TicketStatus::Waiting).count();
             let mut spans = vec![Span::styled("Board", theme.bold())];
             if review > 0 {
                 spans.push(Span::styled(format!(" · {review} to review"), theme.accent()));
+            }
+            if waiting > 0 {
+                spans.push(Span::styled(format!(" · {waiting} waiting on you"), theme.accent()));
             }
             spans.push(Span::styled("  ctrl-b", theme.dim()));
             spans
@@ -1425,6 +1436,11 @@ fn render_scrollbar(frame: &mut Frame, area: Rect, top: usize, height: usize, to
     frame.render_widget(Paragraph::new(rows), column);
 }
 
+/// A ticket that waits on the person: to review, or for their part done.
+fn for_you(status: TicketStatus) -> bool {
+    matches!(status, TicketStatus::Review | TicketStatus::Waiting)
+}
+
 /// The board's list: a heading per group, one row per ticket — the person's
 /// reviews first. Returns the rows, and which ticket each row is.
 fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Option<u32>)> {
@@ -1433,6 +1449,7 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
     let several_projects = app.projects.len() > 1;
     let heading = |status: TicketStatus| match status {
         TicketStatus::Review => "YOUR REVIEW",
+        TicketStatus::Waiting => "WAITING ON YOU",
         TicketStatus::InProgress => "IN PROGRESS",
         TicketStatus::Todo => "TO DO",
         TicketStatus::Proposed => "PROPOSED",
@@ -1454,7 +1471,7 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
                 .filter_map(|id| app.tickets.iter().find(|t| t.id == *id))
                 .filter(|t| heading(t.status) == label)
                 .count();
-            let style = if t.status == TicketStatus::Review { theme.accent().add_modifier(Modifier::BOLD) } else { theme.dim() };
+            let style = if for_you(t.status) { theme.accent().add_modifier(Modifier::BOLD) } else { theme.dim() };
             rows.push((Line::from(Span::styled(format!("{label}  {count}"), style)), None));
             current = Some(label);
         }
@@ -1462,6 +1479,7 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
         let who = t.assignee.as_ref().or(t.owner.as_ref()).cloned().unwrap_or_default();
         let state = match t.status {
             TicketStatus::Review => "waits for you".to_owned(),
+            TicketStatus::Waiting => "needs you".to_owned(),
             TicketStatus::InProgress => "working".to_owned(),
             TicketStatus::Todo if !t.depends_on.is_empty() => {
                 format!("after {}", t.depends_on.iter().map(|d| format!("T-{d}")).collect::<Vec<_>>().join(", "))
@@ -1485,7 +1503,7 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
             (false, true) => theme.dim(),
             (false, false) => Style::new(),
         };
-        let state_style = if t.status == TicketStatus::Review { theme.accent() } else { theme.dim() };
+        let state_style = if for_you(t.status) { theme.accent() } else { theme.dim() };
         let mut spans = vec![
             if selected { Span::styled("› ", theme.accent()) } else { Span::raw("  ") },
             Span::styled(format!("{:<6}", format!("T-{}", t.id)), if selected { theme.bold() } else { theme.dim() }),
@@ -1532,6 +1550,7 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     facts.push(
         match t.status {
             TicketStatus::Review => "handed in — waits for your review",
+            TicketStatus::Waiting => "put down — waits for you to do your part",
             TicketStatus::InProgress => "in progress",
             TicketStatus::Todo => "to do",
             TicketStatus::Proposed => "proposed",
@@ -1553,6 +1572,10 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
             actions.push(("a", "accept".into()));
             actions.push(("r", "ask for changes".into()));
         }
+        TicketStatus::Waiting => {
+            actions.push(("r", "done — resume".into()));
+            actions.push(("a", "mark done".into()));
+        }
         TicketStatus::Done => actions.push(("r", "reopen".into())),
         TicketStatus::InProgress | TicketStatus::Todo | TicketStatus::Proposed => actions.push(("a", "mark done".into())),
         TicketStatus::Cancelled => {}
@@ -1570,7 +1593,7 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
             keys.push(Span::raw("   "));
         }
         // The call the person is here to make stands out.
-        let style = if i == 0 && t.status == TicketStatus::Review { theme.accent().add_modifier(Modifier::BOLD) } else { theme.bold() };
+        let style = if i == 0 && for_you(t.status) { theme.accent().add_modifier(Modifier::BOLD) } else { theme.bold() };
         keys.push(Span::styled(k.to_owned(), style));
         keys.push(Span::styled(format!(" {what}"), theme.dim()));
     }
@@ -1800,8 +1823,12 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let mut facts: Vec<(String, Style)> = Vec::new();
     // Work waiting for the person comes first: it's what only they can do.
     let review = app.to_review().len();
-    if review > 0 {
-        facts.push((format!("{review} to review · ctrl-b"), theme.accent()));
+    let waiting = app.tickets.iter().filter(|t| t.status == TicketStatus::Waiting).count();
+    match (review, waiting) {
+        (0, 0) => {}
+        (_, 0) => facts.push((format!("{review} to review · ctrl-b"), theme.accent())),
+        (0, _) => facts.push((format!("{waiting} waiting on you · ctrl-b"), theme.accent())),
+        _ => facts.push((format!("{review} to review · {waiting} waiting on you · ctrl-b"), theme.accent())),
     }
     // A multi-line draft (often a paste) says how big it is before it's sent.
     let draft_lines = app.composer.line_count();
@@ -2312,6 +2339,31 @@ mod tests {
             app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(id, TicketStatus::Done, "x") });
         }
         assert!(!screen(&app, 100, 30).contains("Waiting for your review"));
+    }
+
+    #[test]
+    fn a_ticket_waiting_on_the_person_shows_what_they_have_to_do() {
+        let (mut app, _) = working();
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(1, TicketStatus::Review, "Pricing") });
+        let mut t = ticket(2, TicketStatus::Waiting, "Analytics");
+        t.note = Some("Waiting on you:\n- [ ] GitHub token\n- [ ] PostHog secrets\n(to deploy)".into());
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t });
+        app.flash = None;
+        let shot = screen(&app, 120, 30);
+        assert!(shot.contains("▎ Waiting for you · 2"), "{shot}");
+        assert!(shot.contains("T-2   Analytics · needs GitHub token, PostHog secrets"), "{shot}");
+        let owner = |id: &str| {
+            let line = shot.lines().find(|l| l.contains(id)).unwrap();
+            line[..line.find("frontend").unwrap()].chars().count()
+        };
+        assert_eq!(owner("Pricing"), owner("Analytics"), "owners line up:\n{shot}");
+        assert!(shot.contains("1 to review · 1 waiting on you"), "{shot}");
+        app.pane = Pane::Board;
+        let shot = screen(&app, 120, 30);
+        assert!(shot.contains("WAITING ON YOU  1"), "{shot}");
+        let row = |text: &str| shot.lines().position(|l| l.contains(text)).unwrap();
+        assert!(row("YOUR REVIEW") < row("WAITING ON YOU"), "{shot}");
+        assert!(shot.lines().find(|l| l.contains("Analytics")).unwrap().contains("needs you"), "{shot}");
     }
 
     #[test]

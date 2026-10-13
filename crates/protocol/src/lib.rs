@@ -87,6 +87,10 @@ pub enum TicketStatus {
     /// Ready to be picked up once its dependencies are done.
     Todo,
     InProgress,
+    /// Its member can't go on without something only the person can do (a
+    /// token, an account); the note lists what. The member is free for other
+    /// work meanwhile, and gets this back, in the same worktree, once resumed.
+    Waiting,
     /// Handed in; waiting for the person to accept it.
     Review,
     Done,
@@ -99,6 +103,7 @@ impl TicketStatus {
             TicketStatus::Proposed => "proposed",
             TicketStatus::Todo => "todo",
             TicketStatus::InProgress => "in progress",
+            TicketStatus::Waiting => "waiting",
             TicketStatus::Review => "review",
             TicketStatus::Done => "done",
             TicketStatus::Cancelled => "cancelled",
@@ -274,6 +279,9 @@ pub enum Command {
     Accept { squad: SquadName, ticket: TicketId },
     /// The person sends a ticket back with what to change.
     Reopen { squad: SquadName, ticket: TicketId, note: String },
+    /// The person did what a `waiting` ticket needed: it goes back to its
+    /// member, in the same worktree, with `note` (what was done) to go on from.
+    Resume { squad: SquadName, ticket: TicketId, note: String },
     /// The person drops a ticket.
     Cancel { squad: SquadName, ticket: TicketId },
     /// Set how much members may do on their own: the squad's default, or one
