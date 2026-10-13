@@ -823,13 +823,21 @@ pub async fn setup(home: &Path) -> Result<String, String> {
     println!("Talk to your squad from Telegram: requests, reviews and questions come to your phone, with buttons to answer.\n");
     println!("1. In Telegram, open @BotFather, send /newbot and pick a name. It gives you a token.");
     println!("   (Messages go through Telegram's servers, encrypted to them — not end to end.)\n");
-    let token = dialoguer::Password::new()
-        .with_prompt("2. Paste the token here")
+    let pasted = dialoguer::Password::new()
+        .with_prompt("2. Paste the token here (or BotFather's whole message)")
         .interact()
         .map_err(|err| err.to_string())?;
-    let token = token.trim().to_owned();
+    let Some(token) = token_in(&pasted) else {
+        return Err(format!(
+            "No bot token in what was pasted ({} characters) — it looks like 123456789:AAH… ; in @BotFather, /mybots › your bot › API Token shows it",
+            pasted.chars().count()
+        ));
+    };
     let api = Api::new(&token);
-    let me = api.call("getMe", json!({})).await.map_err(|why| format!("Telegram didn't take that token: {why}"))?;
+    let me = api.call("getMe", json!({})).await.map_err(|why| match why.as_str() {
+        "Not Found" | "Unauthorized" => format!("Telegram doesn't know that token ({why}) — copy it again from @BotFather: /mybots › your bot › API Token"),
+        _ => format!("Couldn't reach Telegram: {why}"),
+    })?;
     let bot = me["username"].as_str().ok_or("Telegram didn't say the bot's name")?.to_owned();
     let code = pairing_code();
     println!("\n3. Open https://t.me/{bot}?start={code} on your phone and press Start");
@@ -889,6 +897,25 @@ pub fn status(home: &Path) -> String {
         Some(config) => format!("Connected: @{} — it answers only your Telegram account. `equipe telegram off` disconnects.", config.bot),
         None => "Not connected. `equipe telegram setup` connects a bot of your own.".into(),
     }
+}
+
+/// The bot token in what was pasted — `<digits>:<letters, digits, _ and ->` —
+/// wherever it sits: alone, inside BotFather's whole message, after `bot`,
+/// or between the marks a terminal wraps a paste in.
+fn token_in(pasted: &str) -> Option<String> {
+    let chars: Vec<char> = pasted.chars().collect();
+    let tail = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+    for (colon, c) in chars.iter().enumerate() {
+        if *c != ':' {
+            continue;
+        }
+        let start = (0..colon).rev().take_while(|&i| chars[i].is_ascii_digit()).last().unwrap_or(colon);
+        let end = (colon + 1..chars.len()).take_while(|&i| tail(chars[i])).last().map_or(colon + 1, |i| i + 1);
+        if colon - start >= 5 && end - colon - 1 >= 30 {
+            return Some(chars[start..end].iter().collect());
+        }
+    }
+    None
 }
 
 /// Six digits from the system's randomness.
@@ -1150,6 +1177,21 @@ mod tests {
         assert!(pieces.len() > 1 && pieces.iter().all(|p| p.chars().count() <= CHUNK));
         assert_eq!(pieces.concat(), long);
         assert_eq!(chunks(&"x".repeat(8000)).len(), 3);
+    }
+
+    #[test]
+    fn the_token_is_found_in_whatever_was_pasted() {
+        let token = "7412345678:AAHk3jX_9d-Qw2LmNoPqRsTuVwXyZ012345";
+        assert_eq!(token_in(token).as_deref(), Some(token));
+        assert_eq!(token_in(&format!("  {token}\n")).as_deref(), Some(token));
+        // Wrapped by the terminal's paste marks, or after "bot".
+        assert_eq!(token_in(&format!("\x1b[200~{token}\x1b[201~")).as_deref(), Some(token));
+        assert_eq!(token_in(&format!("bot{token}")).as_deref(), Some(token));
+        // BotFather's whole message.
+        let message = format!("Done! Congratulations on your new bot.\nUse this token to access the HTTP API:\n{token}\nKeep your token secure");
+        assert_eq!(token_in(&message).as_deref(), Some(token));
+        assert_eq!(token_in("hello"), None);
+        assert_eq!(token_in("12:34"), None);
     }
 
     #[test]
