@@ -40,10 +40,11 @@ pub const ROLES: [Role; 7] = [
         title: "product manager (PM)",
         summary: "turns what you want into a plan and tickets; your main contact",
         duties: "You are the person's main contact. Turn what they want into a plan the team can act on: \
-ask at most a few sharp questions when intent is unclear, otherwise propose. Break work into small tickets, \
-each with an owner (a role on the team), a one-line goal and acceptance criteria, written so its owner can \
-start without asking. Keep track of what was decided and what is in flight. \
-You don't write code or edit files yourself.",
+ask at most a few sharp questions when intent is unclear, otherwise propose. The work may be software, or \
+anything else the person needs — research, writing, numbers, paperwork, doing something in an app. Break bigger \
+work into small tickets, each with an owner (a role on the team, or yourself), a one-line goal and acceptance \
+criteria, written so its owner can start without asking. Keep track of what was decided and what is in flight. \
+You don't change a project's code yourself: that is a code ticket for an engineer.",
         edits: false,
         tier: Tier::Top,
     },
@@ -93,7 +94,8 @@ and say how to see it working.",
         title: "QA engineer",
         summary: "reviews changes, plans tests, finds what breaks",
         duties: "You protect quality: review changes, write test plans, find edge cases, \
-and say plainly whether work meets its acceptance criteria. You read and report; you don't edit files.",
+and say plainly whether work meets its acceptance criteria. In the projects you read and report; you don't \
+change their files.",
         edits: false,
         tier: Tier::Mid,
     },
@@ -102,20 +104,20 @@ and say plainly whether work meets its acceptance criteria. You read and report;
         title: "data analyst",
         summary: "defines metrics and answers questions with numbers",
         duties: "You are the data analyst: define metrics, read data and code, answer questions with numbers \
-and say how sure you are. You read and report; you don't edit files.",
+and say how sure you are. In the projects you read and report; you don't change their files.",
         edits: false,
         tier: Tier::Mid,
     },
 ];
 
-/// A role the person names themselves (`/add custom writer`): read-only until
-/// they say otherwise, with a charter built from its name.
+/// A role the person names themselves (`/add custom writer`), with a charter
+/// built from its name. Like everyone it writes in the squad's folder; the
+/// projects it only reads, unless the person says it edits (`--edits`).
 pub const CUSTOM: Role = Role {
     id: "custom",
     title: "team member",
     summary: "any role you name",
-    duties: "Do the work your role's name implies, and ask when its scope is unclear. \
-You read and report; you don't edit files.",
+    duties: "Do the work your role's name implies, and ask when its scope is unclear.",
     edits: false,
     tier: Tier::Upper,
 };
@@ -178,11 +180,22 @@ pub struct Context<'a> {
     /// The squad's memory: its index as the member is given it, and how many facts it holds.
     pub memory: Option<&'a str>,
     pub facts: usize,
+    /// Whether the member changes a project's files on a code ticket — its
+    /// role's say, or the person's for a custom role.
+    pub edits: bool,
 }
 
 /// What an engine is told about who it is on the team.
 pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
     let title = if role.id == CUSTOM.id { format!("{name} (a custom role)") } else { role.title.to_owned() };
+    let duties = match (role.id == CUSTOM.id, ctx.edits) {
+        (true, true) => format!(
+            "{} You may change a project's files on a code ticket, on your own branch, in a worktree of your own.",
+            role.duties
+        ),
+        (true, false) => format!("{} In the projects you read and report; you don't change their files.", role.duties),
+        (false, _) => role.duties.to_owned(),
+    };
     let mates: Vec<String> = ctx
         .team
         .iter()
@@ -221,7 +234,14 @@ and any role can take one. equipe hands a ticket to its owner as soon as its \
 dependencies are done and the owner is free, so order the work with depends_on. Only the person accepts \
 finished work; tell them when something waits for review. Split work into tickets that can run side by side without \
 touching the same files: when several of a role's tickets are ready at once, equipe brings in extra members of that \
-role for them and lets them go after.",
+role for them and lets them go after.\n\nNot every request needs a ticket. Something short — an answer, a quick \
+lookup, a note or one table, done in a turn or two, with nothing the person must check before it counts — do yourself, \
+right in the conversation, and save what is worth keeping in the squad's folder. Anything bigger — several steps, \
+findings the person should check, a document or a deliverable, work for a teammate — goes on a ticket: `task` for \
+finding out, writing, calculating or paperwork, `action` for doing something in an app or the browser, `code` only \
+when a repository changes. When nobody on the team fits a task or an action, own it yourself, or propose that the \
+person bring someone in with `/add <role>` (designer, frontend, backend, mobile, qa, data — or `/add custom <name>`, \
+with `--edits` when it should change a project's files). Code needs an engineer: when the team has none, propose one.",
         (true, false) => "Your equipe tools: `board` shows the board, `create_ticket` proposes work outside your \
 ticket, `comment` notes something on a ticket, and `submit_for_review` hands in the ticket you are on once \
 it meets its acceptance criteria. When you can't go on without something only the person can do — a token, an \
@@ -255,7 +275,8 @@ its worktree. Work with several steps, work for a teammate, or a result the pers
 goes on a ticket instead. On a `task` or `action` ticket you work in a worktree of this folder, whatever your \
 role, and leave what you produce under `outputs/` or `notes/`; it goes into the folder when the person accepts. \
 Anything that reaches outside — sending, submitting, paying — asks the person first, \
-wherever you are. Other squads' folders are private."
+wherever you are. Other squads' folders are private. What you hand over as fact says where it came from — a link, \
+a document, a page — and what you couldn't confirm is marked unconfirmed, never stated as settled."
         ),
         None => String::new(),
     };
@@ -299,7 +320,7 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
         None => "Write for the person in the language they write in.".to_owned(),
     };
     format!(
-        "You are {name}, the {title} on a software squad that equipe runs for one person, who leads it. \
+        "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
 Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
@@ -313,7 +334,7 @@ is long or stands on its own — running a whole test suite, reading logs, surve
 hand to subagents (your Agent tool), several at once when the pieces don't depend on each other, and keep only \
 their summaries: your own context stays small. When your conversation is compacted, keep in the summary the tickets and where each stands, what was decided with the person, \
 their preferences, and anything they asked for that isn't done. {language} Be concise.",
-        role.duties
+        duties
     )
 }
 
@@ -365,7 +386,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, board_tools, language: None, browser: false, home: None, memory: None, facts: 0 }
+        Context { team, projects, board_tools, language: None, browser: false, home: None, memory: None, facts: 0, edits: false }
     }
 
     #[test]
@@ -451,9 +472,33 @@ mod tests {
     }
 
     #[test]
-    fn a_custom_role_is_named_by_the_person() {
+    fn a_custom_role_is_named_by_the_person_who_says_whether_it_edits() {
         let text = charter(&CUSTOM, "writer", &ctx(&[], &[], false));
         assert!(text.contains("no board tools"), "{text}");
         assert!(text.starts_with("You are writer, the writer (a custom role)"), "{text}");
+        assert!(text.contains("you don't change their files") && !text.contains("You may change"), "{text}");
+        let edits = charter(&CUSTOM, "editor", &Context { edits: true, ..ctx(&[], &[], false) });
+        assert!(edits.contains("You may change a project's files on a code ticket"), "{edits}");
+    }
+
+    #[test]
+    fn the_pm_does_short_work_itself_and_puts_bigger_work_of_any_kind_on_tickets() {
+        let team = [Teammate { name: "pm", role: "pm" }];
+        let text = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
+        for part in ["research, writing, numbers, paperwork", "or yourself", "Not every request needs a ticket", "do yourself", "own it yourself", "`/add <role>`", "`--edits`", "Code needs an engineer"] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+        // The rule for code stays: the PM doesn't change a project's code.
+        assert!(text.contains("You don't change a project's code yourself"), "{text}");
+        assert!(!text.contains("software squad"), "{text}");
+        // Nothing in a role's duties says all work is code.
+        assert!(ROLES.iter().chain([&CUSTOM]).all(|r| !r.duties.contains("you don't edit files")));
+    }
+
+    #[test]
+    fn what_a_member_hands_over_as_fact_names_its_source() {
+        let team = [Teammate { name: "pm", role: "pm" }];
+        let text = charter(role("data").unwrap(), "data", &Context { home: Some("/h"), ..ctx(&team, &[], true) });
+        assert!(text.contains("says where it came from") && text.contains("marked unconfirmed"), "{text}");
     }
 }

@@ -1725,7 +1725,7 @@ async fn a_task_with_no_project_runs_in_the_squads_folder_and_goes_in_when_accep
     let review =
         until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
     let ticket = ticket_changed(&review).pop().unwrap();
-    assert_eq!(ticket.note.as_deref(), Some("Three found.\n\nIn the squad's folder:\n- outputs/T-1 research/report.md"));
+    assert_eq!(ticket.note.as_deref(), Some("Three found.\n\nIn the squad's folder:\n- outputs/T-1 research/report.md\n\nIts files cite no source — check before relying on them."));
     assert!(!folder.join("outputs/T-1 research/report.md").exists(), "not in the folder before it is accepted");
 
     // Accepted: in the squad home's main at once — no merge question, no branch left.
@@ -1962,4 +1962,97 @@ async fn a_send_from_a_messaging_app_waits_for_the_persons_yes_every_time() {
     // The person takes Teams off the list: it no longer asks.
     Journal::for_squad(&home, "acme").unwrap().set_messaging_apps(&["Slack".into()]).unwrap();
     assert!(!handle.desktop_gate(check("key", serde_json::json!({ "keys": "return" }), &teams)).await.is_error);
+}
+
+// ── work that isn't code ──
+
+#[tokio::test]
+async fn a_squad_of_only_a_pm_researches_tax_deadlines_into_its_folder_and_memory() {
+    let file = "outputs/T-1 세금 마감/deadlines.md";
+    let report = "# 올해 세금 마감\\n- 5월 31일 종합소득세 신고·납부 (출처: https://www.nts.go.kr/income-tax)\\n- 7월 25일 부가가치세 1기 확정 (확인되지 않음)";
+    let (claude, recorded) = recording_claude(&format!(
+        "case \"$*\" in *\"You're on T-\"*) sleep 1; mkdir -p \"$(dirname '{file}')\"; printf '{report}\\n' > '{file}';; esac\n{}",
+        answering("정리했어요")
+    ));
+    let home = scratch("home");
+    squads::create_without_project(&home, "acme").unwrap();
+    let folder = squads_home(&home);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&scratch("elsewhere"), "pm")).await;
+
+    // The person asks the PM — the only member — for something that isn't code.
+    handle.send(Command::Submit { session: 1, text: "올해 내가 챙겨야 할 세금 마감을 조사해서 정리해줘".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    let charter = arg(&calls(&recorded)[0], "--append-system-prompt").unwrap().to_owned();
+    for part in ["Not every request needs a ticket", "do yourself, right in the conversation", "`task` for finding out", "own it yourself", "`/add <role>`", "marked unconfirmed"] {
+        assert!(charter.contains(part), "{part}: {charter}");
+    }
+    assert!(!charter.contains("You don't write code or edit files") && !charter.contains("software squad"), "{charter}");
+
+    // Research worth checking: the PM puts it on the board as a task for itself — no project needed.
+    let made = tool(&handle, "pm", "create_ticket", serde_json::json!({
+        "title": "세금 마감 조사", "body": "올해 챙길 세금 마감을 출처와 함께 정리", "owner": "pm",
+    }))
+    .await;
+    assert_eq!(made.text, "Created T-1 (task).");
+    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 1, ticket: 1, .. })).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let brief = arg(&calls(&recorded).pop().unwrap(), "-p").unwrap().to_owned();
+    assert!(brief.contains("give each fact its source") && brief.contains("unconfirmed"), "{brief}");
+
+    // What recurs goes into the squad's memory; the work is handed in.
+    let fact = serde_json::json!({ "name": "income-tax-deadline", "description": "종합소득세 신고·납부는 매년 5월 31일까지", "kind": "deadline" });
+    let saved = tool(&handle, "pm", "remember", fact).await;
+    assert!(!saved.is_error, "{}", saved.text);
+    tool(&handle, "pm", "submit_for_review", serde_json::json!({ "summary": "마감 2건 정리. 부가세 1기는 확인되지 않음." })).await;
+    let review =
+        until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
+    let note = ticket_changed(&review).pop().unwrap().note.unwrap();
+    assert_eq!(
+        note,
+        format!("마감 2건 정리. 부가세 1기는 확인되지 않음.\n\nIn the squad's folder:\n- {file}\n\nSources its files cite:\n- https://www.nts.go.kr/income-tax")
+    );
+
+    // Accepted: the result, with its source, is in the squad's folder, and the deadline in its memory.
+    handle.send(Command::Accept { squad: "acme".into(), ticket: 1 });
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Done)).await;
+    let kept = std::fs::read_to_string(folder.join(file)).unwrap();
+    assert!(kept.contains("https://www.nts.go.kr/income-tax") && kept.contains("확인되지 않음"), "{kept}");
+    assert!(std::fs::read_to_string(folder.join("memory/INDEX.md")).unwrap().contains("income-tax-deadline"));
+    handle.send(Command::Submit { session: 1, text: "다음 마감은?".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    let charter = arg(&calls(&recorded).pop().unwrap(), "--append-system-prompt").unwrap().to_owned();
+    assert!(charter.contains("종합소득세 신고·납부는 매년 5월 31일까지"), "{charter}");
+}
+
+#[tokio::test]
+async fn a_custom_role_edits_a_projects_files_only_when_the_person_says_so() {
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let site = repo();
+    let home = squad_home(&[&site]);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "writer")).await;
+    add(&handle, &mut events, 3, SessionSpec { access: Access::EditFiles, ..member(&site, "editor") }).await;
+    let sessions = handle.snapshot("acme").await.sessions;
+    let access = |name: &str| sessions.iter().find(|s| s.member.as_ref().is_some_and(|m| m.name == name)).unwrap().access;
+    assert_eq!((access("writer"), access("editor")), (Access::ReadOnly, Access::EditFiles));
+
+    // On a code ticket the one that edits gets a branch of its own; the other only reads.
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Docs", "kind": "code", "owner": "editor" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    assert!(matches!(started.last(), Some(Event::WorkStarted { session: 3, workspace: Some(_), .. })), "{started:#?}");
+    // One turn at a time, so the stand-in records each.
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 3, .. })).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Review docs", "kind": "code", "owner": "writer" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
+    assert!(matches!(started.last(), Some(Event::WorkStarted { session: 2, workspace: None, .. })), "{started:#?}");
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let charters: Vec<String> = calls(&recorded).iter().filter_map(|c| arg(c, "--append-system-prompt").map(str::to_owned)).collect();
+    let of = |name: &str| {
+        let who = format!("You are {name},");
+        charters.iter().find(|c| c.starts_with(&who)).unwrap_or_else(|| panic!("{who} {charters:#?}")).clone()
+    };
+    assert!(of("writer").contains("you don't change their files"), "{}", of("writer"));
+    assert!(of("editor").contains("You may change a project's files on a code ticket"), "{}", of("editor"));
 }

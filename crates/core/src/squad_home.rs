@@ -210,6 +210,33 @@ pub fn squad_of(home: &Path, dir: &Path) -> Option<String> {
     (parts.next()?.as_os_str() == "home").then_some(squad)
 }
 
+/// The links cited in `files` (paths under `dir`), first seen first: where a
+/// task's findings say they came from, for the person to check.
+pub fn cited_sources(dir: &Path, files: &[String]) -> Vec<String> {
+    const MAX: usize = 12;
+    let mut found: Vec<String> = Vec::new();
+    for file in files {
+        let Ok(bytes) = std::fs::read(dir.join(file)) else { continue };
+        // Text only, and not a whole dump.
+        let Ok(text) = std::str::from_utf8(&bytes[..bytes.len().min(1 << 20)]) else { continue };
+        for start in text.match_indices("http").map(|(i, _)| i) {
+            let rest = &text[start..];
+            if !(rest.starts_with("https://") || rest.starts_with("http://")) {
+                continue;
+            }
+            let end = rest.find(|c: char| c.is_whitespace() || "<>()[]\"'`".contains(c)).unwrap_or(rest.len());
+            let link = rest[..end].trim_end_matches(['.', ',', ';', ':', '!', '?']);
+            if link.len() > "https://".len() && !found.iter().any(|f| f == link) {
+                found.push(link.to_owned());
+                if found.len() == MAX {
+                    return found;
+                }
+            }
+        }
+    }
+    found
+}
+
 fn one_line(text: &str) -> String {
     let line = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("no reason given");
     if line.chars().count() > 80 { format!("{}…", line.chars().take(79).collect::<String>()) } else { line.to_owned() }
@@ -312,5 +339,19 @@ mod tests {
             std::fs::write(squad_dir(&home, squad).join("squad.db"), "").unwrap();
         }
         assert_eq!(others(&home, "acme"), [path(&home, "beta")]);
+    }
+
+    #[test]
+    fn the_links_a_tasks_files_cite_are_its_sources() {
+        let dir = home();
+        std::fs::write(
+            dir.join("deadlines.md"),
+            "- 5월 31일 종합소득세 (출처: https://www.nts.go.kr/a.do?x=1).\n- [부가세](https://www.nts.go.kr/b), 확인 안 됨\n같은 곳 https://www.nts.go.kr/a.do?x=1\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("chart.png"), [0xff, 0xfe, 0x00]).unwrap();
+        let files = ["deadlines.md".to_owned(), "chart.png".to_owned(), "gone.md".to_owned()];
+        assert_eq!(cited_sources(&dir, &files), ["https://www.nts.go.kr/a.do?x=1", "https://www.nts.go.kr/b"]);
+        assert!(cited_sources(&dir, &files[1..]).is_empty());
     }
 }

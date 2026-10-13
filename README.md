@@ -1,6 +1,6 @@
 # equipe
 
-### Spin up a full software squad of AI agents — and ship real projects.
+### Spin up a full software squad of AI agents — and ship real projects, and the work around them.
 
 <p align="center">
   <img src="demo/equipe.gif" alt="equipe CLI" width="820">
@@ -53,6 +53,13 @@ worktrees for parallel work, and human approval gates where they matter.
 - **Roles are data.** The PM turns what you want into tickets; engineers edit code
   (web, backend, mobile) in isolated worktrees; QA reviews; the data analyst answers with numbers. Each
   member gets a model suited to its role, and keeps its own memory.
+- **Not only code.** Research, writing, numbers, paperwork, a few steps in an app:
+  the PM does a short one right in the conversation and puts a bigger one on the
+  board as a `task` or `action` ticket, worked in the squad's own folder and accepted
+  like code — with the files it leaves and the sources it cites on the review card.
+  Any role can take one; when no one on the squad fits, the PM does it or suggests
+  `/add <role>` — or `/add custom writer` (`--edits` lets a custom role change a
+  project's files too).
 - **Engines are borrowed, not rebuilt.** equipe drives mature coding agents —
   Codex and Claude Code today, more over the
   [Agent Client Protocol](https://agentclientprotocol.com) — and mixes them per role.

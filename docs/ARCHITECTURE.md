@@ -554,7 +554,13 @@ writing there, reading every project. Roles live in `equipe_core::roles`:
 | `backend` | servers, APIs, data models, integrations | yes | top |
 | `qa` | reviews, test plans, edge cases, acceptance | no | mid |
 | `data` | metrics, analysis, answers with numbers | no | mid |
-| `custom <name>` | whatever its name says | no | upper |
+| `custom <name>` | whatever its name says | no — yes with `--edits` | upper |
+
+*Edits files* is about a project's files, on a code ticket. Every role writes the
+squad home — at its desk, and on a `task` or `action` ticket in a worktree of it —
+so research, writing and paperwork need no editing role. The PM does short work
+itself in conversation, puts bigger work on the board, and when no member fits
+owns it or suggests `/add`.
 
 - **Engines and models.** A tier is resolved against what the person's plan
   offers: Claude Code by alias (top `opus`, otherwise `sonnet`), Codex from its live
