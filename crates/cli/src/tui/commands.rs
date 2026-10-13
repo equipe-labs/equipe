@@ -24,7 +24,7 @@ pub const COMMANDS: [Spec; 22] = [
     Spec { name: "resume", args: "T-n [what you did]", about: "You did what a waiting ticket needed: it goes back to its member" },
     Spec { name: "cancel", args: "T-n", about: "Drop a ticket" },
     Spec { name: "board", args: "", about: "The board (Ctrl-B)" },
-    Spec { name: "add", args: "<role…> [codex|claude]", about: "Bring in teammates" },
+    Spec { name: "add", args: "<role…> | custom <name> [--edits]", about: "Bring in teammates" },
     Spec { name: "close", args: "", about: "Remove the selected member" },
     Spec { name: "mode", args: "[member] read-only|ask|auto|full", about: "How much members do on their own" },
     Spec { name: "browser", args: "[show|hide [member] · max <n>]", about: "Sign in to sites; show, hide or cap members' browsers" },

@@ -36,7 +36,7 @@ use crate::board::{self, Candidate};
 use crate::browser;
 use crate::journal::{self, Journal, SessionRecord, TicketWork};
 use crate::permissions;
-use crate::roles::{self, Role, Teammate};
+use crate::roles::{self, Teammate};
 use crate::squad_home;
 use crate::squad_memory;
 use crate::worktree::{self, Sandbox};
@@ -279,12 +279,10 @@ impl Session {
         self.member.as_ref().map(|m| m.name.as_str())
     }
 
-    fn role(&self) -> Option<&'static Role> {
-        self.member.as_ref().map(|m| roles::role_or_custom(&m.role))
-    }
-
+    /// Whether it changes a project's files on a code ticket: its role's say,
+    /// or the person's for a custom role — as it joined.
     fn edits(&self) -> bool {
-        self.role().is_some_and(|r| r.edits)
+        self.member.is_some() && self.access == Access::EditFiles
     }
 
     /// Free for a new ticket: not on one, not mid-turn.
@@ -631,6 +629,8 @@ impl Runtime {
             rt.publish_in(squad.as_deref(), Event::Error { session: Some(id), message, next: next.map(str::to_owned) });
         };
         let role = spec.role.as_deref().map(roles::role_or_custom);
+        // A built-in role edits as its role says; a custom one as the person said.
+        let edits = role.map(|r| if r.id == roles::CUSTOM.id { spec.access == Access::EditFiles } else { r.edits });
         match (&squad, role) {
             (Some(squad), _) => {
                 // A squad may have no project yet: its home is where it works.
@@ -645,7 +645,11 @@ impl Runtime {
         let engine = match spec.engine {
             Some(engine) => engine,
             None => {
-                let preference = role.map_or([Engine::Codex, Engine::Claude], roles::engine_preference);
+                let preference = match (role, edits) {
+                    (Some(_), Some(true)) => [Engine::Claude, Engine::Codex],
+                    (Some(role), _) => roles::engine_preference(role),
+                    (None, _) => [Engine::Codex, Engine::Claude],
+                };
                 match first_ready_engine(&preference, &self.config.store, &self.config.claude_binary).await {
                     Some(engine) => engine,
                     None => {
@@ -724,7 +728,7 @@ impl Runtime {
                 if let Err(err) = squad_home::ensure(&self.config.home, squad, language.as_deref()) {
                     return fail(self, format!("The squad's folder couldn't be made: {err}"), None);
                 }
-                let access = if role.is_some_and(|r| r.edits) { Access::EditFiles } else { Access::ReadOnly };
+                let access = if edits == Some(true) { Access::EditFiles } else { Access::ReadOnly };
                 (squad_home::path(&self.config.home, squad), None, access)
             }
             (Some(_), _, None) => unreachable!("a member joins a squad"),
@@ -959,6 +963,7 @@ impl Runtime {
                 home: home.as_deref(),
                 memory: memory.as_deref(),
                 facts: facts.len(),
+                edits,
             };
             roles::charter(roles::role_or_custom(&m.role), &m.name, &ctx)
         });
@@ -1389,10 +1394,15 @@ impl Runtime {
         // It sits in the squad home like everyone else; this is only where it starts.
         let project = self.projects(squad).first().cloned().unwrap_or_else(|| squad_home::path(&self.config.home, squad));
         let id = equipe_protocol::new_session_id();
+        // It edits as the role's member does — for a custom role, as the person said.
+        let edits = self
+            .sessions
+            .values()
+            .any(|s| s.squad.as_deref() == Some(squad) && s.member.as_ref().is_some_and(|m| m.role == role) && s.edits());
         let spec = SessionSpec {
             engine: None,
             model: None,
-            access: Access::ReadOnly,
+            access: if edits { Access::EditFiles } else { Access::ReadOnly },
             cwd: project,
             role: Some(role.to_owned()),
             squad: Some(squad.to_owned()),
@@ -1729,6 +1739,23 @@ impl Runtime {
             out.push_str("\n\nIn the squad's folder:");
             for file in &files {
                 out.push_str(&format!("\n- {file}"));
+            }
+        }
+        // A task's findings say where they came from: the links its files cite
+        // that the summary doesn't already, or that they cite none.
+        if ticket.kind == TicketKind::Task
+            && !files.is_empty()
+            && let Some(sandbox) = sandbox
+        {
+            let cited = squad_home::cited_sources(&sandbox.path, &files);
+            let new: Vec<&String> = cited.iter().filter(|link| !summary.contains(link.as_str())).collect();
+            if !new.is_empty() {
+                out.push_str("\n\nSources its files cite:");
+                for link in new {
+                    out.push_str(&format!("\n- {link}"));
+                }
+            } else if cited.is_empty() && !summary.contains("http") {
+                out.push_str("\n\nIts files cite no source — check before relying on them.");
             }
         }
         if ticket.kind == TicketKind::Action {
@@ -2468,7 +2495,7 @@ it back there once they have done it. End your turn now with a short line on wha
                         _ => None,
                     })
                     .collect();
-                let edits = roles::role_or_custom(&member.role).edits;
+                let edits = record.access == Access::EditFiles;
                 let work = tickets
                     .iter()
                     .find(|t| t.status == TicketStatus::InProgress && t.assignee.as_deref() == Some(member.name.as_str()))
@@ -2743,6 +2770,15 @@ fn work_prompt(
                 sandbox.path.display(),
                 ticket.id
             ));
+        }
+        if ticket.kind == TicketKind::Task {
+            out.push_str(
+                " The person reviews what you leave: in your files and your summary, give each fact its source — a \
+link, a document, a page — and mark what you couldn't confirm as unconfirmed.",
+            );
+            if board_tools {
+                out.push_str(" A date, an amount or a rule that recurs goes into the squad's memory with `remember`.");
+            }
         }
         if ticket.kind == TicketKind::Action {
             out.push_str(

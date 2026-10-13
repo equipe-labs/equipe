@@ -367,6 +367,8 @@ async fn main() -> ExitCode {
                 };
                 println!("{}", p.row("", &p.dim(&format!("{work} · {model}"))));
             }
+            println!("  {}  {}", p.bold(&format!("{:<9}", "custom")), ui::wrap("any role you name: /add custom writer", 13, 13, ui::width()));
+            println!("{}", p.row("", &p.dim("reads and reports — or edits files on its own branch, with --edits · sonnet")));
             println!("\n  {}", p.hint("equipe   then /add designer frontend"));
             Ok(())
         }

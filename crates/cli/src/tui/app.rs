@@ -432,7 +432,7 @@ impl App {
         if app.agents.is_empty() && !joining.iter().any(|r| r == roles::PM) {
             joining.insert(0, roles::PM.to_owned());
         }
-        let commands = joining.iter().flat_map(|role| app.add_member(role, None)).collect();
+        let commands = joining.iter().flat_map(|role| app.add_member(role, None, false)).collect();
         (app, commands)
     }
 
@@ -728,10 +728,11 @@ impl App {
         Some((agent.label(), agent.member.is_some() && !agent.is_pm() && has_pm))
     }
 
-    /// Bring a member onto the squad. The selection stays where it is.
-    fn add_member(&mut self, role: &str, engine: Option<Engine>) -> Vec<Command> {
+    /// Bring a member onto the squad. The selection stays where it is. A
+    /// custom role edits a project's files only when the person says so.
+    fn add_member(&mut self, role: &str, engine: Option<Engine>, custom_edits: bool) -> Vec<Command> {
         let id = new_session_id();
-        let edits = roles::role_or_custom(role).edits;
+        let edits = roles::role_or_custom(role).edits || custom_edits;
         // Named by the core once it starts; until then, by its role.
         let member = Member { role: role.to_owned(), name: role.to_owned() };
         self.agents.push(Agent::new(id, Some(member), edits, self.cwd.clone()));
@@ -1845,9 +1846,12 @@ impl App {
         }
     }
 
-    /// `/add designer frontend`, `/add qa codex`, `/add custom writer`.
+    /// `/add designer frontend`, `/add qa codex`, `/add custom writer`,
+    /// `/add custom writer --edits`.
     fn add(&mut self, rest: &str) -> Vec<Command> {
         let mut words: Vec<&str> = rest.split_whitespace().collect();
+        let custom_edits = words.contains(&"--edits");
+        words.retain(|w| *w != "--edits");
         let engine = match words.last() {
             Some(&"codex") => Some(Engine::Codex),
             Some(&"claude") => Some(Engine::Claude),
@@ -1866,6 +1870,10 @@ impl App {
                 return Vec::new();
             }
             ["custom", name, ..] => vec![name.to_lowercase()],
+            _ if custom_edits => {
+                self.flash = Some("--edits is for a custom role: /add custom writer --edits".into());
+                return Vec::new();
+            }
             ids => {
                 let mut wanted = Vec::new();
                 for id in ids {
@@ -1881,7 +1889,7 @@ impl App {
             }
         };
         let names = wanted.join(" and ");
-        let commands = wanted.iter().flat_map(|role| self.add_member(role, engine)).collect();
+        let commands = wanted.iter().flat_map(|role| self.add_member(role, engine, custom_edits)).collect();
         self.flash = Some(format!("{names} joining · Tab or @name to talk to them directly."));
         commands
     }
@@ -2380,7 +2388,16 @@ mod tests {
         type_text(&mut app, "/add qa codex");
         assert!(matches!(enter(&mut app).as_slice(), [Command::Start { spec, .. }] if spec.engine == Some(Engine::Codex)));
         type_text(&mut app, "/add custom writer");
-        assert!(matches!(enter(&mut app).as_slice(), [Command::Start { spec, .. }] if spec.role.as_deref() == Some("writer")));
+        assert!(matches!(enter(&mut app).as_slice(), [Command::Start { spec, .. }]
+            if spec.role.as_deref() == Some("writer") && spec.access == Access::ReadOnly));
+        // The person decides whether a custom role changes a project's files.
+        type_text(&mut app, "/add custom editor --edits");
+        assert!(matches!(enter(&mut app).as_slice(), [Command::Start { spec, .. }]
+            if spec.role.as_deref() == Some("editor") && spec.access == Access::EditFiles));
+        assert!(app.agents.last().unwrap().edit);
+        type_text(&mut app, "/add qa --edits");
+        assert!(enter(&mut app).is_empty());
+        assert!(app.flash.as_deref().unwrap().contains("for a custom role"), "{:?}", app.flash);
         type_text(&mut app, "/add fronend");
         assert!(enter(&mut app).is_empty());
         assert!(app.flash.as_deref().unwrap().contains("/add custom fronend"), "{:?}", app.flash);
