@@ -14,7 +14,7 @@ pub const COMMANDS: [Spec; 21] = [
     Spec { name: "scale", args: "[0-6|off]", about: "Extra members a role may get when its work waits" },
     Spec { name: "compact", args: "[member]", about: "Start its next conversation afresh, from a summary of this one" },
     Spec { name: "clear", args: "[member]", about: "Start its next conversation clean — memory and board stay" },
-    Spec { name: "squad", args: "[name] · new <name> <folder> · add|remove <folder>", about: "Switch, start, or change what a squad works on" },
+    Spec { name: "squad", args: "[name] · new <name> [folder] · add|remove <folder>", about: "Switch, start, or change what a squad works on" },
     Spec { name: "home", args: "[changes · undo [n]]", about: "Open the squad's folder, see what changed there, take a change back" },
     Spec { name: "project", args: "[name|all]", about: "Put one project in focus: board, reviews and new work" },
     Spec { name: "accept", args: "T-n", about: "Approve handed-in work" },
