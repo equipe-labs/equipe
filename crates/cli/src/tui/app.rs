@@ -279,6 +279,11 @@ pub struct App {
     pub help_open: bool,
     /// Ctrl-V was pressed: attach the clipboard's image.
     pub paste_image: bool,
+    /// iTerm2 is sending an upload as typed input: its status line, then base64
+    /// lines until an empty one.
+    pub upload: Option<Upload>,
+    /// An upload received whole, for the loop to unpack.
+    pub uploaded: Option<String>,
     /// The project the board, the review card and new requests are about;
     /// `None` shows all of the squad's projects.
     pub focus: Option<PathBuf>,
@@ -373,6 +378,8 @@ impl App {
             open_browser: false,
             help_open: false,
             paste_image: false,
+            upload: None,
+            uploaded: None,
             switch_to: None,
             focus: None,
             outbox: Vec::new(),
@@ -895,6 +902,21 @@ impl App {
     }
 
     fn key(&mut self, key: KeyEvent, now: Instant) -> Vec<Command> {
+        // While iTerm2 sends an upload, its keystrokes are the upload.
+        if let Some(upload) = &mut self.upload {
+            match upload.take(key) {
+                UploadStep::More => {}
+                UploadStep::Cancelled => {
+                    self.upload = None;
+                    self.flash = Some("No image was sent".into());
+                }
+                UploadStep::Done(data) => {
+                    self.upload = None;
+                    self.uploaded = Some(data);
+                }
+            }
+            return Vec::new();
+        }
         // Any key puts a selection away.
         self.selection = None;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -1571,6 +1593,43 @@ pub fn tool_verb(name: &str) -> &str {
     }
 }
 
+/// An upload arriving from iTerm2 as typed input: a status line (`ok` or
+/// `abort`), then base64 lines, then an empty line.
+#[derive(Debug, Default)]
+pub struct Upload {
+    status: Option<String>,
+    line: String,
+    data: String,
+}
+
+pub enum UploadStep {
+    More,
+    Cancelled,
+    Done(String),
+}
+
+impl Upload {
+    fn take(&mut self, key: KeyEvent) -> UploadStep {
+        let end_of_line = matches!(key.code, KeyCode::Enter)
+            || (key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('j' | 'm')));
+        match key.code {
+            KeyCode::Esc => return UploadStep::Cancelled,
+            KeyCode::Char(c) if !end_of_line => self.line.push(c),
+            _ if end_of_line => {
+                let line = std::mem::take(&mut self.line);
+                match &self.status {
+                    None if line.trim() == "ok" => self.status = Some(line),
+                    None => return UploadStep::Cancelled,
+                    Some(_) if line.is_empty() => return UploadStep::Done(std::mem::take(&mut self.data)),
+                    Some(_) => self.data.push_str(line.trim()),
+                }
+            }
+            _ => {}
+        }
+        UploadStep::More
+    }
+}
+
 /// The image file a paste names — a path, as terminals paste a dropped file,
 /// spaces escaped or the whole of it quoted — when it is one that exists.
 pub fn image_path(text: &str) -> Option<PathBuf> {
@@ -1580,11 +1639,14 @@ pub fn image_path(text: &str) -> Option<PathBuf> {
     }
     let unquoted = text.trim_matches(|c| c == '\'' || c == '"');
     let path = PathBuf::from(unquoted.replace("\\ ", " "));
-    let image = path
-        .extension()
+    (is_image(&path) && path.is_absolute() && path.is_file()).then_some(path)
+}
+
+/// Whether a file is an image a member can look at, by its extension.
+pub fn is_image(path: &std::path::Path) -> bool {
+    path.extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| matches!(e.to_lowercase().as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp"));
-    (image && path.is_absolute() && path.is_file()).then_some(path)
+        .is_some_and(|e| matches!(e.to_lowercase().as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp"))
 }
 
 /// A folder as the person typed it — `~/…` is under home — if it is one.
@@ -2189,6 +2251,29 @@ mod tests {
         app.on_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL), Instant::now());
         assert!(app.paste_image);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_upload_from_iterm2_arrives_as_keystrokes_and_is_taken_whole() {
+        let (mut app, _, _) = team();
+        app.upload = Some(Upload::default());
+        let mut send = |text: &str| {
+            for c in text.chars() {
+                let key = if c == '\n' { KeyEvent::from(KeyCode::Enter) } else { KeyEvent::from(KeyCode::Char(c)) };
+                app.on_key(key, Instant::now());
+            }
+        };
+        send("ok\nQUJD\nREVG\n\n");
+        assert_eq!(app.uploaded.as_deref(), Some("QUJDREVG"), "the lines, joined");
+        assert!(app.upload.is_none() && app.composer.is_empty(), "nothing typed into the message");
+        // Cancelled in iTerm2's window: nothing comes, and the console says so.
+        app.upload = Some(Upload::default());
+        for c in "abort".chars() {
+            app.on_key(KeyEvent::from(KeyCode::Char(c)), Instant::now());
+        }
+        app.on_key(KeyEvent::from(KeyCode::Enter), Instant::now());
+        assert!(app.upload.is_none());
+        assert!(app.flash.as_deref().unwrap().contains("No image"));
     }
 
     #[test]

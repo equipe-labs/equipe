@@ -8,6 +8,7 @@
 //! normal screen so it stays in the terminal's history.
 
 mod app;
+pub use app::is_image;
 mod commands;
 mod composer;
 mod markdown;
@@ -147,12 +148,22 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
     // While someone works, its dot breathes and its clock ticks; with nobody
     // working, nothing redraws on a timer.
     let mut clock = tokio::time::interval(Duration::from_millis(60));
+    // Images sent from another machine (`equipe send-image`) land in an inbox.
+    let mut inbox = tokio::time::interval(Duration::from_secs(1));
     loop {
         tokio::select! {
             _ = clock.tick() => {
                 if app.working() == 0 {
                     continue;
                 }
+            }
+            _ = inbox.tick() => {
+                let arrived = crate::clip::take_inbox();
+                if arrived.is_empty() {
+                    continue;
+                }
+                arrived.iter().for_each(|path| app.attach_image(path));
+                app.flash = Some("Image from your Mac attached".into());
             }
             Some(Ok(event)) = input.next() => {
                 if !on_input(&mut app, &client, event) {
@@ -253,8 +264,31 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
             });
         }
         if std::mem::take(&mut app.paste_image) {
-            match clipboard_image() {
-                Ok(path) => app.attach_image(&path),
+            let over_ssh = std::env::var_os("SSH_CONNECTION").is_some();
+            let iterm = std::env::var("LC_TERMINAL").is_ok_and(|t| t == "iTerm2") || std::env::var("TERM_PROGRAM").is_ok_and(|t| t == "iTerm.app");
+            if over_ssh && iterm {
+                // The clipboard here isn't the person's: iTerm2 lets them pick the
+                // image on their own Mac and sends it down the connection.
+                use std::io::Write as _;
+                let mut out = std::io::stdout();
+                let _ = out.write_all(crate::clip::upload_request().as_bytes());
+                let _ = out.flush();
+                app.upload = Some(app::Upload::default());
+                app.flash = Some("Pick the image in the window iTerm2 opened on your Mac · Esc cancels".into());
+            } else {
+                match crate::clip::clipboard_image() {
+                    Ok(path) => app.attach_image(&path),
+                    Err(_) if over_ssh => {
+                        app.flash = Some("The clipboard here isn't your Mac's. On your Mac: equipe send-image <this machine> — it lands in this message.".into())
+                    }
+                    Err(why) => app.flash = Some(why),
+                }
+            }
+        }
+        if let Some(data) = app.uploaded.take() {
+            match crate::clip::unpack_upload(&data) {
+                Ok(images) if images.is_empty() => app.flash = Some("That upload held no image".into()),
+                Ok(images) => images.iter().for_each(|path| app.attach_image(path)),
                 Err(why) => app.flash = Some(why),
             }
         }
@@ -329,40 +363,6 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         accepted: app.accepted.clone(),
         to_review: app.to_review().len(),
         daemon_lost,
-    })
-}
-
-/// Save the clipboard's image — of the machine equipe runs on — as a PNG in a
-/// folder only the person can read, for a member to look at.
-fn clipboard_image() -> Result<PathBuf, String> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let dir = std::env::temp_dir().join("equipe-pastes");
-    std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
-    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    let path = dir.join(format!("paste-{stamp}.png"));
-    let target = path.to_string_lossy().into_owned();
-    let has = |program: &str| std::process::Command::new("which").arg(program).output().is_ok_and(|o| o.status.success());
-    let shell = |script: &str| std::process::Command::new("sh").arg("-c").arg(script).arg("sh").arg(&target).status();
-    let _ = if cfg!(target_os = "macos") {
-        if has("pngpaste") {
-            shell("pngpaste \"$1\" 2>/dev/null")
-        } else {
-            shell(r#"osascript -e "set f to (open for access POSIX file \"$1\" with write permission)" -e "try" -e "write (the clipboard as «class PNGf») to f" -e "end try" -e "close access f" >/dev/null 2>&1"#)
-        }
-    } else if has("wl-paste") {
-        shell("wl-paste --type image/png > \"$1\" 2>/dev/null")
-    } else {
-        shell("xclip -selection clipboard -t image/png -o > \"$1\" 2>/dev/null")
-    };
-    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
-        return Ok(path);
-    }
-    let _ = std::fs::remove_file(&path);
-    Err(if std::env::var_os("SSH_CONNECTION").is_some() {
-        "No image on the clipboard here — over SSH, equipe reads the clipboard of the Mac it runs on, not yours. Save the screenshot there and drop or paste its path.".into()
-    } else {
-        "No image on the clipboard. Copy a screenshot (⌃⇧⌘4 on a Mac), then Ctrl-V.".into()
     })
 }
 
