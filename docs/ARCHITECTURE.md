@@ -163,9 +163,23 @@ Status flow: `proposed → todo → in_progress → review → done` (or `cancel
   changes are committed to the branch and the ticket goes to `review`. The
   worktree stays, so the work can be sent back.
 - **Only the person closes work.** `/accept T-3` makes it `done` (the worktree
-  goes, the branch stays to merge); `/reopen T-3 <what to change>` gives it back to
+  goes, the branch stays); `/reopen T-3 <what to change>` gives it back to
   its member on the same branch and conversation; `/cancel T-3` drops it. These are
   commands from the person's screen straight to equipe — no member can send them.
+- **Merging is the person's too** (principle 4). Right after `/accept` the screen
+  asks "merge it into main now? y/n", then whether to push main to `origin`; only
+  their yes sends `merge`. `/merge T-3` (or `m` on the board) does it later. The
+  merge is worked out apart from any checkout (`git merge-tree`) and a conflict
+  merges nothing; a checkout that has main out follows by fast-forward, keeping
+  its uncommitted changes, or refuses — and then nothing moves. Work accepted but
+  not on main says so on the board ("not on main").
+- **Accepted work is where the next ticket starts**, merged or not: a new
+  ticket's worktree is cut from `HEAD` with the branches of the `done` tickets it
+  depends on (and theirs) merged in. When they conflict, it doesn't start: it goes
+  back to a proposal saying which ticket and files, for the person or the PM.
+  Both, not one: without the merge question work piles up off main (equipe-site,
+  October 2026: eight accepted tickets, a README on main); without starting from
+  dependencies, a person who wants to look before merging holds the squad up.
 
 ### Board tools (MCP)
 

@@ -234,6 +234,15 @@ fn clock_time() -> String {
         .unwrap_or_default()
 }
 
+/// What the person was asked after accepting work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Question {
+    /// Merge this ticket's branch into main?
+    Merge(TicketId),
+    /// Push main after merging this ticket — merging it either way?
+    Push(TicketId),
+}
+
 pub struct App {
     pub cwd: PathBuf,
     pub squad: String,
@@ -248,6 +257,9 @@ pub struct App {
     pub composer: Composer,
     /// A one-line message in the status bar, cleared by the next key.
     pub flash: Option<String>,
+    /// A yes/no the person was just asked about work they accepted, shown in
+    /// the flash and answered with y or n.
+    pub question: Option<Question>,
     pub should_quit: bool,
     /// Whether the mouse wheel scrolls (the terminal then can't select text).
     pub mouse: bool,
@@ -361,6 +373,7 @@ impl App {
             should_quit: false,
             mouse: true,
             accepted: Vec::new(),
+            question: None,
             mode: snapshot.mode,
             scale: snapshot.scale.unwrap_or(2),
             plan: snapshot.plan,
@@ -562,7 +575,8 @@ impl App {
     }
 
     /// The board's keys, while nothing is typed: ↑↓ pick a ticket; a accepts,
-    /// r asks for changes, d shows the diff, Enter talks to whoever owns it.
+    /// r asks for changes, m merges accepted work into main, d shows the diff,
+    /// Enter talks to whoever owns it.
     fn on_board_key(&mut self, code: KeyCode) -> Option<Vec<Command>> {
         let ticket = self.selected_ticket().cloned();
         match code {
@@ -570,13 +584,16 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.move_ticket(1),
             KeyCode::Char('a') => {
                 let ticket = ticket.filter(|t| !t.status.is_closed())?;
-                self.flash = Some(format!("Accepted T-{} · /reopen T-{0} brings it back", ticket.id));
-                return Some(vec![Command::Accept { squad: self.squad.clone(), ticket: ticket.id }]);
+                return Some(self.accept(ticket.id));
             }
             KeyCode::Char('r') => {
                 let ticket = ticket.filter(|t| matches!(t.status, TicketStatus::Review | TicketStatus::Done))?;
                 self.composer.insert_str(&format!("/reopen T-{} ", ticket.id));
                 self.flash = Some("Say what to change, then Enter.".into());
+            }
+            KeyCode::Char('m') => {
+                let ticket = ticket.filter(Ticket::not_on_main)?;
+                self.ask(Question::Push(ticket.id));
             }
             KeyCode::Char('d') => {
                 let ticket = ticket.filter(|t| t.branch.is_some())?;
@@ -872,6 +889,7 @@ impl App {
             review: tickets(&[TicketStatus::Review]),
             reopenable: tickets(&[TicketStatus::Review, TicketStatus::Done]),
             open: tickets(&[TicketStatus::Proposed, TicketStatus::Todo, TicketStatus::InProgress, TicketStatus::Review]),
+            unmerged: self.tickets.iter().filter(|t| t.not_on_main()).map(|t| (t.id, t.title.as_str())).collect(),
             members: self.agents.iter().filter_map(|a| a.member.as_ref().map(|m| (m.name.as_str(), m.role.as_str()))).collect(),
             roles: roles::ROLES.iter().map(|r| r.id).collect(),
             // Read only when it's wanted: it opens every squad's journal.
@@ -922,6 +940,14 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        if let Some(question) = self.question.take()
+            && self.composer.is_empty()
+            && !ctrl
+            && !alt
+            && let Some(commands) = self.answer(question, key.code)
+        {
+            return commands;
+        }
         if !(ctrl && key.code == KeyCode::Char('c')) {
             self.quit_armed = None;
             self.flash = None;
@@ -1183,7 +1209,7 @@ impl App {
                 self.toggle_board();
                 Vec::new()
             }
-            "accept" | "reopen" | "cancel" => self.decide(name, rest),
+            "accept" | "merge" | "reopen" | "cancel" => self.decide(name, rest),
             "mode" => self.set_mode(rest),
             "close" => match self.agents.get_mut(self.selected) {
                 Some(agent) if agent.is_open() => {
@@ -1431,6 +1457,46 @@ impl App {
         vec![Command::ShowBrowser { squad: self.squad.clone(), member: member.map(|m| (*m).to_owned()), show }]
     }
 
+    /// Accept a ticket; when it has a branch, ask whether to merge it into main.
+    /// Nothing merges unless the person says yes.
+    fn accept(&mut self, ticket: TicketId) -> Vec<Command> {
+        if self.tickets.iter().any(|t| t.id == ticket && t.branch.is_some()) {
+            self.ask(Question::Merge(ticket));
+        } else {
+            self.flash = Some(format!("Accepted T-{ticket} · /reopen T-{ticket} brings it back"));
+        }
+        vec![Command::Accept { squad: self.squad.clone(), ticket }]
+    }
+
+    fn ask(&mut self, question: Question) {
+        self.flash = Some(match question {
+            Question::Merge(id) => format!("Accepted T-{id} · merge it into main now? y/n"),
+            Question::Push(id) => format!("Merge T-{id} into main — and push main to origin too? y/n · Esc: don't merge"),
+        });
+        self.question = Some(question);
+    }
+
+    /// y or n to a question; `None` for any other key, which puts it away.
+    fn answer(&mut self, question: Question, key: KeyCode) -> Option<Vec<Command>> {
+        let squad = self.squad.clone();
+        let commands = match (question, key) {
+            (Question::Merge(id), KeyCode::Char('y')) => {
+                self.ask(Question::Push(id));
+                Vec::new()
+            }
+            (Question::Push(ticket), KeyCode::Char(c @ ('y' | 'n'))) => {
+                self.flash = Some(format!("Merging T-{ticket} into main…"));
+                vec![Command::Merge { squad, ticket, push: c == 'y' }]
+            }
+            (Question::Merge(id) | Question::Push(id), KeyCode::Char('n') | KeyCode::Esc) => {
+                self.flash = Some(format!("T-{id} stays on its branch, not on main · /merge T-{id} when you want it there"));
+                Vec::new()
+            }
+            _ => return None,
+        };
+        Some(commands)
+    }
+
     /// `/accept T-3`, `/reopen T-3 what to change`, `/cancel T-3`: the person's
     /// calls, sent straight to equipe — never through a member.
     fn decide(&mut self, verb: &str, rest: &str) -> Vec<Command> {
@@ -1451,7 +1517,11 @@ impl App {
         }
         let squad = self.squad.clone();
         match verb {
-            "accept" => vec![Command::Accept { squad, ticket }],
+            "accept" => self.accept(ticket),
+            "merge" => {
+                self.ask(Question::Push(ticket));
+                Vec::new()
+            }
             "reopen" => vec![Command::Reopen { squad, ticket, note: note.trim().to_owned() }],
             _ => vec![Command::Cancel { squad, ticket }],
         }
@@ -1795,6 +1865,7 @@ mod tests {
             depends_on: vec![],
             branch: None,
             worktree: None,
+            merged: None,
             created_by: "pm".into(),
             note: None,
         }
@@ -2308,6 +2379,64 @@ mod tests {
         type_text(&mut app, "/accept");
         assert!(enter(&mut app).is_empty());
         assert!(app.flash.as_deref().unwrap().contains("T-5"), "{:?}", app.flash);
+    }
+
+    #[test]
+    fn accepting_asks_before_merging_and_only_a_yes_merges() {
+        let (mut app, _, _) = team();
+        for id in [6, 7, 8, 9] {
+            let mut review = ticket(id, TicketStatus::Review);
+            review.branch = Some(format!("equipe/frontend-t{id}"));
+            app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: review });
+        }
+        let accept = |id: TicketId| vec![Command::Accept { squad: "acme".into(), ticket: id }];
+        let merge = |id: TicketId, push: bool| vec![Command::Merge { squad: "acme".into(), ticket: id, push }];
+
+        // n: accepted, nothing merged.
+        type_text(&mut app, "/accept T-6");
+        assert_eq!(enter(&mut app), accept(6));
+        assert!(app.flash.as_deref().unwrap().contains("merge it into main now? y/n"), "{:?}", app.flash);
+        assert!(app.on_key(key(KeyCode::Char('n')), Instant::now()).is_empty());
+        assert!(app.flash.as_deref().unwrap().contains("/merge T-6"), "{:?}", app.flash);
+        assert_eq!(app.question, None);
+
+        // y, then whether to push.
+        type_text(&mut app, "/accept T-7");
+        enter(&mut app);
+        assert!(app.on_key(key(KeyCode::Char('y')), Instant::now()).is_empty());
+        assert!(app.flash.as_deref().unwrap().contains("push main to origin too? y/n"), "{:?}", app.flash);
+        assert_eq!(app.on_key(key(KeyCode::Char('n')), Instant::now()), merge(7, false));
+        type_text(&mut app, "/accept T-8");
+        enter(&mut app);
+        app.on_key(key(KeyCode::Char('y')), Instant::now());
+        assert_eq!(app.on_key(key(KeyCode::Char('y')), Instant::now()), merge(8, true));
+
+        // Esc at the push question merges nothing; typing something else puts it away.
+        type_text(&mut app, "/accept T-9");
+        enter(&mut app);
+        app.on_key(key(KeyCode::Char('y')), Instant::now());
+        assert!(app.on_key(key(KeyCode::Esc), Instant::now()).is_empty());
+        assert_eq!(app.question, None);
+        type_text(&mut app, "/merge T-9");
+        assert!(enter(&mut app).is_empty(), "/merge asks about pushing first");
+        type_text(&mut app, "hi");
+        assert_eq!((app.question, app.composer.text()), (None, "hi"));
+    }
+
+    #[test]
+    fn work_not_on_main_merges_from_the_board() {
+        let (mut app, _, _) = team();
+        let mut done = ticket(3, TicketStatus::Done);
+        done.branch = Some("equipe/frontend-t3".into());
+        done.merged = Some(false);
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: done.clone() });
+        app.pane = Pane::Board;
+        assert!(app.on_key(key(KeyCode::Char('m')), Instant::now()).is_empty());
+        assert_eq!(app.on_key(key(KeyCode::Char('n')), Instant::now()), vec![Command::Merge { squad: "acme".into(), ticket: 3, push: false }]);
+        // Once on main there is nothing to merge.
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: Ticket { merged: Some(true), ..done } });
+        app.on_key(key(KeyCode::Char('m')), Instant::now());
+        assert_eq!(app.question, None);
     }
 
     #[test]

@@ -470,6 +470,7 @@ impl Runtime {
             Command::Interrupt { session } => self.interrupt(session).await,
             Command::Close { session } => self.close(session).await,
             Command::Accept { squad, ticket } => self.accept(&squad, ticket).await,
+            Command::Merge { squad, ticket, push } => self.merge(&squad, ticket, push),
             Command::Reopen { squad, ticket, note } => self.reopen(&squad, ticket, note).await,
             Command::Cancel { squad, ticket } => self.cancel(&squad, ticket).await,
             Command::SetMode { squad, member, mode } => self.set_mode(&squad, member, mode),
@@ -1357,6 +1358,8 @@ impl Runtime {
             return;
         };
         let saved = journal.ticket_work(ticket_id).unwrap_or_default();
+        let after = work_before(&journal.tickets().unwrap_or_default(), &ticket);
+        let fresh = ticket.branch.is_none() || saved.base.is_none();
         let Some(project) = ticket.project.clone().or_else(|| projects.first().cloned()) else {
             return;
         };
@@ -1371,7 +1374,8 @@ impl Runtime {
                     }
                     // Its worktree went away: check its branch out again.
                     (_, Some(branch), Some(base)) => worktree::resume(&repo, &home, &id_part, branch, base),
-                    _ => worktree::create(&repo, &home, &id_part, &name),
+                    // New: from HEAD, with the finished work it depends on.
+                    _ => worktree::create_after(&repo, &home, &id_part, &name, &after),
                 }
             });
             match checkout {
@@ -1421,7 +1425,14 @@ impl Runtime {
         });
         self.brief_pm(&squad, format!("{name} picked up T-{ticket_id} ({}).", ticket.title), None);
         let language = self.journal(&squad).and_then(Journal::language);
-        let prompt = work_prompt(&ticket, &project, sandbox.as_ref(), reopened.as_deref(), board_tools, language.as_deref());
+        let mut prompt = work_prompt(&ticket, &project, sandbox.as_ref(), reopened.as_deref(), board_tools, language.as_deref());
+        if sandbox.is_some() && !after.is_empty() && fresh {
+            let ids: Vec<&str> = after.iter().map(|(what, _)| what.as_str()).collect();
+            prompt.push_str(&format!(
+                "\nYour branch starts from the accepted work of {}, which may not be on main yet — build on it; don't merge it again.",
+                ids.join(", ")
+            ));
+        }
         self.start_turn(id, prompt);
     }
 
@@ -1480,6 +1491,7 @@ impl Runtime {
             }
             WorkEnd::Accepted => {
                 ticket.status = TicketStatus::Done;
+                ticket.merged = merged_state(&ticket);
                 ("you", "accepted", format!("You accepted T-{}", ticket.id))
             }
             WorkEnd::Cancelled => {
@@ -1546,6 +1558,9 @@ impl Runtime {
         }
         ticket.status = status;
         ticket.worktree = None;
+        if status == TicketStatus::Done {
+            ticket.merged = merged_state(&ticket);
+        }
         let verb = if status == TicketStatus::Done { "accepted" } else { "cancelled" };
         if let Some(journal) = self.journal(squad) {
             let _ = journal.save_ticket(&ticket);
@@ -1573,6 +1588,52 @@ impl Runtime {
             None => self.close_ticket(squad, found, TicketStatus::Done),
         }
         self.dispatch(squad).await;
+    }
+
+    /// The person merges a done ticket's branch into main — their gate, never a
+    /// member's — and pushes main when they said so. A conflict merges nothing.
+    fn merge(&mut self, squad: &str, ticket: TicketId, push: bool) {
+        let Some(mut found) = self.find_ticket(squad, ticket) else {
+            return;
+        };
+        if found.status != TicketStatus::Done {
+            return self.squad_error(squad, format!("T-{ticket} isn't accepted yet — /accept T-{ticket} first."));
+        }
+        let (Some(branch), Some(repo)) =
+            (found.branch.clone(), found.project.as_deref().and_then(|p| worktree::repo_root(p).ok()))
+        else {
+            return self.squad_error(squad, format!("T-{ticket} has no branch to merge."));
+        };
+        let message = format!("equipe: merge T-{ticket} {}\n\nAccepted by the person; merged from {branch}.", found.title);
+        let main = match worktree::merge_into_main(&repo, &branch, &message) {
+            Ok(main) => main,
+            Err(err) => return self.squad_error(squad, format!("T-{ticket} wasn't merged: {err}")),
+        };
+        let mut line = format!("You merged T-{ticket} · {} into {main}", found.title);
+        if push {
+            match worktree::push_main(&repo) {
+                Ok(_) => line.push_str(" and pushed it"),
+                Err(err) => self.squad_error(squad, format!("{main} wasn't pushed: {err}")),
+            }
+        }
+        found.merged = Some(true);
+        if let Some(journal) = self.journal(squad) {
+            let _ = journal.save_ticket(&found);
+            let _ = journal.ticket_event(ticket, "you", "merged", &main);
+        }
+        self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: found });
+        // Work it was built on came along with it.
+        for mut other in self.tickets(squad).into_iter().filter(|t| t.merged == Some(false)) {
+            if other.status == TicketStatus::Done && merged_state(&other) == Some(true) {
+                other.merged = Some(true);
+                if let Some(journal) = self.journal(squad) {
+                    let _ = journal.save_ticket(&other);
+                }
+                self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: other });
+            }
+        }
+        let line = format!("{line}.");
+        self.brief_pm(squad, line.clone(), Some(line));
     }
 
     /// The person sends work back: the ticket goes to its member again, on the
@@ -1854,6 +1915,7 @@ impl Runtime {
                     depends_on,
                     branch: None,
                     worktree: None,
+                    merged: None,
                     created_by: member.clone(),
                     note: None,
                 };
@@ -2349,6 +2411,35 @@ fn recent_history(history: &[responses::Message]) -> Vec<responses::Message> {
 
 /// Remove a ticket's worktree; keep its branch if it has commits, drop it if not.
 /// Returns the branch that remains.
+/// Whether a ticket's branch is in its project's main branch; `None` when that
+/// can't be told (no branch, no repository).
+fn merged_state(ticket: &Ticket) -> Option<bool> {
+    let repo = worktree::repo_root(ticket.project.as_deref()?).ok()?;
+    worktree::is_merged(&repo, ticket.branch.as_deref()?).ok()
+}
+
+/// The finished work a ticket builds on — what it depends on, and what that
+/// depended on — as `(T-n, branch)`, oldest first: its worktree starts with
+/// all of it, merged or not.
+fn work_before(tickets: &[Ticket], ticket: &Ticket) -> Vec<(String, String)> {
+    let mut seen: Vec<TicketId> = Vec::new();
+    let mut next: Vec<TicketId> = ticket.depends_on.clone();
+    while let Some(id) = next.pop() {
+        if seen.contains(&id) || id == ticket.id {
+            continue;
+        }
+        seen.push(id);
+        if let Some(t) = tickets.iter().find(|t| t.id == id) {
+            next.extend(&t.depends_on);
+        }
+    }
+    seen.sort_unstable();
+    seen.iter()
+        .filter_map(|id| tickets.iter().find(|t| t.id == *id && t.status == TicketStatus::Done))
+        .filter_map(|t| Some((format!("T-{}", t.id), t.branch.clone()?)))
+        .collect()
+}
+
 fn release(sandbox: &Sandbox) -> Option<String> {
     if sandbox.has_commits() {
         let _ = sandbox.remove_worktree();

@@ -277,6 +277,7 @@ mod tests {
             depends_on: vec![],
             branch: None,
             worktree: None,
+            merged: None,
             created_by: "pm".into(),
             note: None,
         }
