@@ -642,6 +642,55 @@ project: like a person, a member carries what it learned from one project to the
 next. What a project needs everyone to know belongs in the repository
 (`CLAUDE.md`, `AGENTS.md`), which every member reads.
 
+**The squad's memory** (decided 2026-10-13, T-32). Work that has no repository —
+an assistant's errands, taxes, research — had nowhere to keep what everyone
+should know, so there are two layers:
+
+| Layer | Where | Holds |
+|---|---|---|
+| A member's | `members/<name>/memory/` (above) | how it works: its own knack and lessons |
+| The squad's | `home/memory/` (`equipe_core::squad_memory`) | what everyone needs: facts about the person (preferences, schedule, the services they use), decisions, recurring deadlines, terms, contacts |
+
+- **One fact per file**, `memory/<name>.md`, with a frontmatter: `name`,
+  `description` (the one line the index shows), `kind` (`person`, `decision`,
+  `deadline`, `term`, `contact`, `other`), `updated` (a date) and `by`. A file
+  without one — dropped in by the person — is a fact too, named for its file and
+  described by its first line.
+- **equipe builds the index, not the members.** `memory/INDEX.md` is made from the
+  files' frontmatter, so it can't drift from them: a file the person adds, fixes
+  or deletes is in — or out of — the index on the next turn.
+- **Reading: in the charter, every turn.** Each member's charter carries the index
+  (up to 150 lines; past that, a pointer to `INDEX.md`) and the memory's path; a
+  fact's body is read when it bears on the work — from the home at the desk, as an
+  added directory on a ticket. The charter is rebuilt every turn, so a member
+  started later, a resumed one and a Codex member (no file tools) all know the
+  same. Not `home/CLAUDE.md`: equipe writes none there (the person's or the PM's
+  is theirs), and a charter reaches every engine and every place a member works.
+- **Writing: equipe's `remember` and `forget` tools**, from the desk and from a
+  ticket alike — on a ticket the home is only read, and a tool is how a member
+  writes past that fence without opening it. `remember` takes a name, the line, a
+  kind and an optional body; the same name updates the fact (so a duplicate is an
+  update), and `forget` removes one that turned out wrong. Each is saved in the
+  squad's folder at once, by the member (`pm: remembered tax-filing: …`), shown to
+  the person (*"✎ pm remembered for the squad: … · /memory shows what the squad
+  knows"*), and taken back with `/home undo` like any change there. Members are
+  told to write facts only through the tools.
+- **What the person wrote wins.** Before a tool writes, whatever the person changed
+  in `memory/` is saved as theirs; a fact whose latest change is theirs isn't
+  overwritten until the member asked them and calls again with `confirmed`.
+- **The person sees and fixes it.** `/memory` (and `equipe memory`) opens the
+  folder in Finder and lists the facts and the latest changes; `/memory changes`
+  lists the last ten changes to the memory alone.
+- **Tidying.** Past 60 facts (`CROWDED`, a few screens of index) the PM's charter
+  asks it to propose a ticket that merges overlapping facts and drops stale ones.
+- **No secret values** (with T-31): the charter says to remember where an original
+  is (`outputs/T-12 …/id.pdf`), never a resident registration, card or account
+  number or a password, and `remember` refuses what looks like one (a registration
+  number, a Luhn-valid card, an account-shaped run of digits; phone numbers and
+  dates pass).
+- **Private to its squad**: the memory is inside the home, which other squads'
+  members can neither read nor be told about (see *The squad home*).
+
 Members are told they run inside equipe without a screen, so they never ask the
 person to press keys or change Claude Code's permission mode — equipe sets it.
 

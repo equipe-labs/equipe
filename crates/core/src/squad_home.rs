@@ -119,12 +119,20 @@ impl Change {
 
 /// Save whatever changed in the home, by `by` for `why`. `None` when nothing had.
 pub fn save(dir: &Path, by: &str, why: &str) -> Result<Option<Change>, String> {
-    if !dir.join(".git").exists() || git(dir, &["status", "--porcelain"])?.trim().is_empty() {
+    save_in(dir, by, why, &[])
+}
+
+/// Save whatever changed under `paths` only (all of the home when empty).
+pub fn save_in(dir: &Path, by: &str, why: &str, paths: &[&str]) -> Result<Option<Change>, String> {
+    let with_paths = |args: &[&'static str]| -> Vec<&str> { args.iter().copied().chain(["--"]).chain(paths.iter().copied()).collect() };
+    if !dir.join(".git").exists() || git(dir, &with_paths(&["status", "--porcelain"]))?.trim().is_empty() {
         return Ok(None);
     }
-    git(dir, &["add", "-A"])?;
-    let why = one_line(why);
-    git(dir, &["commit", "-q", "-m", &format!("{by}: {why}")])?;
+    git(dir, &with_paths(&["add", "-A"]))?;
+    let message = format!("{by}: {}", one_line(why));
+    let mut commit = vec!["commit", "-q", "-m", &message];
+    commit.extend(with_paths(&[]));
+    git(dir, &commit)?;
     Ok(changes(dir, 1)?.into_iter().next())
 }
 
@@ -135,7 +143,15 @@ pub fn save_persons(dir: &Path) -> Result<Option<Change>, String> {
 
 /// The latest `n` changes, newest first. The folder's making isn't one.
 pub fn changes(dir: &Path, n: usize) -> Result<Vec<Change>, String> {
-    let log = git(dir, &["log", &format!("-{n}"), "--name-status", "--no-renames", "--format=%x1e%H%x1f%ct%x1f%s"])?;
+    changes_in(dir, n, &[])
+}
+
+/// The latest `n` changes that touched `paths` (all of the home when empty).
+pub fn changes_in(dir: &Path, n: usize, paths: &[&str]) -> Result<Vec<Change>, String> {
+    let count = format!("-{n}");
+    let mut args = vec!["log", &count, "--name-status", "--no-renames", "--format=%x1e%H%x1f%ct%x1f%s", "--"];
+    args.extend(paths);
+    let log = git(dir, &args)?;
     let mut out = Vec::new();
     for record in log.split('\u{1e}').filter(|r| !r.trim().is_empty()) {
         let mut lines = record.lines();
@@ -150,7 +166,8 @@ pub fn changes(dir: &Path, n: usize) -> Result<Vec<Change>, String> {
         let files = lines
             .filter_map(|line| {
                 let (status, file) = line.split_once('\t')?;
-                if file.ends_with(".gitkeep") {
+                // equipe keeps the memory's index itself; it is never news.
+                if file.ends_with(".gitkeep") || file == crate::squad_memory::INDEX_PATH {
                     return None;
                 }
                 let verb = match status {
@@ -199,7 +216,7 @@ fn one_line(text: &str) -> String {
 }
 
 /// git in the home, independent of the person's own git setup: no signing, no hooks.
-fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)

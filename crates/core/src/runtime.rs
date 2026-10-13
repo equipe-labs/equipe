@@ -38,6 +38,7 @@ use crate::journal::{self, Journal, SessionRecord, TicketWork};
 use crate::permissions;
 use crate::roles::{self, Role, Teammate};
 use crate::squad_home;
+use crate::squad_memory;
 use crate::worktree::{self, Sandbox};
 
 /// How many recent lines a snapshot carries per session.
@@ -878,6 +879,9 @@ impl Runtime {
             Some(handoff) => format!("{handoff}\n\n{prompt}"),
             None => prompt,
         };
+        // The squad's memory as its files say now — the person's edits in Finder
+        // included, its index brought up to date before their changes are saved.
+        let facts = self.squad_memory(id);
         self.save_persons_changes(id);
         let Some(session) = self.sessions.get(&id) else {
             return;
@@ -939,6 +943,7 @@ impl Runtime {
             _ => None,
         };
         let home = squad.as_deref().map(|s| squad_home::path(&self.config.home, s));
+        let memory = squad_memory::for_charter(&facts);
         let charter = session.member.as_ref().map(|m| {
             let team = squad.as_deref().map(|s| self.team(s)).unwrap_or_default();
             let mates: Vec<Teammate> = team.iter().map(|(_, name, role)| Teammate { name, role }).collect();
@@ -951,6 +956,8 @@ impl Runtime {
                 language: language.as_deref(),
                 browser: browser.is_some(),
                 home: home.as_deref(),
+                memory: memory.as_deref(),
+                facts: facts.len(),
             };
             roles::charter(roles::role_or_custom(&m.role), &m.name, &ctx)
         });
@@ -1112,6 +1119,18 @@ impl Runtime {
         if let Some(session) = self.sessions.get_mut(&id) {
             session.turn = Some(turn);
         }
+    }
+
+    /// The facts in a member's squad memory, with its index kept up to date.
+    fn squad_memory(&self, id: SessionId) -> Vec<squad_memory::Fact> {
+        let Some(squad) = self.sessions.get(&id).filter(|s| s.member.is_some()).and_then(|s| s.squad.as_deref()) else {
+            return Vec::new();
+        };
+        let folder = squad_home::path(&self.config.home, squad);
+        let facts = squad_memory::facts(&folder);
+        let language = self.journals.get(squad).and_then(Journal::language);
+        squad_memory::refresh_index(&folder, &facts, language.as_deref());
+        facts
     }
 
     /// Before a member's desk turn: whatever changed in the squad's home while no
@@ -2332,6 +2351,30 @@ End your turn now with a short summary.",
 it back there once they have done it. End your turn now with a short line on what you need.",
                     work.ticket
                 ))
+            }
+            board::REMEMBER | board::FORGET => {
+                let folder = squad_home::path(&self.config.home, &squad);
+                let language = self.journals.get(&squad).and_then(Journal::language);
+                let (change, text) = if name == board::REMEMBER {
+                    let fact = squad_memory::Remember {
+                        name: board::arg_str(&args, "name").unwrap_or_default(),
+                        description: board::arg_str(&args, "description").unwrap_or_default(),
+                        kind: board::arg_str(&args, "kind").unwrap_or_default(),
+                        body: board::arg_str(&args, "body").unwrap_or_default(),
+                        confirmed: args.get("confirmed").and_then(Value::as_bool).unwrap_or(false),
+                    };
+                    let today = squad_memory::date(now_secs());
+                    let (change, new) = squad_memory::remember(&folder, &member, &fact, &today, language.as_deref())?;
+                    let verb = if new { "remembered" } else { "updated" };
+                    let text = format!("✎ {member} {verb} for the squad: {} · /memory shows what the squad knows", clip(fact.description.trim(), 80));
+                    (change, text)
+                } else {
+                    let fact = board::arg_str(&args, "name").ok_or("Which fact? Give its name.")?;
+                    let change = squad_memory::forget(&folder, &member, fact, language.as_deref())?;
+                    (change, format!("✎ {member} forgot {fact} from the squad's memory · /home undo takes it back"))
+                };
+                self.publish(Event::Notice { session: id, text });
+                Ok(format!("Saved in the squad's memory ({}). Every member has it from their next turn.", change.what()))
             }
             other => Err(format!("equipe has no tool called {other}.")),
         }

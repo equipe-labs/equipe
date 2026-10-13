@@ -175,6 +175,9 @@ pub struct Context<'a> {
     pub browser: bool,
     /// The squad's home, where the member sits between tickets.
     pub home: Option<&'a str>,
+    /// The squad's memory: its index as the member is given it, and how many facts it holds.
+    pub memory: Option<&'a str>,
+    pub facts: usize,
 }
 
 /// What an engine is told about who it is on the team.
@@ -256,6 +259,38 @@ wherever you are. Other squads' folders are private."
         ),
         None => String::new(),
     };
+    let memory = match ctx.home {
+        Some(home) => {
+            let index = match ctx.memory {
+                Some(index) => format!("What the squad remembers (read a fact's file when it bears on the work):\n{index}"),
+                None => "The squad remembers nothing yet.".to_owned(),
+            };
+            let writing = if ctx.board_tools {
+                "When you learn something every teammate should know — about the person (a preference, their \
+schedule, a service they use), a decision, a recurring deadline, a term, a contact — save it at once with \
+`remember`, at your desk or on a ticket: one fact per call, under a short name; the same name updates it, so look \
+in the index before adding, and `forget` a fact that turned out wrong. Write facts there only through these tools. \
+Your own memory is for how you work; the squad's is for what everyone needs to know. Never put a secret value in \
+it — an ID, account or card number, a password, a certificate's password: remember where the original file is in \
+the squad's folder instead. What the person wrote or changed there wins over what you think: if you believe it \
+wrong, ask them."
+            } else {
+                "You can't write the squad's memory from this engine: when you learn something every teammate should \
+know, say so, and the PM saves it."
+            };
+            let tidy = if role.id == PM && ctx.facts >= crate::squad_memory::CROWDED {
+                format!(
+                    " The squad's memory holds {} facts: propose to the person a ticket to tidy it — merge facts \
+that overlap, drop what no longer holds.",
+                    ctx.facts
+                )
+            } else {
+                String::new()
+            };
+            format!("\n\nThe squad's memory is {home}/memory, which every member shares. {writing}{tidy}\n\n{index}")
+        }
+        None => String::new(),
+    };
     let language = match ctx.language {
         Some(language) => format!(
             "The person writes in {language}: write everything meant for them in {language} — replies, ticket \
@@ -265,7 +300,7 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
     };
     format!(
         "You are {name}, the {title} on a software squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
@@ -330,7 +365,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, board_tools, language: None, browser: false, home: None }
+        Context { team, projects, board_tools, language: None, browser: false, home: None, memory: None, facts: 0 }
     }
 
     #[test]
@@ -360,6 +395,25 @@ mod tests {
             assert!(text.contains(part), "{part}: {text}");
         }
         assert!(!charter(role("backend").unwrap(), "backend", &ctx(&team, &[], true)).contains("squad's folder"));
+    }
+
+    #[test]
+    fn a_charter_carries_the_squads_memory_and_how_to_add_to_it() {
+        let team = [Teammate { name: "pm", role: "pm" }];
+        let home = Context { home: Some("/h/squads/acme/home"), ..ctx(&team, &[], true) };
+        let index = "- [tax-filing](tax-filing.md) (deadline) — 매년 5월 종합소득세 직접 신고";
+        let text = charter(role("backend").unwrap(), "backend", &Context { memory: Some(index), facts: 1, ..home });
+        for part in ["The squad's memory is /h/squads/acme/home/memory", "`remember`", "`forget`", "Never put a secret value", "wins over what you think", index] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+        let empty = charter(role("backend").unwrap(), "backend", &Context { home: Some("/h"), ..ctx(&team, &[], true) });
+        assert!(empty.contains("remembers nothing yet"), "{empty}");
+        // Past a few screens of facts, the PM proposes tidying them.
+        let crowded = Context { home: Some("/h"), facts: crate::squad_memory::CROWDED, ..ctx(&team, &[], true) };
+        assert!(charter(role(PM).unwrap(), "pm", &crowded).contains("a ticket to tidy it"));
+        let crowded = Context { home: Some("/h"), facts: crate::squad_memory::CROWDED, ..ctx(&team, &[], true) };
+        assert!(!charter(role("backend").unwrap(), "backend", &crowded).contains("tidy it"));
+        assert!(!charter(role("backend").unwrap(), "backend", &ctx(&team, &[], true)).contains("squad's memory"));
     }
 
     #[test]

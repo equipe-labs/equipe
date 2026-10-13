@@ -21,6 +21,7 @@ pub mod mock;
 pub mod roles;
 pub mod runtime;
 pub mod squad_home;
+pub mod squad_memory;
 pub mod squads;
 pub mod store;
 pub mod worktree;

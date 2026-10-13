@@ -1779,3 +1779,91 @@ async fn a_code_ticket_still_needs_its_project_when_the_squad_has_several() {
     assert_eq!(project, &app);
     assert!(ws.path.parent().unwrap().ends_with(Path::new("worktrees").join(app_name)), "{}", ws.path.display());
 }
+
+// ── the squad's memory ──
+
+#[tokio::test]
+async fn what_one_member_learns_the_next_one_knows_and_the_person_has_the_last_word() {
+    let (claude, recorded) = recording_claude(&answering("noted"));
+    let site = named("site");
+    let home = squad_home(&[&site]);
+    let folder = squads_home(&home);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+
+    // The person tells pm in conversation; pm keeps it for the squad, as its engine would through equipe's tool.
+    handle.send(Command::Submit { session: 1, text: "나는 매년 5월에 종합소득세를 직접 신고해".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    let fact = serde_json::json!({
+        "name": "tax-filing",
+        "description": "사람은 매년 5월에 종합소득세를 직접 신고한다",
+        "kind": "deadline",
+    });
+    let saved = tool(&handle, "pm", "remember", fact).await;
+    assert!(!saved.is_error, "{}", saved.text);
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.starts_with("✎"))).await;
+    assert!(
+        seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text }
+            if text == "✎ pm remembered for the squad: 사람은 매년 5월에 종합소득세를 직접 신고한다 · /memory shows what the squad knows")),
+        "{seen:#?}"
+    );
+    let latest = squad_home::changes(&folder, 1).unwrap().remove(0);
+    assert_eq!((latest.by.as_str(), latest.what()), ("pm", "saved memory/tax-filing.md".to_owned()));
+
+    // backend joins later, in a session of its own, and knows it from its first turn.
+    add(&handle, &mut events, 2, member(&site, "backend")).await;
+    handle.send(Command::Submit { session: 2, text: "5월에 할 일 있어?".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let charter = arg(&calls(&recorded).pop().unwrap(), "--append-system-prompt").unwrap().to_owned();
+    assert!(charter.contains("- [tax-filing](tax-filing.md) (deadline, "), "{charter}");
+    assert!(charter.contains("사람은 매년 5월에 종합소득세를 직접 신고한다"), "{charter}");
+    assert!(charter.contains(&format!("The squad's memory is {}/memory", folder.display())), "{charter}");
+
+    // The person fixes it in Finder: the next turn has their words, and their change is saved as theirs.
+    let file = folder.join("memory/tax-filing.md");
+    let fixed = std::fs::read_to_string(&file).unwrap().replace("직접 신고한다", "세무사에게 맡긴다");
+    std::fs::write(&file, fixed).unwrap();
+    handle.send(Command::Submit { session: 2, text: "다시 확인해줘".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let charter = arg(&calls(&recorded).pop().unwrap(), "--append-system-prompt").unwrap().to_owned();
+    assert!(charter.contains("사람은 매년 5월에 종합소득세를 세무사에게 맡긴다") && !charter.contains("직접 신고한다"), "{charter}");
+    let latest = squad_home::changes(&folder, 1).unwrap().remove(0);
+    assert_eq!((latest.by.as_str(), latest.what()), (squad_home::PERSON, "updated memory/tax-filing.md".to_owned()));
+    // A member doesn't write over what the person wrote without their yes.
+    let overwrite = serde_json::json!({ "name": "tax-filing", "description": "직접 신고한다", "kind": "deadline" });
+    assert!(tool(&handle, "backend", "remember", overwrite).await.text.contains("what they wrote wins"));
+
+    // The person deletes it: gone from the next turn, and from the index.
+    std::fs::remove_file(&file).unwrap();
+    handle.send(Command::Submit { session: 2, text: "또?".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let charter = arg(&calls(&recorded).pop().unwrap(), "--append-system-prompt").unwrap().to_owned();
+    assert!(!charter.contains("tax-filing") && charter.contains("The squad remembers nothing yet."), "{charter}");
+    assert!(!std::fs::read_to_string(folder.join("memory/INDEX.md")).unwrap().contains("tax-filing"));
+}
+
+#[tokio::test]
+async fn a_secret_value_is_refused_and_another_squad_never_sees_the_memory() {
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let site = named("site");
+    let home = squad_home(&[&site]);
+    squads::create(&home, "beta", &named("beta-app")).unwrap();
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    let secret = serde_json::json!({ "name": "id", "description": "주민번호 900101-1234567", "kind": "person" });
+    let refused = tool(&handle, "pm", "remember", secret).await;
+    assert!(refused.is_error && refused.text.contains("resident registration number"), "{}", refused.text);
+    let fact = serde_json::json!({ "name": "id-copy", "description": "신분증 사본은 outputs/T-3 신분증/id.pdf", "kind": "person" });
+    assert!(!tool(&handle, "pm", "remember", fact).await.is_error);
+
+    // beta's member gets beta's memory — empty — and acme's home is denied it.
+    let beta = SessionSpec { squad: Some("beta".into()), ..member(&site, "pm") };
+    add(&handle, &mut events, 2, beta).await;
+    handle.send(Command::Submit { session: 2, text: "hi".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let call = calls(&recorded).pop().unwrap();
+    let charter = arg(&call, "--append-system-prompt").unwrap();
+    assert!(!charter.contains("id-copy") && charter.contains("remembers nothing yet"), "{charter}");
+    let deny = settings_of(&call)["permissions"]["deny"].to_string();
+    assert!(deny.contains(&format!("Read(/{}/**)", squads_home(&home).display())), "{deny}");
+}
