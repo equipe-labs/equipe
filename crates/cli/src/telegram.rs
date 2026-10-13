@@ -911,7 +911,7 @@ fn token_in(pasted: &str) -> Option<String> {
         }
         let start = (0..colon).rev().take_while(|&i| chars[i].is_ascii_digit()).last().unwrap_or(colon);
         let end = (colon + 1..chars.len()).take_while(|&i| tail(chars[i])).last().map_or(colon + 1, |i| i + 1);
-        if colon - start >= 5 && end - colon - 1 >= 30 {
+        if colon - start >= 5 && end - colon > 30 {
             return Some(chars[start..end].iter().collect());
         }
     }
