@@ -18,6 +18,8 @@ pub const COMMAND: &str = "command";
 pub const EVENT: &str = "event";
 pub const SHUTDOWN: &str = "shutdown";
 pub const TOOL: &str = "tool";
+/// Who is busy: members mid-turn and requests waiting for the person.
+pub const BUSY: &str = "busy";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
@@ -71,6 +73,21 @@ pub struct ToolResult {
 pub struct Hello {
     pub version: String,
     pub snapshot: Snapshot,
+}
+
+/// What the daemon is in the middle of, across every squad.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Busy {
+    /// Members mid-turn, as `squad/member`.
+    pub working: Vec<String>,
+    /// Requests for permission waiting for the person.
+    pub approvals: usize,
+}
+
+impl Busy {
+    pub fn idle(&self) -> bool {
+        self.working.is_empty() && self.approvals == 0
+    }
 }
 
 impl Message {

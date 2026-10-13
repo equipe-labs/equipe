@@ -135,6 +135,9 @@ async fn serve_client(stream: UnixStream, core: Handle, version: String, stop: U
                     let _ = out.send(Message::response(id, result));
                 });
             }
+            (Some(rpc::BUSY), Some(id)) => {
+                let _ = out_tx.send(Message::response(id, core.busy().await));
+            }
             (Some(rpc::SHUTDOWN), Some(id)) => {
                 let (ack_tx, ack_rx) = oneshot::channel();
                 let _ = stop.send(ack_tx);
@@ -238,6 +241,25 @@ pub async fn shutdown(socket: &Path) -> io::Result<bool> {
         }
     }
     Ok(true)
+}
+
+/// What the daemon at `socket` is in the middle of; `None` when none answers.
+pub async fn busy(socket: &Path) -> io::Result<Option<rpc::Busy>> {
+    let Ok(stream) = UnixStream::connect(socket).await else {
+        return Ok(None);
+    };
+    let (reader, mut writer) = stream.into_split();
+    write_line(&mut writer, &Message::request(1, rpc::BUSY, ())).await?;
+    let mut lines = BufReader::new(reader).lines();
+    while let Some(line) = lines.next_line().await? {
+        let Ok(message) = Message::from_line(&line) else {
+            continue;
+        };
+        if message.id == Some(1) {
+            return Ok(message.result_as::<rpc::Busy>());
+        }
+    }
+    Ok(None)
 }
 
 /// Call a member's board tool on the daemon at `socket` — what `equipe mcp`

@@ -227,7 +227,9 @@ your session or change your permission mode, so never ask them to — nor to edi
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
 use them as they are, and never search the environment or files for tokens — that asks the person every time. \
-Run one command at a time where you can: a single command can be allowed for good, a chain only once. {language} \
+Run one command at a time where you can: a single command can be allowed for good, a chain only once. Your memory \
+outlives every ticket: when the person corrects you, sends work back or tells you how they like things, save the \
+lesson there — their taste, the project's conventions, what to avoid — and check it before new work. {language} \
 Be concise.",
         role.duties
     )

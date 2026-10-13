@@ -249,3 +249,25 @@ async fn the_socket_is_private() {
     assert_eq!(mode, 0o600);
     gateway::shutdown(&socket).await.unwrap();
 }
+
+#[tokio::test]
+async fn the_daemon_says_who_is_mid_turn() {
+    let (home, project) = squad();
+    let claude = fake_claude(&slow_answer("1"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    assert!(gateway::busy(&socket).await.unwrap().unwrap().idle(), "nobody yet");
+
+    let (mut screen, _) = Client::connect(&socket, "test", "acme").await.unwrap();
+    screen.send(Command::Start { session: 4, spec: spec(&project) });
+    until(&mut screen, |e| matches!(e, Event::SessionStarted { .. })).await;
+    screen.send(Command::Submit { session: 4, text: "a long job".into() });
+    until(&mut screen, |e| matches!(e, Event::UserMessage { .. })).await;
+    let busy = gateway::busy(&socket).await.unwrap().unwrap();
+    assert_eq!(busy.working, ["acme/designer"]);
+    assert!(!busy.idle());
+
+    until(&mut screen, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(gateway::busy(&socket).await.unwrap().unwrap().idle(), "between turns: safe to restart");
+    gateway::shutdown(&socket).await.unwrap();
+    assert_eq!(gateway::busy(&socket).await.unwrap(), None, "no daemon, no answer");
+}

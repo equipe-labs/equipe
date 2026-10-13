@@ -106,6 +106,7 @@ enum Request {
     Snapshot(String, oneshot::Sender<Snapshot>),
     Subscribe(String, oneshot::Sender<Subscription>),
     Tool(ToolCall, oneshot::Sender<ToolResult>),
+    Busy(oneshot::Sender<equipe_protocol::rpc::Busy>),
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -141,6 +142,13 @@ impl Handle {
         let (tx, rx) = oneshot::channel();
         let _ = self.requests.send(Request::Tool(call, tx));
         rx.await.unwrap_or(ToolResult { text: "equipe is shutting down".into(), is_error: true })
+    }
+
+    /// Who is mid-turn, and how many requests wait for the person.
+    pub async fn busy(&self) -> equipe_protocol::rpc::Busy {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.requests.send(Request::Busy(tx));
+        rx.await.unwrap_or_default()
     }
 
     /// Stop running turns and the runtime. Open sessions stay journaled.
@@ -340,6 +348,16 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                     let _ = reply.send((rt.snapshot(&squad), rx));
                 }
                 Some(Request::Tool(call, reply)) => rt.tool(call, reply).await,
+                Some(Request::Busy(reply)) => {
+                    let mut working: Vec<String> = rt
+                        .sessions
+                        .values()
+                        .filter(|s| s.is_working())
+                        .map(|s| format!("{}/{}", s.squad.as_deref().unwrap_or("-"), s.name().unwrap_or("?")))
+                        .collect();
+                    working.sort();
+                    let _ = reply.send(equipe_protocol::rpc::Busy { working, approvals: rt.pending.len() });
+                }
                 Some(Request::Shutdown(reply)) => {
                     rt.stop_all_turns();
                     let _ = reply.send(());
@@ -1944,7 +1962,10 @@ fn work_prompt(
     }
     out.push('\n');
     if let Some(note) = reopened {
-        out.push_str(&format!("The person sent it back. {note}\n"));
+        out.push_str(&format!(
+            "The person sent it back. {note}\nWhat they asked for says something about how they want work done: save that \
+lesson in your memory before you start, so the next ticket begins with it.\n"
+        ));
     }
     if !ticket.body.is_empty() {
         out.push_str(&format!("\n{}\n", ticket.body));

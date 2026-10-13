@@ -48,7 +48,10 @@ pub async fn ensure_running() -> io::Result<bool> {
     if gateway::is_running(&socket).await {
         return Ok(false);
     }
-    spawn_detached()?;
+    // Installed as a service, the service starts it, so it stays looked after.
+    if !(service::installed() && service::start()) {
+        spawn_detached()?;
+    }
     for _ in 0..100 {
         if gateway::is_running(&socket).await {
             return Ok(true);
@@ -61,7 +64,7 @@ pub async fn ensure_running() -> io::Result<bool> {
     ))
 }
 
-fn log_path() -> PathBuf {
+pub fn log_path() -> PathBuf {
     equipe_home().join("daemon.log")
 }
 
@@ -104,4 +107,163 @@ pub async fn attach(squad: &str) -> io::Result<(Client, Hello)> {
 /// `equipe daemon stop`: `Ok(false)` when none was running.
 pub async fn stop() -> io::Result<bool> {
     gateway::shutdown(&socket()).await
+}
+
+/// The daemon as a login service — launchd on macOS, systemd on Linux — so it
+/// starts when the person logs in, comes back if it crashes, and outlives the
+/// terminal or SSH session it was started from. `equipe daemon stop` exits
+/// cleanly, which the service leaves stopped.
+pub mod service {
+    use std::io;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    const LABEL: &str = "im.equipe.daemon";
+
+    fn home() -> PathBuf {
+        dirs::home_dir().unwrap_or_default()
+    }
+
+    fn plist_path() -> PathBuf {
+        home().join("Library/LaunchAgents").join(format!("{LABEL}.plist"))
+    }
+
+    fn unit_path() -> PathBuf {
+        home().join(".config/systemd/user/equipe.service")
+    }
+
+    pub fn installed() -> bool {
+        if cfg!(target_os = "macos") { plist_path().is_file() } else { unit_path().is_file() }
+    }
+
+    /// The executable the service runs: one that survives updates — Homebrew's
+    /// `bin/equipe` rather than the versioned Cellar path behind it.
+    pub fn stable_exe(exe: &Path) -> PathBuf {
+        let text = exe.to_string_lossy();
+        match text.find("/Cellar/equipe/") {
+            Some(at) => PathBuf::from(format!("{}/bin/equipe", &text[..at])),
+            None => exe.to_owned(),
+        }
+    }
+
+    fn escape(text: &str) -> String {
+        text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    }
+
+    pub fn plist(exe: &Path, path: &str, log: &Path) -> String {
+        let (exe, path, log) = (escape(&exe.to_string_lossy()), escape(path), escape(&log.to_string_lossy()));
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{LABEL}</string>
+  <key>ProgramArguments</key>
+  <array><string>{exe}</string><string>daemon</string><string>run</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>{path}</string></dict>
+  <key>StandardOutPath</key><string>{log}</string>
+  <key>StandardErrorPath</key><string>{log}</string>
+</dict>
+</plist>
+"#
+        )
+    }
+
+    pub fn unit(exe: &Path, path: &str, log: &Path) -> String {
+        format!(
+            "[Unit]\nDescription=equipe — the squad's daemon\n\n[Service]\nExecStart={} daemon run\nEnvironment=PATH={path}\nRestart=on-failure\nStandardOutput=append:{}\nStandardError=append:{}\n\n[Install]\nWantedBy=default.target\n",
+            exe.display(),
+            log.display(),
+            log.display()
+        )
+    }
+
+    fn run(program: &str, args: &[&str]) -> bool {
+        Command::new(program).args(args).status().is_ok_and(|s| s.success())
+    }
+
+    fn domains() -> [String; 2] {
+        // SAFETY: getuid has no preconditions and cannot fail.
+        let uid = unsafe { libc::getuid() };
+        [format!("gui/{uid}"), format!("user/{uid}")]
+    }
+
+    /// Write the service and start it. The running daemon must be stopped first.
+    pub fn install(exe: &Path, log: &Path) -> io::Result<()> {
+        let exe = stable_exe(exe);
+        let path = std::env::var("PATH").unwrap_or_default();
+        if cfg!(target_os = "macos") {
+            let file = plist_path();
+            std::fs::create_dir_all(file.parent().expect("LaunchAgents has a parent"))?;
+            std::fs::write(&file, plist(&exe, &path, log))?;
+            let file = file.to_string_lossy().into_owned();
+            // The person's graphical session when there is one, else their user domain.
+            for domain in domains() {
+                let _ = run("launchctl", &["bootout", &format!("{domain}/{LABEL}")]);
+                if run("launchctl", &["bootstrap", &domain, &file]) {
+                    return Ok(());
+                }
+            }
+            Err(io::Error::other("launchctl couldn't load the service"))
+        } else {
+            let file = unit_path();
+            std::fs::create_dir_all(file.parent().expect("systemd/user has a parent"))?;
+            std::fs::write(&file, unit(&exe, &path, log))?;
+            if run("systemctl", &["--user", "daemon-reload"]) && run("systemctl", &["--user", "enable", "--now", "equipe"]) {
+                Ok(())
+            } else {
+                Err(io::Error::other("systemctl --user couldn't start the service"))
+            }
+        }
+    }
+
+    /// Stop the service and remove it. `Ok(false)` when there was none.
+    pub fn uninstall() -> io::Result<bool> {
+        if !installed() {
+            return Ok(false);
+        }
+        if cfg!(target_os = "macos") {
+            for domain in domains() {
+                let _ = run("launchctl", &["bootout", &format!("{domain}/{LABEL}")]);
+            }
+            std::fs::remove_file(plist_path())?;
+        } else {
+            let _ = run("systemctl", &["--user", "disable", "--now", "equipe"]);
+            std::fs::remove_file(unit_path())?;
+            let _ = run("systemctl", &["--user", "daemon-reload"]);
+        }
+        Ok(true)
+    }
+
+    /// Start the installed service's daemon.
+    pub fn start() -> bool {
+        if cfg!(target_os = "macos") {
+            domains().iter().any(|domain| run("launchctl", &["kickstart", &format!("{domain}/{LABEL}")]))
+        } else {
+            run("systemctl", &["--user", "start", "equipe"])
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_service_runs_a_path_that_survives_updates() {
+            assert_eq!(stable_exe(Path::new("/opt/homebrew/Cellar/equipe/0.2.0/bin/equipe")), Path::new("/opt/homebrew/bin/equipe"));
+            assert_eq!(stable_exe(Path::new("/Users/me/.local/bin/equipe")), Path::new("/Users/me/.local/bin/equipe"));
+        }
+
+        #[test]
+        fn launchd_restarts_a_crash_but_not_a_stop() {
+            let plist = plist(Path::new("/x/equipe"), "/usr/bin:/a&b", Path::new("/h/daemon.log"));
+            assert!(plist.contains("<string>/x/equipe</string><string>daemon</string><string>run</string>"));
+            assert!(plist.contains("<key>SuccessfulExit</key><false/>"), "a clean stop stays stopped");
+            assert!(plist.contains("/usr/bin:/a&amp;b"), "escaped");
+            let unit = unit(Path::new("/x/equipe"), "/usr/bin", Path::new("/h/daemon.log"));
+            assert!(unit.contains("ExecStart=/x/equipe daemon run") && unit.contains("Restart=on-failure"));
+        }
+    }
 }

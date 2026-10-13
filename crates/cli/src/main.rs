@@ -123,9 +123,17 @@ enum DaemonAction {
     /// Stop it. Open sessions resume when it starts again
     Stop,
     /// Stop it and start this build
-    Restart,
+    Restart {
+        /// Wait until no member is mid-turn and no request waits for you
+        #[arg(long)]
+        when_idle: bool,
+    },
     /// Whether it is running
     Status,
+    /// Run it as a login service: up after a restart, back after a crash
+    Install,
+    /// Stop running it as a login service
+    Uninstall,
     /// Serve in the foreground (what `start` runs)
     #[command(hide = true)]
     Run,
@@ -178,7 +186,7 @@ async fn main() -> ExitCode {
         Command::Status => app.status().await,
         Command::Try { prompt, engine, model, edit } => app.run_try(&prompt, engine, model.as_deref(), edit).await,
         Command::Daemon { action } => daemon_command(action).await,
-        Command::Update => update(),
+        Command::Update => update().await,
         Command::Browser { url, forget } => sign_in(url, forget),
         Command::Mcp { squad, member, role, home } => serve_mcp(squad, member, role, home).await,
         Command::Squads => {
@@ -337,7 +345,7 @@ const INSTALL_SCRIPT: &str = "https://github.com/equipe-labs/equipe/releases/lat
 
 /// `equipe update`: the latest release over this binary, by the same script
 /// that installs it. Homebrew installs are pointed back to Homebrew.
-fn update() -> CmdResult {
+async fn update() -> CmdResult {
     let p = ui::out();
     let exe = std::env::current_exe()
         .and_then(|exe| exe.canonicalize())
@@ -356,6 +364,11 @@ fn update() -> CmdResult {
         .status()
         .map_err(|err| Failure::new(format!("Couldn't run the installer: {err}")))?;
     if status.success() {
+        // The squad keeps running the old build until the daemon restarts.
+        if equipe_core::gateway::is_running(&daemon::socket()).await {
+            println!("{}", p.note(2, "Your squad still runs the old build. This restarts it once no one is mid-turn:"));
+            println!("  {}", p.hint("equipe daemon restart --when-idle"));
+        }
         Ok(())
     } else {
         Err(Failure::new("The update didn't finish — equipe is unchanged.").next(format!("curl -fsSL {INSTALL_SCRIPT} | sh")))
@@ -365,6 +378,28 @@ fn update() -> CmdResult {
 fn update_by_homebrew(exe: &std::path::Path) -> bool {
     let path = exe.to_string_lossy();
     path.contains("/Cellar/") || path.contains("/homebrew/") || path.contains("/linuxbrew/")
+}
+
+/// Wait until the daemon is between turns everywhere — a restart then cuts
+/// no one off. Says once who it waits for, and again when that changes.
+async fn wait_until_idle(p: &ui::Painter) -> CmdResult {
+    let mut said = None;
+    loop {
+        let busy = equipe_core::gateway::busy(&daemon::socket()).await.map_err(|err| Failure::new(err.to_string()))?;
+        let Some(busy) = busy.filter(|b| !b.idle()) else {
+            return Ok(());
+        };
+        let mut waiting = busy.working.clone();
+        if busy.approvals > 0 {
+            waiting.push(format!("{} request{} for you", busy.approvals, if busy.approvals == 1 { "" } else { "s" }));
+        }
+        let line = format!("Waiting for {} — Ctrl-C to leave it running", waiting.join(", "));
+        if said.as_ref() != Some(&line) {
+            println!("{}", p.note(0, &line));
+            said = Some(line);
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
 }
 
 async fn daemon_command(action: DaemonAction) -> CmdResult {
@@ -395,16 +430,49 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             }
             Err(err) => Err(Failure::new(err.to_string())),
         },
-        DaemonAction::Restart => {
+        DaemonAction::Restart { when_idle } => {
+            if when_idle {
+                wait_until_idle(&p).await?;
+            }
             let _ = daemon::stop().await;
             daemon::ensure_running().await.map_err(|err| Failure::new(err.to_string()))?;
             println!("{}", p.ok_line("Daemon restarted on this build."));
+            Ok(())
+        }
+        DaemonAction::Install => {
+            let exe = std::env::current_exe().map_err(|err| Failure::new(err.to_string()))?;
+            // The service takes over from a daemon already running — between turns.
+            wait_until_idle(&p).await?;
+            let _ = daemon::stop().await;
+            daemon::service::install(&exe, &daemon::log_path()).map_err(|err| Failure::new(err.to_string()))?;
+            for _ in 0..100 {
+                if equipe_core::gateway::is_running(&daemon::socket()).await {
+                    println!("{}", p.ok_line("The daemon runs as a login service: it starts when you log in and comes back if it crashes."));
+                    println!("{}", p.note(2, "equipe daemon uninstall goes back to starting it on demand."));
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(Failure::new("The service was installed but the daemon didn't answer.").next(format!("tail {}", daemon::log_path().display())))
+        }
+        DaemonAction::Uninstall => {
+            if daemon::service::uninstall().map_err(|err| Failure::new(err.to_string()))? {
+                println!("{}", p.ok_line("No longer a login service. equipe starts the daemon when it needs it."));
+            } else {
+                println!("{}", p.note(0, "The daemon wasn't installed as a service."));
+            }
             Ok(())
         }
         DaemonAction::Status => {
             if equipe_core::gateway::is_running(&daemon::socket()).await {
                 println!("{}", p.ok_line("Daemon running."));
                 println!("{}", p.row("socket", &daemon::socket().display().to_string()));
+                let how = if daemon::service::installed() { "login service — starts at login, back after a crash" } else { "on demand · equipe daemon install keeps it up" };
+                println!("{}", p.row("runs as", how));
+                if let Ok(Some(busy)) = equipe_core::gateway::busy(&daemon::socket()).await {
+                    let working = if busy.working.is_empty() { "nobody mid-turn".to_owned() } else { busy.working.join(", ") };
+                    println!("{}", p.row("working", &working));
+                }
             } else {
                 println!("{}", p.note(0, "Daemon not running. `equipe` starts it when you open the console."));
             }

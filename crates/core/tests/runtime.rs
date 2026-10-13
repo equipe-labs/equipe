@@ -603,6 +603,7 @@ async fn work_sent_back_returns_to_its_member_on_the_same_branch_and_conversatio
     let call = calls(&recorded).pop().unwrap();
     let prompt = arg(&call, "-p").unwrap();
     assert!(prompt.contains("The person sent it back. Reopened: make the button blue"), "{prompt}");
+    assert!(prompt.contains("save that lesson in your memory"), "a reopen is a lesson to keep: {prompt}");
     assert_eq!(arg(&call, "--resume"), Some("sess-1"), "it continues the ticket's conversation");
 }
 
