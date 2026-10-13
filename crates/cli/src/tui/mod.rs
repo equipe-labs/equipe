@@ -101,8 +101,22 @@ fn count_changes(app: &mut app::App, cwd: &std::path::Path) {
     app.diffs.insert(id, (branch, stat));
 }
 
+/// Where the console stands for `squad`: `here` when it is in one of the
+/// squad's projects or its home; else its first project; else — a squad with
+/// no project yet — its home, where its members work.
+fn squad_cwd(home: &std::path::Path, squad: &str, here: &std::path::Path) -> PathBuf {
+    let projects = equipe_core::squads::list(home).into_iter().find(|s| s.name == squad).map(|s| s.projects).unwrap_or_default();
+    let squad_home = equipe_core::squad_home::path(home, squad);
+    let canon = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
+    let inside = |dir: &std::path::Path| here.starts_with(dir) || canon(here).starts_with(canon(dir));
+    if projects.iter().any(|p| inside(p)) || inside(&squad_home) {
+        return here.to_owned();
+    }
+    projects.into_iter().next().unwrap_or(squad_home)
+}
+
 pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
-    let mut cwd = cwd;
+    let mut cwd = squad_cwd(&equipe_providers::credentials::equipe_home(), &start.squad, &cwd);
     let (mut client, hello) = daemon::attach(&start.squad).await?;
     let mut branch = current_branch(&cwd);
     let daemon_build = hello.version.clone();
@@ -336,8 +350,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                     client = next;
                     let home = equipe_providers::credentials::equipe_home();
                     let _ = equipe_core::squads::remember_last(&home, &squad);
-                    let first_project = equipe_core::squads::list(&home).into_iter().find(|s| s.name == squad).and_then(|s| s.projects.first().cloned());
-                    cwd = first_project.unwrap_or(cwd);
+                    cwd = squad_cwd(&home, &squad, &cwd);
                     branch = current_branch(&cwd);
                     let (mut fresh, first) = app::App::from_snapshot(cwd.clone(), hello.snapshot, &members);
                     first.into_iter().for_each(|c| client.send(c));
@@ -567,6 +580,25 @@ fn current_branch(cwd: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_console_stands_in_the_squads_project_or_else_its_home() {
+        let home = std::env::temp_dir().join(format!("equipe-squad-cwd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let repo = home.join("repo");
+        let elsewhere = home.join("elsewhere");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let repo = repo.canonicalize().unwrap();
+        equipe_core::squads::create_without_project(&home, "solo").unwrap();
+        equipe_core::squads::create(&home, "shop", &repo).unwrap();
+        // No project yet: its home, wherever the console was opened.
+        assert_eq!(squad_cwd(&home, "solo", &repo), equipe_core::squad_home::path(&home, "solo"));
+        // Inside one of its projects: right there; elsewhere: its first project.
+        assert_eq!(squad_cwd(&home, "shop", &repo.join("src")), repo.join("src"));
+        assert_eq!(squad_cwd(&home, "shop", &elsewhere), repo);
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     #[test]
     fn a_background_answer_reads_in_any_precision() {

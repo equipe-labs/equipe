@@ -34,6 +34,11 @@ pub fn list(home: &Path) -> Vec<SquadSummary> {
     squads
 }
 
+/// Whether there is a squad called `name` — with projects or not yet.
+pub fn exists(home: &Path, name: &str) -> bool {
+    valid_name(name) && squad_dir(home, name).join("squad.db").exists()
+}
+
 /// The squad `project` belongs to.
 pub fn find(home: &Path, project: &Path) -> Option<String> {
     list(home).into_iter().find(|s| s.projects.iter().any(|p| p == project)).map(|s| s.name)

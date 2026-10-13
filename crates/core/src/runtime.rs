@@ -632,7 +632,8 @@ impl Runtime {
         let role = spec.role.as_deref().map(roles::role_or_custom);
         match (&squad, role) {
             (Some(squad), _) => {
-                if self.projects(squad).is_empty() {
+                // A squad may have no project yet: its home is where it works.
+                if !crate::squads::exists(&self.config.home, squad) {
                     return fail(self, format!("There is no squad called {squad}."), Some("equipe"));
                 }
             }
