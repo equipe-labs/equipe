@@ -276,7 +276,7 @@ impl Layouts {
         if app.pane != Pane::Conversation {
             return None;
         }
-        let agent = app.selected()?;
+        let agent = app.viewed()?;
         let text_width = transcript_width(app, width);
         let key = layout_key(agent, text_width);
         let previous = match self.laid_out.get(&agent.id) {
@@ -536,7 +536,7 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
             }
         }
     }
-    let Some(agent) = app.selected() else {
+    let Some(agent) = app.viewed() else {
         return Extent { page: board_page, conversation_max: 0, board_max, hits, divider, board_detail, board_rule, text: board_text };
     };
     let text = conversation_text(right, app, agent);
@@ -966,7 +966,9 @@ fn glyph(app: &App, agent: &Agent, theme: Theme) -> Span<'static> {
         return Span::styled("✻", theme.accent().add_modifier(Modifier::BOLD));
     }
     let (mark, hue) = agent_look(agent);
-    match agent.state {
+    // At work in another project's conversation is at work too.
+    let state = if agent.state == AgentState::Ready && app.lanes_working(agent) > 0 { AgentState::Working } else { agent.state };
+    match state {
         AgentState::Starting => Span::styled("…", theme.dim()),
         AgentState::Ready => Span::styled(mark, theme.member(hue)),
         AgentState::Working => Span::styled(theme.spinner(Instant::now()).content, theme.member(hue).add_modifier(Modifier::BOLD)),
@@ -1021,6 +1023,9 @@ fn render_squad(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
                 (0, Some(ticket)) => format!("T-{ticket}"),
                 (0, None) => agent.short_model().unwrap_or_default(),
             };
+            // Several of its conversations at work at once.
+            let at_once = app.lanes_working(agent) + usize::from(agent.state == AgentState::Working);
+            let text = if at_once > 1 { format!("{at_once} at once") } else { text };
             // A conversation past half its context, in sight.
             let text = match agent.context.filter(|(_, w)| *w > 0).map(|(u, w)| u * 100 / w) {
                 Some(p) if p >= 50 => format!("{text} · {p}%"),
@@ -1424,7 +1429,7 @@ You can talk to it directly — the PM hears about it."
     // Memos wait below the conversation they go into until the turn ends —
     // each only in the conversation of the project it was left in. On a ticket
     // there is one conversation, the ticket's: every memo is for it.
-    let here = |about: &Option<String>| agent.ticket.is_some() || agent.in_view(about.as_deref());
+    let here = |about: &Option<String>| agent.ticket.is_some() || agent.lane.is_some() || agent.in_view(about.as_deref());
     for (memo, _) in agent.queued.iter().zip(&agent.queued_in).filter(|(_, about)| here(about)) {
         gap(&mut lines);
         lines.extend(wrapped(vec![Span::styled("› ", theme.dim())], memo, theme.dim(), 2, width));
@@ -1526,7 +1531,7 @@ fn render_watch(frame: &mut Frame, area: Rect, app: &App, agent: &Agent, theme: 
 }
 
 fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, layouts: &Layouts) {
-    let Some(agent) = app.selected() else {
+    let Some(agent) = app.viewed() else {
         return;
     };
     let mut title = vec![Span::styled(agent.label(), theme.member(agent_look(agent).1).add_modifier(Modifier::BOLD))];
@@ -1644,7 +1649,7 @@ pub fn selection_text(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) 
         let lines = ticket_detail(app, theme, detail_width(detail_body(detail)));
         return selected_in(&lines, from, to);
     }
-    let agent = app.selected()?;
+    let agent = app.viewed()?;
     let width = (conversation_text(right, app, agent).width as usize).saturating_sub(1).min(PROSE_MAX);
     let fresh;
     let lines: &[Line<'static>] = match layouts.get(agent, width) {
@@ -2572,6 +2577,44 @@ mod tests {
         app.on_event(Event::UserMessage { session: pm, text: "and the app icon".into() });
         assert_eq!(app.agents[0].queued, ["and the site footer"]);
         assert_eq!(app.agents[0].queued_in, [Some("site".to_owned())]);
+    }
+
+    #[test]
+    fn about_another_project_a_member_at_work_answers_in_a_lane_beside_it() {
+        let (mut app, pm) = working();
+        app.projects = vec!["/code/site".into(), "/code/app".into()];
+        app.on_event(Event::Thread { session: pm, project: Some("site".into()) });
+        app.agents[0].thread_view = Some("app".into());
+        for c in "how is the app?".chars() {
+            app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char(c)), Instant::now());
+        }
+        let sent = app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter), Instant::now());
+        assert_eq!(sent, vec![Command::Submit { session: pm, text: "how is the app?".into() }]);
+        assert!(app.flash.as_deref().unwrap().contains("takes it up about app now"), "{:?}", app.flash);
+        // The daemon opens app's lane: it isn't listed, and it is what shows.
+        app.on_event(Event::SessionStarted {
+            session: 77,
+            project: "/repo".into(),
+            engine: Engine::Claude,
+            model: None,
+            workspace: None,
+            member: Some(Member { role: "pm".into(), name: "pm".into() }),
+            squad: Some("acme".into()),
+        });
+        app.on_event(Event::LaneOpened { session: 77, of: pm, project: Some("app".into()) });
+        assert_eq!(app.agents.len(), 1);
+        app.on_event(Event::UserMessage { session: 77, text: "how is the app?".into() });
+        app.on_event(Event::TextDelta { session: 77, text: "The app is fine.".into() });
+        assert_eq!(app.viewed().map(|a| a.id), Some(77));
+        let shot = screen(&app, 110, 24);
+        assert!(shot.contains("The app is fine."), "{shot}");
+        assert!(shot.contains("2 at once"), "{shot}");
+        // Esc stops app's conversation, not site's.
+        let stop = app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Esc), Instant::now());
+        assert_eq!(stop, vec![Command::Interrupt { session: 77 }]);
+        // Back on site, the member's own conversation shows.
+        app.agents[0].thread_view = Some("site".into());
+        assert_eq!(app.viewed().map(|a| a.id), Some(pm));
     }
 
     #[test]

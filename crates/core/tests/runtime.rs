@@ -64,7 +64,7 @@ EOF"#
 fn recording_claude(turn: &str) -> (PathBuf, PathBuf) {
     let calls = scratch("calls");
     let record = format!(
-        "n=$(ls '{dir}' | wc -l | tr -d ' ')\nfor a in \"$@\"; do printf '%s\\n<<arg>>\\n' \"$a\"; done > '{dir}/call-'$(printf %03d $n)\n{turn}",
+        "n=$(ls '{dir}' | wc -l | tr -d ' ')\nfor a in \"$@\"; do printf '%s\\n<<arg>>\\n' \"$a\"; done > '{dir}/call-'$(printf %03d $n)-$$\n{turn}",
         dir = calls.display()
     );
     (fake_claude(true, &record), calls)
@@ -2135,43 +2135,75 @@ async fn the_pm_keeps_a_conversation_for_each_project_and_one_for_the_squad() {
 }
 
 #[tokio::test]
-async fn a_memo_goes_into_the_conversation_of_the_project_it_was_left_in() {
+async fn a_memo_waits_in_the_conversation_it_was_left_in_while_another_project_goes_on() {
     let site = named("site");
     let app = named("app");
-    // Each turn takes a moment, long enough to leave a memo and look elsewhere.
     let (claude, recorded) = recording_claude(&format!("sleep 1\n{}", answering_per_call("ok")));
     let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
     add(&handle, &mut events, 1, member(&site, "pm")).await;
     handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
     handle.send(Command::Submit { session: 1, text: "site one".into() });
     until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
-    // Left while looking at app, then the person goes back to site.
+    // For after site's turn, in site's conversation.
+    handle.send(Command::SubmitLater { session: 1, text: "about the site".into() });
+    let queued = until(&mut events, |e| matches!(e, Event::MessageQueued { .. })).await;
+    assert!(matches!(queued.last(), Some(Event::MessageQueued { session: 1, project: Some(p), .. }) if p == "site"), "{queued:?}");
+    // About app meanwhile: app's lane takes it up at once, without waiting for site.
     handle.send(Command::Focus { squad: "acme".into(), project: Some("app".into()) });
     handle.send(Command::SubmitLater { session: 1, text: "about the app".into() });
-    let queued = until(&mut events, |e| matches!(e, Event::MessageQueued { .. })).await;
-    assert!(matches!(queued.last(), Some(Event::MessageQueued { project: Some(p), .. }) if p == "app"), "{queued:?}");
-    // Another about site, and a second about the app: each project's memos go together, into its own conversation.
-    handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
-    handle.send(Command::SubmitLater { session: 1, text: "about the site".into() });
-    handle.send(Command::Focus { squad: "acme".into(), project: Some("app".into()) });
-    handle.send(Command::SubmitLater { session: 1, text: "more on the app".into() });
-    handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
-    let snapshot = handle.snapshot("acme").await;
-    assert_eq!(snapshot.sessions[0].queued_in, [Some("app".into()), Some("site".into()), Some("app".into())]);
-    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
-    let second = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
-    assert!(second.iter().any(|e| matches!(e, Event::Thread { session: 1, project: Some(p) } if p == "app")), "{second:?}");
-    assert!(
-        second.iter().any(|e| matches!(e, Event::UserMessage { text, .. } if text == "about the app\n\nmore on the app")),
-        "{second:?}"
-    );
-    let third = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
-    assert!(third.iter().any(|e| matches!(e, Event::Thread { session: 1, project: Some(p) } if p == "site")), "{third:?}");
-    assert!(third.iter().any(|e| matches!(e, Event::UserMessage { text, .. } if text == "about the site")), "{third:?}");
-    // The app's conversation starts afresh — not on the end of site's — and site's carries on.
+    let seen = until(&mut events, |e| matches!(e, Event::UserMessage { text, .. } if text.contains("about the app"))).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::LaneOpened { of: 1, project: Some(p), .. } if p == "app")), "{seen:?}");
+    // Site's memo goes in when site's turn ends, in site's conversation, which carries on.
+    let site_next = until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, .. })).await;
+    assert!(matches!(site_next.last(), Some(Event::UserMessage { text, .. }) if text == "about the site"), "{site_next:?}");
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     let all = calls(&recorded);
-    assert_eq!(arg(&all[1], "--resume"), None);
-    assert_eq!(arg(&all[2], "--resume"), Some("sess-0"));
+    let memo = all.iter().find(|c| arg(c, "-p").is_some_and(|p| p.contains("about the site"))).expect("site's memo turn");
+    assert_eq!(arg(memo, "--resume"), Some("sess-0"), "site's conversation carries on");
+}
+
+#[tokio::test]
+async fn a_member_busy_in_one_project_talks_about_another_in_a_lane_beside_it() {
+    let site = named("site");
+    let app = named("app");
+    // A long turn about site; a short one about app.
+    let turn = format!("case \"$*\" in *\"site job\"*) sleep 3;; esac\n{}", answering_per_call("ok"));
+    let (claude, recorded) = recording_claude(&turn);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
+    handle.send(Command::Submit { session: 1, text: "site job".into() });
+    until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, .. })).await;
+
+    // Looking at app now: it starts at once, in a lane of its own, beside site's turn.
+    let asked = std::time::Instant::now();
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("app".into()) });
+    handle.send(Command::Submit { session: 1, text: "how is the app?".into() });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let lane = seen
+        .iter()
+        .find_map(|e| match e {
+            Event::LaneOpened { session, of: 1, project: Some(p) } if p == "app" => Some(*session),
+            _ => None,
+        })
+        .expect("a lane for app");
+    assert!(matches!(seen.last(), Some(Event::TurnEnded { session, .. }) if *session == lane), "app's answer first: {seen:#?}");
+    assert!(asked.elapsed() < Duration::from_secs(2), "it didn't wait for site's turn");
+    assert!(!seen.iter().any(|e| matches!(e, Event::SteerQueued { .. } | Event::MessageQueued { .. })), "not steered into site's work");
+    let snapshot = handle.snapshot("acme").await;
+    let info = snapshot.sessions.iter().find(|s| s.session == lane).unwrap();
+    assert_eq!(info.lane, Some(equipe_core::protocol::Lane { of: 1, project: Some("app".into()) }));
+    // It is the same member, not a teammate of its own, in app's conversation.
+    let all = calls(&recorded);
+    let call = all.iter().find(|c| arg(c, "-p").is_some_and(|p| p.contains("how is the app?"))).expect("app's turn");
+    assert!(arg(call, "--append-system-prompt").unwrap().starts_with("You are pm"));
+    assert!(arg(call, "-p").unwrap().contains("the project app"), "{call:?}");
+
+    // Site's turn ends on its own; app's next message goes to its lane again.
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    handle.send(Command::Submit { session: 1, text: "and the icon?".into() });
+    let next = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(next.iter().any(|e| matches!(e, Event::UserMessage { session, .. } if *session == lane)), "{next:#?}");
 }
 
 #[tokio::test]

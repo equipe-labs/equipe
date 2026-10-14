@@ -135,6 +135,10 @@ pub struct Agent {
     pub suggestion: Option<String>,
     /// What the person said while it works, not read yet (steering).
     pub steering: Vec<String>,
+    /// Set for a lane: another member's conversation about one project,
+    /// running beside its others. Lanes aren't listed; they show when their
+    /// member is talked to about their project.
+    pub lane: Option<equipe_core::protocol::Lane>,
     /// A message to send once the session has started.
     pending: Option<String>,
 }
@@ -169,6 +173,7 @@ impl Agent {
             subagents: Vec::new(),
             suggestion: None,
             steering: Vec::new(),
+            lane: None,
         }
     }
 
@@ -269,6 +274,7 @@ impl Agent {
             subagents: Vec::new(),
             suggestion: None,
             steering: info.steering,
+            lane: info.lane,
         }
     }
 
@@ -386,6 +392,9 @@ pub struct App {
     pub squad: String,
     pub projects: Vec<PathBuf>,
     pub agents: Vec<Agent>,
+    /// Members' lanes: their conversations about one project each, run beside
+    /// their others.
+    pub lanes: Vec<Agent>,
     /// The board: open tickets and the latest closed ones, by id.
     pub tickets: Vec<Ticket>,
     pub selected: usize,
@@ -535,11 +544,13 @@ impl App {
     /// The squad as the daemon has it. `joining` are roles to bring in now (a
     /// new squad's starting team); a squad with nobody on it starts with its PM.
     pub fn from_snapshot(cwd: PathBuf, snapshot: Snapshot, joining: &[String]) -> (Self, Vec<Command>) {
+        let (lanes, agents): (Vec<Agent>, Vec<Agent>) = snapshot.sessions.into_iter().map(Agent::from_info).partition(|a| a.lane.is_some());
         let mut app = Self {
             cwd,
             squad: snapshot.squad,
             projects: snapshot.projects,
-            agents: snapshot.sessions.into_iter().map(Agent::from_info).collect(),
+            agents,
+            lanes,
             tickets: snapshot.tickets,
             selected: 0,
             pane: Pane::Conversation,
@@ -616,6 +627,22 @@ impl App {
 
     pub fn selected(&self) -> Option<&Agent> {
         self.agents.get(self.selected)
+    }
+
+    /// The conversation shown: the selected member's, or — about the project
+    /// in view — its lane's, when one runs beside it.
+    pub fn viewed(&self) -> Option<&Agent> {
+        let selected = self.selected()?;
+        Some(self.lane_of(selected).unwrap_or(selected))
+    }
+
+    /// How many of a member's lanes are at work now.
+    pub fn lanes_working(&self, member: &Agent) -> usize {
+        self.lanes.iter().filter(|l| l.lane.as_ref().is_some_and(|lane| lane.of == member.id) && l.state == AgentState::Working).count()
+    }
+
+    fn lane_of(&self, member: &Agent) -> Option<&Agent> {
+        self.lanes.iter().find(|l| l.lane.as_ref().is_some_and(|lane| lane.of == member.id && lane.project == member.thread_view))
     }
 
     pub fn total_tokens(&self) -> u64 {
@@ -1121,7 +1148,26 @@ impl App {
         {
             self.agents.push(Agent::new(id, member.clone(), false, self.cwd.clone()));
         }
-        let Some(agent) = self.agents.iter_mut().find(|a| a.id == id) else {
+        // A session just started that turns out to be a lane: it leaves the list.
+        if let Event::LaneOpened { of, project, .. } = &event
+            && let Some(at) = self.agents.iter().position(|a| a.id == id)
+        {
+            let mut lane = self.agents.remove(at);
+            if self.selected > at {
+                self.selected -= 1;
+            }
+            // Its conversation so far: what the member said about the project.
+            if let Some(main) = self.agents.iter().find(|a| a.id == *of)
+                && main.thread_view == *project
+            {
+                lane.transcript = Transcript::from_entries(main.shown().into_iter().map(|e| e.into_owned()).collect());
+            }
+            lane.thread_view = None;
+            lane.lane = Some(equipe_core::protocol::Lane { of: *of, project: project.clone() });
+            self.lanes.push(lane);
+            return Vec::new();
+        }
+        let Some(agent) = self.agents.iter_mut().chain(self.lanes.iter_mut()).find(|a| a.id == id) else {
             return Vec::new();
         };
         agent.transcript.apply(&event);
@@ -1682,7 +1728,7 @@ impl App {
             KeyCode::Esc if self.pane == Pane::Board => self.pane = Pane::Conversation,
             KeyCode::Esc => return self.interrupt(),
             // With words typed to a member at work: a memo for after this turn.
-            KeyCode::Tab if !self.composer.is_empty() && !self.composer.text().starts_with('/') && self.selected().is_some_and(|a| a.state == AgentState::Working) => {
+            KeyCode::Tab if !self.composer.is_empty() && !self.composer.text().starts_with('/') && self.viewed().is_some_and(|a| a.state == AgentState::Working) => {
                 return self.send(true);
             }
             KeyCode::Tab => self.cycle(1),
@@ -1735,7 +1781,7 @@ impl App {
     }
 
     fn interrupt(&mut self) -> Vec<Command> {
-        match self.selected() {
+        match self.viewed() {
             Some(agent) if agent.state == AgentState::Working => vec![Command::Interrupt { session: agent.id }],
             _ => Vec::new(),
         }
@@ -1816,11 +1862,32 @@ impl App {
             }
         }
         let away = target != self.selected || self.pane == Pane::Board;
+        // Said about another project than the one it is at work in: that
+        // conversation runs beside it — its lane's state, or a fresh one's.
+        let (state, about) = match self.agents.get(target) {
+            Some(agent) if target == self.selected => match self.lane_of(agent) {
+                Some(lane) => (lane.state, None),
+                None if agent.state == AgentState::Working
+                    && agent.member.is_some()
+                    && agent.ticket.is_none()
+                    && agent.current_thread() != agent.thread_view.as_deref() =>
+                {
+                    (AgentState::Ready, agent.thread_view.clone())
+                }
+                None => (agent.state, None),
+            },
+            Some(agent) => (agent.state, None),
+            None => return Vec::new(),
+        };
         let Some(agent) = self.agents.get_mut(target) else {
             return Vec::new();
         };
         let name = agent.label();
-        match agent.state {
+        if let (AgentState::Ready, Some(project)) = (state, &about) {
+            self.flash = Some(format!("{name} takes it up about {project} now, beside its other work."));
+            return vec![Command::Submit { session: agent.id, text }];
+        }
+        match state {
             // The message shows once the daemon echoes it, the same on every screen.
             AgentState::Ready => {
                 if away {
@@ -2769,6 +2836,7 @@ mod tests {
             queued_project: None,
             queued_in: Vec::new(),
             steering: Vec::new(),
+            lane: None,
             work: None,
             mode: None,
         }

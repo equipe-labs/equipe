@@ -362,6 +362,10 @@ struct Session {
     /// the whole squad's), and the other threads' conversations, put aside.
     thread: Option<String>,
     threads: HashMap<Option<String>, DeskThread>,
+    /// For a lane: the member's own session, and the project its conversation
+    /// is about (`None`: the whole squad's). A lane runs that conversation's
+    /// turns beside the member's others; it is never a member of its own.
+    lane: Option<(SessionId, Option<String>)>,
     /// Its own mode; `None` follows the squad's.
     mode: Option<Mode>,
     /// The turn running answers the person (not the board, not the team), so
@@ -674,11 +678,17 @@ impl Runtime {
     async fn handle(&mut self, command: Command) {
         match command {
             Command::Start { session, spec } => self.start(session, spec).await,
-            Command::Submit { session, text } => self.submit(session, text).await,
-            Command::SubmitLater { session, text } => match self.sessions.get(&session) {
-                Some(s) if s.is_working() => self.leave_memo(session, text),
-                _ => self.submit(session, text).await,
-            },
+            Command::Submit { session, text } => {
+                let session = self.route(session);
+                self.submit(session, text).await
+            }
+            Command::SubmitLater { session, text } => {
+                let session = self.route(session);
+                match self.sessions.get(&session) {
+                    Some(s) if s.is_working() => self.leave_memo(session, text),
+                    _ => self.submit(session, text).await,
+                }
+            }
             Command::Interrupt { session } => self.interrupt(session).await,
             Command::Close { session } => self.close(session).await,
             Command::Accept { squad, ticket } => self.accept(&squad, ticket).await,
@@ -789,7 +799,7 @@ impl Runtime {
     fn member_id(&self, squad: &str, name: &str) -> Option<SessionId> {
         self.sessions
             .iter()
-            .find(|(_, s)| s.squad.as_deref() == Some(squad) && s.name() == Some(name))
+            .find(|(_, s)| s.squad.as_deref() == Some(squad) && s.lane.is_none() && s.name() == Some(name))
             .map(|(&id, _)| id)
     }
 
@@ -806,7 +816,7 @@ impl Runtime {
         let mut members: Vec<(u64, String, String)> = self
             .sessions
             .values()
-            .filter(|s| s.squad.as_deref() == Some(squad))
+            .filter(|s| s.squad.as_deref() == Some(squad) && s.lane.is_none())
             .filter_map(|s| s.member.as_ref().map(|m| (s.joined, m.name.clone(), m.role.clone())))
             .collect();
         members.sort();
@@ -816,7 +826,7 @@ impl Runtime {
     fn pm_of(&self, squad: &str) -> Option<SessionId> {
         self.sessions
             .iter()
-            .find(|(_, s)| s.squad.as_deref() == Some(squad) && s.is_pm())
+            .find(|(_, s)| s.squad.as_deref() == Some(squad) && s.lane.is_none() && s.is_pm())
             .map(|(&id, _)| id)
     }
 
@@ -1045,6 +1055,7 @@ impl Runtime {
                 mode: None,
                 thread: None,
                 threads: HashMap::new(),
+                lane: None,
             },
         );
         self.publish(Event::SessionStarted { session: id, project, engine, model, workspace, member, squad: squad.clone() });
@@ -1153,7 +1164,12 @@ impl Runtime {
             ),
         };
         // With several projects, which one the person is looking at.
-        if let Some(project) = session.squad.as_ref().and_then(|s| self.focus.get(s)) {
+        // A lane's conversation is about its own project; the member's, about the one in view.
+        let about = match &session.lane {
+            Some((_, project)) => project.clone(),
+            None => session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned(),
+        };
+        if let Some(project) = about {
             prompt = if session.member.is_some() && session.work.is_none() {
                 format!(
                     "[equipe: this is your conversation about the project {project} — the whole squad's, and each other \
@@ -1173,6 +1189,108 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
         }
     }
 
+    /// Where a message to member `id` goes: its conversation about the project
+    /// the person looks at. That is the member's own session while it is free
+    /// or already in that conversation; while it works in another, a lane —
+    /// that conversation run beside the one at work, so neither waits.
+    fn route(&mut self, id: SessionId) -> SessionId {
+        let Some(session) = self.sessions.get(&id) else {
+            return id;
+        };
+        if session.lane.is_some() || session.member.is_none() || session.work.is_some() {
+            return id;
+        }
+        let wanted = session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned();
+        if let Some((&lane, _)) = self.sessions.iter().find(|(_, s)| s.lane.as_ref() == Some(&(id, wanted.clone()))) {
+            return lane;
+        }
+        if session.thread == wanted || !session.is_working() {
+            return id;
+        }
+        self.open_lane(id, wanted).unwrap_or(id)
+    }
+
+    /// A lane of member `main` for its conversation about `project`, taking
+    /// that conversation up where the member left it.
+    fn open_lane(&mut self, main: SessionId, project: Option<String>) -> Option<SessionId> {
+        let m = self.sessions.get_mut(&main)?;
+        let thread = m.threads.remove(&project).unwrap_or_default();
+        let id = equipe_protocol::new_session_id();
+        let lane = Session {
+            squad: m.squad.clone(),
+            project: m.project.clone(),
+            member: m.member.clone(),
+            joined: m.joined,
+            engine: m.engine,
+            model: m.model.clone(),
+            access: m.access,
+            cwd: m.cwd.clone(),
+            sandbox: None,
+            codex: m.codex.clone(),
+            history: thread.history,
+            claude_session: thread.claude_session,
+            work: None,
+            prompts: Vec::new(),
+            title: None,
+            tokens: 0,
+            context: thread.desk_context,
+            desk_context: thread.desk_context,
+            last_turn: None,
+            refresh: None,
+            transcript: Transcript::default(),
+            turn: None,
+            queued: Vec::new(),
+            memo_threads: Vec::new(),
+            memo_thread: None,
+            steer: None,
+            steering: Vec::new(),
+            answers_person: false,
+            briefing: Vec::new(),
+            memory: m.memory.clone(),
+            mode: m.mode,
+            thread: project.clone(),
+            threads: HashMap::new(),
+            lane: Some((main, project.clone())),
+        };
+        let started = Event::SessionStarted {
+            session: id,
+            project: lane.project.clone(),
+            engine: lane.engine,
+            model: lane.model.clone(),
+            workspace: None,
+            member: lane.member.clone(),
+            squad: lane.squad.clone(),
+        };
+        self.sessions.insert(id, lane);
+        self.publish(started);
+        self.publish(Event::LaneOpened { session: id, of: main, project });
+        Some(id)
+    }
+
+    /// Keep where each of member `main`'s conversations stands — its own
+    /// threads and its lanes' — so a restart picks each one up again.
+    fn persist_threads(&mut self, main: SessionId) {
+        let Some(m) = self.sessions.get(&main) else {
+            return;
+        };
+        let mut others: HashMap<String, String> = m
+            .threads
+            .iter()
+            .filter_map(|(project, t)| Some((project.clone().unwrap_or_default(), t.claude_session.clone()?)))
+            .collect();
+        for s in self.sessions.values().filter(|s| s.lane.as_ref().is_some_and(|(of, _)| *of == main)) {
+            if let (Some((_, project)), Some(claude)) = (&s.lane, &s.claude_session) {
+                others.insert(project.clone().unwrap_or_default(), claude.clone());
+            }
+        }
+        let (thread, squad) = (m.thread.clone(), m.squad.clone());
+        if self.config.persist
+            && let Some(journal) = squad.as_deref().and_then(|s| journal_for(&mut self.journals, &self.config.home, s))
+        {
+            let _ = journal.set_desk_threads(main, thread.as_deref(), &others);
+        }
+    }
+
     /// Move a member's desk conversation to its thread for the project the person
     /// looks at (the whole squad's when none): the current one is put aside,
     /// the thread's own taken up — or started — so what's said about one
@@ -1181,7 +1299,8 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
         let Some(session) = self.sessions.get(&id) else {
             return;
         };
-        if session.member.is_none() || session.work.is_some() {
+        // A lane is one conversation for good.
+        if session.member.is_none() || session.work.is_some() || session.lane.is_some() {
             return;
         }
         let wanted = wanted.unwrap_or_else(|| session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned());
@@ -1619,6 +1738,10 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
                 }
             }
         }
+        // A lane's conversation is kept with the member's others.
+        if let Some(main) = self.sessions.get(&done.session).and_then(|s| s.lane.as_ref()).map(|(of, _)| *of) {
+            self.persist_threads(main);
+        }
         // The screen is the member's only while its turn runs.
         if let Some(who) = who
             && self.desktop.leave(&who)
@@ -1695,6 +1818,11 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
     }
 
     async fn close(&mut self, id: SessionId) {
+        // A member leaving takes its lanes with it.
+        let lanes: Vec<SessionId> = self.sessions.iter().filter(|(_, s)| s.lane.as_ref().is_some_and(|(of, _)| *of == id)).map(|(&l, _)| l).collect();
+        for lane in lanes {
+            Box::pin(self.close(lane)).await;
+        }
         self.stop_turn(id);
         let Some(session) = self.sessions.get(&id) else {
             return self.error(Some(id), format!("no open session {id}"), None);
@@ -1767,7 +1895,7 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
         let members: Vec<(String, String, bool)> = self
             .sessions
             .iter()
-            .filter(|(id, s)| s.squad.as_deref() == Some(squad) && !helpers.contains(id))
+            .filter(|(id, s)| s.squad.as_deref() == Some(squad) && s.lane.is_none() && !helpers.contains(id))
             .filter_map(|(_, s)| s.member.as_ref().map(|m| (m.name.clone(), m.role.clone(), s.is_free())))
             .collect();
         let candidates: Vec<Candidate> =
@@ -2768,7 +2896,7 @@ there, end your turn, and carry on when they say they're done."
     }
 
     fn run_tool(&mut self, call: ToolCall) -> Result<String, String> {
-        let ToolCall { squad, member, name, arguments: args } = call;
+        let ToolCall { squad, member, name, arguments: args, .. } = call;
         let id = self.member_id(&squad, &member).ok_or_else(|| format!("{member} isn't on the squad {squad}."))?;
         let is_pm = self.sessions.get(&id).is_some_and(Session::is_pm);
         let projects = self.projects(&squad);
@@ -2994,6 +3122,7 @@ it back there once they have done it. End your turn now with a short line on wha
                     queued_project: s.memo_threads.first().cloned().flatten(),
                     queued_in: s.memo_threads.clone(),
                     steering: s.steering.clone(),
+                    lane: s.lane.clone().map(|(of, project)| equipe_protocol::Lane { of, project }),
                     work: s.work.as_ref().map(|w| WorkInfo {
                         ticket: w.ticket,
                         project: w.project.clone(),
@@ -3156,6 +3285,7 @@ it back there once they have done it. End your turn now with a short line on wha
                         mode: record.mode,
                         thread,
                         threads,
+                        lane: None,
                         answers_person: false,
                     },
                 );

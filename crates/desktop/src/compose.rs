@@ -456,6 +456,7 @@ mod tests {
             queued_project: None,
             queued_in: vec![],
             steering: vec![],
+            lane: None,
         }
     }
 

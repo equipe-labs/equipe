@@ -73,6 +73,15 @@ pub struct Member {
     pub name: String,
 }
 
+/// A member's conversation about one project (`None`: the whole squad's),
+/// with turns of its own beside the member's other conversations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lane {
+    /// The member's own session.
+    pub of: SessionId,
+    pub project: Option<String>,
+}
+
 /// A squad's name: lowercase letters, digits and dashes.
 pub type SquadName = String;
 
@@ -512,6 +521,10 @@ pub enum Event {
         #[serde(default)]
         squad: Option<SquadName>,
     },
+    /// The session just started is a lane of member `of`: its conversation
+    /// about `project` (`None`: the whole squad's), running beside the member's
+    /// others — one turn at a time in each, any number of them at once.
+    LaneOpened { session: SessionId, of: SessionId, project: Option<String> },
     /// A member picked up a ticket. Its turns now run in the ticket's project —
     /// in `workspace` when it edits.
     WorkStarted {
@@ -633,6 +646,7 @@ impl Event {
             | Event::Thread { session, .. }
             | Event::Suggestion { session, .. }
             | Event::SteerQueued { session, .. }
+            | Event::LaneOpened { session, .. }
             | Event::Steered { session, .. }
             | Event::SubagentStarted { session, .. }
             | Event::BrowserFrame { session, .. }
@@ -718,6 +732,10 @@ pub struct SessionInfo {
     /// Messages sent while it works that it hasn't read yet (steering).
     #[serde(default)]
     pub steering: Vec<String>,
+    /// Set when this is a lane of another member's session: its conversation
+    /// about one project, running beside the others.
+    #[serde(default)]
+    pub lane: Option<Lane>,
     /// The ticket it is working on, and where.
     #[serde(default)]
     pub work: Option<WorkInfo>,
@@ -927,6 +945,7 @@ mod tests {
                 queued_project: None,
                 queued_in: vec![None],
                 steering: Vec::new(),
+                lane: None,
                 work: Some(WorkInfo { ticket: 1, project: "/repo".into(), workspace: None }),
                 mode: Some(Mode::Ask),
             }],
