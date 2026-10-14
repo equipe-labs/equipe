@@ -26,13 +26,17 @@ Screen design: the squad's `outputs/T-54 데스크톱 화면 설계/spec.md`.
  └───────────────────────┘                           └───────────┘
 ```
 
-- **Connection.** (From another machine: see [Remote](#remote-a-daemon-over-ssh).) `daemon::Target::from_env` picks the socket (`$EQUIPE_HOME`, else
-  `~/.equipe`, `equipe.sock`) and the squad (`$EQUIPE_SQUAD`, else the one opened
-  last, else the first). `daemon::spawn` runs a `Link` on a thread of its own
-  (small tokio runtime) that connects, follows, and when the daemon goes away waits
-  and retries (250 ms doubling to 5 s) — so a daemon turned back on is picked up
-  without a click. It reports only *changes*: a daemon that stays down is one
-  `Down`, not one per retry.
+- **Connection.** `daemon::Target` says *where* (`target::Endpoint`: this Mac's
+  socket — `$EQUIPE_HOME`, else `~/.equipe`, `equipe.sock` — or an SSH host, see
+  [Remote](#remote-a-daemon-over-ssh)) and which squad to prefer (`$EQUIPE_SQUAD`,
+  or the one picked in the sidebar). `daemon::spawn` runs a `Link` on a thread of its
+  own (small tokio runtime) that connects, follows, and when the daemon goes away
+  waits and retries (250 ms doubling to 5 s; 0.5 s to 10 s over SSH) — so a daemon
+  turned back on is picked up without a click. It reports only *changes*: a daemon
+  that stays down is one `Down`, not one per retry. Both kinds of target run the
+  same handshake over a pair of byte streams (`wire.rs`): `squads` → choose the
+  squad (the preferred one if it exists, else the daemon's `last`, else the first)
+  → `hello`. Nothing on this Mac's disk is read to find squads.
 - **Methods used** (the same door the terminal console uses, `equipe_protocol::rpc`):
   `hello {version, squad}` → `Hello {version, snapshot}` once per connection (the
   snapshot replaces whatever the window held), then `event` notifications
@@ -42,8 +46,8 @@ Screen design: the squad's `outputs/T-54 데스크톱 화면 설계/spec.md`.
 - **State.** `state::Model` folds the snapshot and events into the member list and
   the connection (`Connecting` / `Connected` / `Down`). A member "needs you" when it
   has a permission request open or owns a ticket put down for the person. Pure
-  logic, unit-tested without a window. The squad list is read from the folder names
-  under `<home>/squads` at start and on every attach.
+  logic, unit-tested without a window. The squad list is the daemon's own `squads`
+  answer, asked on every attach.
 - **Screens.** `src/views/{sidebar,chat,board}.rs`; `chat` and `board` are
   placeholders that later tickets fill in, each in its own file. `main.rs` holds the
   window, the daemon pump and the connected / banner / daemon-off bodies.
@@ -52,7 +56,7 @@ Screen design: the squad's `outputs/T-54 데스크톱 화면 설계/spec.md`.
   does). `EQUIPE_LOG_RENDER=1` prints a line per frame with the memory footprint.
   The daemon-off screen says to run `equipe`; the app does not start the daemon.
   When there is nothing to attach to *and* no `equipe` command on this Mac
-  (`install::find_cli`: PATH, then `~/.local/bin`, `/opt/homebrew/bin`,
+  (`install::find_cli` — only for the target "this Mac": PATH, then `~/.local/bin`, `/opt/homebrew/bin`,
   `/usr/local/bin`, `~/.cargo/bin` — an app opened from Finder has no shell
   PATH), it shows how to install instead: the install.sh line with a copy
   button, the Homebrew line, and a link to equipe.im.
@@ -71,27 +75,58 @@ through SSH instead of the socket file.
 
 ### Connecting
 
-- **Target.** `daemon::Target` grows a transport: `Local { socket }` (today) or
-  `Ssh { host }`, `host` as `ssh` knows it (`mini`, `me@mini.tailnet`, an alias
-  from `~/.ssh/config`). Same retry loop as the local `Link`: each attempt is a
-  fresh `ssh` process; when it exits, wait (250 ms doubling to 5 s) and run it again.
-- **The command.** The app runs, with no shell of its own in between:
+- **Target.** The window shows which machine it is on (title bar, and the sidebar's
+  foot, which opens the chooser; menu *연결 대상…* ⌘⇧K). The chooser lists *이 맥*,
+  every `Host` in `~/.ssh/config` (and files it `Include`s; no wildcards), the hosts
+  typed before, and a box for `host`, `user@host`, `user@host:port` or `[::1]:port`
+  — anything `ssh` resolves; `-` at the start, spaces and shell characters are
+  refused, and the destination goes after `--`. The last target is remembered in
+  `<home>/desktop-target` (`last local` / `last ssh <spec>`, plus `recent ssh …`
+  lines) and used at the next launch; `EQUIPE_TARGET` (`local` or a destination)
+  overrides it. Nothing else about the machine is assumed: no host, user, path or shell.
+- **The command.** The app runs the system `ssh` (the person's own config —
+  ProxyJump, IdentityFile, agents, 1Password's agent — applies as is), with no shell
+  of the app's in between:
 
   ```
-  ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
-      -o ControlMaster=auto -o ControlPath=<app dir>/ssh-%C -o ControlPersist=60 \
-      <host> 'PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" exec equipe attach --stdio'
+  ssh -T -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=15 \
+      -o ControlMaster=auto -o ControlPath=/tmp/equipe-desktop-<uid>/c-%C -o ControlPersist=600 \
+      -o NumberOfPasswordPrompts=2 [-p <port>] -- [user@]<host> \
+      'sh -c '\''PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; export PATH; exec equipe attach --stdio'\'''
   ```
+  (the last argument is one string: `sh -c '…'` with the script in single quotes.)
 
-  - `BatchMode=yes`: ssh never asks a question on a terminal the app doesn't
-    have. Keys come from the person's agent / keychain and `~/.ssh/config`; a
-    host whose key isn't known yet fails (exit 255) and the app says to run
-    `ssh <host>` once in a terminal.
-  - The `PATH` prefix: a command run over SSH gets a non-login shell, which
-    on macOS usually lacks Homebrew's and `install.sh`'s folders.
-  - `ControlMaster`: the side commands below (`git diff`, `equipe home …`)
-    ride the same SSH connection — no second sign-in, no extra latency.
-    `<app dir>` must be short (Unix socket paths ≤ ~100 bytes).
+  - **The remote line** is written to mean the same to the remote *login shell*,
+    whatever it is: ssh hands the string to `$SHELL -c`, and bash, zsh, fish and
+    (t)csh all read `sh -c '<script>'` alike — the script is POSIX, so `$HOME` and
+    `$PATH` are left for `sh` (fish's `$PATH` is a list; `VAR=x cmd` isn't understood
+    everywhere). Unit-tested through every shell on the machine running the tests;
+    tried by hand against bash, fish and zsh logins on Alpine. The prefix covers
+    `install.sh` (`~/.local/bin`), `cargo install` (`~/.cargo/bin`) and Homebrew
+    (both prefixes) because a non-login shell lacks them.
+  - **`ControlMaster`**: one sign-in serves the attach and the side commands below
+    (`ssh … sh -s`, the script on standard input so nothing is quoted for the outer
+    shell). It lives 10 minutes past the last use. `/tmp/equipe-desktop-<uid>` is 0700,
+    owned by the user, and short (Unix socket paths ≤ ~100 bytes).
+  - `$EQUIPE_SSH_OPTIONS` adds options before the host (`-F …`, `-J …`), for odd setups.
+- **Authentication, by kind.**
+  - *Key, agent, 1Password*: `ssh` does it; nothing is asked.
+  - *Password, 2-step codes, key passphrase*: `SSH_ASKPASS` is the app's own binary
+    (`SSH_ASKPASS_REQUIRE=force`, macOS 12's OpenSSH 8.6 has it). Started by `ssh`, it
+    hands the question over a Unix socket (0600, in the 0700 folder, plus a random
+    one-time token in its environment) to the running app, which shows a box over the
+    window; the answer goes back to `ssh` on stdout and is dropped — **never stored**.
+    The control master means it is asked once, not on every reconnect. Closing the box
+    cancels the whole attempt (`ssh` does not re-ask) and the window waits for
+    *다시 시도*.
+  - *A host this Mac has not met*: never auto-accepted and never an error screen.
+    `ssh`'s own question arrives as a box showing the key's fingerprint
+    (`SHA256:…`) and the host; *지문이 맞습니다 — 연결* answers yes (and `ssh` writes
+    `known_hosts` itself), the other button no. The person's `StrictHostKeyChecking`
+    setting is untouched: with `yes` the guide says to `ssh <host>` once in a
+    terminal; a *changed* key is refused with a warning (no way around it in the app).
+  - With no place for the helper's socket, `BatchMode=yes` keeps `ssh` from asking on
+    a terminal; keys and the agent still work.
 - **The first line** is a notification the bridge writes before anything the
   daemon says (`rpc::Attached`):
 
@@ -99,32 +134,52 @@ through SSH instead of the socket file.
   {"jsonrpc":"2.0","method":"attached","params":{"bridge":"0.21.0+1760400000","daemon":"0.21.0+1760400000","protocol":1,"started":false}}
   ```
 
-  Then the app sends `hello {version, squad}` exactly as it does locally. The
-  app compares `protocol` with its own `rpc::PROTOCOL`:
-  equal → carry on; daemon's lower → "update equipe on <host>" (`equipe update`,
-  then `equipe daemon restart`); daemon's higher → "update this app". `daemon`
-  is `null` when that daemon predates the `version` method (treat as protocol 1,
-  suggest `equipe daemon restart`). `bridge` ≠ `daemon` means the daemon runs an
-  older build than the installed `equipe` — the console's "restart when idle"
-  hint (`equipe daemon restart --when-idle`), not an error.
+  Then the app sends `squads`, then `hello {version, squad}`. It compares
+  `protocol` with `rpc::PROTOCOL`: equal → carry on; the daemon's lower → "update
+  equipe on <host>" (`equipe update`, then `equipe daemon restart`); higher →
+  "update this app". An `equipe` without `attach` at all ends `unrecognized
+  subcommand`: the same advice. `bridge` ≠ `daemon` means the daemon runs an older
+  build than the installed `equipe` — the console's "restart when idle" hint, not an
+  error.
 - **Daemon off.** The bridge starts it, as the console does: through the login
   service when `equipe daemon install` set one up, else detached (`setsid`),
-  and says `"started": true`. Over SSH without the service, the daemon lands in
-  launchd's background session — no access to the Mac's screen, and browser
-  windows open nowhere — so on a daemon machine reached over SSH the person
-  should run `equipe daemon install` once; the app can suggest it when
-  `started` is `true`. `equipe attach --stdio --no-start` fails instead.
-- **Endings** (the exit status of `ssh`):
+  and says `"started": true`. Without the service the daemon lands in launchd's
+  background session — no access to the Mac's screen, and browser windows open
+  nowhere — so when `started` is `true` the window says to run `equipe daemon
+  install` once on that machine. (The bridge may take ~20 s to give up on a daemon
+  that won't start; the window says "connecting" meanwhile.)
+- **Endings and the guide for each.** `ssh`'s exit status and its last lines on stderr
+  (`failure::classify_exit`) become a cause; each has its own screen
+  (`Failure::guide`) with the steps, the lines to paste (copy buttons) and `ssh`'s
+  own message underneath:
 
-  | Status | Meaning | The app |
+  | Seen | Cause | The guide says |
   |---|---|---|
-  | 0 | the daemon stopped, or the app hung up | `Down`, retry quietly |
-  | 69 | no daemon could be reached or started; why is on stderr | show stderr's line |
-  | 127 | no `equipe` on that machine (or not on the `PATH` above) | "install equipe on <host>" |
-  | 255 | ssh itself: unknown host key, refused key, no route | show ssh's stderr, "try `ssh <host>` in a terminal" |
+  | `Connection refused` | no SSH server listening | turn on *원격 로그인* (macOS: 시스템 설정 → 일반 → 공유; ≤ 12: 시스템 환경설정 → 공유) / install and enable `sshd` on Linux; custom port as `host:port` |
+  | no route, timeout, unknown name | unreachable | check the name, that the machine is awake, VPN / Tailscale, try `ssh` in a terminal |
+  | `Permission denied` | authentication failed | `ssh-keygen -t ed25519`, `ssh-copy-id [-p …] user@host`, check the user name |
+  | closed password box | sign-in cancelled | try again when ready |
+  | `Host key verification failed` | fingerprint not confirmed | try again, compare the fingerprint |
+  | …`strict checking` | `StrictHostKeyChecking yes` | `ssh <host>` once in a terminal |
+  | `REMOTE HOST IDENTIFICATION HAS CHANGED` | key changed | ask the admin; `ssh-keygen -R <host>` only if it really changed |
+  | exit 127 | no `equipe` there (or not on the PATH above) | install line (install.sh / `brew install equipe-labs/tap/equipe`) to run on that machine |
+  | exit 69 | daemon unreachable / won't start | stderr's line, `equipe daemon start` |
+  | `attached.protocol` ≠ ours, or no `attach` | version mismatch | `equipe update` + `equipe daemon restart` there, or update the app |
+  | no squads | nothing to follow | run `equipe` in a project on that machine |
+  | exit 0 / a mid-session loss | lost it | retry quietly |
 
-  Keep stderr's last line for the banner; nothing else is ever written there by
-  the bridge.
+  Causes only the person can fix (cancelled box, auth failure, host-key refusals,
+  an app older than the daemon) are **not** retried on a timer — the window would
+  keep asking for the same password. They wait for *다시 시도* (the guide's button, or
+  the banner's). Everything else — a refused port, an unreachable host, a daemon
+  that is off — keeps retrying with backoff and is picked up when it comes back.
+- **Reconnecting.** An `ssh` that exits is run again after the backoff; the window
+  keeps the last snapshot under a banner meanwhile and replaces it on the next
+  `hello`. Cut the network and the control master notices within ~45 s
+  (`ServerAlive*`) and the attach ends; when the network is back the next try
+  succeeds on its own. A Mac that slept is noticed by the wall clock jumping between
+  two 2-second ticks: the link kills its `ssh`, closes the shared connection (it would
+  otherwise be reused dead) and reconnects at once.
 
 ### Security
 
@@ -133,7 +188,9 @@ through SSH instead of the socket file.
   this way could already run any command as that user; nothing is exposed that a
   shell on the machine doesn't already give.
 - No new credential: authentication, host keys and encryption are SSH's. The
-  app stores only the host name.
+  app stores only which host it last used. A password or code typed in the box goes
+  straight to `ssh` and is dropped; the helper socket answers only a caller that
+  has the one-time token, and only this user can open it.
 - The bridge reads nothing and adds nothing past its first line; the daemon
   checks every request as it does for a local screen.
 - `upload` writes only images (`png jpg jpeg gif webp`, ≤ 40 MB) under
@@ -152,7 +209,7 @@ over the same control connection; quote every path with single quotes
 | What | On the daemon's Mac today | Over SSH |
 |---|---|---|
 | Socket | `daemon::Target::from_env`: `<home>/equipe.sock` | `equipe attach --stdio` (above) |
-| Squad list and the squad to open | `state::squad_names` reads `<home>/squads/*/squad.db`; `Target::from_env` takes `$EQUIPE_SQUAD`, else `squads::default_squad` (`state.json`) | **`squads` request** → `{squads: [{name, projects, home}], last}`. Use it locally too, so both paths are one code path. Ask on each attach (it is cheap). |
+| Squad list and the squad to open | **done** — the `squads` request → `{squads: [{name, projects, home}], last}`, locally and remotely alike (`wire::connect`), on each attach | the same |
 | Image attach (paste, drop, file) | the file stays where it is; the message carries `[image: /path]` | **`upload` request** `{name, data: base64}` → `{path}`; put `[image: <path>]` in `Submit`. Not `~/.equipe/inbox` (`equipe send-image`'s): a console open on that machine takes those into its own composer. |
 | `/home` (open the folder) | `open <home>` (path from `squads` → `home`) | Nothing opens there. Show the path with a copy button. |
 | `/home changes`, `/home undo [n]` | `equipe home changes --squad <s>` / `equipe home undo <n> --squad <s>`, run here | the same as an `ssh` side command with `EQUIPE_NO_OPEN=1` in front. Show stdout's lines; exit ≠ 0 → stderr's last non-empty line is the reason. |
@@ -161,13 +218,34 @@ over the same control connection; quote every path with single quotes
 | `/export` | the conversation is the app's own (snapshot + events), rendered to Markdown | write it **on the laptop** (the person reads it there): a save panel, defaulting to `~/Downloads/<squad>-<member>-<time>.md`. Nothing goes to the daemon's machine. |
 | Browser sign-in (`/browser signin`) | `equipe browser [url]`: a Chrome window on this screen; members then use the saved sign-ins | `equipe browser [url]` as an `ssh` side command: the window opens on **the daemon's machine's** screen, where the members' browser lives. Tell the person to reach it with Screen Sharing (`open vnc://<host>`); the command ends when they close the window. Needs the daemon machine's GUI session (see "Daemon off"). |
 | `/browser` (show / watch) | `ShowBrowser` / `WatchBrowser` commands | the same — already protocol. |
-| Approval preview (`Approval.preview`) | a file path on the daemon's Mac; open it | `cat '<path>'` as an `ssh` side command into a temp file on the laptop, then show it. It is deleted on the daemon's side once answered, so fetch it when the request arrives. |
+| Approval preview (`Approval.preview`) | a file path on the daemon's Mac; open it | **done** (`Shell::open_file`) — `cat -- '<path>'` as a side command into a 0600 temp file in `/tmp/equipe-desktop-<uid>/`, then `open`. Fetched on click while the request is still open (the file goes once it is answered); a failure shows in the flash line. |
 | Folder completion, `/squad add`, `/squad new` | lists folders on this disk | not offered remotely yet: point the person to the console on the daemon's machine (`ssh <host>`, `equipe`). |
 | Copy to clipboard | the laptop's clipboard | the same — never the daemon's. |
+
+**Trying it.** `cargo run -p equipe-desktop --example remote_probe -- user@host[:port]
+[--trust]` runs the same link without a window and prints what it says (a password from
+`EQUIPE_PROBE_PASSWORD`, `--trust` to accept a first-seen host key; `local` for this
+Mac). With `--features snapshot`, `EQUIPE_TARGET=user@host EQUIPE_SCRIPT="wait:2500;shot:/tmp/a.png;trust;wait:1500;pass:<password>;…"`
+drives the window through the host-key and password boxes (`chooser`, `connect:<host>`,
+`decline`, `retry` too). A Linux machine to try against: any container with `sshd`
+and a stand-in `equipe` that prints the bridge's three lines.
 
 Later, when the desktop needs them often, the `ssh` side commands can become
 daemon requests like `squads` and `upload` did (a `diff` request first); the
 table is the contract until then.
+
+**The board** (`views/board.rs`; rules in `board.rs`, git in `diffs.rs`). It has the
+terminal board's order, lanes, folding, tree (`g`), search (`f`, done tickets too) and
+calls (`a` `r` `m` `d` Enter), and changes only on the daemon's events: every action is
+the same command the console sends (`accept`, `merge{push}`, `reopen`, `resume`,
+`cancel`). The diff and the branch stat are the two `git` commands of the table above —
+run here on this Mac, as `ssh` side commands otherwise. The list/detail divider is
+dragged and kept in `desktop-target` (`board-split`). To try it on a real daemon without
+touching anyone's squads: `EQUIPE_HOME=$(mktemp -d)`, `examples/seed_board` for a squad
+with projects, `equipe daemon run` (stopped while tickets are put into
+`squads/<name>/squad.db` with `sqlite3`), then `--features snapshot` with
+`EQUIPE_SCRIPT="board;pick:2;bkey:d;shot:/tmp/a.png"` (`bkey`, `pick`, `find`, `note`,
+`submit`, `cancel` drive the board).
 
 The old spike (mock agents into SQLite) is kept as `examples/mock_agents.rs`
 (`cargo run --release -p equipe-desktop --example mock_agents`); the knobs below

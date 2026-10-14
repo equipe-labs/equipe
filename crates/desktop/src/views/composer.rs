@@ -156,6 +156,7 @@ impl Shell {
         match plan.effect {
             Some(Effect::Select(session)) => self.select_member(session, window, cx),
             Some(Effect::ShowBoard) => self.show(Screen::Board, cx),
+            Some(Effect::Find(words)) => self.board_find(&words, cx),
             Some(Effect::Focus(project)) => self.set_focus(project, window, cx),
             None => {}
         }
