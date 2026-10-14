@@ -6,7 +6,11 @@ a third screen beside the terminal console and the phone — not a second engine
 
 ```bash
 cargo run --release -p equipe-desktop
+scripts/desktop-dmg.sh          # the app people download: dist/equipe.dmg
 ```
+
+People get it from **https://github.com/equipe-labs/equipe/releases/latest/download/equipe.dmg**
+(see [Shipping the app](#shipping-the-app)).
 
 Why a Rust core and GPUI: [research/desktop-stack](./research/desktop-stack/README.md).
 Screen design: the squad's `outputs/T-54 데스크톱 화면 설계/spec.md`.
@@ -47,6 +51,11 @@ Screen design: the squad's `outputs/T-54 데스크톱 화면 설계/spec.md`.
   requested only if what is on screen differs (`Model::apply` returns whether it
   does). `EQUIPE_LOG_RENDER=1` prints a line per frame with the memory footprint.
   The daemon-off screen says to run `equipe`; the app does not start the daemon.
+  When there is nothing to attach to *and* no `equipe` command on this Mac
+  (`install::find_cli`: PATH, then `~/.local/bin`, `/opt/homebrew/bin`,
+  `/usr/local/bin`, `~/.cargo/bin` — an app opened from Finder has no shell
+  PATH), it shows how to install instead: the install.sh line with a copy
+  button, the Homebrew line, and a link to equipe.im.
 
 The old spike (mock agents into SQLite) is kept as `examples/mock_agents.rs`
 (`cargo run --release -p equipe-desktop --example mock_agents`); the knobs below
@@ -54,6 +63,141 @@ are for it.
 
 Spike knobs (env): `EQUIPE_AGENTS` (3), `EQUIPE_RATE` lines/s per mock agent
 (200, `0` = idle), `EQUIPE_TICK_MS` UI poll interval (33), `EQUIPE_W`/`EQUIPE_H`.
+
+## Shipping the app
+
+Direct download from the website (the Mac App Store build is separate — it
+needs the sandbox; see the squad's `mac-app-store-sandbox` note).
+
+### Fixed URLs
+
+| What | URL |
+|---|---|
+| Download (what the website links to) | `https://github.com/equipe-labs/equipe/releases/latest/download/equipe.dmg` |
+| Update feed (in the app's Info.plist) | `https://github.com/equipe-labs/equipe/releases/latest/download/appcast.xml` |
+| Checksum | `…/latest/download/equipe.dmg.sha256` |
+
+`latest` is GitHub's newest release that is not a draft or a prerelease, so a
+`v1.2.3-rc.1` tag never reaches downloads or updates. Asset names carry no
+version, so the links never change. Releases before the desktop app (≤ v0.24.1)
+have no `equipe.dmg`: the link 404s until the first release that has one.
+
+### What `scripts/desktop-dmg.sh` makes
+
+One command on a Mac, from the repo root; ~5 min cold (two architectures).
+
+- **`equipe.app`**: `Contents/MacOS/equipe-desktop` is one universal binary
+  (`aarch64` + `x86_64` built with `MACOSX_DEPLOYMENT_TARGET=12.0`, joined with
+  `lipo`); `Info.plist` with bundle ID `im.equipe.desktop`, version = the
+  workspace version (both `CFBundleShortVersionString` and `CFBundleVersion`,
+  which is what Sparkle compares), minimum macOS 12.0 (Sparkle 2.10's floor),
+  icon `crates/desktop/macos/AppIcon.icns` (T-88, light variant).
+- **`equipe.dmg`**: the app and an `Applications` link to drag it onto. Plus
+  `equipe.dmg.sha256`.
+- **Signing**, inside out (Sparkle's helpers, the framework, the app, the DMG):
+  with a `Developer ID Application` identity (`EQUIPE_SIGN_IDENTITY`, else the
+  first in the keychain) — Hardened Runtime, secure timestamp, no entitlements.
+  Without one — ad hoc, and the script ends with `signed: NO`.
+- **Notarization**: when signed and given credentials — `EQUIPE_NOTARY_PROFILE`
+  (a `xcrun notarytool store-credentials` profile in the keychain) or
+  `EQUIPE_NOTARY_KEY` (.p8 path) + `EQUIPE_NOTARY_KEY_ID` + `EQUIPE_NOTARY_ISSUER`
+  — `notarytool submit --wait`, then `stapler staple` on the DMG.
+- **Updates** ([Sparkle](https://sparkle-project.org) 2.10.0, fetched once into
+  `$CARGO_TARGET_DIR/sparkle/` and checked against a pinned SHA-256): only when the
+  update key's public half is known (`SPARKLE_PUBLIC_ED_KEY`, else
+  `crates/desktop/macos/sparkle-public-ed-key`). Sparkle.framework goes into
+  `Contents/Frameworks` (its XPC services removed — they are for sandboxed apps),
+  and Info.plist gets `SUFeedURL`, `SUPublicEDKey`, `SURequireSignedFeed`,
+  `SUVerifyUpdateBeforeExtraction`, `SUEnableAutomaticChecks`. With the private
+  half (`SPARKLE_ED_PRIVATE_KEY` = contents of the `generate_keys -x` file, or
+  `SPARKLE_ED_KEY_FILE`) it writes `appcast.xml` for this DMG — EdDSA-signed
+  enclosure, and the feed itself signed (`sign_update appcast.xml`).
+  No public key: no Sparkle, `updates: OFF`, and the menu item is greyed out.
+
+Secrets are read only from the environment or the keychain; nothing secret is in
+the repository (the public key file is public by design).
+
+In the app (`src/update.rs`): when `Contents/Frameworks/Sparkle.framework` is
+there, the app `dlopen`s it and starts `SPUStandardUpdaterController`. Sparkle
+checks the feed once a day by itself and asks before installing; the app menu
+(equipe ▸ 업데이트 확인…) checks now. `cargo run` has no framework, so updates
+are off and the item is disabled. The menu also has 가리기 (⌘H), 기타 가리기
+(⌥⌘H), 모두 보기 and 종료 (⌘Q).
+
+Knobs for testing: `EQUIPE_DMG_ARCHS=aarch64` (one arch, quicker),
+`EQUIPE_DMG_OUT`, `EQUIPE_APPCAST_URL` / `EQUIPE_DMG_URL` (point the app and the
+appcast at a local server).
+
+### How to release
+
+The desktop app ships with the CLI, same version, same tag:
+
+1. Bump `version` in the workspace `Cargo.toml`, merge to `main`.
+2. `git tag vX.Y.Z && git push origin vX.Y.Z`.
+3. `.github/workflows/release.yml` runs: the `desktop` job (macos-14) runs
+   `scripts/desktop-dmg.sh` with the secrets below, checks the DMG (universal,
+   signature valid, `Applications` link) and hands `equipe.dmg`,
+   `equipe.dmg.sha256` and `appcast.xml` to `publish`, which puts them on the
+   release beside the CLI archives. Installed apps see the new `appcast.xml`
+   through the `latest` link within a day, or at once with 업데이트 확인….
+
+Run the workflow by hand (Actions ▸ Release ▸ Run workflow) to build the DMG
+as an artifact without publishing.
+
+| Secret (repo › Settings › Secrets › Actions) | What |
+|---|---|
+| `MACOS_CERTIFICATE` | Developer ID Application certificate + key, `.p12`, base64 |
+| `MACOS_CERTIFICATE_PASSWORD` | the `.p12`'s password |
+| `APPLE_API_KEY` | App Store Connect API key, the `.p8` file's contents |
+| `APPLE_API_KEY_ID`, `APPLE_API_ISSUER` | that key's ID and the issuer ID |
+| `SPARKLE_ED_PRIVATE_KEY` | Sparkle's private EdDSA key (`generate_keys -x` output) |
+
+Each is optional: without the certificate the DMG is ad hoc; without the API key
+it is signed but not notarized; without the Sparkle key there is no appcast.
+
+### Before signing exists: what people see
+
+Checked 2026-10-14 on macOS 26.2 with an ad hoc universal build, marked as
+downloaded (`com.apple.quarantine`, as Safari sets it):
+`spctl --assess` rejects both the DMG and the copied app (`no usable
+signature`). macOS therefore refuses the first open. Since macOS 15 the
+Control-click ▸ Open bypass is gone: the person opens System Settings ▸ Privacy
+& Security, clicks **Open Anyway** next to "equipe was blocked", and confirms
+with their password (macOS 15+ behaviour as Apple documents it; the dialog was not captured on this
+Mac). `xattr -dr com.apple.quarantine /Applications/equipe.app` also works.
+Once opened, the app runs normally, and updates work unsigned too (Sparkle
+checks its own EdDSA signature, not Apple's) — tested end to end with a
+throwaway key against a local feed: 0.24.1 found 0.24.2, downloaded it,
+installed it on quit; a feed edited after signing was refused.
+
+### What the person has to do for signed, notarized builds
+
+1. **Decide whose name the app is signed in** (the squad's
+   `apple-developer-account` note: the Umbriles Inc. membership lapsed on
+   2025-08-12) and renew or enroll in the Apple Developer Program ($99/year).
+   The name appears in the "Developer ID Application: …" certificate and in
+   macOS's dialogs.
+2. **Create a Developer ID Application certificate** — only the Account Holder
+   can: Xcode ▸ Settings ▸ Accounts ▸ Manage Certificates ▸ + ▸ Developer ID
+   Application (or developer.apple.com ▸ Certificates with a CSR).
+3. **Export it** from Keychain Access as `.p12` with a password, then
+   `base64 -i cert.p12 | gh secret set MACOS_CERTIFICATE -R equipe-labs/equipe`
+   and `gh secret set MACOS_CERTIFICATE_PASSWORD -R equipe-labs/equipe`.
+   Delete the `.p12` afterwards; keep it in a password manager.
+4. **Create an App Store Connect API key** (App Store Connect ▸ Users and Access
+   ▸ Integrations ▸ App Store Connect API ▸ Team Keys, role Developer), download
+   the `.p8` (only once), and set `APPLE_API_KEY` (`gh secret set APPLE_API_KEY < AuthKey_XXXX.p8`),
+   `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`.
+   For signing on this Mac instead: `xcrun notarytool store-credentials equipe-notary --key AuthKey_XXXX.p8 --key-id … --issuer …`
+   and run the script with `EQUIPE_NOTARY_PROFILE=equipe-notary`.
+5. **Make the update key, once, and never lose it** (independent of Apple — can
+   be done today): from Sparkle's release (`gh release download 2.10.0 -R
+   sparkle-project/Sparkle -p 'Sparkle-2.10.0.tar.xz'`), `bin/generate_keys`
+   prints the public key (commit it as `crates/desktop/macos/sparkle-public-ed-key`)
+   and keeps the private key in the login keychain; `bin/generate_keys -x key.txt`
+   exports it for `gh secret set SPARKLE_ED_PRIVATE_KEY < key.txt` (then delete
+   `key.txt`, back it up in a password manager). Losing it means installed apps
+   can never be updated again.
 
 ## Rules that keep it light
 

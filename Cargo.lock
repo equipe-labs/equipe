@@ -2138,6 +2138,7 @@ dependencies = [
  "gpui-kit",
  "image",
  "libc",
+ "objc2 0.6.5",
  "serde_json",
  "tokio",
 ]
