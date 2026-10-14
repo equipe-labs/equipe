@@ -52,7 +52,7 @@ impl Chat {
 
     /// Bring the list up to what the model shows. Cheap when nothing moved.
     pub fn sync(&mut self, model: &Model, cx: &mut App) {
-        let key = model.selected.map(|id| (id, model.focus.clone()));
+        let key = model.viewed().map(|id| (id, model.focus.clone()));
         let moved = key != self.shown;
         if !moved && model.revision == self.seen_revision && self.expanded == self.shown_expanded {
             return;
@@ -110,6 +110,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .flex_1()
         .min_h_0()
         .items_center()
+        .when(model.shows_overview(), |col| col.child(div().w_full().max_w(px(COLUMN)).px_4().child(super::overview::render(shell, cx))))
         .child(body)
         .child(
             div()
