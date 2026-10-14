@@ -10,7 +10,13 @@ path = "src/main.rs"
 
 [dependencies]
 equipe-core = { path = "../core" }
+equipe-providers = { path = "../providers" }
 # gpui-kit pins the matching GPUI snapshot (gpui-pre) and re-exports it, so we
 # depend on exactly one UI crate and upgrade it on our own schedule.
 gpui-kit = "=0.7.1"
 libc = "0.2"
+# The daemon link runs its own small runtime on a thread off the UI.
+tokio = { version = "1.53.2", features = ["rt", "macros", "sync", "time", "net", "io-util"] }
+
+[dev-dependencies]
+serde_json = "1"

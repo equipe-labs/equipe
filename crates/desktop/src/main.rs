@@ -1,91 +1,118 @@
+//! The equipe desktop app: a window onto the daemon. It attaches to the
+//! daemon's socket, follows one squad, and shows its members; screens for the
+//! conversation and the board live in `views/`.
+//!
+//! It draws only when the daemon says something changed or the person acts —
+//! see docs/DESKTOP.md. `EQUIPE_LOG_RENDER=1` prints a line per frame, to see that.
+
+mod daemon;
 mod mem;
+mod state;
+mod theme;
+mod views;
 
-use std::path::PathBuf;
-use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use equipe_core::mock::MockAgent;
-use equipe_core::{LogKind, Store, Ticket, TicketStatus};
+use equipe_core::gateway;
+use equipe_providers::credentials::equipe_home;
 use gpui_kit::component::*;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-/// How often the UI looks for new log rows. Agents may emit thousands of lines a
-/// second; the screen only ever repaints at this rate, and only when something
-/// actually changed.
-const UI_TICK: Duration = Duration::from_millis(33);
-const MEM_TICK: Duration = Duration::from_secs(1);
-const ROW_HEIGHT: f32 = 20.;
+use daemon::{Backoff, Link, Target};
+use state::{Clock, Conn, Model, squad_names};
+use theme::{BODY, Palette, SANS, SMALL};
 
-struct LogPane {
-    agent: SharedString,
-    shown: u64,
-    scroll: UniformListScrollHandle,
+/// How long the daemon gets to answer before the window says it is connecting.
+const CONNECTING_AFTER: Duration = Duration::from_millis(400);
+/// Updates that arrive within this window are drawn together.
+const COALESCE: Duration = Duration::from_millis(100);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Screen {
+    Chat,
+    Board,
 }
 
-struct Workspace {
-    store: Store,
-    tickets: Vec<Ticket>,
-    agents: Vec<MockAgent>,
-    panes: Vec<LogPane>,
-    footprint_mb: f64,
-    peak_mb: f64,
-    lines_per_sec: u32,
-    _ticker: Task<()>,
+pub struct Shell {
+    pub palette: Palette,
+    pub model: Model,
+    pub squads: Vec<String>,
+    pub screen: Screen,
+    /// Why there is nothing to attach to (no squad yet), when so.
+    problem: Option<String>,
+    connecting_shown: bool,
+    log_renders: bool,
+    renders: u64,
+    started: std::time::Instant,
+    // Dropping these ends the link's thread and the tasks that feed from it.
+    link: Option<Link>,
+    _pump: Option<Task<()>>,
+    _connecting: Option<Task<()>>,
 }
 
-impl Workspace {
-    fn new(db: PathBuf, agent_count: usize, lines_per_sec: u32, cx: &mut Context<Self>) -> Self {
-        let mut store = Store::open(&db).expect("open store");
-        store.seed_tickets_if_empty().expect("seed tickets");
-        let tickets = store.tickets().expect("load tickets");
+impl Shell {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        cx.observe_window_appearance(window, |this, window, cx| {
+            this.palette = Palette::new(window.appearance());
+            cx.notify();
+        })
+        .detach();
+        let mut shell = Self {
+            palette: Palette::new(window.appearance()),
+            model: Model::new(""),
+            squads: squad_names(&equipe_home()),
+            screen: Screen::Chat,
+            problem: None,
+            connecting_shown: false,
+            log_renders: std::env::var_os("EQUIPE_LOG_RENDER").is_some(),
+            renders: 0,
+            started: std::time::Instant::now(),
+            link: None,
+            _pump: None,
+            _connecting: None,
+        };
+        match Target::from_env(env!("CARGO_PKG_VERSION")) {
+            Ok(target) => shell.attach(target, cx),
+            Err(problem) => shell.problem = Some(problem),
+        }
+        shell
+    }
 
-        const NAMES: [&str; 6] = ["frontend", "backend", "qa", "devops", "designer", "po"];
-        let agents: Vec<MockAgent> = (0..agent_count)
-            .map(|i| {
-                let name = NAMES[i % NAMES.len()];
-                MockAgent::spawn(db.clone(), name, lines_per_sec, Duration::from_millis(50))
-            })
-            .collect();
-        let panes = agents
-            .iter()
-            .map(|a| LogPane {
-                agent: a.name.clone().into(),
-                shown: 0,
-                scroll: UniformListScrollHandle::new(),
-            })
-            .collect();
+    /// Follow `target`'s squad from scratch, letting go of any earlier link.
+    fn attach(&mut self, target: Target, cx: &mut Context<Self>) {
+        self.model = Model::new(&target.squad);
+        self.connecting_shown = false;
+        let (link, mut updates) = daemon::spawn(target, Backoff::default());
+        self.link = Some(link);
 
-        let tick = Duration::from_millis(env_or("EQUIPE_TICK_MS", UI_TICK.as_millis() as u64));
-        let ticker = cx.spawn(async move |this, cx| {
-            let mut last_mem = Instant::now() - MEM_TICK;
-            loop {
-                cx.background_executor().timer(tick).await;
+        // The daemon's updates, drawn together when they land close to each
+        // other, and only if something on screen differs.
+        self._pump = Some(cx.spawn(async move |this, cx| {
+            while let Some(first) = updates.recv().await {
+                let mut batch = vec![first];
+                cx.background_executor().timer(COALESCE).await;
+                while let Ok(more) = updates.try_recv() {
+                    batch.push(more);
+                }
                 let alive = this.update(cx, |this, cx| {
+                    let now = Clock::now();
                     let mut changed = false;
-                    for (pane, agent) in this.panes.iter_mut().zip(&this.agents) {
-                        let committed = agent.committed.load(Ordering::Acquire);
-                        if committed != pane.shown {
-                            // Follow the tail only if the user hasn't scrolled away.
-                            let follow = pane.scroll.is_scrolled_to_end().unwrap_or(true);
-                            pane.shown = committed;
-                            if follow {
-                                pane.scroll.scroll_to_bottom();
+                    for update in batch {
+                        // A squad may have been made since: look again on attach.
+                        if matches!(update, daemon::Update::Attached(_)) {
+                            let squads = squad_names(&equipe_home());
+                            if squads != this.squads {
+                                this.squads = squads;
+                                changed = true;
                             }
-                            changed = true;
                         }
-                    }
-                    // The memory readout rides along with frames that happen anyway.
-                    // Repainting just to show it would keep the window's GPU working
-                    // set (~100 MB on macOS) resident; it is released ~1s after the
-                    // last frame, so an idle equipe must draw nothing at all.
-                    if changed && last_mem.elapsed() >= MEM_TICK {
-                        last_mem = Instant::now();
-                        if let Some(b) = mem::phys_footprint_bytes() {
-                            this.footprint_mb = b as f64 / 1_048_576.;
-                            this.peak_mb = this.peak_mb.max(this.footprint_mb);
-                        }
+                        changed |= this.model.apply(update, now);
                     }
                     if changed {
+                        if this.log_renders {
+                            eprintln!("daemon update -> redraw");
+                        }
                         cx.notify();
                     }
                 });
@@ -93,200 +120,169 @@ impl Workspace {
                     break;
                 }
             }
-        });
+        }));
+        // Quick connections show nothing; a slow one says so, once.
+        self._connecting = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(CONNECTING_AFTER).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.model.conn == Conn::Connecting {
+                    this.connecting_shown = true;
+                    cx.notify();
+                }
+            });
+        }));
+    }
 
-        Self {
-            store,
-            tickets,
-            agents,
-            panes,
-            footprint_mb: 0.,
-            peak_mb: 0.,
-            lines_per_sec,
-            _ticker: ticker,
+    pub fn select_squad(&mut self, name: &str, cx: &mut Context<Self>) {
+        if name == self.model.squad {
+            return;
+        }
+        let home = equipe_home();
+        self.attach(
+            Target { socket: gateway::socket_path(&home), squad: name.to_owned(), version: env!("CARGO_PKG_VERSION").to_owned() },
+            cx,
+        );
+        cx.notify();
+    }
+
+    pub fn show(&mut self, screen: Screen, cx: &mut Context<Self>) {
+        if self.screen != screen {
+            self.screen = screen;
+            cx.notify();
         }
     }
 
-    fn render_board(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
-        let theme = cx.theme();
-        let columns = [
-            TicketStatus::Todo,
-            TicketStatus::InProgress,
-            TicketStatus::Review,
-            TicketStatus::Done,
-        ];
-        v_flex()
-            .w(px(280.))
-            .h_full()
-            .flex_none()
-            .border_r_1()
-            .border_color(theme.border)
-            .bg(theme.sidebar)
-            .p_3()
-            .gap_3()
-            .child(div().text_sm().font_semibold().child("Board"))
-            .children(columns.into_iter().map(|status| {
-                let tickets = self.tickets.iter().filter(|t| t.status == status);
-                v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(status.label().to_uppercase()),
-                    )
-                    .children(tickets.map(|t| {
-                        v_flex()
-                            .px_2()
-                            .py_1p5()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(theme.border)
-                            .bg(theme.background)
-                            .child(div().text_sm().child(t.title.clone()))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.muted_foreground)
-                                    .child(format!("#{} · {}", t.id, t.role)),
-                            )
-                    }))
-            }))
-    }
-
-    fn render_pane(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let pane = &self.panes[ix];
-        let theme = cx.theme();
-        let (border, muted) = (theme.border, theme.muted_foreground);
-        v_flex()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .border_r_1()
-            .border_color(border)
-            .child(
-                h_flex()
-                    .px_3()
-                    .py_1p5()
-                    .justify_between()
-                    .border_b_1()
-                    .border_color(border)
-                    .child(div().text_sm().font_semibold().child(pane.agent.clone()))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(format!("{} lines", pane.shown)),
-                    ),
-            )
-            .child(
-                uniform_list(
-                    ("log", ix),
-                    pane.shown as usize,
-                    cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
-                        // Only the visible rows are ever read from SQLite.
-                        let agent = this.panes[ix].agent.clone();
-                        let rows = this
-                            .store
-                            .lines(&agent, range.start as u64..range.end as u64)
-                            .unwrap_or_default();
-                        let theme = cx.theme();
-                        rows.into_iter()
-                            .map(|line| {
-                                let color = match line.kind {
-                                    LogKind::Text => theme.foreground,
-                                    LogKind::Tool => theme.info,
-                                    LogKind::DiffAdd => theme.success,
-                                    LogKind::DiffDel => theme.danger,
-                                };
-                                div()
-                                    .id(line.seq as usize)
-                                    .h(px(ROW_HEIGHT))
-                                    .px_3()
-                                    .text_xs()
-                                    .font_family(theme.mono_font_family.clone())
-                                    .text_color(color)
-                                    .whitespace_nowrap()
-                                    .overflow_hidden()
-                                    .child(line.text)
-                            })
-                            .collect()
-                    }),
-                )
-                .track_scroll(&pane.scroll)
-                .flex_1(),
-            )
+    fn body(&self) -> AnyElement {
+        let p = self.palette;
+        if let Some(problem) = &self.problem {
+            return empty_state(p, "아직 스쿼드가 없습니다", problem, None);
+        }
+        match &self.model.conn {
+            Conn::Down { since, had_snapshot: false, .. } => empty_state(
+                p,
+                "equipe 데몬이 실행 중이 아닙니다",
+                "터미널에서 `equipe`를 실행하면 데몬이 시작됩니다. 켜지는 즉시 이 창이 알아서 연결합니다.",
+                Some(format!("~/.equipe/equipe.sock을 {since}에 찾아봤습니다")),
+            ),
+            Conn::Connecting => div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(BODY))
+                .text_color(p.muted)
+                .when(self.connecting_shown, |d| d.child("데몬에 연결하는 중…"))
+                .into_any_element(),
+            conn => {
+                let screen = match self.screen {
+                    Screen::Chat => views::chat::render(self).into_any_element(),
+                    Screen::Board => views::board::render(self).into_any_element(),
+                };
+                v_flex().flex_1().min_w_0().h_full().children(banner(p, conn)).child(screen).into_any_element()
+            }
+        }
     }
 }
 
-impl Render for Workspace {
+/// Shown over the last state when the daemon goes away after we had it.
+fn banner(p: Palette, conn: &Conn) -> Option<impl IntoElement + use<>> {
+    let Conn::Down { since, had_snapshot: true, .. } = conn else { return None };
+    Some(
+        h_flex()
+            .h(px(36.))
+            .flex_none()
+            .px_4()
+            .gap_3()
+            .items_center()
+            .bg(p.accent_bg)
+            .border_b_1()
+            .border_color(p.hair)
+            .text_size(px(SMALL))
+            .child(div().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child("✗"))
+            .child(div().text_color(p.text).child(format!("데몬과의 연결이 {since}에 끊겼습니다.")))
+            .child(div().text_color(p.muted).child("다시 연결하는 중 — 데몬이 켜지면 자동으로 이어집니다")),
+    )
+}
+
+/// The body when there is nothing to show: a heading, a sentence, how to fix it.
+fn empty_state(p: Palette, title: &str, text: &str, note: Option<String>) -> AnyElement {
+    v_flex()
+        .flex_1()
+        .items_center()
+        .justify_center()
+        .gap_3()
+        .child(div().text_size(px(18.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title.to_owned()))
+        .child(div().max_w(px(480.)).text_size(px(BODY)).line_height(px(24.)).text_color(p.text2).text_center().child(text.to_owned()))
+        .child(
+            div()
+                .px_3()
+                .py_1()
+                .rounded(px(8.))
+                .bg(p.code_bg)
+                .border_1()
+                .border_color(p.hair)
+                .font_family("Menlo")
+                .text_size(px(SMALL))
+                .text_color(p.text2)
+                .child("equipe"),
+        )
+        .children(note.map(|n| div().text_size(px(SMALL)).text_color(p.muted).child(n)))
+        .into_any_element()
+}
+
+impl Render for Shell {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let total: u64 = self.panes.iter().map(|p| p.shown).sum();
-        let panes: Vec<_> = (0..self.panes.len()).map(|ix| self.render_pane(ix, cx)).collect();
-        let theme = cx.theme();
+        self.renders += 1;
+        if self.log_renders {
+            let mb = mem::phys_footprint_bytes().map_or(0., |b| b as f64 / 1_048_576.);
+            eprintln!("render #{} {:.1}s ({mb:.0} MB)", self.renders, self.started.elapsed().as_secs_f32());
+        }
+        let p = self.palette;
         v_flex()
             .size_full()
-            .bg(theme.background)
-            .text_color(theme.foreground)
+            .bg(p.bg)
+            .font_family(SANS)
+            .text_color(p.text)
+            .child(
+                // The title bar: drags the window; the traffic lights sit at its left.
+                div()
+                    .h(px(40.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .window_control_area(WindowControlArea::Drag)
+                    .text_size(px(SMALL))
+                    .text_color(p.muted)
+                    .child(self.model.squad.clone()),
+            )
             .child(
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    .child(self.render_board(cx))
-                    .child(h_flex().flex_1().min_w_0().h_full().children(panes)),
-            )
-            .child(
-                h_flex()
-                    .px_3()
-                    .py_1()
-                    .gap_4()
                     .border_t_1()
-                    .border_color(theme.border)
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(format!(
-                        "memory {:.1} MB (peak {:.1} MB)",
-                        self.footprint_mb, self.peak_mb
-                    ))
-                    .child(format!(
-                        "{} agents × {} lines/s",
-                        self.agents.len(),
-                        self.lines_per_sec
-                    ))
-                    .child(format!("{total} lines stored")),
+                    .border_color(p.hair)
+                    .child(views::sidebar::render(self, cx))
+                    .child(div().flex_1().min_w_0().h_full().flex().flex_col().child(self.body())),
             )
     }
-}
-
-fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
-    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
 fn main() {
-    let db = PathBuf::from(
-        std::env::var("EQUIPE_DB").unwrap_or_else(|_| ".equipe/desktop-spike.sqlite".into()),
-    );
-    if let Some(dir) = db.parent() {
-        std::fs::create_dir_all(dir).expect("create db dir");
-    }
-    // Start every spike run from an empty log so measurements are comparable.
-    for suffix in ["", "-wal", "-shm"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
-    let agents: usize = env_or("EQUIPE_AGENTS", 3);
-    let rate: u32 = env_or("EQUIPE_RATE", 200);
-
-    gpui_kit::application().run(move |cx| {
+    gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
-        let (w, h): (f32, f32) = (env_or("EQUIPE_W", 1200.), env_or("EQUIPE_H", 760.));
-        let bounds = Bounds::centered(None, size(px(w), px(h)), cx);
+        let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_min_size: Some(size(px(760.), px(520.))),
+            titlebar: Some(TitlebarOptions {
+                title: Some("equipe".into()),
+                appears_transparent: true,
+                traffic_light_position: Some(point(px(14.), px(13.))),
+            }),
             ..Default::default()
         };
-        gpui_kit::open_window(options, cx, |_, cx| {
-            cx.new(|cx| Workspace::new(db.clone(), agents, rate, cx))
-        })
-        .expect("failed to open window");
+        gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Shell::new(window, cx))).expect("failed to open window");
+        cx.activate(true);
     });
 }
