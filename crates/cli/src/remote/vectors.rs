@@ -665,6 +665,8 @@ fn snapshot() -> Snapshot {
                 context: Some((41000, 200000)),
                 recent: vec![Entry::User { text: "이번 주 계획 정리해 줘".into() }, Entry::Reply { text: "보드에 세 장 올렸어요.".into() }],
                 queued: vec![],
+                queued_project: None,
+                queued_in: vec![],
                 work: None,
                 mode: None,
             },
@@ -682,6 +684,8 @@ fn snapshot() -> Snapshot {
                 context: None,
                 recent: vec![Entry::Tool { tool: "Bash".into(), target: Some("cargo test".into()) }],
                 queued: vec![],
+                queued_project: None,
+                queued_in: vec![],
                 work: Some(WorkInfo { ticket: 38, project: "/Users/you/projects/api".into(), workspace: None }),
                 mode: None,
             },
@@ -691,6 +695,8 @@ fn snapshot() -> Snapshot {
         approvals: vec![approval()],
         scale: Some(0),
         plan: None,
+        suggestions_off: false,
+        desktop: Default::default(),
     }
 }
 
@@ -753,7 +759,7 @@ fn message_vectors() -> Value {
     ask(&mut core, &mut examples, "submit", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "submit", "session": pm, "text": "로그인 화면 다음에 뭐 할까?" } }));
     ask(&mut core, &mut examples, "interrupt", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "interrupt", "session": pm } }));
     tell(&mut core, &mut examples, "event: user message", Event::UserMessage { session: pm, text: "로그인 화면 다음에 뭐 할까?".into() });
-    tell(&mut core, &mut examples, "event: message queued", Event::MessageQueued { session: pm, text: "그리고 테스트도".into() });
+    tell(&mut core, &mut examples, "event: message queued", Event::MessageQueued { session: pm, text: "그리고 테스트도".into(), project: None });
     tell(&mut core, &mut examples, "event: text delta", Event::TextDelta { session: pm, text: "보드를 보면".into() });
     tell(&mut core, &mut examples, "event: tool use", Event::ToolUse { session: pm, tool: "board".into(), target: None });
     tell(&mut core, &mut examples, "event: turn ended", Event::TurnEnded { session: pm, outcome: TurnOutcome::Completed, usage: Some(Usage { input_tokens: Some(1200), output_tokens: Some(340), ..Usage::default() }) });

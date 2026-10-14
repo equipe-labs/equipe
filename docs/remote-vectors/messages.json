@@ -242,6 +242,7 @@
           "jsonrpc": "2.0",
           "method": "event",
           "params": {
+            "project": null,
             "session": 1001,
             "text": "그리고 테스트도",
             "type": "message_queued"
@@ -435,6 +436,11 @@
                     "tool": "Bash"
                   }
                 ],
+                "desktop": {
+                  "holder": null,
+                  "queue": [],
+                  "stopped": false
+                },
                 "mode": "auto",
                 "plan": null,
                 "projects": [
@@ -458,6 +464,8 @@
                     "model": "claude-opus-5-5",
                     "project": "/Users/you/.equipe/squads/acme/home",
                     "queued": [],
+                    "queued_in": [],
+                    "queued_project": null,
                     "recent": [
                       {
                         "kind": "user",
@@ -486,6 +494,8 @@
                     "model": "claude-sonnet-5-5",
                     "project": "/Users/you/projects/api",
                     "queued": [],
+                    "queued_in": [],
+                    "queued_project": null,
                     "recent": [
                       {
                         "kind": "tool",
@@ -506,6 +516,7 @@
                   }
                 ],
                 "squad": "acme",
+                "suggestions_off": false,
                 "tickets": [
                   {
                     "assignee": "backend",
