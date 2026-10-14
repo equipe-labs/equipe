@@ -111,29 +111,42 @@ pub struct Lane {
     pub verb: Verb,
 }
 
-/// A project on the whole squad's overview.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectLine {
-    pub name: String,
-    /// Its place among the squad's projects, for its colour.
-    pub at: usize,
-    pub busy: Vec<Busy>,
-    /// Work waiting for the person: to review, or put down until they act.
-    pub for_you: usize,
-    /// Tickets to do or in progress.
-    pub open: usize,
+/// A line of the sidebar's list: what can be opened — the PM (the one
+/// conversation to talk to), a ticket (its work), someone on the team — and
+/// the headings between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Heading(Group, usize),
+    Pm,
+    Ticket(TicketId),
+    Member(SessionId),
 }
 
-/// Someone at a project: a member on one of its tickets, or in a conversation
-/// about it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Busy {
-    pub member: String,
-    pub ticket: Option<(TicketId, String)>,
-    /// For a conversation: what the person said last in it.
-    pub about: Option<String>,
-    pub working: bool,
+/// The sidebar list's groups, in their order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    /// To review, waiting on the person, or proposed.
+    ForYou,
+    Working,
+    ToDo,
+    Done,
+    Team,
 }
+
+impl Group {
+    pub fn label(self) -> &'static str {
+        match self {
+            Group::ForYou => "나를 기다림",
+            Group::Working => "진행 중",
+            Group::ToDo => "할 일",
+            Group::Done => "완료",
+            Group::Team => "팀",
+        }
+    }
+}
+
+/// How many finished tickets the sidebar keeps in sight.
+const DONE_SHOWN: usize = 5;
 
 /// How a member shows in the list. The most pressing thing wins.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,6 +202,8 @@ pub struct Model {
     pub convos: HashMap<SessionId, Convo>,
     /// Whose conversation is on screen.
     pub selected: Option<SessionId>,
+    /// The ticket open on screen: its work in place of a conversation.
+    pub opened: Option<TicketId>,
     /// The project in focus, by name; `None`: the whole squad.
     pub focus: Option<String>,
     /// Bumped whenever the selected conversation shows something new, so a
@@ -212,6 +227,7 @@ impl Model {
             convos: HashMap::new(),
             selected: None,
             focus: None,
+            opened: None,
             revision: 0,
         }
     }
@@ -221,15 +237,110 @@ impl Model {
         self.selected.and_then(|id| self.members.iter().find(|m| m.session == id))
     }
 
-    /// The session whose conversation shows: the selected member's, or — about
-    /// the project in focus — its lane's, when one runs beside it.
+    /// The session whose conversation shows: a ticket's member's, with the
+    /// ticket open; else the selected member's — or its conversation beside
+    /// its work, when the PM runs one.
     pub fn viewed(&self) -> Option<SessionId> {
+        if let Some(ticket) = self.opened {
+            return self.convos.iter().find(|(_, c)| c.showing == Some(ticket)).map(|(&id, _)| id);
+        }
         let selected = self.selected?;
         Some(self.lane_of(selected).map_or(selected, |l| l.session))
     }
 
     fn lane_of(&self, member: SessionId) -> Option<&Lane> {
-        self.lanes.iter().find(|l| l.of == member && l.project == self.focus)
+        self.lanes.iter().find(|l| l.of == member)
+    }
+
+    /// The sidebar's list, in order: the PM first, then the tickets under the
+    /// project in focus by where they stand, then the rest of the team.
+    pub fn side(&self) -> Vec<Side> {
+        let mut out = Vec::new();
+        let pm = self.members.iter().find(|m| Self::is_pm(m)).or(self.members.first()).map(|m| m.session);
+        if pm.is_some() {
+            out.push(Side::Pm);
+        }
+        let here: Vec<&Ticket> = self.tickets.iter().filter(|t| self.in_focus(t)).collect();
+        let with = |statuses: &[TicketStatus]| {
+            let mut tickets: Vec<&Ticket> = here.iter().copied().filter(|t| statuses.contains(&t.status)).collect();
+            tickets.sort_by_key(|t| (t.status != TicketStatus::Review, t.id));
+            tickets
+        };
+        let mut done = with(&[TicketStatus::Done]);
+        done.sort_by_key(|t| std::cmp::Reverse(t.id));
+        done.truncate(DONE_SHOWN);
+        for (group, tickets) in [
+            (Group::ForYou, with(&[TicketStatus::Review, TicketStatus::Waiting, TicketStatus::Proposed])),
+            (Group::Working, with(&[TicketStatus::InProgress])),
+            (Group::ToDo, with(&[TicketStatus::Todo])),
+            (Group::Done, done),
+        ] {
+            if !tickets.is_empty() {
+                out.push(Side::Heading(group, tickets.len()));
+                out.extend(tickets.into_iter().map(|t| Side::Ticket(t.id)));
+            }
+        }
+        let team: Vec<SessionId> = self.ordered().into_iter().map(|m| m.session).filter(|s| Some(*s) != pm).collect();
+        if !team.is_empty() {
+            out.push(Side::Heading(Group::Team, team.len()));
+            out.extend(team.into_iter().map(Side::Member));
+        }
+        out
+    }
+
+    /// Whether a ticket shows under the project in focus.
+    fn in_focus(&self, ticket: &Ticket) -> bool {
+        self.focus.is_none() || self.ticket_project_name(ticket) == self.focus
+    }
+
+    /// The sidebar's line open now.
+    pub fn side_open(&self) -> Option<Side> {
+        if let Some(ticket) = self.opened {
+            return Some(Side::Ticket(ticket));
+        }
+        let selected = self.selected_member()?;
+        Some(if Self::is_pm(selected) { Side::Pm } else { Side::Member(selected.session) })
+    }
+
+    /// Open a line of the sidebar: the PM's conversation, someone's, or a
+    /// ticket — its member's work on it, while there is any to show. False for
+    /// a ticket with none: it is the board's to show.
+    pub fn open(&mut self, side: Side) -> bool {
+        for convo in self.convos.values_mut() {
+            convo.showing = None;
+        }
+        self.opened = None;
+        self.revision += 1;
+        match side {
+            Side::Heading(..) => true,
+            Side::Pm => {
+                self.selected = self.members.iter().find(|m| Self::is_pm(m)).or(self.members.first()).map(|m| m.session);
+                true
+            }
+            Side::Member(session) => {
+                self.selected = Some(session);
+                true
+            }
+            Side::Ticket(id) => {
+                // Whose work it is: the member on it now, else who did it.
+                let assignee = self.tickets.iter().find(|t| t.id == id).and_then(|t| t.assignee.clone());
+                let who = self
+                    .members
+                    .iter()
+                    .find(|m| m.ticket == Some(id))
+                    .or_else(|| self.members.iter().find(|m| assignee.as_deref() == Some(m.name.as_str())))
+                    .map(|m| m.session);
+                let Some(who) = who.filter(|s| self.convos.get(s).is_some_and(|c| c.has_work_on(id))) else {
+                    return false;
+                };
+                self.selected = Some(who);
+                self.opened = Some(id);
+                if let Some(convo) = self.convos.get_mut(&who) {
+                    convo.showing = Some(id);
+                }
+                true
+            }
+        }
     }
 
     /// How many of a member's lanes are at work now.
@@ -242,20 +353,28 @@ impl Model {
         self.lanes_working(member.session) + usize::from(member.presence == Presence::Working)
     }
 
-    /// Whether the conversation in view is at work. A member at work in another
-    /// project's conversation is free here: what is said opens a lane beside it.
+    /// Whether the conversation in view is at work. The PM at work on a ticket
+    /// of its own is free to talk: what is said opens its conversation beside
+    /// the work.
     pub fn viewed_presence(&self) -> Option<Presence> {
         let member = self.selected_member()?;
-        if let Some(lane) = self.lane_of(member.session) {
-            return Some(lane.presence);
+        if self.opened.is_some() {
+            return Some(member.presence);
         }
-        let elsewhere = member.presence == Presence::Working
-            && member.ticket.is_none()
-            && self.convos.get(&member.session).is_some_and(|c| c.current_thread() != self.focus.as_deref());
-        Some(if elsewhere { Presence::Ready } else { member.presence })
+        Some(self.presence_to_talk(member))
     }
 
-    /// Whether what is said now would open a lane beside work in another project.
+    /// How a member stands for what is said to it: its conversation beside
+    /// its work, when one runs or the PM's would open.
+    pub fn presence_to_talk(&self, member: &Member) -> Presence {
+        if let Some(lane) = self.lane_of(member.session) {
+            return lane.presence;
+        }
+        let beside = Self::is_pm(member) && member.presence == Presence::Working && member.ticket.is_some();
+        if beside { Presence::Ready } else { member.presence }
+    }
+
+    /// Whether what is said now would open the PM's conversation beside its work.
     pub fn opens_lane(&self) -> bool {
         self.selected_member().is_some_and(|m| m.presence == Presence::Working) && self.viewed_presence() == Some(Presence::Ready)
     }
@@ -280,9 +399,13 @@ impl Model {
 
     /// Show a member's conversation. True when that changed what is on screen.
     pub fn select(&mut self, session: SessionId) -> bool {
-        if self.selected == Some(session) || !self.members.iter().any(|m| m.session == session) {
+        if (self.selected == Some(session) && self.opened.is_none()) || !self.members.iter().any(|m| m.session == session) {
             return false;
         }
+        for convo in self.convos.values_mut() {
+            convo.showing = None;
+        }
+        self.opened = None;
         self.selected = Some(session);
         self.revision += 1;
         true
@@ -299,9 +422,6 @@ impl Model {
     pub fn set_focus(&mut self, project: Option<String>) -> bool {
         if self.focus == project {
             return false;
-        }
-        for convo in self.convos.values_mut().filter(|c| !c.lane) {
-            convo.thread_view = project.clone();
         }
         self.focus = project;
         self.revision += 1;
@@ -405,17 +525,12 @@ impl Model {
             })
             .collect();
         let now = Instant::now();
-        let focus = self.focus.clone();
         self.convos = snapshot
             .sessions
             .iter()
             .map(|s| {
                 let mut convo = Convo::from_info(s, now);
-                if s.lane.is_some() {
-                    convo.lane = true;
-                } else {
-                    convo.thread_view = focus.clone();
-                }
+                convo.lane = s.lane.is_some();
                 (s.session, convo)
             })
             .collect();
@@ -429,8 +544,7 @@ impl Model {
             if let Event::SessionStarted { squad, member, project, .. } = &event {
                 let ours = squad.as_ref().is_none_or(|s| *s == self.squad);
                 if ours && !self.convos.contains_key(&id) {
-                    let mut convo = Convo::new(project.clone(), member.as_ref().is_some_and(|m| m.role == "pm"));
-                    convo.thread_view = self.focus.clone();
+                    let convo = Convo::new(project.clone(), member.as_ref().is_some_and(|m| m.role == "pm"));
                     self.convos.insert(id, convo);
                 }
             }
@@ -532,14 +646,11 @@ impl Model {
     fn open_lane(&mut self, session: SessionId, of: SessionId, project: Option<String>) {
         let Some(at) = self.members.iter().position(|m| m.session == session) else { return };
         let lane = self.members.remove(at);
-        let main = self.convos.get(&of).filter(|c| c.thread_view == project).cloned();
+        let main = self.convos.get(&of).cloned();
         if let Some(convo) = self.convos.get_mut(&session) {
             match &main {
                 Some(main) => convo.open_lane(main),
-                None => {
-                    convo.thread_view = None;
-                    convo.lane = true;
-                }
+                None => convo.lane = true,
             }
         }
         self.lanes.push(Lane { session, of, project, presence: lane.presence, verb: lane.verb });
@@ -658,46 +769,6 @@ impl Model {
             }
             Presence::Ready => Status::Ready { ticket: member.ticket, model: member.model.clone() },
         }
-    }
-
-    /// The whole squad at a glance, a line a project: who is at it — members on
-    /// its tickets, conversations about it — and what in it waits.
-    pub fn overview(&self) -> Vec<ProjectLine> {
-        self.projects
-            .iter()
-            .enumerate()
-            .map(|(at, project)| {
-                let name = equipe_core::board::project_name(project);
-                let here: Vec<&Ticket> = self.tickets.iter().filter(|t| self.ticket_project(t).as_deref() == Some(project.as_path())).collect();
-                let mut busy: Vec<Busy> = Vec::new();
-                for member in self.members.iter().filter(|m| m.presence != Presence::Closed) {
-                    let working = member.presence == Presence::Working;
-                    if let Some(ticket) = member.ticket.and_then(|id| here.iter().find(|t| t.id == id)) {
-                        busy.push(Busy { member: member.name.clone(), ticket: Some((ticket.id, ticket.title.clone())), about: None, working });
-                    } else if working && member.ticket.is_none() && self.convos.get(&member.session).is_some_and(|c| c.current_thread() == Some(name.as_str())) {
-                        busy.push(Busy { member: member.name.clone(), ticket: None, about: self.convos.get(&member.session).and_then(Convo::last_said), working });
-                    }
-                }
-                // Conversations about it beside their members' other work.
-                for lane in self.lanes.iter().filter(|l| l.presence == Presence::Working && l.project.as_deref() == Some(name.as_str())) {
-                    let member = self.members.iter().find(|m| m.session == lane.of).map_or("session", |m| m.name.as_str());
-                    busy.push(Busy { member: member.to_owned(), ticket: None, about: self.convos.get(&lane.session).and_then(Convo::last_said), working: true });
-                }
-                ProjectLine {
-                    name,
-                    at,
-                    busy,
-                    for_you: here.iter().filter(|t| matches!(t.status, TicketStatus::Review | TicketStatus::Waiting)).count(),
-                    open: here.iter().filter(|t| matches!(t.status, TicketStatus::Todo | TicketStatus::InProgress)).count(),
-                }
-            })
-            .collect()
-    }
-
-    /// Whether the overview is over the conversation: every project in view,
-    /// more than one of them, and the PM — the squad's main contact — on screen.
-    pub fn shows_overview(&self) -> bool {
-        self.focus.is_none() && self.projects.len() > 1 && self.selected_member().is_some_and(Self::is_pm)
     }
 
     /// Members in list order: the PM first, then whoever needs the person, who
@@ -932,19 +1003,48 @@ mod tests {
     }
 
     #[test]
-    fn a_project_in_focus_gives_every_conversation_its_thread() {
+    fn a_project_in_focus_narrows_the_tickets_not_the_conversation() {
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        model.projects = vec!["/code/site".into(), "/code/app".into()];
+        let mut site = ticket(3, "review", None);
+        site.project = Some("/code/site".into());
+        let mut app = ticket(4, "todo", None);
+        app.project = Some("/code/app".into());
+        model.tickets = vec![site, app];
         assert!(model.set_focus(Some("site".into())));
         assert!(!model.set_focus(Some("site".into())));
-        assert_eq!(model.convo().unwrap().thread_view.as_deref(), Some("site"));
-        // A member who joins afterwards follows the focus too, and so does a reattach.
-        model.apply(Update::Event(Event::SessionStarted { session: 5, project: "/p".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Who { role: "qa".into(), name: "qa".into() }), squad: Some("acme".into()) }), T0);
-        assert_eq!(model.convos[&5].thread_view.as_deref(), Some("site"));
-        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T1);
-        assert_eq!(model.convo().unwrap().thread_view.as_deref(), Some("site"));
+        assert_eq!(model.viewed(), Some(1));
+        assert_eq!(model.side(), [Side::Pm, Side::Heading(Group::ForYou, 1), Side::Ticket(3)]);
         assert!(model.set_focus(None));
-        assert_eq!(model.convo().unwrap().thread_view, None);
+        assert_eq!(model.side().len(), 5);
+    }
+
+    #[test]
+    fn the_sidebar_opens_the_pm_a_tickets_work_or_sends_a_ticket_without_any_to_the_board() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "frontend", "frontend", SessionState::Working)]), T0);
+        let mut working = ticket(7, "in_progress", None);
+        working.assignee = Some("frontend".into());
+        model.tickets = vec![working, ticket(8, "todo", None)];
+        model.members[1].ticket = Some(7);
+        model.apply(Update::Event(Event::Notice { session: 2, text: "── T-7 · Hero — on branch b".into() }), T0);
+        model.apply(Update::Event(Event::UserMessage { session: 2, text: "hero work".into() }), T0);
+        assert_eq!(
+            model.side(),
+            [Side::Pm, Side::Heading(Group::Working, 1), Side::Ticket(7), Side::Heading(Group::ToDo, 1), Side::Ticket(8), Side::Heading(Group::Team, 1), Side::Member(2)]
+        );
+        // A ticket at work: its member's work on it, and what is typed steers it.
+        assert!(model.open(Side::Ticket(7)));
+        assert_eq!((model.viewed(), model.side_open()), (Some(2), Some(Side::Ticket(7))));
+        let plan = crate::compose::plan(&model, "skip the footer", false);
+        assert_eq!(plan.commands, vec![equipe_core::protocol::Command::Submit { session: 2, text: "skip the footer".into() }]);
+        // A ticket with no work to show: the board's to show.
+        assert!(!model.open(Side::Ticket(8)));
+        assert_eq!(model.opened, None);
+        // Back to the PM.
+        assert!(model.open(Side::Pm));
+        assert_eq!(model.viewed(), Some(1));
     }
 
     #[test]
@@ -956,17 +1056,16 @@ mod tests {
         assert_eq!(model.selected, Some(1));
     }
 
-    /// The PM at work in `site`, with `app` in focus; the daemon then opens
-    /// app's lane (session 77) for it.
+    /// The PM at work on a ticket of its own; the daemon then opens its
+    /// conversation (session 77) beside the work.
     fn with_lane() -> Model {
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "frontend", "frontend", SessionState::Ready)]), T0);
         model.projects = vec!["/code/site".into(), "/code/app".into()];
-        model.apply(Update::Event(Event::Thread { session: 1, project: Some("site".into()) }), T0);
         model.apply(Update::Event(Event::UserMessage { session: 1, text: "사이트는?".into() }), T0);
-        model.set_focus(Some("app".into()));
+        model.members[0].ticket = Some(9);
         model.apply(Update::Event(Event::SessionStarted { session: 77, project: "/p".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Who { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) }), T0);
-        model.apply(Update::Event(Event::LaneOpened { session: 77, of: 1, project: Some("app".into()) }), T0);
+        model.apply(Update::Event(Event::LaneOpened { session: 77, of: 1, project: None }), T0);
         model
     }
 
@@ -979,12 +1078,11 @@ mod tests {
         assert_eq!(model.viewed(), Some(77));
         model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into() }), T0);
         model.apply(Update::Event(Event::TextDelta { session: 77, text: "앱은 괜찮습니다.".into() }), T0);
-        assert_eq!(model.convo().unwrap().blocks().len(), 2);
-        // The site's conversation is the member's own again.
+        // What the member said before, then the lane's own.
+        assert_eq!(model.convo().unwrap().blocks().len(), 3);
+        // Whatever project is in focus: one conversation.
         model.set_focus(Some("site".into()));
-        assert_eq!(model.viewed(), Some(1));
-        model.set_focus(None);
-        assert_eq!(model.viewed(), Some(1));
+        assert_eq!(model.viewed(), Some(77));
     }
 
     #[test]
@@ -1005,13 +1103,9 @@ mod tests {
     fn stopping_reaches_only_the_conversation_in_view() {
         let mut model = with_lane();
         model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into() }), T0);
-        assert_eq!(model.viewed(), Some(77));
-        assert_eq!(model.viewed_presence(), Some(Presence::Working));
-        // In site the member's own conversation is the one at work.
-        model.set_focus(Some("site".into()));
-        assert_eq!((model.viewed(), model.viewed_presence()), (Some(1), Some(Presence::Working)));
-        // And nothing at work in a project it has no lane for: free, a lane would open.
-        model.set_focus(Some("else".into()));
+        assert_eq!((model.viewed(), model.viewed_presence()), (Some(77), Some(Presence::Working)));
+        // Without its conversation beside, the PM at work on its ticket is free to talk: one would open.
+        model.apply(Update::Event(Event::SessionClosed { session: 77 }), T0);
         assert_eq!((model.viewed(), model.viewed_presence()), (Some(1), Some(Presence::Ready)));
         assert!(model.opens_lane());
     }
@@ -1027,12 +1121,11 @@ mod tests {
         assert!(!model.convos.contains_key(&77));
         assert_eq!(model.members.len(), 2);
         assert!(model.members.iter().all(|m| m.presence != Presence::Closed), "a lane closing is not a member leaving");
-        // What was said in it is the member's conversation about app, on screen there.
+        // What was said in it stays, in the member's one conversation.
         assert_eq!(model.viewed(), Some(1));
         let shown = model.convo().unwrap().shown();
         assert!(shown.iter().any(|e| matches!(e.as_ref(), Entry::User { text } if text == "앱은?")), "{shown:?}");
-        // and the site's part stays out of it.
-        assert!(!shown.iter().any(|e| matches!(e.as_ref(), Entry::User { text } if text == "사이트는?")));
+        assert!(shown.iter().any(|e| matches!(e.as_ref(), Entry::User { text } if text == "사이트는?")));
     }
 
     #[test]
@@ -1046,41 +1139,9 @@ mod tests {
         assert_eq!(model.at_once(&model.members[0]), 1);
         model.set_focus(Some("app".into()));
         assert_eq!(model.viewed(), Some(9));
-        // A lane's conversation is not narrowed by the project in focus.
+        // Whatever project is in focus, it is the one shown.
         model.set_focus(Some("site".into()));
-        assert_eq!(model.convos[&9].thread_view, None);
-    }
-
-    #[test]
-    fn all_is_a_line_a_project_with_who_is_at_it_and_what_waits() {
-        let mut model = with_lane();
-        model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into() }), T0);
-        let mut t = ticket(4, "review", None);
-        t.project = Some("/code/site".into());
-        let mut open = ticket(5, "todo", None);
-        open.project = Some("/code/site".into());
-        for t in [t, open] {
-            model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: t }), T0);
-        }
-        model.set_focus(None);
-        model.select(1);
-        assert!(model.shows_overview());
-        let lines = model.overview();
-        assert_eq!(lines.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["site", "app"]);
-        // site: the PM talking about it; waits: one review, one open.
-        assert_eq!(lines[0].busy.len(), 1);
-        assert_eq!(lines[0].busy[0].about.as_deref(), Some("사이트는?"));
-        assert_eq!((lines[0].for_you, lines[0].open), (1, 1));
-        // app: the PM's lane.
-        assert_eq!(lines[1].busy.len(), 1);
-        assert_eq!(lines[1].busy[0].about.as_deref(), Some("앱은?"));
-        assert_eq!(crate::views::overview::busy_text(&lines[0].busy), "pm ‘사이트는?’");
-        // With one project in focus, or a member other than the PM, there is no tower.
-        model.set_focus(Some("site".into()));
-        assert!(!model.shows_overview());
-        model.set_focus(None);
-        model.select(2);
-        assert!(!model.shows_overview());
+        assert_eq!(model.viewed(), Some(9));
     }
 
     #[test]

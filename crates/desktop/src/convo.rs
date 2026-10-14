@@ -6,11 +6,10 @@
 //! `tui/view.rs`).
 
 use std::borrow::Cow;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use equipe_core::protocol::{Entry, Event, SessionInfo, Transcript, TurnOutcome};
+use equipe_core::protocol::{Entry, Event, SessionInfo, TicketId, Transcript, TurnOutcome};
 
 use crate::state::Clock;
 
@@ -29,9 +28,8 @@ pub struct Sub {
 #[derive(Debug, Clone)]
 pub struct Convo {
     pub transcript: Transcript,
-    /// For the PM: the thread on screen — the project in focus, `None` for the
-    /// whole squad's. A member's conversation is narrowed to that project too.
-    pub thread_view: Option<String>,
+    /// Shown as the work on this ticket only — the ticket open on screen.
+    pub showing: Option<TicketId>,
     /// Memos waiting for the turn in progress to end.
     pub queued: Vec<String>,
     /// The project each memo was left about (`None`: the whole squad): each
@@ -41,8 +39,6 @@ pub struct Convo {
     pub steering: Vec<String>,
     /// The greyed guess at what the person says next, while it rests.
     pub suggestion: Option<String>,
-    /// Working on a ticket: it has one conversation, so every memo is for it.
-    on_ticket: bool,
     /// Subagents it handed work to this turn and that haven't handed back.
     pub subagents: Vec<Sub>,
     /// Where it works now; tool paths are shown relative to it.
@@ -59,12 +55,11 @@ impl Convo {
     pub fn new(base: PathBuf, is_pm: bool) -> Self {
         Self {
             transcript: Transcript::default(),
-            thread_view: None,
+            showing: None,
             queued: Vec::new(),
             queued_in: Vec::new(),
             steering: Vec::new(),
             suggestion: None,
-            on_ticket: false,
             subagents: Vec::new(),
             desk: base.clone(),
             base,
@@ -83,7 +78,6 @@ impl Convo {
         // From an older daemon: one project for them all.
         convo.queued_in = if info.queued_in.len() == info.queued.len() { info.queued_in.clone() } else { vec![info.queued_project.clone(); info.queued.len()] };
         convo.steering = info.steering.clone();
-        convo.on_ticket = info.work.is_some();
         // Attached mid-turn: the clock starts now, not when the turn did.
         if info.state == equipe_core::protocol::SessionState::Working {
             convo.working_since = Some(now);
@@ -128,13 +122,11 @@ impl Convo {
                 self.queued_in.push(project.clone());
             }
             Event::WorkStarted { project, workspace, .. } => {
-                self.on_ticket = true;
                 self.suggestion = None;
                 self.base = workspace.as_ref().map_or_else(|| project.clone(), |ws| ws.path.clone());
                 self.working_since.get_or_insert(now);
             }
             Event::WorkEnded { .. } => {
-                self.on_ticket = false;
                 self.base = self.desk.clone();
             }
             Event::SubagentStarted { id, what, .. } => self.subagents.push(Sub { id: id.clone(), what: what.clone(), step: None }),
@@ -166,18 +158,18 @@ impl Convo {
         (self.queued, self.queued_in) = (queued, queued_in);
     }
 
-    /// Whether what belongs to `project`'s conversation (`None`: the squad's)
-    /// shows in the one in view.
-    fn in_view(&self, project: Option<&str>) -> bool {
-        self.lane || project == self.thread_view.as_deref() || (self.thread_view.is_none() && !self.is_pm)
-    }
-
     /// The conversation its turns go into now (`None`: the whole squad's).
     pub fn current_thread(&self) -> Option<&str> {
         self.transcript.entries().iter().rev().find_map(|e| match e {
             Entry::Thread { project } => Some(project.as_deref()),
             _ => None,
         })?
+    }
+
+    /// Whether its conversation holds work on `ticket`, to show.
+    pub fn has_work_on(&self, ticket: TicketId) -> bool {
+        let header = format!("── T-{ticket} ");
+        self.transcript.entries().iter().any(|e| matches!(e, Entry::Note { text } if text.starts_with(&header)))
     }
 
     /// What the person said last in it, its first line.
@@ -205,7 +197,6 @@ impl Convo {
         // about the member's conversation, not this one.
         let said = main.shown().into_iter().filter(|e| !matches!(e.as_ref(), Entry::Note { text } if text.starts_with("· 다른 프로젝트")));
         self.transcript = Transcript::from_entries(said.map(Cow::into_owned).collect());
-        self.thread_view = None;
         self.lane = true;
     }
 
@@ -219,56 +210,32 @@ impl Convo {
         }
     }
 
-    /// The conversation as it shows, through the project in focus. The PM's is
-    /// its thread for that project (what came before any thread was the whole
-    /// squad's). A member's is everything with the whole squad in view — each
-    /// ticket headed with its project — or that project's part, with a line
-    /// where other projects' parts were left out. Never the markers.
+    /// The conversation as it shows. A ticket open (`showing`): only its
+    /// work. Otherwise everything — but the PM's own tickets' work, which each
+    /// shows as its ticket. Never the markers.
     pub fn shown(&self) -> Vec<Cow<'_, Entry>> {
-        let entries = self.transcript.entries();
-        let pm = self.is_pm;
-        let mut projects = HashSet::new();
-        for entry in entries {
-            if let Entry::Thread { project: Some(p) } = entry {
-                projects.insert(p.as_str());
-            }
-        }
-        let several = projects.len() > 1;
-        let mut current: Option<&str> = None;
         let mut out = Vec::new();
-        // Left out in a row: whether anything was, and how many tickets.
-        let mut left_out: Option<usize> = None;
-        let say_left_out = |out: &mut Vec<Cow<'_, Entry>>, left: Option<usize>| {
-            let text = match left {
-                None => return,
-                Some(0) => "· 다른 프로젝트의 이전 대화는 숨겼습니다 — 프로젝트 칩 ‘All’로 보입니다".to_owned(),
-                Some(n) => format!("· 다른 프로젝트의 티켓 {n}개는 숨겼습니다 — 프로젝트 칩 ‘All’로 보입니다"),
+        // The ticket whose work the lines are, while they are.
+        let mut on: Option<TicketId> = None;
+        for entry in self.transcript.entries() {
+            match entry {
+                Entry::Thread { .. } => {
+                    on = None;
+                    continue;
+                }
+                Entry::Note { text } if text.starts_with("── T-") => {
+                    on = text["── T-".len()..].split(|c: char| !c.is_ascii_digit()).next().and_then(|n| n.parse().ok());
+                }
+                _ => {}
+            }
+            let keep = match self.showing {
+                Some(ticket) => on == Some(ticket),
+                None => on.is_none() || !self.is_pm,
             };
-            out.push(Cow::Owned(Entry::Note { text }));
-        };
-        for entry in entries {
-            if let Entry::Thread { project } = entry {
-                current = project.as_deref();
-                continue;
-            }
-            let ticket_header = matches!(entry, Entry::Note { text } if text.starts_with("── T-"));
-            let visible = if pm { current == self.thread_view.as_deref() } else { self.thread_view.is_none() || current == self.thread_view.as_deref() };
-            if !visible {
-                if !pm {
-                    let n = left_out.get_or_insert(0);
-                    *n += usize::from(ticket_header);
-                }
-                continue;
-            }
-            say_left_out(&mut out, left_out.take());
-            match (entry, current) {
-                (Entry::Note { text }, Some(project)) if ticket_header && !pm && self.thread_view.is_none() && several => {
-                    out.push(Cow::Owned(Entry::Note { text: format!("── {project} · {}", &text["── ".len()..]) }));
-                }
-                _ => out.push(Cow::Borrowed(entry)),
+            if keep {
+                out.push(Cow::Borrowed(entry));
             }
         }
-        say_left_out(&mut out, left_out);
         out
     }
 
@@ -276,12 +243,8 @@ impl Convo {
     /// steps, note — then each memo still waiting.
     pub fn blocks(&self) -> Vec<Block> {
         let mut blocks = build_blocks(&self.shown(), &self.base);
-        // Memos wait below the conversation they go into until the turn ends —
-        // each only in the project it was left in. On a ticket there is one
-        // conversation, the ticket's: every memo is for it.
-        for (memo, _) in self.queued.iter().zip(&self.queued_in).filter(|(_, about)| self.on_ticket || self.in_view(about.as_deref())) {
-            blocks.push(Block::Memo(memo.clone()));
-        }
+        // Memos wait below the conversation until the turn ends.
+        blocks.extend(self.queued.iter().map(|memo| Block::Memo(memo.clone())));
         blocks.extend(self.steering.iter().map(|text| Block::Steering(text.clone())));
         blocks
     }
@@ -610,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pm_shows_the_thread_of_the_project_in_focus() {
+    fn the_pm_keeps_one_conversation_and_its_tickets_work_shows_as_the_ticket() {
         let mut c = convo(true);
         feed(
             &mut c,
@@ -618,21 +581,21 @@ mod tests {
                 Event::UserMessage { session: 1, text: "whole squad".into() },
                 Event::Thread { session: 1, project: Some("site".into()) },
                 Event::UserMessage { session: 1, text: "about the site".into() },
-                Event::Thread { session: 1, project: Some("app".into()) },
-                Event::UserMessage { session: 1, text: "about the app".into() },
+                Event::Notice { session: 1, text: "── T-4 · Research".into() },
+                Event::UserMessage { session: 1, text: "ticket work".into() },
+                Event::Thread { session: 1, project: None },
+                Event::UserMessage { session: 1, text: "after".into() },
             ],
         );
         let texts = |c: &Convo| c.blocks().iter().filter_map(|b| if let Block::User(t) = b { Some(t.clone()) } else { None }).collect::<Vec<_>>();
-        c.thread_view = None;
-        assert_eq!(texts(&c), ["whole squad"]);
-        c.thread_view = Some("site".into());
-        assert_eq!(texts(&c), ["about the site"]);
-        c.thread_view = Some("app".into());
-        assert_eq!(texts(&c), ["about the app"]);
+        assert_eq!(texts(&c), ["whole squad", "about the site", "after"]);
+        assert!(c.has_work_on(4) && !c.has_work_on(5));
+        c.showing = Some(4);
+        assert_eq!(texts(&c), ["ticket work"]);
     }
 
     #[test]
-    fn a_members_conversation_says_what_other_projects_left_out() {
+    fn a_members_conversation_shows_all_its_work() {
         let mut c = convo(false);
         feed(
             &mut c,
@@ -644,14 +607,11 @@ mod tests {
                 Event::Notice { session: 1, text: "plain".into() },
             ],
         );
-        c.thread_view = Some("site".into());
         let notes: Vec<String> = c.blocks().into_iter().filter_map(|b| if let Block::Note(t) = b { Some(t) } else { None }).collect();
-        assert_eq!(notes[0], "── T-1 · Hero");
-        assert!(notes[1].contains("티켓 1개"), "{notes:?}");
-        // With every project in view, tickets are headed with theirs.
-        c.thread_view = None;
+        assert_eq!(notes, ["── T-1 · Hero", "── T-2 · Login", "plain"]);
+        c.showing = Some(2);
         let notes: Vec<String> = c.blocks().into_iter().filter_map(|b| if let Block::Note(t) = b { Some(t) } else { None }).collect();
-        assert_eq!(notes[0], "── site · T-1 · Hero");
+        assert_eq!(notes, ["── T-2 · Login", "plain"]);
     }
 
     #[test]
@@ -680,7 +640,7 @@ mod tests {
     }
 
     #[test]
-    fn memos_show_only_in_the_project_they_were_left_in() {
+    fn memos_wait_below_the_one_conversation_and_go_in_a_project_at_a_time() {
         let mut c = convo(false);
         feed(
             &mut c,
@@ -691,12 +651,6 @@ mod tests {
             ],
         );
         let memos = |c: &Convo| c.blocks().into_iter().filter_map(|b| if let Block::Memo(t) = b { Some(t) } else { None }).collect::<Vec<_>>();
-        c.thread_view = Some("site".into());
-        assert_eq!(memos(&c), ["for site"]);
-        c.thread_view = Some("app".into());
-        assert_eq!(memos(&c), ["for app"]);
-        // A member's whole-squad view has them all.
-        c.thread_view = None;
         assert_eq!(memos(&c), ["for site", "for app"]);
         // The next turn takes the first project's; the other waits.
         feed(&mut c, &[Event::UserMessage { session: 1, text: "for site".into() }]);

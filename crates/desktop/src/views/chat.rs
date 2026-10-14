@@ -27,8 +27,8 @@ const COLUMN: f32 = 720.;
 pub struct Chat {
     scroller: Entity<MessageScrollerState>,
     blocks: Rc<Vec<Block>>,
-    /// Whose conversation, and through which project, `blocks` are.
-    shown: Option<(SessionId, Option<String>)>,
+    /// Whose conversation `blocks` are, and the ticket it shows the work of.
+    shown: Option<(SessionId, Option<u32>)>,
     seen_revision: u64,
     /// Tool runs shown whole rather than folded (⌘⇧O).
     pub expanded: bool,
@@ -52,7 +52,7 @@ impl Chat {
 
     /// Bring the list up to what the model shows. Cheap when nothing moved.
     pub fn sync(&mut self, model: &Model, cx: &mut App) {
-        let key = model.viewed().map(|id| (id, model.focus.clone()));
+        let key = model.viewed().map(|id| (id, model.opened));
         let moved = key != self.shown;
         if !moved && model.revision == self.seen_revision && self.expanded == self.shown_expanded {
             return;
@@ -106,11 +106,26 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             conversation(shell, look, cx).into_any_element()
         }
     };
+    // A ticket open: its number, title and where it stands, over its work.
+    let banner = model.opened.and_then(|id| model.tickets.iter().find(|t| t.id == id)).map(|t| {
+        let hint = match t.status {
+            equipe_core::protocol::TicketStatus::Review => format!("리뷰 대기 · /accept T-{0} · /reopen T-{0} 이유", t.id),
+            equipe_core::protocol::TicketStatus::Waiting => format!("사람 대기 · 할 일을 마치면 /resume T-{}", t.id),
+            _ => "여기에 쓰면 작업 중인 멤버가 다음 단계에서 읽습니다".to_owned(),
+        };
+        v_flex()
+            .w_full()
+            .max_w(px(COLUMN))
+            .px_4()
+            .pt_3()
+            .child(h_flex().gap_2().text_size(px(15.)).child(div().text_color(p.accent).child(format!("T-{}", t.id))).child(div().font_weight(FontWeight::SEMIBOLD).child(t.title.clone())))
+            .child(div().text_size(px(12.)).text_color(p.muted).child(hint))
+    });
     v_flex()
         .flex_1()
         .min_h_0()
         .items_center()
-        .when(model.shows_overview(), |col| col.child(div().w_full().max_w(px(COLUMN)).px_4().child(super::overview::render(shell, cx))))
+        .children(banner)
         .child(body)
         .child(
             div()
@@ -128,8 +143,8 @@ fn hello(model: &Model, role: &str, name: &str, presence: Presence) -> (&'static
         return ("스쿼드를 떠난 멤버입니다", format!("{name}은(는) 더 이상 일하지 않습니다."));
     }
     match (role, model.focus.as_deref()) {
-        ("pm", Some(project)) => ("이 프로젝트의 PM 대화", format!("{project}에 대한 대화는 다른 프로젝트·스쿼드 전체와 따로 이어집니다. 쓰면 시작합니다. PM은 보드와 스쿼드의 기억을 압니다.")),
-        ("pm", None) => ("PM에게 만들고 싶은 것을 말하세요", "PM이 일을 계획해 보드에 올리고, equipe가 각 티켓을 담당자에게 넘깁니다. @이름 으로 다른 멤버에게 바로 말할 수도 있습니다.".into()),
+        ("pm", Some(project)) => ("PM에게 말하세요", format!("지금 보고 있는 {project} 이야기로 전달됩니다. 금방 끝나는 건 PM이 바로 답하고, 일은 티켓이 되어 왼쪽에 나타납니다.")),
+        ("pm", None) => ("PM에게 만들고 싶은 것을 말하세요", "금방 끝나는 건 PM이 바로 답하고, 일은 티켓이 되어 왼쪽에 나타납니다. 티켓을 열면 그 작업을 보고 바로 지시할 수 있습니다.".into()),
         _ => ("직접 말을 걸 수 있습니다", "이 멤버에게 바로 말하면 PM도 알게 됩니다. 일은 보드에서 가져가 자기 작업 폴더에서 합니다.".into()),
     }
 }
@@ -324,6 +339,21 @@ impl Shell {
     pub fn toggle_folds(&mut self, cx: &mut Context<Self>) {
         self.chat.expanded = !self.chat.expanded;
         self.chat.sync(&self.model, cx);
+        cx.notify();
+    }
+
+    /// A line of the sidebar was clicked: the PM, someone, or a ticket — its
+    /// work in the conversation's place, or the board when there is none.
+    pub fn open_side(&mut self, side: crate::state::Side, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.model.open(side) {
+            if let crate::state::Side::Ticket(id) = side {
+                self.open_ticket(id, cx);
+            }
+            return;
+        }
+        self.screen = Screen::Chat;
+        self.refresh(window, cx);
+        self.composer.focus(window, cx);
         cx.notify();
     }
 

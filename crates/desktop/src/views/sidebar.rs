@@ -6,7 +6,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::convo::Sub;
-use crate::state::{Conn, Member, Status, Verb};
+use crate::state::{Conn, Group, Member, Side, Status, Verb};
 use crate::theme::{Palette, SANS, SMALL, UI, look};
 use crate::{Screen, Shell};
 
@@ -63,14 +63,93 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .children(squads)
         .child(div().h(px(8.)))
         .child(board)
-        .child(kicker(p, "멤버"))
-        // Behind a daemon that is off the list is only what we last saw.
-        .child(v_flex().flex_1().min_h_0().overflow_hidden().when(dim, |l| l.opacity(0.8)).children(model.ordered().into_iter().map(|m| member_row(p, shell, m, cx))))
+        // The PM, then every ticket by where it stands, then the team. Behind a
+        // daemon that is off the list is only what we last saw.
+        .child(
+            v_flex()
+                .id("side")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .when(dim, |l| l.opacity(0.8))
+                .children(model.side().into_iter().filter_map(|side| side_row(p, shell, side, cx))),
+        )
         .child(footer(p, shell, cx))
 }
 
 fn kicker(p: Palette, text: &'static str) -> impl IntoElement {
     div().h(px(32.)).px_5().pt_3().text_size(px(11.)).text_color(p.muted).child(text)
+}
+
+/// A line of the sidebar's list.
+fn side_row(p: Palette, shell: &Shell, side: Side, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let model = &shell.model;
+    Some(match side {
+        Side::Heading(group, count) => div()
+            .h(px(32.))
+            .flex_none()
+            .px_5()
+            .pt_3()
+            .text_size(px(11.))
+            .text_color(if group == Group::ForYou { p.accent } else { p.muted })
+            .child(format!("{} · {count}", group.label()))
+            .into_any_element(),
+        Side::Pm => member_row(p, shell, model.members.iter().find(|m| crate::state::Model::is_pm(m)).or(model.members.first())?, cx).into_any_element(),
+        Side::Member(session) => member_row(p, shell, model.members.iter().find(|m| m.session == session)?, cx).into_any_element(),
+        Side::Ticket(id) => ticket_row(p, shell, id, cx)?.into_any_element(),
+    })
+}
+
+/// A ticket in the sidebar: who has it, its number, its title, and where it
+/// stands — or when it will be done.
+fn ticket_row(p: Palette, shell: &Shell, id: u32, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
+    let model = &shell.model;
+    let ticket = model.tickets.iter().find(|t| t.id == id)?;
+    let who = ticket.assignee.clone().or_else(|| ticket.owner.clone()).unwrap_or_default();
+    let role = model.members.iter().find(|m| m.name == who).map_or(who.as_str(), |m| m.role.as_str());
+    let (mark, hue) = look(role, &who);
+    let on_it = model.members.iter().find(|m| m.ticket == Some(id));
+    let working = on_it.is_some_and(|m| m.presence == crate::state::Presence::Working);
+    use equipe_core::protocol::TicketStatus as S;
+    let (detail, accent) = match ticket.status {
+        S::Review => ("리뷰".to_owned(), true),
+        S::Waiting => ("나를 기다림".to_owned(), true),
+        S::Proposed => ("제안".to_owned(), false),
+        S::InProgress => (if working { "작업 중".to_owned() } else { String::new() }, false),
+        S::Todo => (ticket.owner.clone().unwrap_or_default(), false),
+        S::Done => ("✓".to_owned(), false),
+        S::Cancelled => ("취소".to_owned(), false),
+    };
+    let on = shell.screen == Screen::Chat && model.side_open() == Some(Side::Ticket(id));
+    Some(
+        h_flex()
+            .id(("ticket", id))
+            .h(px(32.))
+            .flex_none()
+            .pl(px(16.))
+            .pr_3()
+            .gap_2()
+            .items_center()
+            .cursor_pointer()
+            .when(on, |r| r.bg(p.wash))
+            .when(!on, |r| r.hover(move |s| s.bg(p.wash)))
+            .on_click(cx.listener(move |this, _, window, cx| this.open_side(Side::Ticket(id), window, cx)))
+            .child(div().w(px(16.)).flex_none().text_size(px(13.)).text_color(p.member(hue)).when(!working, |m| m.opacity(0.62)).child(mark))
+            .child(div().flex_none().text_size(px(SMALL)).text_color(if accent { p.accent } else { p.text2 }).child(format!("T-{id}")))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(UI))
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .when(on, |t| t.font_weight(FontWeight::SEMIBOLD))
+                    .when(ticket.status == S::Done, |t| t.text_color(p.muted))
+                    .child(ticket.title.clone()),
+            )
+            .child(div().flex_none().text_size(px(SMALL)).text_color(if accent { p.accent } else { p.muted }).child(detail)),
+    )
 }
 
 fn member_row(p: Palette, shell: &Shell, member: &Member, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
@@ -82,7 +161,8 @@ fn member_row(p: Palette, shell: &Shell, member: &Member, cx: &mut Context<Shell
     let closed = status == Status::Closed;
     let (line, line_color) = status_line(member, &status, shell.model.at_once(member), p);
 
-    let on = shell.screen == Screen::Chat && shell.model.selected == Some(member.session);
+    let side = if crate::state::Model::is_pm(member) { Side::Pm } else { Side::Member(member.session) };
+    let on = shell.screen == Screen::Chat && shell.model.side_open() == Some(side);
     let session = member.session;
     let subs: Vec<Sub> = shell.model.convos.get(&member.session).map(|c| c.subagents.clone()).unwrap_or_default();
     let row = h_flex()
