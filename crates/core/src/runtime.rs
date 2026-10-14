@@ -650,13 +650,8 @@ impl Runtime {
                     let _ = journal.set_suggestions(on);
                 }
             }
-            Command::Scale { squad, extra } => {
-                if let Some(journal) = self.journal(&squad) {
-                    let _ = journal.set_scale(extra.min(HELPERS_MAX));
-                }
-                // More room may be just what waiting work needed.
-                self.dispatch(&squad).await;
-            }
+            // From older screens: nobody is added on equipe's own any more.
+            Command::Scale { .. } => {}
             Command::Refresh { session, summary } => {
                 if let Some(s) = self.sessions.get_mut(&session) {
                     s.refresh = Some(summary);
@@ -1654,11 +1649,13 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
     async fn dispatch(&mut self, squad: &str) {
         let tickets = self.tickets(squad);
         let single_project = self.projects(squad).len() == 1;
+        // Members equipe once brought in for a rush finish what they hold and take nothing new.
+        let helpers = self.journals.get(squad).map(Journal::helpers).unwrap_or_default();
         let members: Vec<(String, String, bool)> = self
             .sessions
-            .values()
-            .filter(|s| s.squad.as_deref() == Some(squad))
-            .filter_map(|s| s.member.as_ref().map(|m| (m.name.clone(), m.role.clone(), s.is_free())))
+            .iter()
+            .filter(|(id, s)| s.squad.as_deref() == Some(squad) && !helpers.contains(id))
+            .filter_map(|(_, s)| s.member.as_ref().map(|m| (m.name.clone(), m.role.clone(), s.is_free())))
             .collect();
         let candidates: Vec<Candidate> =
             members.iter().map(|(name, role, free)| Candidate { name, role, free: *free }).collect();
@@ -1667,69 +1664,11 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
                 self.begin_work(id, ticket);
             }
         }
-        // Work a role has no one free for: bring in extra members of it, up to the
-        // squad's scale. Each joins and picks up a waiting ticket at once.
-        let waiting = board::unstaffed(&tickets, &candidates, single_project);
-        if waiting.is_empty() {
-            return;
-        }
-        let Some(journal) = self.journal(squad) else {
-            return;
-        };
-        let (scale, helpers) = (journal.scale(), journal.helpers());
-        let total = helpers.iter().filter(|id| self.sessions.contains_key(id)).count();
-        // One at a time: the newcomer's own arrival looks again, with it counted.
-        let room = waiting.into_iter().find(|(role, _)| {
-            let of_role = helpers
-                .iter()
-                .filter(|id| self.sessions.get(id).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == *role))
-                .count();
-            of_role < scale && total < HELPERS_MAX
-        });
-        if let Some((role, count)) = room {
-            Box::pin(self.bring_in_helper(squad, &role, count)).await;
-        }
     }
 
-    /// A temporary member of `role`, for work that waits: it shares the role's
-    /// memory, and leaves when it has been idle a while.
-    async fn bring_in_helper(&mut self, squad: &str, role: &str, waiting: usize) {
-        // It sits in the squad home like everyone else; this is only where it starts.
-        let project = self.projects(squad).first().cloned().unwrap_or_else(|| squad_home::path(&self.config.home, squad));
-        let id = equipe_protocol::new_session_id();
-        // It edits as the role's member does — for a custom role, as the person said.
-        let edits = self
-            .sessions
-            .values()
-            .any(|s| s.squad.as_deref() == Some(squad) && s.member.as_ref().is_some_and(|m| m.role == role) && s.edits());
-        let spec = SessionSpec {
-            engine: None,
-            model: None,
-            access: if edits { Access::EditFiles } else { Access::ReadOnly },
-            cwd: project,
-            role: Some(role.to_owned()),
-            squad: Some(squad.to_owned()),
-        };
-        // Recorded first, so the dispatch its start runs counts it.
-        if let Some(journal) = self.journal(squad) {
-            let mut helpers = journal.helpers();
-            helpers.push(id);
-            let _ = journal.set_helpers(&helpers);
-        }
-        Box::pin(self.start(id, spec)).await;
-        let Some(session) = self.sessions.get_mut(&id) else {
-            return;
-        };
-        session.last_turn = Some(std::time::Instant::now());
-        let name = session.name().unwrap_or(role).to_owned();
-        if let Some(pm) = self.pm_of(squad) {
-            let text = format!("Brought in {name}: {waiting} {role} ticket{} waiting at once · /scale changes how many", if waiting == 1 { " was" } else { "s were" });
-            self.publish(Event::Notice { session: pm, text });
-        }
-    }
-
-    /// Let go the helpers with nothing to do: free, idle a while, and no work
-    /// of their role waiting.
+    /// Let go the members equipe once brought in for a rush, as each finishes
+    /// what it held: nobody is added on equipe's own any more — a member splits
+    /// big work across subagents, and the person adds teammates.
     async fn let_helpers_go(&mut self) {
         let squads: Vec<String> = self.journals.keys().cloned().collect();
         for squad in squads {
@@ -1743,16 +1682,14 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
                 .iter()
                 .copied()
                 .filter(|id| {
-                    self.sessions.get(id).is_some_and(|s| {
-                        s.is_free() && s.last_turn.is_some_and(|t| t.elapsed() > HELPER_IDLE)
-                    })
+                    self.sessions.get(id).is_some_and(Session::is_free)
                 })
                 .collect();
             for id in &idle {
                 let name = self.sessions.get(id).and_then(|s| s.name().map(str::to_owned)).unwrap_or_default();
                 Box::pin(self.close(*id)).await;
                 if let Some(pm) = self.pm_of(&squad) {
-                    self.publish(Event::Notice { session: pm, text: format!("{name} left: nothing of theirs is waiting") });
+                    self.publish(Event::Notice { session: pm, text: format!("{name} left, its work done: its role carries on") });
                 }
             }
             // Gone or let go: no longer helpers.
@@ -3426,10 +3363,6 @@ fn verdict(decision: Decision, input: &Value, why: &str) -> ToolResult {
     ToolResult { text: text.to_string(), is_error: false }
 }
 
-/// The most helpers a squad has at once, whatever its scale.
-const HELPERS_MAX: usize = 6;
-/// A helper idle this long, with nothing of its role waiting, leaves.
-const HELPER_IDLE: Duration = Duration::from_secs(10 * 60);
 
 /// What a turn was for, in a line: the person's words, without what equipe
 /// put before them (`[equipe: …]`).

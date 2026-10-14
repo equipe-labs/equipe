@@ -390,8 +390,6 @@ pub struct App {
     pub accepted: Vec<(TicketId, String, String)>,
     /// How much members may do on their own, unless one has its own mode.
     pub mode: Mode,
-    /// How many extra members of a role equipe may bring in when its work waits.
-    pub scale: usize,
     /// Guesses at the person's next message, after a member answers them.
     pub suggestions: bool,
     /// The Claude plan's usage windows, as last reported.
@@ -532,7 +530,6 @@ impl App {
             accepted: Vec::new(),
             question: None,
             mode: snapshot.mode,
-            scale: snapshot.scale.unwrap_or(2),
             suggestions: !snapshot.suggestions_off,
             plan: snapshot.plan,
             desktop: snapshot.desktop,
@@ -1865,30 +1862,11 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 });
                 vec![Command::Suggestions { squad: self.squad.clone(), on }]
             }
-            "scale" => match rest.trim() {
-                "" => {
-                    self.flash = Some(format!(
-                        "When several tickets of a role are ready at once, equipe brings in up to {} more of it, and lets them go when idle · /scale <0-6>, /scale off",
-                        self.scale
-                    ));
-                    Vec::new()
-                }
-                word => match if word == "off" { Some(0) } else { word.parse::<usize>().ok().filter(|n| *n <= 6) } {
-                    Some(extra) => {
-                        self.scale = extra;
-                        self.flash = Some(if extra == 0 {
-                            "No extra members: each role's tickets wait for its members".into()
-                        } else {
-                            format!("Up to {extra} more of a role when its work waits")
-                        });
-                        vec![Command::Scale { squad: self.squad.clone(), extra }]
-                    }
-                    None => {
-                        self.flash = Some("A number from 0 to 6: /scale 3 · /scale off".into());
-                        Vec::new()
-                    }
-                },
-            },
+            // Gone: members split big work across subagents, and the person adds teammates.
+            "scale" => {
+                self.flash = Some("equipe no longer adds members on its own: each splits big work across subagents · /add <role> brings in a teammate".into());
+                Vec::new()
+            }
             "compact" | "clear" => {
                 let target = match rest.trim() {
                     "" => self.agents.get(self.selected),
