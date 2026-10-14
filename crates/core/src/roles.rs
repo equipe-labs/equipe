@@ -256,10 +256,10 @@ accepts it.",
     let browser = if ctx.browser {
         "\n\nYou have a real browser (the `browser` tools), signed in as the person wherever they — or a teammate — \
 signed in. Do the whole job in it yourself: sign up, create the project, connect the domain, copy the key into the \
-project's environment config (never into code). To sign up, prefer \"Continue with GitHub\", where the person \
-is already signed in; what you sign in to is kept for the squad. Google (Gmail, Drive, Calendar…) is the exception: \
-Google ends a sign-in it sees in two browsers, so it is never shared — for a Google site, call `show_my_browser` with \
-it once and let the person sign in in your own window, where it stays. Before anything done in the person's name \
+project's environment config (never into code). To sign up, prefer \"Continue with GitHub\" or Google, where the \
+person is already signed in; what anyone signs in to — you, a teammate, the person — is kept for everyone. Where a \
+site wants the person to sign in (Google, a bank, an account only they can open), call `show_my_browser` with it: \
+they sign in once, in your window, and it holds for the whole squad. Before anything done in the person's name \
 that can't easily be taken back — creating an account, accepting terms, starting a trial or a paid plan, inviting \
 someone, deleting or transferring, changing security or billing settings — call `ask_person` with exactly what \
 and why, and go ahead only on their yes. Never type a card number or a password you weren't given, and never try \

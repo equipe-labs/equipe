@@ -296,7 +296,7 @@ async fn main() -> ExitCode {
                 Err(why) => Err(Failure::new(why)),
             }
         }
-        Command::Browser { url, forget } => sign_in(url, forget),
+        Command::Browser { url, forget } => sign_in(url, forget).await,
         Command::Mcp { squad, member, role, home } => serve_mcp(squad, member, role, home).await,
         Command::Home { words, squad } => {
             let home = equipe_providers::credentials::equipe_home();
@@ -421,7 +421,7 @@ async fn serve_mcp(squad: String, member: String, role: String, home: std::path:
 /// `equipe browser`: a browser window for the person to sign in (or sign up)
 /// where the squad should work. What they sign in to is kept as Playwright
 /// storage state; members start their own browsers from it.
-fn sign_in(url: Option<String>, forget: bool) -> CmdResult {
+async fn sign_in(url: Option<String>, forget: bool) -> CmdResult {
     use equipe_core::browser;
     let p = ui::out();
     let home = equipe_providers::credentials::equipe_home();
@@ -429,6 +429,20 @@ fn sign_in(url: Option<String>, forget: bool) -> CmdResult {
     if forget {
         let _ = std::fs::remove_file(&state);
         println!("{}", p.ok_line("Signed out everywhere. Members have no browser until you sign in again."));
+        return Ok(());
+    }
+    // Members share one Chrome, run by the daemon: the person signs in there,
+    // once — Google too — and every member works signed in.
+    if daemon::ensure_running().await.is_ok()
+        && equipe_core::gateway::person_window(&daemon::socket(), &url.clone().unwrap_or_else(start_page)).await.unwrap_or(false)
+    {
+        println!("{}\n", p.kicker("browser"));
+        println!("{}", p.note(2, "A window opened in your squads' Chrome, on this Mac's screen. Sign in — or sign up — wherever"));
+        println!("{}", p.note(2, "they should work: Google, GitHub, Vercel… Once is enough: every member works in that Chrome, in a"));
+        println!("{}", p.note(2, "window of its own, signed in as you. Leave the window open or close it, as you like."));
+        if std::env::var_os("SSH_CONNECTION").is_some() {
+            println!("\n{}", p.note(2, "You're connected over SSH: reach this machine's screen with Screen Sharing."));
+        }
         return Ok(());
     }
     let npx = browser::find_npx().ok_or_else(|| Failure::new("The browser runs on Node.js, which isn't installed.").next("brew install node"))?;

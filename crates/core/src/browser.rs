@@ -45,6 +45,10 @@ fn ensure_state(home: &Path) -> PathBuf {
     state
 }
 
+/// What a member's browser on the person's screen shows of who drives it:
+/// written into both browser scripts.
+const DRIVING: &str = include_str!("../assets/driving.js");
+
 /// The script that hands a member's sign-ins back, with the state file's path
 /// written in. Written next to the state when it changed.
 const KEEP_SIGN_INS: &str = include_str!("../assets/keep-sign-ins.ts");
@@ -55,7 +59,8 @@ fn keeper(home: &Path) -> PathBuf {
     let script = KEEP_SIGN_INS
         .replace("__STATE__", &quoted(state_file(home)))
         .replace("__SLOTS__", &quoted(home.join("browser").join("open")))
-        .replace("__MAX__", &at_once(home).to_string());
+        .replace("__MAX__", &at_once(home).to_string())
+        .replace("__DRIVING__", DRIVING);
     if std::fs::read_to_string(&path).ok().as_deref() != Some(script.as_str()) {
         let _ = std::fs::write(&path, script);
     }
@@ -105,18 +110,35 @@ const IDLE_MS: &str = "900000";
 /// local port, which every turn connects to — so a page, a half-done sign-in,
 /// a tab the person is looking at, all outlive the turn that opened them.
 pub struct Running {
-    child: tokio::process::Child,
+    kind: Kind,
     pub port: u16,
     shown: bool,
     pub last_used: std::time::Instant,
 }
 
+enum Kind {
+    /// A Chrome of its own, with a profile of its own.
+    Own(tokio::process::Child),
+    /// Its lane in the browser host's Chrome.
+    Lane { id: String, host: SharedHost },
+}
+
 /// Closing a member's browser closes everything it started: `npx`, the
-/// server under it, and Chrome under that — they share a process group.
+/// server under it, and Chrome under that — they share a process group. A
+/// lane's windows close; the host's Chrome stays for everyone else.
 impl Drop for Running {
     fn drop(&mut self) {
-        if let Some(pid) = self.child.id() {
-            let _ = std::process::Command::new("kill").args(["-TERM", &format!("-{pid}")]).status();
+        match &self.kind {
+            Kind::Own(child) => {
+                if let Some(pid) = child.id() {
+                    let _ = std::process::Command::new("kill").args(["-TERM", &format!("-{pid}")]).status();
+                }
+            }
+            Kind::Lane { id, host } => {
+                if let Ok(mut host) = host.lock() {
+                    host.send(&json!({ "op": "close", "id": id }));
+                }
+            }
         }
     }
 }
@@ -127,9 +149,141 @@ impl Running {
         self.shown
     }
 
-    pub fn fits(&mut self, shown: bool) -> bool {
-        self.shown == shown && matches!(self.child.try_wait(), Ok(None))
+    /// A lane of the browser host, not a Chrome of its own.
+    pub fn is_lane(&self) -> bool {
+        matches!(self.kind, Kind::Lane { .. })
     }
+
+    /// Whether it can be used showing as asked. A lane goes on screen or out of
+    /// sight as it stands; a browser of its own must start again to change.
+    pub fn fits(&mut self, shown: bool) -> bool {
+        match &mut self.kind {
+            Kind::Own(child) => self.shown == shown && matches!(child.try_wait(), Ok(None)),
+            Kind::Lane { id, host } => {
+                let Ok(mut host) = host.lock() else {
+                    return false;
+                };
+                if !host.alive() {
+                    return false;
+                }
+                if self.shown != shown {
+                    host.send(&json!({ "op": "show", "id": id, "shown": shown }));
+                    self.shown = shown;
+                }
+                true
+            }
+        }
+    }
+}
+
+/// The browser host, shared by every lane in it.
+pub type SharedHost = std::sync::Arc<std::sync::Mutex<Host>>;
+
+/// equipe's one Chrome for every member: one profile the person signs in to
+/// once, Google included, and a lane per member — an MCP endpoint that sees
+/// only that member's windows. See `assets/browser-host.cjs`.
+pub struct Host {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    /// Each lane's port, kept for the host's life: a lane closed and opened
+    /// again is the same endpoint.
+    lanes: std::collections::HashMap<String, u16>,
+}
+
+const HOST: &str = include_str!("../assets/browser-host.cjs");
+
+/// The profile the browser host's Chrome keeps: the person's sign-ins, once.
+pub fn host_profile(home: &Path) -> PathBuf {
+    home.join("browser").join("chrome")
+}
+
+impl Host {
+    /// Start the host: its Chrome comes up with the shared profile, taking up
+    /// the sign-ins members' own browsers kept.
+    pub fn start(npx: &Path, home: &Path) -> std::io::Result<SharedHost> {
+        use std::os::unix::process::CommandExt as _;
+        let state = ensure_state(home);
+        let script = home.join("browser").join("browser-host.cjs");
+        let text = HOST.replace("__DRIVING__", DRIVING);
+        if std::fs::read_to_string(&script).ok().as_deref() != Some(text.as_str()) {
+            std::fs::write(&script, text)?;
+        }
+        let profile = host_profile(home);
+        std::fs::create_dir_all(&profile)?;
+        let log = std::fs::OpenOptions::new().create(true).append(true).open(home.join("browser").join("host.log"))?;
+        let mut child = std::process::Command::new(npx)
+            .args(["-y", "-p", PLAYWRIGHT_PACKAGE, "node"])
+            .arg(&script)
+            .arg(&profile)
+            .arg(&state)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(log)
+            .process_group(0)
+            .spawn()?;
+        let stdin = child.stdin.take().expect("stdin is piped");
+        Ok(std::sync::Arc::new(std::sync::Mutex::new(Host { child, stdin, lanes: Default::default() })))
+    }
+
+    pub fn alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    fn send(&mut self, request: &Value) {
+        use std::io::Write as _;
+        let _ = writeln!(self.stdin, "{request}");
+        let _ = self.stdin.flush();
+    }
+
+    /// Open a window in the host's Chrome for the person, at `url`.
+    pub fn person(&mut self, url: &str) {
+        self.send(&json!({ "op": "person", "url": url }));
+    }
+}
+
+impl Drop for Host {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("kill").args(["-TERM", &format!("-{}", self.child.id())]).status();
+    }
+}
+
+/// A member's lane in the host — its endpoint, on screen when `shown`.
+pub fn lane(host: &SharedHost, squad: &str, member: &str, output: &Path, shown: bool) -> std::io::Result<Running> {
+    let id = format!("{squad}/{member}");
+    let mut locked = host.lock().map_err(|_| std::io::Error::other("the browser host is unusable"))?;
+    let port = match locked.lanes.get(&id) {
+        Some(port) => *port,
+        None => std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?.port(),
+    };
+    locked.lanes.insert(id.clone(), port);
+    locked.send(&json!({
+        "op": "lane", "id": id, "member": member, "color": member_color(member),
+        "port": port, "output": output, "shown": shown,
+    }));
+    drop(locked);
+    Ok(Running { kind: Kind::Lane { id, host: host.clone() }, port, shown, last_used: std::time::Instant::now() })
+}
+
+/// A member's colour, as the console shows it: by role (`frontend-2` is a
+/// frontend), anyone else's by name. The same as `keep-sign-ins.ts`.
+pub fn member_color(name: &str) -> &'static str {
+    const PALETTE: [&str; 8] =
+        ["232, 190, 120", "236, 150, 190", "120, 190, 240", "140, 208, 150", "182, 162, 242", "110, 212, 200", "240, 160, 110", "205, 212, 120"];
+    let role = match name.rsplit_once('-') {
+        Some((role, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => role,
+        _ => name,
+    };
+    let hue = match role {
+        "pm" => 0,
+        "designer" => 1,
+        "frontend" => 2,
+        "backend" => 3,
+        "qa" => 4,
+        "data" => 5,
+        "mobile" => 6,
+        _ => 6 + role.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32)) as usize % 2,
+    };
+    PALETTE[hue]
 }
 
 /// Start a member's browser server on a free local port.
@@ -152,7 +306,7 @@ pub fn launch(npx: &Path, home: &Path, profile: &Path, output: &Path, shown: boo
         .process_group(0)
         .kill_on_drop(true)
         .spawn()?;
-    Ok(Running { child, port, shown, last_used: std::time::Instant::now() })
+    Ok(Running { kind: Kind::Own(child), port, shown, last_used: std::time::Instant::now() })
 }
 
 /// How a turn reaches a member's running browser.

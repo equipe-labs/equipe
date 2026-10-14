@@ -84,6 +84,9 @@ pub struct Config {
     /// Guess the person's next message after a member answers them, with
     /// Claude Code's small model.
     pub suggest: bool,
+    /// Members' browsers as lanes of one shared Chrome (the browser host),
+    /// rather than a Chrome each: the person signs in once, Google included.
+    pub browser_host: bool,
 }
 
 impl Config {
@@ -100,6 +103,7 @@ impl Config {
             npx: crate::browser::find_npx(),
             mac: Box::new(desktop::ThisMac),
             suggest: true,
+            browser_host: cfg!(target_os = "macos"),
         }
     }
 
@@ -127,6 +131,7 @@ enum Request {
     Tool(ToolCall, oneshot::Sender<ToolResult>),
     DesktopGate(Box<desktop_gate::Check>, oneshot::Sender<ToolResult>),
     Busy(oneshot::Sender<equipe_protocol::rpc::Busy>),
+    PersonWindow(String, oneshot::Sender<bool>),
     Desktop(DesktopRequest),
     Shutdown(oneshot::Sender<()>),
 }
@@ -197,6 +202,14 @@ impl Handle {
         rx.await.unwrap_or(false)
     }
 
+    /// A window for the person in the members' shared Chrome, at `url`.
+    /// `false` when members use a Chrome each.
+    pub async fn person_window(&self, url: String) -> bool {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.requests.send(Request::PersonWindow(url, tx));
+        rx.await.unwrap_or(false)
+    }
+
     /// Who is mid-turn, and how many requests wait for the person.
     pub async fn busy(&self) -> equipe_protocol::rpc::Busy {
         let (tx, rx) = oneshot::channel();
@@ -233,6 +246,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         next_approval: 1,
         focus: HashMap::new(),
         browsers: HashMap::new(),
+        host: None,
         watching: HashMap::new(),
         framing: std::collections::HashSet::new(),
         last_url: HashMap::new(),
@@ -457,6 +471,8 @@ struct Runtime {
     focus: HashMap<String, String>,
     /// Members' browsers, kept between turns: by squad and member.
     browsers: HashMap<(String, String), browser::Running>,
+    /// The one Chrome members' browsers are lanes of, once started.
+    host: Option<browser::SharedHost>,
     /// The member each squad's screen watches the browser of, and the
     /// pictures under way, one at a time each.
     watching: HashMap<String, SessionId>,
@@ -491,6 +507,9 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                     let _ = reply.send((rt.snapshot(&squad), rx));
                 }
                 Some(Request::Tool(call, reply)) => rt.tool(call, reply).await,
+                Some(Request::PersonWindow(url, reply)) => {
+                    let _ = reply.send(rt.person_window(&url));
+                }
                 Some(Request::DesktopGate(check, reply)) => rt.gate_desktop(*check, reply),
                 Some(Request::Busy(reply)) => {
                     let mut working: Vec<String> = rt
@@ -2587,7 +2606,15 @@ there, end your turn, and carry on when they say they're done."
         let profile = browser::profile(&self.config.home, squad, name);
         let key = (squad.to_owned(), name.to_owned());
         if !self.browsers.get_mut(&key).is_some_and(|b| b.fits(shown)) {
-            let running = browser::launch(&npx, &self.config.home, &profile, &output, shown).ok()?;
+            // A lane of the shared Chrome; a Chrome of its own if that can't be had.
+            let running = match self.browser_host(&npx) {
+                Some(host) => browser::lane(&host, squad, name, &output, shown).ok(),
+                None => None,
+            };
+            let running = match running {
+                Some(running) => running,
+                None => browser::launch(&npx, &self.config.home, &profile, &output, shown).ok()?,
+            };
             let (client, port) = (self.client.clone(), running.port);
             let page = self.show_url.remove(&key).or_else(|| self.last_url.get(&key).cloned()).filter(|_| shown);
             tokio::spawn(async move {
@@ -2603,6 +2630,33 @@ there, end your turn, and carry on when they say they're done."
             b.last_used = std::time::Instant::now();
             b.port
         })
+    }
+
+    /// The browser host, started — or started again, after its Chrome went
+    /// away — when it is wanted. `None` when members use a Chrome each.
+    fn browser_host(&mut self, npx: &Path) -> Option<browser::SharedHost> {
+        if !self.config.browser_host {
+            return None;
+        }
+        let alive = self.host.as_ref().is_some_and(|h| h.lock().is_ok_and(|mut h| h.alive()));
+        if !alive {
+            // Its lanes went with it.
+            self.browsers.retain(|_, b| !b.is_lane());
+            self.host = browser::Host::start(npx, &self.config.home).ok();
+        }
+        self.host.clone()
+    }
+
+    /// A window in the shared Chrome for the person — to sign in, once, where
+    /// every member works. `false` when members use a Chrome each.
+    fn person_window(&mut self, url: &str) -> bool {
+        let Some(npx) = self.config.npx.clone() else {
+            return false;
+        };
+        let Some(host) = self.browser_host(&npx) else {
+            return false;
+        };
+        host.lock().map(|mut h| h.person(url)).is_ok()
     }
 
     /// A picture of each watched member's browser, one under way at a time.

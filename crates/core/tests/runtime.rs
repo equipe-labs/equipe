@@ -99,6 +99,7 @@ fn config(claude: &Path, home: &Path, persist: bool) -> Config {
         npx: None,
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
+        browser_host: false,
     }
 }
 

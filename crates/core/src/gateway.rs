@@ -138,6 +138,10 @@ async fn serve_client(stream: UnixStream, core: Handle, version: String, stop: U
             (Some(rpc::BUSY), Some(id)) => {
                 let _ = out_tx.send(Message::response(id, core.busy().await));
             }
+            (Some(rpc::BROWSER_WINDOW), Some(id)) => {
+                let url: String = message.params_as().unwrap_or_default();
+                let _ = out_tx.send(Message::response(id, core.person_window(url).await));
+            }
             (Some(rpc::SHUTDOWN), Some(id)) => {
                 let (ack_tx, ack_rx) = oneshot::channel();
                 let _ = stop.send(ack_tx);
@@ -297,6 +301,26 @@ pub async fn call_tool(socket: &Path, call: &ToolCall) -> io::Result<ToolResult>
         return message.result_as::<ToolResult>().ok_or_else(|| io::Error::other("the daemon answered something unexpected"));
     }
     Err(io::Error::new(io::ErrorKind::UnexpectedEof, "the daemon closed the connection"))
+}
+
+/// Open a window for the person in the members' shared Chrome, at `url`.
+/// `Ok(false)` when no daemon answers or members use a Chrome each.
+pub async fn person_window(socket: &Path, url: &str) -> io::Result<bool> {
+    let Ok(stream) = UnixStream::connect(socket).await else {
+        return Ok(false);
+    };
+    let (reader, mut writer) = stream.into_split();
+    write_line(&mut writer, &Message::request(1, rpc::BROWSER_WINDOW, url)).await?;
+    let mut lines = BufReader::new(reader).lines();
+    while let Some(line) = lines.next_line().await? {
+        let Ok(message) = Message::from_line(&line) else {
+            continue;
+        };
+        if message.id == Some(1) {
+            return Ok(message.result_as::<bool>().unwrap_or(false));
+        }
+    }
+    Ok(false)
 }
 
 /// Whether a daemon answers at `socket`.

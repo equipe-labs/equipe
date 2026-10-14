@@ -20,6 +20,9 @@ pub const SHUTDOWN: &str = "shutdown";
 pub const TOOL: &str = "tool";
 /// Who is busy: members mid-turn and requests waiting for the person.
 pub const BUSY: &str = "busy";
+/// A window for the person in the members' shared Chrome, at a page (`equipe
+/// browser`): `true` when there is such a Chrome.
+pub const BROWSER_WINDOW: &str = "browser_window";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
