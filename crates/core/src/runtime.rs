@@ -421,6 +421,7 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
             _ = minute.tick() => {
                 rt.close_idle_browsers();
                 rt.let_helpers_go().await;
+                rt.tidy_check();
             }
         }
     }
@@ -2823,6 +2824,25 @@ check what is already done in your worktree first."
 
     /// Close browsers whose member is gone, or hasn't had a turn in half an
     /// hour; the next turn opens a fresh one, still signed in.
+    /// Once a day, a squad whose unstarted work has sat for a week has its PM
+    /// told — to propose, next time it talks with the person, what to close,
+    /// merge or keep. Only the person drops work.
+    fn tidy_check(&mut self) {
+        let squads: Vec<String> = self.journals.keys().cloned().collect();
+        for squad in squads {
+            let Some(journal) = self.journal(&squad) else { continue };
+            if now_secs() as i64 - journal.tidied_at() < TIDY_EVERY {
+                continue;
+            }
+            let _ = journal.set_tidied_at();
+            let stale = journal.stale_tickets(TIDY_AFTER).unwrap_or_default();
+            if let Some(line) = tidy_line(&stale) {
+                let shown = format!("── {} tickets haven't moved in a week: the PM will suggest tidying them ──", stale.len());
+                self.brief_pm(&squad, line, Some(shown));
+            }
+        }
+    }
+
     fn close_idle_browsers(&mut self) {
         let working: Vec<(String, String)> = self
             .sessions
@@ -3322,6 +3342,26 @@ fn claude_failure(err: equipe_providers::Error) -> (String, Option<&'static str>
     (message, next)
 }
 
+/// How often a squad's stale work is looked at, and how long work sits
+/// before it counts as stale.
+const TIDY_EVERY: i64 = 24 * 60 * 60;
+const TIDY_AFTER: i64 = 7 * 24 * 60 * 60;
+
+/// What the PM is told about work that has sat: each ticket and for how long,
+/// and what to do about it.
+fn tidy_line(stale: &[(TicketId, String, i64)]) -> Option<String> {
+    if stale.is_empty() {
+        return None;
+    }
+    let listed: Vec<String> = stale.iter().take(20).map(|(id, title, age)| format!("T-{id} {title} ({} days)", age / 86400)).collect();
+    let more = if stale.len() > 20 { format!(" and {} more", stale.len() - 20) } else { String::new() };
+    Some(format!(
+        "Tidy-up: these haven't moved in a week or more — {}{more}. Next time you talk with the person, propose what to do \
+with each: close it, merge it into another, or keep it (and why). Don't cancel them on your own; the person decides.",
+        listed.join("; ")
+    ))
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3332,6 +3372,14 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pm_hears_about_stale_tickets_and_proposes_rather_than_cancels() {
+        assert_eq!(tidy_line(&[]), None);
+        let line = tidy_line(&[(12, "Dark mode".into(), 9 * 86400), (15, "Old CSV export".into(), 21 * 86400)]).unwrap();
+        assert!(line.contains("T-12 Dark mode (9 days)") && line.contains("T-15 Old CSV export (21 days)"), "{line}");
+        assert!(line.contains("propose") && line.contains("Don't cancel"), "{line}");
+    }
 
     #[test]
     fn an_expired_claude_sign_in_says_where_to_sign_in_again() {

@@ -22,7 +22,8 @@ pub struct Styles {
 /// `text` as lines no wider than `width`.
 pub fn lines(text: &str, width: usize, styles: &Styles) -> Vec<Line<'static>> {
     let mut r = Renderer::new(width.max(10), *styles);
-    for event in Parser::new_ext(text, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH) {
+    let text = crate::ui::cell_safe(text);
+    for event in Parser::new_ext(&text, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH) {
         r.event(event);
     }
     r.flush();

@@ -1036,6 +1036,7 @@ fn render_hairline(frame: &mut Frame, area: Rect, held: bool, theme: Theme) {
 
 /// Wrap `text` so its first row follows `lead` and later rows are indented.
 fn wrapped(lead: Vec<Span<'static>>, text: &str, style: Style, indent: usize, width: usize) -> Vec<Line<'static>> {
+    let text = &*ui::cell_safe(text);
     let lead_width: usize = lead.iter().map(|s| s.width()).sum();
     let mut out = Vec::new();
     let mut lead = Some(lead);
@@ -1606,7 +1607,11 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
     let lanes = app.lanes();
     // As a tree (`g`): one list, each ticket under what it waits for.
     let depth: HashMap<TicketId, usize> = if app.board_graph { app.dependency_tree().into_iter().collect() } else { HashMap::new() };
+    let query = app.board_query();
     let heading = |t: &equipe_core::protocol::Ticket| -> String {
+        if let Some(q) = &query {
+            return format!("FOUND for “{q}” · esc clears");
+        }
         if app.board_graph {
             return "BY WHAT WAITS FOR WHAT · g for the board by state".into();
         }
@@ -1624,16 +1629,33 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
     };
     let mut rows: Vec<(Line<'static>, Option<u32>)> = Vec::new();
     let mut current: Option<String> = None;
+    // Each section's whole size, so a folded one says what it left out.
+    let mut totals: HashMap<String, usize> = HashMap::new();
+    if query.is_none() && !app.board_graph {
+        for t in app.tickets.iter().filter(|t| app.in_focus(t)) {
+            *totals.entry(heading(t)).or_default() += 1;
+        }
+    }
+    let shown = |label: &str| order.iter().filter_map(|id| app.tickets.iter().find(|t| t.id == *id)).filter(|t| heading(t) == label).count();
+    let folded = |label: &str| -> Option<Line<'static>> {
+        let more = totals.get(label).copied().unwrap_or(0).saturating_sub(shown(label));
+        // Done work stays at its latest few; finding reaches the rest.
+        let how = if label == "DONE" { "f finds them" } else { "e shows all · f finds" };
+        (more > 0).then(|| Line::from(Span::styled(format!("    … {more} more · {how}"), theme.dim())))
+    };
     for id in &order {
         let Some(t) = app.tickets.iter().find(|t| t.id == *id) else {
             continue;
         };
         let label = heading(t);
         if current.as_ref() != Some(&label) {
+            if let Some(line) = current.as_deref().and_then(folded) {
+                rows.push((line, None));
+            }
             if current.is_some() {
                 rows.push((Line::raw(""), None));
             }
-            let count = order.iter().filter_map(|id| app.tickets.iter().find(|t| t.id == *id)).filter(|t| heading(t) == label).count();
+            let count = totals.get(&label).copied().unwrap_or_else(|| shown(&label));
             let style = if for_you(t.status) {
                 theme.accent().add_modifier(Modifier::BOLD)
             } else if lanes && !t.status.is_closed() {
@@ -1694,6 +1716,9 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
         ]);
         rows.push((Line::from(spans), Some(t.id)));
     }
+    if let Some(line) = current.as_deref().and_then(folded) {
+        rows.push((line, None));
+    }
     rows
 }
 
@@ -1719,7 +1744,7 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
             width,
         );
     };
-    let mut lines = wrapped(vec![Span::styled(format!("T-{}  ", t.id), theme.bold())], &t.title, theme.bold(), 0, width);
+    let mut lines = wrapped(vec![Span::styled(format!("T-{}  ", t.id), theme.bold())], &ui::cell_safe(&t.title), theme.bold(), 0, width);
     let mut facts = vec![t.kind.label().to_owned()];
     if let Some(who) = t.assignee.as_ref().or(t.owner.as_ref()) {
         facts.push(who.clone());
@@ -1792,6 +1817,7 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     }
     actions.push(("↑↓", "tickets".into()));
     actions.push(("g", if app.board_graph { "by state".into() } else { "what waits for what".into() }));
+    actions.push(("f", "find".into()));
     let mut keys = Vec::new();
     for (i, (k, what)) in actions.into_iter().enumerate() {
         if i > 0 {
@@ -2989,6 +3015,25 @@ mod tests {
         let shot = screen(&app, 120, 40);
         assert!(shot.contains("BY WHAT WAITS FOR WHAT"), "{shot}");
         assert!(shot.contains("└ Chat"), "{shot}");
+    }
+
+    #[test]
+    fn a_board_of_hundreds_folds_what_waits_and_finds_the_rest() {
+        let (mut app, _) = working();
+        for id in 1..=40 {
+            app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(id, TicketStatus::Todo, &format!("Task {id}")) });
+        }
+        for id in 41..=500 {
+            app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(id, TicketStatus::Done, &format!("Old {id}")) });
+        }
+        app.pane = Pane::Board;
+        app.board_split = Some(40);
+        let shot = screen(&app, 120, 60);
+        assert!(shot.contains("TO DO  40") && shot.contains("… 30 more · e shows all · f finds"), "{shot}");
+        assert!(shot.contains("DONE  460") && shot.contains("… 455 more · f finds them"), "{shot}");
+        app.board_query = Some("old 123".into());
+        let shot = screen(&app, 120, 60);
+        assert!(shot.contains("FOUND") && shot.contains("Old 123"), "{shot}");
     }
 
     #[test]

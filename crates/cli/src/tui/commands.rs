@@ -9,7 +9,7 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-pub const COMMANDS: [Spec; 24] = [
+pub const COMMANDS: [Spec; 26] = [
     Spec { name: "usage", args: "", about: "Plan limits, each member's context and tokens" },
     Spec { name: "scale", args: "[0-6|off]", about: "Extra members a role may get when its work waits" },
     Spec { name: "compact", args: "[member]", about: "Start its next conversation afresh, from a summary of this one" },
@@ -25,6 +25,8 @@ pub const COMMANDS: [Spec; 24] = [
     Spec { name: "resume", args: "T-n [what you did]", about: "You did what a waiting ticket needed: it goes back to its member" },
     Spec { name: "cancel", args: "T-n", about: "Drop a ticket" },
     Spec { name: "board", args: "", about: "The board (Ctrl-B)" },
+    Spec { name: "find", args: "<words>", about: "Find tickets on the board, done ones too (f on the board) — Esc clears" },
+    Spec { name: "tidy", args: "", about: "Ask the PM to look the board over and propose what to close, merge or keep" },
     Spec { name: "add", args: "<role…> | custom <name> [--edits]", about: "Bring in teammates" },
     Spec { name: "close", args: "", about: "Remove the selected member" },
     Spec { name: "mode", args: "[member] read-only|ask|auto|full", about: "How much members do on their own" },

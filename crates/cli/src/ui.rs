@@ -70,8 +70,34 @@ fn visible_len(text: &str) -> usize {
 
 /// `text` cut to `width` columns, ending in `…` when cut — for lines that must
 /// stay on one row, like menu items a menu redraws in place.
+/// Text with its enclosed numbers and letters (①, ⑵, ❸, Ⓐ) spelled out —
+/// `(1)`, `(A)`: fonts draw them wider than the one cell a terminal gives
+/// them, over the character after.
+pub fn cell_safe(text: &str) -> std::borrow::Cow<'_, str> {
+    let enclosed = |c: char| -> Option<String> {
+        let n = c as u32;
+        Some(match n {
+            0x2460..=0x2473 => format!("({})", n - 0x2460 + 1),
+            0x2474..=0x2487 => format!("({})", n - 0x2474 + 1),
+            0x2488..=0x249B => format!("{}.", n - 0x2488 + 1),
+            0x24B6..=0x24CF => format!("({})", char::from_u32(u32::from(b'A') + n - 0x24B6)?),
+            0x24D0..=0x24E9 => format!("({})", char::from_u32(u32::from(b'a') + n - 0x24D0)?),
+            0x24EA => "(0)".to_owned(),
+            0x2776..=0x277F => format!("({})", n - 0x2776 + 1),
+            0x2780..=0x2789 => format!("({})", n - 0x2780 + 1),
+            0x278A..=0x2793 => format!("({})", n - 0x278A + 1),
+            _ => return None,
+        })
+    };
+    if !text.chars().any(|c| enclosed(c).is_some()) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    std::borrow::Cow::Owned(text.chars().map(|c| enclosed(c).unwrap_or_else(|| c.to_string())).collect())
+}
+
 pub fn fit(text: &str, width: usize) -> String {
     use unicode_width::UnicodeWidthChar as _;
+    let text = &*cell_safe(text);
     if visible_len(text) <= width {
         return text.to_owned();
     }
@@ -264,6 +290,14 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn enclosed_numbers_are_spelled_out_so_they_keep_to_their_cell() {
+        assert_eq!(cell_safe("Android MVP ①: QR"), "Android MVP (1): QR");
+        assert_eq!(cell_safe("❷ and ⓑ"), "(2) and (b)");
+        assert!(matches!(cell_safe("plain"), std::borrow::Cow::Borrowed(_)));
+        assert_eq!(fit("MVP ② 스쿼드", 40), "MVP (2) 스쿼드");
+    }
 
     #[test]
     fn fit_cuts_to_the_width_counting_wide_characters() {

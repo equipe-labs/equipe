@@ -490,6 +490,26 @@ impl Journal {
     }
 
     /// Every ticket, oldest first.
+    /// Work not yet started — to do, or proposed — that hasn't moved in
+    /// `older_than` seconds: id, title, and how long it has sat.
+    pub fn stale_tickets(&self, older_than: i64) -> Result<Vec<(TicketId, String, i64)>> {
+        let now = now();
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, updated_at FROM tickets WHERE status IN ('todo', 'proposed') AND updated_at < ?1 ORDER BY updated_at",
+        )?;
+        let rows = stmt.query_map([now - older_than], |r| Ok((r.get::<_, TicketId>(0)?, r.get::<_, String>(1)?, now - r.get::<_, i64>(2)?)))?;
+        rows.collect()
+    }
+
+    /// When the PM was last asked to look stale work over.
+    pub fn tidied_at(&self) -> i64 {
+        self.meta("tidied_at").and_then(|v| v.parse().ok()).unwrap_or(0)
+    }
+
+    pub fn set_tidied_at(&self) -> Result<()> {
+        self.set_meta("tidied_at", &now().to_string())
+    }
+
     pub fn tickets(&self) -> Result<Vec<Ticket>> {
         self.query_tickets("", [])
     }
@@ -929,6 +949,20 @@ mod tests {
         j.add_project(Path::new("/code/app")).unwrap();
         j.add_project(Path::new("/code/site")).unwrap();
         assert_eq!(j.projects().unwrap(), [PathBuf::from("/code/site"), PathBuf::from("/code/app")]);
+    }
+
+    #[test]
+    fn tickets_that_have_not_moved_in_a_while_are_found() {
+        let home = temp_home();
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        let old = j.create_ticket(&ticket("Old idea")).unwrap();
+        let fresh = j.create_ticket(&ticket("New idea")).unwrap();
+        let _ = fresh;
+        j.conn.execute("UPDATE tickets SET updated_at = updated_at - 9 * 86400 WHERE id = ?1", [old]).unwrap();
+        let stale = j.stale_tickets(7 * 86400).unwrap();
+        assert_eq!(stale.len(), 1);
+        assert_eq!((stale[0].0, stale[0].1.as_str(), stale[0].2 / 86400), (old, "Old idea", 9));
+        std::fs::remove_dir_all(&home).unwrap();
     }
 
     fn ticket(title: &str) -> Ticket {

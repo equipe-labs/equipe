@@ -330,6 +330,10 @@ pub struct App {
     pub board_scroll: usize,
     /// The board as a tree of what waits for what (`g`), rather than by state.
     pub board_graph: bool,
+    /// Words the board is narrowed to (`/find`, f), kept after Enter.
+    pub board_query: Option<String>,
+    /// Long sections shown whole (e), not folded past a screenful.
+    pub board_expanded: bool,
     /// How many rows the board's list takes, as the person dragged it.
     pub board_split: Option<u16>,
     /// The line between the board's list and its ticket, as last drawn.
@@ -433,6 +437,10 @@ pub struct TextView {
 /// A place in the laid-out conversation: line, and column on it.
 pub type Spot = (usize, u16);
 
+/// How many tickets of work not yet started a board section shows before it
+/// folds the rest into one line.
+pub const SECTION_ROWS: usize = 10;
+
 /// The line between the board's list and the ticket below it, as last
 /// drawn: the rows it takes, and the list's first row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -466,6 +474,8 @@ impl App {
             pane: Pane::Conversation,
             board_scroll: 0,
             board_graph: false,
+            board_query: None,
+            board_expanded: false,
             board_split: None,
             board_rule: None,
             dragging_board: false,
@@ -688,10 +698,35 @@ impl App {
         out
     }
 
+    /// The words the board is narrowed to: being typed (`/find …`), or kept.
+    pub fn board_query(&self) -> Option<String> {
+        let typed = self.composer.text().strip_prefix("/find ").filter(|_| self.pane == Pane::Board).map(str::trim);
+        typed.map(str::to_owned).or_else(|| self.board_query.clone()).map(|q| q.to_lowercase()).filter(|q| !q.is_empty())
+    }
+
     pub fn board_order(&self) -> Vec<TicketId> {
+        if let Some(query) = self.board_query() {
+            // What matches, open work first, then done work, the latest first.
+            let hit = |t: &&Ticket| {
+                self.in_focus(t) && (t.title.to_lowercase().contains(&query) || t.body.to_lowercase().contains(&query) || format!("t-{}", t.id) == query)
+            };
+            let mut open: Vec<TicketId> = self.tickets.iter().filter(hit).filter(|t| !t.status.is_closed()).map(|t| t.id).collect();
+            open.sort_unstable();
+            let mut closed: Vec<TicketId> = self.tickets.iter().filter(hit).filter(|t| t.status.is_closed()).map(|t| t.id).collect();
+            closed.sort_unstable_by(|a, b| b.cmp(a));
+            open.extend(closed);
+            return open;
+        }
         if self.board_graph {
             return self.dependency_tree().into_iter().map(|(id, _)| id).collect();
         }
+        // Work not yet started folds past a screenful, unless shown whole (e).
+        let fold = |mut ids: Vec<TicketId>, status: TicketStatus| -> Vec<TicketId> {
+            if !self.board_expanded && matches!(status, TicketStatus::Todo | TicketStatus::Proposed) {
+                ids.truncate(SECTION_ROWS);
+            }
+            ids
+        };
         let group = |statuses: &[TicketStatus]| -> Vec<TicketId> {
             self.tickets.iter().filter(|t| statuses.contains(&t.status) && self.in_focus(t)).map(|t| t.id).collect()
         };
@@ -702,14 +737,16 @@ impl App {
             // A lane for each project, then the squad home's, its work in the same order.
             for lane in self.projects.iter().map(Some).chain([None]) {
                 for status in open {
-                    order.extend(group(&[status]).into_iter().filter(|id| {
-                        self.tickets.iter().find(|t| t.id == *id).and_then(|t| self.ticket_project(t)).as_ref() == lane
-                    }));
+                    let in_lane: Vec<TicketId> = group(&[status])
+                        .into_iter()
+                        .filter(|id| self.tickets.iter().find(|t| t.id == *id).and_then(|t| self.ticket_project(t)).as_ref() == lane)
+                        .collect();
+                    order.extend(fold(in_lane, status));
                 }
             }
         } else {
             for status in open {
-                order.extend(group(&[status]));
+                order.extend(fold(group(&[status]), status));
             }
         }
         let mut done = group(&[TicketStatus::Done, TicketStatus::Cancelled]);
@@ -829,6 +866,13 @@ impl App {
     fn on_board_key(&mut self, code: KeyCode) -> Option<Vec<Command>> {
         let ticket = self.selected_ticket().cloned();
         match code {
+            // Find: the board narrows as the words are typed.
+            KeyCode::Char('f') => {
+                self.composer.clear();
+                self.composer.insert_str("/find ");
+            }
+            // Long sections whole, or folded again.
+            KeyCode::Char('e') => self.board_expanded = !self.board_expanded,
             // What waits for what, as a tree; again for the board by state.
             KeyCode::Char('g') => {
                 self.board_graph = !self.board_graph;
@@ -1355,6 +1399,17 @@ impl App {
             self.composer.insert_str(&hint);
             return Vec::new();
         }
+        // Esc on the board lets a search go before it leaves the board.
+        if key.code == KeyCode::Esc
+            && self.pane == Pane::Board
+            && (self.board_query.is_some() || self.composer.text().starts_with("/find"))
+        {
+            self.board_query = None;
+            if self.composer.text().starts_with("/find") {
+                self.composer.clear();
+            }
+            return Vec::new();
+        }
         // A request for permission answers to one key — while nothing is being
         // typed, and not on the board, where the same keys act on tickets: an
         // "a" meant to accept a ticket must never allow a command for good.
@@ -1583,6 +1638,28 @@ impl App {
                 self.toggle_board();
                 Vec::new()
             }
+            "find" => {
+                let words = rest.trim();
+                self.board_query = (!words.is_empty()).then(|| words.to_owned());
+                self.pane = Pane::Board;
+                self.board_selected = None;
+                if words.is_empty() {
+                    self.flash = Some("/find <words> — titles, notes and T-numbers, done work too".into());
+                }
+                Vec::new()
+            }
+            "tidy" => match self.agents.iter().find(|a| a.is_pm()) {
+                Some(pm) => vec![Command::Submit {
+                    session: pm.id,
+                    text: "Look the board over for tickets that have gone stale, overlap or no longer fit, and propose \
+what to do with each — close, merge into another, or keep, and why. Don't cancel anything yourself; I'll decide."
+                        .into(),
+                }],
+                None => {
+                    self.flash = Some("No PM on the squad to ask".into());
+                    Vec::new()
+                }
+            },
             "accept" | "merge" | "reopen" | "resume" | "cancel" => self.decide(name, rest),
             "mode" => self.set_mode(rest),
             "close" => match self.agents.get_mut(self.selected) {
@@ -3138,6 +3215,49 @@ mod tests {
         app.on_mouse(MouseEventKind::Up(crossterm::event::MouseButton::Left), Instant::now());
         assert!(!app.is_dragging());
         assert_eq!(app.board_split, Some(12));
+    }
+
+    #[test]
+    fn find_narrows_the_board_as_it_is_typed_and_reaches_done_work() {
+        let (mut app, _, _) = team();
+        for (id, title, status) in [(1, "Hero section", TicketStatus::Done), (2, "Pricing table", TicketStatus::Todo), (3, "Hero copy", TicketStatus::Todo)] {
+            let mut t = ticket(id, status);
+            t.title = title.into();
+            app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t });
+        }
+        app.pane = Pane::Board;
+        // f on the board starts a search; it narrows as it is typed.
+        app.on_key(KeyEvent::from(KeyCode::Char('f')), Instant::now());
+        assert_eq!(app.composer.text(), "/find ");
+        type_text(&mut app, "hero");
+        assert_eq!(app.board_order(), vec![3, 1]);
+        // Enter keeps it; Esc on the board lets it go.
+        assert!(enter(&mut app).is_empty());
+        assert_eq!(app.pane, Pane::Board);
+        assert_eq!(app.board_order(), vec![3, 1]);
+        app.on_key(KeyEvent::from(KeyCode::Esc), Instant::now());
+        assert_eq!(app.pane, Pane::Board);
+        assert_eq!(app.board_order(), vec![2, 3, 1]);
+    }
+
+    #[test]
+    fn a_long_section_folds_and_e_shows_it_whole() {
+        let (mut app, _, _) = team();
+        for id in 1..=30 {
+            app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(id, TicketStatus::Todo) });
+        }
+        app.pane = Pane::Board;
+        assert_eq!(app.board_order().len(), SECTION_ROWS);
+        app.on_key(KeyEvent::from(KeyCode::Char('e')), Instant::now());
+        assert_eq!(app.board_order().len(), 30);
+    }
+
+    #[test]
+    fn tidy_asks_the_pm_to_look_the_board_over() {
+        let (mut app, pm, _) = team();
+        type_text(&mut app, "/tidy");
+        let sent = enter(&mut app);
+        assert!(matches!(&sent[..], [Command::Submit { session, text }] if *session == pm && text.contains("stale") && text.contains("Don't cancel")), "{sent:?}");
     }
 
     #[test]
