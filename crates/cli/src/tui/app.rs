@@ -52,6 +52,8 @@ pub enum Hit {
     Projects,
     /// A member's row in the squad: talk to it.
     Member(usize),
+    /// A completion in the list above the composer: take it.
+    Choice(usize),
     /// A project's chip in the header — or "all" (`None`): filters to it.
     Project(Option<usize>),
     Pane(Pane),
@@ -326,6 +328,13 @@ pub struct App {
     pub pane: Pane,
     /// Lines the board is scrolled up from its top.
     pub board_scroll: usize,
+    /// The board as a tree of what waits for what (`g`), rather than by state.
+    pub board_graph: bool,
+    /// How many rows the board's list takes, as the person dragged it.
+    pub board_split: Option<u16>,
+    /// The line between the board's list and its ticket, as last drawn.
+    board_rule: Option<BoardRule>,
+    dragging_board: bool,
     pub composer: Composer,
     /// A one-line message in the status bar, cleared by the next key.
     pub flash: Option<String>,
@@ -424,6 +433,14 @@ pub struct TextView {
 /// A place in the laid-out conversation: line, and column on it.
 pub type Spot = (usize, u16);
 
+/// The line between the board's list and the ticket below it, as last
+/// drawn: the rows it takes, and the list's first row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoardRule {
+    pub rows: (u16, u16),
+    pub list_top: u16,
+}
+
 /// The hairline between the squad and the conversation, as last drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Divider {
@@ -448,6 +465,10 @@ impl App {
             selected: 0,
             pane: Pane::Conversation,
             board_scroll: 0,
+            board_graph: false,
+            board_split: None,
+            board_rule: None,
+            dragging_board: false,
             composer: Composer::default(),
             flash: None,
             should_quit: false,
@@ -592,6 +613,17 @@ impl App {
         }
     }
 
+    /// Take completion `at` (Enter, or a click): its text into the composer,
+    /// and run when it is whole.
+    fn take_choice(&mut self, at: usize) -> Vec<Command> {
+        let Some(choice) = self.choices().into_iter().nth(at) else {
+            return Vec::new();
+        };
+        self.composer.clear();
+        self.composer.insert_str(&choice.text);
+        if choice.text.ends_with(' ') { Vec::new() } else { self.submit() }
+    }
+
     /// Ctrl-P, or "+N" in the header: the project picker, with the next
     /// project picked — so Ctrl-P, Enter walks them, and typing finds one.
     fn pick_project(&mut self) {
@@ -629,7 +661,37 @@ impl App {
         self.focus.is_none() && self.projects.len() + usize::from(home_work) > 1
     }
 
+    /// Open work as a tree of what waits for what: each ticket with how deep
+    /// it is. A ticket waiting on nothing still open is a root; one waiting on
+    /// several shows under the first.
+    pub fn dependency_tree(&self) -> Vec<(TicketId, usize)> {
+        let open: Vec<&Ticket> = self.tickets.iter().filter(|t| !t.status.is_closed() && self.in_focus(t)).collect();
+        let is_open = |id: TicketId| open.iter().any(|t| t.id == id);
+        let mut out: Vec<(TicketId, usize)> = Vec::new();
+        let mut stack: Vec<(TicketId, usize)> = open.iter().filter(|t| !t.depends_on.iter().any(|d| is_open(*d))).map(|t| (t.id, 0)).collect();
+        stack.sort_by_key(|(id, _)| std::cmp::Reverse(*id));
+        while let Some((id, depth)) = stack.pop() {
+            if out.iter().any(|(seen, _)| *seen == id) {
+                continue;
+            }
+            out.push((id, depth));
+            let mut next: Vec<TicketId> = open.iter().filter(|t| t.depends_on.contains(&id)).map(|t| t.id).collect();
+            next.sort_unstable_by(|a, b| b.cmp(a));
+            stack.extend(next.into_iter().map(|c| (c, depth + 1)));
+        }
+        // Anything left in a loop of waiting: listed, not lost.
+        for t in &open {
+            if !out.iter().any(|(id, _)| *id == t.id) {
+                out.push((t.id, 0));
+            }
+        }
+        out
+    }
+
     pub fn board_order(&self) -> Vec<TicketId> {
+        if self.board_graph {
+            return self.dependency_tree().into_iter().map(|(id, _)| id).collect();
+        }
         let group = |statuses: &[TicketStatus]| -> Vec<TicketId> {
             self.tickets.iter().filter(|t| statuses.contains(&t.status) && self.in_focus(t)).map(|t| t.id).collect()
         };
@@ -699,6 +761,14 @@ impl App {
     /// A click: on a tab, it switches panes; on a ticket, it picks it; on the
     /// squad's edge, it takes hold of it to drag.
     pub fn on_click(&mut self, column: u16, row: u16) {
+        // The line under the board's list: take hold of it to resize the list.
+        if self.pane == Pane::Board
+            && let Some(rule) = self.board_rule
+            && (rule.rows.0..=rule.rows.1).contains(&row)
+        {
+            self.dragging_board = true;
+            return;
+        }
         // A column either side of the hairline, so it isn't a pixel hunt.
         if let Some(d) = self.divider
             && (d.top..d.bottom).contains(&row)
@@ -727,6 +797,10 @@ impl App {
                 self.usage_open = false;
             }
             Some(Hit::Member(_)) => {}
+            Some(Hit::Choice(at)) => {
+                let commands = self.take_choice(at);
+                self.outbox.extend(commands);
+            }
             Some(Hit::Squads) => {
                 self.pane = Pane::Conversation;
                 self.help_open = false;
@@ -755,6 +829,11 @@ impl App {
     fn on_board_key(&mut self, code: KeyCode) -> Option<Vec<Command>> {
         let ticket = self.selected_ticket().cloned();
         match code {
+            // What waits for what, as a tree; again for the board by state.
+            KeyCode::Char('g') => {
+                self.board_graph = !self.board_graph;
+                self.board_scroll = 0;
+            }
             KeyCode::Up | KeyCode::Char('k') => self.move_ticket(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_ticket(1),
             KeyCode::Char('a') => {
@@ -1018,6 +1097,7 @@ impl App {
     pub fn on_mouse(&mut self, kind: MouseEventKind, now: Instant) {
         if let MouseEventKind::Up(_) = kind {
             self.dragging = false;
+            self.dragging_board = false;
             // Letting go after dragging over text copies it.
             if self.press.take().is_some() && self.selection.is_some_and(|(a, b)| a != b) {
                 self.copy_selection = true;
@@ -1044,12 +1124,20 @@ impl App {
     }
 
     pub fn is_dragging(&self) -> bool {
-        self.dragging
+        self.dragging || self.dragging_board
+    }
+
+    pub fn set_board_rule(&mut self, rule: Option<BoardRule>) {
+        self.board_rule = rule;
     }
 
     /// The squad's edge follows the mouse while held; the view keeps it within
     /// bounds.
     pub fn on_drag(&mut self, column: u16, row: u16) {
+        if let (true, Some(rule)) = (self.dragging_board, self.board_rule) {
+            self.board_split = Some(row.saturating_sub(rule.list_top).max(3));
+            return;
+        }
         if let (true, Some(d)) = (self.dragging, self.divider) {
             self.squad_width = Some(column.saturating_sub(d.body_x).saturating_sub(1));
             return;
@@ -1250,15 +1338,13 @@ impl App {
                 // So does Enter after a `/`: a folder typed whole is the folder
                 // meant, not its first subfolder.
                 KeyCode::Enter if self.composer.text().ends_with([' ', '/']) && !self.picked => {}
-                KeyCode::Tab | KeyCode::Enter if !shift => {
+                KeyCode::Tab if !shift => {
                     let choice = &choices[picked];
                     self.composer.clear();
                     self.composer.insert_str(&choice.text);
-                    if key.code == KeyCode::Enter && !choice.text.ends_with(' ') {
-                        return self.submit();
-                    }
                     return Vec::new();
                 }
+                KeyCode::Enter if !shift => return self.take_choice(picked),
                 _ => {}
             }
         }
@@ -3015,6 +3101,52 @@ mod tests {
         assert!(!app_only.iter().any(|t| t.contains("site work")), "{app_only:?}");
         assert!(app_only.iter().any(|t| t.contains("1 ticket in other projects hidden")), "{app_only:?}");
         assert!(app_only.contains(&"app work".to_owned()));
+    }
+
+    #[test]
+    fn g_on_the_board_shows_open_work_as_a_tree_of_what_waits_for_what() {
+        let (mut app, _, _) = team();
+        let mut add = |id: TicketId, status: TicketStatus, after: Vec<TicketId>| {
+            let mut t = ticket(id, status);
+            t.depends_on = after;
+            app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t });
+        };
+        add(1, TicketStatus::Done, vec![]);
+        add(2, TicketStatus::InProgress, vec![1]);
+        add(3, TicketStatus::Todo, vec![2]);
+        add(4, TicketStatus::Todo, vec![3]);
+        add(5, TicketStatus::Todo, vec![]);
+        add(6, TicketStatus::Todo, vec![2]);
+        app.pane = Pane::Board;
+        app.on_key(KeyEvent::from(KeyCode::Char('g')), Instant::now());
+        assert!(app.board_graph);
+        assert_eq!(app.dependency_tree(), vec![(2, 0), (3, 1), (4, 2), (6, 1), (5, 0)]);
+        assert_eq!(app.board_order(), vec![2, 3, 4, 6, 5]);
+        app.on_key(KeyEvent::from(KeyCode::Char('g')), Instant::now());
+        assert!(!app.board_graph);
+    }
+
+    #[test]
+    fn the_line_between_the_board_list_and_the_ticket_drags_up_and_down() {
+        let (mut app, _, _) = team();
+        app.pane = Pane::Board;
+        app.set_board_rule(Some(BoardRule { rows: (10, 11), list_top: 3 }));
+        app.on_click(5, 10);
+        assert!(app.is_dragging());
+        app.on_drag(5, 15);
+        assert_eq!(app.board_split, Some(12));
+        app.on_mouse(MouseEventKind::Up(crossterm::event::MouseButton::Left), Instant::now());
+        assert!(!app.is_dragging());
+        assert_eq!(app.board_split, Some(12));
+    }
+
+    #[test]
+    fn clicking_a_completion_takes_it() {
+        let mut app = two_projects();
+        app.composer.insert_str("/project ");
+        app.set_hits(vec![(0, 40, 7, Hit::Choice(1))], None);
+        app.on_click(5, 7);
+        assert_eq!(app.outbox, vec![Command::Focus { squad: "acme".into(), project: Some("app".into()) }]);
     }
 
     #[test]

@@ -126,6 +126,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         app.offer(folder);
     }
     app.squad_width = saved_squad_width();
+    app.board_split = saved_size("board-split");
     client.send(app.unfiltered());
     first.into_iter().for_each(|c| client.send(c));
     if daemon_build != daemon::build_id() {
@@ -155,6 +156,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
 
     let mut input = EventStream::new();
     let mut saved_width = app.squad_width;
+    let mut saved_split = app.board_split;
     let mut last_sample = Instant::now();
     let mut daemon_lost = false;
     let mut layouts = view::Layouts::default();
@@ -166,6 +168,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         let extent = view::extent(app, theme, ratatui::layout::Rect::new(0, 0, size.width, size.height), layouts);
         app.set_extent(extent.page, extent.conversation_max, extent.board_max);
         app.set_board_detail(extent.board_detail);
+        app.set_board_rule(extent.board_rule);
         app.set_hits(extent.hits, extent.divider);
         app.set_text_view(extent.text);
         terminal.draw(|f| view::render(f, app, theme, layouts)).map(|_| ())
@@ -207,6 +210,11 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                 if !app.is_dragging() && app.squad_width != saved_width {
                     saved_width = app.squad_width;
                     save_squad_width(saved_width);
+                }
+                // So is the board's list height.
+                if !app.is_dragging() && app.board_split != saved_split {
+                    saved_split = app.board_split;
+                    save_size("board-split", saved_split);
                 }
             }
             event = client.next_event() => match event {
@@ -355,6 +363,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                     client.send(fresh.unfiltered());
                     first.into_iter().for_each(|c| client.send(c));
                     fresh.squad_width = app.squad_width;
+                    fresh.board_split = app.board_split;
                     fresh.mouse = app.mouse;
                     fresh.flash = Some(if members.is_empty() {
                         format!("Now on {squad} · /squad switches back")
@@ -444,6 +453,19 @@ fn squad_width_file() -> PathBuf {
 
 fn saved_squad_width() -> Option<u16> {
     std::fs::read_to_string(squad_width_file()).ok()?.trim().parse().ok()
+}
+
+/// A size the person dragged something to, kept beside the hints by `name`.
+fn saved_size(name: &str) -> Option<u16> {
+    std::fs::read_to_string(equipe_providers::credentials::equipe_home().join("hints").join(name)).ok()?.trim().parse().ok()
+}
+
+fn save_size(name: &str, size: Option<u16>) {
+    let file = equipe_providers::credentials::equipe_home().join("hints").join(name);
+    if let Some(size) = size {
+        let _ = std::fs::create_dir_all(file.parent().expect("hints has a parent"));
+        let _ = std::fs::write(&file, size.to_string());
+    }
 }
 
 fn save_squad_width(width: Option<u16>) {

@@ -20,7 +20,7 @@ use ratatui::widgets::Paragraph;
 use equipe_core::board::{self, project_name};
 use equipe_core::protocol::{Entry, SessionId, TicketId, TicketStatus};
 
-use super::app::{Agent, AgentState, App, Divider, Hit, Pane, Spot, TextView, elapsed, relative, tool_verb};
+use super::app::{Agent, AgentState, App, BoardRule, Divider, Hit, Pane, Spot, TextView, elapsed, relative, tool_verb};
 use super::markdown;
 use crate::ui;
 
@@ -442,6 +442,8 @@ pub struct Extent {
     pub divider: Option<Divider>,
     /// On the board: the rows the open ticket is shown in (first, last).
     pub board_detail: Option<(u16, u16)>,
+    /// On the board: the line between the list and the ticket, to drag.
+    pub board_rule: Option<BoardRule>,
     /// Where the conversation's text is, for selecting it.
     pub text: Option<TextView>,
 }
@@ -472,6 +474,14 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
             }
         }
     }
+    // The completions above the composer: a click takes one.
+    let laid_rows = rows(app, theme, screen);
+    if let Some((area, first, shown)) = choices_place(app, Rect { height: laid_rows.rule.y.saturating_sub(body.y), ..body }) {
+        // Drawn over the rest, so they come first.
+        for n in (0..shown).rev() {
+            hits.insert(0, (area.x, area.x + area.width, area.y + 1 + n as u16, Hit::Choice(first + n)));
+        }
+    }
     for (from, to, hit) in header(app, theme, narrow, top.width as usize).1 {
         hits.push((top.x + from, top.x + to, top.y, hit));
     }
@@ -479,15 +489,18 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
     let mut board_page = board.height as usize / 2;
     let mut board_detail = None;
     let mut board_text = None;
+    let mut board_rule = None;
     if app.pane == Pane::Board {
         let width = (board.width as usize).saturating_sub(1).min(PROSE_MAX + 20);
         let rows = board_list(app, theme, width);
-        let (list, detail) = board_areas(board, rows.len());
+        let (list, detail) = board_areas(board, rows.len(), app.board_split);
         let body = detail_body(detail);
         let lines = ticket_detail(app, theme, detail_width(body)).len();
         board_max = lines.saturating_sub(body.height as usize);
         board_page = (body.height as usize / 2).max(1);
         board_detail = Some((body.y, body.y + body.height.saturating_sub(1)));
+        // The blank row under the list and the hairline: hold either to drag.
+        board_rule = Some(BoardRule { rows: (list.y + list.height, detail.y), list_top: list.y });
         // The open ticket's text can be selected, like the conversation's.
         board_text = (!app.help_open).then_some(TextView {
             x: body.x,
@@ -504,7 +517,7 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
         }
     }
     let Some(agent) = app.selected() else {
-        return Extent { page: board_page, conversation_max: 0, board_max, hits, divider, board_detail, text: board_text };
+        return Extent { page: board_page, conversation_max: 0, board_max, hits, divider, board_detail, board_rule, text: board_text };
     };
     let text = conversation_text(right, app, agent);
     // The waiting card's rows open their tickets too.
@@ -557,6 +570,7 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
         hits,
         divider,
         board_detail,
+        board_rule,
         text: if app.pane == Pane::Board { board_text } else { text_view },
     }
 }
@@ -589,8 +603,22 @@ pub fn render(frame: &mut Frame, app: &App, theme: Theme, layouts: &Layouts) {
 
 /// Completions, just above the composer and over whatever is there: the picked
 /// one marked, each with what it does.
+const CHOICES_SHOWN: usize = 8;
+
+/// Where the completions sit: their area, the first shown, and how many.
+fn choices_place(app: &App, above: Rect) -> Option<(Rect, usize, usize)> {
+    let count = app.choices().len();
+    if count == 0 || above.height < 3 {
+        return None;
+    }
+    let first = (app.pick.min(count - 1) + 1).saturating_sub(CHOICES_SHOWN);
+    let shown = count.saturating_sub(first).min(CHOICES_SHOWN);
+    let height = (shown as u16 + 2).min(above.height);
+    Some((Rect { y: above.y + above.height - height, height, ..above }, first, shown))
+}
+
 fn render_choices(frame: &mut Frame, above: Rect, app: &App, theme: Theme) {
-    const SHOWN: usize = 8;
+    const SHOWN: usize = CHOICES_SHOWN;
     let choices = app.choices();
     if choices.is_empty() || above.height < 3 {
         return;
@@ -1492,7 +1520,7 @@ pub fn selection_text(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) 
     if app.pane == Pane::Board {
         let board = under_title(right);
         let width = (board.width as usize).saturating_sub(1).min(PROSE_MAX + 20);
-        let (_, detail) = board_areas(board, board_list(app, theme, width).len());
+        let (_, detail) = board_areas(board, board_list(app, theme, width).len(), app.board_split);
         let lines = ticket_detail(app, theme, detail_width(detail_body(detail)));
         return selected_in(&lines, from, to);
     }
@@ -1576,7 +1604,12 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
     // With no filter and work in several projects, open work goes in a lane
     // for each, below what waits for the person.
     let lanes = app.lanes();
+    // As a tree (`g`): one list, each ticket under what it waits for.
+    let depth: HashMap<TicketId, usize> = if app.board_graph { app.dependency_tree().into_iter().collect() } else { HashMap::new() };
     let heading = |t: &equipe_core::protocol::Ticket| -> String {
+        if app.board_graph {
+            return "BY WHAT WAITS FOR WHAT · g for the board by state".into();
+        }
         match t.status {
             TicketStatus::Review => "YOUR REVIEW".into(),
             TicketStatus::Waiting => "WAITING ON YOU".into(),
@@ -1633,7 +1666,12 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
         let tail_width = (12 + 14).min(width / 2);
         let title_room = width.saturating_sub(2 + 6 + 2 + tail_width + tags + 2);
         let kind = kind_tag(t);
-        let title = ui::fit(&t.title, title_room.saturating_sub(kind.len()));
+        // Under what it waits for, one step in per level.
+        let branch = match depth.get(&t.id) {
+            Some(&d) if d > 0 => format!("{}└ ", "  ".repeat(d - 1)),
+            _ => String::new(),
+        };
+        let title = format!("{branch}{}", ui::fit(&t.title, title_room.saturating_sub(kind.len() + branch.chars().count())));
         let pad = title_room.saturating_sub(kind.len() + unicode_width::UnicodeWidthStr::width(title.as_str()));
         let closed = t.status.is_closed();
         let title_style = match (selected, closed) {
@@ -1703,6 +1741,27 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         facts.push(project_name(project));
     }
     lines.extend(wrapped(Vec::new(), &facts.join(" · "), theme.dim(), 0, width));
+    // What it waits for, and what waits for it.
+    let mark = |s: TicketStatus| match s {
+        TicketStatus::Done => "✓",
+        TicketStatus::Cancelled => "×",
+        TicketStatus::InProgress => "●",
+        TicketStatus::Review | TicketStatus::Waiting => "⚑",
+        TicketStatus::Todo | TicketStatus::Proposed => "○",
+    };
+    let named = |id: TicketId| -> String {
+        match app.tickets.iter().find(|t| t.id == id) {
+            Some(d) => format!("T-{id} {} {}", mark(d.status), ui::fit(&d.title, 28)),
+            None => format!("T-{id}"),
+        }
+    };
+    let unblocks: Vec<TicketId> = app.tickets.iter().filter(|o| o.depends_on.contains(&t.id) && !o.status.is_closed()).map(|o| o.id).collect();
+    for (label, ids) in [("after", t.depends_on.clone()), ("unblocks", unblocks)] {
+        if !ids.is_empty() {
+            let text = ids.into_iter().map(named).collect::<Vec<_>>().join(" · ");
+            lines.push(Line::from(vec![Span::styled(format!("{label:<10}"), theme.dim()), Span::raw(ui::fit(&text, width.saturating_sub(10)))]));
+        }
+    }
     // The keys come right under the title, so a long hand-in never pushes
     // them out of sight.
     let who = t.assignee.as_ref().or(t.owner.as_ref());
@@ -1732,6 +1791,7 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         actions.push(("enter", format!("talk to {who}")));
     }
     actions.push(("↑↓", "tickets".into()));
+    actions.push(("g", if app.board_graph { "by state".into() } else { "what waits for what".into() }));
     let mut keys = Vec::new();
     for (i, (k, what)) in actions.into_iter().enumerate() {
         if i > 0 {
@@ -1781,8 +1841,12 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
 
 /// The board pane split: the list on top — as tall as it needs, up to half —
 /// and the picked ticket's detail below.
-fn board_areas(area: Rect, list_rows: usize) -> (Rect, Rect) {
-    let list_height = (list_rows as u16).min(area.height / 2).max(3.min(area.height));
+fn board_areas(area: Rect, list_rows: usize, split: Option<u16>) -> (Rect, Rect) {
+    // As tall as it needs, up to half — or as the person dragged it.
+    let list_height = match split {
+        Some(rows) => rows.clamp(3.min(area.height), area.height.saturating_sub(5).max(3)),
+        None => (list_rows as u16).min(area.height / 2).max(3.min(area.height)),
+    };
     let [list, _, detail] =
         Layout::vertical([Constraint::Length(list_height), Constraint::Length(1), Constraint::Min(1)]).areas(area);
     (list, detail)
@@ -1799,7 +1863,7 @@ fn render_board(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let area = pane_title(title, switch_label(app, Pane::Board, theme), area, frame);
     let width = (area.width as usize).saturating_sub(1).min(PROSE_MAX + 20);
     let rows = board_list(app, theme, width);
-    let (list, detail) = board_areas(area, rows.len());
+    let (list, detail) = board_areas(area, rows.len(), app.board_split);
     let top = list_top(&rows, app.selected_ticket().map(|t| t.id), list.height as usize);
     let shown: Vec<Line> = rows.into_iter().skip(top).take(list.height as usize).map(|(line, _)| line).collect();
     frame.render_widget(Paragraph::new(shown), list);
@@ -2901,6 +2965,30 @@ mod tests {
         app.flash = None;
         let shot = screen(&app, 140, 30);
         assert!(shot.lines().last().unwrap().contains("at work on site T-4 — your message goes there"), "{shot}");
+    }
+
+    #[test]
+    fn a_ticket_says_what_it_waits_for_and_what_it_unblocks() {
+        let (mut app, _) = working();
+        let mut first = ticket(1, TicketStatus::Done, "Socket");
+        first.depends_on = vec![];
+        let mut middle = ticket(2, TicketStatus::InProgress, "Sidebar");
+        middle.depends_on = vec![1];
+        let mut last = ticket(3, TicketStatus::Todo, "Chat");
+        last.depends_on = vec![2];
+        for t in [first, middle, last] {
+            app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t });
+        }
+        app.pane = Pane::Board;
+        app.board_selected = Some(2);
+        let shot = screen(&app, 120, 40);
+        assert!(shot.contains("after     T-1 ✓"), "{shot}");
+        assert!(shot.contains("unblocks  T-3"), "{shot}");
+        // The tree view, a key away.
+        app.board_graph = true;
+        let shot = screen(&app, 120, 40);
+        assert!(shot.contains("BY WHAT WAITS FOR WHAT"), "{shot}");
+        assert!(shot.contains("└ Chat"), "{shot}");
     }
 
     #[test]
