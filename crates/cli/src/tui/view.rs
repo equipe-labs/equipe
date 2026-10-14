@@ -20,7 +20,7 @@ use ratatui::widgets::Paragraph;
 use equipe_core::board::{self, project_name};
 use equipe_core::protocol::{Entry, Estimate, SessionId, TicketId, TicketStatus};
 
-use super::app::{Agent, AgentState, App, BoardRule, Divider, Hit, Pane, Spot, TextView, elapsed, relative, tool_verb};
+use super::app::{Agent, AgentState, App, BoardRule, Divider, Group, Hit, Pane, Side, Spot, TextView, elapsed, relative, tool_verb};
 use super::markdown;
 use crate::ui;
 
@@ -31,6 +31,8 @@ const PROSE_MAX: usize = 96;
 /// hairline beside it.
 /// The squad pane's narrowest and, as a share of the body, widest.
 const SQUAD_MIN: u16 = 14;
+/// The side list's width unless dragged: room for a ticket's title.
+const SIDE_FIT: u16 = 38;
 const GAP: u16 = 4;
 
 /// Below this width the squad pane gives way to the conversation.
@@ -221,8 +223,9 @@ fn squad_width(app: &App, body: Rect) -> u16 {
         // Room for " · 65%" once a conversation is past half full.
         let full = app.agents.iter().any(|a| a.context.is_some_and(|(u, w)| w > 0 && u * 2 >= w));
         let detail = detail + if full { 6 } else { 0 };
-        // marker, mark and a space, the name, two spaces, the detail, a spare column.
-        (2 + 2 + name + 2 + detail + 1) as u16
+        // marker, mark and a space, the name, two spaces, the detail, a spare
+        // column — and room for tickets' titles.
+        ((2 + 2 + name + 2 + detail + 1) as u16).max(SIDE_FIT)
     };
     app.squad_width.unwrap_or_else(fit).clamp(SQUAD_MIN, (body.width / 2).max(SQUAD_MIN))
 }
@@ -250,7 +253,7 @@ fn transcript_width(app: &App, total: u16) -> usize {
 /// What a laid-out conversation depends on: the width it was laid out for, and
 /// enough of the conversation to notice it changed — its length, the length of
 /// its last line (a reply grows as it streams), the memos waiting.
-type LayoutKey = (usize, usize, usize, usize, bool, Option<String>);
+type LayoutKey = (usize, usize, usize, usize, bool, Option<TicketId>);
 
 /// Conversations already laid out, per member. Laying one out means reading all
 /// of its Markdown; scrolling must not do that again for every wheel event.
@@ -307,7 +310,7 @@ fn layout_key(agent: &Agent, width: usize) -> LayoutKey {
         Entry::Landed { stat, .. } => stat.len(),
         Entry::Thread { .. } => 0,
     });
-    (width, entries.len(), last, agent.queued.len(), agent.expanded, agent.thread_view.clone())
+    (width, entries.len(), last, agent.queued.len(), agent.expanded, agent.showing)
 }
 
 // ── the screen ──
@@ -368,10 +371,14 @@ fn watch_height(app: &App, agent: &Agent, room: u16) -> u16 {
 fn conversation_areas(area: Rect, app: &App, agent: &Agent) -> Areas {
     let live = (agent.scroll_back > 0 && agent.unseen > 0)
         || agent.state == AgentState::Working
-        || agent.estimate.as_ref().is_some_and(|e| e.live_at.is_some());
+        || agent.estimate.as_ref().is_some_and(|e| e.live_at.is_some())
+        || ticket_hint(app).is_some();
     let watch = watch_height(app, agent, area.height);
-    let overview = overview_height(app, area.height.saturating_sub(watch));
-    let card = waiting_card_height(app, area.height.saturating_sub(watch + overview));
+    // With the side list to its left, what waits and where each project
+    // stands are there; without it — a narrow terminal — they show here.
+    let side = area.x >= SQUAD_MIN;
+    let overview = if side { 0 } else { overview_height(app, area.height.saturating_sub(watch)) };
+    let card = if side { 0 } else { waiting_card_height(app, area.height.saturating_sub(watch + overview)) };
     let [watch, overview, _, text, _, card, _, live] = Layout::vertical([
         Constraint::Length(watch),
         Constraint::Length(overview),
@@ -587,12 +594,13 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
     hits.push((name_x, name_x + unicode_width::UnicodeWidthStr::width(app.squad.as_str()) as u16 + 2, top.y, Hit::Squads));
     let (squad_pane, _, _) = columns(app, body);
     let narrow = squad_pane.is_none();
-    // The squad's rows: a click talks to that member.
+    // The side list's lines: a click opens one.
     if let Some(squad) = squad_pane {
-        for (row, member) in squad_rows(app).into_iter().enumerate() {
-            let y = squad.y + 2 + row as u16;
-            if let Some(at) = member.filter(|_| y < squad.y + squad.height) {
-                hits.push((squad.x, squad.x + squad.width, y, Hit::Member(at)));
+        let lines = side_lines(app, theme, squad);
+        let top = side_top(app, &lines, squad.height as usize);
+        for (row, (_, side)) in lines.into_iter().skip(top).enumerate().take(squad.height as usize) {
+            if let Some(side) = side {
+                hits.push((squad.x, squad.x + squad.width, squad.y + row as u16, Hit::Side(side)));
             }
         }
     }
@@ -710,12 +718,14 @@ pub fn render(frame: &mut Frame, app: &App, theme: Theme, layouts: &Layouts) {
     let (squad, gap, right) = columns(app, body);
     render_header(frame, header, app, theme, squad.is_none());
     if let (Some(squad), Some(gap)) = (squad, gap) {
-        render_squad(frame, squad, app, theme);
+        render_side(frame, squad, app, theme);
         render_hairline(frame, gap, app.is_dragging_divider(), theme);
     }
     match app.pane {
         Pane::Conversation if app.help_open => render_help(frame, right, theme),
         Pane::Conversation if app.usage_open => render_usage(frame, right, app, theme),
+        // A ticket nobody is on now: what it is, from the board.
+        Pane::Conversation if app.opened.is_some() && app.viewed().is_none() => render_ticket(frame, right, app, theme),
         Pane::Conversation => render_transcript(frame, right, app, theme, layouts),
         Pane::Board => render_board(frame, right, app, theme),
     }
@@ -914,7 +924,7 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
     let pairs = |list: &[(&str, &'static str)]| -> Vec<(String, &'static str)> { list.iter().map(|(k, w)| ((*k).to_owned(), *w)).collect() };
     let mut lines = wrapped(
         Vec::new(),
-        "The PM is your main contact: tell it what you want, it plans the work on the board, and equipe hands each ticket to its owner. The console shows the whole squad — every project and the squad home — wherever you run it; a project chip in the header, or /project <name>, filters to one.",
+        "The PM is your one conversation: tell it what you want — it answers what's quick and puts the rest on tickets, which equipe hands to their owners. On the left: the PM, then every ticket by where it stands — waiting for you, in progress, to do, done — then the team. Open a ticket to see its work and steer it. A project chip in the header, or /project <name>, filters to one.",
         Style::new(),
         0,
         width,
@@ -923,10 +933,10 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
     // The keys of all three groups share one column.
     let keys = 19;
     lines.extend(rows(&pairs(&[
-        ("Enter", "send to the member named under the composer — at work, it reads it at its next step and carries on"),
+        ("Enter", "send to the PM — or, with a ticket open, to the member on it, read at its next step"),
         ("Tab", "with words typed to a member at work: a memo, read when its turn ends"),
         ("@name …", "send to someone else — the PM hears about it"),
-        ("Tab · Shift-Tab", "pick who you talk to"),
+        ("Tab · Shift-Tab", "walk the list on the left: the PM, the tickets, the team"),
         ("Alt-Enter · Ctrl-J", "a new line (or \\ then Enter)"),
         ("Esc", "stop a member mid-turn; what it hasn't read goes in at once"),
         ("Ctrl-V", "attach the clipboard's image — or drop an image file on the terminal"),
@@ -936,10 +946,10 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
     lines.extend(heading("LOOK AROUND"));
     lines.extend(rows(&pairs(&[
         ("Ctrl-B", "the board, and back"),
-        ("Ctrl-P", "pick a project — the board, and the PM's conversation about it, follow · Enter takes the next, typing finds one"),
+        ("Ctrl-P", "pick a project — the list, the board and new work follow · Enter takes the next, typing finds one"),
         ("PgUp · PgDn · wheel", "scroll · End for the latest · Ctrl-O unfolds steps"),
         ("Ctrl-W", "with nothing typed: watch the member's browser live, above its conversation · again to stop"),
-        ("click · drag", "a ticket number opens it · drag over text to copy it · drag the squad's edge to resize it"),
+        ("click · drag", "a line on the left opens it · a ticket number opens it on the board · drag over text to copy it · drag the list's edge to resize it"),
     ]), keys));
     lines.extend(heading("ANSWER"));
     lines.extend(rows(&pairs(&[
@@ -1173,73 +1183,159 @@ fn doing(agent: &Agent) -> &'static str {
     }
 }
 
-fn render_squad(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
-    let mut lines = vec![Line::from(Span::styled("SQUAD", theme.dim())), Line::raw("")];
+/// The side list, a line each: the PM, then the tickets by where they stand,
+/// then the team — and what a click on each line opens.
+fn side_lines(app: &App, theme: Theme, area: Rect) -> Vec<(Line<'static>, Option<Side>)> {
+    let mut lines: Vec<(Line<'static>, Option<Side>)> = vec![(Line::from(Span::styled("SQUAD", theme.dim())), None), (Line::raw(""), None)];
     let name_width = app.agents.iter().map(|a| a.label().chars().count()).max().unwrap_or(4).clamp(4, 12);
-    for i in app.display_order() {
-        let agent = &app.agents[i];
-        let selected = i == app.selected && app.pane == Pane::Conversation;
-        let marker = if selected { Span::styled("› ", theme.accent()) } else { Span::raw("  ") };
-        let name = ui::fit(&agent.label(), name_width);
-        let style = theme.member(agent_look(agent).1);
-        let name = Span::styled(format!("{name:<name_width$}"), if selected { style.add_modifier(Modifier::BOLD) } else { style });
-        // What it is doing, the most pressing first: needs you, a memo waiting,
-        // its ticket, its model.
-        let detail = if app.needs_you(agent) {
-            Span::styled("needs you", theme.accent())
-        } else {
-            let text = match (agent.queued.len() + agent.steering.len(), agent.ticket) {
-                (1, _) if agent.steering.is_empty() => "1 memo".to_owned(),
-                (n @ 2.., _) if agent.steering.is_empty() => format!("{n} memos"),
-                (n @ 1.., _) => format!("{n} unread"),
-                (0, Some(ticket)) => format!("T-{ticket}"),
-                (0, None) => agent.short_model().unwrap_or_default(),
-            };
-            // Several of its conversations at work at once.
-            let at_once = app.lanes_working(agent) + usize::from(agent.state == AgentState::Working);
-            let text = if at_once > 1 { format!("{at_once} at once") } else { text };
-            // When it expects to be done — or what it ships, live.
-            let text = match app.estimate_of(agent).and_then(|e| estimate_short(e, now_unix())) {
-                Some(left) if text.is_empty() => left,
-                Some(left) => format!("{text} {left}"),
-                None => text,
-            };
-            // A conversation past half its context, in sight.
-            let text = match agent.context.filter(|(_, w)| *w > 0).map(|(u, w)| u * 100 / w) {
-                Some(p) if p >= 50 => format!("{text} · {p}%"),
-                _ => text,
-            };
-            // An open browser, and what it costs in memory.
-            let text = match app.browsers.get(&agent.label()) {
-                Some(mb) if *mb >= 1024 => format!("{text} · {:.1}G", *mb as f32 / 1024.0),
-                Some(mb) => format!("{text} · {mb}M"),
-                None => text,
-            };
-            Span::styled(text, theme.dim())
-        };
-        // With several projects, the one it works in, in its colour, first; a
-        // member busy elsewhere fades while the board is filtered to one project.
-        let project = app.agent_project(agent).filter(|_| app.projects.len() > 1 && agent.queued.is_empty() && !app.needs_you(agent));
-        let elsewhere = app.focus.is_some() && project.is_some() && project != app.focus;
-        let name = if elsewhere { Span::styled(name.content, theme.dim()) } else { name };
-        let mut row = vec![marker, glyph(app, agent, theme), Span::raw(" "), name, Span::raw("  ")];
-        if let Some(project) = &project {
-            // Shortened before the ticket is: in a narrow pane the ticket still shows.
-            let used: usize = row.iter().map(Span::width).sum::<usize>() + detail.width() + 1;
-            let room = (area.width as usize).saturating_sub(used);
-            if room >= 3 {
-                row.push(Span::styled(format!("{} ", ui::fit(&project_name(project), room)), project_style(app, Some(project), theme)));
+    let open = (app.pane == Pane::Conversation).then(|| app.side_open());
+    for side in app.side() {
+        match side {
+            Side::Heading(group, count) => {
+                lines.push((Line::raw(""), None));
+                let style = if group == Group::ForYou { theme.accent().add_modifier(Modifier::BOLD) } else { theme.dim() };
+                lines.push((Line::from(Span::styled(format!("{} · {count}", group.label()), style)), None));
+            }
+            Side::Pm | Side::Member(_) => {
+                let i = match side {
+                    Side::Member(i) => i,
+                    _ => match app.pm_index() {
+                        Some(i) => i,
+                        None => continue,
+                    },
+                };
+                let Some(agent) = app.agents.get(i) else { continue };
+                lines.push((member_line(app, agent, open == Some(side), name_width, area, theme), Some(side)));
+                // Its subagents, under it, while they work.
+                for text in subagent_rows(agent) {
+                    let room = (area.width as usize).saturating_sub(6);
+                    lines.push((Line::from(vec![Span::raw("    "), Span::styled(ui::fit(&text, room), theme.dim())]), Some(side)));
+                }
+            }
+            Side::Ticket(id) => {
+                if let Some(ticket) = app.tickets.iter().find(|t| t.id == id) {
+                    lines.push((ticket_line(app, ticket, open == Some(side), area, theme), Some(side)));
+                }
             }
         }
-        row.push(detail);
-        lines.push(Line::from(row));
-        // Its subagents, under it, while they work.
-        for text in subagent_rows(agent) {
-            let room = (area.width as usize).saturating_sub(6);
-            lines.push(Line::from(vec![Span::raw("    "), Span::styled(ui::fit(&text, room), theme.dim())]));
+    }
+    lines
+}
+
+fn render_side(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
+    let lines = side_lines(app, theme, area);
+    let top = side_top(app, &lines, area.height as usize);
+    frame.render_widget(Paragraph::new(lines.into_iter().skip(top).map(|(line, _)| line).collect::<Vec<_>>()), area);
+}
+
+/// Where the side list starts drawing: the open line kept in sight when the
+/// list is taller than the pane.
+fn side_top(app: &App, lines: &[(Line<'static>, Option<Side>)], height: usize) -> usize {
+    let open = lines.iter().position(|(_, s)| app.pane == Pane::Conversation && *s == Some(app.side_open()));
+    open.map_or(0, |at| (at + 3).saturating_sub(height))
+}
+
+/// A ticket in the side list: who has it, its number in its project's colour,
+/// its title, and where it stands — or when it will be done.
+fn ticket_line(app: &App, ticket: &equipe_core::protocol::Ticket, open: bool, area: Rect, theme: Theme) -> Line<'static> {
+    let marker = if open { Span::styled("› ", theme.accent()) } else { Span::raw("  ") };
+    let who = ticket.assignee.clone().or_else(|| ticket.owner.clone()).unwrap_or_default();
+    let (mark, hue) = match app.agents.iter().find(|a| a.label() == who) {
+        Some(agent) => agent_look(agent),
+        None => look(&who, &who),
+    };
+    let on_it = app.agents.iter().find(|a| a.ticket == Some(ticket.id));
+    let mark = match on_it {
+        Some(agent) if agent.state == AgentState::Working => Span::styled(theme.spinner(Instant::now()).content, theme.member(hue).add_modifier(Modifier::BOLD)),
+        _ => Span::styled(mark, theme.member(hue)),
+    };
+    let (detail, detail_style) = match ticket.status {
+        TicketStatus::Review => ("review".to_owned(), theme.accent()),
+        TicketStatus::Waiting => ("needs you".to_owned(), theme.accent()),
+        TicketStatus::Proposed => ("proposed".to_owned(), theme.dim()),
+        TicketStatus::InProgress => (on_it.and_then(|a| app.estimate_of(a)).and_then(|e| estimate_short(e, now_unix())).unwrap_or_default(), theme.dim()),
+        TicketStatus::Todo => (ticket.owner.clone().unwrap_or_default(), theme.dim()),
+        TicketStatus::Done => ("✓".to_owned(), theme.dim()),
+        TicketStatus::Cancelled => ("cancelled".to_owned(), theme.dim()),
+    };
+    let id = format!("T-{}", ticket.id);
+    let project = app.ticket_project(ticket);
+    let id_style = if app.projects.len() > 1 && project.is_some() { project_style(app, project.as_deref(), theme) } else { theme.accent() };
+    let width_of = |s: &str| unicode_width::UnicodeWidthStr::width(s);
+    let used = 2 + 2 + width_of(&id) + 1 + width_of(&detail) + 1;
+    let room = (area.width as usize).saturating_sub(used);
+    let title = ui::fit(&ticket.title, room);
+    let pad = room.saturating_sub(width_of(&title));
+    let title_style = if open { Style::new().add_modifier(Modifier::BOLD) } else if ticket.status == TicketStatus::Done { theme.dim() } else { Style::new() };
+    Line::from(vec![
+        marker,
+        mark,
+        Span::raw(" "),
+        Span::styled(id, id_style),
+        Span::raw(" "),
+        Span::styled(title, title_style),
+        Span::raw(" ".repeat(pad + 1)),
+        Span::styled(detail, detail_style),
+    ])
+}
+
+/// Someone in the side list — the PM at its head, the rest of the team at
+/// its foot: its mark, its name, and what it is doing.
+fn member_line(app: &App, agent: &Agent, open: bool, name_width: usize, area: Rect, theme: Theme) -> Line<'static> {
+    let marker = if open { Span::styled("› ", theme.accent()) } else { Span::raw("  ") };
+    let name = ui::fit(&agent.label(), name_width);
+    let style = theme.member(agent_look(agent).1);
+    let name = Span::styled(format!("{name:<name_width$}"), if open { style.add_modifier(Modifier::BOLD) } else { style });
+    // What it is doing, the most pressing first: needs you, a memo waiting,
+    // its ticket, its model.
+    let detail = if app.needs_you(agent) {
+        Span::styled("needs you", theme.accent())
+    } else {
+        let text = match (agent.queued.len() + agent.steering.len(), agent.ticket) {
+            (1, _) if agent.steering.is_empty() => "1 memo".to_owned(),
+            (n @ 2.., _) if agent.steering.is_empty() => format!("{n} memos"),
+            (n @ 1.., _) => format!("{n} unread"),
+            (0, Some(ticket)) => format!("T-{ticket}"),
+            (0, None) => agent.short_model().unwrap_or_default(),
+        };
+        // Several of its conversations at work at once.
+        let at_once = app.lanes_working(agent) + usize::from(agent.state == AgentState::Working);
+        let text = if at_once > 1 { format!("{at_once} at once") } else { text };
+        // When it expects to be done — or what it ships, live.
+        let text = match app.estimate_of(agent).and_then(|e| estimate_short(e, now_unix())) {
+            Some(left) if text.is_empty() => left,
+            Some(left) => format!("{text} {left}"),
+            None => text,
+        };
+        // A conversation past half its context, in sight.
+        let text = match agent.context.filter(|(_, w)| *w > 0).map(|(u, w)| u * 100 / w) {
+            Some(p) if p >= 50 => format!("{text} · {p}%"),
+            _ => text,
+        };
+        // An open browser, and what it costs in memory.
+        let text = match app.browsers.get(&agent.label()) {
+            Some(mb) if *mb >= 1024 => format!("{text} · {:.1}G", *mb as f32 / 1024.0),
+            Some(mb) => format!("{text} · {mb}M"),
+            None => text,
+        };
+        Span::styled(text, theme.dim())
+    };
+    // With several projects, the one it works in, in its colour, first; a
+    // member busy elsewhere fades while the board is filtered to one project.
+    let project = app.agent_project(agent).filter(|_| app.projects.len() > 1 && agent.queued.is_empty() && !app.needs_you(agent));
+    let elsewhere = app.focus.is_some() && project.is_some() && project != app.focus;
+    let name = if elsewhere { Span::styled(name.content, theme.dim()) } else { name };
+    let mut row = vec![marker, glyph(app, agent, theme), Span::raw(" "), name, Span::raw("  ")];
+    if let Some(project) = &project {
+        // Shortened before the ticket is: in a narrow pane the ticket still shows.
+        let used: usize = row.iter().map(Span::width).sum::<usize>() + detail.width() + 1;
+        let room = (area.width as usize).saturating_sub(used);
+        if room >= 3 {
+            row.push(Span::styled(format!("{} ", ui::fit(&project_name(project), room)), project_style(app, Some(project), theme)));
         }
     }
-    frame.render_widget(Paragraph::new(lines), area);
+    row.push(detail);
+    Line::from(row)
 }
 
 /// Most subagents shown under a member before the rest are counted.
@@ -1264,15 +1360,6 @@ fn subagent_rows(agent: &Agent) -> Vec<String> {
 
 /// What each row of the squad pane is, from its first member row: a member
 /// (by index) or a line under one.
-fn squad_rows(app: &App) -> Vec<Option<usize>> {
-    let mut rows = Vec::new();
-    for at in app.display_order() {
-        rows.push(Some(at));
-        rows.extend(subagent_rows(&app.agents[at]).into_iter().map(|_| None));
-    }
-    rows
-}
-
 /// The squad's edge; lit while the person drags it.
 fn render_hairline(frame: &mut Frame, area: Rect, held: bool, theme: Theme) {
     let style = if held { theme.accent() } else { theme.dim() };
@@ -1708,17 +1795,52 @@ fn render_watch(frame: &mut Frame, area: Rect, app: &App, agent: &Agent, theme: 
     }
 }
 
+/// A ticket open with no one's work on it to show: what the board knows.
+fn render_ticket(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
+    let Some(ticket) = app.opened.and_then(|id| app.tickets.iter().find(|t| t.id == id)) else {
+        return;
+    };
+    let title = vec![
+        Span::styled(format!("T-{}", ticket.id), theme.accent().add_modifier(Modifier::BOLD)),
+        Span::styled(format!("  ·  {}", ticket.status.label()), theme.dim()),
+    ];
+    let area = pane_title(title, switch_label(app, Pane::Conversation, theme), area, frame);
+    let width = (area.width as usize).saturating_sub(1).min(PROSE_MAX + 20);
+    let mut lines = ticket_detail(app, theme, width);
+    lines.push(Line::raw(""));
+    let hint = ticket_hint(app).unwrap_or_else(|| format!("What you write goes to the PM, about T-{}.", ticket.id));
+    lines.push(Line::from(Span::styled(hint, theme.dim())));
+    frame.render_widget(Paragraph::new(lines).scroll((app.board_scroll as u16, 0)), area);
+}
+
+/// What the person can do with a ticket open whose work is in, in a line.
+fn ticket_hint(app: &App) -> Option<String> {
+    let ticket = app.opened.and_then(|id| app.tickets.iter().find(|t| t.id == id))?;
+    match ticket.status {
+        TicketStatus::Review => Some(format!("/accept T-{0} · /reopen T-{0} <why> · ctrl-b shows the changes", ticket.id)),
+        TicketStatus::Waiting => Some(format!("/resume T-{} once you have done what it needs", ticket.id)),
+        _ => None,
+    }
+}
+
 fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, layouts: &Layouts) {
     let Some(agent) = app.viewed() else {
         return;
     };
     let mut title = vec![Span::styled(agent.label(), theme.member(agent_look(agent).1).add_modifier(Modifier::BOLD))];
-    match agent.ticket.and_then(|id| app.tickets.iter().find(|t| t.id == id)) {
+    // A ticket open: its number and title first, whose work it is after.
+    if let Some(ticket) = app.opened.and_then(|id| app.tickets.iter().find(|t| t.id == id)) {
+        title = vec![
+            Span::styled(format!("T-{}", ticket.id), theme.accent().add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" {}", ticket.title), theme.bold()),
+            Span::styled(format!("  ·  {} · {}", agent.label(), ticket.status.label()), theme.dim()),
+        ];
+    } else { match agent.ticket.and_then(|id| app.tickets.iter().find(|t| t.id == id)) {
         Some(ticket) => title.push(Span::styled(format!("  ·  T-{} {}", ticket.id, ticket.title), theme.dim())),
         // With every project in view, the PM's is the whole squad's conversation.
         None if app.shows_overview() => title.push(Span::styled("  ·  the whole squad", theme.dim())),
         None => title.push(Span::styled(format!("  ·  {}", agent.engine_label()), theme.dim())),
-    }
+    } }
     // How full its conversation is: past half, in the accent, with what to do.
     if let Some((used, window)) = agent.context.filter(|(_, w)| *w > 0) {
         let percent = used * 100 / window;
@@ -1762,6 +1884,8 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
     } else if let Some(live) = agent.estimate.as_ref().and_then(|e| live_phrase(e, now_unix())) {
         // Between turns, what it shipped is on its way.
         footer.push(Line::from(vec![Span::styled("◷ ", theme.accent()), Span::styled(live, theme.accent())]));
+    } else if let Some(hint) = ticket_hint(app) {
+        footer.push(Line::from(Span::styled(hint, theme.dim())));
     }
     let Areas { watch, overview: projects, text, card, live } = conversation_areas(area, app, agent);
     if watch.height > 0 {
@@ -2144,7 +2268,11 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         keys.push(Span::styled(k.to_owned(), style));
         keys.push(Span::styled(format!(" {what}"), theme.dim()));
     }
-    lines.push(Line::from(keys));
+    // The board's keys, on the board; opened from the side list, the
+    // composer and its hint below do it.
+    if app.pane == Pane::Board {
+        lines.push(Line::from(keys));
+    }
     if let Some(note) = &t.note {
         lines.push(Line::raw(""));
         lines.extend(markdown::lines(note, width, &theme.markdown()));
@@ -2387,10 +2515,13 @@ fn render_composer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         ]))
     } else if app.composer.text().is_empty() {
         let to = app.addressee().map(|(name, _)| name).unwrap_or_else(|| "the squad".into());
-        Paragraph::new(Line::from(vec![
-            Span::styled("› ", theme.accent()),
-            Span::styled(format!("Message {to}…  @name for someone else · /help"), theme.dim()),
-        ]))
+        // A ticket open: what is written steers its work, or goes to the PM about it.
+        let say = match (app.opened, app.viewed()) {
+            (Some(t), Some(agent)) if agent.ticket == Some(t) => format!("Tell {} about T-{t} — read at its next step…", agent.label()),
+            (Some(t), _) => format!("Message the PM about T-{t}…  tab to move on"),
+            _ => format!("Message {to}…  @name for someone else · /help"),
+        };
+        Paragraph::new(Line::from(vec![Span::styled("› ", theme.accent()), Span::styled(say, theme.dim())]))
     } else {
         let lines: Vec<Line> = rows
             .iter()
@@ -2465,7 +2596,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let left_width: usize = left.iter().map(|s| s.width()).sum();
     // Facts first; the key hints — key in bold, what it does dim — go when space runs short.
     let mut right: Vec<Vec<Span<'static>>> = facts.into_iter().map(|(text, style)| vec![Span::styled(text, style)]).collect();
-    let keys: Vec<Vec<Span<'static>>> = [("enter", "send"), ("tab", "squad"), ("/help", "")]
+    let keys: Vec<Vec<Span<'static>>> = [("enter", "send"), ("tab", "next"), ("/help", "")]
         .iter()
         .map(|(key, what)| {
             let mut spans = vec![Span::styled(*key, theme.bold())];
@@ -2645,7 +2776,7 @@ mod tests {
         });
         let plan = equipe_core::protocol::PlanWindow { used_percent: 84, resets_at: 0 };
         app.on_event(Event::PlanUsage { usage: equipe_core::protocol::PlanUsage { five_hour: Some(plan), seven_day: None } });
-        let shot = screen(&app, 100, 22);
+        let shot = screen(&app, 130, 22);
         // On a subscription what counts is the plan: in the footer, not a token total.
         assert!(shot.lines().last().unwrap().contains("5h 84%"), "{shot}");
         assert!(!shot.contains("tokens"), "{shot}");
@@ -2653,7 +2784,7 @@ mod tests {
         assert!(shot.contains("pm    haiku · 65%"), "{shot}");
         // The totals are on /usage.
         app.usage_open = true;
-        let usage = screen(&app, 100, 22);
+        let usage = screen(&app, 130, 22);
         assert!(usage.contains("context 65% (130k of 200k) · 100k tokens · 98%"), "{usage}");
         app.usage_open = false;
         assert!(shot.contains("◆ pm"), "at rest, its own mark:\n{shot}");
@@ -2711,8 +2842,9 @@ mod tests {
         app.on_event(Event::TextDelta { session: id, text: format!("\n\n{}", "word ".repeat(60)) });
         let shot = screen(&app, 220, 22);
         let longest = shot.lines().filter(|l| l.contains("word")).map(|l| l.trim_end().len()).max().unwrap();
-        // The pane starts after the margin, the (wide) squad and the hairline: 2 + 32 + 4.
-        assert!(longest <= 38 + PROSE_MAX, "{longest}");
+        // The pane starts after the margin, the side list and the hairline: 2 + 38 + 4.
+        // and the reply's mark ahead of its text.
+        assert!(longest <= 2 + SIDE_FIT as usize + 4 + 4 + PROSE_MAX, "{longest}");
     }
 
     #[test]
@@ -2772,18 +2904,16 @@ mod tests {
     }
 
     #[test]
-    fn about_another_project_a_member_at_work_answers_in_a_lane_beside_it() {
+    fn the_pm_on_a_ticket_of_its_own_answers_beside_it_in_its_one_conversation() {
         let (mut app, pm) = working();
-        app.projects = vec!["/code/site".into(), "/code/app".into()];
-        app.on_event(Event::Thread { session: pm, project: Some("site".into()) });
-        app.agents[0].thread_view = Some("app".into());
+        app.agents[0].ticket = Some(1);
         for c in "how is the app?".chars() {
             app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char(c)), Instant::now());
         }
         let sent = app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter), Instant::now());
         assert_eq!(sent, vec![Command::Submit { session: pm, text: "how is the app?".into() }]);
-        assert!(app.flash.as_deref().unwrap().contains("takes it up about app now"), "{:?}", app.flash);
-        // The daemon opens app's lane: it isn't listed, and it is what shows.
+        assert!(app.flash.as_deref().unwrap().contains("answers now, beside its work on T-1"), "{:?}", app.flash);
+        // The daemon runs the conversation beside the ticket: not listed, it is what shows.
         app.on_event(Event::SessionStarted {
             session: 77,
             project: "/repo".into(),
@@ -2793,14 +2923,14 @@ mod tests {
             member: Some(Member { role: "pm".into(), name: "pm".into() }),
             squad: Some("acme".into()),
         });
-        app.on_event(Event::LaneOpened { session: 77, of: pm, project: Some("app".into()) });
+        app.on_event(Event::LaneOpened { session: 77, of: pm, project: None });
         assert_eq!(app.agents.len(), 1);
         app.on_event(Event::UserMessage { session: 77, text: "how is the app?".into() });
         app.on_event(Event::TextDelta { session: 77, text: "The app is fine.".into() });
         assert_eq!(app.viewed().map(|a| a.id), Some(77));
         let shot = screen(&app, 110, 24);
-        assert!(shot.contains("The app is fine."), "{shot}");
-        // Scrolling moves the conversation shown — the lane's.
+        assert!(shot.contains("The app is fine.") && shot.contains("2 at once"), "{shot}");
+        // Scrolling moves the conversation shown.
         for i in 0..60 {
             app.on_event(Event::Notice { session: 77, text: format!("line {i}") });
         }
@@ -2810,60 +2940,40 @@ mod tests {
         assert!(app.lanes[0].scroll_back > 0 && app.agents[0].scroll_back == 0);
         assert!(!screen(&app, 110, 24).contains("line 59"));
         app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::End), Instant::now());
-        assert_eq!(app.lanes[0].scroll_back, 0);
         assert!(screen(&app, 110, 24).contains("line 59"));
-        assert!(shot.contains("2 at once"), "{shot}");
-        // Esc stops app's conversation, not site's.
+        // Esc stops the conversation, not the ticket's work.
         let stop = app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Esc), Instant::now());
         assert_eq!(stop, vec![Command::Interrupt { session: 77 }]);
-        // Back on site, the member's own conversation shows.
-        app.agents[0].thread_view = Some("site".into());
+        // Its ticket opened: the work, not the conversation.
+        app.open(Side::Ticket(1));
         assert_eq!(app.viewed().map(|a| a.id), Some(pm));
-        // Left idle, the lane goes back into the member: what it said stays, about app.
+        // Left idle, the conversation goes back into the PM: what was said stays.
+        app.open(Side::Pm);
         app.on_event(Event::SessionClosed { session: 77 });
         assert!(app.lanes.is_empty() && app.agents.len() == 1);
-        assert!(!screen(&app, 110, 24).contains("line 59"), "not in site's");
-        app.agents[0].thread_view = Some("app".into());
         assert_eq!(app.viewed().map(|a| a.id), Some(pm));
         assert!(screen(&app, 110, 24).contains("line 59"));
     }
 
     #[test]
-    fn with_every_project_in_view_the_pm_oversees_them_a_line_each_a_click_into_it() {
-        let (mut app, pm) = working();
+    fn without_the_side_list_the_pm_oversees_every_project_a_line_each_a_click_into_it() {
+        let (mut app, _) = working();
         app.projects = vec!["/code/site".into(), "/code/app".into()];
-        app.on_event(Event::Thread { session: pm, project: Some("site".into()) });
         app.tickets = vec![
             Ticket { project: Some("/code/app".into()), ..ticket(5, TicketStatus::Review, "Login page") },
-            Ticket { project: Some("/code/site".into()), ..ticket(6, TicketStatus::Todo, "Pricing") },
+            Ticket { project: Some("/code/site".into()), ..ticket(6, TicketStatus::InProgress, "Pricing") },
         ];
-        // A conversation about app, beside the PM's work on site.
-        app.on_event(Event::SessionStarted {
-            session: 77,
-            project: "/repo".into(),
-            engine: Engine::Claude,
-            model: None,
-            workspace: None,
-            member: Some(Member { role: "pm".into(), name: "pm".into() }),
-            squad: Some("acme".into()),
-        });
-        app.on_event(Event::LaneOpened { session: 77, of: pm, project: Some("app".into()) });
-        app.on_event(Event::UserMessage { session: 77, text: "ship the login".into() });
-        app.on_event(Event::TextDelta { session: 77, text: "On it.".into() });
-        app.lanes[0].state = AgentState::Working;
-        let shot = screen(&app, 110, 30);
+        app.agents[0].ticket = Some(6);
+        // A narrow terminal: no side list, so where each project stands shows here.
+        let shot = screen(&app, 71, 34);
         assert!(shot.contains("All projects"), "{shot}");
-        assert!(shot.contains("the whole squad"), "{shot}");
-        let site = shot.lines().find(|l| l.contains("site ") && l.contains("● pm")).unwrap_or_else(|| panic!("{shot}"));
+        let site = shot.lines().find(|l| l.contains("site ") && l.contains("pm T-6")).unwrap_or_else(|| panic!("{shot}"));
         assert!(site.contains("1 open"), "{site}");
-        let app_line = shot.lines().find(|l| l.contains("“ship the login”")).unwrap_or_else(|| panic!("{shot}"));
-        assert!(app_line.contains("⚑1 for you"), "{app_line}");
-        // A click on a line goes into its project.
-        let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 110, 30), &Layouts::default());
-        assert!(laid.hits.iter().filter(|h| h.3 == Hit::Project(Some(1))).count() >= 2, "a chip and a line");
-        // In one project, it isn't there.
-        app.focus = Some("/code/site".into());
-        assert!(!screen(&app, 110, 30).contains("All projects"));
+        assert!(shot.lines().any(|l| l.contains("app ") && l.contains("⚑1 for you")), "{shot}");
+        let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 71, 34), &Layouts::default());
+        assert!(laid.hits.iter().any(|h| h.3 == Hit::Project(Some(1))), "a line goes into its project");
+        // With the side list, it is there instead.
+        assert!(!screen(&app, 120, 34).contains("All projects"));
     }
 
     #[test]
@@ -2908,29 +3018,6 @@ mod tests {
         assert_eq!(app.agents[0].shown_estimate(), Some(&guess));
         assert_eq!(estimate_short(&guess, now).as_deref(), Some("≈10m"));
         assert_eq!(time_left(now + 80 * 60, now), "1h 20m");
-    }
-
-    #[test]
-    fn team_news_shows_in_its_projects_conversation_and_with_every_project_in_view() {
-        let (mut app, pm) = working();
-        app.projects = vec!["/code/site".into(), "/code/app".into()];
-        for event in [
-            Event::Thread { session: pm, project: Some("site".into()) },
-            Event::Notice { session: pm, text: "● frontend handed in T-5 for your review · Hero".into() },
-            Event::Thread { session: pm, project: Some("app".into()) },
-            Event::TextDelta { session: pm, text: "App talk.".into() },
-        ] {
-            app.on_event(event);
-        }
-        let shot = |app: &mut App, view: Option<&str>| {
-            app.agents[0].thread_view = view.map(str::to_owned);
-            screen(app, 120, 30)
-        };
-        let in_app = shot(&mut app, Some("app"));
-        assert!(in_app.contains("App talk.") && !in_app.contains("handed in T-5"), "{in_app}");
-        assert!(shot(&mut app, Some("site")).contains("handed in T-5"));
-        let all = shot(&mut app, None);
-        assert!(all.contains("handed in T-5") && !all.contains("App talk."), "{all}");
     }
 
     #[test]
@@ -3030,7 +3117,7 @@ mod tests {
         let edge = |shot: &str| shot.lines().find(|l| l.contains("SQUAD")).and_then(|l| l.chars().position(|c| c == '│')).unwrap();
         let shot = screen(&app, 120, 24);
         let fitted = edge(&shot);
-        assert!(fitted < 30, "no wider than its names need:\n{shot}");
+        assert_eq!(fitted, 2 + SIDE_FIT as usize + 1, "as wide as a ticket's title needs:\n{shot}");
 
         // The person takes the edge and drags it to column 50.
         let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 120, 24), &Layouts::default());
@@ -3064,7 +3151,7 @@ mod tests {
         }
         app.pane = Pane::Board;
         app.flash = None;
-        let shot = screen(&app, 100, 34);
+        let shot = screen(&app, 140, 34);
         let at = |text: &str| shot.find(text).unwrap_or_else(|| panic!("missing {text:?} in:\n{shot}"));
         assert!(at("YOUR REVIEW  1") < at("IN PROGRESS  1"), "{shot}");
         assert!(at("IN PROGRESS") < at("TO DO") && at("TO DO") < at("DONE"), "{shot}");
@@ -3083,7 +3170,7 @@ mod tests {
         assert!(shot.lines().last().unwrap().contains("1 to review"), "{shot}");
         // ↓ picks the next ticket, and the detail follows.
         app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Down), Instant::now());
-        let shot = screen(&app, 100, 34);
+        let shot = screen(&app, 140, 34);
         assert!(shot.contains("› T-2") && shot.contains("in progress"), "{shot}");
     }
 
@@ -3098,7 +3185,7 @@ mod tests {
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: task });
         app.pane = Pane::Board;
         app.flash = None;
-        let shot = screen(&app, 100, 30);
+        let shot = screen(&app, 140, 30);
         assert!(shot.lines().any(|l| l.contains("T-1") && l.contains("home  task    Competitor research")), "the squad home's work is tagged home:\n{shot}");
         assert!(shot.contains("task · frontend · handed in"), "{shot}");
         assert!(shot.contains("outputs/T-1 research/report.md"), "{shot}");
@@ -3197,7 +3284,7 @@ mod tests {
         app.on_event(Event::TurnEnded { session: id, outcome: TurnOutcome::Completed, usage: None });
         app.on_event(Event::Notice { session: id, text: "designer handed in T-8 for your review · Translations.".into() });
         app.on_event(Event::Notice { session: id, text: "You reopened T-6 · Glossary — Reopened: shorter.".into() });
-        let shot = screen(&app, 100, 30);
+        let shot = screen(&app, 140, 30);
         let lines: Vec<&str> = shot.lines().collect();
         let at = |text: &str| lines.iter().position(|l| l.contains(text)).unwrap_or_else(|| panic!("no {text:?} in:\n{shot}"));
         // The PM's reply opens with its mark; the rest of it hangs under the text.
@@ -3238,20 +3325,22 @@ mod tests {
         }
         app.flash = None;
         let shot = screen(&app, 100, 30);
-        assert!(shot.contains("▎ Waiting for your review · 4"), "{shot}");
-        assert!(shot.contains("▎ T-1   repo  Piece 1") && shot.contains("+1 more on the board"), "{shot}");
-        let owner = |id: &str| shot.lines().find(|l| l.contains(id)).unwrap().find("frontend").unwrap();
-        assert_eq!(owner("Piece 1"), owner("Piece 3"), "owners line up:\n{shot}");
+        assert!(shot.contains("Waiting for you · 4"), "{shot}");
+        assert!((1..=4).all(|id| shot.lines().any(|l| l.contains(&format!("T-{id} Piece {id}")) && l.contains("review"))), "{shot}");
+        // A click on one opens it.
         let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 100, 30), &Layouts::default());
         let row = shot.lines().position(|l| l.contains("Piece 2")).unwrap() as u16;
         let hit = laid.hits.iter().find(|h| h.2 == row).copied().unwrap();
-        assert_eq!(hit.3, Hit::Ticket(2));
+        assert_eq!(hit.3, Hit::Side(Side::Ticket(2)));
+        // Without the side list — a narrow terminal — a card under the conversation.
+        let narrow = screen(&app, 70, 30);
+        assert!(narrow.contains("▎ Waiting for your review · 4") && narrow.contains("+1 more on the board"), "{narrow}");
         // Nothing waiting, no card.
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(1, TicketStatus::Done, "Piece 1") });
         for id in 2..=4 {
             app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(id, TicketStatus::Done, "x") });
         }
-        assert!(!screen(&app, 100, 30).contains("Waiting for your review"));
+        assert!(!screen(&app, 100, 30).contains("Waiting for you"));
     }
 
     #[test]
@@ -3263,14 +3352,13 @@ mod tests {
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t });
         app.flash = None;
         let shot = screen(&app, 120, 30);
-        assert!(shot.contains("▎ Waiting for you · 2"), "{shot}");
-        assert!(shot.contains("T-2   repo  Analytics · needs GitHub token, PostHog secrets"), "{shot}");
-        let owner = |id: &str| {
-            let line = shot.lines().find(|l| l.contains(id)).unwrap();
-            line[..line.find("frontend").unwrap()].chars().count()
-        };
-        assert_eq!(owner("Pricing"), owner("Analytics"), "owners line up:\n{shot}");
+        assert!(shot.contains("Waiting for you · 2"), "{shot}");
+        assert!(shot.lines().any(|l| l.contains("T-2 Analytics") && l.contains("needs you")), "{shot}");
         assert!(shot.contains("1 to review · 1 waiting on you"), "{shot}");
+        // Opened, what it needs.
+        app.open(Side::Ticket(2));
+        let shot = screen(&app, 120, 30);
+        assert!(shot.contains("GitHub token") && shot.contains("PostHog secrets"), "{shot}");
         app.pane = Pane::Board;
         let shot = screen(&app, 120, 30);
         assert!(shot.contains("WAITING ON YOU  1"), "{shot}");
@@ -3349,12 +3437,12 @@ mod tests {
         app.flash = None;
         let shot = screen(&app, 110, 30);
         assert!(shot.lines().next().unwrap().contains("site · app ⚑1 · all"), "{shot}");
-        assert!(shot.contains("T-3   app   Onboarding screens"), "the review card names the project:\n{shot}");
+        assert!(shot.lines().any(|l| l.contains("T-3 Onboarding screens") && l.contains("review")), "the side list has it:\n{shot}");
         app.pane = Pane::Board;
-        let shot = screen(&app, 110, 30);
+        let shot = screen(&app, 150, 30);
         assert!(shot.contains("› T-3   app   code    Onboarding screens"), "{shot}");
         // Its chip is a click away.
-        let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 110, 30), &Layouts::default());
+        let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 150, 30), &Layouts::default());
         let chip = laid.hits.iter().find(|h| h.3 == Hit::Project(Some(1))).copied().unwrap();
         let row: String = shot.lines().next().unwrap().chars().skip(chip.0 as usize).take(3).collect();
         assert_eq!(row, "app");
@@ -3434,7 +3522,7 @@ mod tests {
         assert!(shot.contains("Hero") && shot.contains("Onboarding screens") && shot.contains("Competitor research"), "{shot}");
         app.pane = Pane::Conversation;
         let shot = screen(&app, 120, 30);
-        assert!(shot.contains("Waiting for your review · 1"), "{shot}");
+        assert!(shot.contains("Waiting for you · 1"), "{shot}");
         assert!(!shot.lines().last().unwrap().contains("· site"), "{shot}");
     }
 
@@ -3467,13 +3555,13 @@ mod tests {
         assert!(shot.lines().next().unwrap().contains("site ●1 · app ⚑1 · all"), "{shot}");
         // The squad: a member's project before its ticket.
         assert!(shot.contains("site T-4"), "{shot}");
-        // However narrow the squad, the ticket shows.
+        // However narrow the side list, the ticket shows.
         app.projects[0] = "/code/marketing-website".into();
         app.tickets.iter_mut().find(|t| t.id == 4).unwrap().project = Some("/code/marketing-website".into());
         let mut squad = Terminal::new(TestBackend::new(30, 10)).unwrap();
-        squad.draw(|f| render_squad(f, f.area(), &app, Theme::plain())).unwrap();
+        squad.draw(|f| render_side(f, f.area(), &app, Theme::plain())).unwrap();
         let rows: String = squad.backend().buffer().content().iter().map(|c| c.symbol()).collect();
-        assert!(rows.contains("… T-4"), "{rows}");
+        assert!(rows.contains("T-4 Hero"), "{rows}");
         app.projects[0] = "/code/site".into();
         app.tickets.iter_mut().find(|t| t.id == 4).unwrap().project = Some("/code/site".into());
         // In focus, a message says where it goes.
@@ -3612,7 +3700,7 @@ mod tests {
         // The rows under a member still click through to the right member.
         let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 140, 30), &Layouts::default());
         let pm_row = shot.lines().position(|l| l.contains("pm    haiku")).unwrap() as u16;
-        assert!(laid.hits.iter().any(|h| h.2 == pm_row && matches!(h.3, Hit::Member(_))));
+        assert!(laid.hits.iter().any(|h| h.2 == pm_row && h.3 == Hit::Side(Side::Pm)));
         // Done, gone; the turn's end takes the rest.
         app.on_event(Event::SubagentEnded { session: pm, id: "t2".into() });
         assert!(!screen(&app, 140, 30).contains("Read the logs"));

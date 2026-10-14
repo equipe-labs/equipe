@@ -851,43 +851,15 @@ impl Runtime {
         }
         self.save_waiting(pm);
         if let Some(text) = shown {
-            self.show_news(squad, pm, text);
+            self.show_news(pm, text);
         }
     }
 
-    /// Team news on the PM's screen, in the conversation it is about: a
-    /// ticket's in its project's (the squad's for work in the home), not
-    /// whichever the PM happens to be in.
-    fn show_news(&mut self, squad: &str, pm: SessionId, text: String) {
-        let ticket = text.match_indices("T-").find_map(|(at, _)| {
-            let digits: String = text[at + 2..].chars().take_while(char::is_ascii_digit).collect();
-            digits.parse::<TicketId>().ok()
-        });
-        let projects = self.projects(squad);
-        let about = ticket.and_then(|id| self.journal(squad)?.ticket(id).ok().flatten()).map(|t| {
-            let project = if t.kind.in_home() { t.project.clone() } else { t.project.clone().or_else(|| projects.first().cloned()) };
-            project.as_deref().map(board::project_name)
-        });
-        let Some(about) = about else {
-            return self.publish(Event::Notice { session: pm, text });
-        };
-        // That conversation's lane, when it runs beside the PM's.
-        if let Some((&lane, _)) = self.sessions.iter().find(|(_, s)| s.lane.as_ref() == Some(&(pm, about.clone()))) {
-            return self.publish(Event::Notice { session: lane, text });
-        }
-        let current = self.sessions.get(&pm).and_then(|s| {
-            s.transcript.entries().iter().rev().find_map(|e| match e {
-                Entry::Thread { project } => Some(project.clone()),
-                _ => None,
-            })
-        });
-        if current.clone().unwrap_or_default() == about {
-            return self.publish(Event::Notice { session: pm, text });
-        }
-        // Into that conversation for the line, then back where the PM is.
-        self.publish(Event::Thread { session: pm, project: about });
-        self.publish(Event::Notice { session: pm, text });
-        self.publish(Event::Thread { session: pm, project: current.flatten() });
+    /// Team news on the PM's screen: in its conversation — beside its own
+    /// ticket's work, when it runs there.
+    fn show_news(&mut self, pm: SessionId, text: String) {
+        let at = self.sessions.iter().find(|(_, s)| s.lane.as_ref().is_some_and(|(of, _)| *of == pm)).map_or(pm, |(&lane, _)| lane);
+        self.publish(Event::Notice { session: at, text });
     }
 
     /// When `id` is a member other than the PM, brief its PM with `line(name)`.
@@ -1186,9 +1158,6 @@ impl Runtime {
         if !self.ensure_codex(id).await {
             return;
         }
-        // The PM talks about the project the person is looking at in that
-        // project's own conversation — a memo, about the one it was left in.
-        self.enter_thread(id, memo_thread);
         self.publish(Event::UserMessage { session: id, text: text.clone() });
         // What the person writes in is what the squad writes for them.
         if let (Some(squad), Some(language)) = (self.sessions.get(&id).and_then(|s| s.squad.clone()), crate::language::detect(&text))
@@ -1198,16 +1167,18 @@ impl Runtime {
             let _ = journal.set_language(language);
         }
         self.tell_the_pm(id, |name| format!("The person told {name}: {text}"), Some(&text));
-        // The PM's whole-squad conversation oversees every project: it is told
+        // The project the message is about: the one the person looks at — a
+        // memo's, the one it was left in. None: the whole squad.
+        let about = memo_thread.flatten().or_else(|| {
+            let squad = self.sessions.get(&id)?.squad.clone()?;
+            self.focus.get(&squad).cloned()
+        });
+        // About the whole squad, the PM oversees every project: it is told
         // where each stands with every message.
         let overview = self
             .sessions
             .get(&id)
-            .filter(|s| s.is_pm() && s.work.is_none())
-            .filter(|s| match &s.lane {
-                Some((_, project)) => project.is_none(),
-                None => s.squad.as_ref().is_some_and(|squad| !self.focus.contains_key(squad)),
-            })
+            .filter(|s| s.is_pm() && s.work.is_none() && about.is_none())
             .and_then(|s| s.squad.clone())
             .and_then(|squad| self.squad_overview(&squad));
         let Some(session) = self.sessions.get_mut(&id) else {
@@ -1223,27 +1194,13 @@ impl Runtime {
             ),
         };
         // With several projects, which one the person is looking at.
-        // A lane's conversation is about its own project; the member's, about the one in view.
-        let about = match &session.lane {
-            Some((_, project)) => project.clone(),
-            None => session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned(),
-        };
         if let Some(project) = about {
-            prompt = if session.member.is_some() && session.work.is_none() {
-                format!(
-                    "[equipe: this is your conversation about the project {project} — the whole squad's, and each other \
-project's, are conversations of their own. New work is for {project} unless the person says otherwise; what \
-should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
-                )
-            } else {
-                format!("[equipe: the person is looking at the project {project} — new work is for it unless they say otherwise]\n\n{prompt}")
-            };
+            prompt = format!("[equipe: the person is looking at the project {project} — new work is for it unless they say otherwise]\n\n{prompt}");
         } else if let Some(overview) = overview {
             prompt = format!(
-                "[equipe: this is the whole squad's conversation — here you oversee every project rather than work in \
-one. Where each project stands now:\n{overview}\nAnswer for the whole: priorities, what waits on the person, what \
-goes next across projects. Work for one project goes to it — tickets for its owners on the board, with that project \
-— and you say where it went; its details are talked over in that project's own conversation.]\n\n{prompt}"
+                "[equipe: the person is looking at the whole squad — you oversee every project. Where each stands \
+now:\n{overview}\nAnswer for the whole: priorities, what waits on the person, what goes next across projects. Work \
+for one project goes to it as tickets for its owners, with that project — and you say where it went.]\n\n{prompt}"
             );
         }
         self.save_waiting(id);
@@ -1330,45 +1287,32 @@ goes next across projects. Work for one project goes to it — tickets for its o
         Some(lines.join("\n"))
     }
 
-    /// Where a message to member `id` goes: its conversation about the project
-    /// the person looks at. That is the member's own session while it is free
-    /// or already in that conversation; while it works in another, a lane —
-    /// that conversation run beside the one at work, so neither waits.
+    /// Where a message to member `id` goes. A member has one conversation
+    /// with the person; to anyone on a ticket, what is said is about that
+    /// work. The PM alone is never out of reach: while it works a ticket of
+    /// its own, its conversation runs beside the work — a lane.
     fn route(&mut self, id: SessionId) -> SessionId {
         let Some(session) = self.sessions.get(&id) else {
             return id;
         };
-        if session.lane.is_some() || session.member.is_none() {
+        if session.lane.is_some() || !session.is_pm() {
             return id;
         }
-        let wanted = session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned();
-        // On a ticket, what is said about its project — or, to anyone but the
-        // PM, about the whole squad — is about that work: it steers it. About
-        // another project (the PM: or the squad), the conversation runs beside.
-        let on_ticket = match &session.work {
-            Some(work) => {
-                if wanted.as_deref() == Some(board::project_name(&work.project).as_str()) || (wanted.is_none() && !session.is_pm()) {
-                    return id;
-                }
-                true
-            }
-            None => false,
-        };
-        if let Some((&lane, _)) = self.sessions.iter().find(|(_, s)| s.lane.as_ref() == Some(&(id, wanted.clone()))) {
+        if let Some((&lane, _)) = self.sessions.iter().find(|(_, s)| s.lane.as_ref().is_some_and(|(of, _)| *of == id)) {
             return lane;
         }
-        if !on_ticket && (session.thread == wanted || !session.is_working()) {
+        if session.work.is_none() {
             return id;
         }
-        self.open_lane(id, wanted).unwrap_or(id)
+        self.open_lane(id, None).unwrap_or(id)
     }
 
     /// A lane of member `main` for its conversation about `project`, taking
     /// that conversation up where the member left it.
     fn open_lane(&mut self, main: SessionId, project: Option<String>) -> Option<SessionId> {
         let m = self.sessions.get_mut(&main)?;
-        // On a ticket, the member's desk conversation waits in its own place.
-        let thread = if m.thread == project && m.work.is_some() {
+        // On a ticket, the member's conversation waits in its own place.
+        let thread = if m.work.is_some() {
             DeskThread {
                 claude_session: m.claude_session.take(),
                 history: std::mem::take(&mut m.history),
@@ -1457,12 +1401,10 @@ goes next across projects. Work for one project goes to it — tickets for its o
         };
         if let Some(m) = self.sessions.get_mut(&main) {
             let thread = DeskThread { claude_session: s.claude_session, history: s.history, desk_context: s.desk_context };
-            if m.thread == project {
-                // Its desk is on that project, the conversation taken from it while
-                // it was on a ticket: back in place — unless it began another meanwhile.
-                if m.claude_session.is_none() && m.history.is_empty() {
-                    (m.claude_session, m.history, m.desk_context) = (thread.claude_session, thread.history, thread.desk_context);
-                }
+            // The conversation taken from it while it was on a ticket: back in
+            // place — unless it began another meanwhile.
+            if m.claude_session.is_none() && m.history.is_empty() {
+                (m.claude_session, m.history, m.desk_context) = (thread.claude_session, thread.history, thread.desk_context);
             } else {
                 m.threads.entry(project).or_insert(thread);
             }
@@ -1492,54 +1434,6 @@ goes next across projects. Work for one project goes to it — tickets for its o
         {
             let _ = journal.set_desk_threads(main, thread.as_deref(), &others);
         }
-    }
-
-    /// Move a member's desk conversation to its thread for the project the person
-    /// looks at (the whole squad's when none): the current one is put aside,
-    /// the thread's own taken up — or started — so what's said about one
-    /// project never fills another's conversation.
-    fn enter_thread(&mut self, id: SessionId, wanted: Option<Option<String>>) {
-        let Some(session) = self.sessions.get(&id) else {
-            return;
-        };
-        // A lane is one conversation for good.
-        if session.member.is_none() || session.work.is_some() || session.lane.is_some() {
-            return;
-        }
-        let wanted = wanted.unwrap_or_else(|| session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned());
-        let Some(session) = self.sessions.get_mut(&id) else {
-            return;
-        };
-        if session.thread == wanted {
-            return;
-        }
-        let current = DeskThread {
-            claude_session: session.claude_session.take(),
-            history: std::mem::take(&mut session.history),
-            desk_context: session.desk_context.take(),
-        };
-        let left = std::mem::replace(&mut session.thread, wanted.clone());
-        session.threads.insert(left, current);
-        let next = session.threads.remove(&wanted).unwrap_or_default();
-        session.claude_session = next.claude_session;
-        session.history = next.history;
-        session.desk_context = next.desk_context;
-        session.context = session.desk_context;
-        let others: HashMap<String, String> = session
-            .threads
-            .iter()
-            .filter_map(|(project, t)| Some((project.clone().unwrap_or_default(), t.claude_session.clone()?)))
-            .collect();
-        let resume = session.claude_session.clone();
-        let squad = session.squad.clone();
-        if let Some(journal) = squad.as_deref().and_then(|s| journal_for(&mut self.journals, &self.config.home, s)) {
-            let _ = journal.set_desk_threads(id, wanted.as_deref(), &others);
-            let _ = match &resume {
-                Some(claude) => journal.set_engine_session(id, claude),
-                None => journal.clear_engine_session(id),
-            };
-        }
-        self.publish(Event::Thread { session: id, project: wanted });
     }
 
     /// Run a turn with `prompt` in the session's current place: its ticket's
