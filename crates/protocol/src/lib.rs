@@ -699,9 +699,12 @@ pub struct SessionInfo {
     /// Memos waiting for the turn in progress to end.
     #[serde(default)]
     pub queued: Vec<String>,
-    /// The project the memos were left about.
+    /// The project the first memo was left about (for older screens).
     #[serde(default)]
     pub queued_project: Option<String>,
+    /// The project each memo was left about (`None`: the whole squad).
+    #[serde(default)]
+    pub queued_in: Vec<Option<String>>,
     /// The ticket it is working on, and where.
     #[serde(default)]
     pub work: Option<WorkInfo>,
@@ -909,6 +912,7 @@ mod tests {
                 recent: vec![Entry::User { text: "fix it".into() }, Entry::Reply { text: "on it".into() }],
                 queued: vec!["and the tests".into()],
                 queued_project: None,
+                queued_in: vec![None],
                 work: Some(WorkInfo { ticket: 1, project: "/repo".into(), workspace: None }),
                 mode: Some(Mode::Ask),
             }],

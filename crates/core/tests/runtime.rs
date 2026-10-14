@@ -2108,13 +2108,28 @@ async fn a_memo_goes_into_the_conversation_of_the_project_it_was_left_in() {
     handle.send(Command::Submit { session: 1, text: "about the app".into() });
     let queued = until(&mut events, |e| matches!(e, Event::MessageQueued { .. })).await;
     assert!(matches!(queued.last(), Some(Event::MessageQueued { project: Some(p), .. }) if p == "app"), "{queued:?}");
+    // Another about site, and a second about the app: each project's memos go together, into its own conversation.
     handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
+    handle.send(Command::Submit { session: 1, text: "about the site".into() });
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("app".into()) });
+    handle.send(Command::Submit { session: 1, text: "more on the app".into() });
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
+    let snapshot = handle.snapshot("acme").await;
+    assert_eq!(snapshot.sessions[0].queued_in, [Some("app".into()), Some("site".into()), Some("app".into())]);
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     let second = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(second.iter().any(|e| matches!(e, Event::Thread { session: 1, project: Some(p) } if p == "app")), "{second:?}");
-    // The app's conversation starts afresh — not on the end of site's.
+    assert!(
+        second.iter().any(|e| matches!(e, Event::UserMessage { text, .. } if text == "about the app\n\nmore on the app")),
+        "{second:?}"
+    );
+    let third = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(third.iter().any(|e| matches!(e, Event::Thread { session: 1, project: Some(p) } if p == "site")), "{third:?}");
+    assert!(third.iter().any(|e| matches!(e, Event::UserMessage { text, .. } if text == "about the site")), "{third:?}");
+    // The app's conversation starts afresh — not on the end of site's — and site's carries on.
     let all = calls(&recorded);
     assert_eq!(arg(&all[1], "--resume"), None);
+    assert_eq!(arg(&all[2], "--resume"), Some("sess-0"));
 }
 
 #[tokio::test]

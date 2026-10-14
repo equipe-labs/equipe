@@ -100,8 +100,9 @@ pub struct Agent {
     pub transcript: Transcript,
     /// Memos waiting for its turn to end.
     pub queued: Vec<String>,
-    /// The project the memos were left about: they show in its conversation.
-    pub queued_project: Option<String>,
+    /// The project each memo was left about (`None`: the whole squad): each
+    /// shows in that project's conversation.
+    pub queued_in: Vec<Option<String>>,
     pub tokens: u64,
     /// How full its conversation's context is, and the window.
     pub context: Option<(u64, u64)>,
@@ -149,7 +150,7 @@ impl Agent {
             state: AgentState::Starting,
             transcript: Transcript::default(),
             queued: Vec::new(),
-            queued_project: None,
+            queued_in: Vec::new(),
             tokens: 0,
             context: None,
             seen: (0, 0),
@@ -241,8 +242,13 @@ impl Agent {
                 SessionState::Working => AgentState::Working,
             },
             transcript: Transcript::from_entries(info.recent),
+            // From an older daemon: one project for them all.
+            queued_in: if info.queued_in.len() == info.queued.len() {
+                info.queued_in
+            } else {
+                vec![info.queued_project; info.queued.len()]
+            },
             queued: info.queued,
-            queued_project: info.queued_project,
             tokens: info.tokens,
             context: info.context,
             seen: (0, 0),
@@ -282,6 +288,23 @@ impl Agent {
 
     /// Whether what belongs to `project`'s conversation (`None`: the squad's)
     /// shows in the one in view.
+    /// The memos sent as its new turn starts: those of the first project one
+    /// was left in.
+    fn deliver_memos(&mut self) {
+        let Some(project) = self.queued_in.first().cloned() else {
+            self.queued.clear();
+            return;
+        };
+        let (mut queued, mut queued_in) = (Vec::new(), Vec::new());
+        for (text, about) in self.queued.drain(..).zip(self.queued_in.drain(..)) {
+            if about != project {
+                queued.push(text);
+                queued_in.push(about);
+            }
+        }
+        (self.queued, self.queued_in) = (queued, queued_in);
+    }
+
     pub fn in_view(&self, project: Option<&str>) -> bool {
         project == self.thread_view.as_deref() || (self.thread_view.is_none() && !self.is_pm())
     }
@@ -1099,8 +1122,9 @@ impl App {
                 agent.suggestion = None;
                 agent.scroll_back = 0;
                 agent.unseen = 0;
-                // Waiting memos are delivered together as one message.
-                agent.queued.clear();
+                // The memos of one project are delivered together, into its
+                // conversation; another project's wait for the next turn's end.
+                agent.deliver_memos();
             }
             Event::Suggestion { text, .. } => {
                 // Too late once it is at work again, or a memo is on its way.
@@ -1111,7 +1135,7 @@ impl App {
             Event::MessageQueued { text, project, .. } => {
                 agent.suggestion = None;
                 agent.queued.push(text);
-                agent.queued_project = project;
+                agent.queued_in.push(project);
             }
             Event::Output { tokens, .. } => agent.output = tokens,
             Event::WorkStarted { ticket, project, workspace, .. } => {
@@ -2684,6 +2708,7 @@ mod tests {
             recent: Vec::new(),
             queued: Vec::new(),
             queued_project: None,
+            queued_in: Vec::new(),
             work: None,
             mode: None,
         }

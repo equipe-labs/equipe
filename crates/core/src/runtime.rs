@@ -325,10 +325,13 @@ struct Session {
     refresh: Option<bool>,
     transcript: Transcript,
     turn: Option<JoinHandle<()>>,
-    /// Memos left while a turn ran, delivered together when it ends.
+    /// Memos left while a turn ran, delivered when it ends: those about one
+    /// project together, in that project's conversation, then the next project's.
     queued: Vec<String>,
-    /// The project the person was looking at when the memos were left (`None`
-    /// inside: the whole squad); they go into that project's conversation.
+    /// For each memo, the project the person was looking at when they left it
+    /// (`None`: the whole squad).
+    memo_threads: Vec<Option<String>>,
+    /// The conversation the memos being delivered now go into.
     memo_thread: Option<Option<String>>,
     /// For the PM: what happened with the team since the PM's last turn. It
     /// travels with the PM's next message, so the PM keeps up without spending a
@@ -348,6 +351,27 @@ struct Session {
 }
 
 impl Session {
+    /// The memos about the first project one was left in, taken out to be sent
+    /// together into its conversation; the rest wait for the next turn's end.
+    fn next_memos(&mut self) -> Option<String> {
+        let project = self.memo_threads.first().cloned().or_else(|| (!self.queued.is_empty()).then_some(None))?;
+        let mut taken = Vec::new();
+        let mut kept = (Vec::new(), Vec::new());
+        let threads = std::mem::take(&mut self.memo_threads);
+        for (i, text) in std::mem::take(&mut self.queued).into_iter().enumerate() {
+            let about = threads.get(i).cloned().unwrap_or_else(|| project.clone());
+            if about == project {
+                taken.push(text);
+            } else {
+                kept.0.push(text);
+                kept.1.push(about);
+            }
+        }
+        (self.queued, self.memo_threads) = kept;
+        self.memo_thread = Some(project);
+        Some(taken.join("\n\n"))
+    }
+
     fn is_working(&self) -> bool {
         self.turn.as_ref().is_some_and(|t| !t.is_finished())
     }
@@ -701,10 +725,10 @@ impl Runtime {
         let (Some(squad), queued, briefing) = (session.squad.clone(), session.queued.clone(), session.briefing.clone()) else {
             return;
         };
-        let memo_thread: Vec<String> = session.memo_thread.clone().map(Option::unwrap_or_default).into_iter().collect();
+        let threads: Vec<String> = session.memo_threads.iter().map(|p| p.clone().unwrap_or_default()).collect();
         if let Some(journal) = self.journal(&squad) {
             let _ = journal.set_waiting(id, "memo", &queued);
-            let _ = journal.set_waiting(id, "memo-thread", &memo_thread);
+            let _ = journal.set_waiting(id, "memo-threads", &threads);
             let _ = journal.set_waiting(id, "briefing", &briefing);
         }
     }
@@ -976,6 +1000,7 @@ impl Runtime {
                 transcript: Transcript::default(),
                 turn: None,
                 queued: Vec::new(),
+                memo_threads: Vec::new(),
                 memo_thread: None,
                 answers_person: false,
                 briefing: Vec::new(),
@@ -1025,11 +1050,9 @@ impl Runtime {
                 Some(work) => Some(crate::board::project_name(&work.project)),
                 None => session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned(),
             };
-            if session.queued.is_empty() || session.memo_thread.is_none() {
-                session.memo_thread = Some(looking_at);
-            }
             session.queued.push(text.clone());
-            let project = session.memo_thread.clone().flatten();
+            session.memo_threads.push(looking_at.clone());
+            let project = looking_at;
             self.save_waiting(id);
             return self.publish(Event::MessageQueued { session: id, text, project });
         }
@@ -1569,10 +1592,7 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
         } else if session.work.as_ref().is_some_and(|w| w.waiting.is_some()) {
             self.end_work(id, WorkEnd::Waiting);
         }
-        if let Some(session) = self.sessions.get_mut(&id)
-            && !session.queued.is_empty()
-        {
-            let text = std::mem::take(&mut session.queued).join("\n\n");
+        if let Some(text) = self.sessions.get_mut(&id).and_then(Session::next_memos) {
             self.save_waiting(id);
             Box::pin(self.submit(id, text)).await;
         }
@@ -2843,7 +2863,8 @@ it back there once they have done it. End your turn now with a short line on wha
                     context: s.context,
                     recent: entries[entries.len().saturating_sub(SNAPSHOT_LINES)..].to_vec(),
                     queued: s.queued.clone(),
-                    queued_project: s.memo_thread.clone().flatten(),
+                    queued_project: s.memo_threads.first().cloned().flatten(),
+                    queued_in: s.memo_threads.clone(),
                     work: s.work.as_ref().map(|w| WorkInfo {
                         ticket: w.ticket,
                         project: w.project.clone(),
@@ -2935,6 +2956,18 @@ it back there once they have done it. End your turn now with a short line on wha
                     }
                 }
                 let memory = Some(journal::member_memory_dir(&self.config.home, &squad, &member.role));
+                let queued = journal.waiting(record.id, "memo").unwrap_or_default();
+                let mut memo_threads: Vec<Option<String>> = journal
+                    .waiting(record.id, "memo-threads")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|p| Some(p).filter(|p| !p.is_empty()))
+                    .collect();
+                // From before memos kept a project each: one for them all.
+                if memo_threads.len() != queued.len() {
+                    let all = journal.waiting(record.id, "memo-thread").unwrap_or_default().pop().filter(|p| !p.is_empty());
+                    memo_threads = vec![all; queued.len()];
+                }
                 // The PM's other conversations, by project, as they were left.
                 let (thread, others) = journal.desk_threads(record.id);
                 let threads: HashMap<Option<String>, DeskThread> = others
@@ -2971,8 +3004,9 @@ it back there once they have done it. End your turn now with a short line on wha
                         refresh,
                         transcript: Transcript::from_entries(conversation),
                         turn: None,
-                        queued: journal.waiting(record.id, "memo").unwrap_or_default(),
-                        memo_thread: journal.waiting(record.id, "memo-thread").unwrap_or_default().pop().map(|p| Some(p).filter(|p| !p.is_empty())),
+                        queued,
+                        memo_threads,
+                        memo_thread: None,
                         briefing: journal.waiting(record.id, "briefing").unwrap_or_default(),
                         memory,
                         mode: record.mode,
@@ -3006,8 +3040,8 @@ it back there once they have done it. End your turn now with a short line on wha
             .collect();
         let mut memos = Vec::new();
         for id in idle {
-            if let Some(session) = self.sessions.get_mut(&id) {
-                memos.push((id, std::mem::take(&mut session.queued).join("\n\n")));
+            if let Some(text) = self.sessions.get_mut(&id).and_then(Session::next_memos) {
+                memos.push((id, text));
             }
             self.save_waiting(id);
         }
