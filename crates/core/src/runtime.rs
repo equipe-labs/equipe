@@ -1278,14 +1278,26 @@ goes next across projects. Work for one project goes to it — tickets for its o
         let Some(session) = self.sessions.get(&id) else {
             return id;
         };
-        if session.lane.is_some() || session.member.is_none() || session.work.is_some() {
+        if session.lane.is_some() || session.member.is_none() {
             return id;
         }
         let wanted = session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned();
+        // On a ticket, what is said about its project — or, to anyone but the
+        // PM, about the whole squad — is about that work: it steers it. About
+        // another project (the PM: or the squad), the conversation runs beside.
+        let on_ticket = match &session.work {
+            Some(work) => {
+                if wanted.as_deref() == Some(board::project_name(&work.project).as_str()) || (wanted.is_none() && !session.is_pm()) {
+                    return id;
+                }
+                true
+            }
+            None => false,
+        };
         if let Some((&lane, _)) = self.sessions.iter().find(|(_, s)| s.lane.as_ref() == Some(&(id, wanted.clone()))) {
             return lane;
         }
-        if session.thread == wanted || !session.is_working() {
+        if !on_ticket && (session.thread == wanted || !session.is_working()) {
             return id;
         }
         self.open_lane(id, wanted).unwrap_or(id)
@@ -1295,7 +1307,16 @@ goes next across projects. Work for one project goes to it — tickets for its o
     /// that conversation up where the member left it.
     fn open_lane(&mut self, main: SessionId, project: Option<String>) -> Option<SessionId> {
         let m = self.sessions.get_mut(&main)?;
-        let thread = m.threads.remove(&project).unwrap_or_default();
+        // On a ticket, the member's desk conversation waits in its own place.
+        let thread = if m.thread == project && m.work.is_some() {
+            DeskThread {
+                claude_session: m.claude_session.take(),
+                history: std::mem::take(&mut m.history),
+                desk_context: m.desk_context.take(),
+            }
+        } else {
+            m.threads.remove(&project).unwrap_or_default()
+        };
         let id = equipe_protocol::new_session_id();
         let lane = Session {
             squad: m.squad.clone(),
@@ -1372,12 +1393,17 @@ goes next across projects. Work for one project goes to it — tickets for its o
         let Some(s) = self.sessions.remove(&lane) else {
             return;
         };
-        if let Some(m) = self.sessions.get_mut(&main)
-            // The member took the conversation up itself meanwhile: its own goes on.
-            && m.thread != project
-            && !m.threads.contains_key(&project)
-        {
-            m.threads.insert(project, DeskThread { claude_session: s.claude_session, history: s.history, desk_context: s.desk_context });
+        if let Some(m) = self.sessions.get_mut(&main) {
+            let thread = DeskThread { claude_session: s.claude_session, history: s.history, desk_context: s.desk_context };
+            if m.thread == project {
+                // Its desk is on that project, the conversation taken from it while
+                // it was on a ticket: back in place — unless it began another meanwhile.
+                if m.claude_session.is_none() && m.history.is_empty() {
+                    (m.claude_session, m.history, m.desk_context) = (thread.claude_session, thread.history, thread.desk_context);
+                }
+            } else {
+                m.threads.entry(project).or_insert(thread);
+            }
         }
         self.persist_threads(main);
     }

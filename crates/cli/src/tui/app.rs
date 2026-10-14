@@ -673,6 +673,21 @@ impl App {
         self.lanes.iter().filter(|l| l.lane.as_ref().is_some_and(|lane| lane.of == member.id) && l.state == AgentState::Working).count()
     }
 
+    /// Whether what the person says to `member`, at work, goes into a
+    /// conversation beside that work rather than steering it: it is about
+    /// another project than the one it works in — or, to the PM, about the
+    /// whole squad while it is on one project's ticket.
+    pub fn talks_beside(&self, member: &Agent) -> bool {
+        match member.ticket {
+            None => member.current_thread() != member.thread_view.as_deref(),
+            Some(_) => match (self.agent_project(member), &self.focus) {
+                (Some(project), Some(focus)) => project != *focus,
+                (_, None) => member.is_pm(),
+                (None, Some(_)) => false,
+            },
+        }
+    }
+
     fn lane_of(&self, member: &Agent) -> Option<&Agent> {
         self.lanes.iter().find(|l| l.lane.as_ref().is_some_and(|lane| lane.of == member.id && lane.project == member.thread_view))
     }
@@ -1968,12 +1983,8 @@ impl App {
         let (state, about) = match self.agents.get(target) {
             Some(agent) if target == self.selected => match self.lane_of(agent) {
                 Some(lane) => (lane.state, None),
-                None if agent.state == AgentState::Working
-                    && agent.member.is_some()
-                    && agent.ticket.is_none()
-                    && agent.current_thread() != agent.thread_view.as_deref() =>
-                {
-                    (AgentState::Ready, agent.thread_view.clone())
+                None if agent.state == AgentState::Working && agent.member.is_some() && self.talks_beside(agent) => {
+                    (AgentState::Ready, Some(agent.thread_view.clone().unwrap_or_else(|| "the whole squad".to_owned())))
                 }
                 None => (agent.state, None),
             },

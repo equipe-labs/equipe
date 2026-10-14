@@ -2198,6 +2198,33 @@ async fn a_memo_waits_in_the_conversation_it_was_left_in_while_another_project_g
 }
 
 #[tokio::test]
+async fn on_a_tickets_work_talk_about_another_project_goes_beside_it_not_into_it() {
+    let site = named("site");
+    let app = named("app");
+    let turn = format!("case \"$*\" in *\"Translate the site\"*) sleep 3;; esac\n{}", answering_per_call("ok"));
+    let (claude, recorded) = recording_claude(&turn);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Translate the site", "body": "-", "owner": "pm", "project": "site" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 1, .. })).await;
+
+    // Looking at app: a conversation about app, beside the ticket — not steering it.
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("app".into()) });
+    handle.send(Command::Submit { session: 1, text: "what does the app need?".into() });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::LaneOpened { of: 1, project: Some(p), .. } if p == "app")), "{seen:#?}");
+    assert!(!seen.iter().any(|e| matches!(e, Event::SteerQueued { .. } | Event::MessageQueued { .. })), "{seen:#?}");
+    let all = calls(&recorded);
+    let call = all.iter().find(|c| arg(c, "-p").is_some_and(|p| p.contains("what does the app need?"))).unwrap();
+    assert!(arg(call, "-p").unwrap().contains("your conversation about the project app"));
+    // About site, its ticket's project: that steers the work.
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
+    handle.send(Command::Submit { session: 1, text: "use formal Korean".into() });
+    let seen = until(&mut events, |e| matches!(e, Event::SteerQueued { .. } | Event::LaneOpened { .. } | Event::TurnEnded { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::SteerQueued { session: 1, .. })), "{seen:#?}");
+}
+
+#[tokio::test]
 async fn a_member_busy_in_one_project_talks_about_another_in_a_lane_beside_it() {
     let site = named("site");
     let app = named("app");
@@ -2265,7 +2292,7 @@ async fn in_the_whole_squads_conversation_the_pm_is_told_where_every_project_sta
     assert!(prompt.contains("- site: pm talking with the person about it (“site job”)"), "{prompt}");
     assert!(prompt.contains("- app: no one on it now; 1 to do or in progress"), "{prompt}");
     // In one project's conversation, it isn't.
-    let first = all.iter().find(|c| arg(c, "-p").is_some_and(|p| p.contains("site job"))).unwrap();
+    let first = all.iter().find(|c| arg(c, "-p").is_some_and(|p| p.contains("site job") && !p.contains("how is everything?"))).unwrap();
     assert!(!arg(first, "-p").unwrap().contains("Where each project stands"));
 }
 

@@ -2336,12 +2336,12 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
                 spans.push(Span::styled(" · ", theme.dim()));
                 spans.push(Span::styled(project_name(project), project_style(app, Some(project), theme).add_modifier(Modifier::BOLD)));
             }
-            // At work on another project's ticket: the message goes to that work.
+            // At work on another project's ticket: this conversation runs beside it.
             if let Some(agent) = app.agents.iter().find(|a| a.label() == name)
                 && let (Some(ticket), Some(focus)) = (agent.ticket, app.focus.as_ref())
                 && let Some(project) = app.agent_project(agent).filter(|p| p != focus)
             {
-                spans.push(Span::styled(format!(" · at work on {} T-{ticket} — your message goes there", project_name(&project)), theme.dim()));
+                spans.push(Span::styled(format!(" · at work on {} T-{ticket} — this talk goes on beside it", project_name(&project)), theme.dim()));
             }
             if direct {
                 spans.push(Span::styled(" · the PM hears about it", theme.dim()));
@@ -3389,7 +3389,7 @@ mod tests {
         app.focus = Some("/code/app".into());
         app.flash = None;
         let shot = screen(&app, 140, 30);
-        assert!(shot.lines().last().unwrap().contains("at work on site T-4 — your message goes there"), "{shot}");
+        assert!(shot.lines().last().unwrap().contains("at work on site T-4 — this talk goes on beside it"), "{shot}");
     }
 
     #[test]
