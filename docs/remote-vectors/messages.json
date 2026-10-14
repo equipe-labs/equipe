@@ -478,6 +478,7 @@
                     ],
                     "session": 1001,
                     "state": "ready",
+                    "steering": [],
                     "title": "이번 주 계획",
                     "tokens": 18200,
                     "work": null,
@@ -505,6 +506,7 @@
                     ],
                     "session": 4242,
                     "state": "working",
+                    "steering": [],
                     "title": null,
                     "tokens": 5300,
                     "work": {

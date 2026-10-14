@@ -17,6 +17,12 @@ pub const PAIRING_MS: u64 = 5 * 60 * 1000;
 const CLOCK_SKEW_MS: u64 = 5 * 60 * 1000;
 /// Of a request's command, this much travels in a push.
 const PUSH_ACTION: usize = 800;
+/// A demo daemon's standing slot is opened again this often, each time for
+/// the relay's longest (10 minutes).
+const STANDING_REFRESH_MS: u64 = 4 * 60 * 1000;
+const STANDING_SLOT_MS: u64 = 10 * 60 * 1000;
+/// How many phones a demo daemon keeps; past that the oldest is forgotten.
+pub const DEMO_DEVICES: usize = 200;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
@@ -53,6 +59,18 @@ struct Pairing {
     shown: bool,
 }
 
+/// A demo daemon's code: open for good, answered without asking anyone.
+/// Only `equipe demo serve` opens one; `equipe daemon` never does.
+#[derive(Debug)]
+struct Standing {
+    slot: String,
+    secret: [u8; 32],
+    /// The name phones are told they paired with.
+    name: String,
+    /// When `pair_open` was last sent.
+    opened: u64,
+}
+
 #[derive(Debug, Default)]
 pub struct Core {
     pub config: Option<Config>,
@@ -60,6 +78,7 @@ pub struct Core {
     seq_in: HashMap<String, u64>,
     seq_out: HashMap<String, u64>,
     pairing: Option<Pairing>,
+    standing: Option<Standing>,
     /// Every squad, with its projects' names — for `squads`.
     pub squads: Vec<(String, Vec<String>)>,
     /// Ticket statuses per squad, to push only on a change.
@@ -134,7 +153,7 @@ impl Core {
 
     /// Whether the relay is worth a connection: devices to reach, or one pairing.
     pub fn wants_relay(&self) -> bool {
-        self.config.as_ref().is_some_and(|c| !c.devices.is_empty()) || self.pairing.is_some()
+        self.config.as_ref().is_some_and(|c| !c.devices.is_empty()) || self.pairing.is_some() || self.standing.is_some()
     }
 
     pub fn has_devices(&self) -> bool {
@@ -175,20 +194,64 @@ impl Core {
             out.extend([close, Action::Local(json!({ "refused": request.name }))]);
             return out;
         }
-        let id = super::hex(&super::random::<16>());
-        let token = super::b64(&super::random::<32>());
-        let Ok(data) = answer(json!({ "type": "paired", "device": id, "token": token, "name": super::hostname() })) else {
-            return vec![close, Action::Local(json!({ "error": "the device's key didn't work" }))];
+        let name = request.name.clone();
+        match admit(config, request, &pairing.secret, &pairing.slot, &super::hostname(), now) {
+            Some(mut out) => {
+                out.extend([close, Action::Local(json!({ "paired": name }))]);
+                out
+            }
+            None => vec![close, Action::Local(json!({ "error": "the device's key didn't work" }))],
+        }
+    }
+
+    /// `equipe demo serve`: keep a code open for good, with this secret, and
+    /// pair every phone that brings it. Its address, which never changes.
+    pub fn open_standing(&mut self, secret: [u8; 32], name: &str) -> Result<String, String> {
+        let config = self.config.as_ref().ok_or("not registered with the relay")?;
+        let url = pairing_url(&config.relay, &config.id, &config.public, &secret, name);
+        self.standing = Some(Standing { slot: slot(&secret), secret, name: name.to_owned(), opened: 0 });
+        Ok(url)
+    }
+
+    /// The standing slot, opened again at the relay — on a new connection, or
+    /// once it was answered and so closed.
+    pub fn reopen_standing(&mut self, now: u64) -> Vec<Action> {
+        match self.standing.as_mut() {
+            Some(s) => {
+                s.opened = now;
+                vec![Action::Relay(json!({ "type": "pair_open", "slot": s.slot, "expires": now + STANDING_SLOT_MS }))]
+            }
+            None => vec![],
+        }
+    }
+
+    /// The standing code stops working (a new one follows).
+    pub fn close_standing(&mut self) -> Vec<Action> {
+        match self.standing.take() {
+            Some(s) => vec![Action::Relay(json!({ "type": "pair_close", "slot": s.slot }))],
+            None => vec![],
+        }
+    }
+
+    /// A phone at the standing slot: paired at once; the oldest phone goes
+    /// past [`DEMO_DEVICES`].
+    fn on_standing_request(&mut self, data: &str, now: u64) -> Vec<Action> {
+        let (Some(standing), Some(config)) = (self.standing.as_ref(), self.config.as_mut()) else {
+            return vec![];
         };
-        config.devices.retain(|d| d.name != request.name || d.key != request.key);
-        config.devices.push(Device { id: id.clone(), name: request.name.clone(), platform: request.platform.clone(), key: request.key, added: now / 1000 });
-        vec![
-            Action::Save,
-            Action::Relay(json!({ "type": "device_add", "device": id, "token_hash": super::sha256_hex(token.as_bytes()) })),
-            Action::Relay(json!({ "type": "pair_send", "slot": pairing.slot, "data": data })),
-            close,
-            Action::Local(json!({ "paired": request.name })),
-        ]
+        let Some(request) = open_request(config, &standing.secret, data) else {
+            return vec![];
+        };
+        let Some(mut out) = admit(config, request, &standing.secret, &standing.slot, &standing.name, now) else {
+            return vec![];
+        };
+        while config.devices.len() > DEMO_DEVICES {
+            let old = config.devices.remove(0);
+            self.online.remove(&old.id);
+            out.extend([Action::Relay(json!({ "type": "device_remove", "device": old.id })), Action::Close { device: old.id }]);
+        }
+        out.extend(self.reopen_standing(now));
+        out
     }
 
     /// A pairing under way, to open again on a relay connection made since.
@@ -206,6 +269,9 @@ impl Core {
 
     /// The minute hand: a pairing past its time ends.
     pub fn tick(&mut self, now: u64) -> Vec<Action> {
+        if self.standing.as_ref().is_some_and(|s| now >= s.opened + STANDING_REFRESH_MS) {
+            return self.reopen_standing(now);
+        }
         if self.pairing.as_ref().is_some_and(|p| p.expires <= now) {
             let mut out = self.end_pairing();
             out.push(Action::Local(json!({ "error": "The code expired — run equipe pair again" })));
@@ -285,28 +351,21 @@ impl Core {
     }
 
     fn on_pair_request(&mut self, slot: &str, data: &str, now: u64) -> Vec<Action> {
+        if self.standing.as_ref().is_some_and(|s| s.slot == slot) {
+            return self.on_standing_request(data, now);
+        }
         let (Some(pairing), Some(config)) = (self.pairing.as_mut(), self.config.as_ref()) else {
             return vec![];
         };
         if pairing.slot != slot || pairing.expires <= now || pairing.request.is_some() {
             return vec![];
         }
-        let Ok(plain) = seal::open(Kind::PairRequest, &config.keys(), None, Some(&pairing.secret), &config.id, data) else {
+        let Some(request) = open_request(config, &pairing.secret, data) else {
             return vec![];
         };
-        let Ok(body) = serde_json::from_slice::<Value>(&plain) else {
-            return vec![];
-        };
-        let (Some(name), Some(key)) = (body["name"].as_str(), body["key"].as_str()) else {
-            return vec![];
-        };
-        if body["type"] != "pair_request" || super::unb64(key).map(|k| k.len()) != Ok(32) {
-            return vec![];
-        }
-        let name: String = name.chars().filter(|c| !c.is_control()).take(60).collect();
-        let platform: String = body["platform"].as_str().unwrap_or("unknown").chars().filter(|c| c.is_ascii_alphanumeric()).take(20).collect();
-        pairing.request = Some(Request { name: name.clone(), platform: platform.clone(), key: key.to_owned() });
-        vec![Action::Local(json!({ "request": { "name": name, "platform": platform } }))]
+        let said = json!({ "request": { "name": request.name, "platform": request.platform } });
+        pairing.request = Some(request);
+        vec![Action::Local(said)]
     }
 
     fn on_device_frame(&mut self, device: &str, data: &str, now: u64) -> Vec<Action> {
@@ -407,6 +466,16 @@ impl Core {
 
     /// An event in any squad: a push to each device away, when it needs the person.
     pub fn on_squad_event(&mut self, squad: &str, event: &Event) -> Vec<Action> {
+        self.push(squad, event, None)
+    }
+
+    /// An event of one device's own squad (a demo phone's): a push to it if
+    /// it's away and the event needs the person.
+    pub fn on_own_event(&mut self, device: &str, squad: &str, event: &Event) -> Vec<Action> {
+        self.push(squad, event, Some(device))
+    }
+
+    fn push(&mut self, squad: &str, event: &Event, only: Option<&str>) -> Vec<Action> {
         let (title, body, category, collapse, event) = match event {
             Event::ApprovalRequested { approval, .. } => {
                 let verb = match approval.tool.as_str() {
@@ -428,7 +497,9 @@ impl Core {
                 )
             }
             Event::TicketChanged { ticket, .. } => {
-                let before = self.tickets.entry(squad.to_owned()).or_default().insert(ticket.id, ticket.status);
+                // A demo phone's board is its own.
+                let board = only.map_or_else(|| squad.to_owned(), |device| format!("{squad}/{device}"));
+                let before = self.tickets.entry(board).or_default().insert(ticket.id, ticket.status);
                 if before == Some(ticket.status) {
                     return vec![];
                 }
@@ -446,7 +517,7 @@ impl Core {
             _ => return vec![],
         };
         let Some(config) = self.config.as_ref() else { return vec![] };
-        let away: Vec<Device> = config.devices.iter().filter(|d| !self.online.contains(&d.id)).cloned().collect();
+        let away: Vec<Device> = config.devices.iter().filter(|d| !self.online.contains(&d.id) && only.is_none_or(|o| o == d.id)).cloned().collect();
         let mut out = Vec::new();
         for device in away {
             // Shown, not counted: seq 0.
@@ -468,6 +539,35 @@ impl Core {
 #[cfg(test)]
 #[path = "vectors.rs"]
 mod vectors;
+
+/// A pairing request sealed with `secret`, read and made safe to show.
+fn open_request(config: &Config, secret: &[u8; 32], data: &str) -> Option<Request> {
+    let plain = seal::open(Kind::PairRequest, &config.keys(), None, Some(secret), &config.id, data).ok()?;
+    let body = serde_json::from_slice::<Value>(&plain).ok()?;
+    let (name, key) = (body["name"].as_str()?, body["key"].as_str()?);
+    if body["type"] != "pair_request" || super::unb64(key).map(|k| k.len()) != Ok(32) {
+        return None;
+    }
+    let name: String = name.chars().filter(|c| !c.is_control()).take(60).collect();
+    let platform: String = body["platform"].as_str().unwrap_or("unknown").chars().filter(|c| c.is_ascii_alphanumeric()).take(20).collect();
+    Some(Request { name, platform, key: key.to_owned() })
+}
+
+/// Pair `request`'s device: keep it, tell the relay its token, and answer it
+/// on `slot`. `None` if its key didn't work.
+fn admit(config: &mut Config, request: Request, secret: &[u8; 32], slot: &str, name: &str, now: u64) -> Option<Vec<Action>> {
+    let id = super::hex(&super::random::<16>());
+    let token = super::b64(&super::random::<32>());
+    let body = json!({ "type": "paired", "device": id, "token": token, "name": name });
+    let data = seal::seal(Kind::PairAnswer, &request.key, Some(&config.keys()), Some(secret), &config.id, body.to_string().as_bytes()).ok()?;
+    config.devices.retain(|d| d.name != request.name || d.key != request.key);
+    config.devices.push(Device { id: id.clone(), name: request.name, platform: request.platform, key: request.key, added: now / 1000 });
+    Some(vec![
+        Action::Save,
+        Action::Relay(json!({ "type": "device_add", "device": id, "token_hash": super::sha256_hex(token.as_bytes()) })),
+        Action::Relay(json!({ "type": "pair_send", "slot": slot, "data": data })),
+    ])
+}
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -665,6 +765,100 @@ pub(crate) mod tests {
         assert!(out.iter().any(|a| matches!(a, Action::Relay(f) if f["type"] == "device_remove")));
         assert!(core.on_relay(&phone.send(&c, None, json!({ "jsonrpc": "2.0", "id": 1, "method": "squads" }), now), now).is_empty());
         assert!(core.remove_device("nobody").is_err());
+    }
+
+    /// A pairing request as the app sends it, for the code in `url`.
+    fn request_for(url: &str, phone: &Phone, name: &str) -> (String, String) {
+        let query: HashMap<String, String> = url.split_once('?').unwrap().1.split('&').map(|kv| {
+            let (k, v) = kv.split_once('=').unwrap();
+            (k.to_owned(), v.to_owned())
+        }).collect();
+        let secret = super::super::unb64(&query["s"]).unwrap();
+        let request = json!({ "type": "pair_request", "name": name, "platform": "ios", "key": phone.keys.public });
+        (slot(&secret), seal::seal(Kind::PairRequest, &query["k"], None, Some(&secret), &query["d"], request.to_string().as_bytes()).unwrap())
+    }
+
+    #[test]
+    fn a_pairing_code_still_lasts_five_minutes_serves_one_phone_and_waits_for_the_persons_yes() {
+        let mut core = Core::new(Some(config()));
+        let (url, opened) = core.begin_pairing(1000).unwrap();
+        assert!(matches!(&opened[..], [Action::Relay(f)] if f["expires"] == 1000 + PAIRING_MS));
+        assert_eq!(PAIRING_MS, 5 * 60 * 1000);
+        assert!(!url.contains("equipe%20demo"));
+        let (slot_a, first) = request_for(&url, &Phone::new(), "first");
+        // A request only asks the person: nothing is kept, nothing told to the relay.
+        let asked = core.on_relay(&json!({ "type": "pair_recv", "slot": slot_a, "data": first }), 1000);
+        assert_eq!(asked, vec![Action::Local(json!({ "request": { "name": "first", "platform": "ios" } }))]);
+        assert!(core.config.as_ref().unwrap().devices.is_empty());
+        // A second phone with the same code, before or after the answer, gets nothing.
+        let (_, second) = request_for(&url, &Phone::new(), "second");
+        assert!(core.on_relay(&json!({ "type": "pair_recv", "slot": slot_a, "data": second }), 1000).is_empty());
+        let done = core.answer_pairing(true, 1000);
+        assert!(done.iter().any(|a| matches!(a, Action::Relay(f) if f["type"] == "pair_close")), "the slot closes once answered");
+        assert!(!done.iter().any(|a| matches!(a, Action::Relay(f) if f["type"] == "pair_open")), "and isn't opened again");
+        assert!(core.on_relay(&json!({ "type": "pair_recv", "slot": slot_a, "data": second }), 2000).is_empty());
+        assert_eq!(core.config.as_ref().unwrap().devices.len(), 1);
+        // Past its time, a new code's request is ignored even before the minute hand closes it.
+        let (url, _) = core.begin_pairing(10_000).unwrap();
+        let (slot_b, late) = request_for(&url, &Phone::new(), "late");
+        assert!(core.on_relay(&json!({ "type": "pair_recv", "slot": slot_b, "data": late }), 10_000 + PAIRING_MS).is_empty());
+        // `equipe daemon` has no standing code: nothing keeps a slot open on its own.
+        let mut core = Core::new(Some(config()));
+        assert!(core.tick(10 * STANDING_REFRESH_MS).is_empty());
+        assert!(core.reopen_standing(1).is_empty());
+        assert!(!core.wants_relay());
+    }
+
+    #[test]
+    fn a_demo_code_pairs_every_phone_at_once_and_stays_open() {
+        let mut core = Core::new(Some(config()));
+        let url = core.open_standing([7; 32], "equipe demo").unwrap();
+        assert!(url.ends_with("&n=equipe%20demo"));
+        assert_eq!(core.open_standing([7; 32], "equipe demo").unwrap(), url, "the same code every time");
+        assert!(core.wants_relay());
+        let opened = core.reopen_standing(1000);
+        assert!(matches!(&opened[..], [Action::Relay(f)] if f["type"] == "pair_open" && f["expires"] == 1000 + STANDING_SLOT_MS));
+        assert!(core.tick(1000 + STANDING_REFRESH_MS - 1).is_empty());
+        assert!(matches!(&core.tick(1000 + STANDING_REFRESH_MS)[..], [Action::Relay(f)] if f["type"] == "pair_open"), "opened again before the relay closes it");
+        let c = core.config.clone().unwrap();
+        for (i, name) in ["reviewer 1", "reviewer 2"].iter().enumerate() {
+            let phone = Phone::new();
+            let (slot_now, data) = request_for(&url, &phone, name);
+            let out = core.on_relay(&json!({ "type": "pair_recv", "slot": slot_now, "data": data }), 5000);
+            assert!(out.contains(&Action::Save));
+            assert!(out.iter().any(|a| matches!(a, Action::Relay(f) if f["type"] == "device_add")));
+            assert!(matches!(out.last(), Some(Action::Relay(f)) if f["type"] == "pair_open"), "open again for the next phone");
+            let send = out.iter().find_map(|a| match a { Action::Relay(f) if f["type"] == "pair_send" => Some(f.clone()), _ => None }).unwrap();
+            let secret = [7u8; 32];
+            let answer: Value = serde_json::from_slice(&seal::open(Kind::PairAnswer, &phone.keys, Some(&c.public), Some(&secret), &c.id, send["data"].as_str().unwrap()).unwrap()).unwrap();
+            assert_eq!((answer["type"].as_str(), answer["name"].as_str()), (Some("paired"), Some("equipe demo")));
+            assert_eq!(core.config.as_ref().unwrap().devices.len(), i + 1);
+        }
+        // Without the code, nothing.
+        let wrong = seal::seal(Kind::PairRequest, &c.public, None, Some(&[1u8; 32]), &c.id, b"{}").unwrap();
+        assert!(core.on_relay(&json!({ "type": "pair_recv", "slot": slot(&[7; 32]), "data": wrong }), 5000).is_empty());
+        // A new code: the old slot closes.
+        assert!(matches!(&core.close_standing()[..], [Action::Relay(f)] if f["type"] == "pair_close" && f["slot"] == slot(&[7; 32])));
+    }
+
+    #[test]
+    fn a_demo_keeps_so_many_phones_and_pushes_each_only_its_own() {
+        let mut core = Core::new(Some(config()));
+        let url = core.open_standing([9; 32], "equipe demo").unwrap();
+        let mut ids: Vec<String> = Vec::new();
+        for i in 0..=DEMO_DEVICES {
+            let (slot_now, data) = request_for(&url, &Phone::new(), &format!("phone {i}"));
+            let out = core.on_relay(&json!({ "type": "pair_recv", "slot": slot_now, "data": data }), 1000);
+            if i == DEMO_DEVICES {
+                assert!(out.iter().any(|a| matches!(a, Action::Relay(f) if f["type"] == "device_remove" && f["device"] == ids[0].as_str())), "the oldest goes");
+            }
+            ids.push(core.config.as_ref().unwrap().devices.last().unwrap().id.clone());
+        }
+        assert_eq!(core.config.as_ref().unwrap().devices.len(), DEMO_DEVICES);
+        let approval = Approval { id: 1, session: 2, member: "frontend".into(), ticket: Some(3), tool: "Bash".into(), action: "npm run build".into(), reason: None, preview: None };
+        let out = core.on_own_event(&ids[5], "demo", &Event::ApprovalRequested { squad: "demo".into(), approval });
+        assert_eq!(out.len(), 1);
+        assert!(matches!(&out[0], Action::Relay(f) if f["type"] == "push" && f["device"] == ids[5].as_str()));
     }
 
     /// The whole way, against a relay running locally (`npx wrangler dev` in

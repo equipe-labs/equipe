@@ -150,6 +150,12 @@ enum Command {
         #[command(subcommand)]
         action: Option<DevicesAction>,
     },
+    /// A demo daemon for app store reviewers: a scripted squad and a code that never expires
+    #[command(hide = true)]
+    Demo {
+        #[command(subcommand)]
+        action: DemoAction,
+    },
     /// Your squads from Telegram: requests, reviews and replies on your phone
     Telegram {
         #[command(subcommand)]
@@ -180,6 +186,29 @@ enum DevicesAction {
     Remove {
         /// Its name, as `equipe devices` lists it
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum DemoAction {
+    /// Run it in the foreground: its own relay registration and squad, no agent
+    Serve {
+        /// Where it keeps its registration, code and phones (default: $EQUIPE_HOME/demo)
+        #[arg(long)]
+        home: Option<std::path::PathBuf>,
+    },
+    /// Show its pairing code: the QR and the address
+    Code {
+        #[arg(long)]
+        home: Option<std::path::PathBuf>,
+    },
+    /// Forget every demo phone and start the script over
+    Reset {
+        /// Also make a new code; the old one stops working
+        #[arg(long)]
+        new_code: bool,
+        #[arg(long)]
+        home: Option<std::path::PathBuf>,
     },
 }
 
@@ -285,6 +314,20 @@ async fn main() -> ExitCode {
                 Command::Pair => remote::cli::pair().await,
                 Command::Devices { action: Some(DevicesAction::Remove { name }) } => remote::cli::remove(&name).await,
                 _ => remote::cli::list().await,
+            };
+            match said {
+                Ok(text) => {
+                    println!("{}", ui::out().ok_line(&text));
+                    Ok(())
+                }
+                Err(why) => Err(Failure::new(why)),
+            }
+        }
+        Command::Demo { action } => {
+            let said = match action {
+                DemoAction::Serve { home } => remote::link::serve_demo(remote::demo::home(home), VERSION.to_owned()).await.map(|()| String::new()),
+                DemoAction::Code { home } => remote::cli::demo_code(&remote::demo::home(home)),
+                DemoAction::Reset { new_code, home } => remote::cli::demo_reset(&remote::demo::home(home), new_code).await,
             };
             match said {
                 Ok(text) => {
