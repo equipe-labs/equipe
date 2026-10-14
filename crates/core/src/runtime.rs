@@ -1199,6 +1199,9 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
                         Activity::Tool { name, target } => emit(Event::ToolUse { session: id, tool: name, target }),
                         Activity::Model(model) => emit(Event::ModelKnown { session: id, model }),
                         Activity::Output(tokens) => emit(Event::Output { session: id, tokens }),
+                        Activity::SubagentStarted { id: sub, what } => emit(Event::SubagentStarted { session: id, id: sub, what }),
+                        Activity::SubagentStep { id: sub, step } => emit(Event::SubagentStep { session: id, id: sub, step }),
+                        Activity::SubagentEnded { id: sub } => emit(Event::SubagentEnded { session: id, id: sub }),
                         Activity::Plan { five_hour, seven_day } => {
                             let window = |w: Option<(f64, i64)>| {
                                 w.map(|(used, resets_at)| equipe_protocol::PlanWindow {

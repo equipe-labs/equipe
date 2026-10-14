@@ -496,6 +496,12 @@ pub enum Event {
     /// The engine named its model (Claude Code does on its first turn), or the
     /// person changed it.
     ModelKnown { session: SessionId, model: String },
+    /// The member handed `what` to a subagent, which works alongside it.
+    SubagentStarted { session: SessionId, id: String, what: String },
+    /// A subagent's latest step.
+    SubagentStep { session: SessionId, id: String, step: String },
+    /// A subagent handed back what it found.
+    SubagentEnded { session: SessionId, id: String },
     /// The PM's conversation moved to its thread for `project` (`None`: the
     /// whole squad's). Each thread is a conversation of its own.
     Thread { session: SessionId, project: Option<String> },
@@ -546,6 +552,9 @@ impl Event {
             | Event::ToolUse { session, .. }
             | Event::ModelKnown { session, .. }
             | Event::Thread { session, .. }
+            | Event::SubagentStarted { session, .. }
+            | Event::SubagentStep { session, .. }
+            | Event::SubagentEnded { session, .. }
             | Event::TurnEnded { session, .. }
             | Event::BranchLanded { session, .. }
             | Event::NothingChanged { session }

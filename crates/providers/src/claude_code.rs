@@ -268,6 +268,12 @@ pub enum Activity {
     Plan { five_hour: Option<(f64, i64)>, seven_day: Option<(f64, i64)> },
     /// Output the turn has produced so far, in tokens.
     Output(u64),
+    /// The member handed `what` to a subagent (Claude Code's Agent tool).
+    SubagentStarted { id: String, what: String },
+    /// A subagent's latest step: a tool and what it acts on.
+    SubagentStep { id: String, step: String },
+    /// A subagent finished and handed back what it found.
+    SubagentEnded { id: String },
 }
 
 /// Folds Claude Code's `stream-json` lines into one turn.
@@ -282,6 +288,8 @@ pub struct TurnCollector {
     /// Output tokens of the turn's finished requests.
     output: u64,
     result: Option<Result<TurnResult>>,
+    /// Subagents handed work this turn and not yet back.
+    subagents: std::collections::HashSet<String>,
 }
 
 impl TurnCollector {
@@ -334,6 +342,8 @@ impl TurnCollector {
                     None => Vec::new(),
                 }
             }
+            // A subagent's words are its own: the member's answer is the member's.
+            "stream_event" if parent(event).is_some() => Vec::new(),
             "stream_event" => text_delta(event)
                 .map(|text| {
                     self.streamed.push_str(text);
@@ -347,12 +357,44 @@ impl TurnCollector {
                         n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens") + n("output_tokens"),
                     );
                 }
+                // Inside a subagent: its steps, as the subagent's.
+                if let Some(id) = parent(event) {
+                    return tool_uses(event)
+                        .into_iter()
+                        .filter_map(|a| match a {
+                            Activity::Tool { name, target } => {
+                                Some(Activity::SubagentStep { id: id.to_owned(), step: format!("{name} {}", target.unwrap_or_default()).trim().to_owned() })
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                }
                 let text = message_text(event);
                 if !text.is_empty() {
                     self.last_message = text;
                 }
-                tool_uses(event)
+                let mut out = tool_uses(event);
+                // Handing work to a subagent: followed until it hands back.
+                for block in content_blocks(event) {
+                    if let (Some("tool_use"), Some(name), Some(id)) = (
+                        block.get("type").and_then(Value::as_str),
+                        block.get("name").and_then(Value::as_str),
+                        block.get("id").and_then(Value::as_str),
+                    ) && matches!(name, "Agent" | "Task")
+                    {
+                        let what = block.get("input").and_then(|i| i.get("description")).and_then(Value::as_str).unwrap_or("a subagent");
+                        self.subagents.insert(id.to_owned());
+                        out.push(Activity::SubagentStarted { id: id.to_owned(), what: what.chars().take(80).collect() });
+                    }
+                }
+                out
             }
+            "user" => content_blocks(event)
+                .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+                .filter_map(|b| b.get("tool_use_id").and_then(Value::as_str))
+                .filter(|id| self.subagents.remove(*id))
+                .map(|id| Activity::SubagentEnded { id: id.to_owned() })
+                .collect(),
             "result" => {
                 let mut result = result_from(event, &self.streamed, &self.last_message);
                 if let Ok(TurnResult { usage: Some(usage), .. }) = &mut result {
@@ -383,6 +425,15 @@ impl TurnCollector {
         };
         result.map(|result| Turn { result, session_id })
     }
+}
+
+/// The subagent an event comes from, when it comes from one.
+fn parent(event: &Value) -> Option<&str> {
+    event.get("parent_tool_use_id").and_then(Value::as_str).filter(|p| !p.is_empty())
+}
+
+fn content_blocks(event: &Value) -> impl Iterator<Item = &Value> {
+    event.get("message").and_then(|m| m.get("content")).and_then(Value::as_array).into_iter().flatten()
 }
 
 /// The text of a `text_delta`; thinking and signature deltas are not output.
@@ -708,6 +759,34 @@ mod tests {
             Activity::Tool { name: "Bash".into(), target: Some("ls -la".into()) },
             Activity::Tool { name: "TodoWrite".into(), target: None },
         ]);
+    }
+
+    #[test]
+    fn subagents_are_followed_from_start_to_end_apart_from_the_members_own_steps() {
+        let mut collector = TurnCollector::new();
+        let started = collector.on_event(&json!({ "type": "assistant", "parent_tool_use_id": null, "message": { "content": [
+            { "type": "tool_use", "id": "toolu_1", "name": "Agent", "input": { "description": "Run the iOS tests", "prompt": "…", "subagent_type": "general-purpose" } },
+            { "type": "tool_use", "id": "toolu_2", "name": "Task", "input": { "description": "Read the logs", "prompt": "…" } },
+        ]}}));
+        // The member's own step (shown in its conversation), and the subagent followed.
+        assert_eq!(started, vec![
+            Activity::Tool { name: "Agent".into(), target: Some("Run the iOS tests".into()) },
+            Activity::Tool { name: "Task".into(), target: Some("Read the logs".into()) },
+            Activity::SubagentStarted { id: "toolu_1".into(), what: "Run the iOS tests".into() },
+            Activity::SubagentStarted { id: "toolu_2".into(), what: "Read the logs".into() },
+        ]);
+        // A subagent's own steps are its, not the member's.
+        let step = collector.on_event(&json!({ "type": "assistant", "parent_tool_use_id": "toolu_1", "message": { "content": [
+            { "type": "tool_use", "id": "toolu_9", "name": "Bash", "input": { "command": "xcodebuild test" } },
+        ]}}));
+        assert_eq!(step, vec![Activity::SubagentStep { id: "toolu_1".into(), step: "Bash xcodebuild test".into() }]);
+        let text = collector.on_event(&json!({ "type": "stream_event", "parent_tool_use_id": "toolu_1",
+            "event": { "type": "content_block_delta", "delta": { "type": "text_delta", "text": "inside" } } }));
+        assert!(text.is_empty(), "a subagent's words aren't the member's answer");
+        let ended = collector.on_event(&json!({ "type": "user", "message": { "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_1", "content": "12 passed" },
+        ]}}));
+        assert_eq!(ended, vec![Activity::SubagentEnded { id: "toolu_1".into() }]);
     }
 
     #[test]

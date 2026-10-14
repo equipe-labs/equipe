@@ -986,6 +986,7 @@ impl App {
                 Event::TextDelta { text, .. } => printer.text(&text),
                 Event::ToolUse { tool, target, .. } => printer.tool(&tool, target),
                 Event::ModelKnown { .. } | Event::UserMessage { .. } | Event::Thread { .. } => {}
+                Event::SubagentStarted { .. } | Event::SubagentStep { .. } | Event::SubagentEnded { .. } => {}
                 Event::TurnEnded { outcome, usage, .. } => {
                     printer.end(outcome, usage);
                     core.send(Cmd::Close { session: ID });

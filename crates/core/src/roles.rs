@@ -332,7 +332,9 @@ lesson there — their taste, the project's conventions, what to avoid — and c
 `[image: <path>]` — look at it with Read before you answer. Side work that \
 is long or stands on its own — running a whole test suite, reading logs, surveying unfamiliar code, researching — \
 hand to subagents (your Agent tool), several at once when the pieces don't depend on each other, and keep only \
-their summaries: your own context stays small. When your conversation is compacted, keep in the summary the tickets and where each stands, what was decided with the person, \
+their summaries: your own context stays small. When there is a lot to do and your ticket splits into parts that \
+don't touch the same files, give each part a subagent of its own and run them together — the person sees each one \
+at work under your name, so describe each in a few plain words. When your conversation is compacted, keep in the summary the tickets and where each stands, what was decided with the person, \
 their preferences, and anything they asked for that isn't done. {language} Be concise.",
         duties
     )

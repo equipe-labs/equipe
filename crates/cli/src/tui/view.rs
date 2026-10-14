@@ -467,9 +467,9 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
     let narrow = squad_pane.is_none();
     // The squad's rows: a click talks to that member.
     if let Some(squad) = squad_pane {
-        for (row, at) in app.display_order().into_iter().enumerate() {
+        for (row, member) in squad_rows(app).into_iter().enumerate() {
             let y = squad.y + 2 + row as u16;
-            if y < squad.y + squad.height {
+            if let Some(at) = member.filter(|_| y < squad.y + squad.height) {
                 hits.push((squad.x, squad.x + squad.width, y, Hit::Member(at)));
             }
         }
@@ -1023,8 +1023,44 @@ fn render_squad(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         }
         row.push(detail);
         lines.push(Line::from(row));
+        // Its subagents, under it, while they work.
+        for text in subagent_rows(agent) {
+            let room = (area.width as usize).saturating_sub(6);
+            lines.push(Line::from(vec![Span::raw("    "), Span::styled(ui::fit(&text, room), theme.dim())]));
+        }
     }
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Most subagents shown under a member before the rest are counted.
+const SUBAGENTS_SHOWN: usize = 3;
+
+/// The lines under a member for its subagents at work.
+fn subagent_rows(agent: &Agent) -> Vec<String> {
+    let mut rows: Vec<String> = agent
+        .subagents
+        .iter()
+        .take(SUBAGENTS_SHOWN)
+        .map(|(_, what, step)| match step {
+            Some(step) => format!("↳ {what} · {step}"),
+            None => format!("↳ {what}"),
+        })
+        .collect();
+    if agent.subagents.len() > SUBAGENTS_SHOWN {
+        rows.push(format!("↳ +{} more subagents", agent.subagents.len() - SUBAGENTS_SHOWN));
+    }
+    rows
+}
+
+/// What each row of the squad pane is, from its first member row: a member
+/// (by index) or a line under one.
+fn squad_rows(app: &App) -> Vec<Option<usize>> {
+    let mut rows = Vec::new();
+    for at in app.display_order() {
+        rows.push(Some(at));
+        rows.extend(subagent_rows(&app.agents[at]).into_iter().map(|_| None));
+    }
+    rows
 }
 
 /// The squad's edge; lit while the person drags it.
@@ -3034,6 +3070,28 @@ mod tests {
         app.board_query = Some("old 123".into());
         let shot = screen(&app, 120, 60);
         assert!(shot.contains("FOUND") && shot.contains("Old 123"), "{shot}");
+    }
+
+    #[test]
+    fn a_members_subagents_show_under_it_while_they_work() {
+        let (mut app, pm) = working();
+        for (sub, what) in [("t1", "Run the iOS tests"), ("t2", "Read the logs"), ("t3", "Survey the API")] {
+            app.on_event(Event::SubagentStarted { session: pm, id: sub.into(), what: what.into() });
+        }
+        app.on_event(Event::SubagentStep { session: pm, id: "t1".into(), step: "Bash xcodebuild test".into() });
+        app.squad_width = Some(50);
+        let shot = screen(&app, 140, 30);
+        assert!(shot.contains("↳ Run the iOS tests"), "{shot}");
+        assert!(shot.contains("↳ Read the logs") && shot.contains("↳ Survey the API"), "{shot}");
+        // The rows under a member still click through to the right member.
+        let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 140, 30), &Layouts::default());
+        let pm_row = shot.lines().position(|l| l.contains("pm    haiku")).unwrap() as u16;
+        assert!(laid.hits.iter().any(|h| h.2 == pm_row && matches!(h.3, Hit::Member(_))));
+        // Done, gone; the turn's end takes the rest.
+        app.on_event(Event::SubagentEnded { session: pm, id: "t2".into() });
+        assert!(!screen(&app, 140, 30).contains("Read the logs"));
+        app.on_event(Event::TurnEnded { session: pm, outcome: TurnOutcome::Completed, usage: None });
+        assert!(!screen(&app, 140, 30).contains("↳"));
     }
 
     #[test]

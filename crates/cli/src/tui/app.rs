@@ -114,6 +114,9 @@ pub struct Agent {
     /// For the PM: the thread on screen — the project in focus, `None` for the
     /// whole squad's. Each is a conversation of its own.
     pub thread_view: Option<String>,
+    /// Subagents it handed work to this turn and that haven't handed back:
+    /// id, what, and their latest step.
+    pub subagents: Vec<(String, String, Option<String>)>,
     /// A message to send once the session has started.
     pending: Option<String>,
 }
@@ -144,6 +147,7 @@ impl Agent {
             pending: None,
             mode: None,
             thread_view: None,
+            subagents: Vec::new(),
         }
     }
 
@@ -236,6 +240,7 @@ impl Agent {
             pending: None,
             mode: info.mode,
             thread_view: None,
+            subagents: Vec::new(),
         }
     }
 
@@ -1042,7 +1047,15 @@ impl App {
                 agent.base = agent.desk.clone();
             }
             Event::ModelKnown { model, .. } => agent.model = Some(model),
+            Event::SubagentStarted { id, what, .. } => agent.subagents.push((id, what, None)),
+            Event::SubagentStep { id, step, .. } => {
+                if let Some(sub) = agent.subagents.iter_mut().find(|s| s.0 == id) {
+                    sub.2 = Some(step);
+                }
+            }
+            Event::SubagentEnded { id, .. } => agent.subagents.retain(|s| s.0 != id),
             Event::TurnEnded { usage, .. } => {
+                agent.subagents.clear();
                 if agent.state == AgentState::Working {
                     agent.state = AgentState::Ready;
                 }
