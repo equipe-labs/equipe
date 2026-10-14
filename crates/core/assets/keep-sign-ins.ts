@@ -19,7 +19,8 @@ const shared = (c: any) => !own(c.domain || '');
 const sharedOrigin = (o: any) => { try { return !own(new URL(o.origin).hostname); } catch { return true; } };
 
 // A browser on the person's screen shows who is driving it, as Claude in Chrome
-// does: a soft glow along its edge, a label, and the member's pointer gliding
+// does: a still glow along its edge (one that pulsed redrew the whole window
+// every frame, a flicker over screen sharing), a label, and the member's pointer gliding
 // to where it clicks. Drawn in a closed shadow root that no click, page style
 // or accessibility snapshot reaches; built without HTML strings or inline
 // <style>, which strict pages (Trusted Types, CSP) refuse.
@@ -41,7 +42,7 @@ function driving({ member }: { member: string }) {
     const sheet = new CSSStyleSheet();
     sheet.replaceSync(`
       * { box-sizing: border-box; pointer-events: none; }
-      .glow { position: fixed; inset: 0; box-shadow: inset 0 0 0 2px rgba(${ACCENT}, .55), inset 0 0 32px 4px rgba(${ACCENT}, .3); animation: breathe 3.2s ease-in-out infinite; }
+      .glow { position: fixed; inset: 0; box-shadow: inset 0 0 0 2px rgba(${ACCENT}, .5), inset 0 0 28px 3px rgba(${ACCENT}, .22); }
       .label { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 7px; padding: 5px 12px 5px 10px; border-radius: 999px; background: rgba(24, 24, 27, .84); color: #fafafa; font: 500 12px/1.3 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; letter-spacing: .01em; box-shadow: 0 2px 12px rgba(0, 0, 0, .25); white-space: nowrap; }
       .dot { width: 7px; height: 7px; border-radius: 50%; background: rgb(${ACCENT}); box-shadow: 0 0 8px rgb(${ACCENT}); animation: breathe 1.6s ease-in-out infinite; }
       .pointer { position: fixed; left: 0; top: 0; width: 24px; height: 24px; opacity: 0; transition: transform .5s cubic-bezier(.2, .8, .2, 1), opacity .25s ease; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .35)) drop-shadow(0 0 6px rgba(${ACCENT}, .6)); }
@@ -49,7 +50,7 @@ function driving({ member }: { member: string }) {
       .ripple.on { animation: ripple .55s ease-out; }
       @keyframes breathe { 0%, 100% { opacity: .6; } 50% { opacity: 1; } }
       @keyframes ripple { from { transform: scale(.35); opacity: .9; } to { transform: scale(1.7); opacity: 0; } }
-      @media (prefers-reduced-motion: reduce) { .glow, .dot { animation: none; } .pointer { transition: opacity .25s ease; } }
+      @media (prefers-reduced-motion: reduce) { .dot { animation: none; } .pointer { transition: opacity .25s ease; } }
     `);
     (root as any).adoptedStyleSheets = [sheet];
     const el = (tag: string, cls: string) => {
