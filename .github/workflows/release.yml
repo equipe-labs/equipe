@@ -223,6 +223,8 @@ jobs:
     env:
       TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
+      - uses: actions/checkout@v5
+        if: env.TAP_TOKEN != ''
       - uses: actions/download-artifact@v5
         if: env.TAP_TOKEN != ''
         with:
@@ -231,52 +233,85 @@ jobs:
       - name: Update equipe-labs/homebrew-tap
         if: env.TAP_TOKEN != ''
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
-          sum() { cut -d' ' -f1 "dist/equipe-$1.tar.gz.sha256"; }
+          cat dist/*.tar.gz.sha256 > SHA256SUMS
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/equipe-labs/homebrew-tap.git" tap
           mkdir -p tap/Formula
-          cat > tap/Formula/equipe.rb <<EOF
-          class Equipe < Formula
-            desc "Full software squad of AI agents, on your own Claude Code and Codex plans"
-            homepage "https://equipe.im"
-            version "${version}"
-            license "MIT"
-
-            on_macos do
-              on_arm do
-                url "${url}/equipe-aarch64-apple-darwin.tar.gz"
-                sha256 "$(sum aarch64-apple-darwin)"
-              end
-              on_intel do
-                url "${url}/equipe-x86_64-apple-darwin.tar.gz"
-                sha256 "$(sum x86_64-apple-darwin)"
-              end
-            end
-
-            on_linux do
-              on_arm do
-                url "${url}/equipe-aarch64-unknown-linux-musl.tar.gz"
-                sha256 "$(sum aarch64-unknown-linux-musl)"
-              end
-              on_intel do
-                url "${url}/equipe-x86_64-unknown-linux-musl.tar.gz"
-                sha256 "$(sum x86_64-unknown-linux-musl)"
-              end
-            end
-
-            def install
-              bin.install "equipe"
-            end
-
-            test do
-              assert_match version.to_s, shell_output("#{bin}/equipe --version")
-            end
-          end
-          EOF
+          scripts/homebrew-formula.sh "${GITHUB_REF_NAME}" SHA256SUMS > tap/Formula/equipe.rb
           cd tap
           git config user.name "equipe release"
           git config user.email "release@equipe.im"
           git add Formula/equipe.rb
-          git commit -m "equipe ${version}"
+          git commit -m "equipe ${GITHUB_REF_NAME#v}"
           git push
+
+  # The release as people get it, on clean machines of each kind: the site's
+  # two install lines (install.sh from the latest release, and the tap), each
+  # giving this version. A failure here fails the release run. Run by hand, it
+  # checks the latest published release, with the formula as this branch
+  # would write it.
+  installed:
+    name: installed (${{ matrix.name }})
+    needs: homebrew
+    if: >-
+      !cancelled() && (needs.homebrew.result == 'success' || github.event_name == 'workflow_dispatch')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-15
+          - name: macOS x86_64
+            os: macos-15-intel
+          - name: Linux x86_64
+            os: ubuntu-24.04
+          - name: Linux arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_ENV_HINTS: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: The release to check
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            tag="$(gh release view --repo "${GITHUB_REPOSITORY}" --json tagName -q .tagName)"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_ENV"
+          echo "Checking ${tag} on $(uname -sm)"
+
+      - name: install.sh
+        run: |
+          curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/install.sh" | sh
+          test "$(~/.local/bin/equipe --version)" = "equipe ${tag#v}"
+          ~/.local/bin/equipe --help >/dev/null
+          rm ~/.local/bin/equipe
+
+      - name: Homebrew
+        run: |
+          if ! command -v brew >/dev/null; then
+            if [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+              eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+            else
+              NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+              eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+            fi
+          fi
+          brew --version
+          brew tap equipe-labs/tap
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            gh release download "${tag}" --repo "${GITHUB_REPOSITORY}" -p SHA256SUMS -D "$RUNNER_TEMP"
+            scripts/homebrew-formula.sh "${tag}" "$RUNNER_TEMP/SHA256SUMS" > "$(brew --repo equipe-labs/tap)/Formula/equipe.rb"
+          fi
+          brew audit --strict equipe-labs/tap/equipe
+          brew install equipe-labs/tap/equipe
+          brew test equipe-labs/tap/equipe
+          equipe="$(brew --prefix)/bin/equipe"
+          test "$("$equipe" --version)" = "equipe ${tag#v}"
+          "$equipe" --help >/dev/null
+          file "$equipe"
