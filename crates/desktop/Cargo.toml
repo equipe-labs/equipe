@@ -16,7 +16,7 @@ equipe-providers = { path = "../providers" }
 gpui-kit = "=0.7.1"
 libc = "0.2"
 # The daemon link runs its own small runtime on a thread off the UI.
-tokio = { version = "1.53.2", features = ["rt", "macros", "sync", "time", "net", "io-util"] }
+tokio = { version = "1.53.2", features = ["rt", "macros", "sync", "time", "net", "io-util", "process"] }
 
 # Dev tool: `--features snapshot` lets `EQUIPE_SNAPSHOT=<png>` write what the
 # window painted, for looking at a change without a screen-capture permission.

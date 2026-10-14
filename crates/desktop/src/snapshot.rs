@@ -6,7 +6,8 @@
 //! `wait:<ms>` · `shot:<png>` · `say:<text>` (type it in the box and send) ·
 //! `type:<text>` (type, don't send) · `key:<y|a|n|o>` (answer a request) · `esc` (stop the member) · `up`/`down`
 //! (history) · `project:<name|all>` · `select:<member>` · `board` · `chat` ·
-//! `folds` · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
+//! `folds` · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
+//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 
 use std::time::Duration;
@@ -64,6 +65,15 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 "board" => shell.update(cx, |shell, cx| shell.show(crate::Screen::Board, cx)),
                 "chat" => shell.update(cx, |shell, cx| shell.show(crate::Screen::Chat, cx)),
                 "folds" => shell.update(cx, |shell, cx| shell.toggle_folds(cx)),
+                "chooser" => shell.update(cx, |shell, cx| shell.open_chooser(window, cx)),
+                "connect" => shell.update(cx, |shell, cx| shell.connect_typed(&arg, window, cx)),
+                "pass" => shell.update(cx, |shell, cx| {
+                    shell.ask.input.update(cx, |s, cx| s.set_value(arg.clone(), window, cx));
+                    shell.submit_secret(window, cx);
+                }),
+                "trust" => shell.update(cx, |shell, cx| shell.answer_prompt(crate::askpass::Answer::Yes, window, cx)),
+                "decline" => shell.update(cx, |shell, cx| shell.answer_prompt(crate::askpass::Answer::Cancel, window, cx)),
+                "retry" => shell.update(cx, |shell, cx| shell.retry(cx)),
                 other => eprintln!("script: no step {other}"),
             });
             // Let the window draw what the step did.
