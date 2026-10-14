@@ -22,6 +22,10 @@ tokio = { version = "1.53.2", features = ["rt", "macros", "sync", "time", "net",
 # window painted, for looking at a change without a screen-capture permission.
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Talks to Sparkle (updates) in the packaged app — see src/update.rs.
+objc2 = "0.6"
+
 [features]
 snapshot = ["dep:image", "gpui-kit/test-support"]
 

@@ -2,7 +2,8 @@ name: Release
 
 # Push a tag like v0.1.0 (matching the workspace version) to build equipe for
 # macOS and Linux and publish a GitHub Release with the binaries, their
-# checksums and install.sh. Run it by hand to build without publishing.
+# checksums and install.sh, and the desktop app (equipe.dmg, with the appcast
+# its updates come from). Run it by hand to build without publishing.
 
 on:
   push:
@@ -78,6 +79,81 @@ jobs:
           name: equipe-${{ matrix.target }}
           path: dist/*
 
+  # The desktop app: scripts/desktop-dmg.sh, signed and notarized when the
+  # secrets are there (docs/DESKTOP.md "Shipping the app"), else ad hoc.
+  desktop:
+    name: desktop (equipe.dmg)
+    runs-on: macos-14
+    env:
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} doesn't match the workspace version ${version}"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop
+
+      - name: Developer ID certificate
+        if: env.MACOS_CERTIFICATE != ''
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(uuidgen)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          # shellcheck disable=SC2046 # one keychain path per word
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+
+      - name: Notary key
+        if: env.APPLE_API_KEY != ''
+        run: |
+          echo "$APPLE_API_KEY" > "$RUNNER_TEMP/notary.p8"
+          {
+            echo "EQUIPE_NOTARY_KEY=$RUNNER_TEMP/notary.p8"
+            echo "EQUIPE_NOTARY_KEY_ID=$APPLE_API_KEY_ID"
+            echo "EQUIPE_NOTARY_ISSUER=$APPLE_API_ISSUER"
+          } >> "$GITHUB_ENV"
+
+      - name: Build equipe.dmg
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: scripts/desktop-dmg.sh
+
+      - name: Check the DMG
+        run: |
+          hdiutil verify dist/equipe.dmg
+          mount="$(hdiutil attach -nobrowse -readonly dist/equipe.dmg | tail -1 | cut -f3)"
+          lipo -archs "$mount/equipe.app/Contents/MacOS/equipe-desktop" | grep -q "x86_64 arm64"
+          codesign --verify --deep --strict "$mount/equipe.app"
+          test -L "$mount/Applications"
+          hdiutil detach "$mount"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: equipe-desktop
+          path: dist/*
+
   # The install script against the archive just built, on a clean machine.
   try-install:
     needs: build
@@ -103,7 +179,7 @@ jobs:
           EQUIPE_DOWNLOAD_BASE="file://$PWD/dist" EQUIPE_NO_MODIFY_PATH=1 sh install.sh
 
   publish:
-    needs: [build, try-install]
+    needs: [build, try-install, desktop]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
     steps:
