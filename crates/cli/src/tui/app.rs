@@ -952,7 +952,10 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.move_ticket(1),
             KeyCode::Char('a') => {
                 let ticket = ticket.filter(|t| !t.status.is_closed())?;
-                return Some(self.accept(ticket.id));
+                let commands = self.accept(ticket.id);
+                // The next review comes up at once, so they go one after another.
+                self.next_review_after(ticket.id);
+                return Some(commands);
             }
             KeyCode::Char('r') if ticket.as_ref().is_some_and(|t| t.status == TicketStatus::Waiting) => {
                 let ticket = ticket?;
@@ -984,6 +987,24 @@ impl App {
             _ => return None,
         }
         Some(Vec::new())
+    }
+
+    /// Pick the review after `done` on the board — or before it, when it was the
+    /// last — leaving the selection where it is when no other waits.
+    fn next_review_after(&mut self, done: TicketId) {
+        // In the board's own order, as the person sees them.
+        let reviews: Vec<TicketId> = self.to_review_here().iter().map(|t| t.id).collect();
+        let list: Vec<TicketId> = self.board_order().into_iter().filter(|id| reviews.contains(id)).collect();
+        let at = list.iter().position(|&id| id == done);
+        let rest: Vec<TicketId> = list.into_iter().filter(|&id| id != done).collect();
+        let next = match at {
+            Some(at) => rest.get(at).or(rest.last()),
+            None => rest.first(),
+        };
+        if let Some(&next) = next {
+            self.board_selected = Some(next);
+            self.board_scroll = 0;
+        }
     }
 
     /// Tickets waiting for the person to accept or send back.
@@ -3118,6 +3139,25 @@ mod tests {
         type_text(&mut app, "/suggest");
         assert!(matches!(enter(&mut app).as_slice(), [Command::Suggestions { on: true, .. }]));
         assert_eq!(app.hint().as_deref(), Some("and the footer"));
+    }
+
+    #[test]
+    fn accepting_a_review_on_the_board_brings_up_the_next() {
+        let (mut app, _, _) = team();
+        for id in [3, 4, 5] {
+            app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(id, TicketStatus::Review) });
+        }
+        app.pane = Pane::Board;
+        app.board_selected = Some(4);
+        let commands = app.on_key(key(KeyCode::Char('a')), Instant::now());
+        assert!(commands.iter().any(|c| matches!(c, Command::Accept { ticket: 4, .. })), "{commands:?}");
+        assert_eq!(app.board_selected, Some(5), "the one after it");
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(4, TicketStatus::Done) });
+        app.on_key(key(KeyCode::Char('a')), Instant::now());
+        assert_eq!(app.board_selected, Some(3), "the last done: the one before it");
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(5, TicketStatus::Done) });
+        app.on_key(key(KeyCode::Char('a')), Instant::now());
+        assert_eq!(app.board_selected, Some(3), "nothing else waits: it stays");
     }
 
     #[test]
