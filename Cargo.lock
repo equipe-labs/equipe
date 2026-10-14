@@ -2060,6 +2060,7 @@ dependencies = [
  "equipe-providers",
  "gpui-kit",
  "libc",
+ "serde_json",
  "tokio",
 ]
 

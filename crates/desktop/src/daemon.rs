@@ -104,7 +104,6 @@ async fn run(target: Target, backoff: Backoff, mut commands: UnboundedReceiver<C
         match attach(&target).await {
             Ok((client, hello)) => {
                 wait = backoff.min;
-                down = None;
                 if updates.send(Update::Attached(hello)).is_err() {
                     return;
                 }
