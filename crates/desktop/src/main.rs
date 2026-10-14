@@ -5,40 +5,49 @@
 //! It draws only when the daemon says something changed or the person acts —
 //! see docs/DESKTOP.md. `EQUIPE_LOG_RENDER=1` prints a line per frame, to see that.
 
+mod askpass;
+mod board;
 mod commands;
+mod diffs;
 mod compose;
 mod convo;
 mod daemon;
+mod failure;
 mod install;
 mod mem;
 mod notify;
+mod ssh;
 #[cfg(feature = "snapshot")]
 mod snapshot;
 mod state;
+mod target;
 mod theme;
 #[cfg(target_os = "macos")]
 mod update;
 mod views;
+mod wire;
 
 use std::time::Duration;
 
-use equipe_core::gateway;
 use equipe_providers::credentials::equipe_home;
 use gpui_kit::component::input::{Enter, InputEvent};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use daemon::{Backoff, Link, Target};
+use daemon::{Backoff, Link, Spawned, Target};
+use target::{Endpoint, Remembered};
 use equipe_core::protocol::{Command, SessionId};
-use state::{Clock, Conn, Model, squad_names};
+use state::{Clock, Conn, Model};
 use theme::{BODY, Palette, SANS, SMALL};
+use views::board::BoardUi;
 use views::chat::Chat;
 use views::composer::Composer;
+use views::connect::{AskUi, ConnectUi};
 
 actions!(
     equipe,
-    [ToggleBoard, AllProjects, Project1, Project2, Project3, Project4, Project5, Project6, Project7, Project8, Project9, ToggleFolds]
+    [ToggleBoard, ChooseTarget, AllProjects, Project1, Project2, Project3, Project4, Project5, Project6, Project7, Project8, Project9, ToggleFolds]
 );
 // The app menu's.
 actions!(equipe, [CheckForUpdates, Hide, HideOthers, ShowAll, Quit]);
@@ -62,12 +71,18 @@ pub struct Shell {
     pub screen: Screen,
     pub chat: Chat,
     pub composer: Composer,
+    pub board: BoardUi,
     /// The ticket a `T-n` link asked the board to open.
     pub board_ticket: Option<u32>,
     /// Where a click on a notification says to go: the notifier's threads send, we follow.
     clicks: tokio::sync::mpsc::UnboundedSender<notify::Go>,
-    /// Why there is nothing to attach to (no squad yet), when so.
-    problem: Option<String>,
+    /// Whose daemon this window is a window onto, and what it remembers of that.
+    pub endpoint: Endpoint,
+    pub remembered: Remembered,
+    pub connect: ConnectUi,
+    pub ask: AskUi,
+    /// Something said on a thread of ours (a failed fetch) for the flash line.
+    notices: tokio::sync::mpsc::UnboundedSender<String>,
     connecting_shown: bool,
     log_renders: bool,
     renders: u64,
@@ -77,6 +92,9 @@ pub struct Shell {
     _pump: Option<Task<()>>,
     _connecting: Option<Task<()>>,
     _clicks: Option<Task<()>>,
+    _notices: Option<Task<()>>,
+    _fetched: Option<Task<()>>,
+    _prompts: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -88,16 +106,31 @@ impl Shell {
         })
         .detach();
         let (clicks, mut clicked) = tokio::sync::mpsc::unbounded_channel();
+        let (notices, mut noticed) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let remembered = Remembered::load(&equipe_home());
+        let (fetched_tx, mut fetched) = tokio::sync::mpsc::unbounded_channel::<diffs::Fetched>();
+        let endpoint = std::env::var("EQUIPE_TARGET")
+            .ok()
+            .and_then(|t| Endpoint::parse(&t).ok())
+            .or_else(|| remembered.last.clone())
+            .unwrap_or_else(Endpoint::this_mac);
+        let connect = ConnectUi::new(window, cx, target::ssh_dir().map(|d| target::config_hosts(&d)).unwrap_or_default());
+        let ask = AskUi::new(window, cx);
         let mut shell = Self {
             palette: Palette::new(window.appearance()),
             model: Model::new(""),
-            squads: squad_names(&equipe_home()),
+            squads: Vec::new(),
             screen: Screen::Chat,
             chat: Chat::new(cx),
             composer: Composer::new(window, cx),
+            board: BoardUi::new(window, cx, remembered.board_split, fetched_tx),
             board_ticket: None,
             clicks,
-            problem: None,
+            endpoint: endpoint.clone(),
+            remembered,
+            connect,
+            ask,
+            notices,
             connecting_shown: false,
             log_renders: std::env::var_os("EQUIPE_LOG_RENDER").is_some(),
             renders: 0,
@@ -106,6 +139,9 @@ impl Shell {
             _pump: None,
             _connecting: None,
             _clicks: None,
+            _notices: None,
+            _fetched: None,
+            _prompts: None,
             _subscriptions: Vec::new(),
         };
         shell._clicks = Some(cx.spawn_in(window, async move |this, cx| {
@@ -113,6 +149,39 @@ impl Shell {
                 if this.update_in(cx, |this, window, cx| this.go(go, window, cx)).is_err() {
                     break;
                 }
+            }
+        }));
+        shell._notices = Some(cx.spawn_in(window, async move |this, cx| {
+            while let Some(text) = noticed.recv().await {
+                if this.update_in(cx, |this, _, cx| {
+                    this.composer.flash = Some(text);
+                    cx.notify();
+                })
+                .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+        shell._fetched = Some(cx.spawn_in(window, async move |this, cx| {
+            while let Some(done) = fetched.recv().await {
+                if this.update_in(cx, |this, _, cx| this.board_fetched(done, cx)).is_err() {
+                    break;
+                }
+            }
+        }));
+        let board_subscriptions = shell.board_subscriptions(window, cx);
+        shell._subscriptions.extend(board_subscriptions);
+        let (connect_input, ask_input) = (shell.connect.input.clone(), shell.ask.input.clone());
+        shell._subscriptions.push(cx.subscribe_in(&connect_input, window, |this, input, event: &InputEvent, window, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                let text = input.read(cx).value().to_string();
+                this.connect_typed(&text, window, cx);
+            }
+        }));
+        shell._subscriptions.push(cx.subscribe_in(&ask_input, window, |this, _, event: &InputEvent, window, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.submit_secret(window, cx);
             }
         }));
         let state = shell.composer.state.clone();
@@ -124,9 +193,23 @@ impl Shell {
         shell._subscriptions.push(cx.intercept_keystrokes(move |event, window, cx| {
             let key = event.keystroke.key.as_str();
             let modifiers = event.keystroke.modifiers;
+            // A box over the window has the keys: typing a password must never
+            // answer a request for permission underneath.
+            if this.update(cx, |shell, _| shell.overlay_open()).unwrap_or(false) {
+                if key == "escape" {
+                    this.update(cx, |shell, cx| shell.escape_overlay(window, cx)).ok();
+                    cx.stop_propagation();
+                }
+                return;
+            }
+            let plain = !(modifiers.control || modifiers.alt || modifiers.platform || modifiers.shift || modifiers.function);
+            // The board's keys: tickets, questions, search.
+            if this.update(cx, |shell, cx| shell.on_board_key(key, plain, window, cx)).unwrap_or(false) {
+                cx.stop_propagation();
+                return;
+            }
             // y / a / n / o answer a request for permission while nothing is typed.
             if matches!(key, "y" | "a" | "n" | "o") {
-                let plain = !(modifiers.control || modifiers.alt || modifiers.platform || modifiers.shift || modifiers.function);
                 if this.update(cx, |shell, cx| shell.on_approval_key(key, plain, cx)).unwrap_or(false) {
                     cx.stop_propagation();
                 }
@@ -140,10 +223,7 @@ impl Shell {
                 cx.stop_propagation();
             }
         }));
-        match Target::from_env(env!("CARGO_PKG_VERSION")) {
-            Ok(target) => shell.attach(target, window, cx),
-            Err(problem) => shell.problem = Some(problem),
-        }
+        shell.attach(Target::new(endpoint, env!("CARGO_PKG_VERSION")), window, cx);
         shell.composer.focus(window, cx);
         shell
     }
@@ -153,6 +233,7 @@ impl Shell {
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.composer.follow(&self.model, window, cx);
         self.chat.sync(&self.model, cx);
+        self.board_sync(cx);
     }
 
     pub fn send_command(&self, command: Command) {
@@ -194,10 +275,20 @@ impl Shell {
 
     /// Follow `target`'s squad from scratch, letting go of any earlier link.
     fn attach(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
-        self.model = Model::new(&target.squad);
+        self.model = Model::new(target.prefer.as_deref().unwrap_or(""));
         self.connecting_shown = false;
-        let (link, mut updates) = daemon::spawn(target, Backoff::default());
+        // Questions still open were for the connection being left.
+        self.ask.queue.clear();
+        let backoff = if target.endpoint.is_remote() { Backoff::remote() } else { Backoff::default() };
+        let Spawned { link, mut updates, mut prompts } = daemon::spawn(target, backoff);
         self.link = Some(link);
+        self._prompts = Some(cx.spawn_in(window, async move |this, cx| {
+            while let Some(prompt) = prompts.recv().await {
+                if this.update_in(cx, |this, window, cx| this.ask_user(prompt, window, cx)).is_err() {
+                    break;
+                }
+            }
+        }));
 
         // The daemon's updates, drawn together when they land close to each
         // other, and only if something on screen differs.
@@ -212,13 +303,23 @@ impl Shell {
                     let now = Clock::now();
                     let mut changed = false;
                     for update in batch {
-                        // A squad may have been made since: look again on attach.
-                        if matches!(update, daemon::Update::Attached(_)) {
-                            let squads = squad_names(&equipe_home());
-                            if squads != this.squads {
-                                this.squads = squads;
+                        match &update {
+                            // The daemon's own list, asked on every attach: a squad
+                            // made since shows up, on this Mac or the far one.
+                            daemon::Update::Squads(list) => {
+                                let names: Vec<String> = list.squads.iter().map(|s| s.name.clone()).collect();
+                                if names != this.squads {
+                                    this.squads = names;
+                                    changed = true;
+                                }
+                            }
+                            // Over SSH the bridge had to start a daemon nobody installed
+                            // as a login service: it won't see the screen.
+                            daemon::Update::Bridge(bridge) if bridge.started => {
+                                this.composer.flash = Some("원격 데몬을 방금 시작했습니다 — 그 기계에서 `equipe daemon install`을 한 번 실행해 두면 항상 켜져 있습니다".into());
                                 changed = true;
                             }
+                            _ => {}
                         }
                         changed |= this.model.apply(update, now);
                     }
@@ -262,13 +363,147 @@ impl Shell {
         if name == self.model.squad {
             return;
         }
-        let home = equipe_home();
-        self.attach(
-            Target { socket: gateway::socket_path(&home), squad: name.to_owned(), version: env!("CARGO_PKG_VERSION").to_owned() },
-            window,
-            cx,
-        );
+        let mut target = Target::new(self.endpoint.clone(), env!("CARGO_PKG_VERSION"));
+        target.prefer = Some(name.to_owned());
+        self.attach(target, window, cx);
         cx.notify();
+    }
+
+    // ── which machine ──
+
+    /// Show the chooser: this Mac, the hosts `~/.ssh/config` names, or one typed.
+    pub fn open_chooser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(dir) = target::ssh_dir() {
+            self.connect.hosts = target::config_hosts(&dir);
+        }
+        self.connect.open = true;
+        self.connect.error = None;
+        let input = self.connect.input.clone();
+        input.update(cx, |s, cx| {
+            s.set_value(String::new(), window, cx);
+            s.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    pub fn close_chooser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.connect.open = false;
+        self.composer.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Connect to `endpoint` and remember it for the next launch.
+    pub fn connect_to(&mut self, endpoint: Endpoint, window: &mut Window, cx: &mut Context<Self>) {
+        self.connect.open = false;
+        self.remembered.use_endpoint(&endpoint);
+        self.remembered.save(&equipe_home());
+        self.endpoint = endpoint.clone();
+        self.squads.clear();
+        self.composer.flash = None;
+        self.attach(Target::new(endpoint, env!("CARGO_PKG_VERSION")), window, cx);
+        self.composer.focus(window, cx);
+        cx.notify();
+    }
+
+    /// What was typed in the chooser (or picked from its list): `user@host[:port]`.
+    pub fn connect_typed(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match Endpoint::parse(text) {
+            Ok(endpoint) => self.connect_to(endpoint, window, cx),
+            Err(why) => {
+                self.connect.error = Some(why);
+                cx.notify();
+            }
+        }
+    }
+
+    /// "Try again", after the person fixed what was wrong.
+    pub fn retry(&mut self, cx: &mut Context<Self>) {
+        if let Some(link) = &self.link {
+            link.retry();
+        }
+        cx.notify();
+    }
+
+    // ── questions from ssh ──
+
+    fn overlay_open(&self) -> bool {
+        self.connect.open || !self.ask.queue.is_empty()
+    }
+
+    fn escape_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.ask.queue.is_empty() {
+            self.answer_prompt(askpass::Answer::Cancel, window, cx);
+        } else {
+            self.close_chooser(window, cx);
+        }
+    }
+
+    /// `ssh` wants something from the person: a box over the window.
+    fn ask_user(&mut self, prompt: askpass::Prompt, window: &mut Window, cx: &mut Context<Self>) {
+        self.ask.queue.push_back(prompt);
+        if self.ask.queue.len() == 1 {
+            self.prepare_question(window, cx);
+        }
+        // It may be a reconnect in the background: bring the window to the person.
+        window.activate_window();
+        cx.notify();
+    }
+
+    fn prepare_question(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let secret = matches!(self.ask.queue.front().map(|p| &p.ask), Some(askpass::Ask::Secret { .. }));
+        if secret {
+            let input = self.ask.input.clone();
+            input.update(cx, |s, cx| {
+                s.set_value(String::new(), window, cx);
+                s.focus(window, cx);
+            });
+        }
+    }
+
+    pub fn answer_prompt(&mut self, answer: askpass::Answer, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(prompt) = self.ask.queue.pop_front() {
+            let _ = prompt.reply.send(answer);
+        }
+        if self.ask.queue.is_empty() {
+            self.composer.focus(window, cx);
+        } else {
+            self.prepare_question(window, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn submit_secret(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.ask.input.read(cx).value().to_string();
+        self.ask.input.update(cx, |s, cx| s.set_value(String::new(), window, cx));
+        self.answer_prompt(askpass::Answer::Text(text), window, cx);
+    }
+
+    /// Show a file the daemon's machine named (an approval's screen). On this
+    /// Mac it opens where it is; from another machine it is fetched first, over
+    /// the same SSH connection, into a private temp file.
+    pub fn open_file(&self, path: &str) {
+        match &self.endpoint {
+            Endpoint::Local { .. } => {
+                let _ = std::process::Command::new("open").arg(path).spawn();
+            }
+            Endpoint::Ssh(host) => {
+                let (host, path, notices) = (host.clone(), path.to_owned(), self.notices.clone());
+                std::thread::spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a tokio runtime");
+                    let fetched = runtime.block_on(ssh::Launcher::system(None).run(&host, &format!("cat -- {}", ssh::quote(&path))));
+                    match fetched {
+                        Ok(bytes) => {
+                            let local = ssh::scratch_dir().join(format!("{}-{}", std::process::id(), ssh::safe_name(std::path::Path::new(&path))));
+                            match std::fs::write(&local, bytes) {
+                                Ok(()) => drop(std::process::Command::new("open").arg(&local).spawn()),
+                                Err(e) => drop(notices.send(format!("미리보기를 저장하지 못했습니다: {e}"))),
+                            }
+                        }
+                        Err(failure) => drop(notices.send(format!("{}에서 미리보기를 가져오지 못했습니다: {}", host.spec(), failure.guide(&Endpoint::Ssh(host.clone())).short))),
+                    }
+                });
+            }
+        }
     }
 
     /// A notification was clicked: bring the window forward, on what it was about.
@@ -285,26 +520,21 @@ impl Shell {
     pub fn show(&mut self, screen: Screen, cx: &mut Context<Self>) {
         if self.screen != screen {
             self.screen = screen;
+            self.board_sync(cx);
             cx.notify();
         }
     }
 
     fn body(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette;
-        let nothing_attached = self.problem.is_some() || matches!(self.model.conn, Conn::Down { had_snapshot: false, .. });
-        if nothing_attached && !install::cli_installed() {
+        let nothing_attached = matches!(self.model.conn, Conn::Down { had_snapshot: false, .. });
+        // A Mac without equipe is told how to install; a far machine's missing
+        // equipe is that machine's guide, below.
+        if nothing_attached && !self.endpoint.is_remote() && !install::cli_installed() {
             return install_screen(p);
         }
-        if let Some(problem) = &self.problem {
-            return empty_state(p, "아직 스쿼드가 없습니다", problem, None);
-        }
         match &self.model.conn {
-            Conn::Down { since, had_snapshot: false, .. } => empty_state(
-                p,
-                "equipe 데몬이 실행 중이 아닙니다",
-                "터미널에서 `equipe`를 실행하면 데몬이 시작됩니다. 켜지는 즉시 이 창이 알아서 연결합니다.",
-                Some(format!("~/.equipe/equipe.sock을 {since}에 찾아봤습니다")),
-            ),
+            Conn::Down { reason, had_snapshot: false, .. } => views::connect::guide_screen(self, &reason.guide(&self.endpoint), cx),
             Conn::Connecting => div()
                 .flex_1()
                 .flex()
@@ -312,7 +542,12 @@ impl Shell {
                 .justify_center()
                 .text_size(px(BODY))
                 .text_color(p.muted)
-                .when(self.connecting_shown, |d| d.child("데몬에 연결하는 중…"))
+                .when(self.connecting_shown, |d| {
+                    d.child(match &self.endpoint {
+                        Endpoint::Local { .. } => "데몬에 연결하는 중…".to_owned(),
+                        remote => format!("{}에 SSH로 연결하는 중…", remote.label()),
+                    })
+                })
                 .into_any_element(),
             conn => {
                 let screen = match self.screen {
@@ -321,35 +556,51 @@ impl Shell {
                         .flex_1()
                         .min_h_0()
                         .child(views::header::render(self, cx))
-                        .child(views::board::render(self))
+                        .child(views::board::render(self, cx))
                         // A request still waits for its answer here; the buttons work.
                         .children(views::approvals::approval(self, cx).map(|card| div().w_full().max_w(px(720.)).px_4().mx_auto().child(card)))
                         .into_any_element(),
                 };
-                v_flex().flex_1().min_w_0().h_full().children(banner(p, conn)).child(screen).into_any_element()
+                v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).child(screen).into_any_element()
             }
         }
     }
-}
 
-/// Shown over the last state when the daemon goes away after we had it.
-fn banner(p: Palette, conn: &Conn) -> Option<impl IntoElement + use<>> {
-    let Conn::Down { since, had_snapshot: true, .. } = conn else { return None };
-    Some(
-        h_flex()
-            .h(px(36.))
-            .flex_none()
-            .px_4()
-            .gap_3()
-            .items_center()
-            .bg(p.accent_bg)
-            .border_b_1()
-            .border_color(p.hair)
-            .text_size(px(SMALL))
-            .child(div().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child("✗"))
-            .child(div().text_color(p.text).child(format!("데몬과의 연결이 {since}에 끊겼습니다.")))
-            .child(div().text_color(p.muted).child("다시 연결하는 중 — 데몬이 켜지면 자동으로 이어집니다")),
-    )
+    /// Shown over the last state when the daemon goes away after we had it.
+    fn banner(&self, conn: &Conn, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let p = self.palette;
+        let Conn::Down { reason, since, had_snapshot: true } = conn else { return None };
+        let guide = reason.guide(&self.endpoint);
+        let waits = reason.waits_for_person();
+        Some(
+            h_flex()
+                .h(px(36.))
+                .flex_none()
+                .px_4()
+                .gap_3()
+                .items_center()
+                .bg(p.accent_bg)
+                .border_b_1()
+                .border_color(p.hair)
+                .text_size(px(SMALL))
+                .child(div().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child("✗"))
+                .child(div().text_color(p.text).child(format!("{} · {since}", guide.short)))
+                .child(div().flex_1().min_w_0().text_color(p.muted).child(if waits { "확인이 필요합니다" } else { "다시 연결하는 중 — 켜지면 자동으로 이어집니다" }))
+                .child(
+                    div()
+                        .id("banner-retry")
+                        .px_2()
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(p.hair)
+                        .text_color(p.text)
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(p.wash))
+                        .on_click(cx.listener(|this, _, _, cx| this.retry(cx)))
+                        .child("다시 시도"),
+                ),
+        )
+    }
 }
 
 /// The body on a Mac without equipe: what the app needs, and the line that installs it.
@@ -406,34 +657,9 @@ fn install_screen(p: Palette) -> AnyElement {
         .into_any_element()
 }
 
-/// The body when there is nothing to show: a heading, a sentence, how to fix it.
-fn empty_state(p: Palette, title: &str, text: &str, note: Option<String>) -> AnyElement {
-    v_flex()
-        .flex_1()
-        .items_center()
-        .justify_center()
-        .gap_3()
-        .child(div().text_size(px(18.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title.to_owned()))
-        .child(div().max_w(px(480.)).text_size(px(BODY)).line_height(px(24.)).text_color(p.text2).text_center().child(text.to_owned()))
-        .child(
-            div()
-                .px_3()
-                .py_1()
-                .rounded(px(8.))
-                .bg(p.code_bg)
-                .border_1()
-                .border_color(p.hair)
-                .font_family("Menlo")
-                .text_size(px(SMALL))
-                .text_color(p.text2)
-                .child("equipe"),
-        )
-        .children(note.map(|n| div().text_size(px(SMALL)).text_color(p.muted).child(n)))
-        .into_any_element()
-}
-
 impl Render for Shell {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.board_prepare(window, cx);
         self.renders += 1;
         if self.log_renders {
             let mb = mem::phys_footprint_bytes().map_or(0., |b| b as f64 / 1_048_576.);
@@ -456,12 +682,14 @@ impl Render for Shell {
                 let next = if this.screen == Screen::Chat { Screen::Board } else { Screen::Chat };
                 this.show(next, cx);
             }))
+            .on_action(cx.listener(|this, _: &ChooseTarget, window, cx| this.open_chooser(window, cx)))
             .on_action(cx.listener(|this, _: &AllProjects, window, cx| this.focus_project(None, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleFolds, _, cx| this.toggle_folds(cx)));
         let root = project_actions!(
             root, cx, Project1 => 1, Project2 => 2, Project3 => 3, Project4 => 4, Project5 => 5, Project6 => 6, Project7 => 7, Project8 => 8, Project9 => 9
         );
         root
+            .relative()
             .child(
                 // The title bar: drags the window; the traffic lights sit at its left.
                 div()
@@ -473,7 +701,11 @@ impl Render for Shell {
                     .window_control_area(WindowControlArea::Drag)
                     .text_size(px(SMALL))
                     .text_color(p.muted)
-                    .child(self.model.squad.clone()),
+                    .child(match (self.endpoint.is_remote(), self.model.squad.is_empty()) {
+                        (false, _) => self.model.squad.clone(),
+                        (true, true) => self.endpoint.label(),
+                        (true, false) => format!("{} · {}", self.model.squad, self.endpoint.label()),
+                    }),
             )
             .child(
                 h_flex()
@@ -484,6 +716,9 @@ impl Render for Shell {
                     .child(views::sidebar::render(self, cx))
                     .child(div().flex_1().min_w_0().h_full().flex().flex_col().child(self.body(cx))),
             )
+            // Over everything: the chooser, then a question from ssh above it.
+            .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
+            .children(views::connect::question(self, cx))
     }
 }
 
@@ -510,6 +745,7 @@ fn app_menu(cx: &mut App) {
         KeyBinding::new("cmd-q", Quit, None),
     ]);
     cx.set_menus(vec![Menu::new("equipe").items([
+        MenuItem::action("연결 대상…", ChooseTarget),
         MenuItem::action("업데이트 확인…", CheckForUpdates).disabled(!can_update),
         MenuItem::separator(),
         MenuItem::action("equipe 가리기", Hide),
@@ -521,6 +757,11 @@ fn app_menu(cx: &mut App) {
 }
 
 fn main() {
+    // `ssh` starts this same binary to ask the person a question: answer it
+    // through the running app and leave, without opening a window.
+    if let Some(code) = askpass::helper() {
+        std::process::exit(code);
+    }
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
         cx.bind_keys([
@@ -536,6 +777,7 @@ fn main() {
             KeyBinding::new("cmd-8", Project8, None),
             KeyBinding::new("cmd-9", Project9, None),
             KeyBinding::new("cmd-shift-o", ToggleFolds, None),
+            KeyBinding::new("cmd-shift-k", ChooseTarget, None),
             // ⌥⏎ and ⌃J break the line like ⇧⏎ (T-54 §8).
             KeyBinding::new("alt-enter", Enter { secondary: false, shift: true }, Some("Input")),
             KeyBinding::new("ctrl-j", Enter { secondary: false, shift: true }, Some("Input")),

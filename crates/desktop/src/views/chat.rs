@@ -169,7 +169,7 @@ fn conversation(shell: &Shell, look: Look, cx: &mut Context<Shell>) -> impl Into
     )
 }
 
-type Handle = WeakEntity<Shell>;
+pub type Handle = WeakEntity<Shell>;
 
 fn row(p: Palette, block: &Block, ix: usize, serial: u64, expanded: bool, look: &Look, handle: &Handle) -> AnyElement {
     let id = serial << 24 | ix as u64;
@@ -269,7 +269,7 @@ fn row(p: Palette, block: &Block, ix: usize, serial: u64, expanded: bool, look: 
 
 /// Markdown at `size`, in the palette's colours; headings stay body-sized (a
 /// conversation is not a document), `T-n` is a way to the board.
-fn markdown(p: Palette, id: (&'static str, u64), text: &str, size: f32, line: f32, color: Rgba, handle: &Handle) -> impl IntoElement + use<> {
+pub fn markdown(p: Palette, id: (&'static str, u64), text: &str, size: f32, line: f32, color: Rgba, handle: &Handle) -> impl IntoElement + use<> {
     let handle = handle.clone();
     let muted = p.muted;
     let to_hsla = |c: Rgba| -> Hsla { c.into() };

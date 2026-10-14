@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
 use equipe_core::protocol::rpc::Hello;
@@ -12,6 +12,7 @@ use equipe_core::protocol::{Engine, Entry, Event, Mode, SessionId, SessionState,
 
 use crate::convo::Convo;
 use crate::daemon::Update;
+use crate::failure::Failure;
 use crate::notify::Alert;
 use crate::views::approvals::Queue;
 
@@ -118,7 +119,7 @@ pub enum Conn {
         last_event: Option<Clock>,
     },
     Down {
-        reason: String,
+        reason: Failure,
         /// When we first noticed.
         since: Clock,
         /// Whether we ever held a snapshot: then the last state stays readable
@@ -253,10 +254,14 @@ impl Model {
                     Conn::Connected { .. } => Conn::Down { reason, since: now, had_snapshot: true },
                     Conn::Connecting => Conn::Down { reason, since: now, had_snapshot: false },
                 };
-                let changed = !matches!((&self.conn, &next), (Conn::Down { since: a, had_snapshot: x, .. }, Conn::Down { since: b, had_snapshot: y, .. }) if a == b && x == y);
+                // With a snapshot on screen only the banner shows, and it doesn't
+                // say why; without one, the whole body is the reason's guide.
+                let changed = !matches!((&self.conn, &next), (Conn::Down { since: a, had_snapshot: x, reason: r }, Conn::Down { since: b, had_snapshot: y, reason: q }) if a == b && x == y && (*x || r == q));
                 self.conn = next;
                 changed
             }
+            // The shell reads these two itself: the squad list and the bridge's greeting.
+            Update::Squads(_) | Update::Bridge(_) => false,
             Update::Event(event) => {
                 let before = (self.members.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint());
                 self.on_event(event, now);
@@ -532,16 +537,6 @@ fn percent((used, window): (u64, u64)) -> Option<u8> {
     (window > 0).then(|| (used * 100 / window).min(100) as u8)
 }
 
-/// The squads under `home`, by name — straight from the folder names, so the
-/// list costs no database opens.
-pub fn squad_names(home: &Path) -> Vec<String> {
-    let Ok(dirs) = std::fs::read_dir(home.join("squads")) else { return Vec::new() };
-    let mut names: Vec<String> =
-        dirs.flatten().filter(|d| d.path().join("squad.db").exists()).map(|d| d.file_name().to_string_lossy().into_owned()).collect();
-    names.sort();
-    names
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -694,10 +689,10 @@ mod tests {
     fn going_down_keeps_the_list_and_the_first_time_noticed() {
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
-        assert!(model.apply(Update::Down("the daemon closed the connection".into()), T0));
+        assert!(model.apply(Update::Down(Failure::Closed), T0));
         // A later reason is not news, and the time stays the first one.
-        assert!(!model.apply(Update::Down("no daemon at /x".into()), T1));
-        assert_eq!(model.conn, Conn::Down { reason: "no daemon at /x".into(), since: T0, had_snapshot: true });
+        assert!(!model.apply(Update::Down(Failure::NoAnswer), T1));
+        assert_eq!(model.conn, Conn::Down { reason: Failure::NoAnswer, since: T0, had_snapshot: true });
         assert_eq!(model.members.len(), 1);
         // Back: the snapshot replaces the list.
         model.apply(hello(vec![]), T1);
@@ -708,7 +703,7 @@ mod tests {
     #[test]
     fn a_daemon_that_was_never_there_has_no_snapshot() {
         let mut model = Model::new("acme");
-        model.apply(Update::Down("no daemon at /x".into()), T0);
+        model.apply(Update::Down(Failure::NoAnswer), T0);
         assert!(matches!(model.conn, Conn::Down { had_snapshot: false, .. }));
     }
 

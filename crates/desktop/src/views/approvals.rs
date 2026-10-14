@@ -208,7 +208,7 @@ impl Shell {
     /// Open the screen a send would go from.
     pub fn open_preview(&self) {
         if let Some(path) = self.model.approvals.first().and_then(|a| a.preview.as_deref()) {
-            let _ = std::process::Command::new("open").arg(path).spawn();
+            self.open_file(path);
         }
     }
 
@@ -261,8 +261,9 @@ pub fn approval(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let waiting = model.approvals.len();
     let on_chat = shell.screen == Screen::Chat;
     let handle = cx.entity().downgrade();
+    let for_decisions = handle.clone();
     let act = move |d: Decision| {
-        let handle = handle.clone();
+        let handle = for_decisions.clone();
         move |_: &mut Window, cx: &mut App| {
             handle.update(cx, |shell, cx| shell.decide(d, cx)).ok();
         }
@@ -315,8 +316,11 @@ pub fn approval(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                     "미리보기 열기",
                     "O",
                     false,
-                    move |_, _| {
-                        let _ = std::process::Command::new("open").arg(&path).spawn();
+                    {
+                        let handle = handle.clone();
+                        move |_, cx| {
+                            handle.update(cx, |shell, _| shell.open_file(&path)).ok();
+                        }
                     },
                 ))
             }))
