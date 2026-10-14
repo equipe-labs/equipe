@@ -2057,8 +2057,10 @@ name = "equipe-desktop"
 version = "0.12.0"
 dependencies = [
  "equipe-core",
+ "equipe-providers",
  "gpui-kit",
  "libc",
+ "tokio",
 ]
 
 [[package]]
