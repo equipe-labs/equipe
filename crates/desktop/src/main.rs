@@ -10,6 +10,7 @@ mod compose;
 mod convo;
 mod daemon;
 mod mem;
+mod notify;
 #[cfg(feature = "snapshot")]
 mod snapshot;
 mod state;
@@ -58,6 +59,8 @@ pub struct Shell {
     pub composer: Composer,
     /// The ticket a `T-n` link asked the board to open.
     pub board_ticket: Option<u32>,
+    /// Where a click on a notification says to go: the notifier's threads send, we follow.
+    clicks: tokio::sync::mpsc::UnboundedSender<notify::Go>,
     /// Why there is nothing to attach to (no squad yet), when so.
     problem: Option<String>,
     connecting_shown: bool,
@@ -68,6 +71,7 @@ pub struct Shell {
     link: Option<Link>,
     _pump: Option<Task<()>>,
     _connecting: Option<Task<()>>,
+    _clicks: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -78,6 +82,7 @@ impl Shell {
             cx.notify();
         })
         .detach();
+        let (clicks, mut clicked) = tokio::sync::mpsc::unbounded_channel();
         let mut shell = Self {
             palette: Palette::new(window.appearance()),
             model: Model::new(""),
@@ -86,6 +91,7 @@ impl Shell {
             chat: Chat::new(cx),
             composer: Composer::new(window, cx),
             board_ticket: None,
+            clicks,
             problem: None,
             connecting_shown: false,
             log_renders: std::env::var_os("EQUIPE_LOG_RENDER").is_some(),
@@ -94,8 +100,16 @@ impl Shell {
             link: None,
             _pump: None,
             _connecting: None,
+            _clicks: None,
             _subscriptions: Vec::new(),
         };
+        shell._clicks = Some(cx.spawn_in(window, async move |this, cx| {
+            while let Some(go) = clicked.recv().await {
+                if this.update_in(cx, |this, window, cx| this.go(go, window, cx)).is_err() {
+                    break;
+                }
+            }
+        }));
         let state = shell.composer.state.clone();
         shell._subscriptions.push(cx.subscribe_in(&state, window, |this, _, event: &InputEvent, window, cx| this.on_composer_event(event, window, cx)));
         shell._subscriptions.push(cx.observe_in(&state, window, |this, _, window, cx| this.on_composer_touched(window, cx)));
@@ -104,10 +118,18 @@ impl Shell {
         let this = cx.entity().downgrade();
         shell._subscriptions.push(cx.intercept_keystrokes(move |event, window, cx| {
             let key = event.keystroke.key.as_str();
+            let modifiers = event.keystroke.modifiers;
+            // y / a / n / o answer a request for permission while nothing is typed.
+            if matches!(key, "y" | "a" | "n" | "o") {
+                let plain = !(modifiers.control || modifiers.alt || modifiers.platform || modifiers.shift || modifiers.function);
+                if this.update(cx, |shell, cx| shell.on_approval_key(key, plain, cx)).unwrap_or(false) {
+                    cx.stop_propagation();
+                }
+                return;
+            }
             if !matches!(key, "escape" | "up" | "down" | "tab" | "enter") {
                 return;
             }
-            let modifiers = event.keystroke.modifiers;
             let taken = this.update(cx, |shell, cx| shell.on_composer_key(key, &modifiers, window, cx)).unwrap_or(false);
             if taken {
                 cx.stop_propagation();
@@ -195,6 +217,17 @@ impl Shell {
                         }
                         changed |= this.model.apply(update, now);
                     }
+                    // Told while the window is out of sight; in sight, the cards say it.
+                    let alerts = this.model.take_alerts();
+                    if !alerts.is_empty() && !window.is_window_active() {
+                        for toast in notify::toasts(&alerts, &this.model.squad, true) {
+                            notify::send(toast, this.clicks.clone());
+                        }
+                    }
+                    if let Some(flash) = this.model.take_flash() {
+                        this.composer.flash = Some(flash);
+                        changed = true;
+                    }
                     if changed {
                         if this.log_renders {
                             eprintln!("daemon update -> redraw");
@@ -233,6 +266,17 @@ impl Shell {
         cx.notify();
     }
 
+    /// A notification was clicked: bring the window forward, on what it was about.
+    fn go(&mut self, go: notify::Go, window: &mut Window, cx: &mut Context<Self>) {
+        match go {
+            notify::Go::Member(session) => self.select_member(session, window, cx),
+            notify::Go::Ticket(ticket) => self.open_ticket(ticket, cx),
+            notify::Go::Board => self.show(Screen::Board, cx),
+        }
+        window.activate_window();
+        cx.activate(true);
+    }
+
     pub fn show(&mut self, screen: Screen, cx: &mut Context<Self>) {
         if self.screen != screen {
             self.screen = screen;
@@ -264,7 +308,14 @@ impl Shell {
             conn => {
                 let screen = match self.screen {
                     Screen::Chat => views::chat::screen(self, cx).into_any_element(),
-                    Screen::Board => v_flex().flex_1().min_h_0().child(views::header::render(self, cx)).child(views::board::render(self)).into_any_element(),
+                    Screen::Board => v_flex()
+                        .flex_1()
+                        .min_h_0()
+                        .child(views::header::render(self, cx))
+                        .child(views::board::render(self))
+                        // A request still waits for its answer here; the buttons work.
+                        .children(views::approvals::approval(self, cx).map(|card| div().w_full().max_w(px(720.)).px_4().mx_auto().child(card)))
+                        .into_any_element(),
                 };
                 v_flex().flex_1().min_w_0().h_full().children(banner(p, conn)).child(screen).into_any_element()
             }

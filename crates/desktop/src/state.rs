@@ -12,6 +12,8 @@ use equipe_core::protocol::{Engine, Entry, Event, Mode, SessionId, SessionState,
 
 use crate::convo::Convo;
 use crate::daemon::Update;
+use crate::notify::Alert;
+use crate::views::approvals::Queue;
 
 /// A wall-clock time of day, as shown ("14:02"). Passed in, never read here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +127,8 @@ pub enum Conn {
     },
 }
 
+type CardHint = (Vec<u64>, Vec<(TicketId, TicketStatus, Option<String>)>, Option<String>);
+
 #[derive(Debug, Clone)]
 pub struct Model {
     pub squad: String,
@@ -135,8 +139,13 @@ pub struct Model {
     pub projects: Vec<PathBuf>,
     /// The squad's mode, for completion's sake.
     pub mode: Mode,
-    /// Open permission requests: (id, session, ticket).
-    approvals: Vec<(u64, SessionId, Option<TicketId>)>,
+    /// Open permission requests, oldest first.
+    pub approvals: Queue,
+    /// Things that need the person and have not been announced yet: the shell
+    /// takes them and tells the person if the window is out of sight.
+    alerts: Vec<Alert>,
+    /// One quiet line the shell shows under the conversation, until taken.
+    flash: Option<String>,
     /// Each member's conversation.
     pub convos: HashMap<SessionId, Convo>,
     /// Whose conversation is on screen.
@@ -157,7 +166,9 @@ impl Model {
             tickets: Vec::new(),
             projects: Vec::new(),
             mode: Mode::default(),
-            approvals: Vec::new(),
+            approvals: Queue::default(),
+            alerts: Vec::new(),
+            flash: None,
             convos: HashMap::new(),
             selected: None,
             focus: None,
@@ -233,6 +244,8 @@ impl Model {
                 true
             }
             Update::Down(reason) => {
+                // Answers sent into a dead link never came back as resolved.
+                self.approvals.forget_answers();
                 let next = match &self.conn {
                     // Already down: only the reason may have moved on, and it
                     // is not shown while the banner is up.
@@ -245,9 +258,9 @@ impl Model {
                 changed
             }
             Update::Event(event) => {
-                let before = (self.members.clone(), self.ticket_hint(), self.subagents_hint(), self.revision);
+                let before = (self.members.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint());
                 self.on_event(event, now);
-                let mut changed = before != (self.members.clone(), self.ticket_hint(), self.subagents_hint(), self.revision);
+                let mut changed = before != (self.members.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint());
                 // The footer's "last event" moves when the minute does.
                 if let Conn::Connected { last_event } = &mut self.conn {
                     let stamp = Some(now);
@@ -262,12 +275,16 @@ impl Model {
     }
 
     fn load(&mut self, hello: Hello) {
+        let version = hello.version;
         let snapshot = hello.snapshot;
         self.squad = snapshot.squad;
         self.tickets = snapshot.tickets.clone();
         self.projects = snapshot.projects.clone();
         self.mode = snapshot.mode;
-        self.approvals = snapshot.approvals.iter().map(|a| (a.id, a.session, a.ticket)).collect();
+        self.approvals.load(snapshot.approvals.clone());
+        if let Some(note) = crate::notify::stale_daemon(&version, env!("CARGO_PKG_VERSION")) {
+            self.flash = Some(note);
+        }
         self.members = snapshot
             .sessions
             .iter()
@@ -330,8 +347,14 @@ impl Model {
     fn on_member_event(&mut self, event: Event) {
         match event {
             Event::TicketChanged { ticket, .. } => self.on_ticket(&ticket),
-            Event::ApprovalRequested { approval, .. } => self.approvals.push((approval.id, approval.session, approval.ticket)),
-            Event::ApprovalResolved { approval, .. } => self.approvals.retain(|(id, ..)| *id != approval),
+            Event::ApprovalRequested { squad, approval } => {
+                if squad == self.squad && !self.approvals.has(approval.id) {
+                    self.alerts.push(Alert::Approval { approval: approval.clone(), squad });
+                    self.approvals.push(approval);
+                }
+            }
+            Event::ApprovalResolved { approval, .. } => self.approvals.resolve(approval),
+            Event::Error { session: None, message, .. } => self.flash = Some(message),
             Event::SessionStarted { session, member, model, squad, engine, .. } => {
                 if squad.is_some_and(|s| s != self.squad) || self.members.iter().any(|m| m.session == session) {
                     return;
@@ -393,6 +416,21 @@ impl Model {
     }
 
     fn on_ticket(&mut self, ticket: &Ticket) {
+        let was = self.tickets.iter().find(|t| t.id == ticket.id).map(|t| t.status);
+        if was.is_some() && was != Some(ticket.status) {
+            match ticket.status {
+                TicketStatus::Review => {
+                    self.flash = Some(format!("T-{0} 검토 대기 · /accept T-{0} 또는 /reopen T-{0} <바꿀 것>", ticket.id));
+                    self.alerts.push(Alert::Review { ticket: ticket.id, title: ticket.title.clone(), by: ticket.assignee.clone().or(ticket.owner.clone()), project: self.ticket_project_name(ticket) });
+                }
+                TicketStatus::Waiting => {
+                    let needs = ticket.note.as_deref().map(equipe_core::board::waiting_needs).unwrap_or_default().join(", ");
+                    self.flash = Some(format!("T-{0}: 당신을 기다립니다 — {needs} · 끝나면 /resume T-{0}", ticket.id));
+                    self.alerts.push(Alert::Waiting { ticket: ticket.id, by: ticket.assignee.clone().or(ticket.owner.clone()) });
+                }
+                _ => {}
+            }
+        }
         match self.tickets.iter_mut().find(|t| t.id == ticket.id) {
             Some(slot) => *slot = ticket.clone(),
             None => self.tickets.push(ticket.clone()),
@@ -404,9 +442,52 @@ impl Model {
         self.members.iter().filter_map(|m| self.convos.get(&m.session).filter(|c| !c.subagents.is_empty()).map(|c| (m.session, c.subagents.clone()))).collect()
     }
 
+    /// What the cards above the composer show, for change detection.
+    fn card_hint(&self) -> CardHint {
+        (
+            self.approvals.ids(),
+            self.for_you_here().iter().map(|t| (t.id, t.status, t.note.clone())).collect(),
+            self.flash.clone(),
+        )
+    }
+
     /// What the sidebar derives from tickets and approvals, for change detection.
     fn ticket_hint(&self) -> (usize, Vec<Status>) {
         (self.for_you(), self.members.iter().map(|m| self.status(m)).collect())
+    }
+
+    pub fn take_alerts(&mut self) -> Vec<Alert> {
+        std::mem::take(&mut self.alerts)
+    }
+
+    pub fn take_flash(&mut self) -> Option<String> {
+        self.flash.take()
+    }
+
+    /// The project a ticket is about: its own; for code, else the squad's first.
+    /// A task or action with none is the squad's own, not a project's.
+    pub fn ticket_project(&self, ticket: &Ticket) -> Option<PathBuf> {
+        if ticket.kind.in_home() {
+            return ticket.project.clone();
+        }
+        ticket.project.clone().or_else(|| self.projects.first().cloned())
+    }
+
+    pub fn ticket_project_name(&self, ticket: &Ticket) -> Option<String> {
+        self.ticket_project(ticket).map(|p| equipe_core::board::project_name(&p))
+    }
+
+    /// What waits for the person under the project in focus: reviews first,
+    /// then tickets put down for them, each in ticket order.
+    pub fn for_you_here(&self) -> Vec<&Ticket> {
+        let here = |t: &&Ticket| self.focus.is_none() || self.ticket_project_name(t) == self.focus;
+        let mut out: Vec<&Ticket> = Vec::new();
+        for status in [TicketStatus::Review, TicketStatus::Waiting] {
+            let mut group: Vec<&Ticket> = self.tickets.iter().filter(|t| t.status == status).filter(here).collect();
+            group.sort_by_key(|t| t.id);
+            out.extend(group);
+        }
+        out
     }
 
     /// Tickets waiting for the person: handed in for review, or put down for them.
@@ -420,9 +501,9 @@ impl Model {
             .iter()
             .find(|t| t.status == TicketStatus::Waiting && t.owner.as_deref() == Some(member.name.as_str()))
             .map(|t| t.id);
-        let asking = self.approvals.iter().find(|(_, session, _)| *session == member.session);
+        let asking = self.approvals.first_for(member.session);
         if member.presence != Presence::Closed && (asking.is_some() || waiting.is_some()) {
-            return Status::NeedsYou(asking.and_then(|(.., t)| *t).or(member.ticket).or(waiting));
+            return Status::NeedsYou(asking.and_then(|a| a.ticket).or(member.ticket).or(waiting));
         }
         match member.presence {
             Presence::Closed => Status::Closed,
@@ -549,6 +630,45 @@ mod tests {
         model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket }), T0);
         assert_eq!(model.status(&model.members[0]), Status::NeedsYou(Some(3)));
         assert_eq!(model.for_you(), 1);
+    }
+
+    fn ticket(id: u32, status: &str, note: Option<&str>) -> Ticket {
+        serde_json::from_value(serde_json::json!({"id": id, "title": "t", "body": "", "status": status, "owner": "backend", "assignee": null, "project": null, "depends_on": [], "branch": null, "created_by": "pm", "note": note})).unwrap()
+    }
+
+    #[test]
+    fn a_new_request_or_a_ticket_turning_to_review_or_waiting_is_announced_once() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(2, "backend", "backend", SessionState::Working)]), T0);
+        assert!(model.take_alerts().is_empty(), "what the snapshot holds is not news");
+        model.apply(Update::Event(Event::ApprovalRequested { squad: "acme".into(), approval: approval(7, 2) }), T0);
+        // The same request again changes nothing.
+        model.apply(Update::Event(Event::ApprovalRequested { squad: "acme".into(), approval: approval(7, 2) }), T0);
+        let tick = |status, note| Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(3, status, note) });
+        model.apply(tick("in_progress", None), T0);
+        assert!(model.apply(tick("review", None), T0));
+        model.apply(tick("review", None), T0);
+        assert!(model.apply(tick("waiting", Some("Waiting on you:\n- [ ] GitHub token")), T0));
+        let alerts = model.take_alerts();
+        assert_eq!(alerts.len(), 3);
+        assert!(matches!(alerts[0], Alert::Approval { .. }));
+        assert!(matches!(alerts[1], Alert::Review { ticket: 3, .. }));
+        assert!(matches!(alerts[2], Alert::Waiting { ticket: 3, .. }));
+        assert!(model.take_flash().unwrap().contains("GitHub token"));
+        assert!(model.take_alerts().is_empty());
+    }
+
+    #[test]
+    fn the_card_lists_reviews_before_waits_and_follows_the_project_in_focus() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![]), T0);
+        for t in [ticket(5, "waiting", None), ticket(9, "review", None), ticket(2, "review", None), ticket(1, "in_progress", None)] {
+            model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: t }), T0);
+        }
+        let ids: Vec<u32> = model.for_you_here().iter().map(|t| t.id).collect();
+        assert_eq!(ids, [2, 9, 5]);
+        model.set_focus(Some("elsewhere".into()));
+        assert!(model.for_you_here().is_empty());
     }
 
     #[test]

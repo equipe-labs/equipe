@@ -2138,6 +2138,7 @@ dependencies = [
  "gpui-kit",
  "image",
  "libc",
+ "mac-notification-sys",
  "serde_json",
  "tokio",
 ]

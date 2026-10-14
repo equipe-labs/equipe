@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use equipe_core::gateway;
 use equipe_core::protocol::rpc::{self, Hello, Message};
-use equipe_core::protocol::{Access, Command, Engine, Entry, Event, Member, SessionId, SessionInfo, SessionState, Snapshot, TurnOutcome, Usage};
+use equipe_core::protocol::{Access, Approval, Command, Engine, Entry, Event, Member, SessionId, SessionInfo, SessionState, Snapshot, TurnOutcome, Usage};
 use equipe_providers::credentials::equipe_home;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -45,6 +45,36 @@ fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
         work: None,
         mode: None,
     }
+}
+
+/// Requests for permission still unanswered; a `decide` removes one. `FAKE_ASKS=0` starts with none.
+fn asks() -> &'static std::sync::Mutex<Vec<Approval>> {
+    static ASKS: std::sync::OnceLock<std::sync::Mutex<Vec<Approval>>> = std::sync::OnceLock::new();
+    ASKS.get_or_init(|| {
+        let ask = |id, session, member: &str, tool: &str, action: &str, reason: Option<&str>| Approval {
+            id,
+            session,
+            member: member.into(),
+            ticket: Some(52),
+            tool: tool.into(),
+            action: action.into(),
+            reason: reason.map(Into::into),
+            preview: None,
+        };
+        let on = std::env::var("FAKE_ASKS").map_or(true, |v| v != "0");
+        std::sync::Mutex::new(if on {
+            vec![
+                ask(7, 3, "backend", "Bash", "cargo test -p equipe-core -- --nocapture\ncat > /tmp/out.txt <<EOF\nx\nEOF", Some("테스트를 돌리기 전에 허가가 필요합니다")),
+                ask(8, 2, "frontend", "Send", "press return in Slack · #general\n내일 회의 3시로 옮겨요", None),
+            ]
+        } else {
+            vec![]
+        })
+    })
+}
+
+fn ticket(id: u32, status: &str, note: Option<&str>) -> equipe_core::protocol::Ticket {
+    serde_json::from_value(serde_json::json!({"id": id, "title": format!("티켓 {id}의 제목"), "body": "", "status": status, "owner": "backend", "assignee": "backend", "project": "/tmp/fake/site", "depends_on": [], "branch": null, "created_by": "pm", "note": note})).unwrap()
 }
 
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
@@ -89,6 +119,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             squad: params.squad,
                             projects: vec!["/tmp/fake/site".into(), "/tmp/fake/app".into()],
                             sessions: vec![info(1, "pm", history), info(2, "frontend", vec![]), info(3, "backend", vec![])],
+                            approvals: asks().lock().unwrap().clone(),
+                            tickets: vec![ticket(54, "review", None), ticket(35, "waiting", Some("Waiting on you:\n- [ ] 화면 기록 권한")), ticket(30, "review", None), ticket(31, "review", None)],
                             ..Default::default()
                         };
                         let hello = Hello { version: "fake".into(), snapshot };
@@ -113,6 +145,10 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     task.abort();
                                 }
                                 let _ = events.send(Event::TurnEnded { session, outcome: TurnOutcome::Interrupted, usage: None });
+                            }
+                            Command::Decide { squad, approval, decision } => {
+                                asks().lock().unwrap().retain(|a| a.id != approval);
+                                let _ = events.send(Event::ApprovalResolved { squad, approval, decision });
                             }
                             Command::Focus { project, .. } => {
                                 let _ = events.send(Event::Thread { session: 1, project });
