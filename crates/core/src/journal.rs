@@ -310,6 +310,11 @@ impl Journal {
                text TEXT NOT NULL,
                PRIMARY KEY (session, kind, seq)
              ) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS turn_times (
+               role TEXT NOT NULL,
+               seconds INTEGER NOT NULL,
+               at INTEGER NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS allowed (
                rule TEXT PRIMARY KEY,
                by TEXT NOT NULL,
@@ -651,6 +656,37 @@ impl Journal {
             params![id, now(), by, kind, text],
         )?;
         Ok(())
+    }
+
+    /// How long tickets took, from first being assigned to first being handed
+    /// in (or put down for the person): `(member, kind, seconds)`, newest first.
+    pub fn ticket_times(&self) -> Result<Vec<(String, TicketKind, u64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT a.text, t.kind, h.at - a.at FROM tickets t
+             JOIN (SELECT ticket, text, at, MIN(seq) FROM ticket_events WHERE kind = 'assigned' GROUP BY ticket) a ON a.ticket = t.id
+             JOIN (SELECT ticket, MIN(at) AS at FROM ticket_events WHERE kind IN ('handed in', 'waiting') GROUP BY ticket) h ON h.ticket = t.id
+             WHERE h.at >= a.at ORDER BY h.at DESC LIMIT 500",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let kind: String = r.get(1)?;
+            Ok((r.get::<_, String>(0)?, TicketKind::parse(&kind).unwrap_or_default(), r.get::<_, i64>(2)?.max(0) as u64))
+        })?;
+        rows.collect()
+    }
+
+    /// Keep how long a turn of `role`'s at its desk took.
+    pub fn record_turn_time(&self, role: &str, seconds: u64) -> Result<()> {
+        self.conn.execute("INSERT INTO turn_times (role, seconds, at) VALUES (?1, ?2, ?3)", params![role, seconds as i64, now()])?;
+        // The latest few hundred are plenty to go by.
+        self.conn.execute("DELETE FROM turn_times WHERE rowid NOT IN (SELECT rowid FROM turn_times ORDER BY at DESC LIMIT 500)", [])?;
+        Ok(())
+    }
+
+    /// How long `role`'s desk turns took, newest first, in seconds.
+    pub fn turn_times(&self, role: &str) -> Result<Vec<u64>> {
+        let mut stmt = self.conn.prepare("SELECT seconds FROM turn_times WHERE role = ?1 ORDER BY at DESC, rowid DESC LIMIT 50")?;
+        let rows = stmt.query_map([role], |r| Ok(r.get::<_, i64>(0)?.max(0) as u64))?;
+        rows.collect()
     }
 
     /// A ticket's record, oldest first: `(by, kind, text)`.

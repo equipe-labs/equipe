@@ -87,6 +87,10 @@ pub struct Estimate {
     /// What goes live: "v0.28.1 on Homebrew", "equipe.im".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_what: Option<String>,
+    /// `done_at` is equipe's guess from how long such work took before, not
+    /// the member's word.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub guessed: bool,
 }
 
 impl Estimate {

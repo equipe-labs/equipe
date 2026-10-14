@@ -2327,6 +2327,35 @@ async fn a_member_says_when_its_work_is_done_and_when_what_it_ships_is_live() {
 }
 
 #[tokio::test]
+async fn without_a_members_word_equipe_guesses_from_how_long_such_turns_took() {
+    let repo = repo();
+    let home = squad_home(&[&repo]);
+    // The PM's desk turns took 5, 10 and 20 minutes before.
+    let journal = equipe_core::journal::Journal::for_squad(&home, "acme").unwrap();
+    for minutes in [5, 10, 20] {
+        journal.record_turn_time("pm", minutes * 60).unwrap();
+    }
+    drop(journal);
+    let (claude, _) = recording_claude(&format!("sleep 1\n{}", answering("ok")));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    handle.send(Command::Submit { session: 1, text: "look into it".into() });
+    let seen = until(&mut events, |e| matches!(e, Event::Estimated { .. })).await;
+    let Some(Event::Estimated { estimate: Some(e), .. }) = seen.last() else { panic!("{seen:#?}") };
+    assert!(e.guessed && e.done_at.unwrap().abs_diff(now + 600) < 5, "the median, 10 minutes: {e:?}");
+    // The member's own word replaces the guess.
+    tool(&handle, "pm", "estimate", serde_json::json!({ "done_in_minutes": 2 })).await;
+    let seen = until(&mut events, |e| matches!(e, Event::Estimated { .. })).await;
+    let Some(Event::Estimated { estimate: Some(e), .. }) = seen.last() else { panic!("{seen:#?}") };
+    assert!(!e.guessed && e.done_at.unwrap().abs_diff(now + 120) < 5, "{e:?}");
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    // A turn under a minute isn't kept to guess from.
+    let journal = equipe_core::journal::Journal::for_squad(&home, "acme").unwrap();
+    assert_eq!(journal.turn_times("pm").unwrap().len(), 3);
+}
+
+#[tokio::test]
 async fn a_members_model_changes_between_turns_and_its_conversation_carries_on() {
     let cwd = scratch("model");
     let (claude, recorded) = recording_claude(&answering("ok"));

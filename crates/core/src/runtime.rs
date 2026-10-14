@@ -36,6 +36,7 @@ use crate::board::{self, Candidate};
 use crate::browser;
 use crate::desktop_gate::{self, Act, Verdict};
 use crate::desktop;
+use crate::eta;
 use crate::journal::{self, Journal, SessionRecord, TicketWork};
 use crate::permissions;
 use crate::roles::{self, Teammate};
@@ -368,6 +369,8 @@ struct Session {
     lane: Option<(SessionId, Option<String>)>,
     /// When it expects its work done, and what it ships live, as it said.
     estimate: Option<Estimate>,
+    /// When its turn running now began (unix seconds).
+    turn_began: Option<u64>,
     /// Its own mode; `None` follows the squad's.
     mode: Option<Mode>,
     /// The turn running answers the person (not the board, not the team), so
@@ -1060,6 +1063,7 @@ impl Runtime {
                 threads: HashMap::new(),
                 lane: None,
                 estimate: None,
+                turn_began: None,
             },
         );
         self.publish(Event::SessionStarted { session: id, project, engine, model, workspace, member, squad: squad.clone() });
@@ -1245,7 +1249,8 @@ goes next across projects. Work for one project goes to it — tickets for its o
                     let left = |at: u64| at.saturating_sub(now_secs()).div_ceil(60);
                     let mut out = String::new();
                     if let Some(at) = e.done_at {
-                        out.push_str(&format!(", done in ~{}m by its word", left(at)));
+                        let whose = if e.guessed { "as such work usually takes" } else { "by its word" };
+                        out.push_str(&format!(", done in ~{}m {whose}", left(at)));
                     }
                     if let Some(at) = e.live_at {
                         out.push_str(&format!(", {} live in ~{}m", e.live_what.as_deref().unwrap_or("what it ships"), left(at)));
@@ -1369,6 +1374,7 @@ goes next across projects. Work for one project goes to it — tickets for its o
             thread: project.clone(),
             threads: HashMap::new(),
             estimate: None,
+            turn_began: None,
             lane: Some((main, project.clone())),
         };
         let started = Event::SessionStarted {
@@ -1502,7 +1508,9 @@ goes next across projects. Work for one project goes to it — tickets for its o
     fn start_turn(&mut self, id: SessionId, prompt: String) {
         if let Some(session) = self.sessions.get_mut(&id) {
             session.answers_person = false;
+            session.turn_began = Some(now_secs());
         }
+        self.guess_estimate(id);
         // A desk conversation grown too large, or gone cold, starts afresh.
         let prompt = match self.refresh_desk(id) {
             Some(handoff) => format!("{handoff}\n\n{prompt}"),
@@ -1949,6 +1957,17 @@ goes next across projects. Work for one project goes to it — tickets for its o
     /// After a turn, finished or stopped: hand in work that was submitted,
     /// deliver memos, and let the rules hand out what is ready.
     async fn after_turn(&mut self, id: SessionId) {
+        // How long a turn at the desk took, for guessing the next ones'.
+        if let Some(s) = self.sessions.get_mut(&id)
+            && let (Some(began), None, Some(squad), Some(name)) = (s.turn_began.take(), &s.work, s.squad.clone(), s.name())
+        {
+            let (took, role) = (now_secs().saturating_sub(began), eta::role_of(name).to_owned());
+            if took >= GUESSED_AFTER.as_secs()
+                && let Some(journal) = self.journal(&squad)
+            {
+                let _ = journal.record_turn_time(&role, took);
+            }
+        }
         // Said while it worked but not read before the turn ended: delivered now, with the memos.
         let unread = self.sessions.get_mut(&id).map(|s| {
             s.steer = None;
@@ -1979,6 +1998,39 @@ goes next across projects. Work for one project goes to it — tickets for its o
         }
     }
 
+    /// Without a member's word on when its work is done, equipe's guess: how
+    /// long a ticket of the kind took its role before, or a turn at its desk.
+    fn guess_estimate(&mut self, id: SessionId) {
+        let Some(s) = self.sessions.get(&id) else {
+            return;
+        };
+        if s.estimate.as_ref().is_some_and(|e| e.done_at.is_some()) {
+            return;
+        }
+        let (Some(squad), Some(name)) = (s.squad.clone(), s.name().map(str::to_owned)) else {
+            return;
+        };
+        let ticket = s.work.as_ref().map(|w| (w.ticket, w.kind));
+        let Some(journal) = self.journal(&squad) else {
+            return;
+        };
+        let typical = match ticket {
+            Some((_, kind)) => eta::ticket_time(&journal.ticket_times().unwrap_or_default(), &name, kind),
+            None => eta::typical(&journal.turn_times(eta::role_of(&name)).unwrap_or_default()),
+        };
+        let (Some(took), Some(session)) = (typical, self.sessions.get_mut(&id)) else {
+            return;
+        };
+        let estimate = Estimate {
+            done_at: Some(now_secs() + took),
+            what: ticket.map(|(t, _)| format!("T-{t}")),
+            guessed: true,
+            ..session.estimate.clone().unwrap_or_default()
+        };
+        session.estimate = Some(estimate.clone());
+        self.publish(Event::Estimated { session: id, estimate: Some(estimate) });
+    }
+
     /// The work a member expected done is: only what it ships, if anything, is
     /// still to come.
     fn estimate_done(&mut self, id: SessionId) {
@@ -1988,7 +2040,7 @@ goes next across projects. Work for one project goes to it — tickets for its o
         let Some(estimate) = session.estimate.as_mut().filter(|e| e.done_at.is_some()) else {
             return;
         };
-        (estimate.done_at, estimate.what) = (None, None);
+        (estimate.done_at, estimate.what, estimate.guessed) = (None, None, false);
         let estimate = session.estimate.take().filter(|e| !e.is_empty());
         session.estimate = estimate.clone();
         self.publish(Event::Estimated { session: id, estimate });
@@ -3297,6 +3349,7 @@ it back there once they have done it. End your turn now with a short line on wha
                 let mut estimate = session.estimate.clone().unwrap_or_default();
                 if let Some(m) = done {
                     estimate.done_at = Some(at(m));
+                    estimate.guessed = false;
                     estimate.what = board::arg_str(&args, "what").map(|w| clip(w.trim(), 60));
                 }
                 if let Some(m) = live {
@@ -3533,6 +3586,7 @@ it back there once they have done it. End your turn now with a short line on wha
                         mode: record.mode,
                         thread,
                         estimate: None,
+                        turn_began: None,
                         threads,
                         lane: None,
                         answers_person: false,
@@ -4229,6 +4283,10 @@ with each: close it, merge it into another, or keep it (and why). Don't cancel t
 
 /// How long a browser stays on screen unused before it goes out of sight.
 const SHOWN_IDLE: Duration = Duration::from_secs(10 * 60);
+
+/// Turns shorter than this need no guess at when they end, and aren't kept
+/// to guess from.
+const GUESSED_AFTER: Duration = Duration::from_secs(60);
 
 /// How long past its expected time something to go live is still waited for.
 const LIVE_STALE: Duration = Duration::from_secs(30 * 60);

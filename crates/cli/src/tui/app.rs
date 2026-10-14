@@ -22,6 +22,9 @@ use equipe_core::roles;
 use super::commands;
 use super::composer::Composer;
 
+/// How long a turn goes on before equipe's guess at its end shows.
+const GUESS_SHOWN_AFTER: Duration = Duration::from_secs(60);
+
 /// How long a first Ctrl-C waits for a second before it stops meaning "leave".
 const QUIT_WINDOW: Duration = Duration::from_secs(2);
 
@@ -324,6 +327,14 @@ impl Agent {
 
     pub fn is_pm(&self) -> bool {
         self.member.as_ref().is_some_and(|m| m.role == roles::PM)
+    }
+
+    /// When it expects its work done, as far as it shows: equipe's guess only
+    /// once its turn has gone on a while — a quick answer needs none.
+    pub fn shown_estimate(&self) -> Option<&equipe_core::protocol::Estimate> {
+        self.estimate.as_ref().filter(|e| {
+            !e.guessed || e.live_at.is_some() || self.working_since.is_some_and(|since| since.elapsed() >= GUESS_SHOWN_AFTER)
+        })
     }
 
     /// What the person said last to it.
@@ -677,11 +688,11 @@ impl App {
     /// When a member expects its work done, and what it ships live: its own
     /// conversation's word, else one beside it at work.
     pub fn estimate_of<'a>(&'a self, member: &'a Agent) -> Option<&'a equipe_core::protocol::Estimate> {
-        member.estimate.as_ref().or_else(|| {
+        member.shown_estimate().or_else(|| {
             self.lanes
                 .iter()
                 .filter(|l| l.lane.as_ref().is_some_and(|lane| lane.of == member.id))
-                .find_map(|l| l.estimate.as_ref())
+                .find_map(Agent::shown_estimate)
         })
     }
 
@@ -802,9 +813,9 @@ impl App {
                 for agent in &self.agents {
                     let working = agent.state == AgentState::Working;
                     if let Some(id) = agent.ticket.filter(|_| self.agent_project(agent).as_deref() == Some(project.as_path())) {
-                        busy.push(Busy { member: agent.label(), estimate: agent.estimate.clone(), ticket: Some(id), about: None, working });
+                        busy.push(Busy { member: agent.label(), estimate: agent.shown_estimate().cloned(), ticket: Some(id), about: None, working });
                     } else if working && agent.ticket.is_none() && agent.current_thread() == Some(name.as_str()) {
-                        busy.push(Busy { member: agent.label(), estimate: agent.estimate.clone(), ticket: None, about: agent.last_said(), working });
+                        busy.push(Busy { member: agent.label(), estimate: agent.shown_estimate().cloned(), ticket: None, about: agent.last_said(), working });
                     }
                 }
                 // Conversations about it beside their members' other work.
@@ -816,7 +827,7 @@ impl App {
                         continue;
                     }
                     let member = self.agents.iter().find(|a| a.id == of.of).map_or_else(|| lane.label(), Agent::label);
-                    busy.push(Busy { member, estimate: lane.estimate.clone(), ticket: None, about: lane.last_said(), working: true });
+                    busy.push(Busy { member, estimate: lane.shown_estimate().cloned(), ticket: None, about: lane.last_said(), working: true });
                 }
                 ProjectLine {
                     at,

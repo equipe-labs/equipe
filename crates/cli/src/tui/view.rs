@@ -823,9 +823,15 @@ fn time_left(at: u64, now: u64) -> String {
 }
 
 /// When a member's work is expected done, as a phrase: `done ~20:52 (12m)`,
-/// or — past it — `expected ~20:52, still going`.
-fn done_phrase(at: u64, now: u64) -> String {
-    if at > now { format!("done ~{} ({})", clock(at), time_left(at, now)) } else { format!("expected ~{}, still going", clock(at)) }
+/// or — past it — `expected ~20:52, still going`. equipe's own guess says so:
+/// `usually done ~20:52 (12m)`, `longer than usual`.
+fn done_phrase(at: u64, guessed: bool, now: u64) -> String {
+    match (at > now, guessed) {
+        (true, false) => format!("done ~{} ({})", clock(at), time_left(at, now)),
+        (true, true) => format!("usually done ~{} ({})", clock(at), time_left(at, now)),
+        (false, false) => format!("expected ~{}, still going", clock(at)),
+        (false, true) => "longer than usual".to_owned(),
+    }
 }
 
 /// When what it ships is expected live: `v0.28.1 on Homebrew live ~21:05 (25m)`.
@@ -838,9 +844,10 @@ fn live_phrase(estimate: &Estimate, now: u64) -> Option<String> {
 /// The shortest word on it, for a narrow row: time left until done, else
 /// until live (`↑25m`).
 fn estimate_short(estimate: &Estimate, now: u64) -> Option<String> {
+    let about = if estimate.guessed { "≈" } else { "~" };
     match (estimate.done_at, estimate.live_at) {
-        (Some(at), _) if at > now => Some(format!("~{}", time_left(at, now))),
-        (Some(_), _) => Some("late".to_owned()),
+        (Some(at), _) if at > now => Some(format!("{about}{}", time_left(at, now))),
+        (Some(_), _) => Some(if estimate.guessed { "long" } else { "late" }.to_owned()),
         (None, Some(at)) if at > now => Some(format!("↑{}", time_left(at, now))),
         _ => None,
     }
@@ -1740,8 +1747,9 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
             row.push(Span::styled(format!("in {} · ", agent.current_thread().unwrap_or("the squad")), theme.dim()));
         }
         row.extend(theme.shimmer(doing(agent), now));
-        let expected = agent.estimate.as_ref().and_then(|e| e.done_at).map(|at| done_phrase(at, now_unix()));
-        let live = agent.estimate.as_ref().and_then(|e| live_phrase(e, now_unix()));
+        let shown = agent.shown_estimate();
+        let expected = shown.and_then(|e| Some(done_phrase(e.done_at?, e.guessed, now_unix())));
+        let live = shown.and_then(|e| live_phrase(e, now_unix()));
         row.extend([
             Span::styled(format!(" · {took}"), theme.dim()),
             Span::styled(expected.map(|e| format!(" · {e}")).unwrap_or_default(), theme.accent()),
@@ -2857,6 +2865,7 @@ mod tests {
                 what: Some("release notes".into()),
                 live_at: Some(now + 25 * 60),
                 live_what: Some("v0.28.1 on Homebrew".into()),
+                guessed: false,
             }),
         });
         let shot = screen(&app, 160, 24);
@@ -2875,7 +2884,17 @@ mod tests {
         assert!(shot.contains("◷ v0.28.1 on Homebrew live ~"), "{shot}");
         assert!(shot.lines().find(|l| l.contains("› ")).unwrap().contains("↑25m"), "{shot}");
         // Late: said so, not hidden.
-        assert_eq!(done_phrase(now - 60, now), format!("expected ~{}, still going", clock(now - 60)));
+        assert_eq!(done_phrase(now - 60, false, now), format!("expected ~{}, still going", clock(now - 60)));
+        // equipe's own guess says so, and shows only once a turn has gone on a while.
+        assert_eq!(done_phrase(now + 600, true, now), format!("usually done ~{} (10m)", clock(now + 600)));
+        assert_eq!(done_phrase(now - 60, true, now), "longer than usual");
+        let guess = Estimate { done_at: Some(now + 600), guessed: true, ..Default::default() };
+        app.agents[0].estimate = Some(guess.clone());
+        app.agents[0].working_since = Some(Instant::now());
+        assert!(app.agents[0].shown_estimate().is_none());
+        app.agents[0].working_since = Instant::now().checked_sub(std::time::Duration::from_secs(90));
+        assert_eq!(app.agents[0].shown_estimate(), Some(&guess));
+        assert_eq!(estimate_short(&guess, now).as_deref(), Some("≈10m"));
         assert_eq!(time_left(now + 80 * 60, now), "1h 20m");
     }
 
