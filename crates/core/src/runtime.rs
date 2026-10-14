@@ -347,6 +347,11 @@ struct Session {
     memo_threads: Vec<Option<String>>,
     /// The conversation the memos being delivered now go into.
     memo_thread: Option<Option<String>>,
+    /// Into the turn running now: what the person says while it works, read
+    /// at its next step (steering). `None` when the engine can't take it.
+    steer: Option<mpsc::UnboundedSender<String>>,
+    /// What was sent that way and not read yet; at the turn's end, memos.
+    steering: Vec<String>,
     /// For the PM: what happened with the team since the PM's last turn. It
     /// travels with the PM's next message, so the PM keeps up without spending a
     /// turn on every exchange.
@@ -589,6 +594,11 @@ impl Runtime {
                     session.title = text.lines().next().map(str::to_owned);
                 }
                 Event::ModelKnown { model, .. } => session.model = Some(model.clone()),
+                Event::Steered { text, .. } => {
+                    if let Some(at) = session.steering.iter().position(|t| t == text) {
+                        session.steering.remove(at);
+                    }
+                }
                 Event::TurnEnded { usage, .. } => {
                     session.last_turn = Some(std::time::Instant::now());
                     if let Some(u) = usage {
@@ -665,6 +675,10 @@ impl Runtime {
         match command {
             Command::Start { session, spec } => self.start(session, spec).await,
             Command::Submit { session, text } => self.submit(session, text).await,
+            Command::SubmitLater { session, text } => match self.sessions.get(&session) {
+                Some(s) if s.is_working() => self.leave_memo(session, text),
+                _ => self.submit(session, text).await,
+            },
             Command::Interrupt { session } => self.interrupt(session).await,
             Command::Close { session } => self.close(session).await,
             Command::Accept { squad, ticket } => self.accept(&squad, ticket).await,
@@ -745,7 +759,9 @@ impl Runtime {
             return;
         };
         let threads: Vec<String> = session.memo_threads.iter().map(|p| p.clone().unwrap_or_default()).collect();
+        let steering = session.steering.clone();
         if let Some(journal) = self.journal(&squad) {
+            let _ = journal.set_waiting(id, "steer", &steering);
             let _ = journal.set_waiting(id, "memo", &queued);
             let _ = journal.set_waiting(id, "memo-threads", &threads);
             let _ = journal.set_waiting(id, "briefing", &briefing);
@@ -1021,6 +1037,8 @@ impl Runtime {
                 queued: Vec::new(),
                 memo_threads: Vec::new(),
                 memo_thread: None,
+                steer: None,
+                steering: Vec::new(),
                 answers_person: false,
                 briefing: Vec::new(),
                 memory,
@@ -1063,8 +1081,29 @@ impl Runtime {
             return self.error(Some(id), format!("no open session {id}"), None);
         };
         if session.is_working() {
-            // A memo: it waits for the turn to end rather than cutting in, and
-            // belongs with the project the person is looking at now.
+            // Said while it works: it reads it at its next step and carries on,
+            // steered (what is said mid-work is mostly a correction); an engine
+            // that can't take it mid-turn gets it as a memo.
+            if let Some(steer) = session.steer.clone()
+                && steer.send(text.clone()).is_ok()
+            {
+                session.steering.push(text.clone());
+                self.save_waiting(id);
+                self.tell_the_pm(id, |name| format!("The person told {name}, mid-work: {text}"), Some(&text));
+                return self.publish(Event::SteerQueued { session: id, text });
+            }
+            return self.leave_memo(id, text);
+        }
+        self.submit_now(id, text).await;
+    }
+
+    /// A memo: it waits for the turn to end rather than cutting in, and belongs
+    /// with the project the person is looking at now.
+    fn leave_memo(&mut self, id: SessionId, text: String) {
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        {
             let looking_at = match &session.work {
                 Some(work) => Some(crate::board::project_name(&work.project)),
                 None => session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned(),
@@ -1073,8 +1112,15 @@ impl Runtime {
             session.memo_threads.push(looking_at.clone());
             let project = looking_at;
             self.save_waiting(id);
-            return self.publish(Event::MessageQueued { session: id, text, project });
+            self.publish(Event::MessageQueued { session: id, text, project });
         }
+    }
+
+    /// Send `text` to a member between turns: it starts one.
+    async fn submit_now(&mut self, id: SessionId, text: String) {
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
         let memo_thread = session.memo_thread.take();
         if memo_thread.is_some() {
             self.save_waiting(id);
@@ -1310,6 +1356,8 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
             .then(|| format!("mcp__{MCP_SERVER}__{}", permissions::APPROVE_TOOL));
         let squad_rules = squad.as_deref().and_then(|s| self.journals.get(s)).and_then(|j| j.allowed().ok()).unwrap_or_default();
         let internal = self.internal.clone();
+        // What the person says while this turn runs goes into it (Claude Code only).
+        let mut steer = None;
         let turn = match session.engine {
             Engine::Codex => {
                 let client = self.client.clone();
@@ -1360,6 +1408,8 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
                     if member_rules { permissions::BLOCKED.iter().map(|r| (*r).to_owned()).collect() } else { Vec::new() };
                 // The person's browser sign-ins and equipe's logins: no fenced command reads them.
                 // Nor other squads' homes.
+                let (steer_tx, steer_rx) = mpsc::unbounded_channel::<String>();
+                steer = Some(steer_tx);
                 let private: Vec<String> = [self.config.home.join("browser"), self.config.home.join("credentials")]
                     .iter()
                     .chain(&other_homes)
@@ -1397,7 +1447,7 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
                     if let Some(port) = browser {
                         browser::ready(port, Duration::from_secs(90)).await;
                     }
-                    let outcome = claude_code::run_turn(&binary, &cwd, request, |activity| match activity {
+                    let outcome = claude_code::run_turn(&binary, &cwd, request, Some(steer_rx), |activity| match activity {
                         Activity::Text(text) => {
                             streamed = true;
                             emit(Event::TextDelta { session: id, text });
@@ -1408,6 +1458,7 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
                         Activity::SubagentStarted { id: sub, what } => emit(Event::SubagentStarted { session: id, id: sub, what }),
                         Activity::SubagentStep { id: sub, step } => emit(Event::SubagentStep { session: id, id: sub, step }),
                         Activity::SubagentEnded { id: sub } => emit(Event::SubagentEnded { session: id, id: sub }),
+                        Activity::Steered(text) => emit(Event::Steered { session: id, text }),
                         Activity::Plan { five_hour, seven_day } => {
                             let window = |w: Option<(f64, i64)>| {
                                 w.map(|(used, resets_at)| equipe_protocol::PlanWindow {
@@ -1430,6 +1481,7 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
         };
         if let Some(session) = self.sessions.get_mut(&id) {
             session.turn = Some(turn);
+            session.steer = steer;
         }
     }
 
@@ -1616,6 +1668,14 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
     /// After a turn, finished or stopped: hand in work that was submitted,
     /// deliver memos, and let the rules hand out what is ready.
     async fn after_turn(&mut self, id: SessionId) {
+        // Said while it worked but not read before the turn ended: delivered now, with the memos.
+        let unread = self.sessions.get_mut(&id).map(|s| {
+            s.steer = None;
+            std::mem::take(&mut s.steering)
+        });
+        for text in unread.unwrap_or_default() {
+            self.leave_memo(id, text);
+        }
         let Some(session) = self.sessions.get(&id) else {
             return;
         };
@@ -2933,6 +2993,7 @@ it back there once they have done it. End your turn now with a short line on wha
                     queued: s.queued.clone(),
                     queued_project: s.memo_threads.first().cloned().flatten(),
                     queued_in: s.memo_threads.clone(),
+                    steering: s.steering.clone(),
                     work: s.work.as_ref().map(|w| WorkInfo {
                         ticket: w.ticket,
                         project: w.project.clone(),
@@ -3036,6 +3097,19 @@ it back there once they have done it. End your turn now with a short line on wha
                     let all = journal.waiting(record.id, "memo-thread").unwrap_or_default().pop().filter(|p| !p.is_empty());
                     memo_threads = vec![all; queued.len()];
                 }
+                // Said while a turn ran that the restart ended, unread: memos now.
+                let mut queued = queued;
+                let unread = journal.waiting(record.id, "steer").unwrap_or_default();
+                if !unread.is_empty() {
+                    let _ = journal.set_waiting(record.id, "steer", &[]);
+                    let mut memos = queued.clone();
+                    memos.extend(unread.iter().cloned());
+                    let _ = journal.set_waiting(record.id, "memo", &memos);
+                }
+                for text in unread {
+                    queued.push(text);
+                    memo_threads.push(None);
+                }
                 // The PM's other conversations, by project, as they were left.
                 let (thread, others) = journal.desk_threads(record.id);
                 let threads: HashMap<Option<String>, DeskThread> = others
@@ -3075,6 +3149,8 @@ it back there once they have done it. End your turn now with a short line on wha
                         queued,
                         memo_threads,
                         memo_thread: None,
+                        steer: None,
+                        steering: Vec::new(),
                         briefing: journal.waiting(record.id, "briefing").unwrap_or_default(),
                         memory,
                         mode: record.mode,

@@ -751,11 +751,12 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
     // The keys of all three groups share one column.
     let keys = 19;
     lines.extend(rows(&pairs(&[
-        ("Enter", "send to the member named under the composer"),
+        ("Enter", "send to the member named under the composer — at work, it reads it at its next step and carries on"),
+        ("Tab", "with words typed to a member at work: a memo, read when its turn ends"),
         ("@name …", "send to someone else — the PM hears about it"),
         ("Tab · Shift-Tab", "pick who you talk to"),
         ("Alt-Enter · Ctrl-J", "a new line (or \\ then Enter)"),
-        ("Esc", "stop a member mid-turn; a waiting memo goes in at once"),
+        ("Esc", "stop a member mid-turn; what it hasn't read goes in at once"),
         ("Ctrl-V", "attach the clipboard's image — or drop an image file on the terminal"),
         ("⌃⇧V", "over SSH: your Mac's screenshot (once `equipe paste-setup` ran there)"),
         ("→", "take the greyed suggestion in an empty composer"),
@@ -1013,9 +1014,10 @@ fn render_squad(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         let detail = if app.needs_you(agent) {
             Span::styled("needs you", theme.accent())
         } else {
-            let text = match (agent.queued.len(), agent.ticket) {
-                (1, _) => "1 memo".to_owned(),
-                (n @ 2.., _) => format!("{n} memos"),
+            let text = match (agent.queued.len() + agent.steering.len(), agent.ticket) {
+                (1, _) if agent.steering.is_empty() => "1 memo".to_owned(),
+                (n @ 2.., _) if agent.steering.is_empty() => format!("{n} memos"),
+                (n @ 1.., _) => format!("{n} unread"),
                 (0, Some(ticket)) => format!("T-{ticket}"),
                 (0, None) => agent.short_model().unwrap_or_default(),
             };
@@ -1426,7 +1428,13 @@ You can talk to it directly — the PM hears about it."
     for (memo, _) in agent.queued.iter().zip(&agent.queued_in).filter(|(_, about)| here(about)) {
         gap(&mut lines);
         lines.extend(wrapped(vec![Span::styled("› ", theme.dim())], memo, theme.dim(), 2, width));
-        lines.push(Line::from(Span::styled("  memo · read when this turn ends · Esc to read now", theme.dim())));
+        lines.push(Line::from(Span::styled("  memo · read when this turn ends", theme.dim())));
+    }
+    // Said while it works: read at its next step, the work carrying on.
+    for text in &agent.steering {
+        gap(&mut lines);
+        lines.extend(wrapped(vec![Span::styled("› ", theme.accent())], text, theme.dim(), 2, width));
+        lines.push(Line::from(Span::styled("  steering · read at its next step, nothing stopped", theme.dim())));
     }
     lines
 }
@@ -2562,6 +2570,31 @@ mod tests {
         app.on_event(Event::UserMessage { session: pm, text: "and the app icon".into() });
         assert_eq!(app.agents[0].queued, ["and the site footer"]);
         assert_eq!(app.agents[0].queued_in, [Some("site".to_owned())]);
+    }
+
+    #[test]
+    fn said_to_a_member_at_work_it_steers_and_tab_leaves_a_memo() {
+        let (mut app, pm) = working();
+        for c in "skip the footer".chars() {
+            app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char(c)), Instant::now());
+        }
+        let sent = app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter), Instant::now());
+        assert_eq!(sent, vec![Command::Submit { session: pm, text: "skip the footer".into() }], "Enter steers");
+        app.on_event(Event::SteerQueued { session: pm, text: "skip the footer".into() });
+        let shot = screen(&app, 110, 24);
+        assert!(shot.contains("› skip the footer") && shot.contains("steering · read at its next step"), "{shot}");
+        assert!(shot.contains("1 unread"), "{shot}");
+        // Read: it moves into the conversation, where it was read.
+        app.on_event(Event::Steered { session: pm, text: "skip the footer".into() });
+        let shot = screen(&app, 110, 24);
+        assert!(!shot.contains("steering ·"), "{shot}");
+        assert!(app.agents[0].transcript.entries().iter().any(|e| matches!(e, Entry::User { text } if text == "skip the footer")));
+        // Tab: for after this turn.
+        for c in "then the pricing page".chars() {
+            app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char(c)), Instant::now());
+        }
+        let later = app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Tab), Instant::now());
+        assert_eq!(later, vec![Command::SubmitLater { session: pm, text: "then the pricing page".into() }]);
     }
 
     #[test]

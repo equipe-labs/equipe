@@ -133,6 +133,8 @@ pub struct Agent {
     pub subagents: Vec<(String, String, Option<String>)>,
     /// A guess at what the person says next to it, after it answered them.
     pub suggestion: Option<String>,
+    /// What the person said while it works, not read yet (steering).
+    pub steering: Vec<String>,
     /// A message to send once the session has started.
     pending: Option<String>,
 }
@@ -166,6 +168,7 @@ impl Agent {
             thread_view: None,
             subagents: Vec::new(),
             suggestion: None,
+            steering: Vec::new(),
         }
     }
 
@@ -265,6 +268,7 @@ impl Agent {
             thread_view: None,
             subagents: Vec::new(),
             suggestion: None,
+            steering: info.steering,
         }
     }
 
@@ -1147,6 +1151,12 @@ impl App {
                 // conversation; another project's wait for the next turn's end.
                 agent.deliver_memos();
             }
+            Event::SteerQueued { text, .. } => agent.steering.push(text),
+            Event::Steered { text, .. } => {
+                if let Some(at) = agent.steering.iter().position(|t| *t == text) {
+                    agent.steering.remove(at);
+                }
+            }
             Event::Suggestion { text, .. } => {
                 // Too late once it is at work again, or a memo is on its way.
                 if agent.state != AgentState::Working && agent.queued.is_empty() {
@@ -1183,6 +1193,8 @@ impl App {
             Event::SubagentEnded { id, .. } => agent.subagents.retain(|s| s.0 != id),
             Event::TurnEnded { usage, .. } => {
                 agent.subagents.clear();
+                // Unread, it comes back as a memo, delivered now.
+                agent.steering.clear();
                 if agent.state == AgentState::Working {
                     agent.state = AgentState::Ready;
                 }
@@ -1659,6 +1671,10 @@ impl App {
             KeyCode::Enter => return self.submit(),
             KeyCode::Esc if self.pane == Pane::Board => self.pane = Pane::Conversation,
             KeyCode::Esc => return self.interrupt(),
+            // With words typed to a member at work: a memo for after this turn.
+            KeyCode::Tab if !self.composer.is_empty() && !self.composer.text().starts_with('/') && self.selected().is_some_and(|a| a.state == AgentState::Working) => {
+                return self.send(true);
+            }
             KeyCode::Tab => self.cycle(1),
             KeyCode::BackTab => self.cycle(-1),
             KeyCode::PageUp => self.scroll(self.page as isize),
@@ -1752,6 +1768,13 @@ impl App {
     }
 
     fn submit(&mut self) -> Vec<Command> {
+        self.send(false)
+    }
+
+    /// Send what is typed. To a member at work it steers the work — read at its
+    /// next step, nothing stopped — unless `later`: then a memo for when this
+    /// turn ends.
+    fn send(&mut self, later: bool) -> Vec<Command> {
         if self.composer.is_empty() {
             return Vec::new();
         }
@@ -1795,9 +1818,14 @@ impl App {
                 }
                 vec![Command::Submit { session: agent.id, text }]
             }
+            AgentState::Working if later || agent.engine != Some(Engine::Claude) => {
+                // A memo: the core holds it until the turn ends.
+                self.flash = Some(format!("Left {name} a memo — it reads it when this turn ends."));
+                vec![Command::SubmitLater { session: agent.id, text }]
+            }
             AgentState::Working => {
-                // Left as a memo: the core holds it until the turn ends.
-                self.flash = Some(format!("Left {name} a memo — it reads it when this turn ends. Esc stops it to read now."));
+                // Steering: read at its next step, the work carrying on.
+                self.flash = Some(format!("{name} reads it at its next step, without stopping · Tab instead: a memo for after"));
                 vec![Command::Submit { session: agent.id, text }]
             }
             AgentState::Starting => {
@@ -2730,6 +2758,7 @@ mod tests {
             queued: Vec::new(),
             queued_project: None,
             queued_in: Vec::new(),
+            steering: Vec::new(),
             work: None,
             mode: None,
         }

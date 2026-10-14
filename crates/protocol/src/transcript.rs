@@ -71,7 +71,8 @@ closing the session lands the branch.",
                     ws.branch
                 ),
             }),
-            Event::UserMessage { text, .. } => Some(Entry::User { text: text.clone() }),
+            // A message sent while it worked, where it was read.
+            Event::UserMessage { text, .. } | Event::Steered { text, .. } => Some(Entry::User { text: text.clone() }),
             Event::Notice { text, .. } => Some(Entry::Note { text: text.clone() }),
             Event::Thread { project, .. } => Some(Entry::Thread { project: project.clone() }),
             Event::WorkStarted { ticket, title, workspace, .. } => Some(Entry::Note {

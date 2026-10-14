@@ -17,7 +17,7 @@ use std::process::Stdio;
 
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use crate::error::{Error, Result};
@@ -131,9 +131,14 @@ pub struct Sandbox<'a> {
 /// `--bare` is deliberately absent: bare mode never reads the subscription login,
 /// which is the whole point of bringing your own Claude Code.
 pub fn turn_args(request: &TurnRequest<'_>) -> Vec<String> {
+    // The prompt goes in on stdin, as the first of the turn's messages: more
+    // can follow while it runs — the person steering it — and Claude Code reads
+    // each at its next step, echoing it back as it does.
     let mut args: Vec<String> = [
         "-p",
-        request.prompt,
+        "--input-format",
+        "stream-json",
+        "--replay-user-messages",
         "--output-format",
         "stream-json",
         "--verbose",
@@ -278,6 +283,8 @@ pub enum Activity {
     SubagentStep { id: String, step: String },
     /// A subagent finished and handed back what it found.
     SubagentEnded { id: String },
+    /// A message sent while the turn ran was read, at this point of it.
+    Steered(String),
 }
 
 /// Folds Claude Code's `stream-json` lines into one turn.
@@ -294,6 +301,8 @@ pub struct TurnCollector {
     result: Option<Result<TurnResult>>,
     /// Subagents handed work this turn and not yet back.
     subagents: std::collections::HashSet<String>,
+    /// The person's messages Claude Code has read so far — the prompt first.
+    replayed: usize,
 }
 
 /// A subagent run in the background answers its tool call at once with this;
@@ -414,6 +423,17 @@ impl TurnCollector {
                     }
                 }
                 out
+            }
+            // The person's own message, read: the prompt first, then whatever
+            // they sent while the turn ran.
+            "user" if event.get("isReplay").and_then(Value::as_bool) == Some(true) => {
+                self.replayed += 1;
+                let text = match event.get("message").and_then(|m| m.get("content")) {
+                    Some(Value::String(text)) => text.clone(),
+                    Some(Value::Array(parts)) => parts.iter().filter_map(|p| p.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join(""),
+                    _ => String::new(),
+                };
+                if self.replayed > 1 && !text.is_empty() { vec![Activity::Steered(text)] } else { Vec::new() }
             }
             // A subagent handing back — unless the answer is that it went off to
             // work in the background.
@@ -585,6 +605,7 @@ pub async fn run_turn(
     binary: &str,
     cwd: &Path,
     request: TurnRequest<'_>,
+    mut steering: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
     mut on_activity: impl FnMut(Activity),
 ) -> Result<Turn> {
     let mut command = Command::new(binary);
@@ -597,7 +618,7 @@ pub async fn run_turn(
     let mut child = command
         .args(turn_args(&request))
         .current_dir(cwd)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
@@ -617,16 +638,48 @@ pub async fn run_turn(
         text
     });
 
+    // The turn's first message; Claude Code reads more until its input ends,
+    // which is once the turn has its result and no subagent is still out.
+    let mut stdin = child.stdin.take();
+    if let Some(input) = &mut stdin {
+        let _ = input.write_all(user_message(request.prompt).as_bytes()).await;
+    }
     let mut collector = TurnCollector::new();
     let mut stray = Vec::new();
     let mut lines = BufReader::new(stdout).lines();
-    while let Some(line) = lines.next_line().await? {
+    loop {
+        let steer = async {
+            match (&mut steering, stdin.is_some()) {
+                (Some(rx), true) => rx.recv().await,
+                _ => std::future::pending().await,
+            }
+        };
+        let line = tokio::select! {
+            line = lines.next_line() => line?,
+            text = steer => {
+                match (text, &mut stdin) {
+                    (Some(text), Some(input)) => {
+                        let _ = input.write_all(user_message(&text).as_bytes()).await;
+                    }
+                    // Nobody will steer any more.
+                    _ => steering = None,
+                }
+                continue;
+            }
+        };
+        let Some(line) = line else { break };
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
         match serde_json::from_str::<Value>(line) {
-            Ok(event) => collector.on_event(&event).into_iter().for_each(&mut on_activity),
+            Ok(event) => {
+                collector.on_event(&event).into_iter().for_each(&mut on_activity);
+                if event.get("type").and_then(Value::as_str) == Some("result") && collector.subagents.is_empty() {
+                    // Done: its input ends, and so does Claude Code.
+                    stdin = None;
+                }
+            }
             // Keep the first few non-JSON lines for the error message.
             Err(_) if stray.len() < 5 => stray.push(line.to_owned()),
             Err(_) => {}
@@ -643,6 +696,11 @@ pub async fn run_turn(
         diagnostics.push(format!("exit status {status}"));
     }
     collector.finish(&diagnostics.join(" · "))
+}
+
+/// One of the turn's messages, as Claude Code's `stream-json` input takes it.
+fn user_message(text: &str) -> String {
+    format!("{}\n", serde_json::json!({ "type": "user", "message": { "role": "user", "content": text } }))
 }
 
 /// How the person's next message is guessed: from the conversation's last
@@ -769,7 +827,10 @@ mod tests {
     fn runs_headless_with_streaming_json_and_no_edits() {
         let args = turn_args(&TurnRequest { prompt: "hello", ..Default::default() });
         let has = |pair: [&str; 2]| args.windows(2).any(|w| w[0] == pair[0] && w[1] == pair[1]);
-        assert!(has(["-p", "hello"]));
+        assert!(args.iter().any(|a| a == "-p"));
+        assert!(!args.iter().any(|a| a == "hello"), "the prompt goes in on stdin, where steering follows it");
+        assert!(has(["--input-format", "stream-json"]));
+        assert!(args.iter().any(|a| a == "--replay-user-messages"), "each message echoed as it is read");
         assert!(has(["--output-format", "stream-json"]));
         assert!(has(["--permission-mode", "dontAsk"]));
         assert!(args.iter().any(|a| a == "--verbose"));
@@ -900,6 +961,17 @@ mod tests {
     }
 
     #[test]
+    fn a_message_sent_while_the_turn_runs_is_seen_where_it_was_read() {
+        let mut collector = TurnCollector::new();
+        let replay = |text: &str| json!({ "type": "user", "isReplay": true, "message": { "role": "user", "content": text } });
+        assert!(collector.on_event(&replay("fix the button")).is_empty(), "the prompt itself");
+        assert_eq!(collector.on_event(&replay("skip the footer")), vec![Activity::Steered("skip the footer".into())]);
+        let line = user_message("a \"b\"\nc");
+        assert!(line.ends_with('\n') && line.matches('\n').count() == 1, "one line: {line}");
+        assert_eq!(serde_json::from_str::<Value>(&line).unwrap(), json!({ "type": "user", "message": { "role": "user", "content": "a \"b\"\nc" } }));
+    }
+
+    #[test]
     fn a_guess_at_the_next_message_is_small_and_touches_nothing() {
         let args = suggest_args("[person] fix the button\n[frontend] Done. Shall I tidy the other pages too?");
         let has = |pair: [&str; 2]| args.windows(2).any(|w| w[0] == pair[0] && w[1] == pair[1]);
@@ -984,8 +1056,8 @@ mod tests {
         assert!(args.windows(2).any(|w| w[0] == "--mcp-config" && w[1] == r#"{"mcpServers":{}}"#));
         assert!(args.iter().any(|a| a == "--strict-mcp-config"), "the person's own servers stay out");
         assert!(args.windows(2).any(|w| w[0] == "--allowedTools" && w[1] == "mcp__equipe"));
-        // The prompt still comes right after -p, whatever follows.
-        assert!(args.windows(2).any(|w| w[0] == "-p" && w[1] == "x"));
+        // The prompt isn't among them: it goes in on stdin.
+        assert!(!args.iter().any(|a| a == "x"));
     }
 
     // ── stream ──
@@ -1097,7 +1169,7 @@ EOF"#,
         );
         let mut seen = String::new();
         let request = TurnRequest { prompt: "ping", ..Default::default() };
-        let turn = run_turn(bin.to_str().unwrap(), &dir, request, |a| {
+        let turn = run_turn(bin.to_str().unwrap(), &dir, request, None, |a| {
             if let Activity::Text(t) = a {
                 seen.push_str(&t)
             }
@@ -1113,7 +1185,7 @@ EOF"#,
     async fn reports_stderr_when_the_binary_fails_without_a_result() {
         let (bin, dir) = fake_claude("echo 'boom: config is broken' >&2\nexit 3");
         let request = TurnRequest { prompt: "ping", ..Default::default() };
-        let err = run_turn(bin.to_str().unwrap(), &dir, request, |_| {})
+        let err = run_turn(bin.to_str().unwrap(), &dir, request, None, |_| {})
             .await
             .unwrap_err()
             .to_string();
@@ -1133,7 +1205,7 @@ EOF"#,
     async fn a_missing_binary_is_not_installed_rather_than_an_error() {
         assert_eq!(auth_status("equipe-no-such-claude-binary").await.unwrap(), None);
         let request = TurnRequest { prompt: "x", ..Default::default() };
-        let err = run_turn("equipe-no-such-claude-binary", Path::new("."), request, |_| {})
+        let err = run_turn("equipe-no-such-claude-binary", Path::new("."), request, None, |_| {})
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not installed"));

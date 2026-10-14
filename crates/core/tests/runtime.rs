@@ -39,8 +39,10 @@ fn named(name: &str) -> PathBuf {
 /// A stand-in `claude`: answers `auth status`, and runs `turn` for a turn.
 fn fake_claude(logged_in: bool, turn: &str) -> PathBuf {
     let bin = scratch("bin").join("claude");
+    // A turn's prompt comes in on stdin, as Claude Code's stream-json; put in
+    // front of the arguments as `-p <prompt>`, where a test looks for it.
     let script = format!(
-        "#!/bin/sh\nif [ \"$1\" = \"auth\" ]; then echo '{{\"loggedIn\":{logged_in},\"authMethod\":\"claude.ai\"}}'; exit 0; fi\n{turn}\n"
+        "#!/bin/sh\nif [ \"$1\" = \"auth\" ]; then echo '{{\"loggedIn\":{logged_in},\"authMethod\":\"claude.ai\"}}'; exit 0; fi\nif [ \"$2\" = --input-format ] && IFS= read -r line; then set -- -p \"$(printf '%s' \"$line\" | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"message\"][\"content\"], end=\"\")')\" \"$@\"; fi\n{turn}\n"
     );
     write_script(&bin, &script);
     bin
@@ -297,8 +299,9 @@ async fn a_message_sent_mid_turn_waits_as_a_memo() {
     handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
     until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
     handle.send(Command::Submit { session: 1, text: "first".into() });
-    handle.send(Command::Submit { session: 1, text: "also this".into() });
-    handle.send(Command::Submit { session: 1, text: "and this".into() });
+    // For after this turn: they don't steer it.
+    handle.send(Command::SubmitLater { session: 1, text: "also this".into() });
+    handle.send(Command::SubmitLater { session: 1, text: "and this".into() });
 
     let first = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     let memos: Vec<_> = first
@@ -317,14 +320,47 @@ async fn a_message_sent_mid_turn_waits_as_a_memo() {
 }
 
 #[tokio::test]
+async fn said_while_it_works_it_reads_at_its_next_step_without_stopping() {
+    // Claude Code reads a second message mid-turn, echoes it as it does, and carries on.
+    let turn = r#"IFS= read -r more
+text=$(printf '%s' "$more" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["message"]["content"]))')
+cat <<EOF
+{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}
+{"type":"user","isReplay":true,"message":{"role":"user","content":"fix the page"}}
+{"type":"user","isReplay":true,"message":{"role":"user","content":$text}}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"skipping the footer"}}}
+{"type":"result","subtype":"success","is_error":false,"result":"skipping the footer","usage":{"input_tokens":3,"output_tokens":1}}
+EOF"#;
+    let claude = fake_claude(true, turn);
+    let (handle, mut events) = start(&claude);
+    handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
+    until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "fix the page".into() });
+    until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "skip the footer".into() });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::SteerQueued { text, .. } if text == "skip the footer")), "{seen:#?}");
+    let read = seen.iter().position(|e| matches!(e, Event::Steered { text, .. } if text == "skip the footer")).expect("read");
+    let answer = seen.iter().position(|e| matches!(e, Event::TextDelta { .. })).unwrap();
+    assert!(read < answer, "read mid-turn, before the rest of the answer");
+    assert!(!seen.iter().any(|e| matches!(e, Event::TurnEnded { outcome: TurnOutcome::Interrupted, .. })), "nothing stopped");
+    // Read: not delivered again as a memo.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while let Ok(e) = events.try_recv() {
+        assert!(!matches!(e, Event::MessageQueued { .. } | Event::UserMessage { .. }), "{e:?}");
+    }
+}
+
+#[tokio::test]
 async fn esc_delivers_waiting_memos_at_once() {
     let claude = fake_claude(true, "case \"$*\" in *\"take forever\"*) exec sleep 30;; esac\necho");
     let (handle, mut events) = start(&claude);
     handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
     until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
     handle.send(Command::Submit { session: 1, text: "take forever".into() });
+    // Sent while it works: it would read it at its next step; Esc stops it first.
     handle.send(Command::Submit { session: 1, text: "stop, do this instead".into() });
-    until(&mut events, |e| matches!(e, Event::MessageQueued { .. })).await;
+    until(&mut events, |e| matches!(e, Event::SteerQueued { .. })).await;
 
     let asked = std::time::Instant::now();
     handle.send(Command::Interrupt { session: 1 });
@@ -981,7 +1017,7 @@ async fn memos_and_the_pms_briefing_survive_a_restart() {
         add(&handle, &mut events, 2, member(&cwd, "designer")).await;
         handle.send(Command::Submit { session: 2, text: "long job".into() });
         until(&mut events, |e| matches!(e, Event::UserMessage { session: 2, .. })).await;
-        handle.send(Command::Submit { session: 2, text: "and the footer".into() });
+        handle.send(Command::SubmitLater { session: 2, text: "and the footer".into() });
         until(&mut events, |e| matches!(e, Event::MessageQueued { .. })).await;
         handle.shutdown().await;
     }
@@ -2111,14 +2147,14 @@ async fn a_memo_goes_into_the_conversation_of_the_project_it_was_left_in() {
     until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
     // Left while looking at app, then the person goes back to site.
     handle.send(Command::Focus { squad: "acme".into(), project: Some("app".into()) });
-    handle.send(Command::Submit { session: 1, text: "about the app".into() });
+    handle.send(Command::SubmitLater { session: 1, text: "about the app".into() });
     let queued = until(&mut events, |e| matches!(e, Event::MessageQueued { .. })).await;
     assert!(matches!(queued.last(), Some(Event::MessageQueued { project: Some(p), .. }) if p == "app"), "{queued:?}");
     // Another about site, and a second about the app: each project's memos go together, into its own conversation.
     handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
-    handle.send(Command::Submit { session: 1, text: "about the site".into() });
+    handle.send(Command::SubmitLater { session: 1, text: "about the site".into() });
     handle.send(Command::Focus { squad: "acme".into(), project: Some("app".into()) });
-    handle.send(Command::Submit { session: 1, text: "more on the app".into() });
+    handle.send(Command::SubmitLater { session: 1, text: "more on the app".into() });
     handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
     let snapshot = handle.snapshot("acme").await;
     assert_eq!(snapshot.sessions[0].queued_in, [Some("app".into()), Some("site".into()), Some("app".into())]);

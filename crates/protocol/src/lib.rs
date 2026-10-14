@@ -327,6 +327,9 @@ pub enum Command {
     /// message sent while a turn runs waits as a memo ([`Event::MessageQueued`])
     /// and is delivered when the turn ends — or at once, if the turn is stopped.
     Submit { session: SessionId, text: String },
+    /// A message for after the turn running now (a memo): it doesn't steer
+    /// the work under way. With no turn running, the same as `Submit`.
+    SubmitLater { session: SessionId, text: String },
     /// Stop the turn in progress (Esc). Answered by a `TurnEnded` with
     /// [`TurnOutcome::Interrupted`].
     Interrupt { session: SessionId },
@@ -576,6 +579,11 @@ pub enum Event {
     /// A guess at what the person will say next to the member who just
     /// answered them, for their empty composer. Not part of the conversation.
     Suggestion { session: SessionId, text: String },
+    /// A message the person sent while the member works: it reads it at its
+    /// next step, without stopping (steering).
+    SteerQueued { session: SessionId, text: String },
+    /// The member read a steering message, at this point of its turn.
+    Steered { session: SessionId, text: String },
     TurnEnded {
         session: SessionId,
         outcome: TurnOutcome,
@@ -624,6 +632,8 @@ impl Event {
             | Event::ModelKnown { session, .. }
             | Event::Thread { session, .. }
             | Event::Suggestion { session, .. }
+            | Event::SteerQueued { session, .. }
+            | Event::Steered { session, .. }
             | Event::SubagentStarted { session, .. }
             | Event::BrowserFrame { session, .. }
             | Event::SubagentStep { session, .. }
@@ -705,6 +715,9 @@ pub struct SessionInfo {
     /// The project each memo was left about (`None`: the whole squad).
     #[serde(default)]
     pub queued_in: Vec<Option<String>>,
+    /// Messages sent while it works that it hasn't read yet (steering).
+    #[serde(default)]
+    pub steering: Vec<String>,
     /// The ticket it is working on, and where.
     #[serde(default)]
     pub work: Option<WorkInfo>,
@@ -913,6 +926,7 @@ mod tests {
                 queued: vec!["and the tests".into()],
                 queued_project: None,
                 queued_in: vec![None],
+                steering: Vec::new(),
                 work: Some(WorkInfo { ticket: 1, project: "/repo".into(), workspace: None }),
                 mode: Some(Mode::Ask),
             }],
