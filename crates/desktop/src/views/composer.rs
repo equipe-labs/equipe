@@ -347,7 +347,7 @@ impl Composer {
         !self.choices.is_empty()
     }
 
-    fn refresh_choices(&mut self, model: &Model, cx: &App) {
+    pub(crate) fn refresh_choices(&mut self, model: &Model, cx: &App) {
         let text = self.text(cx);
         self.pick = 0;
         self.choices = if self.dismissed.as_deref() == Some(text.as_str()) { Vec::new() } else { compose::choices_with(model, &text, &self.indexes) };
@@ -561,12 +561,8 @@ impl Shell {
         self.composer.dismissed = None;
         let box_text = plan.restore.map(|_| typed.trim().to_owned()).unwrap_or_default();
         self.composer.set_text(&box_text, window, cx);
-        match plan.effect {
-            Some(Effect::Select(session)) => self.select_member(session, window, cx),
-            Some(Effect::ShowBoard) => self.show(Screen::Board, cx),
-            Some(Effect::Find(words)) => self.board_find(&words, cx),
-            Some(Effect::Focus(project)) => self.set_focus(project, window, cx),
-            None => {}
+        if let Some(effect) = plan.effect {
+            self.apply_effect(effect, window, cx);
         }
         self.save_drafts_soon(cx);
         // What was just said belongs in view.

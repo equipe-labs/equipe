@@ -34,6 +34,16 @@ pub struct Role {
 
 pub const PM: &str = "pm";
 
+/// The roles a new squad may start with, besides the PM, and which are ticked.
+pub const STARTERS: [(&str, bool); 5] =
+    [("designer", true), ("frontend", true), ("backend", false), ("qa", false), ("data", false)];
+
+/// The team a squad started from a screen begins with: the PM, then the
+/// starters ticked by default.
+pub fn starting_team() -> Vec<String> {
+    std::iter::once(PM).chain(STARTERS.iter().filter(|(_, on)| *on).map(|(id, _)| *id)).map(str::to_owned).collect()
+}
+
 pub const ROLES: [Role; 7] = [
     Role {
         id: PM,

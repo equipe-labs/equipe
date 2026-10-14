@@ -8,8 +8,8 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use equipe_core::protocol::rpc::Hello;
-use equipe_core::protocol::{Engine, Entry, Estimate, Event, HumanCheck, Mode, OffMain, SessionId, SessionState, Ticket, TicketEntry, TicketId, TicketKind, TicketStatus, TurnOutcome};
+use equipe_core::protocol::rpc::{Hello, SquadEntry};
+use equipe_core::protocol::{Engine, Entry, Estimate, Event, HumanCheck, Mode, OffMain, PlanUsage, SessionId, SessionState, Ticket, TicketEntry, TicketId, TicketKind, TicketStatus, TurnOutcome};
 
 use crate::convo::Convo;
 use crate::daemon::Update;
@@ -249,6 +249,17 @@ pub enum Conn {
     },
 }
 
+/// What a member's turns have used, for `/usage`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Spent {
+    /// Everything its turns processed, cached history included.
+    pub tokens: u64,
+    /// Of `seen.0` tokens, `seen.1` came from the prompt cache.
+    pub seen: (u64, u64),
+    /// (used, window) tokens of its context, once known.
+    pub context: Option<(u64, u64)>,
+}
+
 type CardHint = (Vec<u64>, Vec<(TicketId, TicketStatus, Option<String>)>, Option<String>);
 
 #[derive(Debug, Clone)]
@@ -263,6 +274,16 @@ pub struct Model {
     pub projects: Vec<PathBuf>,
     /// The squad's mode, for completion's sake.
     pub mode: Mode,
+    /// The Claude plan's usage windows, as last reported.
+    pub plan: Option<PlanUsage>,
+    /// The daemon is on another machine (SSH): its folders aren't on this disk.
+    pub remote: bool,
+    /// Whether a guess at the next message is offered after an answer (`/suggest`).
+    pub suggestions: bool,
+    /// What each member's turns have used.
+    pub spent: HashMap<SessionId, Spent>,
+    /// The daemon machine's squads: where each one's folder is.
+    pub squad_list: Vec<SquadEntry>,
     /// Open permission requests, oldest first.
     pub approvals: Queue,
     /// Members' questions waiting for the person, oldest first.
@@ -343,6 +364,11 @@ impl Model {
             tickets: Vec::new(),
             projects: Vec::new(),
             mode: Mode::default(),
+            plan: None,
+            remote: false,
+            suggestions: true,
+            spent: HashMap::new(),
+            squad_list: Vec::new(),
             approvals: Queue::default(),
             asked: Default::default(),
             alerts: Vec::new(),
@@ -595,8 +621,13 @@ impl Model {
                 self.conn = next;
                 changed
             }
-            // The shell reads these two itself: the squad list and the bridge's greeting.
-            Update::Squads(_) | Update::Bridge(_) => false,
+            // The shell reads the bridge's greeting itself; the squad list is kept for
+            // `/home` (where the folder is) and `/squad` (what to switch to).
+            Update::Squads(list) => {
+                self.squad_list = list.squads;
+                false
+            }
+            Update::Bridge(_) => false,
             Update::Event(event) => {
                 let before = (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint());
                 self.on_event(event, now);
@@ -638,6 +669,14 @@ impl Model {
         self.tickets = snapshot.tickets.clone();
         self.projects = snapshot.projects.clone();
         self.mode = snapshot.mode;
+        self.plan = snapshot.plan;
+        self.suggestions = !snapshot.suggestions_off;
+        self.spent = snapshot
+            .sessions
+            .iter()
+            .filter(|s| s.lane.is_none())
+            .map(|s| (s.session, Spent { tokens: s.tokens, seen: (0, 0), context: s.context }))
+            .collect();
         self.approvals.load(snapshot.approvals.clone());
         self.asked.load(snapshot.questions.clone());
         if let Some(note) = crate::notify::stale_daemon(&version, env!("CARGO_PKG_VERSION")) {
@@ -707,6 +746,19 @@ impl Model {
     }
 
     fn on_event(&mut self, event: Event, now: Clock) {
+        match &event {
+            Event::PlanUsage { usage } => self.plan = Some(*usage),
+            Event::TurnEnded { session, usage: Some(u), .. } if !self.lanes.iter().any(|l| l.session == *session) => {
+                let spent = self.spent.entry(*session).or_default();
+                spent.tokens += u.total();
+                spent.seen.0 += u.total();
+                spent.seen.1 += u.cache_tokens.unwrap_or(0);
+                if let (Some(used), Some(window)) = (u.context_tokens, u.context_window) {
+                    spent.context = Some((used, window));
+                }
+            }
+            _ => {}
+        }
         // The conversation first: what the selected one shows decides redraws.
         if let Some(id) = event.session() {
             if let Event::SessionStarted { squad, member, project, .. } = &event {
@@ -1270,7 +1322,7 @@ fn percent((used, window): (u64, u64)) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use equipe_core::protocol::rpc::Hello;
+    use equipe_core::protocol::rpc::{Hello, SquadEntry};
     use equipe_core::protocol::{Access, Approval, Engine, Member as Who, SessionInfo, Snapshot, WorkInfo};
 
     const T0: Clock = Clock { hour: 14, minute: 2, second: 10 };

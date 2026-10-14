@@ -28,9 +28,7 @@ pub struct Start {
     pub offer: Option<Folder>,
 }
 
-/// The roles a new squad may start with, besides the PM, and which are ticked.
-const STARTERS: [(&str, bool); 5] =
-    [("designer", true), ("frontend", true), ("backend", false), ("qa", false), ("data", false)];
+use equipe_core::roles::STARTERS;
 
 /// A folder too wide to be a project: the home folder, or the disk's root.
 pub fn is_too_wide(project: &Path) -> bool {
@@ -111,7 +109,7 @@ fn team_from_picks(picked: &[usize]) -> Vec<&'static str> {
 /// The team a squad started from the console begins with: the PM, then the
 /// roles ticked by default.
 pub fn starting_team() -> Vec<String> {
-    std::iter::once(equipe_core::roles::PM).chain(STARTERS.iter().filter(|(_, on)| *on).map(|(id, _)| *id)).map(str::to_owned).collect()
+    equipe_core::roles::starting_team()
 }
 
 /// The squad to open from `cwd`, first match wins: the one named; the one

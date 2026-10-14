@@ -50,8 +50,26 @@ impl AskUi {
     }
 }
 
+<<<<<<< HEAD
 /// A one-line text box in the window's own colours, `FIELD` tall, its text
 /// `S3` in from its edge (the box pads its text itself; the rest is ours).
+=======
+pub fn button(p: Palette, id: &'static str, label: impl Into<SharedString>, primary: bool) -> Stateful<Div> {
+    h_flex()
+        .id(id)
+        .h(px(30.))
+        .px_3()
+        .items_center()
+        .rounded(px(6.))
+        .text_size(px(SMALL))
+        .cursor_pointer()
+        .when(primary, |b| b.bg(p.primary).text_color(p.on_primary).font_weight(FontWeight::SEMIBOLD))
+        .when(!primary, |b| b.border_1().border_color(p.hair).hover(move |s| s.bg(p.wash)))
+        .child(label.into())
+}
+
+/// A one-line text box in the window's own colours.
+>>>>>>> 5f5dfde (Desktop: every console command — usage, help, add, squads, home/memory, browser, send-apps, export; menu bar and ⌘K)
 fn field(p: Palette, state: &Entity<InputState>) -> impl IntoElement {
     h_flex()
         .w_full()
@@ -159,6 +177,7 @@ fn row(p: Palette, id: impl Into<ElementId>, glyph: Icon, label: String, note: &
         .child(div().flex_none().font_weight(FontWeight::NORMAL).text_size(px(12.)).text_color(p.muted).child(note))
 }
 
+<<<<<<< HEAD
 /// A row that eases its fill in under the pointer (the current one is filled already).
 fn hoverable(p: Palette, row: Stateful<Div>, id: impl Into<ElementId>, current: bool) -> AnyElement {
     if current { row.into_any_element() } else { motion::hover_fill(row, id, p.wash, false).into_any_element() }
@@ -211,6 +230,36 @@ fn heading(p: Palette, title: String, text: Option<String>) -> impl IntoElement 
         .gap_1()
         .child(div().text_size(px(17.)).line_height(px(24.)).font_weight(FontWeight::SEMIBOLD).child(title))
         .children(text.map(|t| div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).child(t)))
+=======
+fn modal(p: Palette, card: impl IntoElement) -> AnyElement {
+    modal_sized(p, 500., card)
+}
+
+/// A card over the window, `width` wide.
+pub fn modal_sized(p: Palette, width: f32, card: impl IntoElement) -> AnyElement {
+    div()
+        .absolute()
+        .inset_0()
+        .occlude()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(rgba(0x00000066))
+        .child(
+            v_flex()
+                .w(px(width))
+                .max_h(px(640.))
+                .p_5()
+                .gap_3()
+                .rounded(px(12.))
+                .bg(p.raised)
+                .border_1()
+                .border_color(p.hair)
+                .text_color(p.text)
+                .child(card),
+        )
+        .into_any_element()
+>>>>>>> 5f5dfde (Desktop: every console command — usage, help, add, squads, home/memory, browser, send-apps, export; menu bar and ⌘K)
 }
 
 /// "Where is the daemon?": this Mac or an SSH host.
