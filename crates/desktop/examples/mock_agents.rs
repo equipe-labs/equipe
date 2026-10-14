@@ -1,3 +1,6 @@
+//! The original spike, kept for measuring: mock agents streaming into SQLite and
+//! log panes that read only the rows they draw. Knobs in docs/DESKTOP.md.
+#[path = "../src/mem.rs"]
 mod mem;
 
 use std::path::PathBuf;
