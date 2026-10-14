@@ -77,10 +77,26 @@ fn asks() -> &'static std::sync::Mutex<Vec<Approval>> {
 }
 
 fn ticket(id: u32, status: &str, note: Option<&str>) -> equipe_core::protocol::Ticket {
-    serde_json::from_value(serde_json::json!({"id": id, "title": format!("티켓 {id}의 제목"), "body": "", "status": status, "owner": "backend", "assignee": "backend", "project": "/tmp/fake/site", "depends_on": [], "branch": null, "created_by": "pm", "note": note})).unwrap()
+    ticket_in(id, status, note, "site")
+}
+
+fn ticket_in(id: u32, status: &str, note: Option<&str>, project: &str) -> equipe_core::protocol::Ticket {
+    serde_json::from_value(serde_json::json!({"id": id, "title": format!("티켓 {id}의 제목"), "body": "", "status": status, "owner": "backend", "assignee": "backend", "project": format!("/tmp/fake/{project}"), "depends_on": [], "branch": null, "created_by": "pm", "note": note})).unwrap()
 }
 
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
+
+/// Where a message goes, as the daemon decides: the project in focus, each
+/// member's current conversation, and the lanes opened beside them.
+#[derive(Default)]
+struct Routes {
+    focus: Option<String>,
+    thread: HashMap<SessionId, Option<String>>,
+    /// `(lane session, member session, project)`.
+    lanes: Vec<(SessionId, SessionId, Option<String>)>,
+}
+
+type Shared = Arc<Mutex<Routes>>;
 
 #[tokio::main]
 async fn main() {
@@ -93,13 +109,14 @@ async fn main() {
     let seconds: f32 = std::env::var("FAKE_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(4.);
     let (events, _) = broadcast::channel::<Event>(1024);
     let turns: Turns = Arc::default();
+    let routes: Shared = Arc::default();
     loop {
         let (stream, _) = listener.accept().await.unwrap();
-        tokio::spawn(serve(stream, events.clone(), turns.clone(), seconds));
+        tokio::spawn(serve(stream, events.clone(), turns.clone(), routes.clone(), seconds));
     }
 }
 
-async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turns, seconds: f32) {
+async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turns, routes: Shared, seconds: f32) {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
     let mut feed = events.subscribe();
@@ -132,7 +149,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             projects: vec!["/tmp/fake/site".into(), "/tmp/fake/app".into()],
                             sessions: vec![info(1, "pm", history), info(2, "frontend", vec![]), info(3, "backend", vec![])],
                             approvals: asks().lock().unwrap().clone(),
-                            tickets: vec![ticket(54, "review", None), ticket(35, "waiting", Some("Waiting on you:\n- [ ] 화면 기록 권한")), ticket(30, "review", None), ticket(31, "review", None)],
+                            tickets: vec![ticket_in(60, "in_progress", None, "app"), ticket_in(61, "todo", None, "app"), ticket(54, "review", None), ticket(35, "waiting", Some("Waiting on you:\n- [ ] 화면 기록 권한")), ticket(30, "review", None), ticket(31, "review", None)],
                             ..Default::default()
                         };
                         let hello = Hello { version: "fake".into(), snapshot };
@@ -143,7 +160,37 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         eprintln!("command: {command:?}");
                         match command {
                             Command::Submit { session, text } => {
-                                let busy = turns.lock().await.get(&session).is_some_and(|t| !t.is_finished());
+                                let working = |id: SessionId| {
+                                    let turns = turns.clone();
+                                    async move { turns.lock().await.get(&id).is_some_and(|t| !t.is_finished()) }
+                                };
+                                // Route like the daemon: the conversation about the project in focus,
+                                // beside the member's other work if it is at work in another.
+                                let mut r = routes.lock().await;
+                                let wanted = r.focus.clone();
+                                let lane = r.lanes.iter().find(|(_, of, project)| *of == session && *project == wanted).map(|l| l.0);
+                                let session = match lane {
+                                    Some(lane) => lane,
+                                    None => {
+                                        let here = r.thread.get(&session).cloned().unwrap_or(None);
+                                        if here != wanted && working(session).await {
+                                            let id = 100 + r.lanes.len() as SessionId;
+                                            r.lanes.push((id, session, wanted.clone()));
+                                            let role = ["pm", "frontend", "backend"][session as usize - 1];
+                                            let _ = events.send(Event::SessionStarted { session: id, project: "/tmp/fake/site".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Member { role: role.into(), name: role.into() }), squad: Some("demo".into()) });
+                                            let _ = events.send(Event::LaneOpened { session: id, of: session, project: wanted.clone() });
+                                            id
+                                        } else {
+                                            if here != wanted {
+                                                r.thread.insert(session, wanted.clone());
+                                                let _ = events.send(Event::Thread { session, project: wanted.clone() });
+                                            }
+                                            session
+                                        }
+                                    }
+                                };
+                                drop(r);
+                                let busy = working(session).await;
                                 if busy {
                                     // Like the daemon: said to a member at work, it steers.
                                     let _ = events.send(Event::SteerQueued { session, text });
@@ -167,7 +214,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 let _ = events.send(Event::ApprovalResolved { squad, approval, decision });
                             }
                             Command::Focus { project, .. } => {
-                                let _ = events.send(Event::Thread { session: 1, project });
+                                routes.lock().await.focus = project;
                             }
                             _ => {}
                         }

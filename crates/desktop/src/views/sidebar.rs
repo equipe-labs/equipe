@@ -80,7 +80,7 @@ fn member_row(p: Palette, shell: &Shell, member: &Member, cx: &mut Context<Shell
     let needs = matches!(status, Status::NeedsYou(_));
     let working = matches!(status, Status::Working { .. });
     let closed = status == Status::Closed;
-    let (line, line_color) = status_line(member, &status, p);
+    let (line, line_color) = status_line(member, &status, shell.model.at_once(member), p);
 
     let on = shell.screen == Screen::Chat && shell.model.selected == Some(member.session);
     let session = member.session;
@@ -163,13 +163,15 @@ fn status_is_ready(status: &Status) -> bool {
 }
 
 /// The second line of a member row, and its colour.
-pub fn status_line(member: &Member, status: &Status, p: Palette) -> (String, Rgba) {
+pub fn status_line(member: &Member, status: &Status, at_once: usize, p: Palette) -> (String, Rgba) {
     let ticket = |t: Option<u32>| t.map(|t| format!("T-{t}"));
     let join = |parts: Vec<Option<String>>| parts.into_iter().flatten().collect::<Vec<_>>().join(" · ");
     let memos = (member.memos > 0).then(|| format!("메모 {}개", member.memos));
     let context = member.context.filter(|c| *c >= 50).map(|c| format!("{c}%"));
     match status {
         Status::NeedsYou(t) => (join(vec![Some("사람 대기".into()), ticket(*t)]), p.accent),
+        // Several of its conversations at work at once.
+        Status::Working { ticket: t, .. } if at_once > 1 => (join(vec![memos, ticket(*t), Some(format!("{at_once}개 동시")), context]), p.muted),
         Status::Working { ticket: t, verb } => (join(vec![memos, ticket(*t), Some(verb_text(*verb).into()), context]), p.muted),
         Status::Ready { ticket: t, .. } => (join(vec![memos, Some("쉬는 중".into()), ticket(*t), context]), p.muted),
         Status::Closed => ("닫힘".into(), p.muted),

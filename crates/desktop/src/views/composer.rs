@@ -104,7 +104,11 @@ impl Composer {
     /// or the project in focus changes, the old draft is put away and the
     /// new one's comes out.
     pub fn follow(&mut self, model: &Model, window: &mut Window, cx: &mut App) {
-        let guess = model.convo().and_then(|c| c.suggestion.clone()).filter(|_| model.selected_member().is_some_and(|m| m.presence == Presence::Ready));
+        let guess = model.convo().and_then(|c| c.suggestion.clone()).filter(|_| model.viewed_presence() == Some(Presence::Ready));
+        // A stop asked for is over once nothing in view is at work.
+        if self.stopping.is_some() && model.viewed_presence() != Some(Presence::Working) {
+            self.stopping = None;
+        }
         if guess != self.suggestion {
             let hint = guess.as_ref().map_or_else(|| PLACEHOLDER.to_owned(), |g| format!("{g}  →"));
             self.state.update(cx, |s, cx| s.set_placeholder(hint, window, cx));
@@ -347,11 +351,11 @@ impl Shell {
 
     /// Stop the turn in progress (Esc, or the Stop button).
     pub fn interrupt(&mut self, cx: &mut Context<Self>) {
-        let Some(member) = self.model.selected_member() else { return };
-        if member.presence != Presence::Working || self.composer.stopping == Some(member.session) {
+        // Only the conversation in view stops; a member's others go on.
+        let Some(session) = self.model.viewed() else { return };
+        if self.model.viewed_presence() != Some(Presence::Working) || self.composer.stopping == Some(session) {
             return;
         }
-        let session = member.session;
         self.composer.stopping = Some(session);
         self.send_command(Command::Interrupt { session });
         cx.notify();
@@ -403,7 +407,7 @@ impl Shell {
                 true
             }
             // Tab with something written to a member at work: a memo for after.
-            "tab" if plain && !self.composer.open() && self.model.selected_member().is_some_and(|m| m.presence == Presence::Working) && {
+            "tab" if plain && !self.composer.open() && self.model.viewed_presence() == Some(Presence::Working) && {
                 let text = self.composer.text(cx);
                 !text.trim().is_empty() && !text.starts_with('/')
             } =>
@@ -443,8 +447,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let composer = &shell.composer;
     let model = &shell.model;
     let member = model.selected_member();
-    let working = member.is_some_and(|m| m.presence == Presence::Working);
-    let stopping = working && member.is_some_and(|m| composer.stopping == Some(m.session));
+    let working = model.viewed_presence() == Some(Presence::Working);
+    let stopping = working && model.viewed().is_some_and(|s| composer.stopping == Some(s));
     let text = composer.text(cx);
     let (to_label, to_color) = recipient(p, model, &text);
     let project = model.focus.clone().filter(|_| member.is_some_and(Model::is_pm));

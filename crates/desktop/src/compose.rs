@@ -237,7 +237,11 @@ pub fn plan(model: &Model, text: &str, later: bool) -> Plan {
         None => (selected, text),
     };
     let away = target.session != selected.session;
-    match target.presence {
+    // What is said to the one in view goes to its conversation about the
+    // project in focus: at work there or in a lane, or free if the member is
+    // at work in another project's — the daemon then opens a lane beside it.
+    let presence = if away { target.presence } else { model.viewed_presence().unwrap_or(target.presence) };
+    match presence {
         Presence::Closed => Plan { restore: Some(text.to_owned()), ..Plan::say(format!("{}은(는) 더 이상 스쿼드에 없습니다", target.name)) },
         // A memo: the core holds it until the turn ends. Only Claude can be steered.
         Presence::Working if later || target.engine != Some(Engine::Claude) => Plan {
@@ -249,6 +253,11 @@ pub fn plan(model: &Model, text: &str, later: bool) -> Plan {
         Presence::Working => Plan {
             commands: vec![Command::Submit { session: target.session, text: text.to_owned() }],
             flash: Some(format!("{}이(가) 다음 단계에서 읽습니다, 하던 일은 멈추지 않습니다 · Tab으로 보내면 끝난 뒤 읽는 메모", target.name)),
+            ..Plan::default()
+        },
+        Presence::Ready if !away && model.opens_lane() => Plan {
+            commands: vec![Command::Submit { session: target.session, text: text.to_owned() }],
+            flash: Some(format!("{}이(가) {} 대화를 다른 일과 나란히 시작합니다", target.name, model.focus.as_deref().unwrap_or("스쿼드 전체"))),
             ..Plan::default()
         },
         Presence::Ready => Plan {
@@ -497,6 +506,20 @@ mod tests {
         assert_eq!(model.selected, Some(1), "the PM is where the window starts");
         assert_eq!(plan(&model, "  안녕하세요  "), Plan { commands: vec![submit(1, "안녕하세요")], ..Plan::default() });
         assert_eq!(plan(&model, "   "), Plan::default());
+    }
+
+    #[test]
+    fn said_about_another_project_than_the_one_it_works_in_a_member_takes_it_up_beside() {
+        let mut model = squad(vec![session(1, "pm", SessionState::Working), session(2, "frontend", SessionState::Ready)]);
+        model.apply(Update::Event(Event::Thread { session: 1, project: Some("site".into()) }), T0);
+        // Looking at site, where it works: steered.
+        model.set_focus(Some("site".into()));
+        assert!(plan(&model, "이거 해").flash.unwrap().contains("다음 단계에서 읽습니다"));
+        // Looking at app: it is free there, and a lane opens beside the work.
+        model.set_focus(Some("app".into()));
+        let p = plan(&model, "앱은?");
+        assert_eq!(p.commands, vec![submit(1, "앱은?")]);
+        assert!(p.flash.unwrap().contains("나란히"));
     }
 
     #[test]

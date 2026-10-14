@@ -49,6 +49,9 @@ pub struct Convo {
     pub base: PathBuf,
     desk: PathBuf,
     pub is_pm: bool,
+    /// A lane: one project's conversation beside its member's others. Like a
+    /// ticket's, it is one conversation, so every memo is for it.
+    pub lane: bool,
     working_since: Option<Instant>,
 }
 
@@ -66,6 +69,7 @@ impl Convo {
             desk: base.clone(),
             base,
             is_pm,
+            lane: false,
             working_since: None,
         }
     }
@@ -165,7 +169,44 @@ impl Convo {
     /// Whether what belongs to `project`'s conversation (`None`: the squad's)
     /// shows in the one in view.
     fn in_view(&self, project: Option<&str>) -> bool {
-        project == self.thread_view.as_deref() || (self.thread_view.is_none() && !self.is_pm)
+        self.lane || project == self.thread_view.as_deref() || (self.thread_view.is_none() && !self.is_pm)
+    }
+
+    /// The conversation its turns go into now (`None`: the whole squad's).
+    pub fn current_thread(&self) -> Option<&str> {
+        self.transcript.entries().iter().rev().find_map(|e| match e {
+            Entry::Thread { project } => Some(project.as_deref()),
+            _ => None,
+        })?
+    }
+
+    /// What the person said last in it, its first line.
+    pub fn last_said(&self) -> Option<String> {
+        self.transcript.entries().iter().rev().find_map(|e| match e {
+            Entry::User { text } => Some(text.lines().next().unwrap_or_default().trim().to_owned()),
+            _ => None,
+        })
+    }
+
+    /// A lane of this member that goes back into it: what was said there stays,
+    /// in this member's conversation about `project`.
+    pub fn take_back(&mut self, project: Option<String>, lane: &Convo) {
+        let back = self.current_thread().map(str::to_owned);
+        self.transcript.push_local(Entry::Thread { project });
+        for entry in lane.transcript.entries() {
+            self.transcript.push_local(entry.clone());
+        }
+        self.transcript.push_local(Entry::Thread { project: back });
+    }
+
+    /// Start a lane's conversation with what the member said about its project.
+    pub fn open_lane(&mut self, main: &Convo) {
+        // Not the line that says other projects' parts were left out: it is
+        // about the member's conversation, not this one.
+        let said = main.shown().into_iter().filter(|e| !matches!(e.as_ref(), Entry::Note { text } if text.starts_with("· 다른 프로젝트")));
+        self.transcript = Transcript::from_entries(said.map(Cow::into_owned).collect());
+        self.thread_view = None;
+        self.lane = true;
     }
 
     /// Its turn ended: leave a quiet line saying how long it took.
