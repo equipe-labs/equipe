@@ -15,6 +15,10 @@ pub struct Palette {
     pub accent: Rgba,
     pub accent_bg: Rgba,
     pub code_bg: Rgba,
+    pub raised: Rgba,
+    /// The main button: the text colour on the background's, inverted.
+    pub primary: Rgba,
+    pub on_primary: Rgba,
     members: [Rgba; 8],
 }
 
@@ -38,6 +42,9 @@ impl Palette {
             accent: rgb(0xB4CDE6),
             accent_bg: rgba(0xB4CDE61A),
             code_bg: rgb(0x111114),
+            raised: rgb(0x141417),
+            primary: rgb(0xEFEDE7),
+            on_primary: rgb(0x0A0A0C),
             members: [0xE8BE78, 0xEC96BE, 0x78BEF0, 0x8CD096, 0xB6A2F2, 0x6ED4C8, 0xF0A06E, 0xCDD478].map(rgb),
         }
     }
@@ -54,6 +61,9 @@ impl Palette {
             accent: rgb(0x2E5C8A),
             accent_bg: rgba(0x2E5C8A17),
             code_bg: rgb(0xECEBE6),
+            raised: rgb(0xFFFFFF),
+            primary: rgb(0x15161A),
+            on_primary: rgb(0xF6F5F1),
             members: [0xA06814, 0xB0326E, 0x1E68AA, 0x28803C, 0x6446BE, 0x14807A, 0xB4501E, 0x6E7814].map(rgb),
         }
     }
@@ -86,3 +96,7 @@ pub const SANS: &str = "Helvetica Neue";
 pub const BODY: f32 = 15.;
 pub const UI: f32 = 14.;
 pub const SMALL: f32 = 13.;
+
+/// Project chips take the project's order and these colours (T-54 §2.1).
+pub const PROJECT_HUES: [usize; 8] = [2, 6, 4, 7, 5, 1, 3, 0];
+pub const MONO: &str = "Menlo";

@@ -2,12 +2,15 @@
 //! one stands, kept up to date from the daemon's snapshot and events alone.
 //! No UI types here, so the rules can be tested without a window.
 
+use std::collections::HashMap;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use equipe_core::protocol::rpc::Hello;
-use equipe_core::protocol::{Entry, Event, SessionId, SessionState, Ticket, TicketId, TicketStatus};
+use equipe_core::protocol::{Engine, Entry, Event, Mode, SessionId, SessionState, Ticket, TicketId, TicketStatus};
 
+use crate::convo::Convo;
 use crate::daemon::Update;
 
 /// A wall-clock time of day, as shown ("14:02"). Passed in, never read here.
@@ -90,6 +93,7 @@ pub struct Member {
     /// How full its context is, in percent, once known.
     pub context: Option<u8>,
     pub model: Option<String>,
+    pub engine: Option<Engine>,
 }
 
 /// How a member shows in the list. The most pressing thing wins.
@@ -126,14 +130,98 @@ pub struct Model {
     pub squad: String,
     pub members: Vec<Member>,
     pub conn: Conn,
-    tickets: Vec<(TicketId, TicketStatus, Option<String>)>,
+    pub tickets: Vec<Ticket>,
+    /// The squad's projects, in the order they joined.
+    pub projects: Vec<PathBuf>,
+    /// The squad's mode, for completion's sake.
+    pub mode: Mode,
     /// Open permission requests: (id, session, ticket).
     approvals: Vec<(u64, SessionId, Option<TicketId>)>,
+    /// Each member's conversation.
+    pub convos: HashMap<SessionId, Convo>,
+    /// Whose conversation is on screen.
+    pub selected: Option<SessionId>,
+    /// The project in focus, by name; `None`: the whole squad.
+    pub focus: Option<String>,
+    /// Bumped whenever the selected conversation shows something new, so a
+    /// screen can tell it must draw again.
+    pub revision: u64,
 }
 
 impl Model {
     pub fn new(squad: &str) -> Self {
-        Self { squad: squad.to_owned(), members: Vec::new(), conn: Conn::Connecting, tickets: Vec::new(), approvals: Vec::new() }
+        Self {
+            squad: squad.to_owned(),
+            members: Vec::new(),
+            conn: Conn::Connecting,
+            tickets: Vec::new(),
+            projects: Vec::new(),
+            mode: Mode::default(),
+            approvals: Vec::new(),
+            convos: HashMap::new(),
+            selected: None,
+            focus: None,
+            revision: 0,
+        }
+    }
+
+    /// The member on screen.
+    pub fn selected_member(&self) -> Option<&Member> {
+        self.selected.and_then(|id| self.members.iter().find(|m| m.session == id))
+    }
+
+    pub fn convo(&self) -> Option<&Convo> {
+        self.convos.get(&self.selected?)
+    }
+
+    pub fn convo_mut(&mut self) -> Option<&mut Convo> {
+        self.convos.get_mut(&self.selected?)
+    }
+
+    pub fn is_pm(member: &Member) -> bool {
+        member.role == "pm"
+    }
+
+    /// A member by the name the person types after `@`, if it is still on the squad.
+    pub fn open_member(&self, name: &str) -> Option<&Member> {
+        self.members.iter().find(|m| m.name == name && m.presence != Presence::Closed)
+    }
+
+    /// Show a member's conversation. True when that changed what is on screen.
+    pub fn select(&mut self, session: SessionId) -> bool {
+        if self.selected == Some(session) || !self.members.iter().any(|m| m.session == session) {
+            return false;
+        }
+        self.selected = Some(session);
+        self.revision += 1;
+        true
+    }
+
+    /// The names of the squad's projects, as chips show them.
+    pub fn project_names(&self) -> Vec<String> {
+        self.projects.iter().map(|p| equipe_core::board::project_name(p)).collect()
+    }
+
+    /// Put a project (by name; `None`: the whole squad) in focus. Every
+    /// conversation follows: the PM's thread for it, each member's part of its
+    /// work there. True when it changed.
+    pub fn set_focus(&mut self, project: Option<String>) -> bool {
+        if self.focus == project {
+            return false;
+        }
+        for convo in self.convos.values_mut() {
+            convo.thread_view = project.clone();
+        }
+        self.focus = project;
+        self.revision += 1;
+        true
+    }
+
+    fn keep_selection(&mut self) {
+        let valid = self.selected.is_some_and(|id| self.members.iter().any(|m| m.session == id));
+        if !valid {
+            self.selected = self.members.iter().find(|m| Self::is_pm(m)).or(self.members.first()).map(|m| m.session);
+        }
     }
 
     /// Apply one update from the link. True when something on screen changed.
@@ -157,9 +245,9 @@ impl Model {
                 changed
             }
             Update::Event(event) => {
-                let before = (self.members.clone(), self.ticket_hint());
-                self.on_event(event);
-                let mut changed = before != (self.members.clone(), self.ticket_hint());
+                let before = (self.members.clone(), self.ticket_hint(), self.subagents_hint(), self.revision);
+                self.on_event(event, now);
+                let mut changed = before != (self.members.clone(), self.ticket_hint(), self.subagents_hint(), self.revision);
                 // The footer's "last event" moves when the minute does.
                 if let Conn::Connected { last_event } = &mut self.conn {
                     let stamp = Some(now);
@@ -176,7 +264,9 @@ impl Model {
     fn load(&mut self, hello: Hello) {
         let snapshot = hello.snapshot;
         self.squad = snapshot.squad;
-        self.tickets = snapshot.tickets.iter().map(|t| (t.id, t.status, t.owner.clone())).collect();
+        self.tickets = snapshot.tickets.clone();
+        self.projects = snapshot.projects.clone();
+        self.mode = snapshot.mode;
         self.approvals = snapshot.approvals.iter().map(|a| (a.id, a.session, a.ticket)).collect();
         self.members = snapshot
             .sessions
@@ -196,17 +286,53 @@ impl Model {
                     memos: s.queued.len(),
                     context: s.context.and_then(percent),
                     model: s.model.clone(),
+                    engine: Some(s.engine),
                 }
             })
             .collect();
+        let now = Instant::now();
+        let focus = self.focus.clone();
+        self.convos = snapshot
+            .sessions
+            .iter()
+            .map(|s| {
+                let mut convo = Convo::from_info(s, now);
+                convo.thread_view = focus.clone();
+                (s.session, convo)
+            })
+            .collect();
+        self.keep_selection();
+        self.revision += 1;
     }
 
-    fn on_event(&mut self, event: Event) {
+    fn on_event(&mut self, event: Event, now: Clock) {
+        // The conversation first: what the selected one shows decides redraws.
+        if let Some(id) = event.session() {
+            if let Event::SessionStarted { squad, member, project, .. } = &event {
+                let ours = squad.as_ref().is_none_or(|s| *s == self.squad);
+                if ours && !self.convos.contains_key(&id) {
+                    let mut convo = Convo::new(project.clone(), member.as_ref().is_some_and(|m| m.role == "pm"));
+                    convo.thread_view = self.focus.clone();
+                    self.convos.insert(id, convo);
+                }
+            }
+            if let Some(convo) = self.convos.get_mut(&id)
+                && convo.on_event(&event, Instant::now(), now)
+                && self.selected == Some(id)
+            {
+                self.revision += 1;
+            }
+        }
+        self.on_member_event(event);
+        self.keep_selection();
+    }
+
+    fn on_member_event(&mut self, event: Event) {
         match event {
             Event::TicketChanged { ticket, .. } => self.on_ticket(&ticket),
             Event::ApprovalRequested { approval, .. } => self.approvals.push((approval.id, approval.session, approval.ticket)),
             Event::ApprovalResolved { approval, .. } => self.approvals.retain(|(id, ..)| *id != approval),
-            Event::SessionStarted { session, member, model, squad, .. } => {
+            Event::SessionStarted { session, member, model, squad, engine, .. } => {
                 if squad.is_some_and(|s| s != self.squad) || self.members.iter().any(|m| m.session == session) {
                     return;
                 }
@@ -221,6 +347,7 @@ impl Model {
                     memos: 0,
                     context: None,
                     model,
+                    engine: Some(engine),
                 });
             }
             other => {
@@ -266,11 +393,15 @@ impl Model {
     }
 
     fn on_ticket(&mut self, ticket: &Ticket) {
-        let entry = (ticket.id, ticket.status, ticket.owner.clone());
-        match self.tickets.iter_mut().find(|(id, ..)| *id == ticket.id) {
-            Some(slot) => *slot = entry,
-            None => self.tickets.push(entry),
+        match self.tickets.iter_mut().find(|t| t.id == ticket.id) {
+            Some(slot) => *slot = ticket.clone(),
+            None => self.tickets.push(ticket.clone()),
         }
+    }
+
+    /// The subagents under each member, which the sidebar lists.
+    fn subagents_hint(&self) -> Vec<(SessionId, Vec<crate::convo::Sub>)> {
+        self.members.iter().filter_map(|m| self.convos.get(&m.session).filter(|c| !c.subagents.is_empty()).map(|c| (m.session, c.subagents.clone()))).collect()
     }
 
     /// What the sidebar derives from tickets and approvals, for change detection.
@@ -280,15 +411,15 @@ impl Model {
 
     /// Tickets waiting for the person: handed in for review, or put down for them.
     pub fn for_you(&self) -> usize {
-        self.tickets.iter().filter(|(_, s, _)| matches!(s, TicketStatus::Review | TicketStatus::Waiting)).count()
+        self.tickets.iter().filter(|t| matches!(t.status, TicketStatus::Review | TicketStatus::Waiting)).count()
     }
 
     pub fn status(&self, member: &Member) -> Status {
         let waiting = self
             .tickets
             .iter()
-            .find(|(_, s, owner)| *s == TicketStatus::Waiting && owner.as_deref() == Some(member.name.as_str()))
-            .map(|(id, ..)| *id);
+            .find(|t| t.status == TicketStatus::Waiting && t.owner.as_deref() == Some(member.name.as_str()))
+            .map(|t| t.id);
         let asking = self.approvals.iter().find(|(_, session, _)| *session == member.session);
         if member.presence != Presence::Closed && (asking.is_some() || waiting.is_some()) {
             return Status::NeedsYou(asking.and_then(|(.., t)| *t).or(member.ticket).or(waiting));
@@ -464,6 +595,62 @@ mod tests {
         assert!(model.apply(Update::Event(Event::Output { session: 1, tokens: 5 }), T0));
         assert!(!model.apply(Update::Event(Event::Output { session: 1, tokens: 9 }), Clock { second: 50, ..T0 }));
         assert!(model.apply(Update::Event(Event::Output { session: 1, tokens: 9 }), T1));
+    }
+
+    #[test]
+    fn the_pm_is_on_screen_first_and_selecting_a_member_changes_what_shows() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(2, "frontend", "frontend", SessionState::Ready), session(1, "pm", "pm", SessionState::Ready)]), T0);
+        assert_eq!(model.selected, Some(1));
+        let before = model.revision;
+        assert!(model.select(2));
+        assert!(model.revision > before, "a draw is due");
+        assert!(!model.select(2), "already there");
+        assert!(!model.select(99), "nobody by that session");
+        assert_eq!(model.selected_member().map(|m| m.name.as_str()), Some("frontend"));
+    }
+
+    #[test]
+    fn only_what_the_selected_conversation_shows_asks_for_a_draw() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "frontend", "frontend", SessionState::Ready)]), T0);
+        // Another member's reply is not on screen: no draw for the text itself.
+        let busy = Event::TextDelta { session: 2, text: "x".into() };
+        let first = model.apply(Update::Event(busy.clone()), T0);
+        assert!(first, "its row says it is writing now");
+        assert!(!model.apply(Update::Event(busy), Clock { second: 50, ..T0 }), "more of the same changes nothing the person sees");
+        // The selected one's every piece does.
+        let delta = |t: &str| Update::Event(Event::TextDelta { session: 1, text: t.into() });
+        assert!(model.apply(delta("a"), T0));
+        assert!(model.apply(delta("b"), T0));
+        assert_eq!(model.convo().unwrap().blocks().len(), 1);
+        // The token counter is not a change.
+        assert!(!model.apply(Update::Event(Event::Output { session: 1, tokens: 5 }), Clock { second: 50, ..T0 }));
+    }
+
+    #[test]
+    fn a_project_in_focus_gives_every_conversation_its_thread() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        assert!(model.set_focus(Some("site".into())));
+        assert!(!model.set_focus(Some("site".into())));
+        assert_eq!(model.convo().unwrap().thread_view.as_deref(), Some("site"));
+        // A member who joins afterwards follows the focus too, and so does a reattach.
+        model.apply(Update::Event(Event::SessionStarted { session: 5, project: "/p".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Who { role: "qa".into(), name: "qa".into() }), squad: Some("acme".into()) }), T0);
+        assert_eq!(model.convos[&5].thread_view.as_deref(), Some("site"));
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T1);
+        assert_eq!(model.convo().unwrap().thread_view.as_deref(), Some("site"));
+        assert!(model.set_focus(None));
+        assert_eq!(model.convo().unwrap().thread_view, None);
+    }
+
+    #[test]
+    fn a_closed_selection_falls_back_to_the_pm() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "qa", "qa", SessionState::Ready)]), T0);
+        model.select(2);
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T1);
+        assert_eq!(model.selected, Some(1));
     }
 
     #[test]
