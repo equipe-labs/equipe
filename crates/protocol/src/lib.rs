@@ -73,6 +73,28 @@ pub struct Member {
     pub name: String,
 }
 
+/// When a member expects what it is doing to be done, and — when it is
+/// shipping something — to be live, as it said (unix seconds).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Estimate {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_at: Option<u64>,
+    /// What is being done, in a few words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub what: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_at: Option<u64>,
+    /// What goes live: "v0.28.1 on Homebrew", "equipe.im".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_what: Option<String>,
+}
+
+impl Estimate {
+    pub fn is_empty(&self) -> bool {
+        self.done_at.is_none() && self.live_at.is_none()
+    }
+}
+
 /// A member's conversation about one project (`None`: the whole squad's),
 /// with turns of its own beside the member's other conversations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -597,6 +619,9 @@ pub enum Event {
     SteerQueued { session: SessionId, text: String },
     /// The member read a steering message, at this point of its turn.
     Steered { session: SessionId, text: String },
+    /// When the member expects its work done, and what it ships live — as it
+    /// said, or nothing any more (`None`).
+    Estimated { session: SessionId, estimate: Option<Estimate> },
     TurnEnded {
         session: SessionId,
         outcome: TurnOutcome,
@@ -648,6 +673,7 @@ impl Event {
             | Event::SteerQueued { session, .. }
             | Event::LaneOpened { session, .. }
             | Event::Steered { session, .. }
+            | Event::Estimated { session, .. }
             | Event::SubagentStarted { session, .. }
             | Event::BrowserFrame { session, .. }
             | Event::SubagentStep { session, .. }
@@ -736,6 +762,9 @@ pub struct SessionInfo {
     /// about one project, running beside the others.
     #[serde(default)]
     pub lane: Option<Lane>,
+    /// When it expects its work done, and what it ships live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimate: Option<Estimate>,
     /// The ticket it is working on, and where.
     #[serde(default)]
     pub work: Option<WorkInfo>,
@@ -946,6 +975,7 @@ mod tests {
                 queued_in: vec![None],
                 steering: Vec::new(),
                 lane: None,
+                estimate: None,
                 work: Some(WorkInfo { ticket: 1, project: "/repo".into(), workspace: None }),
                 mode: Some(Mode::Ask),
             }],

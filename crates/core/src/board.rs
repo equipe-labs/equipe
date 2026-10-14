@@ -150,6 +150,8 @@ pub const SHOW_BROWSER: &str = "show_my_browser";
 pub const REMEMBER: &str = "remember";
 /// A member takes a wrong or stale fact out of the squad's memory.
 pub const FORGET: &str = "forget";
+/// A member says when what it is doing will be done — and what it ships, live.
+pub const ESTIMATE: &str = "estimate";
 
 /// The `kind` argument of `create_ticket` and `update_ticket`.
 static KIND_SCHEMA: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
@@ -287,6 +289,22 @@ or card number, a password: remember where the original file is instead.",
                 "confirmed": { "type": "boolean", "description": "Only when the person agreed to change a fact they wrote last." },
             },
             "required": ["name", "description", "kind"],
+        },
+    }));
+    tools.push(json!({
+        "name": ESTIMATE,
+        "description": "Tell the person when what you're doing will be done, so they can see it at a glance — call it \
+as you start anything that takes more than a couple of minutes, and again whenever your guess changes by much. When \
+you push a release, deploy or start anything else that ships, also say when it will be live (CI, a build, a store \
+review, DNS…) and what goes live. Honest minutes, not hopeful ones.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "done_in_minutes": { "type": "integer", "description": "Minutes from now until this work is done." },
+                "what": { "type": "string", "description": "What is being done, in a few words." },
+                "live_in_minutes": { "type": "integer", "description": "Minutes from now until what you are shipping is live; 0 once it is." },
+                "live_what": { "type": "string", "description": "What goes live: \"v0.28.1 on Homebrew\", \"equipe.im\"." },
+            },
         },
     }));
     tools.push(json!({

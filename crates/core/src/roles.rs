@@ -253,6 +253,16 @@ until they have; don't keep a ticket open just to wait.",
         (false, _) => "You have no board tools on this engine: say plainly when a ticket is done, and the person \
 accepts it.",
     };
+    // The person sees when work will be done, and when what ships is live.
+    let tools = if ctx.board_tools {
+        format!(
+            "{tools} As you start anything that takes more than a couple of minutes — a ticket, research, subagents' \
+work — call `estimate` with honest minutes until it is done, and again when that changes by much; when you push a \
+release, deploy or start anything else that ships, say too when it will be live (CI, build, review) and what."
+        )
+    } else {
+        tools.to_owned()
+    };
     let browser = if ctx.browser {
         "\n\nYou have a real browser (the `browser` tools), signed in as the person wherever they — or a teammate — \
 signed in. Do the whole job in it yourself: sign up, create the project, connect the domain, copy the key into the \

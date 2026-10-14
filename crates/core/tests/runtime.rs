@@ -2297,6 +2297,36 @@ async fn in_the_whole_squads_conversation_the_pm_is_told_where_every_project_sta
 }
 
 #[tokio::test]
+async fn a_member_says_when_its_work_is_done_and_when_what_it_ships_is_live() {
+    let repo = repo();
+    let (claude, _) = recording_claude(&format!("sleep 1\n{}", answering("ok")));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&repo])));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    handle.send(Command::Submit { session: 1, text: "ship it".into() });
+    until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let said = tool(&handle, "pm", "estimate", serde_json::json!({
+        "done_in_minutes": 10, "what": "the release", "live_in_minutes": 20, "live_what": "v1 on Homebrew",
+    }))
+    .await;
+    assert!(!said.is_error, "{said:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::Estimated { .. })).await;
+    let Some(Event::Estimated { session: 1, estimate: Some(e) }) = seen.last() else { panic!("{seen:#?}") };
+    assert!(e.done_at.unwrap().abs_diff(now + 600) < 5 && e.live_at.unwrap().abs_diff(now + 1200) < 5, "{e:?}");
+    assert_eq!((e.what.as_deref(), e.live_what.as_deref()), (Some("the release"), Some("v1 on Homebrew")));
+    // Screens attaching later see it.
+    let snapshot = handle.snapshot("acme").await;
+    assert!(snapshot.sessions[0].estimate.as_ref().is_some_and(|s| s.done_at.is_some()));
+    // The turn over, the work is done; what ships is still on its way.
+    let seen = until(&mut events, |e| matches!(e, Event::Estimated { .. })).await;
+    let Some(Event::Estimated { estimate: Some(e), .. }) = seen.last() else { panic!("{seen:#?}") };
+    assert!(e.done_at.is_none() && e.live_at.is_some(), "{e:?}");
+    // Nothing to say: the member is told how.
+    let none = tool(&handle, "pm", "estimate", serde_json::json!({})).await;
+    assert!(none.is_error);
+}
+
+#[tokio::test]
 async fn a_members_model_changes_between_turns_and_its_conversation_carries_on() {
     let cwd = scratch("model");
     let (claude, recorded) = recording_claude(&answering("ok"));

@@ -960,6 +960,7 @@ mod tests {
             queued_in: vec![],
             steering: vec![],
             lane: None,
+            estimate: None,
             work: None,
             mode: None,
         }

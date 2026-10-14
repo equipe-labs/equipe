@@ -93,6 +93,8 @@ pub struct ProjectLine {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Busy {
     pub member: String,
+    /// When it expects this done, and what it ships live.
+    pub estimate: Option<equipe_core::protocol::Estimate>,
     pub ticket: Option<TicketId>,
     /// For a conversation: what the person said last in it.
     pub about: Option<String>,
@@ -163,6 +165,8 @@ pub struct Agent {
     /// running beside its others. Lanes aren't listed; they show when their
     /// member is talked to about their project.
     pub lane: Option<equipe_core::protocol::Lane>,
+    /// When it expects its work done, and what it ships live, as it said.
+    pub estimate: Option<equipe_core::protocol::Estimate>,
     /// A message to send once the session has started.
     pending: Option<String>,
 }
@@ -198,6 +202,7 @@ impl Agent {
             suggestion: None,
             steering: Vec::new(),
             lane: None,
+            estimate: None,
         }
     }
 
@@ -299,6 +304,7 @@ impl Agent {
             suggestion: None,
             steering: info.steering,
             lane: info.lane,
+            estimate: info.estimate,
         }
     }
 
@@ -668,6 +674,17 @@ impl App {
         Some(self.lane_of(selected).unwrap_or(selected))
     }
 
+    /// When a member expects its work done, and what it ships live: its own
+    /// conversation's word, else one beside it at work.
+    pub fn estimate_of<'a>(&'a self, member: &'a Agent) -> Option<&'a equipe_core::protocol::Estimate> {
+        member.estimate.as_ref().or_else(|| {
+            self.lanes
+                .iter()
+                .filter(|l| l.lane.as_ref().is_some_and(|lane| lane.of == member.id))
+                .find_map(|l| l.estimate.as_ref())
+        })
+    }
+
     /// How many of a member's lanes are at work now.
     pub fn lanes_working(&self, member: &Agent) -> usize {
         self.lanes.iter().filter(|l| l.lane.as_ref().is_some_and(|lane| lane.of == member.id) && l.state == AgentState::Working).count()
@@ -785,9 +802,9 @@ impl App {
                 for agent in &self.agents {
                     let working = agent.state == AgentState::Working;
                     if let Some(id) = agent.ticket.filter(|_| self.agent_project(agent).as_deref() == Some(project.as_path())) {
-                        busy.push(Busy { member: agent.label(), ticket: Some(id), about: None, working });
+                        busy.push(Busy { member: agent.label(), estimate: agent.estimate.clone(), ticket: Some(id), about: None, working });
                     } else if working && agent.ticket.is_none() && agent.current_thread() == Some(name.as_str()) {
-                        busy.push(Busy { member: agent.label(), ticket: None, about: agent.last_said(), working });
+                        busy.push(Busy { member: agent.label(), estimate: agent.estimate.clone(), ticket: None, about: agent.last_said(), working });
                     }
                 }
                 // Conversations about it beside their members' other work.
@@ -799,7 +816,7 @@ impl App {
                         continue;
                     }
                     let member = self.agents.iter().find(|a| a.id == of.of).map_or_else(|| lane.label(), Agent::label);
-                    busy.push(Busy { member, ticket: None, about: lane.last_said(), working: true });
+                    busy.push(Busy { member, estimate: lane.estimate.clone(), ticket: None, about: lane.last_said(), working: true });
                 }
                 ProjectLine {
                     at,
@@ -1314,6 +1331,7 @@ impl App {
                 agent.deliver_memos();
             }
             Event::SteerQueued { text, .. } => agent.steering.push(text),
+            Event::Estimated { estimate, .. } => agent.estimate = estimate,
             Event::Steered { text, .. } => {
                 if let Some(at) = agent.steering.iter().position(|t| *t == text) {
                     agent.steering.remove(at);
@@ -2948,6 +2966,7 @@ mod tests {
             queued_project: None,
             queued_in: Vec::new(),
             steering: Vec::new(),
+            estimate: None,
             lane: None,
             work: None,
             mode: None,

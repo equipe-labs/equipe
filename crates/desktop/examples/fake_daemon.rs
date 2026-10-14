@@ -42,6 +42,7 @@ fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
         queued_in: vec![],
         steering: vec![],
         lane: None,
+        estimate: None,
         recent,
         queued: vec![],
         work: None,

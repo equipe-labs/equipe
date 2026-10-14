@@ -20,7 +20,7 @@ use std::time::Duration;
 use equipe_protocol::rpc::{ToolCall, ToolResult};
 use equipe_protocol::{
     Access, Approval, Command, Decision, Engine, Entry, Event, Member, MemberRef, Mode, SessionId, SessionInfo,
-    SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
+    Estimate, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
 };
 use equipe_providers::claude_code::{self, Activity};
 use equipe_providers::credentials::equipe_home;
@@ -366,6 +366,8 @@ struct Session {
     /// is about (`None`: the whole squad's). A lane runs that conversation's
     /// turns beside the member's others; it is never a member of its own.
     lane: Option<(SessionId, Option<String>)>,
+    /// When it expects its work done, and what it ships live, as it said.
+    estimate: Option<Estimate>,
     /// Its own mode; `None` follows the squad's.
     mode: Option<Mode>,
     /// The turn running answers the person (not the board, not the team), so
@@ -560,6 +562,7 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
             _ = frames.tick() => rt.take_frames(),
             _ = minute.tick() => {
                 rt.fold_idle_lanes();
+                rt.expire_estimates();
                 rt.close_idle_browsers();
                 rt.let_helpers_go().await;
                 rt.tidy_check();
@@ -1056,6 +1059,7 @@ impl Runtime {
                 thread: None,
                 threads: HashMap::new(),
                 lane: None,
+                estimate: None,
             },
         );
         self.publish(Event::SessionStarted { session: id, project, engine, model, workspace, member, squad: squad.clone() });
@@ -1236,10 +1240,22 @@ goes next across projects. Work for one project goes to it — tickets for its o
                 let Some(who) = s.name() else {
                     continue;
                 };
+                // What it said it expects: done in, live in.
+                let expects = s.estimate.as_ref().map_or_else(String::new, |e| {
+                    let left = |at: u64| at.saturating_sub(now_secs()).div_ceil(60);
+                    let mut out = String::new();
+                    if let Some(at) = e.done_at {
+                        out.push_str(&format!(", done in ~{}m by its word", left(at)));
+                    }
+                    if let Some(at) = e.live_at {
+                        out.push_str(&format!(", {} live in ~{}m", e.live_what.as_deref().unwrap_or("what it ships"), left(at)));
+                    }
+                    out
+                });
                 if let Some(work) = s.work.as_ref().filter(|w| &w.project == project) {
                     let title = here.iter().find(|t| t.id == work.ticket).map(|t| t.title.as_str()).unwrap_or_default();
                     let working = if s.is_working() { ", at work" } else { "" };
-                    at.push(format!("{who} on T-{} ({title}){working}", work.ticket));
+                    at.push(format!("{who} on T-{} ({title}){working}{expects}", work.ticket));
                     continue;
                 }
                 let about = match &s.lane {
@@ -1249,7 +1265,7 @@ goes next across projects. Work for one project goes to it — tickets for its o
                 };
                 if s.is_working() && about == Some(name.as_str()) {
                     let asked = s.prompts.last().map(|p| short(p)).unwrap_or_default();
-                    at.push(format!("{who} talking with the person about it (“{asked}”)"));
+                    at.push(format!("{who} talking with the person about it (“{asked}”){expects}"));
                 }
             }
             let mut line = format!("- {name}: {}", if at.is_empty() { "no one on it now".to_owned() } else { at.join("; ") });
@@ -1352,6 +1368,7 @@ goes next across projects. Work for one project goes to it — tickets for its o
             mode: m.mode,
             thread: project.clone(),
             threads: HashMap::new(),
+            estimate: None,
             lane: Some((main, project.clone())),
         };
         let started = Event::SessionStarted {
@@ -1949,12 +1966,49 @@ goes next across projects. Work for one project goes to it — tickets for its o
         } else if session.work.as_ref().is_some_and(|w| w.waiting.is_some()) {
             self.end_work(id, WorkEnd::Waiting);
         }
+        // Off a ticket, the turn's end is the work's: what was expected is done.
+        if self.sessions.get(&id).is_some_and(|s| s.work.is_none()) {
+            self.estimate_done(id);
+        }
         if let Some(text) = self.sessions.get_mut(&id).and_then(Session::next_memos) {
             self.save_waiting(id);
             Box::pin(self.submit(id, text)).await;
         }
         if let Some(squad) = squad {
             Box::pin(self.dispatch(&squad)).await;
+        }
+    }
+
+    /// The work a member expected done is: only what it ships, if anything, is
+    /// still to come.
+    fn estimate_done(&mut self, id: SessionId) {
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        let Some(estimate) = session.estimate.as_mut().filter(|e| e.done_at.is_some()) else {
+            return;
+        };
+        (estimate.done_at, estimate.what) = (None, None);
+        let estimate = session.estimate.take().filter(|e| !e.is_empty());
+        session.estimate = estimate.clone();
+        self.publish(Event::Estimated { session: id, estimate });
+    }
+
+    /// What was to be live long ago is no longer waited for.
+    fn expire_estimates(&mut self) {
+        let stale: Vec<SessionId> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.estimate.as_ref().and_then(|e| e.live_at).is_some_and(|at| at + LIVE_STALE.as_secs() < now_secs()))
+            .map(|(&id, _)| id)
+            .collect();
+        for id in stale {
+            let Some(session) = self.sessions.get_mut(&id) else {
+                continue;
+            };
+            let estimate = session.estimate.take().map(|e| Estimate { live_at: None, live_what: None, ..e }).filter(|e| !e.is_empty());
+            session.estimate = estimate.clone();
+            self.publish(Event::Estimated { session: id, estimate });
         }
     }
 
@@ -3223,6 +3277,38 @@ it back there once they have done it. End your turn now with a short line on wha
                     work.ticket
                 ))
             }
+            board::ESTIMATE => {
+                let minutes = |key: &str| args.get(key).and_then(Value::as_f64).map(|m| m.max(0.0));
+                let (done, live) = (minutes("done_in_minutes"), minutes("live_in_minutes"));
+                if done.is_none() && live.is_none() {
+                    return Err("Say in how many minutes it is done (done_in_minutes), or live (live_in_minutes).".into());
+                }
+                let at = |m: f64| now_secs() + (m * 60.0).round() as u64;
+                // Said in a conversation beside the member's own: that one's.
+                let id = if self.sessions.get(&id).is_some_and(Session::is_working) {
+                    id
+                } else {
+                    self.sessions
+                        .iter()
+                        .find(|(_, s)| s.lane.as_ref().is_some_and(|(of, _)| *of == id) && s.is_working())
+                        .map_or(id, |(&lane, _)| lane)
+                };
+                let session = self.sessions.get_mut(&id).ok_or("You're not on the squad.")?;
+                let mut estimate = session.estimate.clone().unwrap_or_default();
+                if let Some(m) = done {
+                    estimate.done_at = Some(at(m));
+                    estimate.what = board::arg_str(&args, "what").map(|w| clip(w.trim(), 60));
+                }
+                if let Some(m) = live {
+                    // Live now: nothing left to wait for.
+                    estimate.live_at = (m > 0.0).then(|| at(m));
+                    estimate.live_what = board::arg_str(&args, "live_what").map(|w| clip(w.trim(), 60)).filter(|_| m > 0.0);
+                }
+                let estimate = Some(estimate).filter(|e| !e.is_empty());
+                session.estimate = estimate.clone();
+                self.publish(Event::Estimated { session: id, estimate });
+                Ok("Shown to the person.".into())
+            }
             board::REMEMBER | board::FORGET => {
                 let folder = squad_home::path(&self.config.home, &squad);
                 let language = self.journals.get(&squad).and_then(Journal::language);
@@ -3284,6 +3370,7 @@ it back there once they have done it. End your turn now with a short line on wha
                     queued_in: s.memo_threads.clone(),
                     steering: s.steering.clone(),
                     lane: s.lane.clone().map(|(of, project)| equipe_protocol::Lane { of, project }),
+                    estimate: s.estimate.clone().filter(|e| !e.is_empty()),
                     work: s.work.as_ref().map(|w| WorkInfo {
                         ticket: w.ticket,
                         project: w.project.clone(),
@@ -3445,6 +3532,7 @@ it back there once they have done it. End your turn now with a short line on wha
                         memory,
                         mode: record.mode,
                         thread,
+                        estimate: None,
                         threads,
                         lane: None,
                         answers_person: false,
@@ -4141,6 +4229,9 @@ with each: close it, merge it into another, or keep it (and why). Don't cancel t
 
 /// How long a browser stays on screen unused before it goes out of sight.
 const SHOWN_IDLE: Duration = Duration::from_secs(10 * 60);
+
+/// How long past its expected time something to go live is still waited for.
+const LIVE_STALE: Duration = Duration::from_secs(30 * 60);
 
 /// How long a lane waits for its next message before it goes back into its member.
 const LANE_IDLE: Duration = Duration::from_secs(30 * 60);

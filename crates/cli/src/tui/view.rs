@@ -18,7 +18,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use equipe_core::board::{self, project_name};
-use equipe_core::protocol::{Entry, SessionId, TicketId, TicketStatus};
+use equipe_core::protocol::{Entry, Estimate, SessionId, TicketId, TicketStatus};
 
 use super::app::{Agent, AgentState, App, BoardRule, Divider, Hit, Pane, Spot, TextView, elapsed, relative, tool_verb};
 use super::markdown;
@@ -366,7 +366,9 @@ fn watch_height(app: &App, agent: &Agent, room: u16) -> u16 {
 /// The conversation pane under its title: the conversation, then — when there
 /// is any — work waiting for the person, then the live row.
 fn conversation_areas(area: Rect, app: &App, agent: &Agent) -> Areas {
-    let live = (agent.scroll_back > 0 && agent.unseen > 0) || agent.state == AgentState::Working;
+    let live = (agent.scroll_back > 0 && agent.unseen > 0)
+        || agent.state == AgentState::Working
+        || agent.estimate.as_ref().is_some_and(|e| e.live_at.is_some());
     let watch = watch_height(app, agent, area.height);
     let overview = overview_height(app, area.height.saturating_sub(watch));
     let card = waiting_card_height(app, area.height.saturating_sub(watch + overview));
@@ -449,6 +451,10 @@ fn overview(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Option
                 (Some(id), _) => format!(" T-{id}"),
                 (None, Some(about)) => format!(" “{}”", ui::fit(about, 24)),
                 (None, None) => String::new(),
+            };
+            let what = match busy.estimate.as_ref().and_then(|e| estimate_short(e, now_unix())) {
+                Some(left) => format!("{what} {left}"),
+                None => what,
             };
             let mark = if busy.working { "● " } else { "○ " };
             let need = width_of(sep) + width_of(mark) + width_of(&busy.member) + width_of(&what);
@@ -781,6 +787,63 @@ fn local_time(unix: i64) -> String {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     let fmt = if unix - now < 20 * 60 * 60 { "+%H:%M" } else { "+%m/%d %H:%M" };
     format(fmt).unwrap_or_default()
+}
+
+/// A time as the clock on the wall reads it: `20:52`. The offset from UTC is
+/// asked of the system once, not every frame.
+fn clock(unix: u64) -> String {
+    static OFFSET: std::sync::LazyLock<i64> = std::sync::LazyLock::new(|| {
+        let out = std::process::Command::new("date").arg("+%z").output().ok();
+        let text = out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
+        let (sign, digits) = match text.strip_prefix('-') {
+            Some(rest) => (-1, rest.to_owned()),
+            None => (1, text.trim_start_matches('+').to_owned()),
+        };
+        let hours: i64 = digits.get(..2).and_then(|h| h.parse().ok()).unwrap_or(0);
+        let minutes: i64 = digits.get(2..4).and_then(|m| m.parse().ok()).unwrap_or(0);
+        sign * (hours * 3600 + minutes * 60)
+    });
+    let minutes = (unix as i64 + *OFFSET).div_euclid(60).rem_euclid(24 * 60);
+    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// How long until `at`, short: `12m`, `1h 20m`, `<1m`.
+fn time_left(at: u64, now: u64) -> String {
+    let minutes = at.saturating_sub(now).div_ceil(60);
+    match minutes {
+        0 => "<1m".to_owned(),
+        m if m < 60 => format!("{m}m"),
+        m if m % 60 == 0 => format!("{}h", m / 60),
+        m => format!("{}h {}m", m / 60, m % 60),
+    }
+}
+
+/// When a member's work is expected done, as a phrase: `done ~20:52 (12m)`,
+/// or — past it — `expected ~20:52, still going`.
+fn done_phrase(at: u64, now: u64) -> String {
+    if at > now { format!("done ~{} ({})", clock(at), time_left(at, now)) } else { format!("expected ~{}, still going", clock(at)) }
+}
+
+/// When what it ships is expected live: `v0.28.1 on Homebrew live ~21:05 (25m)`.
+fn live_phrase(estimate: &Estimate, now: u64) -> Option<String> {
+    let at = estimate.live_at?;
+    let what = estimate.live_what.as_deref().map(|w| format!("{w} ")).unwrap_or_default();
+    Some(if at > now { format!("{what}live ~{} ({})", clock(at), time_left(at, now)) } else { format!("{what}live any minute") })
+}
+
+/// The shortest word on it, for a narrow row: time left until done, else
+/// until live (`↑25m`).
+fn estimate_short(estimate: &Estimate, now: u64) -> Option<String> {
+    match (estimate.done_at, estimate.live_at) {
+        (Some(at), _) if at > now => Some(format!("~{}", time_left(at, now))),
+        (Some(_), _) => Some("late".to_owned()),
+        (None, Some(at)) if at > now => Some(format!("↑{}", time_left(at, now))),
+        _ => None,
+    }
 }
 
 /// `/usage`: the plan's windows, then each member — how full its context is,
@@ -1128,6 +1191,12 @@ fn render_squad(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
             // Several of its conversations at work at once.
             let at_once = app.lanes_working(agent) + usize::from(agent.state == AgentState::Working);
             let text = if at_once > 1 { format!("{at_once} at once") } else { text };
+            // When it expects to be done — or what it ships, live.
+            let text = match app.estimate_of(agent).and_then(|e| estimate_short(e, now_unix())) {
+                Some(left) if text.is_empty() => left,
+                Some(left) => format!("{text} {left}"),
+                None => text,
+            };
             // A conversation past half its context, in sight.
             let text = match agent.context.filter(|(_, w)| *w > 0).map(|(u, w)| u * 100 / w) {
                 Some(p) if p >= 50 => format!("{text} · {p}%"),
@@ -1671,13 +1740,20 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
             row.push(Span::styled(format!("in {} · ", agent.current_thread().unwrap_or("the squad")), theme.dim()));
         }
         row.extend(theme.shimmer(doing(agent), now));
+        let expected = agent.estimate.as_ref().and_then(|e| e.done_at).map(|at| done_phrase(at, now_unix()));
+        let live = agent.estimate.as_ref().and_then(|e| live_phrase(e, now_unix()));
         row.extend([
             Span::styled(format!(" · {took}"), theme.dim()),
+            Span::styled(expected.map(|e| format!(" · {e}")).unwrap_or_default(), theme.accent()),
+            Span::styled(live.map(|l| format!(" · {l}")).unwrap_or_default(), theme.accent()),
             // What it has written so far, as Claude Code shows it.
             Span::styled(if agent.output > 0 { format!(" · ↓ {}", short_count(agent.output)) } else { String::new() }, theme.dim()),
             Span::styled(" · esc to stop", theme.dim()),
         ]);
         footer.push(Line::from(row));
+    } else if let Some(live) = agent.estimate.as_ref().and_then(|e| live_phrase(e, now_unix())) {
+        // Between turns, what it shipped is on its way.
+        footer.push(Line::from(vec![Span::styled("◷ ", theme.accent()), Span::styled(live, theme.accent())]));
     }
     let Areas { watch, overview: projects, text, card, live } = conversation_areas(area, app, agent);
     if watch.height > 0 {
@@ -2768,6 +2844,39 @@ mod tests {
         // In one project, it isn't there.
         app.focus = Some("/code/site".into());
         assert!(!screen(&app, 110, 30).contains("All projects"));
+    }
+
+    #[test]
+    fn work_under_way_says_when_it_is_expected_done_and_what_it_ships_when_live() {
+        let (mut app, pm) = working();
+        let now = now_unix();
+        app.on_event(Event::Estimated {
+            session: pm,
+            estimate: Some(Estimate {
+                done_at: Some(now + 12 * 60),
+                what: Some("release notes".into()),
+                live_at: Some(now + 25 * 60),
+                live_what: Some("v0.28.1 on Homebrew".into()),
+            }),
+        });
+        let shot = screen(&app, 160, 24);
+        let row = shot.lines().find(|l| l.contains("esc to stop")).unwrap_or_else(|| panic!("{shot}"));
+        assert!(row.contains(&format!("done ~{} (12m)", clock(now + 12 * 60))), "{row}");
+        assert!(row.contains("v0.28.1 on Homebrew live ~") && row.contains("(25m)"), "{row}");
+        let squad = shot.lines().find(|l| l.contains("› ")).unwrap();
+        assert!(squad.contains("~12m"), "{squad}");
+        // Its turn over, what it shipped is still on its way.
+        app.on_event(Event::TurnEnded { session: pm, outcome: equipe_core::protocol::TurnOutcome::Completed, usage: None });
+        app.on_event(Event::Estimated {
+            session: pm,
+            estimate: Some(Estimate { live_at: Some(now + 25 * 60), live_what: Some("v0.28.1 on Homebrew".into()), ..Default::default() }),
+        });
+        let shot = screen(&app, 160, 24);
+        assert!(shot.contains("◷ v0.28.1 on Homebrew live ~"), "{shot}");
+        assert!(shot.lines().find(|l| l.contains("› ")).unwrap().contains("↑25m"), "{shot}");
+        // Late: said so, not hidden.
+        assert_eq!(done_phrase(now - 60, now), format!("expected ~{}, still going", clock(now - 60)));
+        assert_eq!(time_left(now + 80 * 60, now), "1h 20m");
     }
 
     #[test]
