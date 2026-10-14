@@ -22,8 +22,8 @@ const sharedOrigin = (o: any) => { try { return !own(new URL(o.origin).hostname)
 // does: a soft glow along its edge and a label at the foot, in the member's own colour (the one
 // it has in the console), and an outline on what it clicks or types into. A
 // member doesn't steer a pointer — it picks an element and Playwright acts on it —
-// so what it acts on is what's shown. The glow stands still: one that pulsed
-// redrew the whole window every frame, a flicker over screen sharing. Drawn in
+// so what it acts on is what's shown. The glow breathes on its own layer, by
+// opacity alone, which the compositor does without redrawing the page. Drawn in
 // a closed shadow root that no click, page style or accessibility snapshot
 // reaches; built without HTML strings or inline <style>, which strict pages
 // (Trusted Types, CSP) refuse.
@@ -58,15 +58,15 @@ function driving({ member, color }: { member: string; color: string }) {
     sheet.replaceSync(`
       * { box-sizing: border-box; pointer-events: none; }
       :host { --fade: rgba(${color}, .34) 0, rgba(${color}, .16) 16px, rgba(${color}, .06) 40px, rgba(${color}, 0) 72px; }
-      .glow { position: fixed; inset: 0; box-shadow: inset 0 0 2px 1px rgba(${color}, .7), inset 0 0 10px 2px rgba(${color}, .32);
+      .glow { position: fixed; inset: 0; will-change: opacity; animation: breathe 3.2s ease-in-out infinite; box-shadow: inset 0 0 2px 1px rgba(${color}, .7), inset 0 0 10px 2px rgba(${color}, .32);
         background: linear-gradient(to bottom, var(--fade)) top / 100% 72px no-repeat, linear-gradient(to top, var(--fade)) bottom / 100% 72px no-repeat,
           linear-gradient(to right, var(--fade)) left / 72px 100% no-repeat, linear-gradient(to left, var(--fade)) right / 72px 100% no-repeat; }
       .label { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 7px; padding: 5px 12px 5px 10px; border-radius: 999px; background: rgba(24, 24, 27, .86); color: #fafafa; font: 500 12px/1.3 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; letter-spacing: .01em; box-shadow: 0 0 0 1px rgba(${color}, .7), 0 2px 12px rgba(0, 0, 0, .25); white-space: nowrap; }
       .dot { width: 8px; height: 8px; border-radius: 50%; background: rgb(${color}); box-shadow: 0 0 8px rgb(${color}); animation: breathe 1.6s ease-in-out infinite; }
       .target { position: fixed; border-radius: 6px; border: 2px solid rgb(${color}); background: rgba(${color}, .12); box-shadow: 0 0 0 4px rgba(${color}, .25); opacity: 0; transition: opacity .4s ease; }
       .target.on { opacity: 1; transition: opacity .08s ease; }
-      @keyframes breathe { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
-      @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+      @keyframes breathe { 0%, 100% { opacity: .6; } 50% { opacity: 1; } }
+      @media (prefers-reduced-motion: reduce) { .glow, .dot { animation: none; } }
     `);
     (root as any).adoptedStyleSheets = [sheet];
     const el = (cls: string) => {
@@ -166,7 +166,20 @@ export default async ({ page }: { page: any }) => {
   }
   // Start from the squad's sign-ins — the person's, and what teammates signed in
   // to — and take up new ones as they come: a sign-in the person makes in one
-  // member's window reaches the others at their next page.
+  // window reaches the others at their next page. Each browser writes back only
+  // what it changed, and takes up only what it hasn't changed itself: two
+  // browsers writing all they hold, stale copies included, overwrote each
+  // other's fresh sessions in turn — a site saw its sign-in flip and sent the
+  // page off to sign in again, over and over.
+  const key = (c: any) => `${c.name}\u0000${c.domain}\u0000${c.path}`;
+  const stamp = (c: any) => `${c.value}\u0000${c.expires}`;
+  // What this browser and the file last agreed on, cookie by cookie and origin by origin.
+  const agreed = new Map<string, string>();
+  const agreedOrigins = new Map<string, string>();
+  // What the file held when this browser last read it: a change there since is news.
+  const read = new Map<string, string>();
+  // What the profile already holds is its own, kept from its earlier runs.
+  for (const c of await context.cookies().catch(() => [])) agreed.set(key(c), stamp(c));
   let seen = 0;
   const take = async () => {
     try {
@@ -175,7 +188,18 @@ export default async ({ page }: { page: any }) => {
       seen = changed;
       const kept = JSON.parse(fs.readFileSync(STATE, 'utf8'));
       const now = Date.now() / 1000;
-      await context.addCookies((kept.cookies || []).filter((c: any) => shared(c) && (c.expires === -1 || c.expires > now)));
+      const mine = new Map<string, any>((await context.cookies()).map((c: any) => [key(c), c]));
+      const fresh = (kept.cookies || []).filter((c: any) => {
+        if (!shared(c) || (c.expires !== -1 && c.expires <= now)) return false;
+        const before = read.get(key(c));
+        read.set(key(c), stamp(c));
+        const have = mine.get(key(c));
+        // New to this browser; or changed in the file since it last looked, while
+        // its own copy is as it was — someone signed in again elsewhere.
+        return !have || (before !== undefined && before !== stamp(c) && stamp(have) !== stamp(c) && agreed.get(key(c)) === stamp(have));
+      });
+      if (fresh.length) await context.addCookies(fresh);
+      for (const c of fresh) agreed.set(key(c), stamp(c));
     } catch {}
   };
   await take();
@@ -183,16 +207,24 @@ export default async ({ page }: { page: any }) => {
   process.on('exit', () => leave(place));
   const save = async () => {
     const mine = await context.storageState();
+    const changed = mine.cookies.filter((c: any) => shared(c) && agreed.get(key(c)) !== stamp(c));
+    const changedOrigins = mine.origins.filter((o: any) => sharedOrigin(o) && agreedOrigins.get(o.origin) !== JSON.stringify(o.localStorage));
+    // Nothing of its own to hand back: the file stays as it is.
+    if (!changed.length && !changedOrigins.length) return;
     let kept = { cookies: [] as any[], origins: [] as any[] };
     try { kept = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch {}
-    const key = (c: any) => `${c.name}\u0000${c.domain}\u0000${c.path}`;
     const cookies = new Map(kept.cookies.filter(shared).map((c: any) => [key(c), c]));
-    for (const c of mine.cookies.filter(shared)) cookies.set(key(c), c);
+    for (const c of changed) cookies.set(key(c), c);
     const origins = new Map(kept.origins.filter(sharedOrigin).map((o: any) => [o.origin, o]));
-    for (const o of mine.origins.filter(sharedOrigin)) origins.set(o.origin, o);
+    for (const o of changedOrigins) origins.set(o.origin, o);
     const tmp = `${STATE}.${process.pid}`;
     fs.writeFileSync(tmp, JSON.stringify({ cookies: [...cookies.values()], origins: [...origins.values()] }), { mode: 0o600 });
     fs.renameSync(tmp, STATE);
+    for (const c of changed) {
+      agreed.set(key(c), stamp(c));
+      read.set(key(c), stamp(c));
+    }
+    for (const o of changedOrigins) agreedOrigins.set(o.origin, JSON.stringify(o.localStorage));
     // Its own write isn't news to take up again.
     try { seen = fs.statSync(STATE).mtimeMs; } catch {}
   };

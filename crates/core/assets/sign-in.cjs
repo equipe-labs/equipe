@@ -19,11 +19,29 @@ const { chromium } = require(require.resolve('playwright', { paths: roots }));
     args: ['--disable-blink-features=AutomationControlled', '--test-type'],
   });
   const context = await browser.newContext({ viewport: null, ...(fs.existsSync(state) ? { storageState: state } : {}) });
+  // Only what the person changed here goes back, merged into the file as it is
+  // now: writing all this window holds would put its stale copies over sessions
+  // members renewed meanwhile, and sign them out.
+  const key = (c) => `${c.name}\u0000${c.domain}\u0000${c.path}`;
+  const stamp = (c) => `${c.value}\u0000${c.expires}`;
+  const agreed = new Map((await context.cookies()).map((c) => [key(c), stamp(c)]));
+  const agreedOrigins = new Map();
   const save = async () => {
-    const kept = await context.storageState();
+    const mine = await context.storageState();
+    const changed = mine.cookies.filter((c) => agreed.get(key(c)) !== stamp(c));
+    const changedOrigins = mine.origins.filter((o) => agreedOrigins.get(o.origin) !== JSON.stringify(o.localStorage));
+    if (!changed.length && !changedOrigins.length) return;
+    let kept = { cookies: [], origins: [] };
+    try { kept = JSON.parse(fs.readFileSync(state, 'utf8')); } catch {}
+    const cookies = new Map(kept.cookies.map((c) => [key(c), c]));
+    for (const c of changed) cookies.set(key(c), c);
+    const origins = new Map(kept.origins.map((o) => [o.origin, o]));
+    for (const o of changedOrigins) origins.set(o.origin, o);
     const tmp = `${state}.${process.pid}`;
-    fs.writeFileSync(tmp, JSON.stringify(kept), { mode: 0o600 });
+    fs.writeFileSync(tmp, JSON.stringify({ cookies: [...cookies.values()], origins: [...origins.values()] }), { mode: 0o600 });
     fs.renameSync(tmp, state);
+    for (const c of changed) agreed.set(key(c), stamp(c));
+    for (const o of changedOrigins) agreedOrigins.set(o.origin, JSON.stringify(o.localStorage));
   };
   const every = setInterval(() => save().catch(() => {}), 3000);
   const done = async () => {
