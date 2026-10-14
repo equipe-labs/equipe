@@ -19,20 +19,35 @@ const shared = (c: any) => !own(c.domain || '');
 const sharedOrigin = (o: any) => { try { return !own(new URL(o.origin).hostname); } catch { return true; } };
 
 // A browser on the person's screen shows who is driving it, as Claude in Chrome
-// does: a still glow along its edge (one that pulsed redrew the whole window
-// every frame, a flicker over screen sharing), a label, and the member's pointer gliding
-// to where it clicks. Drawn in a closed shadow root that no click, page style
-// or accessibility snapshot reaches; built without HTML strings or inline
-// <style>, which strict pages (Trusted Types, CSP) refuse.
+// does: a glow along its edge and a label, in the member's own colour (the one
+// it has in the console), and an outline on what it clicks or types into. A
+// member doesn't steer a pointer — it picks an element and Playwright acts on it —
+// so what it acts on is what's shown. The glow stands still: one that pulsed
+// redrew the whole window every frame, a flicker over screen sharing. Drawn in
+// a closed shadow root that no click, page style or accessibility snapshot
+// reaches; built without HTML strings or inline <style>, which strict pages
+// (Trusted Types, CSP) refuse.
 const argv = process.argv;
 const onScreen = !argv.includes('--headless');
 const profileAt = argv.indexOf('--user-data-dir');
 const member = profileAt >= 0 ? (argv[profileAt + 1] || '').split('/').filter(Boolean).pop() || '' : '';
 
-function driving({ member }: { member: string }) {
+// The console's colours by role (`frontend-2` is a frontend); anyone else's by name.
+const ROLE_HUES: Record<string, number> = { pm: 0, designer: 1, frontend: 2, backend: 3, qa: 4, data: 5, mobile: 6 };
+const PALETTE = ['232, 190, 120', '236, 150, 190', '120, 190, 240', '140, 208, 150', '182, 162, 242', '110, 212, 200', '240, 160, 110', '205, 212, 120'];
+const roleOf = (name: string) => name.replace(/-\d+$/, '');
+const hueOf = (name: string) => {
+  const role = roleOf(name);
+  if (role in ROLE_HUES) return ROLE_HUES[role];
+  let h = 7;
+  for (const b of Buffer.from(role)) h = (h * 31 + b) >>> 0;
+  return 6 + (h % 2);
+};
+const color = PALETTE[hueOf(member) % PALETTE.length];
+
+function driving({ member, color }: { member: string; color: string }) {
   if (window.top !== window || (window as any).__equipeDriving) return;
   (window as any).__equipeDriving = true;
-  const ACCENT = '217, 119, 87';
   const mount = () => {
     if (!document.documentElement) return;
     const host = document.createElement('equipe-driving');
@@ -42,78 +57,62 @@ function driving({ member }: { member: string }) {
     const sheet = new CSSStyleSheet();
     sheet.replaceSync(`
       * { box-sizing: border-box; pointer-events: none; }
-      .glow { position: fixed; inset: 0; box-shadow: inset 0 0 0 2px rgba(${ACCENT}, .5), inset 0 0 28px 3px rgba(${ACCENT}, .22); }
-      .label { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 7px; padding: 5px 12px 5px 10px; border-radius: 999px; background: rgba(24, 24, 27, .84); color: #fafafa; font: 500 12px/1.3 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; letter-spacing: .01em; box-shadow: 0 2px 12px rgba(0, 0, 0, .25); white-space: nowrap; }
-      .dot { width: 7px; height: 7px; border-radius: 50%; background: rgb(${ACCENT}); box-shadow: 0 0 8px rgb(${ACCENT}); animation: breathe 1.6s ease-in-out infinite; }
-      .pointer { position: fixed; left: 0; top: 0; width: 24px; height: 24px; opacity: 0; transition: transform .5s cubic-bezier(.2, .8, .2, 1), opacity .25s ease; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .35)) drop-shadow(0 0 6px rgba(${ACCENT}, .6)); }
-      .ripple { position: fixed; left: 0; top: 0; width: 30px; height: 30px; margin: -15px 0 0 -15px; border-radius: 50%; border: 2px solid rgb(${ACCENT}); opacity: 0; }
-      .ripple.on { animation: ripple .55s ease-out; }
-      @keyframes breathe { 0%, 100% { opacity: .6; } 50% { opacity: 1; } }
-      @keyframes ripple { from { transform: scale(.35); opacity: .9; } to { transform: scale(1.7); opacity: 0; } }
-      @media (prefers-reduced-motion: reduce) { .dot { animation: none; } .pointer { transition: opacity .25s ease; } }
+      .glow { position: fixed; inset: 0; box-shadow: inset 0 0 0 4px rgba(${color}, .9), inset 0 0 0 5px rgba(0, 0, 0, .12), inset 0 0 60px 10px rgba(${color}, .38); }
+      .label { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 7px; padding: 5px 12px 5px 10px; border-radius: 999px; background: rgba(24, 24, 27, .86); color: #fafafa; font: 500 12px/1.3 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; letter-spacing: .01em; box-shadow: 0 0 0 1px rgba(${color}, .7), 0 2px 12px rgba(0, 0, 0, .25); white-space: nowrap; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: rgb(${color}); box-shadow: 0 0 8px rgb(${color}); animation: breathe 1.6s ease-in-out infinite; }
+      .target { position: fixed; border-radius: 6px; border: 2px solid rgb(${color}); background: rgba(${color}, .12); box-shadow: 0 0 0 4px rgba(${color}, .25); opacity: 0; transition: opacity .4s ease; }
+      .target.on { opacity: 1; transition: opacity .08s ease; }
+      @keyframes breathe { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+      @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
     `);
     (root as any).adoptedStyleSheets = [sheet];
-    const el = (tag: string, cls: string) => {
-      const e = document.createElement(tag);
+    const el = (cls: string) => {
+      const e = document.createElement('div');
       e.className = cls;
       return root.appendChild(e);
     };
-    el('div', 'glow');
-    const label = el('div', 'label');
+    el('glow');
+    const label = el('label');
     const dot = document.createElement('span');
     dot.className = 'dot';
     const who = document.createElement('span');
     who.textContent = member ? `${member} is working in this browser` : 'equipe is working in this browser';
     label.append(dot, who);
-    const svg = 'http://www.w3.org/2000/svg';
-    const pointer = document.createElementNS(svg, 'svg');
-    pointer.setAttribute('class', 'pointer');
-    pointer.setAttribute('viewBox', '0 0 24 24');
-    const arrow = document.createElementNS(svg, 'path');
-    arrow.setAttribute('d', 'M5 3l14 8.2-6.1 1.5-3.3 6.1z');
-    arrow.setAttribute('fill', `rgb(${ACCENT})`);
-    arrow.setAttribute('stroke', '#fff');
-    arrow.setAttribute('stroke-width', '1.6');
-    arrow.setAttribute('stroke-linejoin', 'round');
-    pointer.appendChild(arrow);
-    root.appendChild(pointer);
-    const ripple = el('div', 'ripple');
+    const target = el('target');
     document.documentElement.appendChild(host);
     // A page that rewrites its document, or a framework that clears <html>, takes
     // it away: it comes back.
     setInterval(() => { if (!host.isConnected && document.documentElement) document.documentElement.appendChild(host); }, 1500);
 
-    // The member's pointer jumps where it acts — one move, then the click — while
-    // a hand on a mouse sends a stream of small moves: those are the person's own,
-    // with their own pointer, and the member's is put away.
-    let last = { x: -1, y: -1, t: 0 };
-    let shown = false;
-    let hide: any;
-    const put = (x: number, y: number) => { pointer.style.transform = `translate(${x - 5}px, ${y - 3}px)`; };
+    // What the member acts on, outlined a moment. A member's click comes as one
+    // jump of the pointer and the press; its typing focuses a field with no hand
+    // on the mouse. The person's own hand sends a stream of small moves first —
+    // what they do isn't outlined.
+    // Nothing has moved yet: not the hand, not the pointer.
+    let last = { x: -1, y: -1, t: -1e9 };
+    let hand = -1e9;
+    let fade: any;
+    const outline = (node: EventTarget | null) => {
+      const e = node instanceof Element ? (node.closest('a, button, input, textarea, select, label, [role], [contenteditable]') || node) : null;
+      if (!e || e === document.body || e === document.documentElement) return;
+      const r = e.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0 || r.width * r.height > innerWidth * innerHeight * 0.5) return;
+      Object.assign(target.style, { left: `${r.left - 4}px`, top: `${r.top - 4}px`, width: `${r.width + 8}px`, height: `${r.height + 8}px` });
+      target.classList.add('on');
+      clearTimeout(fade);
+      fade = setTimeout(() => target.classList.remove('on'), 1200);
+    };
     addEventListener('mousemove', (e) => {
       const now = performance.now();
-      const jump = Math.hypot(e.clientX - last.x, e.clientY - last.y);
-      const member = now - last.t > 160 && jump > 24;
+      const jump = now - last.t > 160 && Math.hypot(e.clientX - last.x, e.clientY - last.y) > 24;
+      if (!jump) hand = now;
       last = { x: e.clientX, y: e.clientY, t: now };
-      clearTimeout(hide);
-      if (member) {
-        shown = true;
-        pointer.style.opacity = '1';
-        put(e.clientX, e.clientY);
-        hide = setTimeout(() => { shown = false; pointer.style.opacity = '0'; }, 6000);
-      } else if (shown) {
-        shown = false;
-        pointer.style.opacity = '0';
-      }
     }, true);
     addEventListener('mousedown', (e) => {
-      if (!shown) return;
-      ripple.style.transform = '';
-      ripple.style.left = `${e.clientX}px`;
-      ripple.style.top = `${e.clientY}px`;
-      ripple.classList.remove('on');
-      void ripple.offsetWidth;
-      ripple.classList.add('on');
+      if (performance.now() - hand > 400) outline(e.target);
+    }, true);
+    addEventListener('focusin', (e) => {
+      if (performance.now() - hand > 1000 && performance.now() - last.t > 300) outline(e.target);
     }, true);
   };
   if (document.body) mount();
@@ -158,9 +157,9 @@ export default async ({ page }: { page: any }) => {
   if (context.__equipe) return;
   context.__equipe = true;
   if (onScreen) {
-    await context.addInitScript(driving, { member }).catch(() => {});
+    await context.addInitScript(driving, { member, color }).catch(() => {});
     // The page open already gets it now; every later page and navigation, from the script.
-    for (const p of context.pages()) await p.evaluate(driving, { member }).catch(() => {});
+    for (const p of context.pages()) await p.evaluate(driving, { member, color }).catch(() => {});
   }
   // Start from the squad's sign-ins — the person's, and what teammates signed in
   // to — and take up new ones as they come: a sign-in the person makes in one
