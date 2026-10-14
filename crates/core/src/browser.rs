@@ -247,9 +247,29 @@ impl Drop for Host {
     }
 }
 
-/// A member's lane in the host — its endpoint, on screen when `shown`.
-pub fn lane(host: &SharedHost, squad: &str, member: &str, output: &Path, shown: bool) -> std::io::Result<Running> {
-    let id = format!("{squad}/{member}");
+/// The browser of a member's conversation about `project` beside its own
+/// (`None`: the whole squad's): `pm@site`, `pm@squad`.
+pub fn lane_key(member: &str, project: Option<&str>) -> String {
+    format!("{member}@{}", project.unwrap_or("squad"))
+}
+
+/// Whose browser `key` is: `pm` for `pm@site`.
+pub fn member_of(key: &str) -> &str {
+    key.split_once('@').map_or(key, |(member, _)| member)
+}
+
+/// A conversation's lane in the host — its endpoint, on screen when `shown`.
+/// `key` is a member's name, or a conversation of it beside its own
+/// ([`lane_key`]): each its own windows, in the member's colour, labelled
+/// with what it is about.
+pub fn lane(host: &SharedHost, squad: &str, key: &str, output: &Path, shown: bool) -> std::io::Result<Running> {
+    let id = format!("{squad}/{key}");
+    let member = member_of(key);
+    let label = match key.split_once('@') {
+        Some((member, "squad")) => format!("{member} (the whole squad)"),
+        Some((member, about)) => format!("{member} ({about})"),
+        None => member.to_owned(),
+    };
     let mut locked = host.lock().map_err(|_| std::io::Error::other("the browser host is unusable"))?;
     let port = match locked.lanes.get(&id) {
         Some(port) => *port,
@@ -257,7 +277,7 @@ pub fn lane(host: &SharedHost, squad: &str, member: &str, output: &Path, shown: 
     };
     locked.lanes.insert(id.clone(), port);
     locked.send(&json!({
-        "op": "lane", "id": id, "member": member, "color": member_color(member),
+        "op": "lane", "id": id, "member": label, "color": member_color(member),
         "port": port, "output": output, "shown": shown,
     }));
     drop(locked);
@@ -509,6 +529,15 @@ pub fn sites(state: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_conversation_beside_a_members_own_has_a_browser_of_its_own_in_its_colour() {
+        assert_eq!(lane_key("pm", Some("site")), "pm@site");
+        assert_eq!(lane_key("pm", None), "pm@squad");
+        assert_eq!(member_of("pm@site"), "pm");
+        assert_eq!(member_of("frontend-2"), "frontend-2");
+        assert_eq!(member_color(member_of("frontend-2@app")), member_color("frontend"));
+    }
 
     #[test]
     fn the_current_tabs_address_is_read_from_its_line() {

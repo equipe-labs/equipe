@@ -351,7 +351,7 @@ fn under_title(area: Rect) -> Rect {
 
 /// The conversation's text area, above its live row (working, or new lines).
 fn conversation_text(area: Rect, app: &App, agent: &Agent) -> Rect {
-    conversation_areas(under_title(area), app, agent).1
+    conversation_areas(under_title(area), app, agent).text
 }
 
 /// Room for a watched browser: above the conversation, most of the pane,
@@ -365,12 +365,15 @@ fn watch_height(app: &App, agent: &Agent, room: u16) -> u16 {
 
 /// The conversation pane under its title: the conversation, then — when there
 /// is any — work waiting for the person, then the live row.
-fn conversation_areas(area: Rect, app: &App, agent: &Agent) -> (Rect, Rect, Rect, Rect) {
+fn conversation_areas(area: Rect, app: &App, agent: &Agent) -> Areas {
     let live = (agent.scroll_back > 0 && agent.unseen > 0) || agent.state == AgentState::Working;
     let watch = watch_height(app, agent, area.height);
-    let card = waiting_card_height(app, area.height.saturating_sub(watch));
-    let [watch, text, _, card, _, live] = Layout::vertical([
+    let overview = overview_height(app, area.height.saturating_sub(watch));
+    let card = waiting_card_height(app, area.height.saturating_sub(watch + overview));
+    let [watch, overview, _, text, _, card, _, live] = Layout::vertical([
         Constraint::Length(watch),
+        Constraint::Length(overview),
+        Constraint::Length(u16::from(overview > 0)),
         Constraint::Min(1),
         Constraint::Length(u16::from(card > 0)),
         Constraint::Length(card),
@@ -378,7 +381,100 @@ fn conversation_areas(area: Rect, app: &App, agent: &Agent) -> (Rect, Rect, Rect
         Constraint::Length(u16::from(live)),
     ])
     .areas(area);
-    (watch, text, card, live)
+    Areas { watch, overview, text, card, live }
+}
+
+/// Where the parts of the conversation pane go.
+struct Areas {
+    watch: Rect,
+    overview: Rect,
+    text: Rect,
+    card: Rect,
+    live: Rect,
+}
+
+/// How many projects the overview lists before it counts the rest.
+const OVERVIEW_SHOWN: usize = 6;
+
+fn overview_height(app: &App, room: u16) -> u16 {
+    if !app.shows_overview() || room < 16 {
+        return 0;
+    }
+    let projects = app.projects.len();
+    // Never more than a third of the pane: the conversation comes first.
+    let rows = 1 + projects.min(OVERVIEW_SHOWN) + usize::from(projects > OVERVIEW_SHOWN);
+    (rows as u16).min(room / 3)
+}
+
+/// Every project at a glance, over the PM's conversation when all of them
+/// are in view: a line a project with who is at it and what waits — each a
+/// click into that project.
+fn overview(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Option<usize>)> {
+    let lines = app.overview();
+    let looks = squad_looks(app);
+    let tags = tag_width(app);
+    let width_of = |s: &str| unicode_width::UnicodeWidthStr::width(s);
+    let mut rows = vec![(
+        Line::from(vec![
+            Span::styled("All projects", theme.bold()),
+            Span::styled("   click one to go in, or ctrl-p", theme.dim()),
+        ]),
+        None,
+    )];
+    for line in lines.iter().take(OVERVIEW_SHOWN) {
+        let project = app.projects.get(line.at).cloned();
+        let mut spans = vec![Span::styled(format!("{:<tags$}  ", ui::fit(&line.name, tags)), project_style(app, project.as_deref(), theme))];
+        // What waits, at the right: for the person first.
+        let mut tail: Vec<Span<'static>> = Vec::new();
+        if line.for_you > 0 {
+            tail.push(Span::styled(format!("⚑{} for you", line.for_you), theme.accent().add_modifier(Modifier::BOLD)));
+        }
+        if line.open > 0 {
+            if !tail.is_empty() {
+                tail.push(Span::styled(" · ", theme.dim()));
+            }
+            tail.push(Span::styled(format!("{} open", line.open), theme.dim()));
+        }
+        let tail_width: usize = tail.iter().map(Span::width).sum();
+        let mut room = width.saturating_sub(tags + 2 + tail_width + 2);
+        if line.busy.is_empty() {
+            let quiet = if line.for_you + line.open == 0 { "quiet" } else { "no one on it now" };
+            let quiet = ui::fit(quiet, room);
+            room = room.saturating_sub(width_of(&quiet));
+            spans.push(Span::styled(quiet, theme.dim()));
+        }
+        for (i, busy) in line.busy.iter().enumerate() {
+            let sep = if i == 0 { "" } else { " · " };
+            let what = match (busy.ticket, &busy.about) {
+                (Some(id), _) => format!(" T-{id}"),
+                (None, Some(about)) => format!(" “{}”", ui::fit(about, 24)),
+                (None, None) => String::new(),
+            };
+            let mark = if busy.working { "● " } else { "○ " };
+            let need = width_of(sep) + width_of(mark) + width_of(&busy.member) + width_of(&what);
+            if need > room {
+                spans.push(Span::styled(format!("{sep}+{}", line.busy.len() - i), theme.dim()));
+                room = room.saturating_sub(width_of(sep) + 3);
+                break;
+            }
+            room -= need;
+            let hue = looks.iter().find(|(name, ..)| *name == busy.member).map(|l| l.2);
+            let style = hue.map_or_else(|| theme.dim(), |h| theme.member(h));
+            spans.push(Span::styled(sep.to_owned(), theme.dim()));
+            spans.push(Span::styled(mark.to_owned(), if busy.working { style } else { theme.dim() }));
+            spans.push(Span::styled(busy.member.clone(), style));
+            spans.push(Span::styled(what, if busy.working { Style::new() } else { theme.dim() }));
+        }
+        if !tail.is_empty() {
+            spans.push(Span::raw(" ".repeat(room + 2)));
+            spans.extend(tail);
+        }
+        rows.push((Line::from(spans), Some(line.at)));
+    }
+    if lines.len() > OVERVIEW_SHOWN {
+        rows.push((Line::from(Span::styled(format!("+{} more · ctrl-p", lines.len() - OVERVIEW_SHOWN), theme.dim())), None));
+    }
+    rows
 }
 
 /// How many tickets the card names before it counts the rest.
@@ -542,10 +638,16 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
     let text = conversation_text(right, app, agent);
     // The waiting card's rows open their tickets too.
     if app.pane == Pane::Conversation {
-        let (_, _, card, _) = conversation_areas(under_title(right), app, agent);
+        let Areas { card, overview: projects, .. } = conversation_areas(under_title(right), app, agent);
         for (i, (_, id)) in waiting_card(app, theme, card.width as usize).into_iter().enumerate().take(card.height as usize) {
             if let Some(id) = id {
                 hits.push((card.x, card.x + card.width, card.y + i as u16, Hit::Ticket(id)));
+            }
+        }
+        // The overview's lines go into their projects.
+        for (i, (_, at)) in overview(app, theme, projects.width as usize).into_iter().enumerate().take(projects.height as usize) {
+            if let Some(at) = at {
+                hits.push((projects.x, projects.x + projects.width, projects.y + i as u16, Hit::Project(Some(at))));
             }
         }
     }
@@ -1537,6 +1639,8 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
     let mut title = vec![Span::styled(agent.label(), theme.member(agent_look(agent).1).add_modifier(Modifier::BOLD))];
     match agent.ticket.and_then(|id| app.tickets.iter().find(|t| t.id == id)) {
         Some(ticket) => title.push(Span::styled(format!("  ·  T-{} {}", ticket.id, ticket.title), theme.dim())),
+        // With every project in view, the PM's is the whole squad's conversation.
+        None if app.shows_overview() => title.push(Span::styled("  ·  the whole squad", theme.dim())),
         None => title.push(Span::styled(format!("  ·  {}", agent.engine_label()), theme.dim())),
     }
     // How full its conversation is: past half, in the accent, with what to do.
@@ -1575,9 +1679,13 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
         ]);
         footer.push(Line::from(row));
     }
-    let (watch, text, card, live) = conversation_areas(area, app, agent);
+    let Areas { watch, overview: projects, text, card, live } = conversation_areas(area, app, agent);
     if watch.height > 0 {
         render_watch(frame, watch, app, agent, theme, layouts);
+    }
+    if projects.height > 0 {
+        let rows: Vec<Line> = overview(app, theme, projects.width as usize).into_iter().map(|(line, _)| line).take(projects.height as usize).collect();
+        frame.render_widget(Paragraph::new(rows), projects);
     }
     if card.height > 0 {
         let rows: Vec<Line> = waiting_card(app, theme, card.width as usize).into_iter().map(|(line, _)| line).collect();
@@ -2615,6 +2723,51 @@ mod tests {
         // Back on site, the member's own conversation shows.
         app.agents[0].thread_view = Some("site".into());
         assert_eq!(app.viewed().map(|a| a.id), Some(pm));
+        // Left idle, the lane goes back into the member: what it said stays, about app.
+        app.on_event(Event::SessionClosed { session: 77 });
+        assert!(app.lanes.is_empty() && app.agents.len() == 1);
+        assert!(!screen(&app, 110, 24).contains("The app is fine."), "not in site's");
+        app.agents[0].thread_view = Some("app".into());
+        assert_eq!(app.viewed().map(|a| a.id), Some(pm));
+        assert!(screen(&app, 110, 24).contains("The app is fine."));
+    }
+
+    #[test]
+    fn with_every_project_in_view_the_pm_oversees_them_a_line_each_a_click_into_it() {
+        let (mut app, pm) = working();
+        app.projects = vec!["/code/site".into(), "/code/app".into()];
+        app.on_event(Event::Thread { session: pm, project: Some("site".into()) });
+        app.tickets = vec![
+            Ticket { project: Some("/code/app".into()), ..ticket(5, TicketStatus::Review, "Login page") },
+            Ticket { project: Some("/code/site".into()), ..ticket(6, TicketStatus::Todo, "Pricing") },
+        ];
+        // A conversation about app, beside the PM's work on site.
+        app.on_event(Event::SessionStarted {
+            session: 77,
+            project: "/repo".into(),
+            engine: Engine::Claude,
+            model: None,
+            workspace: None,
+            member: Some(Member { role: "pm".into(), name: "pm".into() }),
+            squad: Some("acme".into()),
+        });
+        app.on_event(Event::LaneOpened { session: 77, of: pm, project: Some("app".into()) });
+        app.on_event(Event::UserMessage { session: 77, text: "ship the login".into() });
+        app.on_event(Event::TextDelta { session: 77, text: "On it.".into() });
+        app.lanes[0].state = AgentState::Working;
+        let shot = screen(&app, 110, 30);
+        assert!(shot.contains("All projects"), "{shot}");
+        assert!(shot.contains("the whole squad"), "{shot}");
+        let site = shot.lines().find(|l| l.contains("site ") && l.contains("● pm")).unwrap_or_else(|| panic!("{shot}"));
+        assert!(site.contains("1 open"), "{site}");
+        let app_line = shot.lines().find(|l| l.contains("“ship the login”")).unwrap_or_else(|| panic!("{shot}"));
+        assert!(app_line.contains("⚑1 for you"), "{app_line}");
+        // A click on a line goes into its project.
+        let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 110, 30), &Layouts::default());
+        assert!(laid.hits.iter().filter(|h| h.3 == Hit::Project(Some(1))).count() >= 2, "a chip and a line");
+        // In one project, it isn't there.
+        app.focus = Some("/code/site".into());
+        assert!(!screen(&app, 110, 30).contains("All projects"));
     }
 
     #[test]

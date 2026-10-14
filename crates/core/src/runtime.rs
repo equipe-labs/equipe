@@ -559,6 +559,7 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
             }
             _ = frames.tick() => rt.take_frames(),
             _ = minute.tick() => {
+                rt.fold_idle_lanes();
                 rt.close_idle_browsers();
                 rt.let_helpers_go().await;
                 rt.tidy_check();
@@ -582,10 +583,9 @@ impl Runtime {
         // Where a member's browser goes, to bring it back there on screen.
         if let Event::ToolUse { session, tool, target: Some(url) } = &event
             && tool.ends_with("browser_navigate")
-            && let Some(s) = self.sessions.get(session)
-            && let (Some(squad), Some(name)) = (s.squad.clone(), s.name())
+            && let Some(key) = self.browser_key(*session)
         {
-            self.last_url.insert((squad, name.to_owned()), url.clone());
+            self.last_url.insert(key, url.clone());
         }
         let mut squad = squad.map(str::to_owned);
         if let Some(id) = event.session()
@@ -1151,6 +1151,18 @@ impl Runtime {
             let _ = journal.set_language(language);
         }
         self.tell_the_pm(id, |name| format!("The person told {name}: {text}"), Some(&text));
+        // The PM's whole-squad conversation oversees every project: it is told
+        // where each stands with every message.
+        let overview = self
+            .sessions
+            .get(&id)
+            .filter(|s| s.is_pm() && s.work.is_none())
+            .filter(|s| match &s.lane {
+                Some((_, project)) => project.is_none(),
+                None => s.squad.as_ref().is_some_and(|squad| !self.focus.contains_key(squad)),
+            })
+            .and_then(|s| s.squad.clone())
+            .and_then(|squad| self.squad_overview(&squad));
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -1179,6 +1191,13 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
             } else {
                 format!("[equipe: the person is looking at the project {project} — new work is for it unless they say otherwise]\n\n{prompt}")
             };
+        } else if let Some(overview) = overview {
+            prompt = format!(
+                "[equipe: this is the whole squad's conversation — here you oversee every project rather than work in \
+one. Where each project stands now:\n{overview}\nAnswer for the whole: priorities, what waits on the person, what \
+goes next across projects. Work for one project goes to it — tickets for its owners on the board, with that project \
+— and you say where it went; its details are talked over in that project's own conversation.]\n\n{prompt}"
+            );
         }
         self.save_waiting(id);
         self.start_turn(id, prompt);
@@ -1187,6 +1206,68 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
         {
             session.answers_person = true;
         }
+    }
+
+    /// Where each of `squad`'s projects stands, a line a project: who is at it
+    /// and what in it waits. `None` with a single project — the squad's
+    /// conversation is about it anyway.
+    fn squad_overview(&mut self, squad: &str) -> Option<String> {
+        let projects = self.projects(squad);
+        if projects.len() < 2 {
+            return None;
+        }
+        let tickets = self.tickets(squad);
+        let short = |text: &str| {
+            let line = text.lines().next().unwrap_or_default().trim();
+            let cut: String = line.chars().take(80).collect();
+            if cut.len() < line.len() { format!("{cut}…") } else { cut }
+        };
+        let mut lines = Vec::new();
+        for project in &projects {
+            let name = board::project_name(project);
+            let here: Vec<&Ticket> = tickets
+                .iter()
+                .filter(|t| t.project.as_ref().or(if t.kind.in_home() { None } else { projects.first() }) == Some(project))
+                .collect();
+            let mut at = Vec::new();
+            let mut members: Vec<&Session> = self.sessions.values().filter(|s| s.squad.as_deref() == Some(squad)).collect();
+            members.sort_by_key(|s| s.joined);
+            for s in members {
+                let Some(who) = s.name() else {
+                    continue;
+                };
+                if let Some(work) = s.work.as_ref().filter(|w| &w.project == project) {
+                    let title = here.iter().find(|t| t.id == work.ticket).map(|t| t.title.as_str()).unwrap_or_default();
+                    let working = if s.is_working() { ", at work" } else { "" };
+                    at.push(format!("{who} on T-{} ({title}){working}", work.ticket));
+                    continue;
+                }
+                let about = match &s.lane {
+                    Some((_, about)) => about.as_deref(),
+                    None if s.work.is_none() => s.thread.as_deref(),
+                    None => None,
+                };
+                if s.is_working() && about == Some(name.as_str()) {
+                    let asked = s.prompts.last().map(|p| short(p)).unwrap_or_default();
+                    at.push(format!("{who} talking with the person about it (“{asked}”)"));
+                }
+            }
+            let mut line = format!("- {name}: {}", if at.is_empty() { "no one on it now".to_owned() } else { at.join("; ") });
+            for t in here.iter().filter(|t| t.status == TicketStatus::Review) {
+                line.push_str(&format!("; T-{} ({}) waits for the person's review", t.id, t.title));
+            }
+            for t in here.iter().filter(|t| t.status == TicketStatus::Waiting) {
+                let needs = t.note.as_deref().map(board::waiting_needs).unwrap_or_default();
+                let needs = if needs.is_empty() { String::new() } else { format!(": needs {}", needs.join(", ")) };
+                line.push_str(&format!("; T-{} ({}) waits for the person{needs}", t.id, t.title));
+            }
+            let open = here.iter().filter(|t| matches!(t.status, TicketStatus::Todo | TicketStatus::InProgress)).count();
+            if open > 0 {
+                line.push_str(&format!("; {open} to do or in progress"));
+            }
+            lines.push(line);
+        }
+        Some(lines.join("\n"))
     }
 
     /// Where a message to member `id` goes: its conversation about the project
@@ -1265,6 +1346,40 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
         self.publish(started);
         self.publish(Event::LaneOpened { session: id, of: main, project });
         Some(id)
+    }
+
+    /// Lanes left with nothing to do for a while go back into their members.
+    fn fold_idle_lanes(&mut self) {
+        let idle: Vec<SessionId> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.lane.is_some() && !s.is_working() && s.queued.is_empty())
+            .filter(|(_, s)| s.last_turn.is_none_or(|t| t.elapsed() > LANE_IDLE))
+            .map(|(&id, _)| id)
+            .collect();
+        for lane in idle {
+            self.fold_lane(lane);
+        }
+    }
+
+    /// A lane goes back into its member: its conversation is the member's for
+    /// that project again, taken up there next time — its browser closes.
+    fn fold_lane(&mut self, lane: SessionId) {
+        let Some((main, project)) = self.sessions.get(&lane).and_then(|s| s.lane.clone()) else {
+            return;
+        };
+        self.publish(Event::SessionClosed { session: lane });
+        let Some(s) = self.sessions.remove(&lane) else {
+            return;
+        };
+        if let Some(m) = self.sessions.get_mut(&main)
+            // The member took the conversation up itself meanwhile: its own goes on.
+            && m.thread != project
+            && !m.threads.contains_key(&project)
+        {
+            m.threads.insert(project, DeskThread { claude_session: s.claude_session, history: s.history, desk_context: s.desk_context });
+        }
+        self.persist_threads(main);
     }
 
     /// Keep where each of member `main`'s conversations stands — its own
@@ -1367,15 +1482,15 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
         // person (or a teammate) signed in, if anywhere yet. In Auto and Full
         // it browses freely; in Ask each step comes to the person.
         let wants_browser = board_tools && mode != Mode::ReadOnly;
-        let browser = match (self.config.npx.clone(), squad.clone(), session.member.as_ref().map(|m| m.name.clone())) {
-            (Some(npx), Some(squad), Some(name)) if wants_browser => {
+        let browser = match (self.config.npx.clone(), self.browser_key(id), session.member.as_ref().map(|m| m.name.clone())) {
+            (Some(npx), Some((squad, key)), Some(name)) if wants_browser => {
                 // Page snapshots and screenshots: in the temp folder, readable without
                 // asking, and never in the project.
                 let _ = npx;
                 let shown = self.journals.get(&squad).is_some_and(|j| j.browser_shown(&name));
                 // The browser it had, if still running and showing as asked; else a new one,
                 // which equipe holds open so it outlives each turn.
-                self.open_browser(&squad, &name, shown)
+                self.open_browser(&squad, &key, shown)
             }
             _ => None,
         };
@@ -2765,14 +2880,14 @@ there, end your turn, and carry on when they say they're done."
     /// not — now, for members between turns; a member mid-turn keeps its own
     /// until the turn ends (its turn is using it).
     fn apply_browsers(&mut self, squad: &str) {
-        let members: Vec<(SessionId, String, bool)> = self
+        let members: Vec<(String, bool)> = self
             .sessions
             .iter()
             .filter(|(_, s)| s.squad.as_deref() == Some(squad))
-            .filter_map(|(id, s)| Some((*id, s.name()?.to_owned(), s.is_working())))
+            .filter_map(|(id, s)| Some((self.browser_key(*id)?.1, s.is_working())))
             .collect();
-        for (_, name, working) in members {
-            let shown = self.journals.get(squad).is_some_and(|j| j.browser_shown(&name));
+        for (name, working) in members {
+            let shown = self.journals.get(squad).is_some_and(|j| j.browser_shown(browser::member_of(&name)));
             let key = (squad.to_owned(), name.clone());
             let fits = self.browsers.get_mut(&key).is_none_or(|b| b.fits(shown));
             if working || (fits && !(shown && !self.browsers.contains_key(&key))) {
@@ -2786,13 +2901,27 @@ there, end your turn, and carry on when they say they're done."
         }
     }
 
-    /// Start a member's browser now — on screen when `shown` — and take it to
-    /// the page asked for, or where it last was.
+    /// The browser a conversation of session `id` uses: `(squad, key)`. Its
+    /// member's own for the member's conversation; one of its own for a lane,
+    /// so conversations side by side never share a tab.
+    fn browser_key(&self, id: SessionId) -> Option<(String, String)> {
+        let s = self.sessions.get(&id)?;
+        let name = s.name()?;
+        let key = match &s.lane {
+            Some((_, project)) => browser::lane_key(name, project.as_deref()),
+            None => name.to_owned(),
+        };
+        Some((s.squad.clone()?, key))
+    }
+
+    /// Start a conversation's browser now — on screen when `shown` — and take
+    /// it to the page asked for, or where it last was. `name` is its key.
     fn open_browser(&mut self, squad: &str, name: &str, shown: bool) -> Option<u16> {
         let npx = self.config.npx.clone()?;
         let output = std::env::temp_dir().join("equipe-browser").join(squad).join(name);
         let profile = browser::profile(&self.config.home, squad, name);
         let key = (squad.to_owned(), name.to_owned());
+        let member = (squad.to_owned(), browser::member_of(name).to_owned());
         if !self.browsers.get_mut(&key).is_some_and(|b| b.fits(shown)) {
             // A lane of the shared Chrome; a Chrome of its own if that can't be had.
             let running = match self.browser_host(&npx) {
@@ -2804,7 +2933,12 @@ there, end your turn, and carry on when they say they're done."
                 None => browser::launch(&npx, &self.config.home, &profile, &output, shown).ok()?,
             };
             let (client, port) = (self.client.clone(), running.port);
-            let page = self.show_url.remove(&key).or_else(|| self.last_url.get(&key).cloned()).filter(|_| shown);
+            let page = self
+                .show_url
+                .remove(&key)
+                .or_else(|| self.show_url.remove(&member))
+                .or_else(|| self.last_url.get(&key).cloned())
+                .filter(|_| shown);
             tokio::spawn(async move {
                 if browser::hold(&client, port).await
                     && let Some(page) = page
@@ -2854,8 +2988,9 @@ there, end your turn, and carry on when they say they're done."
             if self.framing.contains(&id) {
                 continue;
             }
-            let Some(name) = self.sessions.get(&id).and_then(|s| s.name().map(str::to_owned)) else { continue };
-            let Some(port) = self.browsers.get(&(squad.clone(), name.clone())).map(|b| b.port) else { continue };
+            let Some(key) = self.browser_key(id) else { continue };
+            let Some(port) = self.browsers.get(&key).map(|b| b.port) else { continue };
+            let name = key.1;
             self.framing.insert(id);
             let (client, internal) = (self.client.clone(), self.internal.clone());
             let output = std::env::temp_dir().join("equipe-browser").join(&squad).join(&name);
@@ -3407,14 +3542,9 @@ check what is already done in your worktree first."
     }
 
     fn close_idle_browsers(&mut self) {
-        let working: Vec<(String, String)> = self
-            .sessions
-            .values()
-            .filter(|s| s.is_working())
-            .filter_map(|s| Some((s.squad.clone()?, s.name()?.to_owned())))
-            .collect();
-        let present: Vec<(String, String)> =
-            self.sessions.values().filter_map(|s| Some((s.squad.clone()?, s.name()?.to_owned()))).collect();
+        let working: Vec<(String, String)> =
+            self.sessions.iter().filter(|(_, s)| s.is_working()).filter_map(|(id, _)| self.browser_key(*id)).collect();
+        let present: Vec<(String, String)> = self.sessions.keys().filter_map(|id| self.browser_key(*id)).collect();
         self.browsers.retain(|key, b| {
             working.contains(key) || (present.contains(key) && b.last_used.elapsed() < Duration::from_secs(30 * 60))
         });
@@ -3428,7 +3558,7 @@ check what is already done in your worktree first."
         for (squad, name) in idle_shown {
             let team: Vec<String> = self.team(&squad).into_iter().map(|(_, n, _)| n).collect();
             if let Some(journal) = self.journal(&squad) {
-                let _ = journal.show_browser(Some(&name), false, &team);
+                let _ = journal.show_browser(Some(browser::member_of(&name)), false, &team);
             }
             self.browsers.remove(&(squad, name));
         }
@@ -3985,6 +4115,9 @@ with each: close it, merge it into another, or keep it (and why). Don't cancel t
 
 /// How long a browser stays on screen unused before it goes out of sight.
 const SHOWN_IDLE: Duration = Duration::from_secs(10 * 60);
+
+/// How long a lane waits for its next message before it goes back into its member.
+const LANE_IDLE: Duration = Duration::from_secs(30 * 60);
 
 /// How often a watched browser is pictured.
 const FRAME_EVERY: Duration = Duration::from_millis(1500);

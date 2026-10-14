@@ -456,6 +456,7 @@
                       200000
                     ],
                     "engine": "claude",
+                    "lane": null,
                     "member": {
                       "name": "pm",
                       "role": "pm"
@@ -487,6 +488,7 @@
                   {
                     "access": "edit_files",
                     "engine": "claude",
+                    "lane": null,
                     "member": {
                       "name": "backend",
                       "role": "backend"

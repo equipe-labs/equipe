@@ -1134,7 +1134,7 @@ fn fake_npx() -> (PathBuf, PathBuf) {
         &format!(
             r#"#!/bin/sh
 n=$(ls '{launches}' | wc -l | tr -d ' ')
-for a in "$@"; do printf '%s\n' "$a"; done > '{launches}'/launch-$(printf %03d $n)
+for a in "$@"; do printf '%s\n' "$a"; done > '{launches}'/launch-$(printf %03d $n)-$$
 port=""
 while [ $# -gt 0 ]; do [ "$1" = "--port" ] && port="$2"; shift; done
 exec python3 -c 'import socket,sys,time
@@ -1213,6 +1213,36 @@ async fn members_browse_from_the_start_and_as_the_person_once_signed_in() {
     until(&mut events, |e| matches!(e, Event::ModeChanged { member: None, .. })).await;
     let call = turn(&handle, &mut events).await;
     assert!(browser_of(&call).is_null(), "{call:?}");
+}
+
+#[tokio::test]
+async fn a_conversation_beside_the_members_own_browses_in_a_browser_of_its_own() {
+    let site = named("site");
+    let app = named("app");
+    let turn = format!("case \"$*\" in *\"site job\"*) sleep 3;; esac\n{}", answering_per_call("ok"));
+    let (claude, recorded) = recording_claude(&turn);
+    let home = squad_home(&[&site, &app]);
+    let (npx, launched) = fake_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
+    handle.send(Command::Submit { session: 1, text: "site job".into() });
+    until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, .. })).await;
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("app".into()) });
+    handle.send(Command::Submit { session: 1, text: "how is the app?".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let all = calls(&recorded);
+    let url_of = |said: &str| {
+        let call = all.iter().find(|c| arg(c, "-p").is_some_and(|p| p.contains(said))).unwrap();
+        browser_of(call)["url"].as_str().unwrap().to_owned()
+    };
+    // Side by side, each its own: neither sees the other's tabs.
+    assert_ne!(url_of("site job"), url_of("how is the app?"));
+    let profiles: Vec<String> = launches(&launched)
+        .iter()
+        .filter_map(|a| a.windows(2).find(|w| w[0] == "--user-data-dir").map(|w| w[1].clone()))
+        .collect();
+    assert_eq!(profiles.len(), 2, "{profiles:?}");
 }
 
 #[tokio::test]
@@ -1299,11 +1329,12 @@ async fn the_project_in_focus_travels_with_the_persons_message() {
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     let prompt = arg(&calls(&recorded)[0], "-p").unwrap().to_owned();
     assert!(prompt.contains("your conversation about the project app") && prompt.ends_with("add an onboarding screen"), "{prompt}");
-    // Back to all: nothing added.
+    // Back to all: the whole squad's conversation, about no one project.
     handle.send(Command::Focus { squad: "acme".into(), project: None });
     handle.send(Command::Submit { session: 1, text: "and the site?".into() });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
-    assert_eq!(arg(calls(&recorded).last().unwrap(), "-p"), Some("and the site?"));
+    let prompt = arg(calls(&recorded).last().unwrap(), "-p").unwrap().to_owned();
+    assert!(!prompt.contains("about the project") && prompt.contains("the whole squad's conversation"), "{prompt}");
 }
 
 /// A turn that reports how full its context got: `used` of a 200k window.
@@ -2204,6 +2235,34 @@ async fn a_member_busy_in_one_project_talks_about_another_in_a_lane_beside_it() 
     handle.send(Command::Submit { session: 1, text: "and the icon?".into() });
     let next = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(next.iter().any(|e| matches!(e, Event::UserMessage { session, .. } if *session == lane)), "{next:#?}");
+}
+
+#[tokio::test]
+async fn in_the_whole_squads_conversation_the_pm_is_told_where_every_project_stands() {
+    let site = named("site");
+    let app = named("app");
+    let turn = format!("case \"$*\" in *\"site job\"*) sleep 3;; esac\n{}", answering_per_call("ok"));
+    let (claude, recorded) = recording_claude(&turn);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Login page", "body": "-", "owner": "designer", "project": "app" })).await;
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
+    handle.send(Command::Submit { session: 1, text: "site job".into() });
+    until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, .. })).await;
+
+    // Every project in view: the whole squad's conversation, told how each stands.
+    handle.send(Command::Focus { squad: "acme".into(), project: None });
+    handle.send(Command::Submit { session: 1, text: "how is everything?".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let all = calls(&recorded);
+    let call = all.iter().find(|c| arg(c, "-p").is_some_and(|p| p.contains("how is everything?"))).expect("the squad's turn");
+    let prompt = arg(call, "-p").unwrap();
+    assert!(prompt.contains("the whole squad's conversation"), "{prompt}");
+    assert!(prompt.contains("- site: pm talking with the person about it (“site job”)"), "{prompt}");
+    assert!(prompt.contains("- app: no one on it now; 1 to do or in progress"), "{prompt}");
+    // In one project's conversation, it isn't.
+    let first = all.iter().find(|c| arg(c, "-p").is_some_and(|p| p.contains("site job"))).unwrap();
+    assert!(!arg(first, "-p").unwrap().contains("Where each project stands"));
 }
 
 #[tokio::test]

@@ -75,6 +75,30 @@ pub struct ProjectStatus {
     pub for_you: usize,
 }
 
+/// A project on the whole squad's overview.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectLine {
+    /// Its place among the squad's projects.
+    pub at: usize,
+    pub name: String,
+    pub busy: Vec<Busy>,
+    /// Work waiting for the person: to review, or put down until they act.
+    pub for_you: usize,
+    /// Tickets to do or in progress.
+    pub open: usize,
+}
+
+/// Someone at a project: a member on one of its tickets, or in a conversation
+/// about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Busy {
+    pub member: String,
+    pub ticket: Option<TicketId>,
+    /// For a conversation: what the person said last in it.
+    pub about: Option<String>,
+    pub working: bool,
+}
+
 /// A picture of a member's browser, as the daemon sent it.
 #[derive(Debug, Clone)]
 pub struct Frame {
@@ -294,6 +318,14 @@ impl Agent {
 
     pub fn is_pm(&self) -> bool {
         self.member.as_ref().is_some_and(|m| m.role == roles::PM)
+    }
+
+    /// What the person said last to it.
+    pub fn last_said(&self) -> Option<String> {
+        self.transcript.entries().iter().rev().find_map(|e| match e {
+            Entry::User { text } => Some(text.lines().next().unwrap_or_default().trim().to_owned()),
+            _ => None,
+        })
     }
 
     /// Whether what belongs to `project`'s conversation (`None`: the squad's)
@@ -722,6 +754,53 @@ impl App {
                 .count(),
             for_you: self.tickets.iter().filter(|t| matches!(t.status, TicketStatus::Review | TicketStatus::Waiting) && here(t)).count(),
         }
+    }
+
+    /// The whole squad at a glance, a line a project: who is at it — members
+    /// on its tickets, conversations about it — and what in it waits. Shown
+    /// over the PM's conversation with every project in view.
+    pub fn overview(&self) -> Vec<ProjectLine> {
+        self.projects
+            .iter()
+            .enumerate()
+            .map(|(at, project)| {
+                let name = equipe_core::board::project_name(project);
+                let here: Vec<&Ticket> = self.tickets.iter().filter(|t| self.ticket_project(t).as_deref() == Some(project.as_path())).collect();
+                let mut busy: Vec<Busy> = Vec::new();
+                for agent in &self.agents {
+                    let working = agent.state == AgentState::Working;
+                    if let Some(id) = agent.ticket.filter(|_| self.agent_project(agent).as_deref() == Some(project.as_path())) {
+                        busy.push(Busy { member: agent.label(), ticket: Some(id), about: None, working });
+                    } else if working && agent.ticket.is_none() && agent.current_thread() == Some(name.as_str()) {
+                        busy.push(Busy { member: agent.label(), ticket: None, about: agent.last_said(), working });
+                    }
+                }
+                // Conversations about it beside their members' other work.
+                for lane in &self.lanes {
+                    let Some(of) = lane.lane.as_ref().filter(|l| l.project.as_deref() == Some(name.as_str())) else {
+                        continue;
+                    };
+                    if lane.state != AgentState::Working {
+                        continue;
+                    }
+                    let member = self.agents.iter().find(|a| a.id == of.of).map_or_else(|| lane.label(), Agent::label);
+                    busy.push(Busy { member, ticket: None, about: lane.last_said(), working: true });
+                }
+                ProjectLine {
+                    at,
+                    name,
+                    busy,
+                    for_you: here.iter().filter(|t| matches!(t.status, TicketStatus::Review | TicketStatus::Waiting)).count(),
+                    open: here.iter().filter(|t| matches!(t.status, TicketStatus::Todo | TicketStatus::InProgress)).count(),
+                }
+            })
+            .collect()
+    }
+
+    /// Whether the overview is over the conversation: every project in view,
+    /// more than one of them, and the PM — the squad's main contact — on screen.
+    pub fn shows_overview(&self) -> bool {
+        self.focus.is_none() && self.projects.len() > 1 && self.pane == Pane::Conversation && self.viewed().is_some_and(Agent::is_pm)
     }
 
     /// Take completion `at` (Enter, or a click): its text into the composer,
@@ -1165,6 +1244,28 @@ impl App {
             lane.thread_view = None;
             lane.lane = Some(equipe_core::protocol::Lane { of: *of, project: project.clone() });
             self.lanes.push(lane);
+            return Vec::new();
+        }
+        // A lane that goes back into its member: what was said in it stays, in
+        // the member's conversation about that project.
+        if let Event::SessionClosed { .. } = &event
+            && let Some(at) = self.lanes.iter().position(|l| l.id == id)
+        {
+            let lane = self.lanes.remove(at);
+            if let Some(of) = lane.lane
+                && let Some(main) = self.agents.iter_mut().find(|a| a.id == of.of)
+            {
+                let back = main.current_thread().map(str::to_owned);
+                main.transcript.push_local(Entry::Thread { project: of.project });
+                for entry in lane.transcript.entries() {
+                    main.transcript.push_local(entry.clone());
+                }
+                main.transcript.push_local(Entry::Thread { project: back });
+            }
+            if self.watch == Some(id) {
+                self.watch = None;
+                self.frame = None;
+            }
             return Vec::new();
         }
         let Some(agent) = self.agents.iter_mut().chain(self.lanes.iter_mut()).find(|a| a.id == id) else {

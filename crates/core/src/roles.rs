@@ -266,7 +266,9 @@ and why, and go ahead only on their yes. Never type a card number or a password 
 to get past a CAPTCHA. When the person has to do a step — sign in, a code, a CAPTCHA — or should see something, \
 call `show_my_browser` with the page: your own browser comes up on their screen when your turn ends, and they do \
 it there while you wait; their sign-ins are kept as they go, no window to close. Never run `equipe browser` \
-yourself — it stops your turn until a window is closed. A one-time code the person sends you you may type."
+yourself — it stops your turn until a window is closed. A one-time code the person sends you you may type. Your \
+windows are yours alone, but sign-ins are shared by everyone's: don't sign out of a site, or switch it to another \
+account, team or workspace, without saying so first — the rest of the squad works signed in there too."
     } else {
         ""
     };
