@@ -2179,6 +2179,10 @@ async fn a_memo_waits_in_the_conversation_it_was_left_in_while_another_project_g
     handle.send(Command::SubmitLater { session: 1, text: "about the site".into() });
     let queued = until(&mut events, |e| matches!(e, Event::MessageQueued { .. })).await;
     assert!(matches!(queued.last(), Some(Event::MessageQueued { session: 1, project: Some(p), .. }) if p == "site"), "{queued:?}");
+    // Site's engine has started (and numbered its conversation) before app's can.
+    while calls(&recorded).is_empty() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     // About app meanwhile: app's lane takes it up at once, without waiting for site.
     handle.send(Command::Focus { squad: "acme".into(), project: Some("app".into()) });
     handle.send(Command::SubmitLater { session: 1, text: "about the app".into() });
