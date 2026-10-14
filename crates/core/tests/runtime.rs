@@ -2111,3 +2111,32 @@ async fn a_members_model_changes_between_turns_and_its_conversation_carries_on()
     assert_eq!(arg(&all[1], "--model"), Some("opus"));
     assert_eq!(arg(&all[1], "--resume"), Some("sess-1"));
 }
+
+#[tokio::test]
+async fn a_folder_inside_a_repository_is_a_project_of_its_own_worked_in_its_folder() {
+    let repo = repo();
+    let desktop = repo.join("crates").join("desktop");
+    std::fs::create_dir_all(&desktop).unwrap();
+    std::fs::write(desktop.join("main.rs"), "fn main() {}\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "desktop"]);
+    // Each turn writes down where it ran.
+    let wd = scratch("wd");
+    let turn = format!("pwd > '{}/cwd'\n{}", wd.display(), answering("ok"));
+    let claude = fake_claude(true, &turn);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&repo, &desktop])));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    let name = format!("{}-desktop", repo.file_name().unwrap().to_string_lossy());
+    assert_eq!(equipe_core::board::project_name(&desktop), name);
+    let made = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Window", "body": "-", "owner": "frontend", "project": name })).await;
+    assert!(!made.is_error, "{made:?}");
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(ws), project, .. }) = started.last() else { panic!("{started:#?}") };
+    assert_eq!(project, &desktop);
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    // The worktree is the whole repository's; the member works in the folder.
+    let ran = std::fs::read_to_string(wd.join("cwd")).unwrap();
+    let ran = std::fs::canonicalize(ran.trim()).unwrap();
+    assert_eq!(ran, std::fs::canonicalize(ws.path.join("crates").join("desktop")).unwrap());
+}

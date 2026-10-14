@@ -1612,7 +1612,7 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
         } else {
             None
         };
-        let cwd = sandbox.as_ref().map_or_else(|| project.clone(), |s| s.path.clone());
+        let cwd = sandbox.as_ref().map_or_else(|| project.clone(), |s| within(s, &project));
 
         ticket.status = TicketStatus::InProgress;
         ticket.assignee = Some(name.clone());
@@ -2843,6 +2843,16 @@ check what is already done in your worktree first."
 
 /// A member's ticket as it was when the daemon stopped. A ticket whose worktree
 /// was removed in the meantime goes back on the board instead.
+/// Where in a worktree `project` is: the worktree itself for a repository,
+/// the same folder in it for a folder of a repository.
+fn within(sandbox: &Sandbox, project: &Path) -> PathBuf {
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
+    match canon(project).strip_prefix(canon(&sandbox.repo)) {
+        Ok(inside) if !inside.as_os_str().is_empty() => sandbox.path.join(inside),
+        _ => sandbox.path.clone(),
+    }
+}
+
 fn restore_work(journal: &Journal, ticket: &Ticket, projects: &[PathBuf], home: &Path, edits: bool) -> Option<Work> {
     let in_home = ticket.kind.in_home();
     let project = if in_home {
@@ -2872,7 +2882,7 @@ fn restore_work(journal: &Journal, ticket: &Ticket, projects: &[PathBuf], home: 
     Some(Work {
         ticket: ticket.id,
         kind: ticket.kind,
-        cwd: sandbox.as_ref().map_or_else(|| project.clone(), |s| s.path.clone()),
+        cwd: sandbox.as_ref().map_or_else(|| project.clone(), |s| within(s, &project)),
         project,
         sandbox,
         claude_session: saved.engine_session,

@@ -89,7 +89,9 @@ pub fn resolve_folder(typed: &str, home: &Path, cwd: &Path) -> Result<Folder, St
             if root == Path::new("/") || root == canon(home) {
                 return Err(format!("{} is inside a git repository at {} — a squad works on project folders", path.display(), root.display()));
             }
-            return Err(format!("{} is inside the repository {} · type {} for the whole repository", path.display(), root.display(), root.display()));
+            // A folder of a repository — an app in a monorepo — is a project of
+            // its own: the squad works on it in the repository's worktrees.
+            true
         }
         Err(_) => false,
     };
@@ -409,10 +411,11 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_inside_a_repository_is_refused_not_swapped_for_its_top() {
+    fn a_folder_inside_a_repository_is_a_project_of_its_own_not_swapped_for_its_top() {
         let home = scratch_home("inside");
-        let err = resolve_folder("~/Abel/equipe/crates", &home, &home).unwrap_err();
-        assert!(err.contains(&format!("type {}", home.join("Abel/equipe").display())), "{err}");
+        let folder = resolve_folder("~/Abel/equipe/crates", &home, &home).unwrap();
+        assert!(folder.path.ends_with("Abel/equipe/crates") && folder.git, "{folder:?}");
+        assert_eq!(folder.name, "equipe-crates");
         std::fs::remove_dir_all(&home).unwrap();
     }
 

@@ -81,7 +81,21 @@ pub fn assignments(tickets: &[Ticket], members: &[Candidate<'_>], single_project
 
 /// What a project is called on the board: its directory name.
 pub fn project_name(path: &Path) -> String {
-    path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
+    // Screens ask for names every frame; the disk is looked at once per path.
+    static NAMES: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, String>>> = std::sync::Mutex::new(None);
+    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    names.get_or_insert_with(Default::default).entry(path.to_owned()).or_insert_with(|| name_on_disk(path)).clone()
+}
+
+fn name_on_disk(path: &Path) -> String {
+    let leaf = |p: &Path| p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
+    // A folder inside a repository is named with it: `equipe-desktop`.
+    if !path.join(".git").exists()
+        && let Some(root) = path.ancestors().skip(1).find(|a| a.join(".git").exists())
+    {
+        return format!("{}-{}", leaf(root), leaf(path));
+    }
+    leaf(path)
 }
 
 /// The project a tool argument names — by name or by path.
@@ -371,6 +385,19 @@ pub fn arg_id(args: &Value, key: &str) -> Option<TicketId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_folder_inside_a_repository_is_named_with_it() {
+        let root = std::env::temp_dir().join(format!("equipe-names-{}", std::process::id()));
+        let repo = root.join("equipe");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("crates").join("desktop")).unwrap();
+        assert_eq!(project_name(&repo), "equipe");
+        assert_eq!(project_name(&repo.join("crates").join("desktop")), "equipe-desktop");
+        // Not in a repository: its own name.
+        assert_eq!(project_name(std::path::Path::new("/nowhere/site")), "site");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     fn ticket(id: TicketId, owner: &str) -> Ticket {
         Ticket {
