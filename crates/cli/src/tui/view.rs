@@ -257,9 +257,18 @@ type LayoutKey = (usize, usize, usize, usize, bool, Option<String>);
 #[derive(Default)]
 pub struct Layouts {
     laid_out: HashMap<SessionId, (LayoutKey, Vec<Line<'static>>)>,
+    /// How this terminal shows pictures (iTerm2, kitty, sixel, or half blocks);
+    /// none in tests.
+    pub picker: Option<ratatui_image::picker::Picker>,
+    /// The watched browser's latest picture, ready to draw, and which it is.
+    picture: std::cell::RefCell<Option<(u64, ratatui_image::protocol::StatefulProtocol)>>,
 }
 
 impl Layouts {
+    pub fn with_picker(picker: ratatui_image::picker::Picker) -> Self {
+        Self { picker: Some(picker), ..Self::default() }
+    }
+
     /// Lay out the selected member's conversation for a terminal `width` columns
     /// wide, reusing the last layout when nothing changed. Returns the member and
     /// how many lines its conversation grew by, so a view scrolled up can stay put.
@@ -342,15 +351,26 @@ fn under_title(area: Rect) -> Rect {
 
 /// The conversation's text area, above its live row (working, or new lines).
 fn conversation_text(area: Rect, app: &App, agent: &Agent) -> Rect {
-    conversation_areas(under_title(area), app, agent).0
+    conversation_areas(under_title(area), app, agent).1
+}
+
+/// Room for a watched browser: above the conversation, most of the pane,
+/// when the pane is tall enough to keep some conversation in sight.
+fn watch_height(app: &App, agent: &Agent, room: u16) -> u16 {
+    if app.watch != Some(agent.id) || room < 14 {
+        return 0;
+    }
+    room * 3 / 5
 }
 
 /// The conversation pane under its title: the conversation, then — when there
 /// is any — work waiting for the person, then the live row.
-fn conversation_areas(area: Rect, app: &App, agent: &Agent) -> (Rect, Rect, Rect) {
+fn conversation_areas(area: Rect, app: &App, agent: &Agent) -> (Rect, Rect, Rect, Rect) {
     let live = (agent.scroll_back > 0 && agent.unseen > 0) || agent.state == AgentState::Working;
-    let card = waiting_card_height(app, area.height);
-    let [text, _, card, _, live] = Layout::vertical([
+    let watch = watch_height(app, agent, area.height);
+    let card = waiting_card_height(app, area.height.saturating_sub(watch));
+    let [watch, text, _, card, _, live] = Layout::vertical([
+        Constraint::Length(watch),
         Constraint::Min(1),
         Constraint::Length(u16::from(card > 0)),
         Constraint::Length(card),
@@ -358,7 +378,7 @@ fn conversation_areas(area: Rect, app: &App, agent: &Agent) -> (Rect, Rect, Rect
         Constraint::Length(u16::from(live)),
     ])
     .areas(area);
-    (text, card, live)
+    (watch, text, card, live)
 }
 
 /// How many tickets the card names before it counts the rest.
@@ -522,7 +542,7 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
     let text = conversation_text(right, app, agent);
     // The waiting card's rows open their tickets too.
     if app.pane == Pane::Conversation {
-        let (_, card, _) = conversation_areas(under_title(right), app, agent);
+        let (_, _, card, _) = conversation_areas(under_title(right), app, agent);
         for (i, (_, id)) in waiting_card(app, theme, card.width as usize).into_iter().enumerate().take(card.height as usize) {
             if let Some(id) = id {
                 hits.push((card.x, card.x + card.width, card.y + i as u16, Hit::Ticket(id)));
@@ -745,6 +765,7 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
         ("Ctrl-B", "the board, and back"),
         ("Ctrl-P", "pick a project — the board, and the PM's conversation about it, follow · Enter takes the next, typing finds one"),
         ("PgUp · PgDn · wheel", "scroll · End for the latest · Ctrl-O unfolds steps"),
+        ("Ctrl-W", "with nothing typed: watch the member's browser live, above its conversation · again to stop"),
         ("click · drag", "a ticket number opens it · drag over text to copy it · drag the squad's edge to resize it"),
     ]), keys));
     lines.extend(heading("ANSWER"));
@@ -1398,11 +1419,23 @@ You can talk to it directly — the PM hears about it."
         }
     }
     flush(&mut run, &mut lines, &mut last);
-    // Memos wait below the conversation until the turn ends.
-    for memo in &agent.queued {
+    // Memos wait below the conversation they go into until the turn ends;
+    // another project's conversation just says they are there.
+    if agent.in_view(agent.queued_project.as_deref()) {
+        for memo in &agent.queued {
+            gap(&mut lines);
+            lines.extend(wrapped(vec![Span::styled("› ", theme.dim())], memo, theme.dim(), 2, width));
+            lines.push(Line::from(Span::styled("  memo · read when this turn ends · Esc to read now", theme.dim())));
+        }
+    } else if !agent.queued.is_empty() {
         gap(&mut lines);
-        lines.extend(wrapped(vec![Span::styled("› ", theme.dim())], memo, theme.dim(), 2, width));
-        lines.push(Line::from(Span::styled("  memo · read when this turn ends · Esc to read now", theme.dim())));
+        let n = agent.queued.len();
+        let memos = if n == 1 { "1 memo".to_owned() } else { format!("{n} memos") };
+        let text = match agent.queued_project.as_deref() {
+            Some(project) => format!("· {memos} waiting in {project}'s conversation · Ctrl-P {project} shows it"),
+            None => format!("· {memos} waiting in the squad's conversation · Ctrl-P › all shows it"),
+        };
+        lines.push(Line::from(Span::styled(text, theme.dim())));
     }
     lines
 }
@@ -1453,6 +1486,46 @@ fn switch_label(app: &App, pane: Pane, theme: Theme) -> Vec<Span<'static>> {
     }
 }
 
+/// The watched member's browser: a line saying whose and where, then the
+/// latest picture of it — drawn in whatever pictures this terminal shows.
+fn render_watch(frame: &mut Frame, area: Rect, app: &App, agent: &Agent, theme: Theme, layouts: &Layouts) {
+    let [head, picture, _] = Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    let name = agent.label();
+    let shown = app.frame.as_ref().filter(|f| f.session == agent.id);
+    let mut line = vec![Span::styled(format!("{name}'s browser"), theme.bold())];
+    if let Some(url) = shown.and_then(|f| f.url.as_deref()) {
+        line.push(Span::styled(format!("  ·  {url}"), theme.dim()));
+    }
+    line.push(Span::styled("  ·  live · Ctrl-W stops", theme.dim()));
+    frame.render_widget(Paragraph::new(Line::from(line)), head);
+    let drawn = match (shown, &layouts.picker) {
+        (Some(shot), Some(picker)) => {
+            let mut picture_cache = layouts.picture.borrow_mut();
+            if picture_cache.as_ref().is_none_or(|(seq, _)| *seq != shot.seq)
+                && let Ok(image) = image::load_from_memory(&shot.png)
+            {
+                *picture_cache = Some((shot.seq, picker.new_resize_protocol(image)));
+            }
+            match picture_cache.as_mut() {
+                Some((_, protocol)) => {
+                    frame.render_stateful_widget(ratatui_image::StatefulImage::default(), picture, protocol);
+                    true
+                }
+                None => false,
+            }
+        }
+        _ => false,
+    };
+    if !drawn {
+        let text = if shown.is_some() {
+            format!("A picture of {name}'s browser came in — this terminal can't draw it.")
+        } else {
+            format!("Waiting for {name}'s browser · a picture comes while it has a page open.")
+        };
+        frame.render_widget(Paragraph::new(Span::styled(text, theme.dim())), picture);
+    }
+}
+
 fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, layouts: &Layouts) {
     let Some(agent) = app.selected() else {
         return;
@@ -1485,6 +1558,10 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
         let now = Instant::now();
         let took = agent.working_since.map(|since| elapsed(now.duration_since(since))).unwrap_or_default();
         let mut row = vec![theme.spinner(now), Span::raw(" ")];
+        // A turn in another project's conversation says where.
+        if !agent.in_view(agent.current_thread()) {
+            row.push(Span::styled(format!("in {} · ", agent.current_thread().unwrap_or("the squad")), theme.dim()));
+        }
         row.extend(theme.shimmer(doing(agent), now));
         row.extend([
             Span::styled(format!(" · {took}"), theme.dim()),
@@ -1494,7 +1571,10 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
         ]);
         footer.push(Line::from(row));
     }
-    let (text, card, live) = conversation_areas(area, app, agent);
+    let (watch, text, card, live) = conversation_areas(area, app, agent);
+    if watch.height > 0 {
+        render_watch(frame, watch, app, agent, theme, layouts);
+    }
     if card.height > 0 {
         let rows: Vec<Line> = waiting_card(app, theme, card.width as usize).into_iter().map(|(line, _)| line).collect();
         frame.render_widget(Paragraph::new(rows), card);
@@ -2463,6 +2543,27 @@ mod tests {
     }
 
     #[test]
+    fn a_memo_and_the_turn_show_in_the_projects_conversation_they_belong_to() {
+        let (mut app, pm) = working();
+        app.projects = vec!["/code/site".into(), "/code/app".into()];
+        // The turn runs in site's conversation; a memo was left about app.
+        app.on_event(Event::Thread { session: pm, project: Some("site".into()) });
+        app.on_event(Event::MessageQueued { session: pm, text: "and the app icon".into(), project: Some("app".into()) });
+        app.agents[0].thread_view = Some("app".into());
+        let shot = screen(&app, 110, 24);
+        assert!(shot.contains("› and the app icon"), "{shot}");
+        assert!(shot.contains("memo · read when this turn ends"), "{shot}");
+        assert!(shot.contains("in site ·"), "{shot}");
+        // Looking at site: the turn is here, the memo is app's.
+        app.agents[0].thread_view = Some("site".into());
+        let shot = screen(&app, 110, 24);
+        assert!(!shot.contains("› and the app icon"), "{shot}");
+        assert!(shot.contains("1 memo waiting in app"), "{shot}");
+        assert!(!shot.contains("in site ·"), "{shot}");
+        assert!(shot.contains("esc to stop"), "{shot}");
+    }
+
+    #[test]
     fn a_member_spoken_to_directly_says_the_pm_hears_and_memos_wait_in_sight() {
         let (mut app, pm) = working();
         app.on_event(Event::SessionStarted {
@@ -2474,7 +2575,7 @@ mod tests {
             member: Some(Member { role: "frontend".into(), name: "frontend".into() }),
             squad: Some("acme".into()),
         });
-        app.on_event(Event::MessageQueued { session: pm, text: "and the footer".into() });
+        app.on_event(Event::MessageQueued { session: pm, text: "and the footer".into(), project: None });
         let shot = screen(&app, 100, 24);
         assert!(shot.contains("● frontend  sonnet-5-5"), "{shot}");
         assert!(shot.contains("pm        1 memo"), "{shot}");

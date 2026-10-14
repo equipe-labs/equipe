@@ -363,6 +363,9 @@ pub enum Command {
     /// The project the person is looking at, by name — new work goes there
     /// unless they say otherwise; `None`: all of the squad's projects.
     Focus { squad: SquadName, project: Option<String> },
+    /// The screen watches `session`'s browser (`None`: none): equipe sends it
+    /// a picture of the page every moment or so ([`Event::BrowserFrame`]).
+    WatchBrowser { squad: SquadName, session: Option<SessionId> },
     /// The model a member's turns run on from now — any its engine offers.
     /// Its conversation carries on.
     SetModel { session: SessionId, model: String },
@@ -533,7 +536,14 @@ pub enum Event {
     UserMessage { session: SessionId, text: String },
     /// A message left while the agent works. It becomes a [`Event::UserMessage`]
     /// when the turn ends; memos left in the meantime arrive together.
-    MessageQueued { session: SessionId, text: String },
+    MessageQueued {
+        session: SessionId,
+        text: String,
+        /// The project it was left about: it goes into that project's
+        /// conversation, whichever the person looks at when the turn ends.
+        #[serde(default)]
+        project: Option<String>,
+    },
     /// A line from equipe for this session's conversation — e.g. the PM being
     /// told that the person spoke to a member directly.
     Notice { session: SessionId, text: String },
@@ -548,6 +558,8 @@ pub enum Event {
     /// The engine named its model (Claude Code does on its first turn), or the
     /// person changed it.
     ModelKnown { session: SessionId, model: String },
+    /// What a watched member's browser shows now: a PNG, base64, and the page.
+    BrowserFrame { session: SessionId, image: String, url: Option<String> },
     /// The member handed `what` to a subagent, which works alongside it.
     SubagentStarted { session: SessionId, id: String, what: String },
     /// A subagent's latest step.
@@ -605,6 +617,7 @@ impl Event {
             | Event::ModelKnown { session, .. }
             | Event::Thread { session, .. }
             | Event::SubagentStarted { session, .. }
+            | Event::BrowserFrame { session, .. }
             | Event::SubagentStep { session, .. }
             | Event::SubagentEnded { session, .. }
             | Event::TurnEnded { session, .. }
@@ -678,6 +691,9 @@ pub struct SessionInfo {
     /// Memos waiting for the turn in progress to end.
     #[serde(default)]
     pub queued: Vec<String>,
+    /// The project the memos were left about.
+    #[serde(default)]
+    pub queued_project: Option<String>,
     /// The ticket it is working on, and where.
     #[serde(default)]
     pub work: Option<WorkInfo>,
@@ -814,7 +830,7 @@ mod tests {
             },
             Event::TicketChanged { squad: "acme".into(), ticket: ticket(3) },
             Event::WorkStarted { session: 1, ticket: 3, title: "Hero".into(), project: "/site".into(), workspace: None },
-            Event::MessageQueued { session: 1, text: "also the footer".into() },
+            Event::MessageQueued { session: 1, text: "also the footer".into(), project: None },
             Event::Notice { session: 2, text: "↪ You → frontend: hi".into() },
             Event::TextDelta { session: 1, text: "안녕".into() },
             Event::ToolUse { session: 1, tool: "Edit".into(), target: Some("a.rs".into()) },
@@ -880,6 +896,7 @@ mod tests {
                 context: None,
                 recent: vec![Entry::User { text: "fix it".into() }, Entry::Reply { text: "on it".into() }],
                 queued: vec!["and the tests".into()],
+                queued_project: None,
                 work: Some(WorkInfo { ticket: 1, project: "/repo".into(), workspace: None }),
                 mode: Some(Mode::Ask),
             }],

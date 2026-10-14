@@ -268,7 +268,7 @@ impl Bridge {
                     *hearing = Hearing::Capturing(String::new());
                 }
             }
-            Event::MessageQueued { session, text } => {
+            Event::MessageQueued { session, text, .. } => {
                 if matches!(self.hearing.get(session), Some((_, Hearing::Waiting(sent))) if sent == text) {
                     let name = self.name_of(squad, *session);
                     outs.push(Out::Send {
@@ -956,6 +956,7 @@ mod tests {
             context: None,
             recent: vec![],
             queued: vec![],
+            queued_project: None,
             work: None,
             mode: None,
         }
@@ -1088,7 +1089,7 @@ mod tests {
     fn a_message_to_a_busy_member_says_it_waits() {
         let mut b = bridge();
         b.on_text("One more thing", None, 10);
-        let outs = b.on_event("acme", &Event::MessageQueued { session: 1, text: "One more thing".into() });
+        let outs = b.on_event("acme", &Event::MessageQueued { session: 1, text: "One more thing".into(), project: None });
         assert!(text(&outs[0]).contains("pm is mid-turn"), "{outs:?}");
     }
 

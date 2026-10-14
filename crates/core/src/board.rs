@@ -27,7 +27,8 @@ pub fn unstaffed(tickets: &[Ticket], members: &[Candidate<'_>], single_project: 
     let finished = |id: &TicketId| tickets.iter().any(|t| t.id == *id && t.status.is_closed());
     let mut waiting: Vec<(String, usize)> = Vec::new();
     for ticket in tickets.iter().filter(|t| t.status == TicketStatus::Todo && !taken.contains(&t.id)) {
-        let Some(owner) = ticket.owner.as_deref().filter(|o| members.iter().any(|m| m.role == *o)) else {
+        // The PM is one: its own work waits for it rather than bringing in more PMs.
+        let Some(owner) = ticket.owner.as_deref().filter(|o| *o != crate::roles::PM && members.iter().any(|m| m.role == *o)) else {
             continue;
         };
         if !knows_where(ticket, single_project) || !ticket.depends_on.iter().all(finished) {
@@ -155,6 +156,7 @@ pub const SUBMIT_FOR_REVIEW: &str = "submit_for_review";
 pub const BLOCK_ON_PERSON: &str = "block_on_person";
 /// A member asks the person's yes before something done in their name.
 pub const ASK_PERSON: &str = "ask_person";
+pub const SHOW_BROWSER: &str = "show_my_browser";
 /// A member writes a fact into the squad's memory.
 pub const REMEMBER: &str = "remember";
 /// A member takes a wrong or stale fact out of the squad's memory.
@@ -251,6 +253,20 @@ have done it. Your changes so far are kept. Then end your turn.",
             },
         }),
     ];
+    tools.push(json!({
+        "name": SHOW_BROWSER,
+        "description": "Put your browser on the person's screen — for them to sign in, to look at something with \
+you, or to do a step only they can (a code, a CAPTCHA). Give the page to open. It comes up when this turn ends; \
+say what they should do there, then end your turn and wait for them. Never run `equipe browser` yourself.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": { "type": "string", "description": "The page to open for them." },
+                "why": { "type": "string", "description": "What they should do there, in one line — in the person's language." },
+            },
+            "required": ["why"],
+        },
+    }));
     tools.push(json!({
         "name": ASK_PERSON,
         "description": "Ask the person's yes before something done in their name that they can't take back \
@@ -484,7 +500,8 @@ mod tests {
         assert_eq!(assignments(&tickets, &members, false), [(1, "data".into()), (2, "pm".into())]);
         assert!(unstaffed(&tickets, &members[..1], false).iter().all(|(role, _)| role != "backend"));
         let busy = [Candidate { name: "data", role: "data", free: false }, Candidate { name: "pm", role: "pm", free: false }];
-        assert_eq!(unstaffed(&tickets, &busy, false), [("data".into(), 1), ("pm".into(), 1)]);
+        // The PM's own work waits for the PM: no second PM is brought in for it.
+        assert_eq!(unstaffed(&tickets, &busy, false), [("data".into(), 1)]);
         assert_eq!(default_kind(None), TicketKind::Task);
         assert_eq!(default_kind(Some(Path::new("/site"))), TicketKind::Code);
     }

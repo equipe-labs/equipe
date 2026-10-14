@@ -354,6 +354,7 @@ mod tests {
             context: None,
             recent: vec![],
             queued: vec![],
+            queued_project: None,
             work: None,
             mode: None,
         }

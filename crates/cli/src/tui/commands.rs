@@ -30,7 +30,7 @@ pub const COMMANDS: [Spec; 27] = [
     Spec { name: "add", args: "<role…> | custom <name> [--edits]", about: "Bring in teammates" },
     Spec { name: "close", args: "", about: "Remove the selected member" },
     Spec { name: "mode", args: "[member] read-only|ask|auto|full", about: "How much members do on their own" },
-    Spec { name: "browser", args: "[show|hide [member] · max <n>]", about: "Sign in to sites; show, hide or cap members' browsers" },
+    Spec { name: "browser", args: "[watch|show|hide [member] · signin · max <n>]", about: "See a member's browser at work; sign in to sites" },
     Spec { name: "send-apps", args: "[add|remove <app> · reset]", about: "Apps where a member's send waits for your yes" },
     Spec { name: "desktop", args: "stop|resume", about: "Take the Mac's screen back from the members, or open it to them again" },
     Spec { name: "export", args: "", about: "Open the conversation in your editor" },
@@ -210,7 +210,7 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             choices
         }
         ("squad", 3) if words[0] == "new" => folders(typed).into_iter().map(|f| word(&f, "", "")).collect(),
-        ("browser", 1) => [("show", "browsers on this Mac's screen"), ("hide", "browsers hidden again"), ("max", "how many open at once")]
+        ("browser", 1) => [("watch", "a member's browser, live in a pane here"), ("show", "browsers on this Mac's screen"), ("hide", "browsers hidden again"), ("signin", "the sign-in window"), ("max", "how many open at once")]
             .iter()
             .filter(|(w, _)| starts(w))
             .map(|(w, about)| word(w, about, ""))
@@ -220,7 +220,7 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             .filter(|(w, _)| starts(w))
             .map(|(w, about)| word(w, about, ""))
             .collect(),
-        ("browser", 2) if matches!(words[0], "show" | "hide") => {
+        ("browser", 2) if matches!(words[0], "show" | "hide" | "watch") => {
             ctx.members.iter().filter(|(m, _)| starts(m)).map(|(m, _)| word(m, "", "")).collect()
         }
         _ => Vec::new(),

@@ -142,6 +142,9 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
     // In raw mode, before anything else reads the input: ask the terminal its
     // background colour, so the person's messages can sit on a faint wash of it.
     let theme = view::Theme::detect(query_background());
+    // How this terminal draws pictures (a watched member's browser): asked once,
+    // still before anything reads the input.
+    let picker = ratatui_image::picker::Picker::from_query_stdio().unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks());
     tell_keys_apart();
     if app.mouse && first_time("mouse-select") {
         app.flash = Some("The wheel scrolls here, and dragging over text copies it.".into());
@@ -159,7 +162,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
     let mut saved_split = app.board_split;
     let mut last_sample = Instant::now();
     let mut daemon_lost = false;
-    let mut layouts = view::Layouts::default();
+    let mut layouts = view::Layouts::with_picker(picker.clone());
     let draw = |terminal: &mut ratatui::DefaultTerminal, app: &mut app::App, layouts: &mut view::Layouts| {
         let size = terminal.size()?;
         if let Some((id, lines)) = layouts.prepare(app, theme, size.width) {
@@ -236,6 +239,10 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
             },
         }
         if app.should_quit {
+            // Nobody looks any more: the daemon stops taking pictures.
+            if app.watch.is_some() {
+                client.send(equipe_core::protocol::Command::WatchBrowser { squad: app.squad.clone(), session: None });
+            }
             break;
         }
         if std::mem::take(&mut app.export) {
@@ -353,6 +360,9 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         if let Some((squad, members)) = app.switch_to.take() {
             // Another squad: attach to it and show it in place — this one keeps
             // working in the daemon.
+            if app.watch.is_some() {
+                client.send(equipe_core::protocol::Command::WatchBrowser { squad: app.squad.clone(), session: None });
+            }
             match daemon::attach(&squad).await {
                 Ok((next, hello)) => {
                     client = next;
@@ -371,7 +381,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                         format!("Started {squad}: the PM joins first, then the team · tell the PM what to build")
                     });
                     app = fresh;
-                    layouts = view::Layouts::default();
+                    layouts = view::Layouts::with_picker(picker.clone());
                 }
                 Err(err) => app.flash = Some(format!("Couldn't open {squad}: {err}")),
             }

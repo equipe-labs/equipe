@@ -2096,6 +2096,31 @@ async fn the_pm_keeps_a_conversation_for_each_project_and_one_for_the_squad() {
 }
 
 #[tokio::test]
+async fn a_memo_goes_into_the_conversation_of_the_project_it_was_left_in() {
+    let site = named("site");
+    let app = named("app");
+    // Each turn takes a moment, long enough to leave a memo and look elsewhere.
+    let (claude, recorded) = recording_claude(&format!("sleep 1\n{}", answering_per_call("ok")));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
+    handle.send(Command::Submit { session: 1, text: "site one".into() });
+    until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
+    // Left while looking at app, then the person goes back to site.
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("app".into()) });
+    handle.send(Command::Submit { session: 1, text: "about the app".into() });
+    let queued = until(&mut events, |e| matches!(e, Event::MessageQueued { .. })).await;
+    assert!(matches!(queued.last(), Some(Event::MessageQueued { project: Some(p), .. }) if p == "app"), "{queued:?}");
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let second = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(second.iter().any(|e| matches!(e, Event::Thread { session: 1, project: Some(p) } if p == "app")), "{second:?}");
+    // The app's conversation starts afresh — not on the end of site's.
+    let all = calls(&recorded);
+    assert_eq!(arg(&all[1], "--resume"), None);
+}
+
+#[tokio::test]
 async fn a_members_model_changes_between_turns_and_its_conversation_carries_on() {
     let cwd = scratch("model");
     let (claude, recorded) = recording_claude(&answering("ok"));
@@ -2225,4 +2250,38 @@ async fn two_members_at_the_screen_take_turns_and_desktop_stop_refuses_both() {
     assert!(handle.desktop_ask(first.clone(), Use::Input).await.is_ok());
     assert!(handle.desktop_release(first.clone()).await);
     assert!(handle.desktop_ask(second, Use::Input).await.is_ok());
+}
+
+#[tokio::test]
+async fn one_browser_at_a_time_comes_on_screen_and_a_member_can_call_for_it() {
+    let repo = repo();
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    let (npx, launched) = fake_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    let shown = |name: &str| Journal::for_squad(&home, "acme").unwrap().browser_shown(name);
+    // Between turns, showing one opens it on screen at once…
+    handle.send(Command::ShowBrowser { squad: "acme".into(), member: Some("pm".into()), show: true });
+    for _ in 0..200 {
+        if launches(&launched).iter().any(|a| !a.iter().any(|x| x == "--headless")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(launches(&launched).iter().any(|a| !a.iter().any(|x| x == "--headless")), "pm's window opened at once");
+    // …and showing another puts the first away.
+    handle.send(Command::ShowBrowser { squad: "acme".into(), member: Some("frontend".into()), show: true });
+    for _ in 0..200 {
+        if shown("frontend") && !shown("pm") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(shown("frontend") && !shown("pm"));
+    // A member calls its own browser up for the person.
+    let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://vercel.com/login", "why": "Sign in to Vercel" })).await;
+    assert!(!said.is_error && said.text.contains("comes up on the person's screen"), "{said:?}");
+    assert!(shown("pm") && !shown("frontend"));
 }

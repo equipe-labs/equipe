@@ -229,6 +229,10 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         next_approval: 1,
         focus: HashMap::new(),
         browsers: HashMap::new(),
+        watching: HashMap::new(),
+        framing: std::collections::HashSet::new(),
+        last_url: HashMap::new(),
+        show_url: HashMap::new(),
         plan: None,
     };
     let mut memos = Vec::new();
@@ -319,6 +323,9 @@ struct Session {
     turn: Option<JoinHandle<()>>,
     /// Memos left while a turn ran, delivered together when it ends.
     queued: Vec<String>,
+    /// The project the person was looking at when the memos were left (`None`
+    /// inside: the whole squad); they go into that project's conversation.
+    memo_thread: Option<Option<String>>,
     /// For the PM: what happened with the team since the PM's last turn. It
     /// travels with the PM's next message, so the PM keeps up without spending a
     /// turn on every exchange.
@@ -373,6 +380,8 @@ enum Internal {
     Done(TurnDone),
     /// Nobody answered a request for permission in time.
     ApprovalTimedOut(u64),
+    /// A picture of a watched member's browser, or none to be had.
+    Frame(SessionId, Option<(Vec<u8>, Option<String>)>),
 }
 
 /// A request for permission waiting for the person, and the engine waiting on it.
@@ -417,6 +426,14 @@ struct Runtime {
     focus: HashMap<String, String>,
     /// Members' browsers, kept between turns: by squad and member.
     browsers: HashMap<(String, String), browser::Running>,
+    /// The member each squad's screen watches the browser of, and the
+    /// pictures under way, one at a time each.
+    watching: HashMap<String, SessionId>,
+    framing: std::collections::HashSet<SessionId>,
+    /// Where each member's browser was last taken, by squad and name — and a
+    /// page asked for when it next comes on screen.
+    last_url: HashMap<(String, String), String>,
+    show_url: HashMap<(String, String), String>,
     /// The Claude plan's usage, as Claude Code last reported it.
     plan: Option<equipe_protocol::PlanUsage>,
     /// The Mac's screen, one member at a time, across squads.
@@ -428,6 +445,7 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
     let mut minute = tokio::time::interval(Duration::from_secs(60));
     // A screen held by a member that stopped using it goes to the next in line.
     let mut desktop_tick = tokio::time::interval(Duration::from_secs(5));
+    let mut frames = tokio::time::interval(FRAME_EVERY);
     daily.tick().await; // the first tick is immediate; pruning already ran at start
     loop {
         tokio::select! {
@@ -465,6 +483,14 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                 Internal::Event(event) => rt.publish(event),
                 Internal::Done(done) => rt.on_turn_done(done).await,
                 Internal::ApprovalTimedOut(id) => rt.answer(id, Decision::Deny, "Nobody answered in time."),
+                Internal::Frame(session, frame) => {
+                    rt.framing.remove(&session);
+                    if let Some((png, url)) = frame {
+                        use base64::Engine as _;
+                        let image = base64::engine::general_purpose::STANDARD.encode(png);
+                        rt.publish(Event::BrowserFrame { session, image, url });
+                    }
+                }
             },
             _ = daily.tick(), if rt.config.persist => rt.prune(),
             _ = desktop_tick.tick() => {
@@ -472,6 +498,7 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                     rt.publish_desktop();
                 }
             }
+            _ = frames.tick() => rt.take_frames(),
             _ = minute.tick() => {
                 rt.close_idle_browsers();
                 rt.let_helpers_go().await;
@@ -493,6 +520,14 @@ impl Runtime {
     /// the screens following its squad. `squad` names the squad of an event that
     /// has no session to say it (a failed start, a board error).
     fn publish_in(&mut self, squad: Option<&str>, event: Event) {
+        // Where a member's browser goes, to bring it back there on screen.
+        if let Event::ToolUse { session, tool, target: Some(url) } = &event
+            && tool.ends_with("browser_navigate")
+            && let Some(s) = self.sessions.get(session)
+            && let (Some(squad), Some(name)) = (s.squad.clone(), s.name())
+        {
+            self.last_url.insert((squad, name.to_owned()), url.clone());
+        }
         let mut squad = squad.map(str::to_owned);
         if let Some(id) = event.session()
             && let Some(session) = self.sessions.get_mut(&id)
@@ -595,6 +630,14 @@ impl Runtime {
                     self.publish_desktop();
                 }
             }
+            Command::WatchBrowser { squad, session } => match session {
+                Some(id) => {
+                    self.watching.insert(squad, id);
+                }
+                None => {
+                    self.watching.remove(&squad);
+                }
+            },
             Command::Scale { squad, extra } => {
                 if let Some(journal) = self.journal(&squad) {
                     let _ = journal.set_scale(extra.min(HELPERS_MAX));
@@ -651,8 +694,10 @@ impl Runtime {
         let (Some(squad), queued, briefing) = (session.squad.clone(), session.queued.clone(), session.briefing.clone()) else {
             return;
         };
+        let memo_thread: Vec<String> = session.memo_thread.clone().map(Option::unwrap_or_default).into_iter().collect();
         if let Some(journal) = self.journal(&squad) {
             let _ = journal.set_waiting(id, "memo", &queued);
+            let _ = journal.set_waiting(id, "memo-thread", &memo_thread);
             let _ = journal.set_waiting(id, "briefing", &briefing);
         }
     }
@@ -924,6 +969,7 @@ impl Runtime {
                 transcript: Transcript::default(),
                 turn: None,
                 queued: Vec::new(),
+                memo_thread: None,
                 briefing: Vec::new(),
                 memory,
                 mode: None,
@@ -965,17 +1011,30 @@ impl Runtime {
             return self.error(Some(id), format!("no open session {id}"), None);
         };
         if session.is_working() {
-            // A memo: it waits for the turn to end rather than cutting in.
+            // A memo: it waits for the turn to end rather than cutting in, and
+            // belongs with the project the person is looking at now.
+            let looking_at = match &session.work {
+                Some(work) => Some(crate::board::project_name(&work.project)),
+                None => session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned(),
+            };
+            if session.queued.is_empty() || session.memo_thread.is_none() {
+                session.memo_thread = Some(looking_at);
+            }
             session.queued.push(text.clone());
+            let project = session.memo_thread.clone().flatten();
             self.save_waiting(id);
-            return self.publish(Event::MessageQueued { session: id, text });
+            return self.publish(Event::MessageQueued { session: id, text, project });
+        }
+        let memo_thread = session.memo_thread.take();
+        if memo_thread.is_some() {
+            self.save_waiting(id);
         }
         if !self.ensure_codex(id).await {
             return;
         }
         // The PM talks about the project the person is looking at in that
-        // project's own conversation.
-        self.enter_thread(id);
+        // project's own conversation — a memo, about the one it was left in.
+        self.enter_thread(id, memo_thread);
         self.publish(Event::UserMessage { session: id, text: text.clone() });
         // What the person writes in is what the squad writes for them.
         if let (Some(squad), Some(language)) = (self.sessions.get(&id).and_then(|s| s.squad.clone()), crate::language::detect(&text))
@@ -1017,14 +1076,14 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
     /// looks at (the whole squad's when none): the current one is put aside,
     /// the thread's own taken up — or started — so what's said about one
     /// project never fills another's conversation.
-    fn enter_thread(&mut self, id: SessionId) {
+    fn enter_thread(&mut self, id: SessionId, wanted: Option<Option<String>>) {
         let Some(session) = self.sessions.get(&id) else {
             return;
         };
         if session.member.is_none() || session.work.is_some() {
             return;
         }
-        let wanted = session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned();
+        let wanted = wanted.unwrap_or_else(|| session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned());
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -1089,23 +1148,11 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
             (Some(npx), Some(squad), Some(name)) if wants_browser => {
                 // Page snapshots and screenshots: in the temp folder, readable without
                 // asking, and never in the project.
-                let output = std::env::temp_dir().join("equipe-browser").join(&squad).join(&name);
+                let _ = npx;
                 let shown = self.journals.get(&squad).is_some_and(|j| j.browser_shown(&name));
-                let profile = browser::profile(&self.config.home, &squad, &name);
-                let key = (squad, name);
                 // The browser it had, if still running and showing as asked; else a new one,
                 // which equipe holds open so it outlives each turn.
-                if !self.browsers.get_mut(&key).is_some_and(|b| b.fits(shown))
-                    && let Ok(running) = browser::launch(&npx, &self.config.home, &profile, &output, shown)
-                {
-                    let (client, port) = (self.client.clone(), running.port);
-                    tokio::spawn(async move { browser::hold(&client, port).await });
-                    self.browsers.insert(key.clone(), running);
-                }
-                self.browsers.get_mut(&key).map(|b| {
-                    b.last_used = std::time::Instant::now();
-                    b.port
-                })
+                self.open_browser(&squad, &name, shown)
             }
             _ => None,
         };
@@ -1397,6 +1444,13 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
     }
 
     async fn on_turn_done(&mut self, done: TurnDone) {
+        // A browser asked onto the screen during the turn comes up now.
+        if let Some(session) = self.sessions.get_mut(&done.session) {
+            session.turn = None;
+            if let Some(squad) = session.squad.clone() {
+                self.apply_browsers(&squad);
+            }
+        }
         let persist = self.config.persist;
         let Some(session) = self.sessions.get_mut(&done.session) else {
             return;
@@ -2181,6 +2235,24 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
         if call.name == board::ASK_PERSON {
             return self.ask_person(call, reply);
         }
+        if call.name == board::SHOW_BROWSER {
+            let url = call.arguments["url"].as_str().map(str::to_owned);
+            let why = call.arguments["why"].as_str().unwrap_or_default().to_owned();
+            if let Some(url) = url {
+                self.show_url.insert((call.squad.clone(), call.member.clone()), url);
+            }
+            self.show_browser(&call.squad, Some(call.member.clone()), true);
+            if let Some(id) = self.member_id(&call.squad, &call.member) {
+                self.publish(Event::Notice { session: id, text: format!("🖥 {}'s browser comes up on this Mac's screen: {why}", call.member) });
+            }
+            let _ = reply.send(ToolResult {
+                text: "Your browser comes up on the person's screen when this turn ends, at that page. Tell them what to do \
+there, end your turn, and carry on when they say they're done."
+                    .into(),
+                is_error: false,
+            });
+            return;
+        }
         let squad = call.squad.clone();
         let result = self.run_tool(call);
         // Whatever changed, the rules look again.
@@ -2453,7 +2525,84 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
             return self.squad_error(squad, format!("No one called {name} on the squad."));
         }
         if let Some(journal) = self.journal(squad) {
+            // One window to touch at a time: showing one member's hides the rest.
+            if show && member.is_some() {
+                let _ = journal.show_browser(None, false, &team);
+            }
             let _ = journal.show_browser(member.as_deref(), show, &team);
+        }
+        self.apply_browsers(squad);
+    }
+
+    /// Bring each of `squad`'s browsers to how it should show — on screen or
+    /// not — now, for members between turns; a member mid-turn keeps its own
+    /// until the turn ends (its turn is using it).
+    fn apply_browsers(&mut self, squad: &str) {
+        let members: Vec<(SessionId, String, bool)> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.squad.as_deref() == Some(squad))
+            .filter_map(|(id, s)| Some((*id, s.name()?.to_owned(), s.is_working())))
+            .collect();
+        for (_, name, working) in members {
+            let shown = self.journals.get(squad).is_some_and(|j| j.browser_shown(&name));
+            let key = (squad.to_owned(), name.clone());
+            let fits = self.browsers.get_mut(&key).is_none_or(|b| b.fits(shown));
+            if working || (fits && !(shown && !self.browsers.contains_key(&key))) {
+                continue;
+            }
+            // Hidden: its window closes; it opens again hidden when next used.
+            self.browsers.remove(&key);
+            if shown {
+                self.open_browser(squad, &name, true);
+            }
+        }
+    }
+
+    /// Start a member's browser now — on screen when `shown` — and take it to
+    /// the page asked for, or where it last was.
+    fn open_browser(&mut self, squad: &str, name: &str, shown: bool) -> Option<u16> {
+        let npx = self.config.npx.clone()?;
+        let output = std::env::temp_dir().join("equipe-browser").join(squad).join(name);
+        let profile = browser::profile(&self.config.home, squad, name);
+        let key = (squad.to_owned(), name.to_owned());
+        if !self.browsers.get_mut(&key).is_some_and(|b| b.fits(shown)) {
+            let running = browser::launch(&npx, &self.config.home, &profile, &output, shown).ok()?;
+            let (client, port) = (self.client.clone(), running.port);
+            let page = self.show_url.remove(&key).or_else(|| self.last_url.get(&key).cloned()).filter(|_| shown);
+            tokio::spawn(async move {
+                if browser::hold(&client, port).await
+                    && let Some(page) = page
+                {
+                    browser::navigate(&client, port, &page).await;
+                }
+            });
+            self.browsers.insert(key.clone(), running);
+        }
+        self.browsers.get_mut(&key).map(|b| {
+            b.last_used = std::time::Instant::now();
+            b.port
+        })
+    }
+
+    /// A picture of each watched member's browser, one under way at a time.
+    fn take_frames(&mut self) {
+        let watched: Vec<(String, SessionId)> = self.watching.iter().map(|(s, id)| (s.clone(), *id)).collect();
+        for (squad, id) in watched {
+            if self.framing.contains(&id) {
+                continue;
+            }
+            let Some(name) = self.sessions.get(&id).and_then(|s| s.name().map(str::to_owned)) else { continue };
+            let Some(port) = self.browsers.get(&(squad.clone(), name.clone())).map(|b| b.port) else { continue };
+            self.framing.insert(id);
+            let (client, internal) = (self.client.clone(), self.internal.clone());
+            let output = std::env::temp_dir().join("equipe-browser").join(&squad).join(&name);
+            tokio::spawn(async move {
+                let frame = browser::screenshot(&client, port).await;
+                // Its screenshots land beside the member's: those are equipe's to clear.
+                clear_frames(&output);
+                let _ = internal.send(Internal::Frame(id, frame));
+            });
         }
     }
 
@@ -2708,6 +2857,7 @@ it back there once they have done it. End your turn now with a short line on wha
                     context: s.context,
                     recent: entries[entries.len().saturating_sub(SNAPSHOT_LINES)..].to_vec(),
                     queued: s.queued.clone(),
+                    queued_project: s.memo_thread.clone().flatten(),
                     work: s.work.as_ref().map(|w| WorkInfo {
                         ticket: w.ticket,
                         project: w.project.clone(),
@@ -2820,6 +2970,7 @@ it back there once they have done it. End your turn now with a short line on wha
                         transcript: Transcript::from_entries(conversation),
                         turn: None,
                         queued: journal.waiting(record.id, "memo").unwrap_or_default(),
+                        memo_thread: journal.waiting(record.id, "memo-thread").unwrap_or_default().pop().map(|p| Some(p).filter(|p| !p.is_empty())),
                         briefing: journal.waiting(record.id, "briefing").unwrap_or_default(),
                         memory,
                         mode: record.mode,
@@ -2956,6 +3107,20 @@ check what is already done in your worktree first."
         self.browsers.retain(|key, b| {
             working.contains(key) || (present.contains(key) && b.last_used.elapsed() < Duration::from_secs(30 * 60))
         });
+        // A window left on screen with nobody using it goes back out of sight.
+        let idle_shown: Vec<(String, String)> = self
+            .browsers
+            .iter()
+            .filter(|(key, b)| b.is_shown() && !working.contains(key) && b.last_used.elapsed() > SHOWN_IDLE)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for (squad, name) in idle_shown {
+            let team: Vec<String> = self.team(&squad).into_iter().map(|(_, n, _)| n).collect();
+            if let Some(journal) = self.journal(&squad) {
+                let _ = journal.show_browser(Some(&name), false, &team);
+            }
+            self.browsers.remove(&(squad, name));
+        }
     }
 
     /// Prune conversations past the retention window in every journal.
@@ -3461,6 +3626,25 @@ fn tidy_line(stale: &[(TicketId, String, i64)]) -> Option<String> {
 with each: close it, merge it into another, or keep it (and why). Don't cancel them on your own; the person decides.",
         listed.join("; ")
     ))
+}
+
+/// How long a browser stays on screen unused before it goes out of sight.
+const SHOWN_IDLE: Duration = Duration::from_secs(10 * 60);
+
+/// How often a watched browser is pictured.
+const FRAME_EVERY: Duration = Duration::from_millis(1500);
+
+/// Screenshots older than a moment in a member's browser folder: the pictures
+/// equipe took to show the person, not the member's own (it reads them at once).
+fn clear_frames(dir: &Path) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let old = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > Duration::from_secs(30));
+        if name.starts_with("page-") && name.ends_with(".png") && old {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 fn now_secs() -> u64 {

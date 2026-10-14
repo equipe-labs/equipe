@@ -75,6 +75,17 @@ pub struct ProjectStatus {
     pub for_you: usize,
 }
 
+/// A picture of a member's browser, as the daemon sent it.
+#[derive(Debug, Clone)]
+pub struct Frame {
+    /// Counts the pictures, so a new one is drawn anew.
+    pub seq: u64,
+    pub session: SessionId,
+    /// The PNG, decoded.
+    pub png: Vec<u8>,
+    pub url: Option<String>,
+}
+
 pub struct Agent {
     pub id: SessionId,
     pub member: Option<Member>,
@@ -89,6 +100,8 @@ pub struct Agent {
     pub transcript: Transcript,
     /// Memos waiting for its turn to end.
     pub queued: Vec<String>,
+    /// The project the memos were left about: they show in its conversation.
+    pub queued_project: Option<String>,
     pub tokens: u64,
     /// How full its conversation's context is, and the window.
     pub context: Option<(u64, u64)>,
@@ -134,6 +147,7 @@ impl Agent {
             state: AgentState::Starting,
             transcript: Transcript::default(),
             queued: Vec::new(),
+            queued_project: None,
             tokens: 0,
             context: None,
             seen: (0, 0),
@@ -186,8 +200,7 @@ impl Agent {
                 continue;
             }
             let ticket_header = matches!(entry, Entry::Note { text } if text.starts_with("── T-"));
-            let visible = if pm { current == self.thread_view.as_deref() } else { self.thread_view.is_none() || current == self.thread_view.as_deref() };
-            if !visible {
+            if !self.in_view(current) {
                 if !pm {
                     let n = left_out.get_or_insert(0);
                     *n += usize::from(ticket_header);
@@ -226,6 +239,7 @@ impl Agent {
             },
             transcript: Transcript::from_entries(info.recent),
             queued: info.queued,
+            queued_project: info.queued_project,
             tokens: info.tokens,
             context: info.context,
             seen: (0, 0),
@@ -260,6 +274,20 @@ impl Agent {
 
     pub fn is_pm(&self) -> bool {
         self.member.as_ref().is_some_and(|m| m.role == roles::PM)
+    }
+
+    /// Whether what belongs to `project`'s conversation (`None`: the squad's)
+    /// shows in the one in view.
+    pub fn in_view(&self, project: Option<&str>) -> bool {
+        project == self.thread_view.as_deref() || (self.thread_view.is_none() && !self.is_pm())
+    }
+
+    /// The conversation its turns go into now.
+    pub fn current_thread(&self) -> Option<&str> {
+        self.transcript.entries().iter().rev().find_map(|e| match e {
+            Entry::Thread { project } => Some(project.as_deref()),
+            _ => None,
+        })?
     }
 
     /// The model as a short name: `opus-5-5` for `claude-opus-5-5[1m]`.
@@ -379,8 +407,13 @@ pub struct App {
     last_wheel: Option<(Instant, bool)>,
     /// The selected member's conversation, asked for as a file (`/export`).
     pub export: bool,
-    /// Asked to open the sign-in browser (`/browser`).
+    /// Asked to open the sign-in browser (`/browser signin`).
     pub open_browser: bool,
+    /// The member whose browser is watched in a pane (Ctrl-W): it follows the
+    /// member talked to.
+    pub watch: Option<SessionId>,
+    /// The latest picture of the watched browser.
+    pub frame: Option<Frame>,
     /// The help screen is open over the conversation.
     pub help_open: bool,
     /// Ctrl-V was pressed: attach the clipboard's image.
@@ -509,6 +542,8 @@ impl App {
             browsers: HashMap::new(),
             view_diff: None,
             open_browser: false,
+            watch: None,
+            frame: None,
             help_open: false,
             paste_image: false,
             upload: None,
@@ -962,6 +997,31 @@ impl App {
 
     pub fn on_event(&mut self, event: Event) -> Vec<Command> {
         match event {
+            // A member that leaves the squad leaves its list: a helper by the
+            // same name may join later, and must not show twice.
+            Event::SessionClosed { session } if self.agents.iter().any(|a| a.id == session && a.member.is_some()) => {
+                let talked_to = self.selected().map(|a| a.id).filter(|id| *id != session);
+                self.agents.retain(|a| a.id != session);
+                self.selected = talked_to
+                    .and_then(|id| self.agents.iter().position(|a| a.id == id))
+                    .or_else(|| self.agents.iter().position(Agent::is_pm))
+                    .unwrap_or(0);
+                if self.watch == Some(session) {
+                    self.watch = None;
+                    self.frame = None;
+                }
+                return Vec::new();
+            }
+            Event::BrowserFrame { session, image, url } => {
+                use base64::Engine as _;
+                if self.watch == Some(session)
+                    && let Ok(png) = base64::engine::general_purpose::STANDARD.decode(image.as_bytes())
+                {
+                    let seq = self.frame.as_ref().map_or(0, |f| f.seq + 1);
+                    self.frame = Some(Frame { seq, session, png, url });
+                }
+                return Vec::new();
+            }
             Event::PlanUsage { usage } => {
                 self.plan = Some(usage);
                 return Vec::new();
@@ -1037,7 +1097,10 @@ impl App {
                 // Waiting memos are delivered together as one message.
                 agent.queued.clear();
             }
-            Event::MessageQueued { text, .. } => agent.queued.push(text),
+            Event::MessageQueued { text, project, .. } => {
+                agent.queued.push(text);
+                agent.queued_project = project;
+            }
             Event::Output { tokens, .. } => agent.output = tokens,
             Event::WorkStarted { ticket, project, workspace, .. } => {
                 agent.ticket = Some(ticket);
@@ -1159,6 +1222,45 @@ impl App {
     }
 
     pub fn on_mouse(&mut self, kind: MouseEventKind, now: Instant) {
+        self.mouse(kind, now);
+        self.follow_watch();
+    }
+
+    /// Watching a browser follows the member talked to.
+    fn follow_watch(&mut self) {
+        let Some(watched) = self.watch else { return };
+        let Some(id) = self.selected().map(|a| a.id) else { return };
+        if id != watched {
+            self.watch = Some(id);
+            self.frame = None;
+            self.outbox.push(Command::WatchBrowser { squad: self.squad.clone(), session: Some(id) });
+        }
+    }
+
+    /// Ctrl-W with nothing typed: watch the selected member's browser in a
+    /// pane, or stop.
+    fn toggle_watch(&mut self) -> Vec<Command> {
+        let session = match self.watch {
+            Some(_) => None,
+            None => self.selected().map(|a| a.id),
+        };
+        self.watch(session)
+    }
+
+    fn watch(&mut self, session: Option<SessionId>) -> Vec<Command> {
+        if session.is_none() && self.watch.is_none() {
+            return Vec::new();
+        }
+        self.watch = session;
+        self.frame = None;
+        self.flash = Some(match session {
+            Some(_) => "Watching this member's browser · it follows who you talk to · Ctrl-W stops".into(),
+            None => "Stopped watching".into(),
+        });
+        vec![Command::WatchBrowser { squad: self.squad.clone(), session }]
+    }
+
+    fn mouse(&mut self, kind: MouseEventKind, now: Instant) {
         if let MouseEventKind::Up(_) = kind {
             self.dragging = false;
             self.dragging_board = false;
@@ -1236,6 +1338,7 @@ impl App {
     pub fn on_key(&mut self, key: KeyEvent, now: Instant) -> Vec<Command> {
         let before = self.composer.text().to_owned();
         let commands = self.key(key, now);
+        self.follow_watch();
         // A new text starts completion over — unless the key itself picked
         // a choice (Ctrl-P opens the picker on the next project).
         if self.composer.text() != before && !std::mem::take(&mut self.keep_pick) {
@@ -1514,6 +1617,7 @@ impl App {
             KeyCode::Char('a') if ctrl => self.composer.home(),
             KeyCode::Char('e') if ctrl => self.composer.end(),
             KeyCode::Char('u') if ctrl => self.composer.clear(),
+            KeyCode::Char('w') if ctrl && self.composer.is_empty() => return self.toggle_watch(),
             KeyCode::Char('w') if ctrl => self.composer.delete_word(),
             KeyCode::Backspace => self.composer.backspace(),
             KeyCode::Delete => self.composer.delete(),
@@ -2002,15 +2106,42 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
         }
     }
 
-    /// `/browser` opens the sign-in window; `/browser show [member]` puts members'
-    /// browsers on this Mac's screen, `/browser hide [member]` hides them again.
+    /// `/browser` puts the selected member's own browser on this Mac's screen,
+    /// where it keeps working; `/browser watch [member]` shows it in a pane here;
+    /// `/browser signin` opens the separate sign-in window; `/browser show|hide
+    /// [member]` puts browsers on screen or away.
     fn browser(&mut self, rest: &str) -> Vec<Command> {
         let words: Vec<&str> = rest.split_whitespace().collect();
+        let named = |app: &Self, name: &str| app.agents.iter().find(|a| a.is_open() && a.member.as_ref().is_some_and(|m| m.name == name)).map(|a| a.id);
         let (show, member) = match words.as_slice() {
             [] => {
+                let Some(name) = self.selected().and_then(|a| a.member.as_ref()).map(|m| m.name.clone()) else {
+                    self.open_browser = true;
+                    return Vec::new();
+                };
+                self.flash = Some(format!(
+                    "{name}'s browser comes on this Mac's screen — watch it work, sign in there; no need to close it · /browser hide puts it away"
+                ));
+                return vec![Command::ShowBrowser { squad: self.squad.clone(), member: Some(name), show: true }];
+            }
+            ["signin"] => {
                 self.open_browser = true;
                 return Vec::new();
             }
+            ["watch"] => return self.toggle_watch(),
+            ["watch", name] => match named(self, name) {
+                Some(id) => {
+                    if let Some(at) = self.agents.iter().position(|a| a.id == id) {
+                        self.selected = at;
+                        self.pane = Pane::Conversation;
+                    }
+                    return self.watch(Some(id));
+                }
+                None => {
+                    self.flash = Some(format!("No one called {name} in the squad"));
+                    return Vec::new();
+                }
+            },
             ["max"] => {
                 let home = equipe_providers::credentials::equipe_home();
                 self.flash = Some(format!("Up to {} browsers open at once · /browser max <n> changes it", equipe_core::browser::at_once(&home)));
@@ -2030,7 +2161,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             ["show", rest @ ..] if rest.len() <= 1 => (true, rest.first()),
             ["hide", rest @ ..] if rest.len() <= 1 => (false, rest.first()),
             _ => {
-                self.flash = Some("/browser signs you in · /browser show [member] puts browsers on screen · /browser hide [member]".into());
+                self.flash = Some("/browser shows the member's browser · /browser watch [member] here · /browser signin · /browser show|hide [member]".into());
                 return Vec::new();
             }
         };
@@ -2538,6 +2669,7 @@ mod tests {
             context: None,
             recent: Vec::new(),
             queued: Vec::new(),
+            queued_project: None,
             work: None,
             mode: None,
         }
@@ -2823,7 +2955,7 @@ mod tests {
         type_text(&mut app, "also the pricing page");
         assert_eq!(enter(&mut app), vec![Command::Submit { session: pm, text: "also the pricing page".into() }]);
         assert!(app.flash.as_deref().unwrap().contains("memo"));
-        app.on_event(Event::MessageQueued { session: pm, text: "also the pricing page".into() });
+        app.on_event(Event::MessageQueued { session: pm, text: "also the pricing page".into(), project: None });
         assert_eq!(app.agents[0].queued, ["also the pricing page"]);
         // Delivered when the turn ends: the memo becomes the next message.
         app.on_event(Event::UserMessage { session: pm, text: "also the pricing page".into() });
@@ -3302,6 +3434,42 @@ mod tests {
     }
 
     #[test]
+    fn a_member_that_leaves_drops_off_the_squad_and_one_by_its_name_can_join_again() {
+        let (mut app, pm, frontend) = team();
+        app.selected = app.agents.iter().position(|a| a.id == pm).unwrap();
+        app.on_event(Event::SessionClosed { session: frontend });
+        assert!(!app.agents.iter().any(|a| a.id == frontend));
+        assert_eq!(app.selected().map(|a| a.id), Some(pm));
+        // The one talked to leaves: the PM is talked to.
+        let (mut app, pm, frontend) = team();
+        app.selected = app.agents.iter().position(|a| a.id == frontend).unwrap();
+        app.on_event(Event::SessionClosed { session: frontend });
+        assert_eq!(app.selected().map(|a| a.id), Some(pm));
+    }
+
+    #[test]
+    fn ctrl_w_watches_the_selected_members_browser_and_follows_the_selection() {
+        let (mut app, pm, frontend) = team();
+        let ctrl_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        // Ctrl-W with an empty composer: watch (it deletes a word when there is text).
+        assert_eq!(app.on_key(ctrl_w, Instant::now()), vec![Command::WatchBrowser { squad: "acme".into(), session: Some(pm) }]);
+        assert_eq!(app.watch, Some(pm));
+        // A picture of it arrives and is kept.
+        app.on_event(Event::BrowserFrame { session: pm, image: "iVBORw0KGgo=".into(), url: Some("https://vercel.com".into()) });
+        assert!(app.frame.as_ref().is_some_and(|f| f.session == pm && f.url.as_deref() == Some("https://vercel.com")));
+        // Talking to someone else watches theirs.
+        app.on_key(KeyEvent::from(KeyCode::Tab), Instant::now());
+        assert_eq!(app.outbox, vec![Command::WatchBrowser { squad: "acme".into(), session: Some(frontend) }]);
+        app.outbox.clear();
+        // Again: stop.
+        assert_eq!(app.on_key(ctrl_w, Instant::now()), vec![Command::WatchBrowser { squad: "acme".into(), session: None }]);
+        assert_eq!(app.watch, None);
+        // /browser watch does the same.
+        type_text(&mut app, "/browser watch pm");
+        assert_eq!(enter(&mut app), vec![Command::WatchBrowser { squad: "acme".into(), session: Some(pm) }]);
+    }
+
+    #[test]
     fn clicking_a_completion_takes_it() {
         let mut app = two_projects();
         app.composer.insert_str("/project ");
@@ -3448,9 +3616,14 @@ mod tests {
     }
 
     #[test]
-    fn browser_opens_the_sign_in_window() {
+    fn browser_puts_the_selected_members_own_browser_on_screen() {
         let (mut app, _, _) = team();
+        // The member talked to: its browser, on screen — where it keeps working.
         type_text(&mut app, "/browser");
+        assert_eq!(enter(&mut app), vec![Command::ShowBrowser { squad: "acme".into(), member: Some("pm".into()), show: true }]);
+        assert!(app.flash.as_deref().unwrap().contains("no need to close"), "{:?}", app.flash);
+        // The separate sign-in window, still there for who wants it.
+        type_text(&mut app, "/browser signin");
         assert!(enter(&mut app).is_empty());
         assert!(app.open_browser);
         type_text(&mut app, "/browser show frontend");

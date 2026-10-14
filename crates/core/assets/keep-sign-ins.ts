@@ -2,8 +2,8 @@
 // takes one of the squad's browser places while it is open.
 // Playwright MCP runs this on every page (--init-page); STATE, SLOTS and MAX are
 // filled in by equipe. Cookies and local storage are merged into the shared
-// sign-ins, newest wins, a second after each page loads and when the browser
-// closes. At most MAX browsers run at once: a browser opening while all places
+// sign-ins, newest wins, a second after each page loads, every few seconds, and
+// when the browser closes; others' new sign-ins are taken up at each page. At most MAX browsers run at once: a browser opening while all places
 // are taken waits for one (a few minutes at most, then opens anyway).
 import * as fs from 'node:fs';
 
@@ -48,12 +48,21 @@ export default async ({ page }: { page: any }) => {
   const context = page.context();
   if (context.__equipe) return;
   context.__equipe = true;
-  // Start from the squad's sign-ins — the person's, and what teammates signed in to.
-  try {
-    const kept = JSON.parse(fs.readFileSync(STATE, 'utf8'));
-    const now = Date.now() / 1000;
-    await context.addCookies((kept.cookies || []).filter((c: any) => c.expires === -1 || c.expires > now));
-  } catch {}
+  // Start from the squad's sign-ins — the person's, and what teammates signed in
+  // to — and take up new ones as they come: a sign-in the person makes in one
+  // member's window reaches the others at their next page.
+  let seen = 0;
+  const take = async () => {
+    try {
+      const changed = fs.statSync(STATE).mtimeMs;
+      if (changed === seen) return;
+      seen = changed;
+      const kept = JSON.parse(fs.readFileSync(STATE, 'utf8'));
+      const now = Date.now() / 1000;
+      await context.addCookies((kept.cookies || []).filter((c: any) => c.expires === -1 || c.expires > now));
+    } catch {}
+  };
+  await take();
   const place = await takePlace();
   process.on('exit', () => leave(place));
   const save = async () => {
@@ -68,14 +77,24 @@ export default async ({ page }: { page: any }) => {
     const tmp = `${STATE}.${process.pid}`;
     fs.writeFileSync(tmp, JSON.stringify({ cookies: [...cookies.values()], origins: [...origins.values()] }), { mode: 0o600 });
     fs.renameSync(tmp, STATE);
+    // Its own write isn't news to take up again.
+    try { seen = fs.statSync(STATE).mtimeMs; } catch {}
   };
   let timer: any;
   const soon = () => {
     clearTimeout(timer);
     timer = setTimeout(() => save().catch(() => {}), 1000);
   };
-  context.on('page', (p: any) => p.on('load', soon));
-  page.on('load', soon);
+  const loaded = () => {
+    take().catch(() => {});
+    soon();
+  };
+  context.on('page', (p: any) => p.on('load', loaded));
+  page.on('load', loaded);
+  // A sign-in finishes on a page that may never load again — the person types
+  // a code and waits: kept every few seconds too, so the window needn't close.
+  const every = setInterval(() => save().catch(() => {}), 5000);
+  context.on('close', () => clearInterval(every));
   context.on('close', () => {
     save().catch(() => {}).finally(() => leave(place));
   });

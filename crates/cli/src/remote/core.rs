@@ -394,7 +394,8 @@ impl Core {
 
     /// An event of a squad a device follows: on to the device.
     pub fn on_event(&mut self, device: &str, squad: &str, event: &Event) -> Vec<Action> {
-        if !self.online.contains(device) {
+        // Pictures of a browser someone at the Mac watches stay on the Mac.
+        if !self.online.contains(device) || matches!(event, Event::BrowserFrame { .. }) {
             return vec![];
         }
         self.frame_for(device, Some(squad), &Message::event(event)).into_iter().collect()

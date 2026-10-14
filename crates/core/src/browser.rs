@@ -123,6 +123,10 @@ impl Drop for Running {
 
 impl Running {
     /// Still running, and showing as asked.
+    pub fn is_shown(&self) -> bool {
+        self.shown
+    }
+
     pub fn fits(&mut self, shown: bool) -> bool {
         self.shown == shown && matches!(self.child.try_wait(), Ok(None))
     }
@@ -192,6 +196,61 @@ pub async fn hold(client: &reqwest::Client, port: u16) -> bool {
         Ok(response) => response.bytes().await.is_ok(),
         Err(_) => false,
     }
+}
+
+/// Call one of a member's browser tools from a connection of equipe's own:
+/// the tool's result content, or `None`. The browser is the member's —
+/// its tabs and the page it is on.
+pub async fn call(client: &reqwest::Client, port: u16, tool: &str, arguments: Value) -> Option<Vec<Value>> {
+    let url = format!("http://localhost:{port}/mcp");
+    let post = |body: String, session: Option<&str>| {
+        let mut request = client
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(20))
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(body);
+        if let Some(session) = session {
+            request = request.header("mcp-session-id", session);
+        }
+        request.send()
+    };
+    let initialize = json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "equipe", "version": "1" } } });
+    let response = post(initialize.to_string(), None).await.ok()?;
+    let session = response.headers().get("mcp-session-id")?.to_str().ok()?.to_owned();
+    let _ = response.bytes().await;
+    let _ = post(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }).to_string(), Some(&session)).await;
+    let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": tool, "arguments": arguments } });
+    let raw = post(body.to_string(), Some(&session)).await.ok()?.text().await.ok()?;
+    // Streamable HTTP: one JSON message, or server-sent events carrying it.
+    let message: Value = raw
+        .lines()
+        .find_map(|line| line.strip_prefix("data:").and_then(|d| serde_json::from_str(d.trim()).ok()))
+        .or_else(|| serde_json::from_str(&raw).ok())?;
+    message["result"]["content"].as_array().cloned()
+}
+
+/// What a member's browser shows now: a PNG of the page, and its address.
+pub async fn screenshot(client: &reqwest::Client, port: u16) -> Option<(Vec<u8>, Option<String>)> {
+    use base64::Engine as _;
+    let content = call(client, port, "browser_take_screenshot", json!({})).await?;
+    let image = content.iter().find(|c| c["type"] == "image")?["data"].as_str()?;
+    let png = base64::engine::general_purpose::STANDARD.decode(image).ok()?;
+    let tabs = call(client, port, "browser_tabs", json!({ "action": "list" })).await.unwrap_or_default();
+    let url = tabs.iter().filter_map(|c| c["text"].as_str()).flat_map(str::lines).find(|l| l.contains("(current)")).and_then(current_url);
+    Some((png, url))
+}
+
+/// The address in a tab line: `- 0: (current) [Title](https://…)`.
+fn current_url(line: &str) -> Option<String> {
+    let start = line.rfind("](")? + 2;
+    Some(line[start..].trim_end_matches(')').to_owned())
+}
+
+/// Take a member's browser to `url`.
+pub async fn navigate(client: &reqwest::Client, port: u16, url: &str) -> bool {
+    call(client, port, "browser_navigate", json!({ "url": url })).await.is_some()
 }
 
 /// Wait until the browser server on `port` takes connections — the first
@@ -268,6 +327,13 @@ pub fn sites(state: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_current_tabs_address_is_read_from_its_line() {
+        assert_eq!(current_url("- 0: (current) [Example Domain](https://example.com/)").as_deref(), Some("https://example.com/"));
+        assert_eq!(current_url("- 1: [](about:blank)").as_deref(), Some("about:blank"));
+        assert_eq!(current_url("no link"), None);
+    }
 
     #[tokio::test]
     async fn a_server_listening_on_ipv6_localhost_is_seen_ready() {

@@ -152,7 +152,7 @@ mod tests {
     fn a_memo_is_not_a_line_until_it_is_delivered() {
         let mut t = Transcript::default();
         t.apply(&delta("working"));
-        assert_eq!(t.apply(&Event::MessageQueued { session: 1, text: "also this".into() }), Vec::<Entry>::new());
+        assert_eq!(t.apply(&Event::MessageQueued { session: 1, text: "also this".into(), project: None }), Vec::<Entry>::new());
         t.apply(&delta(" still"));
         assert_eq!(t.entries(), &[Entry::Reply { text: "working still".into() }], "a memo doesn't split the reply");
     }
