@@ -444,7 +444,7 @@ fn copy(text: &str) {
 /// Write the selected member's conversation to a Markdown file under
 /// `~/.equipe/exports`, and name the editor to open it in, if one is set.
 fn export(app: &app::App) -> std::io::Result<(PathBuf, Option<String>)> {
-    let agent = app.selected().ok_or_else(|| std::io::Error::other("nobody is selected"))?;
+    let agent = app.viewed().ok_or_else(|| std::io::Error::other("nobody is selected"))?;
     let dir = equipe_providers::credentials::equipe_home().join("exports");
     std::fs::create_dir_all(&dir)?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);

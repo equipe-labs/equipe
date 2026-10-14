@@ -2800,6 +2800,18 @@ mod tests {
         assert_eq!(app.viewed().map(|a| a.id), Some(77));
         let shot = screen(&app, 110, 24);
         assert!(shot.contains("The app is fine."), "{shot}");
+        // Scrolling moves the conversation shown — the lane's.
+        for i in 0..60 {
+            app.on_event(Event::Notice { session: 77, text: format!("line {i}") });
+        }
+        let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 110, 24), &Layouts::default());
+        app.set_extent(laid.page, laid.conversation_max, laid.board_max);
+        app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::PageUp), Instant::now());
+        assert!(app.lanes[0].scroll_back > 0 && app.agents[0].scroll_back == 0);
+        assert!(!screen(&app, 110, 24).contains("line 59"));
+        app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::End), Instant::now());
+        assert_eq!(app.lanes[0].scroll_back, 0);
+        assert!(screen(&app, 110, 24).contains("line 59"));
         assert!(shot.contains("2 at once"), "{shot}");
         // Esc stops app's conversation, not site's.
         let stop = app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Esc), Instant::now());
@@ -2810,10 +2822,10 @@ mod tests {
         // Left idle, the lane goes back into the member: what it said stays, about app.
         app.on_event(Event::SessionClosed { session: 77 });
         assert!(app.lanes.is_empty() && app.agents.len() == 1);
-        assert!(!screen(&app, 110, 24).contains("The app is fine."), "not in site's");
+        assert!(!screen(&app, 110, 24).contains("line 59"), "not in site's");
         app.agents[0].thread_view = Some("app".into());
         assert_eq!(app.viewed().map(|a| a.id), Some(pm));
-        assert!(screen(&app, 110, 24).contains("The app is fine."));
+        assert!(screen(&app, 110, 24).contains("line 59"));
     }
 
     #[test]

@@ -696,6 +696,17 @@ impl App {
         })
     }
 
+    /// The conversation shown, to scroll or unfold: the selected member's, or
+    /// its lane's about the project in view.
+    fn viewed_mut(&mut self) -> Option<&mut Agent> {
+        let selected = self.agents.get(self.selected)?;
+        let lane = self.lane_of(selected).map(|l| l.id);
+        match lane {
+            Some(id) => self.lanes.iter_mut().find(|l| l.id == id),
+            None => self.agents.get_mut(self.selected),
+        }
+    }
+
     /// How many of a member's lanes are at work now.
     pub fn lanes_working(&self, member: &Agent) -> usize {
         self.lanes.iter().filter(|l| l.lane.as_ref().is_some_and(|lane| lane.of == member.id) && l.state == AgentState::Working).count()
@@ -731,7 +742,7 @@ impl App {
     /// A member's conversation grew by `lines`. Someone scrolled up to read keeps
     /// their place instead of being carried along, and is told what arrived.
     pub fn grew(&mut self, id: SessionId, lines: usize) {
-        if let Some(agent) = self.agents.iter_mut().find(|a| a.id == id)
+        if let Some(agent) = self.agents.iter_mut().chain(self.lanes.iter_mut()).find(|a| a.id == id)
             && agent.scroll_back > 0
         {
             agent.scroll_back += lines;
@@ -1599,7 +1610,7 @@ impl App {
         self.page = page.max(3);
         self.conversation_max = conversation_max;
         self.board_max = board_max;
-        if let Some(agent) = self.agents.get_mut(self.selected) {
+        if let Some(agent) = self.viewed_mut() {
             agent.scroll_back = agent.scroll_back.min(conversation_max);
         }
         self.board_scroll = self.board_scroll.min(board_max);
@@ -1837,7 +1848,7 @@ impl App {
         }
         // Ctrl-O unfolds (and folds again) long runs of tool use.
         if key.code == KeyCode::Char('o') && ctrl && self.pane == Pane::Conversation {
-            if let Some(agent) = self.agents.get_mut(self.selected) {
+            if let Some(agent) = self.viewed_mut() {
                 agent.expanded = !agent.expanded;
             }
             return Vec::new();
@@ -1945,7 +1956,7 @@ impl App {
     }
 
     fn jump_to_latest(&mut self) {
-        if let Some(agent) = self.agents.get_mut(self.selected) {
+        if let Some(agent) = self.viewed_mut() {
             agent.scroll_back = 0;
             agent.unseen = 0;
         }
@@ -1958,7 +1969,7 @@ impl App {
             Pane::Board => self.board_scroll = moved(self.board_scroll, -lines, self.board_max),
             Pane::Conversation => {
                 let max = self.conversation_max;
-                if let Some(agent) = self.agents.get_mut(self.selected) {
+                if let Some(agent) = self.viewed_mut() {
                     agent.scroll_back = moved(agent.scroll_back, lines, max);
                     if agent.scroll_back == 0 {
                         agent.unseen = 0;
