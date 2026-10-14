@@ -296,6 +296,10 @@ pub struct TurnCollector {
     subagents: std::collections::HashSet<String>,
 }
 
+/// A subagent run in the background answers its tool call at once with this;
+/// it hands back later, in a task notification.
+const LAUNCHED_IN_BACKGROUND: &str = "Async agent launched";
+
 impl TurnCollector {
     pub fn new() -> Self {
         Self::default()
@@ -320,6 +324,24 @@ impl TurnCollector {
             "system" if event.get("subtype").and_then(Value::as_str) == Some("init") => {
                 self.model = event.get("model").and_then(Value::as_str).map(str::to_owned);
                 self.model.clone().map(Activity::Model).into_iter().collect()
+            }
+            // A subagent at work in the background: where it is, and when it is done.
+            "system" => {
+                let id = event.get("tool_use_id").and_then(Value::as_str).filter(|id| self.subagents.contains(*id));
+                match (event.get("subtype").and_then(Value::as_str), id) {
+                    (Some("task_progress"), Some(id)) => event
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .map(|step| Activity::SubagentStep { id: id.to_owned(), step: step.chars().take(80).collect() })
+                        .into_iter()
+                        .collect(),
+                    (Some("task_notification"), Some(id)) => {
+                        let id = id.to_owned();
+                        self.subagents.remove(&id);
+                        vec![Activity::SubagentEnded { id }]
+                    }
+                    _ => Vec::new(),
+                }
             }
             "rate_limit_event" => {
                 let windows = event.get("rate_limit_info").and_then(|i| i.get("unifiedWindows"));
@@ -393,8 +415,11 @@ impl TurnCollector {
                 }
                 out
             }
+            // A subagent handing back — unless the answer is that it went off to
+            // work in the background.
             "user" => content_blocks(event)
                 .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+                .filter(|b| !result_text(b).starts_with(LAUNCHED_IN_BACKGROUND))
                 .filter_map(|b| b.get("tool_use_id").and_then(Value::as_str))
                 .filter(|id| self.subagents.remove(*id))
                 .map(|id| Activity::SubagentEnded { id: id.to_owned() })
@@ -432,6 +457,15 @@ impl TurnCollector {
 }
 
 /// The subagent an event comes from, when it comes from one.
+/// A tool result's text, whether it came as a string or as blocks.
+fn result_text(block: &Value) -> String {
+    match block.get("content") {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => parts.iter().filter_map(|p| p.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join(""),
+        _ => String::new(),
+    }
+}
+
 fn parent(event: &Value) -> Option<&str> {
     event.get("parent_tool_use_id").and_then(Value::as_str).filter(|p| !p.is_empty())
 }
@@ -852,6 +886,17 @@ mod tests {
             { "type": "tool_result", "tool_use_id": "toolu_1", "content": "12 passed" },
         ]}}));
         assert_eq!(ended, vec![Activity::SubagentEnded { id: "toolu_1".into() }]);
+
+        // One run in the background answers at once, and hands back later.
+        let launched = collector.on_event(&json!({ "type": "user", "message": { "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_2", "content": [{ "type": "text", "text": "Async agent launched successfully. agentId: a1" }] },
+        ]}}));
+        assert!(launched.is_empty(), "still at work: {launched:?}");
+        let progress = collector.on_event(&json!({ "type": "system", "subtype": "task_progress", "tool_use_id": "toolu_2", "description": "Reading build.log" }));
+        assert_eq!(progress, vec![Activity::SubagentStep { id: "toolu_2".into(), step: "Reading build.log".into() }]);
+        let done = collector.on_event(&json!({ "type": "system", "subtype": "task_notification", "tool_use_id": "toolu_2", "status": "completed" }));
+        assert_eq!(done, vec![Activity::SubagentEnded { id: "toolu_2".into() }]);
+        assert!(collector.on_event(&json!({ "type": "system", "subtype": "task_notification", "tool_use_id": "toolu_2" })).is_empty(), "once");
     }
 
     #[test]
