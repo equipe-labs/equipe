@@ -58,6 +58,7 @@ fn config(home: &Path, claude: &Path) -> Config {
         equipe_binary: None,
         npx: None,
         mac: Box::new(equipe_core::desktop::ThisMac),
+        suggest: false,
     }
 }
 

@@ -606,6 +606,66 @@ pub async fn run_turn(
     collector.finish(&diagnostics.join(" · "))
 }
 
+/// How the person's next message is guessed: from the conversation's last
+/// exchanges alone, by the small model, with no tools, no MCP servers and
+/// nothing kept — a few hundred tokens, never the member's own conversation.
+const SUGGEST_SYSTEM: &str = "You guess what a person will type next to a member of their software \
+team, from the end of their conversation. Reply with only that message, as the person would type it: one short \
+line, in the language the person writes in, without quotes. Prefer what moves the work forward — a yes to an \
+offer, the obvious next step, a check of what was just done. If nothing is likely, reply with nothing.";
+
+/// Arguments for guessing the person's next message.
+pub fn suggest_args(conversation: &str) -> Vec<String> {
+    let prompt = format!("{conversation}\n\nThe person's next message:");
+    [
+        "-p",
+        &prompt,
+        "--model",
+        "haiku",
+        "--output-format",
+        "json",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        "--system-prompt",
+        SUGGEST_SYSTEM,
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .collect()
+}
+
+/// The guess in Claude Code's JSON result, cleaned to one line; `None` when
+/// there is no guess worth showing.
+pub fn parse_suggestion(json: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(json.trim()).ok()?;
+    if value.get("is_error").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+    let text = value.get("result")?.as_str()?;
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let line = line.trim_matches(|c| matches!(c, '"' | '\'' | '“' | '”' | '`')).trim();
+    (!line.is_empty() && line.chars().count() <= 200).then(|| line.to_owned())
+}
+
+/// Guess the person's next message from `conversation` with their own Claude
+/// Code, in `cwd`. Any failure is no guess.
+pub async fn suggest(binary: &str, cwd: &Path, conversation: &str) -> Option<String> {
+    let output = Command::new(binary)
+        .args(suggest_args(conversation))
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(std::time::Duration::from_secs(60), output).await.ok()?.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_suggestion(&String::from_utf8_lossy(&output.stdout))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -787,6 +847,30 @@ mod tests {
             { "type": "tool_result", "tool_use_id": "toolu_1", "content": "12 passed" },
         ]}}));
         assert_eq!(ended, vec![Activity::SubagentEnded { id: "toolu_1".into() }]);
+    }
+
+    #[test]
+    fn a_guess_at_the_next_message_is_small_and_touches_nothing() {
+        let args = suggest_args("[person] fix the button\n[frontend] Done. Shall I tidy the other pages too?");
+        let has = |pair: [&str; 2]| args.windows(2).any(|w| w[0] == pair[0] && w[1] == pair[1]);
+        assert!(has(["--model", "haiku"]));
+        assert!(has(["--tools", ""]), "no tools at all");
+        assert!(has(["--output-format", "json"]));
+        assert!(args.iter().any(|a| a == "--strict-mcp-config"), "none of the person's MCP servers");
+        assert!(args.iter().any(|a| a == "--no-session-persistence"), "nothing kept");
+        assert!(!args.iter().any(|a| a == "--bare" || a == "--resume"), "{args:?}");
+        assert!(args[1].contains("Shall I tidy"));
+    }
+
+    #[test]
+    fn the_guess_is_one_clean_line_or_none() {
+        let result = |text: &str| json!({"type": "result", "is_error": false, "result": text}).to_string();
+        assert_eq!(parse_suggestion(&result("\"응, 다른 페이지도 정리해줘\"\n")).as_deref(), Some("응, 다른 페이지도 정리해줘"));
+        assert_eq!(parse_suggestion(&result("\n  yes, go ahead\nand more")).as_deref(), Some("yes, go ahead"));
+        assert_eq!(parse_suggestion(&result("   ")), None);
+        assert_eq!(parse_suggestion(&result(&"x".repeat(300))), None, "a speech isn't a suggestion");
+        assert_eq!(parse_suggestion(&json!({"is_error": true, "result": "Not logged in"}).to_string()), None);
+        assert_eq!(parse_suggestion("not json"), None);
     }
 
     #[test]

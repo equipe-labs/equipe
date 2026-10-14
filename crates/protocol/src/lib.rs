@@ -376,6 +376,10 @@ pub enum Command {
     /// `/desktop stop`): whoever had it loses it at once and nobody gets it
     /// until they open it again (`open: true`, `/desktop resume`). For every squad.
     Desktop { open: bool },
+    /// Whether the squad's empty composer offers a guess at the person's next
+    /// message after a member answers them ([`Event::Suggestion`]). On unless
+    /// turned off; kept for the squad.
+    Suggestions { squad: SquadName, on: bool },
 }
 
 /// A member, wherever it is: its squad and its name.
@@ -569,6 +573,9 @@ pub enum Event {
     /// The PM's conversation moved to its thread for `project` (`None`: the
     /// whole squad's). Each thread is a conversation of its own.
     Thread { session: SessionId, project: Option<String> },
+    /// A guess at what the person will say next to the member who just
+    /// answered them, for their empty composer. Not part of the conversation.
+    Suggestion { session: SessionId, text: String },
     TurnEnded {
         session: SessionId,
         outcome: TurnOutcome,
@@ -616,6 +623,7 @@ impl Event {
             | Event::ToolUse { session, .. }
             | Event::ModelKnown { session, .. }
             | Event::Thread { session, .. }
+            | Event::Suggestion { session, .. }
             | Event::SubagentStarted { session, .. }
             | Event::BrowserFrame { session, .. }
             | Event::SubagentStep { session, .. }
@@ -731,6 +739,9 @@ pub struct Snapshot {
     /// How many extra members of a role equipe may bring in when its work waits.
     #[serde(default)]
     pub scale: Option<usize>,
+    /// The person turned off guesses at their next message.
+    #[serde(default)]
+    pub suggestions_off: bool,
     /// The plan's usage, as last reported.
     #[serde(default)]
     pub plan: Option<PlanUsage>,
@@ -880,6 +891,7 @@ mod tests {
             mode: Mode::ReadOnly,
             approvals: Vec::new(),
             scale: Some(2),
+            suggestions_off: false,
             plan: None,
             desktop: DesktopState::default(),
             sessions: vec![SessionInfo {

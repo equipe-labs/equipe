@@ -993,7 +993,10 @@ impl App {
                 Event::TextDelta { text, .. } => printer.text(&text),
                 Event::ToolUse { tool, target, .. } => printer.tool(&tool, target),
                 Event::ModelKnown { .. } | Event::UserMessage { .. } | Event::Thread { .. } => {}
-                Event::SubagentStarted { .. } | Event::SubagentStep { .. } | Event::SubagentEnded { .. } | Event::BrowserFrame { .. } => {}
+                // Work handed to a subagent shows as it starts and as it hands back.
+                Event::SubagentStarted { what, .. } => eprintln!("{}", e.dim(&format!("  ↳ {what}"))),
+                Event::SubagentEnded { .. } => eprintln!("{}", e.dim("  ↳ handed back")),
+                Event::SubagentStep { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } => {}
                 Event::TurnEnded { outcome, usage, .. } => {
                     printer.end(outcome, usage);
                     core.send(Cmd::Close { session: ID });

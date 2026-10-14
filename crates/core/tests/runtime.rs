@@ -98,6 +98,7 @@ fn config(claude: &Path, home: &Path, persist: bool) -> Config {
         equipe_binary: None,
         npx: None,
         mac: Box::new(equipe_core::desktop::ThisMac),
+        suggest: false,
     }
 }
 
@@ -411,7 +412,8 @@ async fn a_member_gets_its_charter_a_recommended_model_and_its_own_memory() {
 async fn members_are_named_by_role_and_told_who_else_is_on_the_team() {
     let (claude, recorded) = recording_claude(&answering("ok"));
     let cwd = scratch("cwd");
-    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), false));
+    let home = squad_home(&[&cwd]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
     for (id, role) in [(1, "pm"), (2, "qa"), (3, "qa")] {
         add(&handle, &mut events, id, member(&cwd, role)).await;
     }
@@ -423,6 +425,10 @@ async fn members_are_named_by_role_and_told_who_else_is_on_the_team() {
     let charter = arg(&calls(&recorded)[0], "--append-system-prompt").unwrap().to_owned();
     assert!(charter.starts_with("You are qa-2, the QA engineer"), "{charter}");
     assert!(charter.contains("Your teammates: pm, qa."), "{charter}");
+    // What qa-2 learns is the role's: it outlasts qa-2, and qa reads it too.
+    let settings = arg(&calls(&recorded)[0], "--settings").unwrap().to_owned();
+    let memory = journal::member_memory_dir(&home, "acme", "qa");
+    assert!(settings.contains(&format!("\"{}\"", memory.display())), "{settings}");
 }
 
 #[tokio::test]
@@ -2284,4 +2290,42 @@ async fn one_browser_at_a_time_comes_on_screen_and_a_member_can_call_for_it() {
     let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://vercel.com/login", "why": "Sign in to Vercel" })).await;
     assert!(!said.is_error && said.text.contains("comes up on the person's screen"), "{said:?}");
     assert!(shown("pm") && !shown("frontend"));
+}
+
+#[tokio::test]
+async fn after_a_member_answers_the_person_their_next_message_is_guessed() {
+    let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
+    let turn = format!(
+        "case \"$*\" in\n*no-session-persistence*) echo '{{\"type\":\"result\",\"is_error\":false,\"result\":\"yes, tidy them\"}}' ;;\n*)\n{}\n;;\nesac",
+        answering("Done. Shall I tidy the other pages too?")
+    );
+    let (claude, recorded) = recording_claude(&turn);
+    let (handle, mut events) = runtime::start(Config { suggest: true, ..config(&claude, &home, false) });
+    add(&handle, &mut events, 1, member(&cwd, "frontend")).await;
+
+    handle.send(Command::Submit { session: 1, text: "fix the button".into() });
+    let seen = until(&mut events, |e| matches!(e, Event::Suggestion { .. })).await;
+    assert!(
+        seen.iter().any(|e| matches!(e, Event::Suggestion { session: 1, text } if text == "yes, tidy them")),
+        "{seen:?}"
+    );
+    // The guess reads the end of the conversation, not the member's own one.
+    let guess = &calls(&recorded)[1];
+    assert_eq!(arg(guess, "--model"), Some("haiku"));
+    assert_eq!(arg(guess, "--resume"), None);
+    let prompt = arg(guess, "-p").unwrap();
+    assert!(prompt.contains("[person] fix the button"), "{prompt}");
+    assert!(prompt.contains("[frontend] Done. Shall I tidy the other pages too?"), "{prompt}");
+    // And it isn't part of the conversation.
+    let snapshot = handle.snapshot("acme").await;
+    assert!(!snapshot.suggestions_off);
+
+    // Turned off, none is guessed.
+    handle.send(Command::Suggestions { squad: "acme".into(), on: false });
+    handle.send(Command::Submit { session: 1, text: "and the footer".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(calls(&recorded).len(), 3, "the turn, its guess, the next turn");
+    assert!(handle.snapshot("acme").await.suggestions_off);
 }

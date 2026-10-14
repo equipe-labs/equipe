@@ -9,7 +9,7 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-pub const COMMANDS: [Spec; 27] = [
+pub const COMMANDS: [Spec; 28] = [
     Spec { name: "usage", args: "", about: "Plan limits, each member's context and tokens" },
     Spec { name: "scale", args: "[0-6|off]", about: "Extra members a role may get when its work waits" },
     Spec { name: "compact", args: "[member]", about: "Start its next conversation afresh, from a summary of this one" },
@@ -33,6 +33,7 @@ pub const COMMANDS: [Spec; 27] = [
     Spec { name: "browser", args: "[watch|show|hide [member] · signin · max <n>]", about: "See a member's browser at work; sign in to sites" },
     Spec { name: "send-apps", args: "[add|remove <app> · reset]", about: "Apps where a member's send waits for your yes" },
     Spec { name: "desktop", args: "stop|resume", about: "Take the Mac's screen back from the members, or open it to them again" },
+    Spec { name: "suggest", args: "[on|off]", about: "After a member answers, guess your next message, greyed — → takes it" },
     Spec { name: "export", args: "", about: "Open the conversation in your editor" },
     Spec { name: "mouse", args: "", about: "Hand the mouse to the terminal (dragging over text already copies it)" },
     Spec { name: "help", args: "", about: "Keys and commands" },
@@ -216,6 +217,11 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             .map(|(w, about)| word(w, about, ""))
             .collect(),
         ("desktop", 1) => [("stop", "no member clicks or types"), ("resume", "members may use the screen again")]
+            .iter()
+            .filter(|(w, _)| starts(w))
+            .map(|(w, about)| word(w, about, ""))
+            .collect(),
+        ("suggest", 1) => [("on", "guess your next message after an answer"), ("off", "no guesses")]
             .iter()
             .filter(|(w, _)| starts(w))
             .map(|(w, about)| word(w, about, ""))

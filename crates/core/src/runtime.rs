@@ -81,6 +81,9 @@ pub struct Config {
     /// What the Mac says about the person's session: whether they are at it,
     /// whether it is locked. Asked before every member's desktop input.
     pub mac: Box<dyn desktop::Probe>,
+    /// Guess the person's next message after a member answers them, with
+    /// Claude Code's small model.
+    pub suggest: bool,
 }
 
 impl Config {
@@ -96,6 +99,7 @@ impl Config {
             equipe_binary: std::env::current_exe().ok(),
             npx: crate::browser::find_npx(),
             mac: Box::new(desktop::ThisMac),
+            suggest: true,
         }
     }
 
@@ -338,6 +342,9 @@ struct Session {
     threads: HashMap<Option<String>, DeskThread>,
     /// Its own mode; `None` follows the squad's.
     mode: Option<Mode>,
+    /// The turn running answers the person (not the board, not the team), so
+    /// a guess at what they say next may follow it.
+    answers_person: bool,
 }
 
 impl Session {
@@ -638,6 +645,11 @@ impl Runtime {
                     self.watching.remove(&squad);
                 }
             },
+            Command::Suggestions { squad, on } => {
+                if let Some(journal) = self.journal(&squad) {
+                    let _ = journal.set_suggestions(on);
+                }
+            }
             Command::Scale { squad, extra } => {
                 if let Some(journal) = self.journal(&squad) {
                     let _ = journal.set_scale(extra.min(HELPERS_MAX));
@@ -916,7 +928,7 @@ impl Runtime {
         let project = if member.is_some() { cwd.clone() } else { opened_in };
         let workspace = sandbox.as_ref().map(workspace_of);
         let memory = match (&squad, &member) {
-            (Some(squad), Some(m)) => Some(journal::member_memory_dir(&self.config.home, squad, &m.name)),
+            (Some(squad), Some(m)) => Some(journal::member_memory_dir(&self.config.home, squad, &m.role)),
             _ => None,
         };
 
@@ -970,6 +982,7 @@ impl Runtime {
                 turn: None,
                 queued: Vec::new(),
                 memo_thread: None,
+                answers_person: false,
                 briefing: Vec::new(),
                 memory,
                 mode: None,
@@ -1070,6 +1083,11 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
         }
         self.save_waiting(id);
         self.start_turn(id, prompt);
+        if let Some(session) = self.sessions.get_mut(&id)
+            && session.is_working()
+        {
+            session.answers_person = true;
+        }
     }
 
     /// Move a member's desk conversation to its thread for the project the person
@@ -1122,6 +1140,9 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
     /// Run a turn with `prompt` in the session's current place: its ticket's
     /// project when it has one, its desk otherwise.
     fn start_turn(&mut self, id: SessionId, prompt: String) {
+        if let Some(session) = self.sessions.get_mut(&id) {
+            session.answers_person = false;
+        }
         // A desk conversation grown too large, or gone cold, starts afresh.
         let prompt = match self.refresh_desk(id) {
             Some(handoff) => format!("{handoff}\n\n{prompt}"),
@@ -1456,6 +1477,7 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
             return;
         };
         session.turn = None;
+        let answered_person = std::mem::take(&mut session.answers_person) && done.reply.as_deref().is_some_and(|r| !r.trim().is_empty());
         let squad = session.squad.clone();
         let who = session_member(session);
         let in_work = session.work.as_ref().is_some_and(|w| Some(w.ticket) == done.ticket);
@@ -1509,6 +1531,35 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
             self.tell_the_pm(done.session, |name| format!("{name} answered: {short}{more}"), None);
         }
         self.after_turn(done.session).await;
+        if answered_person {
+            self.suggest_next(done.session);
+        }
+    }
+
+    /// Guess what the person will say next to the member that just answered
+    /// them, from the end of their conversation — unless the member is busy
+    /// again, or the person turned guesses off.
+    fn suggest_next(&mut self, id: SessionId) {
+        let Some(session) = self.sessions.get(&id) else {
+            return;
+        };
+        let off = session.squad.as_deref().and_then(|s| self.journals.get(s)).is_some_and(Journal::suggestions_off);
+        if off || !self.config.suggest || session.member.is_none() || session.engine != Engine::Claude || session.is_working() {
+            return;
+        }
+        let Some(conversation) = suggestion_context(session.name().unwrap_or("agent"), session.transcript.entries()) else {
+            return;
+        };
+        let binary = self.config.claude_binary.clone();
+        // Somewhere with no project of the person's in it: nothing to read, nothing to load.
+        let cwd = self.config.home.join("suggest");
+        let internal = self.internal.clone();
+        tokio::spawn(async move {
+            let _ = std::fs::create_dir_all(&cwd);
+            if let Some(text) = claude_code::suggest(&binary, &cwd, &conversation).await {
+                let _ = internal.send(Internal::Event(Event::Suggestion { session: id, text }));
+            }
+        });
     }
 
     /// After a turn, finished or stopped: hand in work that was submitted,
@@ -1669,8 +1720,6 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
-        // What it learns goes where the role's lessons are kept.
-        session.memory = Some(journal::member_memory_dir(&self.config.home, squad, role));
         session.last_turn = Some(std::time::Instant::now());
         let name = session.name().unwrap_or(role).to_owned();
         if let Some(pm) = self.pm_of(squad) {
@@ -2877,7 +2926,19 @@ it back there once they have done it. End your turn now with a short line on wha
             self.pending.values().filter(|p| p.squad == squad).map(|p| p.approval.clone()).collect();
         approvals.sort_by_key(|a| a.id);
         let scale = self.journals.get(squad).map(Journal::scale);
-        Snapshot { squad: squad.to_owned(), projects, sessions, tickets, mode, approvals, scale, plan: self.plan, desktop: self.desktop.state() }
+        let suggestions_off = self.journals.get(squad).is_some_and(Journal::suggestions_off);
+        Snapshot {
+            squad: squad.to_owned(),
+            projects,
+            sessions,
+            tickets,
+            mode,
+            approvals,
+            scale,
+            suggestions_off,
+            plan: self.plan,
+            desktop: self.desktop.state(),
+        }
     }
 
     /// Bring back every squad's members, and the tickets they were on.
@@ -2896,6 +2957,10 @@ it back there once they have done it. End your turn now with a short line on wha
             let home = squad_home::path(&self.config.home, &squad);
             if let Err(err) = squad_home::ensure(&self.config.home, &squad, journal.language().as_deref()) {
                 eprintln!("equipe: {squad}'s folder couldn't be made: {err}");
+            }
+            // Members of one role once each kept their own lessons; now they share them.
+            if let Err(err) = journal::fold_member_memories(&self.config.home, &squad) {
+                eprintln!("equipe: {squad}'s members' memories couldn't be gathered: {err}");
             }
             let projects = journal.projects().unwrap_or_default();
             let tickets = journal.tickets().unwrap_or_default();
@@ -2932,7 +2997,7 @@ it back there once they have done it. End your turn now with a short line on wha
                         refresh = Some(true);
                     }
                 }
-                let memory = Some(journal::member_memory_dir(&self.config.home, &squad, &member.name));
+                let memory = Some(journal::member_memory_dir(&self.config.home, &squad, &member.role));
                 // The PM's other conversations, by project, as they were left.
                 let (thread, others) = journal.desk_threads(record.id);
                 let threads: HashMap<Option<String>, DeskThread> = others
@@ -2976,6 +3041,7 @@ it back there once they have done it. End your turn now with a short line on wha
                         mode: record.mode,
                         thread,
                         threads,
+                        answers_person: false,
                     },
                 );
             }
@@ -3553,6 +3619,38 @@ fn workspace_of(sandbox: &Sandbox) -> Workspace {
 }
 
 /// Report a finished turn. Returns the reply text for the conversation history.
+/// The end of a conversation, as the guess at the person's next message reads
+/// it: the last few exchanges, each cut short, the member's last answer most
+/// fully. `None` when it doesn't end with the member answering.
+fn suggestion_context(member: &str, entries: &[Entry]) -> Option<String> {
+    let said: Vec<(bool, &str)> = entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::User { text } => Some((true, text.as_str())),
+            Entry::Reply { text } if !text.trim().is_empty() => Some((false, text.as_str())),
+            _ => None,
+        })
+        .collect();
+    if said.last().is_none_or(|(person, _)| *person) {
+        return None;
+    }
+    let from = said.len().saturating_sub(6);
+    let last = said.len() - 1;
+    let lines: Vec<String> = said[from..]
+        .iter()
+        .enumerate()
+        .map(|(i, (person, text))| {
+            let keep = if from + i == last { 4000 } else { 1200 };
+            let mut text: String = text.trim().chars().take(keep).collect();
+            if text.chars().count() == keep {
+                text.push('…');
+            }
+            format!("[{}] {text}", if *person { "person" } else { member })
+        })
+        .collect();
+    Some(lines.join("\n\n"))
+}
+
 fn finish_turn(
     emit: &impl Fn(Event),
     id: SessionId,

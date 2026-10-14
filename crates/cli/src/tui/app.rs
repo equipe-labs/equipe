@@ -130,6 +130,8 @@ pub struct Agent {
     /// Subagents it handed work to this turn and that haven't handed back:
     /// id, what, and their latest step.
     pub subagents: Vec<(String, String, Option<String>)>,
+    /// A guess at what the person says next to it, after it answered them.
+    pub suggestion: Option<String>,
     /// A message to send once the session has started.
     pending: Option<String>,
 }
@@ -162,6 +164,7 @@ impl Agent {
             mode: None,
             thread_view: None,
             subagents: Vec::new(),
+            suggestion: None,
         }
     }
 
@@ -255,6 +258,7 @@ impl Agent {
             mode: info.mode,
             thread_view: None,
             subagents: Vec::new(),
+            suggestion: None,
         }
     }
 
@@ -388,6 +392,8 @@ pub struct App {
     pub mode: Mode,
     /// How many extra members of a role equipe may bring in when its work waits.
     pub scale: usize,
+    /// Guesses at the person's next message, after a member answers them.
+    pub suggestions: bool,
     /// The Claude plan's usage windows, as last reported.
     pub plan: Option<equipe_core::protocol::PlanUsage>,
     /// Who has the Mac's screen and who waits for it.
@@ -527,6 +533,7 @@ impl App {
             question: None,
             mode: snapshot.mode,
             scale: snapshot.scale.unwrap_or(2),
+            suggestions: !snapshot.suggestions_off,
             plan: snapshot.plan,
             desktop: snapshot.desktop,
             usage_open: false,
@@ -1092,12 +1099,20 @@ impl App {
             Event::UserMessage { .. } => {
                 // Typed on another screen, perhaps: either way it is busy now.
                 agent.start_working();
+                agent.suggestion = None;
                 agent.scroll_back = 0;
                 agent.unseen = 0;
                 // Waiting memos are delivered together as one message.
                 agent.queued.clear();
             }
+            Event::Suggestion { text, .. } => {
+                // Too late once it is at work again, or a memo is on its way.
+                if agent.state != AgentState::Working && agent.queued.is_empty() {
+                    agent.suggestion = Some(text);
+                }
+            }
             Event::MessageQueued { text, project, .. } => {
+                agent.suggestion = None;
                 agent.queued.push(text);
                 agent.queued_project = project;
             }
@@ -1415,6 +1430,9 @@ impl App {
         }));
         if asked_to_sign_in == Some(true) {
             return Some("/browser".into());
+        }
+        if let Some(guess) = self.selected().and_then(|a| a.suggestion.clone()).filter(|_| self.suggestions) {
+            return Some(guess);
         }
         self.to_review_here().iter().map(|t| t.id).max().map(|id| format!("/accept T-{id}"))
     }
@@ -1829,6 +1847,24 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 Vec::new()
             }
             "project" => self.focus_on(rest),
+            "suggest" => {
+                let on = match rest.trim() {
+                    "" => !self.suggestions,
+                    "on" => true,
+                    "off" => false,
+                    _ => {
+                        self.flash = Some("/suggest on · /suggest off".into());
+                        return Vec::new();
+                    }
+                };
+                self.suggestions = on;
+                self.flash = Some(if on {
+                    "After a member answers you, your likely next message waits greyed in the composer — → takes it, typing ignores it".into()
+                } else {
+                    "No more guesses at your next message · /suggest on brings them back".into()
+                });
+                vec![Command::Suggestions { squad: self.squad.clone(), on }]
+            }
             "scale" => match rest.trim() {
                 "" => {
                     self.flash = Some(format!(
@@ -3052,6 +3088,33 @@ mod tests {
         app.on_key(key(KeyCode::Right), Instant::now());
         assert_eq!(app.composer.text(), "/accept T-8");
         assert_eq!(app.hint(), None, "not while typing");
+    }
+
+    #[test]
+    fn a_guess_at_the_next_message_waits_greyed_and_right_takes_it() {
+        let (mut app, pm, _) = team();
+        app.on_event(Event::UserMessage { session: pm, text: "fix the button".into() });
+        app.on_event(Event::TurnEnded { session: pm, outcome: TurnOutcome::Completed, usage: None });
+        app.on_event(Event::Suggestion { session: pm, text: "다른 페이지도 정리해줘".into() });
+        assert_eq!(app.hint().as_deref(), Some("다른 페이지도 정리해줘"));
+        app.on_key(key(KeyCode::Right), Instant::now());
+        assert_eq!(app.composer.text(), "다른 페이지도 정리해줘");
+        // Sent, it's gone.
+        app.composer.clear();
+        app.on_event(Event::UserMessage { session: pm, text: "다른 페이지도 정리해줘".into() });
+        assert_eq!(app.hint(), None);
+        // One arriving after the member got back to work is too late.
+        app.on_event(Event::Suggestion { session: pm, text: "late".into() });
+        assert_eq!(app.hint(), None);
+        app.on_event(Event::TurnEnded { session: pm, outcome: TurnOutcome::Completed, usage: None });
+        app.on_event(Event::Suggestion { session: pm, text: "and the footer".into() });
+        // Turned off, none shows, and the squad hears of it.
+        type_text(&mut app, "/suggest off");
+        assert!(matches!(enter(&mut app).as_slice(), [Command::Suggestions { on: false, .. }]));
+        assert_eq!(app.hint(), None);
+        type_text(&mut app, "/suggest");
+        assert!(matches!(enter(&mut app).as_slice(), [Command::Suggestions { on: true, .. }]));
+        assert_eq!(app.hint().as_deref(), Some("and the footer"));
     }
 
     #[test]

@@ -45,14 +45,16 @@ worktrees for parallel work, and human approval gates where they matter.
            └─────────┬─────────┘
       ┌─────────┬────┴─────┬─────────┬─────────┐
    Designer  Frontend   Backend     QA       Data
-   each = [engine] + [role charter] + [its own memory] + [git worktree]
+   each = [engine] + [role charter] + [its role's memory] + [git worktree]
 ```
 
 - **The board is the source of truth.** Agents coordinate through tickets and
   immutable events — not a firehose of chat. Every action ends in a visible outcome.
 - **Roles are data.** The PM turns what you want into tickets; engineers edit code
   (web, backend, mobile) in isolated worktrees; QA reviews; the data analyst answers with numbers. Each
-  member gets a model suited to its role, and keeps its own memory.
+  member gets a model suited to its role, and learns into its role's memory —
+  shared by every member of the role, so what `backend-3` learned in a rush stays
+  with `backend` after it leaves.
 - **Not only code.** Research, writing, numbers, paperwork, a few steps in an app:
   the PM does a short one right in the conversation and puts a bigger one on the
   board as a `task` or `action` ticket, worked in the squad's own folder and accepted
@@ -90,6 +92,7 @@ CLAUDE CODE  your claude · signs itself in
 | `/send-apps` | Where a member on the desktop may send something in your name — Microsoft Teams, Slack, Mail, Outlook, Messages, KakaoTalk, Zoom, Discord… A message is typed as a draft, but Return or the Send button waits for your yes every time, in every mode, showing the draft, the conversation and the screen (`o` opens it). Other apps never ask; payment, account deletion, passwords and security settings take no input at all. `/send-apps add <app>`, `remove <app>`, `reset` |
 | `Ctrl-V` · drop | Ctrl-V attaches the clipboard's image (a screenshot) to your message; dropping an image file on the terminal attaches it too. The member looks at it before answering. **Over SSH**, a terminal only carries text, so the other machine can't see your Mac's clipboard: run `equipe paste-setup` once on the Mac you type on (or `curl -fsSL https://github.com/equipe-labs/equipe/releases/latest/download/paste-setup.sh \| sh` if equipe isn't installed there) and ⌃⇧V in iTerm2 types the clipboard's screenshot down the connection, where equipe attaches it (`--remove` undoes it). Without it, Ctrl-V over SSH opens a picker on your Mac, and `equipe send-image <host>` sends the clipboard image from your Mac |
 | `/find` · `/tidy` | A board of hundreds stays readable: work not yet started folds past ten per section (`e` shows it whole), done work keeps its latest few, and **f** on the board (or `/find <words>`) narrows it as you type — titles, notes and T-numbers, done work too; Esc clears. `g` shows open work as a tree of what waits for what, and each ticket says what it's after and what it unblocks. Once a day the PM hears which unstarted tickets haven't moved in a week and proposes, next time you talk, what to close, merge or keep — it never drops work itself; `/tidy` asks now |
+| `/suggest` | After a member answers you, your likely next message waits greyed in the empty composer — "yes, tidy the other pages too", the obvious next step — and **→** takes it; typing ignores it. Claude Code's small model guesses it from the end of the conversation alone (a few hundred tokens, no tools, nothing kept). `/suggest off` stops it, `/suggest on` brings it back |
 | `/model` | `/model <member> <model>` changes the model a member works on from its next turn — Claude Code's `opus` / `sonnet` / `haiku`, or any model its engine offers (Codex's, and the engines to come); its conversation carries on. Completion lists what the member's engine takes |
 | `/usage` | The footer shows your Claude plan's five-hour and weekly windows; `/usage` adds when they start over, and each member's context, tokens processed and the share from cache |
 | `/compact` · `/clear` | Conversations stay a sensible size on their own: Claude Code compacts a long one as it fills, and a member's desk conversation (between tickets) starts afresh — handed a summary of where the last one left off — once it is 60% full, or after an hour unused, when carrying it on would mean processing all of it again. `/compact [member]` asks for that now; `/clear [member]` starts clean. Memory and the board carry over either way. The title shows how full the selected member's context is, and token counts include cached input |

@@ -68,12 +68,80 @@ pub fn squad_dir(home: &Path, squad: &str) -> PathBuf {
     home.join("squads").join(squad)
 }
 
-/// Where a member keeps what it learns. It belongs to the member, not to a
-/// project — like a person, a member carries what it learned from one project
-/// to the next. What a project needs everyone to know belongs in the repository
-/// (`CLAUDE.md`, `AGENTS.md`).
-pub fn member_memory_dir(home: &Path, squad: &str, member: &str) -> PathBuf {
-    squad_dir(home, squad).join("members").join(member).join("memory")
+/// Where a role's members keep what they learn. It belongs to the role, not to
+/// a project — like a person, a member carries what it learned from one project
+/// to the next — nor to one member: `backend-2`, brought in for a rush, learns
+/// for `backend` too, and what it learned stays when it leaves. What a project
+/// needs everyone to know belongs in the repository (`CLAUDE.md`, `AGENTS.md`).
+pub fn member_memory_dir(home: &Path, squad: &str, role: &str) -> PathBuf {
+    squad_dir(home, squad).join("members").join(role).join("memory")
+}
+
+/// Fold what members like `backend-3` learned, from when each kept its own,
+/// into their role's memory: lessons it lacks move over, a lesson of the same
+/// name but other words keeps both, and the index gains their lines. Returns
+/// how many lessons moved.
+pub fn fold_member_memories(home: &Path, squad: &str) -> std::io::Result<usize> {
+    let members = squad_dir(home, squad).join("members");
+    let Ok(dirs) = std::fs::read_dir(&members) else {
+        return Ok(0);
+    };
+    let mut moved = 0;
+    for dir in dirs.flatten() {
+        let name = dir.file_name().to_string_lossy().into_owned();
+        let Some((role, n)) = name.rsplit_once('-') else {
+            continue;
+        };
+        if role.is_empty() || n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let from = dir.path().join("memory");
+        let to = members.join(role).join("memory");
+        if from.is_dir() {
+            std::fs::create_dir_all(&to)?;
+            moved += fold_memory(&from, &to, &name)?;
+        }
+        let _ = std::fs::remove_dir_all(dir.path());
+    }
+    Ok(moved)
+}
+
+fn fold_memory(from: &Path, to: &Path, who: &str) -> std::io::Result<usize> {
+    const INDEX: &str = "MEMORY.md";
+    let mut index = std::fs::read_to_string(from.join(INDEX)).unwrap_or_default();
+    let mut moved = 0;
+    for entry in std::fs::read_dir(from)?.flatten() {
+        let file = entry.file_name().to_string_lossy().into_owned();
+        if file == INDEX || !entry.path().is_file() {
+            continue;
+        }
+        let text = std::fs::read(entry.path())?;
+        let mut target = to.join(&file);
+        if target.exists() {
+            if std::fs::read(&target)? == text {
+                continue;
+            }
+            let (stem, ext) = file.rsplit_once('.').unwrap_or((&file, ""));
+            let renamed = if ext.is_empty() { format!("{stem}-from-{who}") } else { format!("{stem}-from-{who}.{ext}") };
+            index = index.replace(&format!("({file})"), &format!("({renamed})"));
+            target = to.join(renamed);
+        }
+        std::fs::write(&target, text)?;
+        moved += 1;
+    }
+    let mut kept = std::fs::read_to_string(to.join(INDEX)).unwrap_or_default();
+    let new: Vec<&str> = index.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#') && !kept.contains(*l)).collect();
+    if !new.is_empty() {
+        if !kept.is_empty() && !kept.ends_with('\n') {
+            kept.push('\n');
+        }
+        for line in new {
+            kept.push_str(line);
+            kept.push('\n');
+        }
+        std::fs::write(to.join(INDEX), kept)?;
+    }
+    Ok(moved)
 }
 
 /// Where an editing member's ticket work is checked out, so it can be resumed.
@@ -354,6 +422,15 @@ impl Journal {
 
     pub fn set_scale(&self, extra: usize) -> Result<()> {
         self.set_meta("scale", &extra.to_string())
+    }
+
+    /// The person turned off guesses at their next message.
+    pub fn suggestions_off(&self) -> bool {
+        self.meta("suggestions").as_deref() == Some("off")
+    }
+
+    pub fn set_suggestions(&self, on: bool) -> Result<()> {
+        self.set_meta("suggestions", if on { "on" } else { "off" })
     }
 
     /// The members equipe brought in to help, which it lets go when idle.
@@ -1061,5 +1138,41 @@ mod tests {
         let home = Path::new("/h");
         assert_eq!(squad_dir(home, "acme"), PathBuf::from("/h/squads/acme"));
         assert_eq!(member_memory_dir(home, "acme", "frontend"), PathBuf::from("/h/squads/acme/members/frontend/memory"));
+    }
+
+    #[test]
+    fn what_extra_members_learned_folds_into_their_roles_memory() {
+        let home = std::env::temp_dir().join(format!("equipe-fold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let write = |member: &str, file: &str, text: &str| {
+            let dir = member_memory_dir(&home, "acme", member);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(file), text).unwrap();
+        };
+        write("backend", "MEMORY.md", "- [Cargo](cargo.md) — not on PATH\n");
+        write("backend", "cargo.md", "cargo lives in ~/.cargo/bin");
+        write("backend-3", "MEMORY.md", "- [Cargo](cargo.md) — not on PATH\n- [Hold](hold.md) — hold means stop\n");
+        write("backend-3", "cargo.md", "cargo lives in ~/.cargo/bin");
+        write("backend-3", "hold.md", "hold means stop");
+        write("mobile-2", "MEMORY.md", "- [Android](android.md) — the SDK path\n");
+        write("mobile-2", "android.md", "ANDROID_HOME is set");
+        write("frontend-2", "MEMORY.md", "- [Cargo](cargo.md) — a different lesson\n");
+        write("frontend-2", "cargo.md", "something else");
+        write("frontend", "cargo.md", "frontend's own");
+        write("web-app", "notes.md", "a role whose name has a dash");
+
+        assert_eq!(fold_member_memories(&home, "acme").unwrap(), 3);
+        let read = |member: &str, file: &str| std::fs::read_to_string(member_memory_dir(&home, "acme", member).join(file)).unwrap();
+        assert_eq!(read("backend", "hold.md"), "hold means stop");
+        assert_eq!(read("backend", "MEMORY.md"), "- [Cargo](cargo.md) — not on PATH\n- [Hold](hold.md) — hold means stop\n");
+        // A role with no member of its own name yet gets one's memory.
+        assert_eq!(read("mobile", "android.md"), "ANDROID_HOME is set");
+        assert_eq!(read("frontend", "cargo.md"), "frontend's own");
+        assert_eq!(read("frontend", "cargo-from-frontend-2.md"), "something else");
+        assert!(read("frontend", "MEMORY.md").contains("(cargo-from-frontend-2.md)"));
+        assert!(!home.join("squads/acme/members/backend-3").exists());
+        assert_eq!(read("web-app", "notes.md"), "a role whose name has a dash");
+        assert_eq!(fold_member_memories(&home, "acme").unwrap(), 0, "once is enough");
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
