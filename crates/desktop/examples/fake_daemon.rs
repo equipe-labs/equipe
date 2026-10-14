@@ -108,6 +108,15 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                 let Ok(Some(line)) = line else { return };
                 let Ok(message) = Message::from_line(&line) else { continue };
                 match (message.method.as_deref(), message.id) {
+                    (Some(rpc::SQUADS), Some(id)) => {
+                        let squads = rpc::Squads {
+                            squads: ["demo", "side"].map(|name| rpc::SquadEntry { name: name.into(), projects: vec!["/tmp/fake/site".into()], home: format!("/tmp/fake/{name}-home").into() }).to_vec(),
+                            last: Some("demo".into()),
+                        };
+                        if writer.write_all(Message::response(id, squads).to_line().as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
                     (Some(rpc::HELLO), Some(id)) => {
                         let params: rpc::HelloParams = message.params_as().unwrap();
                         let history = vec![

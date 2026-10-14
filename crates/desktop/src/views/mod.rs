@@ -4,5 +4,6 @@ pub mod approvals;
 pub mod board;
 pub mod chat;
 pub mod composer;
+pub mod connect;
 pub mod header;
 pub mod sidebar;
