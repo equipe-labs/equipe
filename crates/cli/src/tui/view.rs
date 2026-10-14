@@ -1420,8 +1420,10 @@ You can talk to it directly — the PM hears about it."
     }
     flush(&mut run, &mut lines, &mut last);
     // Memos wait below the conversation they go into until the turn ends —
-    // each only in the conversation of the project it was left in.
-    for (memo, _) in agent.queued.iter().zip(&agent.queued_in).filter(|(_, about)| agent.in_view(about.as_deref())) {
+    // each only in the conversation of the project it was left in. On a ticket
+    // there is one conversation, the ticket's: every memo is for it.
+    let here = |about: &Option<String>| agent.ticket.is_some() || agent.in_view(about.as_deref());
+    for (memo, _) in agent.queued.iter().zip(&agent.queued_in).filter(|(_, about)| here(about)) {
         gap(&mut lines);
         lines.extend(wrapped(vec![Span::styled("› ", theme.dim())], memo, theme.dim(), 2, width));
         lines.push(Line::from(Span::styled("  memo · read when this turn ends · Esc to read now", theme.dim())));
@@ -2560,6 +2562,18 @@ mod tests {
         app.on_event(Event::UserMessage { session: pm, text: "and the app icon".into() });
         assert_eq!(app.agents[0].queued, ["and the site footer"]);
         assert_eq!(app.agents[0].queued_in, [Some("site".to_owned())]);
+    }
+
+    #[test]
+    fn memos_left_while_on_a_ticket_stack_up_in_sight() {
+        let (mut app, pm) = working();
+        app.projects = vec!["/code/site".into(), "/code/app".into()];
+        app.on_event(Event::WorkStarted { session: pm, ticket: 7, title: "Settle up".into(), project: "/h/home".into(), workspace: None });
+        for text in ["what was the 200 for?", "is it all done?"] {
+            app.on_event(Event::MessageQueued { session: pm, text: text.into(), project: Some("home".into()) });
+        }
+        let shot = screen(&app, 110, 30);
+        assert!(shot.contains("› what was the 200 for?") && shot.contains("› is it all done?"), "{shot}");
     }
 
     #[test]
