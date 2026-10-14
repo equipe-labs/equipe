@@ -192,7 +192,8 @@ pub mod service {
     }
 
     fn run(program: &str, args: &[&str]) -> bool {
-        Command::new(program).args(args).status().is_ok_and(|s| s.success())
+        // Nothing on our standard output: `equipe attach --stdio` carries the protocol there.
+        Command::new(program).args(args).stdout(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
     }
 
     fn domains() -> [String; 2] {

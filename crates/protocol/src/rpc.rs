@@ -7,6 +7,13 @@
 //! - `tool` (request): a member's board tool call, from the MCP server equipe
 //!   gives its engine → [`ToolResult`]
 //! - `shutdown` (request): stop the daemon; sessions stay restorable
+//! - `version` (request): → [`Version`], the daemon's build and wire version
+//! - `squads` (request): → [`Squads`], the squads on the daemon's machine
+//! - `upload` (request): [`Upload`] → [`Uploaded`], an image saved on the
+//!   daemon's machine for a message to point at
+//! - `attached` (notification, `equipe attach --stdio` → screen): [`Attached`],
+//!   the first line a screen reads through the bridge, before anything the
+//!   daemon says
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,6 +25,16 @@ pub const COMMAND: &str = "command";
 pub const EVENT: &str = "event";
 pub const SHUTDOWN: &str = "shutdown";
 pub const TOOL: &str = "tool";
+pub const VERSION: &str = "version";
+pub const ATTACHED: &str = "attached";
+pub const SQUADS: &str = "squads";
+pub const UPLOAD: &str = "upload";
+
+/// The wire's version: bumped when a change would break a screen built
+/// against the one before (a method or a field it relies on removed or
+/// changed). Added methods, events and optional fields don't bump it.
+pub const PROTOCOL: u32 = 1;
+
 /// Who is busy: members mid-turn and requests waiting for the person.
 pub const BUSY: &str = "busy";
 /// A window for the person in the members' shared Chrome, at a page (`equipe
@@ -76,6 +93,61 @@ pub struct ToolResult {
 pub struct Hello {
     pub version: String,
     pub snapshot: Snapshot,
+}
+
+/// The daemon's answer to `version`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Version {
+    /// Its build, as `hello` reports it (`0.4.1+1760400000`).
+    pub version: String,
+    pub protocol: u32,
+}
+
+/// The squads on the daemon's machine, for a screen that can't read its disk.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Squads {
+    pub squads: Vec<SquadEntry>,
+    /// The one the person opened last, when it still exists; else the first.
+    pub last: Option<crate::SquadName>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SquadEntry {
+    pub name: crate::SquadName,
+    /// Its projects' folders, on the daemon's machine.
+    pub projects: Vec<std::path::PathBuf>,
+    /// Its home folder (`/home`), on the daemon's machine.
+    pub home: std::path::PathBuf,
+}
+
+/// An image to keep on the daemon's machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Upload {
+    /// The file's name where it came from; only its extension is kept.
+    pub name: String,
+    /// The bytes, base64 (standard alphabet, padded).
+    pub data: String,
+}
+
+/// Where an [`Upload`] was saved: a message attaches it as `[image: <path>]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Uploaded {
+    pub path: std::path::PathBuf,
+}
+
+/// What `equipe attach --stdio` says first: which equipe answered on the
+/// other end, and which daemon it reached.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attached {
+    /// The build of the `equipe` that runs the bridge.
+    pub bridge: String,
+    /// The daemon's build; `None` when it predates `version`.
+    pub daemon: Option<String>,
+    /// The daemon's wire version, else the bridge's own when the daemon
+    /// predates `version`.
+    pub protocol: u32,
+    /// Whether the bridge had to start the daemon.
+    pub started: bool,
 }
 
 /// What the daemon is in the middle of, across every squad.

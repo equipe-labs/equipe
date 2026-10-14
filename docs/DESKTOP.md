@@ -26,7 +26,7 @@ Screen design: the squad's `outputs/T-54 데스크톱 화면 설계/spec.md`.
  └───────────────────────┘                           └───────────┘
 ```
 
-- **Connection.** `daemon::Target::from_env` picks the socket (`$EQUIPE_HOME`, else
+- **Connection.** (From another machine: see [Remote](#remote-a-daemon-over-ssh).) `daemon::Target::from_env` picks the socket (`$EQUIPE_HOME`, else
   `~/.equipe`, `equipe.sock`) and the squad (`$EQUIPE_SQUAD`, else the one opened
   last, else the first). `daemon::spawn` runs a `Link` on a thread of its own
   (small tokio runtime) that connects, follows, and when the daemon goes away waits
@@ -56,6 +56,118 @@ Screen design: the squad's `outputs/T-54 데스크톱 화면 설계/spec.md`.
   `/usr/local/bin`, `~/.cargo/bin` — an app opened from Finder has no shell
   PATH), it shows how to install instead: the install.sh line with a copy
   button, the Homebrew line, and a link to equipe.im.
+
+## Remote: a daemon over SSH
+
+The desktop runs on the laptop; the daemon may run on another Mac (a Mac mini)
+that the laptop reaches with `ssh`. The app then speaks the same protocol, only
+through SSH instead of the socket file.
+
+```
+ laptop                                       mini (the daemon's machine)
+ equipe-desktop ── ssh -T mini '… equipe attach --stdio' ──► equipe attach
+   stdin/stdout  ◄──────── JSON-RPC lines, untouched ───────►  ~/.equipe/equipe.sock
+```
+
+### Connecting
+
+- **Target.** `daemon::Target` grows a transport: `Local { socket }` (today) or
+  `Ssh { host }`, `host` as `ssh` knows it (`mini`, `me@mini.tailnet`, an alias
+  from `~/.ssh/config`). Same retry loop as the local `Link`: each attempt is a
+  fresh `ssh` process; when it exits, wait (250 ms doubling to 5 s) and run it again.
+- **The command.** The app runs, with no shell of its own in between:
+
+  ```
+  ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+      -o ControlMaster=auto -o ControlPath=<app dir>/ssh-%C -o ControlPersist=60 \
+      <host> 'PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" exec equipe attach --stdio'
+  ```
+
+  - `BatchMode=yes`: ssh never asks a question on a terminal the app doesn't
+    have. Keys come from the person's agent / keychain and `~/.ssh/config`; a
+    host whose key isn't known yet fails (exit 255) and the app says to run
+    `ssh <host>` once in a terminal.
+  - The `PATH` prefix: a command run over SSH gets a non-login shell, which
+    on macOS usually lacks Homebrew's and `install.sh`'s folders.
+  - `ControlMaster`: the side commands below (`git diff`, `equipe home …`)
+    ride the same SSH connection — no second sign-in, no extra latency.
+    `<app dir>` must be short (Unix socket paths ≤ ~100 bytes).
+- **The first line** is a notification the bridge writes before anything the
+  daemon says (`rpc::Attached`):
+
+  ```json
+  {"jsonrpc":"2.0","method":"attached","params":{"bridge":"0.21.0+1760400000","daemon":"0.21.0+1760400000","protocol":1,"started":false}}
+  ```
+
+  Then the app sends `hello {version, squad}` exactly as it does locally. The
+  app compares `protocol` with its own `rpc::PROTOCOL`:
+  equal → carry on; daemon's lower → "update equipe on <host>" (`equipe update`,
+  then `equipe daemon restart`); daemon's higher → "update this app". `daemon`
+  is `null` when that daemon predates the `version` method (treat as protocol 1,
+  suggest `equipe daemon restart`). `bridge` ≠ `daemon` means the daemon runs an
+  older build than the installed `equipe` — the console's "restart when idle"
+  hint (`equipe daemon restart --when-idle`), not an error.
+- **Daemon off.** The bridge starts it, as the console does: through the login
+  service when `equipe daemon install` set one up, else detached (`setsid`),
+  and says `"started": true`. Over SSH without the service, the daemon lands in
+  launchd's background session — no access to the Mac's screen, and browser
+  windows open nowhere — so on a daemon machine reached over SSH the person
+  should run `equipe daemon install` once; the app can suggest it when
+  `started` is `true`. `equipe attach --stdio --no-start` fails instead.
+- **Endings** (the exit status of `ssh`):
+
+  | Status | Meaning | The app |
+  |---|---|---|
+  | 0 | the daemon stopped, or the app hung up | `Down`, retry quietly |
+  | 69 | no daemon could be reached or started; why is on stderr | show stderr's line |
+  | 127 | no `equipe` on that machine (or not on the `PATH` above) | "install equipe on <host>" |
+  | 255 | ssh itself: unknown host key, refused key, no route | show ssh's stderr, "try `ssh <host>` in a terminal" |
+
+  Keep stderr's last line for the banner; nothing else is ever written there by
+  the bridge.
+
+### Security
+
+- No new door: the daemon's socket stays a 0600 file in a 0700 folder, and the
+  bridge is a process of the user SSH signed in as. Whoever can reach the daemon
+  this way could already run any command as that user; nothing is exposed that a
+  shell on the machine doesn't already give.
+- No new credential: authentication, host keys and encryption are SSH's. The
+  app stores only the host name.
+- The bridge reads nothing and adds nothing past its first line; the daemon
+  checks every request as it does for a local screen.
+- `upload` writes only images (`png jpg jpeg gif webp`, ≤ 40 MB) under
+  `~/.equipe/uploads`, 0600 in 0700, under a name equipe chooses — the screen
+  can't pick where. Uploads older than 7 days are swept when the next one arrives.
+
+### What the app does on this Mac, and over SSH
+
+Everything the app shows comes from `hello` and `event`, so it works remotely
+as is. These are the places that touch the disk or start a program on the
+machine the app runs on, and what each does when the daemon is elsewhere.
+"`ssh` side command" means `ssh <same options> <host> '<PATH prefix> <command>'`
+over the same control connection; quote every path with single quotes
+(`'…'`, with `'` written `'\''`).
+
+| What | On the daemon's Mac today | Over SSH |
+|---|---|---|
+| Socket | `daemon::Target::from_env`: `<home>/equipe.sock` | `equipe attach --stdio` (above) |
+| Squad list and the squad to open | `state::squad_names` reads `<home>/squads/*/squad.db`; `Target::from_env` takes `$EQUIPE_SQUAD`, else `squads::default_squad` (`state.json`) | **`squads` request** → `{squads: [{name, projects, home}], last}`. Use it locally too, so both paths are one code path. Ask on each attach (it is cheap). |
+| Image attach (paste, drop, file) | the file stays where it is; the message carries `[image: /path]` | **`upload` request** `{name, data: base64}` → `{path}`; put `[image: <path>]` in `Submit`. Not `~/.equipe/inbox` (`equipe send-image`'s): a console open on that machine takes those into its own composer. |
+| `/home` (open the folder) | `open <home>` (path from `squads` → `home`) | Nothing opens there. Show the path with a copy button. |
+| `/home changes`, `/home undo [n]` | `equipe home changes --squad <s>` / `equipe home undo <n> --squad <s>`, run here | the same as an `ssh` side command with `EQUIPE_NO_OPEN=1` in front. Show stdout's lines; exit ≠ 0 → stderr's last non-empty line is the reason. |
+| `/memory`, `/memory changes` | `equipe memory [changes] --squad <s>` | the same, `EQUIPE_NO_OPEN=1 equipe memory …`; `EQUIPE_NO_OPEN` keeps it from opening a Finder window on the far screen. |
+| A ticket's diff | the ticket (from the snapshot) gives `dir, branch, from`: a `home`-kind ticket (`task`, `action`) → `ticket.worktree`, `branch`, `main`; a `code` ticket → `ticket.project` (else the squad's first project), `branch`, `HEAD`. Stat: `git -C <dir> diff --stat=200 <from>...<branch>`; full: `git -C <dir> diff <from>...<branch>` | the same two `git` commands as `ssh` side commands. Cache per (ticket, branch) as the console does; fetch the full diff only when it is opened. |
+| `/export` | the conversation is the app's own (snapshot + events), rendered to Markdown | write it **on the laptop** (the person reads it there): a save panel, defaulting to `~/Downloads/<squad>-<member>-<time>.md`. Nothing goes to the daemon's machine. |
+| Browser sign-in (`/browser signin`) | `equipe browser [url]`: a Chrome window on this screen; members then use the saved sign-ins | `equipe browser [url]` as an `ssh` side command: the window opens on **the daemon's machine's** screen, where the members' browser lives. Tell the person to reach it with Screen Sharing (`open vnc://<host>`); the command ends when they close the window. Needs the daemon machine's GUI session (see "Daemon off"). |
+| `/browser` (show / watch) | `ShowBrowser` / `WatchBrowser` commands | the same — already protocol. |
+| Approval preview (`Approval.preview`) | a file path on the daemon's Mac; open it | `cat '<path>'` as an `ssh` side command into a temp file on the laptop, then show it. It is deleted on the daemon's side once answered, so fetch it when the request arrives. |
+| Folder completion, `/squad add`, `/squad new` | lists folders on this disk | not offered remotely yet: point the person to the console on the daemon's machine (`ssh <host>`, `equipe`). |
+| Copy to clipboard | the laptop's clipboard | the same — never the daemon's. |
+
+Later, when the desktop needs them often, the `ssh` side commands can become
+daemon requests like `squads` and `upload` did (a `diff` request first); the
+table is the contract until then.
 
 The old spike (mock agents into SQLite) is kept as `examples/mock_agents.rs`
 (`cargo run --release -p equipe-desktop --example mock_agents`); the knobs below

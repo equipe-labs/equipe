@@ -23,8 +23,13 @@ pub fn squad_for(home: &Path, cwd: &Path, named: Option<String>) -> Option<Strin
         .or_else(|| squads.first().map(|s| s.name.clone()))
 }
 
-/// Open the folder in Finder (or the desktop's file manager).
+/// Open the folder in Finder (or the desktop's file manager) — unless
+/// `EQUIPE_NO_OPEN` is set, as a screen on another machine sets it when it runs
+/// `equipe home` or `equipe memory` over SSH: no window on a screen nobody faces.
 pub fn open(dir: &Path) {
+    if std::env::var_os("EQUIPE_NO_OPEN").is_some() {
+        return;
+    }
     let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     let _ = std::process::Command::new(opener)
         .arg(dir)
