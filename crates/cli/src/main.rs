@@ -624,6 +624,7 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
                 if let Ok(Some(busy)) = equipe_core::gateway::busy(&daemon::socket()).await {
                     let working = if busy.working.is_empty() { "nobody mid-turn".to_owned() } else { busy.working.join(", ") };
                     println!("{}", p.row("working", &working));
+                    println!("{}", p.row("screen", &busy.desktop.summary(None).unwrap_or_else(|| "free".into())));
                 }
             } else {
                 println!("{}", p.note(0, "Daemon not running. `equipe` starts it when you open the console."));
@@ -863,6 +864,12 @@ impl App {
             return Err(Failure::new("No engine is ready yet").next("equipe login codex"));
         }
         println!("{}", p.row("ready", &p.bold(&ready.join(" · "))));
+        // The Mac's screen, when a member has it, waits for it, or the person took it back.
+        if let Ok(Some(busy)) = equipe_core::gateway::busy(&daemon::socket()).await
+            && let Some(desktop) = busy.desktop.summary(None)
+        {
+            println!("{}", p.row("screen", &desktop));
+        }
         Ok(())
     }
 
@@ -1006,6 +1013,7 @@ impl App {
                 // One prompt, one turn: no memos, no squad, no board.
                 Event::MessageQueued { .. }
                 | Event::PlanUsage { .. }
+                | Event::Desktop { .. }
                 | Event::Output { .. }
                 | Event::Notice { .. }
                 | Event::WorkStarted { .. }

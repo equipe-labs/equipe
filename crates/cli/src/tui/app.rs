@@ -362,6 +362,8 @@ pub struct App {
     pub scale: usize,
     /// The Claude plan's usage windows, as last reported.
     pub plan: Option<equipe_core::protocol::PlanUsage>,
+    /// Who has the Mac's screen and who waits for it.
+    pub desktop: equipe_core::protocol::DesktopState,
     /// The usage screen is open over the conversation.
     pub usage_open: bool,
     /// Requests for permission waiting for the person, oldest first.
@@ -493,6 +495,7 @@ impl App {
             mode: snapshot.mode,
             scale: snapshot.scale.unwrap_or(2),
             plan: snapshot.plan,
+            desktop: snapshot.desktop,
             usage_open: false,
             approvals: snapshot.approvals,
             page: 10,
@@ -961,6 +964,10 @@ impl App {
         match event {
             Event::PlanUsage { usage } => {
                 self.plan = Some(usage);
+                return Vec::new();
+            }
+            Event::Desktop { desktop } => {
+                self.desktop = desktop;
                 return Vec::new();
             }
             Event::TicketChanged { ticket, .. } => {
@@ -1691,6 +1698,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 self.flash = Some(send_apps(&self.squad, rest));
                 Vec::new()
             }
+            "desktop" => self.desktop_command(rest),
             "squad" => self.squad_command(rest),
             "home" => {
                 let dir = crate::home::dir(&equipe_providers::credentials::equipe_home(), &self.squad);
@@ -2033,6 +2041,26 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             format!("{whose} run hidden from the next turn")
         });
         vec![Command::ShowBrowser { squad: self.squad.clone(), member: member.map(|m| (*m).to_owned()), show }]
+    }
+
+    /// `/desktop stop` takes the Mac's screen back from every member at once;
+    /// `/desktop resume` opens it to them again.
+    fn desktop_command(&mut self, rest: &str) -> Vec<Command> {
+        let open = match rest.trim() {
+            "stop" => false,
+            "resume" => true,
+            _ => {
+                let now = self.desktop.summary(Some(&self.squad)).unwrap_or_else(|| "nobody on the screen".into());
+                self.flash = Some(format!("{now} · /desktop stop takes the screen back from every member · /desktop resume"));
+                return Vec::new();
+            }
+        };
+        self.flash = Some(if open {
+            "The screen is open to the members again".into()
+        } else {
+            "Screen taken back: no member clicks or types until /desktop resume".into()
+        });
+        vec![Command::Desktop { open }]
     }
 
     /// Accept a ticket; when it is code with a branch, ask whether to merge it
@@ -3430,6 +3458,18 @@ mod tests {
         type_text(&mut app, "/browser hide");
         assert_eq!(enter(&mut app), vec![Command::ShowBrowser { squad: "acme".into(), member: None, show: false }]);
         assert!(app.flash.as_deref().unwrap().contains("hidden"));
+    }
+
+    #[test]
+    fn desktop_stop_takes_the_screen_back_and_resume_opens_it() {
+        let (mut app, _, _) = team();
+        type_text(&mut app, "/desktop stop");
+        assert_eq!(enter(&mut app), vec![Command::Desktop { open: false }]);
+        type_text(&mut app, "/desktop resume");
+        assert_eq!(enter(&mut app), vec![Command::Desktop { open: true }]);
+        type_text(&mut app, "/desktop");
+        assert_eq!(enter(&mut app), vec![]);
+        assert!(app.flash.as_deref().unwrap().contains("nobody on the screen"));
     }
 
     #[test]

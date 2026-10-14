@@ -265,6 +265,25 @@ answers free for them anyway. A tool not named in `Act::of` is taken for a click
    them: the lease should also yield when the person is active (HID idle time <
    N s), not only to other members.
 
+## T-22 on this Mac: the person first
+
+`cargo run -p equipe-core --example desktop_watch -- <seconds>` asks the gate
+twice a second whether a member's input would go in, with this Mac's real
+readings. It posts nothing. Run from a member's turn under the installed daemon
+(`launchctl managername` → `Aqua`), 2026-10-14 00:4x–00:5x:
+
+| Moment | Last input | Lock | Member input |
+|---|---|---|---|
+| The person working the Mac (Jump Desktop) | 0.0–9 s ago, reset at irregular moments | Open | held: "The person is using the Mac… at least 30 s more" |
+| The person away | 32.9 s ago | Open | goes in |
+
+So the idle clock sees the person's input over Jump Desktop, and nothing on this
+Mac (Amphetamine included) resets it on its own: members aren't kept out
+forever. Not yet tried, because no member can post input before T-35: a
+member's own clicks not being taken for the person (unit-tested in
+`desktop::presence`), and input stopping in the middle of a long call (left to
+the helper, below).
+
 ## Notes for the follow-up tickets
 
 - **T-21 (tools):** build `equipe-desktop` as its own binary + LaunchAgent
@@ -285,6 +304,15 @@ answers free for them anyway. A tool not named in `Act::of` is taken for a click
   can't unlock (and mustn't hold the password). Tools return "the Mac is locked"
   and the member asks the person. Also cover "no GUI session" (logged out,
   FileVault after reboot).
+- **T-22, done — for T-35 to use:** the daemon's gate is
+  `Handle::desktop_ask(member, Use::Look|Input)` before each call goes to the
+  helper, `desktop_done(member, start, input)` after it, and
+  `desktop_release(member)` for the `release` tool; a refusal's text goes back
+  to the model as the tool result. The gate decides *before* a call; a long
+  call (`type` of a paragraph, a drag) must also stop *during* it when the person
+  touches the Mac: the helper checks the last input's age between its own
+  events and stops when the latest event is not one it just posted (same rule as
+  `desktop::presence`).
 - **T-23 (send approval):** with AX we can see *what* is about to be sent — the
   text in the compose field and the conversation title — so the approval shows
   the exact message and recipient, and the send (⏎ / Send button) is a separate

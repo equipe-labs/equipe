@@ -811,6 +811,10 @@ fn header(app: &App, theme: Theme, narrow: bool, width: usize) -> (Vec<Span<'sta
         let summary = if working > 0 { format!("   {open} members · {working} working") } else { format!("   {open} members") };
         spans.push(Span::styled(summary, theme.dim()));
     }
+    // Who has the Mac's screen, whichever squad: there is only one.
+    if let Some(desktop) = app.desktop.summary(Some(&app.squad)) {
+        spans.push(Span::styled(format!("   ▣ {desktop}"), theme.accent()));
+    }
     let mut hits = Vec::new();
     let used = |spans: &[Span]| spans.iter().map(Span::width).sum::<usize>();
     let mut chips: Vec<Span<'static>> = Vec::new();
@@ -2385,6 +2389,20 @@ mod tests {
         assert!(!shot.contains("SQUAD"), "{shot}");
         assert!(shot.contains("1 members · 1 working"), "{shot}");
         assert!(shot.contains("Looking now."), "{shot}");
+    }
+
+    #[test]
+    fn the_header_says_who_has_the_macs_screen_and_who_waits() {
+        use equipe_core::protocol::{DesktopState, MemberRef};
+        let (mut app, _) = working();
+        assert!(!screen(&app, 120, 18).contains("▣"), "nothing while nobody uses it");
+        let here = |m: &str| MemberRef { squad: app.squad.clone(), member: m.into() };
+        let desktop = DesktopState { holder: Some(here("frontend")), queue: vec![here("backend")], stopped: false };
+        app.on_event(Event::Desktop { desktop });
+        let shot = screen(&app, 120, 18);
+        assert!(shot.contains("▣ frontend on the screen · 1 waiting"), "{shot}");
+        app.on_event(Event::Desktop { desktop: DesktopState { stopped: true, ..Default::default() } });
+        assert!(screen(&app, 120, 18).contains("▣ screen taken back · /desktop resume"));
     }
 
     #[test]

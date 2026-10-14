@@ -645,6 +645,32 @@ permission modes), with the presets on top (`equipe_core::permissions`):
   deletion, password fields and security settings take no input at all. See
   [DESKTOP-CONTROL.md](./DESKTOP-CONTROL.md#send-gate-t-23).
 
+### The Mac's screen
+
+One mouse, one keyboard: the daemon lets one member at a time use the desktop
+tools, and the person always comes first (`equipe_core::desktop`). Every desktop
+tool call asks the daemon before it reaches the Mac (`Handle::desktop_ask`) and
+says when it has ended (`desktop_done`); the answer is code, not the model's.
+
+- **A lease, across squads.** The first call gets the screen; the others are told
+  "frontend is using the screen; you are number 1 in line" and keep their place.
+  It passes to the next in line when the member's turn ends, when it lets go
+  (`desktop_release`), or after 2 minutes without a desktop call. Looking
+  (screenshots, the accessibility tree) waits its turn too: the one who has the
+  screen may be halfway through something.
+- **The person first.** macOS tells how long ago the last input of any source came
+  (`CGEventSourceSecondsSinceLastEventType`). The members' own clicks count there
+  too, so equipe tells them apart by *when* they ran: an event outside every
+  window in which a member's call was posting is the person's — at the Mac, or
+  over Jump Desktop, whose input is synthetic as well. After the person's last
+  touch, members' input waits 30 seconds; looking stays allowed.
+- **Locked or logged out**, no input (`CGSSessionScreenIsLocked`); members can't
+  unlock it. Not knowing — a daemon outside the GUI session — counts as no.
+- **`/desktop stop`** takes the screen back from everyone at once and empties the
+  line; nothing is let through until `/desktop resume`. The console's header and
+  `equipe status` show who has the screen and how many wait.
+- Kept in memory only: a restarted daemon starts with a free screen.
+
 ### Memory
 
 Claude Code keeps an auto memory per directory, shared with the person's own
