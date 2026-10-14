@@ -234,6 +234,19 @@ Later, when the desktop needs them often, the `ssh` side commands can become
 daemon requests like `squads` and `upload` did (a `diff` request first); the
 table is the contract until then.
 
+**The board** (`views/board.rs`; rules in `board.rs`, git in `diffs.rs`). It has the
+terminal board's order, lanes, folding, tree (`g`), search (`f`, done tickets too) and
+calls (`a` `r` `m` `d` Enter), and changes only on the daemon's events: every action is
+the same command the console sends (`accept`, `merge{push}`, `reopen`, `resume`,
+`cancel`). The diff and the branch stat are the two `git` commands of the table above —
+run here on this Mac, as `ssh` side commands otherwise. The list/detail divider is
+dragged and kept in `desktop-target` (`board-split`). To try it on a real daemon without
+touching anyone's squads: `EQUIPE_HOME=$(mktemp -d)`, `examples/seed_board` for a squad
+with projects, `equipe daemon run` (stopped while tickets are put into
+`squads/<name>/squad.db` with `sqlite3`), then `--features snapshot` with
+`EQUIPE_SCRIPT="board;pick:2;bkey:d;shot:/tmp/a.png"` (`bkey`, `pick`, `find`, `note`,
+`submit`, `cancel` drive the board).
+
 The old spike (mock agents into SQLite) is kept as `examples/mock_agents.rs`
 (`cargo run --release -p equipe-desktop --example mock_agents`); the knobs below
 are for it.

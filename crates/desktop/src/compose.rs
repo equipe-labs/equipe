@@ -183,6 +183,8 @@ pub enum Effect {
     /// Talk to this member (a bare `@name`).
     Select(SessionId),
     ShowBoard,
+    /// The board, narrowed to these words (`/find`).
+    Find(String),
     /// Put this project (or all) in focus.
     Focus(Option<String>),
 }
@@ -256,7 +258,7 @@ fn slash(model: &Model, command: &str) -> Plan {
     match name {
         "accept" | "merge" | "reopen" | "resume" | "cancel" => decide(model, name, rest),
         "board" => Plan { effect: Some(Effect::ShowBoard), ..Plan::default() },
-        "find" => Plan { effect: Some(Effect::ShowBoard), ..Plan::say("보드에서 찾기는 보드 화면과 함께 들어옵니다") },
+        "find" => Plan { effect: Some(Effect::Find(rest.to_owned())), ..Plan::default() },
         "project" => {
             let wanted = rest;
             let project = match wanted {
@@ -581,6 +583,7 @@ mod tests {
         let p = plan(&model, "/squad new x");
         assert!(p.commands.is_empty() && p.flash.unwrap().contains("터미널"));
         assert_eq!(plan(&model, "/board").effect, Some(Effect::ShowBoard));
+        assert_eq!(plan(&model, "/find 로그인 화면").effect, Some(Effect::Find("로그인 화면".into())));
     }
 
     #[test]

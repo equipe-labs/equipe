@@ -6,7 +6,9 @@
 //! see docs/DESKTOP.md. `EQUIPE_LOG_RENDER=1` prints a line per frame, to see that.
 
 mod askpass;
+mod board;
 mod commands;
+mod diffs;
 mod compose;
 mod convo;
 mod daemon;
@@ -38,6 +40,7 @@ use target::{Endpoint, Remembered};
 use equipe_core::protocol::{Command, SessionId};
 use state::{Clock, Conn, Model};
 use theme::{BODY, Palette, SANS, SMALL};
+use views::board::BoardUi;
 use views::chat::Chat;
 use views::composer::Composer;
 use views::connect::{AskUi, ConnectUi};
@@ -68,6 +71,7 @@ pub struct Shell {
     pub screen: Screen,
     pub chat: Chat,
     pub composer: Composer,
+    pub board: BoardUi,
     /// The ticket a `T-n` link asked the board to open.
     pub board_ticket: Option<u32>,
     /// Where a click on a notification says to go: the notifier's threads send, we follow.
@@ -89,6 +93,7 @@ pub struct Shell {
     _connecting: Option<Task<()>>,
     _clicks: Option<Task<()>>,
     _notices: Option<Task<()>>,
+    _fetched: Option<Task<()>>,
     _prompts: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -103,6 +108,7 @@ impl Shell {
         let (clicks, mut clicked) = tokio::sync::mpsc::unbounded_channel();
         let (notices, mut noticed) = tokio::sync::mpsc::unbounded_channel::<String>();
         let remembered = Remembered::load(&equipe_home());
+        let (fetched_tx, mut fetched) = tokio::sync::mpsc::unbounded_channel::<diffs::Fetched>();
         let endpoint = std::env::var("EQUIPE_TARGET")
             .ok()
             .and_then(|t| Endpoint::parse(&t).ok())
@@ -117,6 +123,7 @@ impl Shell {
             screen: Screen::Chat,
             chat: Chat::new(cx),
             composer: Composer::new(window, cx),
+            board: BoardUi::new(window, cx, remembered.board_split, fetched_tx),
             board_ticket: None,
             clicks,
             endpoint: endpoint.clone(),
@@ -133,6 +140,7 @@ impl Shell {
             _connecting: None,
             _clicks: None,
             _notices: None,
+            _fetched: None,
             _prompts: None,
             _subscriptions: Vec::new(),
         };
@@ -155,6 +163,15 @@ impl Shell {
                 }
             }
         }));
+        shell._fetched = Some(cx.spawn_in(window, async move |this, cx| {
+            while let Some(done) = fetched.recv().await {
+                if this.update_in(cx, |this, _, cx| this.board_fetched(done, cx)).is_err() {
+                    break;
+                }
+            }
+        }));
+        let board_subscriptions = shell.board_subscriptions(window, cx);
+        shell._subscriptions.extend(board_subscriptions);
         let (connect_input, ask_input) = (shell.connect.input.clone(), shell.ask.input.clone());
         shell._subscriptions.push(cx.subscribe_in(&connect_input, window, |this, input, event: &InputEvent, window, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
@@ -185,9 +202,14 @@ impl Shell {
                 }
                 return;
             }
+            let plain = !(modifiers.control || modifiers.alt || modifiers.platform || modifiers.shift || modifiers.function);
+            // The board's keys: tickets, questions, search.
+            if this.update(cx, |shell, cx| shell.on_board_key(key, plain, window, cx)).unwrap_or(false) {
+                cx.stop_propagation();
+                return;
+            }
             // y / a / n / o answer a request for permission while nothing is typed.
             if matches!(key, "y" | "a" | "n" | "o") {
-                let plain = !(modifiers.control || modifiers.alt || modifiers.platform || modifiers.shift || modifiers.function);
                 if this.update(cx, |shell, cx| shell.on_approval_key(key, plain, cx)).unwrap_or(false) {
                     cx.stop_propagation();
                 }
@@ -211,6 +233,7 @@ impl Shell {
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.composer.follow(&self.model, window, cx);
         self.chat.sync(&self.model, cx);
+        self.board_sync(cx);
     }
 
     pub fn send_command(&self, command: Command) {
@@ -497,6 +520,7 @@ impl Shell {
     pub fn show(&mut self, screen: Screen, cx: &mut Context<Self>) {
         if self.screen != screen {
             self.screen = screen;
+            self.board_sync(cx);
             cx.notify();
         }
     }
@@ -532,7 +556,7 @@ impl Shell {
                         .flex_1()
                         .min_h_0()
                         .child(views::header::render(self, cx))
-                        .child(views::board::render(self))
+                        .child(views::board::render(self, cx))
                         // A request still waits for its answer here; the buttons work.
                         .children(views::approvals::approval(self, cx).map(|card| div().w_full().max_w(px(720.)).px_4().mx_auto().child(card)))
                         .into_any_element(),
@@ -634,7 +658,8 @@ fn install_screen(p: Palette) -> AnyElement {
 }
 
 impl Render for Shell {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.board_prepare(window, cx);
         self.renders += 1;
         if self.log_renders {
             let mb = mem::phys_footprint_bytes().map_or(0., |b| b as f64 / 1_048_576.);

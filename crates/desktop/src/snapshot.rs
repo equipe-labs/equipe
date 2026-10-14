@@ -6,7 +6,7 @@
 //! `wait:<ms>` · `shot:<png>` · `say:<text>` (type it in the box and send) ·
 //! `type:<text>` (type, don't send) · `key:<y|a|n|o>` (answer a request) · `esc` (stop the member) · `up`/`down`
 //! (history) · `project:<name|all>` · `select:<member>` · `board` · `chat` ·
-//! `folds` · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
+//! `bkey:<key>` (a board key) · `pick:<n>` (a ticket) · `find:<words>` · `note:<text>` (in the open question's box) · `submit` (its main button) · `folds` · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
 //! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 
@@ -62,6 +62,14 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                         shell.select_member(session, window, cx);
                     }
                 }),
+                "bkey" => shell.update(cx, |shell, cx| {
+                    shell.on_board_key(&arg, true, window, cx);
+                }),
+                "pick" => shell.update(cx, |shell, cx| shell.board_pick(arg.parse().unwrap_or(0), cx)),
+                "find" => shell.update(cx, |shell, cx| shell.board_find(&arg, cx)),
+                "note" => shell.update(cx, |shell, cx| shell.board_type(&arg, window, cx)),
+                "cancel" => shell.update(cx, |shell, cx| shell.board_ask_cancel(cx)),
+                "submit" => shell.update(cx, |shell, cx| shell.board_submit(window, cx)),
                 "board" => shell.update(cx, |shell, cx| shell.show(crate::Screen::Board, cx)),
                 "chat" => shell.update(cx, |shell, cx| shell.show(crate::Screen::Chat, cx)),
                 "folds" => shell.update(cx, |shell, cx| shell.toggle_folds(cx)),

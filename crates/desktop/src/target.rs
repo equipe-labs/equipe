@@ -141,10 +141,12 @@ impl Endpoint {
 /// What the app remembers about where it connected: the last target, and the
 /// hosts typed by hand to pick again. A small text file next to the app's other
 /// state (`<home>/desktop-target`): `last <target>` and `recent ssh <spec>` lines.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Remembered {
     pub last: Option<Endpoint>,
     pub recent: Vec<SshHost>,
+    /// How tall the board's list was left, in px (the divider the person dragged).
+    pub board_split: Option<f32>,
 }
 
 impl Remembered {
@@ -161,6 +163,8 @@ impl Remembered {
         for line in text.lines() {
             if let Some(rest) = line.strip_prefix("last ") {
                 out.last = Endpoint::from_saved(rest);
+            } else if let Some(rest) = line.strip_prefix("board-split ") {
+                out.board_split = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("recent ssh ")
                 && let Ok(host) = SshHost::parse(rest)
                 && !out.recent.contains(&host)
@@ -179,6 +183,9 @@ impl Remembered {
         }
         for host in &self.recent {
             text.push_str(&format!("recent ssh {}\n", host.spec()));
+        }
+        if let Some(split) = self.board_split {
+            text.push_str(&format!("board-split {split:.0}\n"));
         }
         text
     }
@@ -302,9 +309,11 @@ mod tests {
         remembered.use_endpoint(&Endpoint::Ssh(host("me@a")));
         remembered.use_endpoint(&Endpoint::Ssh(host("b:2222")));
         remembered.use_endpoint(&Endpoint::Ssh(host("me@a")));
+        remembered.board_split = Some(212.4);
         remembered.save(&dir);
 
         let loaded = Remembered::load(&dir);
+        assert_eq!(loaded.board_split, Some(212.0), "the board's divider is kept, to the pixel");
         assert_eq!(loaded.last, Some(Endpoint::Ssh(host("me@a"))));
         assert_eq!(loaded.recent, vec![host("me@a"), host("b:2222")]);
 
