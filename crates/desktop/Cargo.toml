@@ -18,5 +18,12 @@ libc = "0.2"
 # The daemon link runs its own small runtime on a thread off the UI.
 tokio = { version = "1.53.2", features = ["rt", "macros", "sync", "time", "net", "io-util"] }
 
+# Dev tool: `--features snapshot` lets `EQUIPE_SNAPSHOT=<png>` write what the
+# window painted, for looking at a change without a screen-capture permission.
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+
+[features]
+snapshot = ["dep:image", "gpui-kit/test-support"]
+
 [dev-dependencies]
 serde_json = "1"
