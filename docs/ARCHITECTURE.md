@@ -252,8 +252,10 @@ daemon ──~/.equipe/desktop/helper.sock + token──▶ equipe Desktop Helpe
   helper keeps its grants: a self-signed certificate made on the Mac, in a
   keychain of its own under `~/.equipe/desktop/signing`, until there is a
   Developer ID (`equipe desktop setup --sign "<identity>"` switches; `Signer` in
-  `install.rs`). Each build goes in a bundle folder of its own — App Management
-  blocks rewriting a bundle in place.
+  `install.rs`). The bundle lives in `~/Applications` — System Settings lists
+  only apps Launch Services knows, not bundles in hidden folders like
+  `~/.equipe` — and a new build is staged beside it and swapped in, since App
+  Management blocks rewriting a bundle in place.
 - **Reached through the daemon.** The helper answers only requests carrying the
   token beside its socket, which fenced members can't read (`deny_read`, like the
   credentials). The runtime checks the member is turned on; the call itself runs

@@ -10,8 +10,10 @@
 //! [`Signer::Identity`] signs with any identity instead.
 //!
 //! The bundle's executable is a copy of `equipe` itself, run as `equipe desktop
-//! serve`. A new build goes in a folder of its own beside the old one rather
-//! than over it: macOS's App Management blocks rewriting an app bundle.
+//! serve`. It lives in `~/Applications`: System Settings lists only apps
+//! Launch Services knows, which leaves out bundles in hidden folders like
+//! `~/.equipe`. A new build is made beside the old bundle and swapped in, not
+//! written over it: macOS's App Management blocks rewriting an app bundle.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -84,10 +86,13 @@ pub fn gui_domain() -> String {
     format!("gui/{}", uid())
 }
 
-/// The bundle for build `stamp`.
-pub fn bundle_path(home: &Path, stamp: &str) -> PathBuf {
-    helper::dir(home).join("apps").join(stamp.replace(['+', '/', ' '], "-")).join(format!("{APP_NAME}.app"))
+/// Where the helper's bundle lives.
+pub fn bundle_path() -> PathBuf {
+    dirs_home().join("Applications").join(format!("{APP_NAME}.app"))
 }
+
+const LSREGISTER: &str =
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 
 pub fn info_plist(version: &str) -> String {
     format!(
@@ -170,33 +175,47 @@ pub struct Installed {
     pub requirement: String,
 }
 
-/// Put build `stamp` of `source` (this equipe) in place as the helper, signed
-/// by `signer`, and (re)load its LaunchAgent. A bundle already in place for
-/// this build is kept as it is.
-pub fn install(home: &Path, source: &Path, stamp: &str, version: &str, signer: &Signer) -> Result<Installed, String> {
+/// Put `source` (this equipe) in place as the helper, signed by `signer`, and
+/// (re)load its LaunchAgent. A bundle already holding this build is kept.
+pub fn install(home: &Path, source: &Path, version: &str, signer: &Signer) -> Result<Installed, String> {
     helper::ensure_dir(home).map_err(|e| e.to_string())?;
     helper::ensure_token(home).map_err(|e| e.to_string())?;
-    let app = bundle_path(home, stamp);
+    let app = bundle_path();
     let exe = app.join("Contents/MacOS").join(EXECUTABLE);
-    let current = installed_exe().is_some_and(|e| e == exe) && run("codesign", &["--verify", &app.to_string_lossy()]).is_ok();
+    let same_build = std::fs::read(&exe).ok().zip(std::fs::read(source).ok()).is_some_and(|(a, b)| a == b);
+    let current = same_build && run("codesign", &["--verify", &app.to_string_lossy()]).is_ok();
     let changed = !current;
     if changed {
-        if app.exists() {
-            std::fs::remove_dir_all(&app).map_err(|e| format!("Couldn't clear {}: {e}", app.display()))?;
+        // Made beside the old one, then swapped in.
+        let staged = app.with_file_name(format!(".{APP_NAME}.new.app"));
+        if staged.exists() {
+            std::fs::remove_dir_all(&staged).map_err(|e| format!("Couldn't clear {}: {e}", staged.display()))?;
         }
-        std::fs::create_dir_all(exe.parent().expect("MacOS has a parent")).map_err(|e| e.to_string())?;
-        std::fs::copy(source, &exe).map_err(|e| format!("Couldn't copy equipe into the helper: {e}"))?;
-        std::fs::write(app.join("Contents/Info.plist"), info_plist(version)).map_err(|e| e.to_string())?;
-        sign(home, &app, signer)?;
+        let staged_exe = staged.join("Contents/MacOS").join(EXECUTABLE);
+        std::fs::create_dir_all(staged_exe.parent().expect("MacOS has a parent")).map_err(|e| e.to_string())?;
+        std::fs::copy(source, &staged_exe).map_err(|e| format!("Couldn't copy equipe into the helper: {e}"))?;
+        std::fs::write(staged.join("Contents/Info.plist"), info_plist(version)).map_err(|e| e.to_string())?;
+        sign(home, &staged, signer)?;
+        let _ = run("launchctl", &["bootout", &format!("{}/{LABEL}", gui_domain())]);
+        if app.exists() {
+            let old = app.with_file_name(format!(".{APP_NAME}.old.app"));
+            let _ = std::fs::remove_dir_all(&old);
+            std::fs::rename(&app, &old).map_err(|e| {
+                format!("Couldn't replace {} ({e}). If macOS says it blocked modifying apps, allow App Management for your terminal, or delete the old helper and run setup again.", app.display())
+            })?;
+            let _ = std::fs::remove_dir_all(&old);
+        }
+        std::fs::rename(&staged, &app).map_err(|e| format!("Couldn't put the helper in {}: {e}", app.display()))?;
+        // Known to Launch Services, so System Settings lists it.
+        let _ = run(LSREGISTER, &["-f", &app.to_string_lossy()]);
     }
     let requirement = requirement(&app);
-    if changed || !plist_path().is_file() {
+    if changed || installed_exe().is_none_or(|e| e != exe) {
         let plist = plist_path();
         std::fs::create_dir_all(plist.parent().expect("LaunchAgents has a parent")).map_err(|e| e.to_string())?;
         std::fs::write(&plist, agent_plist(&exe, home, &helper::log_path(home))).map_err(|e| e.to_string())?;
         let _ = run("launchctl", &["bootout", &format!("{}/{LABEL}", gui_domain())]);
         run("launchctl", &["bootstrap", &gui_domain(), &plist.to_string_lossy()])?;
-        remove_old_bundles(home, &app);
     } else if !loaded() {
         run("launchctl", &["bootstrap", &gui_domain(), &plist_path().to_string_lossy()])?;
     }
@@ -212,17 +231,6 @@ fn requirement(app: &Path) -> String {
     text.lines().find(|l| l.contains("designated")).unwrap_or("").trim().to_owned()
 }
 
-/// Earlier builds' bundles. Best effort: App Management may keep one.
-fn remove_old_bundles(home: &Path, keep: &Path) {
-    let Ok(entries) = std::fs::read_dir(helper::dir(home).join("apps")) else { return };
-    let keep = keep.parent().map(Path::to_path_buf);
-    for entry in entries.flatten() {
-        if Some(entry.path()) != keep {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-    }
-}
-
 /// Whether the helper's agent is loaded in the GUI session.
 pub fn loaded() -> bool {
     run("launchctl", &["print", &format!("{}/{LABEL}", gui_domain())]).is_ok()
@@ -233,12 +241,13 @@ pub fn restart() -> Result<(), String> {
     run("launchctl", &["kickstart", "-k", &format!("{}/{LABEL}", gui_domain())])
 }
 
-/// Stop the helper and remove it: its agent, its bundles, its socket.
+/// Stop the helper and remove it: its agent, its bundle, its socket.
 pub fn uninstall(home: &Path) -> bool {
     let had = plist_path().is_file();
     let _ = run("launchctl", &["bootout", &format!("{}/{LABEL}", gui_domain())]);
     let _ = std::fs::remove_file(plist_path());
-    let _ = std::fs::remove_dir_all(helper::dir(home).join("apps"));
+    let _ = run(LSREGISTER, &["-u", &bundle_path().to_string_lossy()]);
+    let _ = std::fs::remove_dir_all(bundle_path());
     let _ = std::fs::remove_file(helper::socket_path(home));
     had
 }
@@ -342,7 +351,7 @@ mod tests {
 
     #[test]
     fn the_agent_runs_only_in_the_gui_session() {
-        let plist = agent_plist(Path::new("/h/.equipe/desktop/apps/1/equipe Desktop Helper.app/Contents/MacOS/x"), Path::new("/h/.equipe"), Path::new("/h/log"));
+        let plist = agent_plist(Path::new("/h/Applications/equipe Desktop Helper.app/Contents/MacOS/x"), Path::new("/h/.equipe"), Path::new("/h/log"));
         assert!(plist.contains("<key>LimitLoadToSessionType</key><string>Aqua</string>"));
         assert!(plist.contains("<string>desktop</string><string>serve</string><string>--home</string><string>/h/.equipe</string>"));
         let info = info_plist("0.11.0");
@@ -350,10 +359,8 @@ mod tests {
     }
 
     #[test]
-    fn each_build_gets_a_bundle_of_its_own() {
-        let a = bundle_path(Path::new("/h"), "0.11.0+100");
-        let b = bundle_path(Path::new("/h"), "0.11.0+200");
-        assert_ne!(a, b);
-        assert!(a.ends_with("desktop/apps/0.11.0-100/equipe Desktop Helper.app"));
+    fn the_helper_lives_where_system_settings_lists_it() {
+        let app = bundle_path();
+        assert!(app.ends_with("Applications/equipe Desktop Helper.app"), "{}", app.display());
     }
 }

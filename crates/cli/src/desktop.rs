@@ -175,8 +175,7 @@ async fn setup(home: &Path, sign: Option<String>) -> Result<(), String> {
     };
     signer.remember(home).map_err(|e| e.to_string())?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let stamp = crate::daemon::build_id();
-    let installed = install::install(home, &exe, &stamp, env!("CARGO_PKG_VERSION"), &signer)?;
+    let installed = install::install(home, &exe, env!("CARGO_PKG_VERSION"), &signer)?;
     if installed.changed {
         println!("{}", p.ok_line(&format!("Installed the desktop helper, signed with {}.", signer.describe())));
     } else {
