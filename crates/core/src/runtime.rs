@@ -325,10 +325,13 @@ struct Session {
     refresh: Option<bool>,
     transcript: Transcript,
     turn: Option<JoinHandle<()>>,
-    /// Memos left while a turn ran, delivered together when it ends.
+    /// Memos left while a turn ran, delivered when it ends: those about one
+    /// project together, in that project's conversation, then the next project's.
     queued: Vec<String>,
-    /// The project the person was looking at when the memos were left (`None`
-    /// inside: the whole squad); they go into that project's conversation.
+    /// For each memo, the project the person was looking at when they left it
+    /// (`None`: the whole squad).
+    memo_threads: Vec<Option<String>>,
+    /// The conversation the memos being delivered now go into.
     memo_thread: Option<Option<String>>,
     /// For the PM: what happened with the team since the PM's last turn. It
     /// travels with the PM's next message, so the PM keeps up without spending a
@@ -348,6 +351,27 @@ struct Session {
 }
 
 impl Session {
+    /// The memos about the first project one was left in, taken out to be sent
+    /// together into its conversation; the rest wait for the next turn's end.
+    fn next_memos(&mut self) -> Option<String> {
+        let project = self.memo_threads.first().cloned().or_else(|| (!self.queued.is_empty()).then_some(None))?;
+        let mut taken = Vec::new();
+        let mut kept = (Vec::new(), Vec::new());
+        let threads = std::mem::take(&mut self.memo_threads);
+        for (i, text) in std::mem::take(&mut self.queued).into_iter().enumerate() {
+            let about = threads.get(i).cloned().unwrap_or_else(|| project.clone());
+            if about == project {
+                taken.push(text);
+            } else {
+                kept.0.push(text);
+                kept.1.push(about);
+            }
+        }
+        (self.queued, self.memo_threads) = kept;
+        self.memo_thread = Some(project);
+        Some(taken.join("\n\n"))
+    }
+
     fn is_working(&self) -> bool {
         self.turn.as_ref().is_some_and(|t| !t.is_finished())
     }
@@ -650,13 +674,8 @@ impl Runtime {
                     let _ = journal.set_suggestions(on);
                 }
             }
-            Command::Scale { squad, extra } => {
-                if let Some(journal) = self.journal(&squad) {
-                    let _ = journal.set_scale(extra.min(HELPERS_MAX));
-                }
-                // More room may be just what waiting work needed.
-                self.dispatch(&squad).await;
-            }
+            // From older screens: nobody is added on equipe's own any more.
+            Command::Scale { .. } => {}
             Command::Refresh { session, summary } => {
                 if let Some(s) = self.sessions.get_mut(&session) {
                     s.refresh = Some(summary);
@@ -706,10 +725,10 @@ impl Runtime {
         let (Some(squad), queued, briefing) = (session.squad.clone(), session.queued.clone(), session.briefing.clone()) else {
             return;
         };
-        let memo_thread: Vec<String> = session.memo_thread.clone().map(Option::unwrap_or_default).into_iter().collect();
+        let threads: Vec<String> = session.memo_threads.iter().map(|p| p.clone().unwrap_or_default()).collect();
         if let Some(journal) = self.journal(&squad) {
             let _ = journal.set_waiting(id, "memo", &queued);
-            let _ = journal.set_waiting(id, "memo-thread", &memo_thread);
+            let _ = journal.set_waiting(id, "memo-threads", &threads);
             let _ = journal.set_waiting(id, "briefing", &briefing);
         }
     }
@@ -981,6 +1000,7 @@ impl Runtime {
                 transcript: Transcript::default(),
                 turn: None,
                 queued: Vec::new(),
+                memo_threads: Vec::new(),
                 memo_thread: None,
                 answers_person: false,
                 briefing: Vec::new(),
@@ -1030,11 +1050,9 @@ impl Runtime {
                 Some(work) => Some(crate::board::project_name(&work.project)),
                 None => session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned(),
             };
-            if session.queued.is_empty() || session.memo_thread.is_none() {
-                session.memo_thread = Some(looking_at);
-            }
             session.queued.push(text.clone());
-            let project = session.memo_thread.clone().flatten();
+            session.memo_threads.push(looking_at.clone());
+            let project = looking_at;
             self.save_waiting(id);
             return self.publish(Event::MessageQueued { session: id, text, project });
         }
@@ -1574,10 +1592,7 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
         } else if session.work.as_ref().is_some_and(|w| w.waiting.is_some()) {
             self.end_work(id, WorkEnd::Waiting);
         }
-        if let Some(session) = self.sessions.get_mut(&id)
-            && !session.queued.is_empty()
-        {
-            let text = std::mem::take(&mut session.queued).join("\n\n");
+        if let Some(text) = self.sessions.get_mut(&id).and_then(Session::next_memos) {
             self.save_waiting(id);
             Box::pin(self.submit(id, text)).await;
         }
@@ -1654,11 +1669,13 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
     async fn dispatch(&mut self, squad: &str) {
         let tickets = self.tickets(squad);
         let single_project = self.projects(squad).len() == 1;
+        // Members equipe once brought in for a rush finish what they hold and take nothing new.
+        let helpers = self.journals.get(squad).map(Journal::helpers).unwrap_or_default();
         let members: Vec<(String, String, bool)> = self
             .sessions
-            .values()
-            .filter(|s| s.squad.as_deref() == Some(squad))
-            .filter_map(|s| s.member.as_ref().map(|m| (m.name.clone(), m.role.clone(), s.is_free())))
+            .iter()
+            .filter(|(id, s)| s.squad.as_deref() == Some(squad) && !helpers.contains(id))
+            .filter_map(|(_, s)| s.member.as_ref().map(|m| (m.name.clone(), m.role.clone(), s.is_free())))
             .collect();
         let candidates: Vec<Candidate> =
             members.iter().map(|(name, role, free)| Candidate { name, role, free: *free }).collect();
@@ -1667,69 +1684,11 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
                 self.begin_work(id, ticket);
             }
         }
-        // Work a role has no one free for: bring in extra members of it, up to the
-        // squad's scale. Each joins and picks up a waiting ticket at once.
-        let waiting = board::unstaffed(&tickets, &candidates, single_project);
-        if waiting.is_empty() {
-            return;
-        }
-        let Some(journal) = self.journal(squad) else {
-            return;
-        };
-        let (scale, helpers) = (journal.scale(), journal.helpers());
-        let total = helpers.iter().filter(|id| self.sessions.contains_key(id)).count();
-        // One at a time: the newcomer's own arrival looks again, with it counted.
-        let room = waiting.into_iter().find(|(role, _)| {
-            let of_role = helpers
-                .iter()
-                .filter(|id| self.sessions.get(id).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == *role))
-                .count();
-            of_role < scale && total < HELPERS_MAX
-        });
-        if let Some((role, count)) = room {
-            Box::pin(self.bring_in_helper(squad, &role, count)).await;
-        }
     }
 
-    /// A temporary member of `role`, for work that waits: it shares the role's
-    /// memory, and leaves when it has been idle a while.
-    async fn bring_in_helper(&mut self, squad: &str, role: &str, waiting: usize) {
-        // It sits in the squad home like everyone else; this is only where it starts.
-        let project = self.projects(squad).first().cloned().unwrap_or_else(|| squad_home::path(&self.config.home, squad));
-        let id = equipe_protocol::new_session_id();
-        // It edits as the role's member does — for a custom role, as the person said.
-        let edits = self
-            .sessions
-            .values()
-            .any(|s| s.squad.as_deref() == Some(squad) && s.member.as_ref().is_some_and(|m| m.role == role) && s.edits());
-        let spec = SessionSpec {
-            engine: None,
-            model: None,
-            access: if edits { Access::EditFiles } else { Access::ReadOnly },
-            cwd: project,
-            role: Some(role.to_owned()),
-            squad: Some(squad.to_owned()),
-        };
-        // Recorded first, so the dispatch its start runs counts it.
-        if let Some(journal) = self.journal(squad) {
-            let mut helpers = journal.helpers();
-            helpers.push(id);
-            let _ = journal.set_helpers(&helpers);
-        }
-        Box::pin(self.start(id, spec)).await;
-        let Some(session) = self.sessions.get_mut(&id) else {
-            return;
-        };
-        session.last_turn = Some(std::time::Instant::now());
-        let name = session.name().unwrap_or(role).to_owned();
-        if let Some(pm) = self.pm_of(squad) {
-            let text = format!("Brought in {name}: {waiting} {role} ticket{} waiting at once · /scale changes how many", if waiting == 1 { " was" } else { "s were" });
-            self.publish(Event::Notice { session: pm, text });
-        }
-    }
-
-    /// Let go the helpers with nothing to do: free, idle a while, and no work
-    /// of their role waiting.
+    /// Let go the members equipe once brought in for a rush, as each finishes
+    /// what it held: nobody is added on equipe's own any more — a member splits
+    /// big work across subagents, and the person adds teammates.
     async fn let_helpers_go(&mut self) {
         let squads: Vec<String> = self.journals.keys().cloned().collect();
         for squad in squads {
@@ -1743,16 +1702,14 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
                 .iter()
                 .copied()
                 .filter(|id| {
-                    self.sessions.get(id).is_some_and(|s| {
-                        s.is_free() && s.last_turn.is_some_and(|t| t.elapsed() > HELPER_IDLE)
-                    })
+                    self.sessions.get(id).is_some_and(Session::is_free)
                 })
                 .collect();
             for id in &idle {
                 let name = self.sessions.get(id).and_then(|s| s.name().map(str::to_owned)).unwrap_or_default();
                 Box::pin(self.close(*id)).await;
                 if let Some(pm) = self.pm_of(&squad) {
-                    self.publish(Event::Notice { session: pm, text: format!("{name} left: nothing of theirs is waiting") });
+                    self.publish(Event::Notice { session: pm, text: format!("{name} left, its work done: its role carries on") });
                 }
             }
             // Gone or let go: no longer helpers.
@@ -2906,7 +2863,8 @@ it back there once they have done it. End your turn now with a short line on wha
                     context: s.context,
                     recent: entries[entries.len().saturating_sub(SNAPSHOT_LINES)..].to_vec(),
                     queued: s.queued.clone(),
-                    queued_project: s.memo_thread.clone().flatten(),
+                    queued_project: s.memo_threads.first().cloned().flatten(),
+                    queued_in: s.memo_threads.clone(),
                     work: s.work.as_ref().map(|w| WorkInfo {
                         ticket: w.ticket,
                         project: w.project.clone(),
@@ -2998,6 +2956,18 @@ it back there once they have done it. End your turn now with a short line on wha
                     }
                 }
                 let memory = Some(journal::member_memory_dir(&self.config.home, &squad, &member.role));
+                let queued = journal.waiting(record.id, "memo").unwrap_or_default();
+                let mut memo_threads: Vec<Option<String>> = journal
+                    .waiting(record.id, "memo-threads")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|p| Some(p).filter(|p| !p.is_empty()))
+                    .collect();
+                // From before memos kept a project each: one for them all.
+                if memo_threads.len() != queued.len() {
+                    let all = journal.waiting(record.id, "memo-thread").unwrap_or_default().pop().filter(|p| !p.is_empty());
+                    memo_threads = vec![all; queued.len()];
+                }
                 // The PM's other conversations, by project, as they were left.
                 let (thread, others) = journal.desk_threads(record.id);
                 let threads: HashMap<Option<String>, DeskThread> = others
@@ -3034,8 +3004,9 @@ it back there once they have done it. End your turn now with a short line on wha
                         refresh,
                         transcript: Transcript::from_entries(conversation),
                         turn: None,
-                        queued: journal.waiting(record.id, "memo").unwrap_or_default(),
-                        memo_thread: journal.waiting(record.id, "memo-thread").unwrap_or_default().pop().map(|p| Some(p).filter(|p| !p.is_empty())),
+                        queued,
+                        memo_threads,
+                        memo_thread: None,
                         briefing: journal.waiting(record.id, "briefing").unwrap_or_default(),
                         memory,
                         mode: record.mode,
@@ -3069,8 +3040,8 @@ it back there once they have done it. End your turn now with a short line on wha
             .collect();
         let mut memos = Vec::new();
         for id in idle {
-            if let Some(session) = self.sessions.get_mut(&id) {
-                memos.push((id, std::mem::take(&mut session.queued).join("\n\n")));
+            if let Some(text) = self.sessions.get_mut(&id).and_then(Session::next_memos) {
+                memos.push((id, text));
             }
             self.save_waiting(id);
         }
@@ -3426,10 +3397,6 @@ fn verdict(decision: Decision, input: &Value, why: &str) -> ToolResult {
     ToolResult { text: text.to_string(), is_error: false }
 }
 
-/// The most helpers a squad has at once, whatever its scale.
-const HELPERS_MAX: usize = 6;
-/// A helper idle this long, with nothing of its role waiting, leaves.
-const HELPER_IDLE: Duration = Duration::from_secs(10 * 60);
 
 /// What a turn was for, in a line: the person's words, without what equipe
 /// put before them (`[equipe: …]`).

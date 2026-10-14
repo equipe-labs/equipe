@@ -11,6 +11,13 @@ const STATE: string = __STATE__;
 const SLOTS: string = __SLOTS__;
 const MAX: number = __MAX__;
 
+// Google's sign-in is the browser's own: it rotates its cookies and ends a
+// session it sees in two browsers at once. So Google stays in the browser it was
+// signed in to — a member signs in in its own window — and is never shared.
+const own = (domain: string) => /(^|\.)(google\.[a-z]{2,3}(\.[a-z]{2})?|youtube\.com|googleusercontent\.com)$/.test(domain.replace(/^\./, ''));
+const shared = (c: any) => !own(c.domain || '');
+const sharedOrigin = (o: any) => { try { return !own(new URL(o.origin).hostname); } catch { return true; } };
+
 const alive = (pid: number) => {
   try {
     process.kill(pid, 0);
@@ -59,7 +66,7 @@ export default async ({ page }: { page: any }) => {
       seen = changed;
       const kept = JSON.parse(fs.readFileSync(STATE, 'utf8'));
       const now = Date.now() / 1000;
-      await context.addCookies((kept.cookies || []).filter((c: any) => c.expires === -1 || c.expires > now));
+      await context.addCookies((kept.cookies || []).filter((c: any) => shared(c) && (c.expires === -1 || c.expires > now)));
     } catch {}
   };
   await take();
@@ -70,10 +77,10 @@ export default async ({ page }: { page: any }) => {
     let kept = { cookies: [] as any[], origins: [] as any[] };
     try { kept = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch {}
     const key = (c: any) => `${c.name}\u0000${c.domain}\u0000${c.path}`;
-    const cookies = new Map(kept.cookies.map((c: any) => [key(c), c]));
-    for (const c of mine.cookies) cookies.set(key(c), c);
-    const origins = new Map(kept.origins.map((o: any) => [o.origin, o]));
-    for (const o of mine.origins) origins.set(o.origin, o);
+    const cookies = new Map(kept.cookies.filter(shared).map((c: any) => [key(c), c]));
+    for (const c of mine.cookies.filter(shared)) cookies.set(key(c), c);
+    const origins = new Map(kept.origins.filter(sharedOrigin).map((o: any) => [o.origin, o]));
+    for (const o of mine.origins.filter(sharedOrigin)) origins.set(o.origin, o);
     const tmp = `${STATE}.${process.pid}`;
     fs.writeFileSync(tmp, JSON.stringify({ cookies: [...cookies.values()], origins: [...origins.values()] }), { mode: 0o600 });
     fs.renameSync(tmp, STATE);

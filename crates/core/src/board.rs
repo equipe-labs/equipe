@@ -20,28 +20,6 @@ pub struct Candidate<'a> {
     pub free: bool,
 }
 
-/// Ready tickets owned by a role that no member of it was free to take: how
-/// many wait, per role — the work extra members of that role would start on.
-pub fn unstaffed(tickets: &[Ticket], members: &[Candidate<'_>], single_project: bool) -> Vec<(String, usize)> {
-    let taken: Vec<TicketId> = assignments(tickets, members, single_project).into_iter().map(|(id, _)| id).collect();
-    let finished = |id: &TicketId| tickets.iter().any(|t| t.id == *id && t.status.is_closed());
-    let mut waiting: Vec<(String, usize)> = Vec::new();
-    for ticket in tickets.iter().filter(|t| t.status == TicketStatus::Todo && !taken.contains(&t.id)) {
-        // The PM is one: its own work waits for it rather than bringing in more PMs.
-        let Some(owner) = ticket.owner.as_deref().filter(|o| *o != crate::roles::PM && members.iter().any(|m| m.role == *o)) else {
-            continue;
-        };
-        if !knows_where(ticket, single_project) || !ticket.depends_on.iter().all(finished) {
-            continue;
-        }
-        match waiting.iter_mut().find(|(role, _)| role == owner) {
-            Some((_, n)) => *n += 1,
-            None => waiting.push((owner.to_owned(), 1)),
-        }
-    }
-    waiting
-}
-
 /// Whether a ticket knows where its work happens: a `code` ticket needs its
 /// project (or the squad's only one); a `task` or `action` works in the squad
 /// home, whatever the squad's projects.
@@ -65,6 +43,9 @@ pub fn assignments(tickets: &[Ticket], members: &[Candidate<'_>], single_project
             continue;
         }
         let free = |m: &&Candidate<'_>| !busy.contains(&m.name);
+        // A member that has left, or takes nothing new (`frontend-3`), hands its
+        // tickets to its role.
+        let owner = if members.iter().any(|m| m.role == owner || m.name == owner) { owner } else { role_of(owner) };
         let pick = if members.iter().any(|m| m.role == owner) {
             // A role: whoever holds it and is free, the member named after it first.
             members.iter().filter(|m| m.role == owner).filter(free).min_by_key(|m| m.name != owner)
@@ -78,6 +59,14 @@ pub fn assignments(tickets: &[Ticket], members: &[Candidate<'_>], single_project
         }
     }
     out
+}
+
+/// The role a numbered member's name stands for: `frontend-3` → `frontend`.
+fn role_of(name: &str) -> &str {
+    match name.rsplit_once('-') {
+        Some((role, n)) if !role.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => role,
+        _ => name,
+    }
 }
 
 /// What a project is called on the board: its directory name.
@@ -472,6 +461,15 @@ mod tests {
     }
 
     #[test]
+    fn a_ticket_of_a_member_who_left_goes_to_its_role() {
+        let tickets = [ticket(1, "backend-3"), ticket(2, "frontend-2")];
+        let members = [free("backend", "backend"), free("frontend-2", "frontend")];
+        assert_eq!(assignments(&tickets, &members, true), [(1, "backend".into()), (2, "frontend-2".into())]);
+        // Nobody of the role: it waits.
+        assert_eq!(assignments(&[ticket(3, "qa-2")], &members, true), []);
+    }
+
+    #[test]
     fn no_owner_no_project_or_not_todo_means_not_ready() {
         let mut unowned = ticket(1, "x");
         unowned.owner = None;
@@ -498,10 +496,6 @@ mod tests {
         let members = [free("data", "data"), free("pm", "pm"), free("backend", "backend")];
         let tickets = [task, action, code];
         assert_eq!(assignments(&tickets, &members, false), [(1, "data".into()), (2, "pm".into())]);
-        assert!(unstaffed(&tickets, &members[..1], false).iter().all(|(role, _)| role != "backend"));
-        let busy = [Candidate { name: "data", role: "data", free: false }, Candidate { name: "pm", role: "pm", free: false }];
-        // The PM's own work waits for the PM: no second PM is brought in for it.
-        assert_eq!(unstaffed(&tickets, &busy, false), [("data".into(), 1)]);
         assert_eq!(default_kind(None), TicketKind::Task);
         assert_eq!(default_kind(Some(Path::new("/site"))), TicketKind::Code);
     }

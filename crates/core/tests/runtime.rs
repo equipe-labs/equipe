@@ -1329,34 +1329,25 @@ async fn the_person_can_start_a_members_conversation_clean() {
 }
 
 #[tokio::test]
-async fn work_that_waits_brings_in_helpers_up_to_the_squads_scale() {
+async fn work_that_waits_waits_for_its_role_and_a_rush_member_takes_nothing_new() {
     let repo = repo();
     let claude = fake_claude(true, "exec sleep 30");
     let home = squad_home(&[&repo]);
     let (handle, mut events) = runtime::start(with_tools(&claude, &home));
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
     add(&handle, &mut events, 2, member(&repo, "backend")).await;
-    for title in ["API", "Webhooks", "Exports", "Billing"] {
-        tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": title, "body": "-", "owner": "backend" })).await;
+    // backend-2, brought in for a rush by an older equipe: it finishes what it holds and takes nothing new.
+    add(&handle, &mut events, 3, member(&repo, "backend")).await;
+    Journal::for_squad(&home, "acme").unwrap().set_helpers(&[3]).unwrap();
+    for (title, owner) in [("API", "backend"), ("Webhooks", "backend-2"), ("Exports", "backend")] {
+        tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": title, "body": "-", "owner": owner })).await;
     }
-    // backend takes one; two more backend members come for the rest — the default scale.
-    let seen = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.starts_with("Brought in backend-3"))).await;
-    assert!(seen.iter().any(|e| matches!(e, Event::Notice { text, .. } if text.starts_with("Brought in backend-2"))), "{seen:?}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
     let snapshot = handle.snapshot("acme").await;
-    let backends: Vec<_> = snapshot.sessions.iter().filter(|s| s.member.as_ref().is_some_and(|m| m.role == "backend")).collect();
-    assert_eq!(backends.len(), 3, "no more than the scale: {backends:?}");
-    let working = snapshot.tickets.iter().filter(|t| t.status == TicketStatus::InProgress).count();
-    assert_eq!(working, 3, "each on a ticket; the fourth waits");
-    let journal = Journal::for_squad(&home, "acme").unwrap();
-    assert_eq!(journal.helpers().len(), 2);
-    // Helpers keep the role's lessons where the role keeps them.
-    assert_eq!(journal.scale(), 2);
-
-    // Scale 0: nobody more comes, whatever waits.
-    handle.send(Command::Scale { squad: "acme".into(), extra: 0 });
-    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Search", "body": "-", "owner": "backend" })).await;
-    let snapshot = handle.snapshot("acme").await;
-    assert_eq!(snapshot.sessions.len(), 4, "pm and three backends");
+    assert_eq!(snapshot.sessions.len(), 3, "nobody is brought in, whatever waits");
+    let working: Vec<_> = snapshot.tickets.iter().filter(|t| t.status == TicketStatus::InProgress).collect();
+    assert_eq!(working.len(), 1, "{working:?}");
+    assert_eq!(working[0].assignee.as_deref(), Some("backend"));
 }
 
 #[tokio::test]
@@ -2117,13 +2108,28 @@ async fn a_memo_goes_into_the_conversation_of_the_project_it_was_left_in() {
     handle.send(Command::Submit { session: 1, text: "about the app".into() });
     let queued = until(&mut events, |e| matches!(e, Event::MessageQueued { .. })).await;
     assert!(matches!(queued.last(), Some(Event::MessageQueued { project: Some(p), .. }) if p == "app"), "{queued:?}");
+    // Another about site, and a second about the app: each project's memos go together, into its own conversation.
     handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
+    handle.send(Command::Submit { session: 1, text: "about the site".into() });
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("app".into()) });
+    handle.send(Command::Submit { session: 1, text: "more on the app".into() });
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
+    let snapshot = handle.snapshot("acme").await;
+    assert_eq!(snapshot.sessions[0].queued_in, [Some("app".into()), Some("site".into()), Some("app".into())]);
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     let second = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(second.iter().any(|e| matches!(e, Event::Thread { session: 1, project: Some(p) } if p == "app")), "{second:?}");
-    // The app's conversation starts afresh — not on the end of site's.
+    assert!(
+        second.iter().any(|e| matches!(e, Event::UserMessage { text, .. } if text == "about the app\n\nmore on the app")),
+        "{second:?}"
+    );
+    let third = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(third.iter().any(|e| matches!(e, Event::Thread { session: 1, project: Some(p) } if p == "site")), "{third:?}");
+    assert!(third.iter().any(|e| matches!(e, Event::UserMessage { text, .. } if text == "about the site")), "{third:?}");
+    // The app's conversation starts afresh — not on the end of site's — and site's carries on.
     let all = calls(&recorded);
     assert_eq!(arg(&all[1], "--resume"), None);
+    assert_eq!(arg(&all[2], "--resume"), Some("sess-0"));
 }
 
 #[tokio::test]

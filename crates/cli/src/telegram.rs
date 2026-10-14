@@ -957,6 +957,7 @@ mod tests {
             recent: vec![],
             queued: vec![],
             queued_project: None,
+            queued_in: vec![],
             work: None,
             mode: None,
         }

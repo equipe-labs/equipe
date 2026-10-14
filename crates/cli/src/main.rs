@@ -440,6 +440,8 @@ fn sign_in(url: Option<String>, forget: bool) -> CmdResult {
     println!("{}", p.note(2, "A browser opens. Sign in — or sign up — wherever your squad should work: Vercel, PostHog, GitHub…"));
     println!("{}", p.note(2, "Close the window when you're done. Members then work there signed in as you, and ask you before"));
     println!("{}", p.note(2, "creating accounts, accepting terms, paying, or deleting anything."));
+    println!("{}", p.note(2, "Google (Gmail, Drive…) isn't shared this way: Google ends a sign-in seen in two browsers. A member"));
+    println!("{}", p.note(2, "that needs it brings its own browser up on this screen, and you sign in there once."));
     if std::env::var_os("SSH_CONNECTION").is_some() {
         println!("\n{}", p.note(2, "You're connected over SSH: the window opens on this machine's own screen. Reach it with Screen Sharing."));
     }
@@ -483,7 +485,9 @@ fn start_page() -> String {
 <h1 style='font-size:22px'>equipe<span style='color:#8f9aa8'>.</span> sign in for your squad</h1>\
 <p>Sign in, or sign up, wherever your squad should work. Open as many tabs as you like; close the window when \
 you're done.</p><ul>{links}</ul><p style='color:#666'>Members work there signed in as you. They ask you before \
-creating accounts, accepting terms, paying, or deleting anything.</p>"
+creating accounts, accepting terms, paying, or deleting anything.</p><p style='color:#666'>Google (Gmail, Drive…) \
+isn't shared from here: Google ends a sign-in it sees in two browsers. A member that needs it brings its own browser \
+up on your screen, and you sign in there once.</p>"
     );
     let encoded: String = html
         .bytes()
