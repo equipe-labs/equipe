@@ -19,7 +19,7 @@ const shared = (c: any) => !own(c.domain || '');
 const sharedOrigin = (o: any) => { try { return !own(new URL(o.origin).hostname); } catch { return true; } };
 
 // A browser on the person's screen shows who is driving it, as Claude in Chrome
-// does: a glow along its edge and a label, in the member's own colour (the one
+// does: a soft glow along its edge and a label at the foot, in the member's own colour (the one
 // it has in the console), and an outline on what it clicks or types into. A
 // member doesn't steer a pointer — it picks an element and Playwright acts on it —
 // so what it acts on is what's shown. The glow stands still: one that pulsed
@@ -57,8 +57,11 @@ function driving({ member, color }: { member: string; color: string }) {
     const sheet = new CSSStyleSheet();
     sheet.replaceSync(`
       * { box-sizing: border-box; pointer-events: none; }
-      .glow { position: fixed; inset: 0; box-shadow: inset 0 0 0 4px rgba(${color}, .9), inset 0 0 0 5px rgba(0, 0, 0, .12), inset 0 0 60px 10px rgba(${color}, .38); }
-      .label { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 7px; padding: 5px 12px 5px 10px; border-radius: 999px; background: rgba(24, 24, 27, .86); color: #fafafa; font: 500 12px/1.3 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; letter-spacing: .01em; box-shadow: 0 0 0 1px rgba(${color}, .7), 0 2px 12px rgba(0, 0, 0, .25); white-space: nowrap; }
+      :host { --fade: rgba(${color}, .34) 0, rgba(${color}, .16) 16px, rgba(${color}, .06) 40px, rgba(${color}, 0) 72px; }
+      .glow { position: fixed; inset: 0; box-shadow: inset 0 0 2px 1px rgba(${color}, .7), inset 0 0 10px 2px rgba(${color}, .32);
+        background: linear-gradient(to bottom, var(--fade)) top / 100% 72px no-repeat, linear-gradient(to top, var(--fade)) bottom / 100% 72px no-repeat,
+          linear-gradient(to right, var(--fade)) left / 72px 100% no-repeat, linear-gradient(to left, var(--fade)) right / 72px 100% no-repeat; }
+      .label { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 7px; padding: 5px 12px 5px 10px; border-radius: 999px; background: rgba(24, 24, 27, .86); color: #fafafa; font: 500 12px/1.3 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; letter-spacing: .01em; box-shadow: 0 0 0 1px rgba(${color}, .7), 0 2px 12px rgba(0, 0, 0, .25); white-space: nowrap; }
       .dot { width: 8px; height: 8px; border-radius: 50%; background: rgb(${color}); box-shadow: 0 0 8px rgb(${color}); animation: breathe 1.6s ease-in-out infinite; }
       .target { position: fixed; border-radius: 6px; border: 2px solid rgb(${color}); background: rgba(${color}, .12); box-shadow: 0 0 0 4px rgba(${color}, .25); opacity: 0; transition: opacity .4s ease; }
       .target.on { opacity: 1; transition: opacity .08s ease; }

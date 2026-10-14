@@ -15,7 +15,8 @@ const { chromium } = require(require.resolve('playwright', { paths: roots }));
     channel: 'chrome',
     headless: process.env.EQUIPE_SIGN_IN_HEADLESS === '1',
     ignoreDefaultArgs: ['--enable-automation'],
-    args: ['--disable-blink-features=AutomationControlled'],
+    // The second keeps Chrome from warning about the first in a bar.
+    args: ['--disable-blink-features=AutomationControlled', '--test-type'],
   });
   const context = await browser.newContext({ viewport: null, ...(fs.existsSync(state) ? { storageState: state } : {}) });
   const save = async () => {
