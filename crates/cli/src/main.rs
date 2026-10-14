@@ -445,12 +445,13 @@ fn sign_in(url: Option<String>, forget: bool) -> CmdResult {
     if std::env::var_os("SSH_CONNECTION").is_some() {
         println!("\n{}", p.note(2, "You're connected over SSH: the window opens on this machine's own screen. Reach it with Screen Sharing."));
     }
+    // Chrome as an ordinary browser, not an automated one: Google refuses to sign
+    // anyone in to the latter.
     let mut open = std::process::Command::new(npx);
-    open.args(["-y", browser::PLAYWRIGHT_PACKAGE, "open", "--channel", "chrome", "--save-storage"]).arg(&state);
-    if state.is_file() {
-        open.arg("--load-storage").arg(&state);
-    }
-    open.arg(url.unwrap_or_else(start_page));
+    open.args(["-y", "-p", browser::PLAYWRIGHT_PACKAGE, "node"])
+        .arg(browser::sign_in_script(&home))
+        .arg(&state)
+        .arg(url.unwrap_or_else(start_page));
     let status = open.status().map_err(|err| Failure::new(format!("Couldn't open the browser: {err}")))?;
     let _ = std::fs::set_permissions(&state, std::os::unix::fs::PermissionsExt::from_mode(0o600));
     if !status.success() {

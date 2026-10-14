@@ -53,12 +53,19 @@ pub async fn ensure_running() -> io::Result<bool> {
         return Ok(false);
     }
     // Installed as a service, the service starts it, so it stays looked after.
-    if !(service::installed() && service::start()) {
+    let service = service::installed() && service::start();
+    if !service {
         spawn_detached()?;
     }
-    for _ in 0..100 {
+    for i in 0..400 {
         if gateway::is_running(&socket).await {
             return Ok(true);
+        }
+        // A daemon just told to stop may still be winding down: the service, seeing
+        // it alive, ignores the start, then leaves it stopped once it exits cleanly.
+        // Ask again each second until one answers.
+        if service && i % 20 == 19 {
+            service::start();
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

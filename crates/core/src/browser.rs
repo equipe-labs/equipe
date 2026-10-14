@@ -292,8 +292,34 @@ pub fn server(npx: &Path, home: &Path, profile: &Path, output: &Path, shown: boo
         json!(keeper(home)),
         json!("--idle-timeout"),
         json!(IDLE_MS),
+        json!("--config"),
+        json!(mcp_config(home)),
     ]);
     json!({ "type": "stdio", "command": npx, "args": args })
+}
+
+/// How every member's browser is launched: Google Chrome without the
+/// automation switch, which Google answers by refusing to sign anyone in.
+const MCP_CONFIG: &str = r#"{"browser":{"browserName":"chromium","launchOptions":{"channel":"chrome","ignoreDefaultArgs":["--enable-automation"],"args":["--disable-blink-features=AutomationControlled"]}}}"#;
+
+fn mcp_config(home: &Path) -> PathBuf {
+    let path = home.join("browser").join("mcp-config.json");
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(MCP_CONFIG) {
+        let _ = std::fs::write(&path, MCP_CONFIG);
+    }
+    path
+}
+
+/// The person's sign-in window (`equipe browser`), as a script for Node.js run
+/// with Playwright's package: written next to the sign-ins when it changed.
+const SIGN_IN: &str = include_str!("../assets/sign-in.cjs");
+
+pub fn sign_in_script(home: &Path) -> PathBuf {
+    let path = home.join("browser").join("sign-in.cjs");
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(SIGN_IN) {
+        let _ = std::fs::write(&path, SIGN_IN);
+    }
+    path
 }
 
 /// `npx` on PATH: the browser needs Node.js.
@@ -384,6 +410,11 @@ mod tests {
         let text = std::fs::read_to_string(script).unwrap();
         assert!(text.contains(&*state_file(&home).to_string_lossy()) && !["__STATE__", "__SLOTS__", "__MAX__"].iter().any(|p| text.contains(p)), "{text}");
         assert!(args.windows(2).any(|w| w == ["--idle-timeout", IDLE_MS]), "an idle browser gives its memory back");
+        // Google signs nobody in to a browser that says it is automated.
+        let config = args.windows(2).find(|w| w[0] == "--config").unwrap()[1];
+        let config: Value = serde_json::from_str(&std::fs::read_to_string(config).unwrap()).unwrap();
+        assert_eq!(config["browser"]["launchOptions"]["ignoreDefaultArgs"], json!(["--enable-automation"]));
+        assert_eq!(config["browser"]["launchOptions"]["channel"], "chrome");
         // On the person's screen it shows who drives it, out of reach of clicks and snapshots.
         for part in ["!argv.includes('--headless')", "addInitScript(driving", "attachShadow({ mode: 'closed' })", "aria-hidden", "pointer-events: none"] {
             assert!(text.contains(part), "{part}");
