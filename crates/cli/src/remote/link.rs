@@ -23,6 +23,8 @@ enum Ask {
     Cancel,
     Devices(UnboundedSender<Value>),
     Remove(String, UnboundedSender<Value>),
+    /// `equipe demo reset`, to a running `equipe demo serve`.
+    DemoReset { new_code: bool, conn: UnboundedSender<Value> },
 }
 
 enum Input {
@@ -166,6 +168,9 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                         let _ = conn.send(json!({ "error": why }));
                     }
                 },
+                Ask::DemoReset { conn, .. } => {
+                    let _ = conn.send(json!({ "error": "not a demo daemon" }));
+                }
             },
             Some(Input::Device(device, squad, event)) => actions.extend(core.on_event(&device, &squad, &event)),
             Some(Input::Opened(device, squad, id, result)) => {
@@ -271,6 +276,170 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
             }
         }
     }
+}
+
+/// `equipe demo serve`, in the foreground: a daemon of its own for store
+/// reviewers, with a standing code and a scripted squad for each phone
+/// (`demo`). It never connects to `equipe daemon` and runs no agent.
+pub async fn serve_demo(home: PathBuf, version: String) -> Result<(), String> {
+    let mut config = match super::load(&home) {
+        Some(config) => config,
+        None => super::register(&home).await?,
+    };
+    // `EQUIPE_RELAY` may point it elsewhere after it registered: the code says where it is.
+    config.relay = super::relay_url(Some(&config));
+    let secret = super::demo::secret(&home, false).map_err(|err| format!("Couldn't keep the demo's code: {err}"))?;
+    let mut core = Core::new(Some(config));
+    core.squads = vec![(super::demo::SQUAD.to_owned(), vec!["website".into(), "server".into()])];
+    let url = core.open_standing(secret, super::demo::NAME)?;
+    show_code(&home, &url);
+    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Input>();
+    listen_demo(&home, input_tx.clone()).map_err(|err| format!("Couldn't open {}: {err}", home.join("demo.sock").display()))?;
+    let mut demo = super::demo::Demo::default();
+    let mut relay: Option<UnboundedSender<Ws>> = None;
+    let mut retry_at = tokio::time::Instant::now();
+    let mut backoff = Duration::from_secs(2);
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
+    loop {
+        let input = tokio::select! {
+            Some(input) = input_rx.recv() => Some(input),
+            _ = tick.tick() => None,
+        };
+        let now = super::now_ms();
+        let mut actions = Vec::new();
+        // Events as they reach a phone: (device, event).
+        let mut events: Vec<(String, Event)> = Vec::new();
+        match input {
+            None => {
+                actions.extend(core.tick(now));
+                events.extend(demo.due(now));
+            }
+            Some(Input::Relay(frame)) => actions.extend(core.on_relay(&frame, now)),
+            Some(Input::RelayGone) => {
+                relay = None;
+                retry_at = tokio::time::Instant::now() + backoff;
+                backoff = (backoff * 2).min(Duration::from_secs(60));
+            }
+            Some(Input::Ask(Ask::DemoReset { new_code, conn })) => {
+                let names: Vec<String> = core.config.iter().flat_map(|c| c.devices.iter()).map(|d| d.id.clone()).collect();
+                for id in &names {
+                    actions.extend(core.remove_device(id).unwrap_or_default());
+                }
+                demo.reset();
+                let mut said = json!({ "forgot": names.len(), "told_relay": relay.is_some() });
+                if new_code {
+                    actions.extend(core.close_standing());
+                    match super::demo::secret(&home, true) {
+                        Ok(secret) => match core.open_standing(secret, super::demo::NAME) {
+                            Ok(url) => {
+                                show_code(&home, &url);
+                                actions.extend(core.reopen_standing(now));
+                                said["code"] = json!(url);
+                            }
+                            Err(why) => said["error"] = json!(why),
+                        },
+                        Err(err) => said["error"] = json!(format!("Couldn't make a new code: {err}")),
+                    }
+                }
+                let _ = conn.send(said);
+            }
+            Some(_) => {}
+        }
+        while !actions.is_empty() || !events.is_empty() {
+            for (device, event) in events.drain(..) {
+                actions.extend(core.on_event(&device, super::demo::SQUAD, &event));
+                actions.extend(core.on_own_event(&device, super::demo::SQUAD, &event));
+            }
+            for action in std::mem::take(&mut actions) {
+                match action {
+                    Action::Relay(frame) => {
+                        if let Some(relay) = &relay {
+                            let _ = relay.send(Ws::text(frame.to_string()));
+                        }
+                    }
+                    Action::Open { device, squad, id } => {
+                        let hello = demo.hello(&device, &version, now);
+                        actions.extend(core.opened(&device, &squad, &id, Ok(hello)));
+                    }
+                    Action::Command { device, command, .. } => {
+                        events.extend(demo.command(&device, command, now).into_iter().map(|e| (device.clone(), e)));
+                    }
+                    Action::Save => {
+                        if let Some(config) = &core.config
+                            && let Err(err) = super::save(&home, config)
+                        {
+                            eprintln!("demo: couldn't keep the devices: {err}");
+                        }
+                    }
+                    Action::Close { .. } | Action::Local(_) => {}
+                }
+            }
+        }
+        if relay.is_none() && tokio::time::Instant::now() >= retry_at
+            && let Some(config) = core.config.clone()
+        {
+            match connect(&config, input_tx.clone()).await {
+                Ok(sender) => {
+                    for action in core.reopen_standing(now) {
+                        if let Action::Relay(frame) = action {
+                            let _ = sender.send(Ws::text(frame.to_string()));
+                        }
+                    }
+                    relay = Some(sender);
+                    backoff = Duration::from_secs(2);
+                    eprintln!("demo: connected to the relay at {}", config.relay);
+                }
+                Err(err) => {
+                    eprintln!("demo: {err}");
+                    retry_at = tokio::time::Instant::now() + backoff;
+                    backoff = (backoff * 2).min(Duration::from_secs(60));
+                }
+            }
+        }
+    }
+}
+
+/// The code, on the terminal and in the demo's home for the review forms.
+fn show_code(home: &Path, url: &str) {
+    let _ = std::fs::write(home.join("pairing-url.txt"), format!("{url}\n"));
+    if let Some(svg) = super::demo::qr_svg(url) {
+        let _ = std::fs::write(home.join("pairing-qr.svg"), svg);
+    }
+    println!("equipe demo — the code for store reviewers, the same until `equipe demo reset --new-code`:\n");
+    println!("{}", super::cli::qr(url));
+    println!("{url}\n");
+    println!("Also in {} and pairing-qr.svg next to it.", home.join("pairing-url.txt").display());
+}
+
+/// `equipe demo reset`'s socket: one JSON object per line each way.
+fn listen_demo(home: &Path, input: UnboundedSender<Input>) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let path = home.join("demo.sock");
+    let _ = std::fs::remove_file(&path);
+    std::fs::create_dir_all(home)?;
+    let listener = UnixListener::bind(&path)?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let input = input.clone();
+            tokio::spawn(async move {
+                let (reader, mut writer) = stream.into_split();
+                let Ok(Some(line)) = BufReader::new(reader).lines().next_line().await else { return };
+                let Ok(ask) = serde_json::from_str::<Value>(&line) else { return };
+                if ask["op"] != "reset" {
+                    return;
+                }
+                let (tx, mut rx) = mpsc::unbounded_channel();
+                if input.send(Input::Ask(Ask::DemoReset { new_code: ask["new_code"] == true, conn: tx })).is_err() {
+                    return;
+                }
+                if let Some(said) = rx.recv().await {
+                    let _ = writer.write_all(format!("{said}\n").as_bytes()).await;
+                }
+            });
+        }
+    });
+    Ok(())
 }
 
 /// The relay's socket for this daemon: frames in as `Input::Relay`, a sender out.

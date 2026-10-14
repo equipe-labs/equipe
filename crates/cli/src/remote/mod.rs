@@ -6,10 +6,12 @@
 //! - `core`: what the daemon does with frames, events and pairing — plain state.
 //! - `link`: in the daemon, the relay connection and the local socket `equipe
 //!   pair` and `equipe devices` talk to.
-//! - `cli`: `equipe pair`, `equipe devices`.
+//! - `cli`: `equipe pair`, `equipe devices`, `equipe demo`.
+//! - `demo`: the scripted squad `equipe demo serve` shows store reviewers.
 
 pub mod cli;
 pub mod core;
+pub mod demo;
 pub mod link;
 pub mod seal;
 

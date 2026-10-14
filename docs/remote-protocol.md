@@ -88,6 +88,37 @@ The pairing **slot** is the first 32 hex chars of `SHA-256(pairing secret)`.
 `equipe devices` lists paired devices; `equipe devices remove <name>` forgets one and has the
 relay drop it (`device_remove`) — its socket is closed at once.
 
+## Demo pairing (store review)
+
+App Review and Google Play reviewers have no Mac to pair with. For them equipe-labs runs a
+**demo daemon** — `equipe demo serve` — whose code is printed in the review notes and never
+expires. Its rules, and why they stay away from the person's own daemon:
+
+- **A process of its own.** `equipe demo serve` keeps its own home (`$EQUIPE_HOME/demo` unless
+  `--home` says otherwise), registers with the relay under a daemon id and key pair of its own,
+  and never connects to `equipe daemon`: it can't see or reach anyone's squads, and runs no
+  agent and no engine. What a phone gets is one squad, `demo`, played from a script — a board,
+  members, a request for permission, the PM answering — kept apart for each paired phone, so
+  reviewers don't see each other. Nothing a phone sends leaves its own copy of the script.
+- **A standing code.** Its pairing secret is made once and kept (`demo.json`, 0600), so the QR
+  code and its `equipe://pair?…` address stay the same across restarts, with `n=equipe demo`.
+  The relay is the same and unchanged: the demo sends `pair_open` for its slot every 4 minutes
+  (10 minutes ahead, the relay's limit) and again right after each answer, since the relay
+  closes a slot once it is answered.
+- **Answered without asking.** Every well-formed pairing request on the standing slot is
+  answered `paired` at once — there is no person at a terminal. The relay still lets one phone
+  at a time on a slot: one that finds it taken (`409`) tries again a moment later.
+- **Bounded.** At most 200 phones are kept; past that the oldest is forgotten (`device_remove`).
+  A phone may do what any phone may (below), against its own copy of the script only.
+- **`equipe demo reset`** forgets every demo phone (the relay too) and starts the script over;
+  `--new-code` also makes a new secret — the old address stops working, so the review notes
+  must be updated.
+
+Running it: [demo-daemon.md](demo-daemon.md).
+
+`equipe pair` is untouched by any of this: a code works for 5 minutes, for one phone, after the
+person's yes at the terminal, and `equipe daemon` never opens a standing slot.
+
 ## Relay API
 
 Base URL: the relay's, as deployed (the `equipe-relay` Worker on Cloudflare; `EQUIPE_RELAY` overrides it).
