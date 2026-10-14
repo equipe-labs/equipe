@@ -384,6 +384,11 @@ mod tests {
         let text = std::fs::read_to_string(script).unwrap();
         assert!(text.contains(&*state_file(&home).to_string_lossy()) && !["__STATE__", "__SLOTS__", "__MAX__"].iter().any(|p| text.contains(p)), "{text}");
         assert!(args.windows(2).any(|w| w == ["--idle-timeout", IDLE_MS]), "an idle browser gives its memory back");
+        // On the person's screen it shows who drives it, out of reach of clicks and snapshots.
+        for part in ["!argv.includes('--headless')", "addInitScript(driving", "attachShadow({ mode: 'closed' })", "aria-hidden", "pointer-events: none"] {
+            assert!(text.contains(part), "{part}");
+        }
+        assert!(!text.contains("innerHTML"), "Trusted Types pages refuse HTML strings");
         std::fs::remove_dir_all(&home).unwrap();
     }
 }

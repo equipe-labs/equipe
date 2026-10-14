@@ -18,6 +18,107 @@ const own = (domain: string) => /(^|\.)(google\.[a-z]{2,3}(\.[a-z]{2})?|youtube\
 const shared = (c: any) => !own(c.domain || '');
 const sharedOrigin = (o: any) => { try { return !own(new URL(o.origin).hostname); } catch { return true; } };
 
+// A browser on the person's screen shows who is driving it, as Claude in Chrome
+// does: a soft glow along its edge, a label, and the member's pointer gliding
+// to where it clicks. Drawn in a closed shadow root that no click, page style
+// or accessibility snapshot reaches; built without HTML strings or inline
+// <style>, which strict pages (Trusted Types, CSP) refuse.
+const argv = process.argv;
+const onScreen = !argv.includes('--headless');
+const profileAt = argv.indexOf('--user-data-dir');
+const member = profileAt >= 0 ? (argv[profileAt + 1] || '').split('/').filter(Boolean).pop() || '' : '';
+
+function driving({ member }: { member: string }) {
+  if (window.top !== window || (window as any).__equipeDriving) return;
+  (window as any).__equipeDriving = true;
+  const ACCENT = '217, 119, 87';
+  const mount = () => {
+    if (!document.documentElement) return;
+    const host = document.createElement('equipe-driving');
+    host.setAttribute('aria-hidden', 'true');
+    host.style.cssText = 'all: initial; position: fixed; inset: 0; pointer-events: none; z-index: 2147483647;';
+    const root = host.attachShadow({ mode: 'closed' });
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(`
+      * { box-sizing: border-box; pointer-events: none; }
+      .glow { position: fixed; inset: 0; box-shadow: inset 0 0 0 2px rgba(${ACCENT}, .55), inset 0 0 32px 4px rgba(${ACCENT}, .3); animation: breathe 3.2s ease-in-out infinite; }
+      .label { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 7px; padding: 5px 12px 5px 10px; border-radius: 999px; background: rgba(24, 24, 27, .84); color: #fafafa; font: 500 12px/1.3 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; letter-spacing: .01em; box-shadow: 0 2px 12px rgba(0, 0, 0, .25); white-space: nowrap; }
+      .dot { width: 7px; height: 7px; border-radius: 50%; background: rgb(${ACCENT}); box-shadow: 0 0 8px rgb(${ACCENT}); animation: breathe 1.6s ease-in-out infinite; }
+      .pointer { position: fixed; left: 0; top: 0; width: 24px; height: 24px; opacity: 0; transition: transform .5s cubic-bezier(.2, .8, .2, 1), opacity .25s ease; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .35)) drop-shadow(0 0 6px rgba(${ACCENT}, .6)); }
+      .ripple { position: fixed; left: 0; top: 0; width: 30px; height: 30px; margin: -15px 0 0 -15px; border-radius: 50%; border: 2px solid rgb(${ACCENT}); opacity: 0; }
+      .ripple.on { animation: ripple .55s ease-out; }
+      @keyframes breathe { 0%, 100% { opacity: .6; } 50% { opacity: 1; } }
+      @keyframes ripple { from { transform: scale(.35); opacity: .9; } to { transform: scale(1.7); opacity: 0; } }
+      @media (prefers-reduced-motion: reduce) { .glow, .dot { animation: none; } .pointer { transition: opacity .25s ease; } }
+    `);
+    (root as any).adoptedStyleSheets = [sheet];
+    const el = (tag: string, cls: string) => {
+      const e = document.createElement(tag);
+      e.className = cls;
+      return root.appendChild(e);
+    };
+    el('div', 'glow');
+    const label = el('div', 'label');
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    const who = document.createElement('span');
+    who.textContent = member ? `${member} is working in this browser` : 'equipe is working in this browser';
+    label.append(dot, who);
+    const svg = 'http://www.w3.org/2000/svg';
+    const pointer = document.createElementNS(svg, 'svg');
+    pointer.setAttribute('class', 'pointer');
+    pointer.setAttribute('viewBox', '0 0 24 24');
+    const arrow = document.createElementNS(svg, 'path');
+    arrow.setAttribute('d', 'M5 3l14 8.2-6.1 1.5-3.3 6.1z');
+    arrow.setAttribute('fill', `rgb(${ACCENT})`);
+    arrow.setAttribute('stroke', '#fff');
+    arrow.setAttribute('stroke-width', '1.6');
+    arrow.setAttribute('stroke-linejoin', 'round');
+    pointer.appendChild(arrow);
+    root.appendChild(pointer);
+    const ripple = el('div', 'ripple');
+    document.documentElement.appendChild(host);
+    // A page that rewrites its document, or a framework that clears <html>, takes
+    // it away: it comes back.
+    setInterval(() => { if (!host.isConnected && document.documentElement) document.documentElement.appendChild(host); }, 1500);
+
+    // The member's pointer jumps where it acts — one move, then the click — while
+    // a hand on a mouse sends a stream of small moves: those are the person's own,
+    // with their own pointer, and the member's is put away.
+    let last = { x: -1, y: -1, t: 0 };
+    let shown = false;
+    let hide: any;
+    const put = (x: number, y: number) => { pointer.style.transform = `translate(${x - 5}px, ${y - 3}px)`; };
+    addEventListener('mousemove', (e) => {
+      const now = performance.now();
+      const jump = Math.hypot(e.clientX - last.x, e.clientY - last.y);
+      const member = now - last.t > 160 && jump > 24;
+      last = { x: e.clientX, y: e.clientY, t: now };
+      clearTimeout(hide);
+      if (member) {
+        shown = true;
+        pointer.style.opacity = '1';
+        put(e.clientX, e.clientY);
+        hide = setTimeout(() => { shown = false; pointer.style.opacity = '0'; }, 6000);
+      } else if (shown) {
+        shown = false;
+        pointer.style.opacity = '0';
+      }
+    }, true);
+    addEventListener('mousedown', (e) => {
+      if (!shown) return;
+      ripple.style.transform = '';
+      ripple.style.left = `${e.clientX}px`;
+      ripple.style.top = `${e.clientY}px`;
+      ripple.classList.remove('on');
+      void ripple.offsetWidth;
+      ripple.classList.add('on');
+    }, true);
+  };
+  if (document.body) mount();
+  else addEventListener('DOMContentLoaded', mount, { once: true });
+}
+
 const alive = (pid: number) => {
   try {
     process.kill(pid, 0);
@@ -55,6 +156,11 @@ export default async ({ page }: { page: any }) => {
   const context = page.context();
   if (context.__equipe) return;
   context.__equipe = true;
+  if (onScreen) {
+    await context.addInitScript(driving, { member }).catch(() => {});
+    // The page open already gets it now; every later page and navigation, from the script.
+    for (const p of context.pages()) await p.evaluate(driving, { member }).catch(() => {});
+  }
   // Start from the squad's sign-ins — the person's, and what teammates signed in
   // to — and take up new ones as they come: a sign-in the person makes in one
   // member's window reaches the others at their next page.
