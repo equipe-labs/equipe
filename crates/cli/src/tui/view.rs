@@ -603,7 +603,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: Theme, layouts: &Layouts) {
     render_header(frame, header, app, theme, squad.is_none());
     if let (Some(squad), Some(gap)) = (squad, gap) {
         render_squad(frame, squad, app, theme);
-        render_hairline(frame, gap, app.is_dragging(), theme);
+        render_hairline(frame, gap, app.is_dragging_divider(), theme);
     }
     match app.pane {
         Pane::Conversation if app.help_open => render_help(frame, right, theme),
@@ -2014,7 +2014,9 @@ fn render_board(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     frame.render_widget(Paragraph::new(shown), list);
     // A hairline between the list and the ticket open below it.
     let [rule, _] = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(detail);
-    frame.render_widget(Paragraph::new(Span::styled("─".repeat(width.min(rule.width as usize)), theme.dim())), rule);
+    // Held to drag, it lights up, as the squad's line does.
+    let held = if app.is_dragging_board_rule() { theme.accent() } else { theme.dim() };
+    frame.render_widget(Paragraph::new(Span::styled("─".repeat(width.min(rule.width as usize)), held)), rule);
     let body = detail_body(detail);
     let lines = ticket_detail(app, theme, detail_width(body));
     let height = body.height as usize;

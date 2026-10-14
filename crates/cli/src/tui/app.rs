@@ -1362,6 +1362,16 @@ impl App {
         self.dragging || self.dragging_board
     }
 
+    /// The line between the squad and the conversation, held.
+    pub fn is_dragging_divider(&self) -> bool {
+        self.dragging
+    }
+
+    /// The board's line between its list and the open ticket, held.
+    pub fn is_dragging_board_rule(&self) -> bool {
+        self.dragging_board
+    }
+
     pub fn set_board_rule(&mut self, rule: Option<BoardRule>) {
         self.board_rule = rule;
     }
@@ -3518,6 +3528,7 @@ mod tests {
         app.set_board_rule(Some(BoardRule { rows: (10, 11), list_top: 3 }));
         app.on_click(5, 10);
         assert!(app.is_dragging());
+        assert!(app.is_dragging_board_rule() && !app.is_dragging_divider(), "the line held lights up, the other doesn't");
         app.on_drag(5, 15);
         assert_eq!(app.board_split, Some(12));
         app.on_mouse(MouseEventKind::Up(crossterm::event::MouseButton::Left), Instant::now());
