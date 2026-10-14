@@ -18,13 +18,15 @@ libc = "0.2"
 # The daemon link runs its own small runtime on a thread off the UI.
 tokio = { version = "1.53.2", features = ["rt", "macros", "sync", "time", "net", "io-util"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-# Notifications while the window is out of sight; a click comes back to us.
-mac-notification-sys = "0.6.15"
-
 # Dev tool: `--features snapshot` lets `EQUIPE_SNAPSHOT=<png>` write what the
 # window painted, for looking at a change without a screen-capture permission.
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Notifications while the window is out of sight; a click comes back to us.
+mac-notification-sys = "0.6.15"
+# Talks to Sparkle (updates) in the packaged app — see src/update.rs.
+objc2 = "0.6"
 
 [features]
 snapshot = ["dep:image", "gpui-kit/test-support"]

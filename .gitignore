@@ -20,3 +20,5 @@ demo/*.cast
 
 # rust
 /target/
+# scripts/desktop-dmg.sh output
+/dist/

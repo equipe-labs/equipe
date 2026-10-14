@@ -2139,6 +2139,7 @@ dependencies = [
  "image",
  "libc",
  "mac-notification-sys",
+ "objc2 0.6.5",
  "serde_json",
  "tokio",
 ]

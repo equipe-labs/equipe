@@ -9,12 +9,15 @@ mod commands;
 mod compose;
 mod convo;
 mod daemon;
+mod install;
 mod mem;
 mod notify;
 #[cfg(feature = "snapshot")]
 mod snapshot;
 mod state;
 mod theme;
+#[cfg(target_os = "macos")]
+mod update;
 mod views;
 
 use std::time::Duration;
@@ -37,6 +40,8 @@ actions!(
     equipe,
     [ToggleBoard, AllProjects, Project1, Project2, Project3, Project4, Project5, Project6, Project7, Project8, Project9, ToggleFolds]
 );
+// The app menu's.
+actions!(equipe, [CheckForUpdates, Hide, HideOthers, ShowAll, Quit]);
 
 /// How long the daemon gets to answer before the window says it is connecting.
 const CONNECTING_AFTER: Duration = Duration::from_millis(400);
@@ -286,6 +291,10 @@ impl Shell {
 
     fn body(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette;
+        let nothing_attached = self.problem.is_some() || matches!(self.model.conn, Conn::Down { had_snapshot: false, .. });
+        if nothing_attached && !install::cli_installed() {
+            return install_screen(p);
+        }
         if let Some(problem) = &self.problem {
             return empty_state(p, "아직 스쿼드가 없습니다", problem, None);
         }
@@ -341,6 +350,60 @@ fn banner(p: Palette, conn: &Conn) -> Option<impl IntoElement + use<>> {
             .child(div().text_color(p.text).child(format!("데몬과의 연결이 {since}에 끊겼습니다.")))
             .child(div().text_color(p.muted).child("다시 연결하는 중 — 데몬이 켜지면 자동으로 이어집니다")),
     )
+}
+
+/// The body on a Mac without equipe: what the app needs, and the line that installs it.
+fn install_screen(p: Palette) -> AnyElement {
+    let button = |label: &'static str| {
+        div()
+            .px_3()
+            .py_1()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(p.hair)
+            .text_size(px(SMALL))
+            .text_color(p.text)
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.wash))
+            .child(label)
+    };
+    v_flex()
+        .flex_1()
+        .items_center()
+        .justify_center()
+        .gap_3()
+        .child(div().text_size(px(18.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("이 맥에 equipe가 없습니다"))
+        .child(
+            div()
+                .max_w(px(520.))
+                .text_size(px(BODY))
+                .line_height(px(24.))
+                .text_color(p.text2)
+                .text_center()
+                .child("이 앱은 equipe 데몬을 보여 주는 창입니다. 터미널에 아래 한 줄을 붙여 넣어 equipe를 설치한 뒤 `equipe`를 실행하세요. 데몬이 켜지면 이 창이 알아서 연결합니다."),
+        )
+        .child(
+            div()
+                .id("install-command")
+                .px_3()
+                .py_1()
+                .rounded(px(8.))
+                .bg(p.code_bg)
+                .border_1()
+                .border_color(p.hair)
+                .font_family("Menlo")
+                .text_size(px(SMALL))
+                .text_color(p.text2)
+                .child(install::INSTALL_COMMAND),
+        )
+        .child(
+            h_flex()
+                .gap_2()
+                .child(button("명령 복사").id("copy-install").on_click(|_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(install::INSTALL_COMMAND.to_owned()))))
+                .child(button("설치 안내 (equipe.im)").id("open-site").on_click(|_, _, cx| cx.open_url(install::SITE))),
+        )
+        .child(div().text_size(px(SMALL)).text_color(p.muted).child("Homebrew를 쓰면: brew install equipe-labs/tap/equipe"))
+        .into_any_element()
 }
 
 /// The body when there is nothing to show: a heading, a sentence, how to fix it.
@@ -424,6 +487,39 @@ impl Render for Shell {
     }
 }
 
+/// The app menu: updates, hiding, quitting.
+fn app_menu(cx: &mut App) {
+    #[cfg(target_os = "macos")]
+    let updater = update::Updater::start();
+    #[cfg(not(target_os = "macos"))]
+    let updater: Option<()> = None;
+    let can_update = updater.is_some();
+    cx.on_action(move |_: &CheckForUpdates, _| {
+        #[cfg(target_os = "macos")]
+        if let Some(updater) = &updater {
+            updater.check();
+        }
+    });
+    cx.on_action(|_: &Hide, cx| cx.hide());
+    cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+    cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+    cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.bind_keys([
+        KeyBinding::new("cmd-h", Hide, None),
+        KeyBinding::new("alt-cmd-h", HideOthers, None),
+        KeyBinding::new("cmd-q", Quit, None),
+    ]);
+    cx.set_menus(vec![Menu::new("equipe").items([
+        MenuItem::action("업데이트 확인…", CheckForUpdates).disabled(!can_update),
+        MenuItem::separator(),
+        MenuItem::action("equipe 가리기", Hide),
+        MenuItem::action("기타 가리기", HideOthers),
+        MenuItem::action("모두 보기", ShowAll),
+        MenuItem::separator(),
+        MenuItem::action("equipe 종료", Quit),
+    ])]);
+}
+
 fn main() {
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
@@ -444,6 +540,7 @@ fn main() {
             KeyBinding::new("alt-enter", Enter { secondary: false, shift: true }, Some("Input")),
             KeyBinding::new("ctrl-j", Enter { secondary: false, shift: true }, Some("Input")),
         ]);
+        app_menu(cx);
         let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
