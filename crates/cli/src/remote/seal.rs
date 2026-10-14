@@ -62,17 +62,60 @@ fn private(key: &str) -> Result<PrivateKey, String> {
 pub fn seal(kind: Kind, to: &str, from: Option<&Keys>, psk: Option<&[u8]>, aad: &str, plaintext: &[u8]) -> Result<String, String> {
     let to = public(to)?;
     let sender = from.map(|k| Ok::<_, String>((private(&k.private)?, public(&k.public)?))).transpose()?;
-    let bundle = psk.map(|psk| PskBundle::new(psk, PSK_ID)).transpose().map_err(|_| "bad pairing secret")?;
-    let mode = match (sender, bundle) {
-        (None, None) => OpModeS::Base,
-        (None, Some(b)) => OpModeS::Psk(b),
-        (Some(pair), None) => OpModeS::Auth(pair),
-        (Some(pair), Some(b)) => OpModeS::AuthPsk(pair, b),
-    };
+    let mode = sender_mode(sender, psk)?;
     let (enc, ciphertext) = hpke::single_shot_seal::<Aead, Kdf, Kem>(&mode, &to, kind.info(), plaintext, aad.as_bytes()).map_err(|err| err.to_string())?;
     let mut frame = enc.to_bytes().to_vec();
     frame.extend_from_slice(&ciphertext);
     Ok(super::b64(&frame))
+}
+
+/// `seal` with the ephemeral key made from `ikm_e` instead of at random —
+/// for the conformance vectors, whose frames must come out the same each time.
+#[cfg(test)]
+pub(crate) fn seal_with_ephemeral(kind: Kind, to: &str, from: Option<&Keys>, psk: Option<&[u8]>, aad: &str, plaintext: &[u8], ikm_e: &[u8; 32]) -> Result<String, String> {
+    /// Hands out `ikm_e` once: the bytes `gen_keypair_with_rng` derives the ephemeral key pair from.
+    struct Fixed([u8; 32], bool);
+    impl hpke::rand_core::TryRng for Fixed {
+        type Error = std::convert::Infallible;
+        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+            unreachable!("only whole keys are drawn")
+        }
+        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+            unreachable!("only whole keys are drawn")
+        }
+        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+            assert!(!self.1 && dst.len() == 32, "one ephemeral key per frame");
+            dst.copy_from_slice(&self.0);
+            self.1 = true;
+            Ok(())
+        }
+    }
+    impl hpke::rand_core::TryCryptoRng for Fixed {}
+    let to = public(to)?;
+    let sender = from.map(|k| Ok::<_, String>((private(&k.private)?, public(&k.public)?))).transpose()?;
+    let mode = sender_mode(sender, psk)?;
+    let (enc, ciphertext) = hpke::single_shot_seal_with_rng::<Aead, Kdf, Kem>(&mode, &to, kind.info(), plaintext, aad.as_bytes(), &mut Fixed(*ikm_e, false)).map_err(|err| err.to_string())?;
+    let mut frame = enc.to_bytes().to_vec();
+    frame.extend_from_slice(&ciphertext);
+    Ok(super::b64(&frame))
+}
+
+/// The HPKE mode a frame is sealed in: who sent it, and whether the pairing secret is in it.
+fn sender_mode(sender: Option<(PrivateKey, PublicKey)>, psk: Option<&[u8]>) -> Result<OpModeS<'_, Kem>, String> {
+    let bundle = psk.map(|psk| PskBundle::new(psk, PSK_ID)).transpose().map_err(|_| "bad pairing secret")?;
+    Ok(match (sender, bundle) {
+        (None, None) => OpModeS::Base,
+        (None, Some(b)) => OpModeS::Psk(b),
+        (Some(pair), None) => OpModeS::Auth(pair),
+        (Some(pair), Some(b)) => OpModeS::AuthPsk(pair, b),
+    })
+}
+
+/// The key pair a 32-byte seed derives (RFC 9180 `DeriveKeyPair`), as kept.
+#[cfg(test)]
+pub(crate) fn derive(ikm: &[u8]) -> Keys {
+    let (private, public) = Kem::derive_keypair(ikm);
+    Keys { private: super::b64(&private.to_bytes()), public: super::b64(&public.to_bytes()) }
 }
 
 /// Open a frame sealed for `me`; `from` must be who sealed it, when it says who.

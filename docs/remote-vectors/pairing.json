@@ -1,0 +1,138 @@
+{
+  "1_device_connects": "wss://relay.equipe.im/v1/daemons/4e03a65cc601c4c9135d6c771cd878e9/pair/bca9359074636a24d0cef7187b181a21",
+  "2_device_sends": {
+    "frame": {
+      "data": "EKeQ3h_KygI0TigLCiYjOXnNmqatHB8hu-SNXaBoljKyNC6ghhEw2_3M6Bh9CG8VovEyZXDlyrp-AJS7PWZqbOIGLmGYRn3E_ih1mrCH-Bzc2fyZPblPVYkGV_lr30mwDpPknTJgwLgrErpX0cz-M3bClzFwpAdqBLG8jDEfcTbR9Bz-QXmRxdEtBo2YUJpuGHymVetWtZqUD8XATyaY-3IbfQ",
+      "type": "send"
+    },
+    "plaintext": "{\"key\":\"7K7S_GpkyAvxKV99vq0RjUwR7tYx_fPvi35ljnUGpyI\",\"name\":\"Abel's iPhone\",\"platform\":\"ios\",\"type\":\"pair_request\"}",
+    "sealed": {
+      "aad": "4e03a65cc601c4c9135d6c771cd878e9",
+      "ciphertext": "sjQuoIYRMNv9zOgYfQhvFaLxMmVw5cq6fgCUuz1mamziBi5hmEZ9xP4odZqwh_gc3Nn8mT25T1WJBlf5a99JsA6T5J0yYMC4KxK6V9HM_jN2wpcxcKQHagSxvIwxH3E20fQc_kF5kcXRLQaNmFCabhh8plXrVrWalA_FwE8mmPtyG30",
+      "enc": "EKeQ3h_KygI0TigLCiYjOXnNmqatHB8hu-SNXaBoljI",
+      "ikm_e": "gaOzb0R_s-dIQ3II1Km4fcU0Psd0twoMGBjoV53B2rM",
+      "info": "equipe/1 pair-request",
+      "kind": "pair_request",
+      "mode": "psk",
+      "name": "pair-request",
+      "pk_e": "EKeQ3h_KygI0TigLCiYjOXnNmqatHB8hu-SNXaBoljI",
+      "plaintext": "{\"key\":\"7K7S_GpkyAvxKV99vq0RjUwR7tYx_fPvi35ljnUGpyI\",\"name\":\"Abel's iPhone\",\"platform\":\"ios\",\"type\":\"pair_request\"}",
+      "psk": true,
+      "recipient": "daemon",
+      "sealed": "EKeQ3h_KygI0TigLCiYjOXnNmqatHB8hu-SNXaBoljKyNC6ghhEw2_3M6Bh9CG8VovEyZXDlyrp-AJS7PWZqbOIGLmGYRn3E_ih1mrCH-Bzc2fyZPblPVYkGV_lr30mwDpPknTJgwLgrErpX0cz-M3bClzFwpAdqBLG8jDEfcTbR9Bz-QXmRxdEtBo2YUJpuGHymVetWtZqUD8XATyaY-3IbfQ",
+      "sender": null,
+      "sk_e": "FmYVuDkk2ZT33fd4PXjuQK7dNQDC3SH65FWZ-wc-zcA"
+    }
+  },
+  "3_daemon_receives": {
+    "data": "EKeQ3h_KygI0TigLCiYjOXnNmqatHB8hu-SNXaBoljKyNC6ghhEw2_3M6Bh9CG8VovEyZXDlyrp-AJS7PWZqbOIGLmGYRn3E_ih1mrCH-Bzc2fyZPblPVYkGV_lr30mwDpPknTJgwLgrErpX0cz-M3bClzFwpAdqBLG8jDEfcTbR9Bz-QXmRxdEtBo2YUJpuGHymVetWtZqUD8XATyaY-3IbfQ",
+    "slot": "bca9359074636a24d0cef7187b181a21",
+    "type": "pair_recv"
+  },
+  "4_daemon_asks_the_person": {
+    "request": {
+      "name": "Abel's iPhone",
+      "platform": "ios"
+    }
+  },
+  "5_no": {
+    "daemon_sends": [
+      {
+        "data": "ytmEHDrP04f2ZKqD-TME63AsCxuXd87OPcLoa2sILGmfYWBkw61UDUBBQUwNJ2LS79STfOX_yuCuV9I4zuUSHgDB",
+        "slot": "bca9359074636a24d0cef7187b181a21",
+        "type": "pair_send"
+      },
+      {
+        "slot": "bca9359074636a24d0cef7187b181a21",
+        "type": "pair_close"
+      }
+    ],
+    "device_receives": {
+      "data": "ytmEHDrP04f2ZKqD-TME63AsCxuXd87OPcLoa2sILGmfYWBkw61UDUBBQUwNJ2LS79STfOX_yuCuV9I4zuUSHgDB",
+      "type": "recv"
+    },
+    "plaintext": "{\"type\":\"refused\"}",
+    "sealed": {
+      "aad": "4e03a65cc601c4c9135d6c771cd878e9",
+      "ciphertext": "n2FgZMOtVA1AQUFMDSdi0u_Uk3zl_8rgrlfSOM7lEh4AwQ",
+      "enc": "ytmEHDrP04f2ZKqD-TME63AsCxuXd87OPcLoa2sILGk",
+      "ikm_e": "5hEqI4bOAyQ6cuz_AeUTH7iuwGYm3NbUVA_2S-egNKc",
+      "info": "equipe/1 pair-answer",
+      "kind": "pair_answer",
+      "mode": "auth_psk",
+      "name": "pair-refused",
+      "pk_e": "ytmEHDrP04f2ZKqD-TME63AsCxuXd87OPcLoa2sILGk",
+      "plaintext": "{\"type\":\"refused\"}",
+      "psk": true,
+      "recipient": "device",
+      "sealed": "ytmEHDrP04f2ZKqD-TME63AsCxuXd87OPcLoa2sILGmfYWBkw61UDUBBQUwNJ2LS79STfOX_yuCuV9I4zuUSHgDB",
+      "sender": "daemon",
+      "sk_e": "FgCTYxRssIWCFgIuQv0HgFPDJedIPR5-b0qpNcILuBM"
+    }
+  },
+  "5_yes": {
+    "daemon_sends": [
+      {
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "token_hash": "676fc84c7f939363d513041755b11f4f32a6acae7c8f468878206a2b71a14f80",
+        "type": "device_add"
+      },
+      {
+        "data": "wKE1jHTlKDOHxpsge6LAQYMRw7RAVG-hHQVNN3lpyXg0X27b_gRBs_L-Oeo6WQfbLjBuHg0canwyfpGrcGgfHeAMykJk8oOZe-3Nggfm9YuByrAzXdYgGy3EZhf2hFhutq_mPM-vkyo4H1aTNeTM6I4k_UYyVlEcTdbwcg5fryIb4Pja6F7vGGgstTQ4328X7nxXhX4PZ6EVWp21pVa8JRGqQnrQK8eza4H7GNnR0cGSpWZxIxjKOw0",
+        "slot": "bca9359074636a24d0cef7187b181a21",
+        "type": "pair_send"
+      },
+      {
+        "slot": "bca9359074636a24d0cef7187b181a21",
+        "type": "pair_close"
+      }
+    ],
+    "device_receives": {
+      "data": "wKE1jHTlKDOHxpsge6LAQYMRw7RAVG-hHQVNN3lpyXg0X27b_gRBs_L-Oeo6WQfbLjBuHg0canwyfpGrcGgfHeAMykJk8oOZe-3Nggfm9YuByrAzXdYgGy3EZhf2hFhutq_mPM-vkyo4H1aTNeTM6I4k_UYyVlEcTdbwcg5fryIb4Pja6F7vGGgstTQ4328X7nxXhX4PZ6EVWp21pVa8JRGqQnrQK8eza4H7GNnR0cGSpWZxIxjKOw0",
+      "type": "recv"
+    },
+    "plaintext": "{\"device\":\"b9e7dbfc95945ac17102665e1cc82fa6\",\"name\":\"abel-macmini\",\"token\":\"G380Xm36FP1GF9mIGUEH8TJtvb1WILu8OpW9Dj3Fpqs\",\"type\":\"paired\"}",
+    "sealed": {
+      "aad": "4e03a65cc601c4c9135d6c771cd878e9",
+      "ciphertext": "NF9u2_4EQbPy_jnqOlkH2y4wbh4NHGp8Mn6Rq3BoHx3gDMpCZPKDmXvtzYIH5vWLgcqwM13WIBstxGYX9oRYbrav5jzPr5MqOB9WkzXkzOiOJP1GMlZRHE3W8HIOX68iG-D42uhe7xhoLLU0ON9vF-58V4V-D2ehFVqdtaVWvCURqkJ60CvHs2uB-xjZ0dHBkqVmcSMYyjsN",
+      "enc": "wKE1jHTlKDOHxpsge6LAQYMRw7RAVG-hHQVNN3lpyXg",
+      "ikm_e": "HRBkQXhaWhDnAEbQMScgab65NkhfxZ4g33nmyrX_GuQ",
+      "info": "equipe/1 pair-answer",
+      "kind": "pair_answer",
+      "mode": "auth_psk",
+      "name": "pair-answer",
+      "pk_e": "wKE1jHTlKDOHxpsge6LAQYMRw7RAVG-hHQVNN3lpyXg",
+      "plaintext": "{\"device\":\"b9e7dbfc95945ac17102665e1cc82fa6\",\"name\":\"abel-macmini\",\"token\":\"G380Xm36FP1GF9mIGUEH8TJtvb1WILu8OpW9Dj3Fpqs\",\"type\":\"paired\"}",
+      "psk": true,
+      "recipient": "device",
+      "sealed": "wKE1jHTlKDOHxpsge6LAQYMRw7RAVG-hHQVNN3lpyXg0X27b_gRBs_L-Oeo6WQfbLjBuHg0canwyfpGrcGgfHeAMykJk8oOZe-3Nggfm9YuByrAzXdYgGy3EZhf2hFhutq_mPM-vkyo4H1aTNeTM6I4k_UYyVlEcTdbwcg5fryIb4Pja6F7vGGgstTQ4328X7nxXhX4PZ6EVWp21pVa8JRGqQnrQK8eza4H7GNnR0cGSpWZxIxjKOw0",
+      "sender": "daemon",
+      "sk_e": "0d9hiNwpdGsSmu8LqHQXBA2fcrp230loUGXKTHmrR0Q"
+    }
+  },
+  "6_device_connects": {
+    "authorization": "Bearer G380Xm36FP1GF9mIGUEH8TJtvb1WILu8OpW9Dj3Fpqs",
+    "url": "wss://relay.equipe.im/v1/daemons/4e03a65cc601c4c9135d6c771cd878e9/devices/b9e7dbfc95945ac17102665e1cc82fa6/connect"
+  },
+  "about": "One pairing, start to end, between the vectors' daemon and device (keys in seal.json). The daemon makes the device id and token at random; here they are fixed, and the test checks the daemon's real answer has exactly this shape.",
+  "ignored": [
+    {
+      "frame": {
+        "data": "KAVbwoWxhJsHAEzB3CpIijdhvGQUjm_mfutt7VDLJTfRkq2pR-FIxoqBWiJIUWo_3zuRWYIm7raaRfBJdMBF6NT1505qs5L5zZhQliwoC9Lu5fiJ9WjFl_jQ0UzWjf8Jicc2QkqOdMHH3yPjiKr7H_ihbxHDLUnDvfprO31ACAAp09wYNqrrblrl71vnpebLLrAwCTGGyO69YCRWndRxoAucUA",
+        "slot": "bca9359074636a24d0cef7187b181a21",
+        "type": "pair_recv"
+      },
+      "name": "sealed with another pairing secret"
+    },
+    {
+      "frame": {
+        "data": "EKeQ3h_KygI0TigLCiYjOXnNmqatHB8hu-SNXaBoljKyNC6ghhEw2_3M6Bh9CG8VovEyZXDlyrp-AJS7PWZqbOIGLmGYRn3E_ih1mrCH-Bzc2fyZPblPVYkGV_lr30mwDpPknTJgwLgrErpX0cz-M3bClzFwpAdqBLG8jDEfcTbR9Bz-QXmRxdEtBo2YUJpuGHymVetWtZqUD8XATyaY-3IbfQ",
+        "slot": "00000000000000000000000000000000",
+        "type": "pair_recv"
+      },
+      "name": "for another slot"
+    }
+  ],
+  "qr": "equipe://pair?r=https%3A%2F%2Frelay.equipe.im&d=4e03a65cc601c4c9135d6c771cd878e9&k=8PjOI_D2YiFIjjFAyAw7xqrYvt2X_wQqDoh0ZtDE4ik&s=PM49OXIOJFuCr5500jxtQCItxPor1yZq5iiRxUQRgNg&n=abel-macmini",
+  "slot": "bca9359074636a24d0cef7187b181a21"
+}
