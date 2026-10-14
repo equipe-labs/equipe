@@ -319,6 +319,14 @@ impl Mac {
             let options = NSDictionary::from_slices(&[&*ns("AXTrustedCheckOptionPrompt")], &[&*NSNumber::new_bool(true)]);
             AXIsProcessTrustedWithOptions(ptr(&options));
         }
+        // On macOS 26 asking isn't enough to be listed under Screen Recording:
+        // an attempt to capture is what puts the helper there.
+        if !self.permissions().screen
+            && let Ok(image) = capture(None, 64, 36)
+        {
+            // SAFETY: retained by capture().
+            unsafe { CGImageRelease(image) };
+        }
     }
 }
 
