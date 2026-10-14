@@ -104,6 +104,11 @@ pub struct Busy {
     pub working: bool,
 }
 
+/// Whether `text` names a ticket: `T-12`.
+fn mentions_ticket(text: &str) -> bool {
+    text.match_indices("T-").any(|(at, _)| text[at + 2..].starts_with(|c: char| c.is_ascii_digit()))
+}
+
 /// A picture of a member's browser, as the daemon sent it.
 #[derive(Debug, Clone)]
 pub struct Frame {
@@ -244,6 +249,13 @@ impl Agent {
                 continue;
             }
             let ticket_header = matches!(entry, Entry::Note { text } if text.starts_with("── T-"));
+            // With every project in view, the PM's conversation carries every
+            // project's team news — each kept in its own project's too.
+            let news = matches!(entry, Entry::Note { text } if !ticket_header && mentions_ticket(text));
+            if pm && news && self.thread_view.is_none() {
+                out.push(Cow::Borrowed(entry));
+                continue;
+            }
             if !self.in_view(current) {
                 if !pm {
                     let n = left_out.get_or_insert(0);

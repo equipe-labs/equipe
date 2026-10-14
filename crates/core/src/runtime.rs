@@ -246,6 +246,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         pending: HashMap::new(),
         next_approval: 1,
         focus: HashMap::new(),
+        builds_trimmed: None,
         browsers: HashMap::new(),
         host: None,
         watching: HashMap::new(),
@@ -483,6 +484,8 @@ struct Runtime {
     next_approval: u64,
     /// The project each squad's person is looking at, by name.
     focus: HashMap<String, String>,
+    /// When members' build caches were last looked at.
+    builds_trimmed: Option<std::time::Instant>,
     /// Members' browsers, kept between turns: by squad and member.
     browsers: HashMap<(String, String), browser::Running>,
     /// The one Chrome members' browsers are lanes of, once started.
@@ -565,6 +568,7 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
             _ = frames.tick() => rt.take_frames(),
             _ = minute.tick() => {
                 rt.fold_idle_lanes();
+                rt.trim_builds();
                 rt.expire_estimates();
                 rt.close_idle_browsers();
                 rt.let_helpers_go().await;
@@ -847,8 +851,43 @@ impl Runtime {
         }
         self.save_waiting(pm);
         if let Some(text) = shown {
-            self.publish(Event::Notice { session: pm, text });
+            self.show_news(squad, pm, text);
         }
+    }
+
+    /// Team news on the PM's screen, in the conversation it is about: a
+    /// ticket's in its project's (the squad's for work in the home), not
+    /// whichever the PM happens to be in.
+    fn show_news(&mut self, squad: &str, pm: SessionId, text: String) {
+        let ticket = text.match_indices("T-").find_map(|(at, _)| {
+            let digits: String = text[at + 2..].chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<TicketId>().ok()
+        });
+        let projects = self.projects(squad);
+        let about = ticket.and_then(|id| self.journal(squad)?.ticket(id).ok().flatten()).map(|t| {
+            let project = if t.kind.in_home() { t.project.clone() } else { t.project.clone().or_else(|| projects.first().cloned()) };
+            project.as_deref().map(board::project_name)
+        });
+        let Some(about) = about else {
+            return self.publish(Event::Notice { session: pm, text });
+        };
+        // That conversation's lane, when it runs beside the PM's.
+        if let Some((&lane, _)) = self.sessions.iter().find(|(_, s)| s.lane.as_ref() == Some(&(pm, about.clone()))) {
+            return self.publish(Event::Notice { session: lane, text });
+        }
+        let current = self.sessions.get(&pm).and_then(|s| {
+            s.transcript.entries().iter().rev().find_map(|e| match e {
+                Entry::Thread { project } => Some(project.clone()),
+                _ => None,
+            })
+        });
+        if current.clone().unwrap_or_default() == about {
+            return self.publish(Event::Notice { session: pm, text });
+        }
+        // Into that conversation for the line, then back where the PM is.
+        self.publish(Event::Thread { session: pm, project: about });
+        self.publish(Event::Notice { session: pm, text });
+        self.publish(Event::Thread { session: pm, project: current.flatten() });
     }
 
     /// When `id` is a member other than the PM, brief its PM with `line(name)`.
@@ -3693,6 +3732,27 @@ check what is already done in your worktree first."
     /// Once a day, a squad whose unstarted work has sat for a week has its PM
     /// told — to propose, next time it talks with the person, what to close,
     /// merge or keep. Only the person drops work.
+    /// Members' build caches kept to a size, every half hour, off the loop.
+    fn trim_builds(&mut self) {
+        if self.builds_trimmed.is_some_and(|at| at.elapsed() < BUILDS_TRIM_EVERY) {
+            return;
+        }
+        self.builds_trimmed = Some(std::time::Instant::now());
+        // A member mid-turn may be building: its cache is left alone.
+        let busy: Vec<PathBuf> = self
+            .sessions
+            .values()
+            .filter(|s| s.is_working())
+            .filter_map(|s| Some(journal::build_dir(&self.config.home, s.squad.as_deref()?, s.name()?)))
+            .collect();
+        let home = self.config.home.clone();
+        std::thread::spawn(move || {
+            for line in worktree::trim_builds(&home, &busy, BUILD_CAP) {
+                eprintln!("equipe: {line}");
+            }
+        });
+    }
+
     fn tidy_check(&mut self) {
         let squads: Vec<String> = self.journals.keys().cloned().collect();
         for squad in squads {
@@ -4287,6 +4347,11 @@ const SHOWN_IDLE: Duration = Duration::from_secs(10 * 60);
 /// Turns shorter than this need no guess at when they end, and aren't kept
 /// to guess from.
 const GUESSED_AFTER: Duration = Duration::from_secs(60);
+
+/// How big a member's build cache may grow before it is trimmed, and how often
+/// that is looked at.
+const BUILD_CAP: u64 = 10 * 1024 * 1024 * 1024;
+const BUILDS_TRIM_EVERY: Duration = Duration::from_secs(30 * 60);
 
 /// How long past its expected time something to go live is still waited for.
 const LIVE_STALE: Duration = Duration::from_secs(30 * 60);

@@ -2356,6 +2356,28 @@ async fn without_a_members_word_equipe_guesses_from_how_long_such_turns_took() {
 }
 
 #[tokio::test]
+async fn team_news_about_a_ticket_shows_in_its_projects_conversation_not_the_one_the_pm_is_in() {
+    let site = named("site");
+    let app = named("app");
+    let (claude, _) = recording_claude(&answering("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "designer")).await;
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("app".into()) });
+    handle.send(Command::Submit { session: 1, text: "about the app".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    // News about a site ticket while the PM's conversation is app's.
+    tool(&handle, "designer", "create_ticket", serde_json::json!({ "title": "Hero", "body": "-", "owner": "designer", "project": "site" })).await;
+    let seen = until(&mut events, |e| matches!(e, Event::Thread { session: 1, project: Some(p) } if p == "app")).await;
+    let around: Vec<&Event> = seen.iter().filter(|e| matches!(e, Event::Thread { session: 1, .. } | Event::Notice { session: 1, .. })).collect();
+    assert!(
+        matches!(around.as_slice(), [.., Event::Thread { project: Some(a), .. }, Event::Notice { text, .. }, Event::Thread { project: Some(b), .. }]
+            if a == "site" && text.contains("proposed T-1") && b == "app"),
+        "{around:#?}"
+    );
+}
+
+#[tokio::test]
 async fn a_members_model_changes_between_turns_and_its_conversation_carries_on() {
     let cwd = scratch("model");
     let (claude, recorded) = recording_claude(&answering("ok"));

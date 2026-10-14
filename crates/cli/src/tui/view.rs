@@ -2911,6 +2911,29 @@ mod tests {
     }
 
     #[test]
+    fn team_news_shows_in_its_projects_conversation_and_with_every_project_in_view() {
+        let (mut app, pm) = working();
+        app.projects = vec!["/code/site".into(), "/code/app".into()];
+        for event in [
+            Event::Thread { session: pm, project: Some("site".into()) },
+            Event::Notice { session: pm, text: "● frontend handed in T-5 for your review · Hero".into() },
+            Event::Thread { session: pm, project: Some("app".into()) },
+            Event::TextDelta { session: pm, text: "App talk.".into() },
+        ] {
+            app.on_event(event);
+        }
+        let shot = |app: &mut App, view: Option<&str>| {
+            app.agents[0].thread_view = view.map(str::to_owned);
+            screen(app, 120, 30)
+        };
+        let in_app = shot(&mut app, Some("app"));
+        assert!(in_app.contains("App talk.") && !in_app.contains("handed in T-5"), "{in_app}");
+        assert!(shot(&mut app, Some("site")).contains("handed in T-5"));
+        let all = shot(&mut app, None);
+        assert!(all.contains("handed in T-5") && !all.contains("App talk."), "{all}");
+    }
+
+    #[test]
     fn said_to_a_member_at_work_it_steers_and_tab_leaves_a_memo() {
         let (mut app, pm) = working();
         for c in "skip the footer".chars() {

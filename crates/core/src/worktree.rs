@@ -296,9 +296,72 @@ pub fn tidy(home: &Path, in_use: &[PathBuf], kept: &[PathBuf]) -> Vec<String> {
     done
 }
 
+/// The bytes under `path`, links not followed.
+fn size_of(path: &Path) -> u64 {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if !meta.is_dir() {
+        return meta.len();
+    }
+    std::fs::read_dir(path).into_iter().flatten().flatten().map(|e| size_of(&e.path())).sum()
+}
+
+/// Members' build caches (`~/.equipe/cache/build/<squad>/<member>`) kept
+/// under `cap` bytes each: past it, a member not building now (`busy` are
+/// those that may be) loses its incremental state first — what grows without
+/// end — and, still past it, the whole cache, which its next build makes anew.
+pub fn trim_builds(home: &Path, busy: &[PathBuf], cap: u64) -> Vec<String> {
+    let mut done = Vec::new();
+    let Ok(squads) = std::fs::read_dir(home.join("cache").join("build")) else {
+        return done;
+    };
+    for dir in squads.flatten().flat_map(|s| std::fs::read_dir(s.path()).into_iter().flatten().flatten()) {
+        let path = dir.path();
+        if busy.contains(&path) || size_of(&path) <= cap {
+            continue;
+        }
+        // `debug/incremental`, `release/incremental`, `<target>/debug/incremental`…
+        let profiles = std::fs::read_dir(&path).into_iter().flatten().flatten().flat_map(|p| {
+            let nested: Vec<PathBuf> = std::fs::read_dir(p.path()).into_iter().flatten().flatten().map(|q| q.path()).collect();
+            std::iter::once(p.path()).chain(nested)
+        });
+        for incremental in profiles.map(|p| p.join("incremental")).filter(|p| p.is_dir()).collect::<Vec<_>>() {
+            if std::fs::remove_dir_all(&incremental).is_ok() {
+                done.push(format!("cleared {}", incremental.display()));
+            }
+        }
+        if size_of(&path) > cap && std::fs::remove_dir_all(&path).is_ok() {
+            done.push(format!("cleared {}", path.display()));
+        }
+    }
+    done
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_members_build_cache_past_its_cap_loses_incremental_state_then_all_unless_it_builds() {
+        let home = scratch("builds");
+        let member = |name: &str| home.join("cache").join("build").join("acme").join(name);
+        let fill = |dir: &Path, bytes: usize| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("blob"), vec![0u8; bytes]).unwrap();
+        };
+        // Mostly incremental state: trimming it is enough.
+        fill(&member("frontend").join("debug").join("incremental"), 900);
+        fill(&member("frontend").join("debug").join("deps"), 100);
+        // Past the cap without it: all of it goes.
+        fill(&member("backend").join("debug").join("deps"), 900);
+        // Building now: untouched.
+        fill(&member("pm").join("debug").join("incremental"), 900);
+        let done = trim_builds(&home, &[member("pm")], 500);
+        assert!(!member("frontend").join("debug").join("incremental").exists() && member("frontend").join("debug").join("deps").exists(), "{done:?}");
+        assert!(!member("backend").exists(), "{done:?}");
+        assert!(member("pm").join("debug").join("incremental").exists());
+    }
 
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
