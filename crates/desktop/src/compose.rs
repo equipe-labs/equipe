@@ -208,7 +208,10 @@ impl Plan {
 
 /// What a sent line comes to. `text` is the box's content; the selected
 /// member is who it is for unless `@name` says otherwise.
-pub fn plan(model: &Model, text: &str) -> Plan {
+///
+/// `later` (Tab, or the memo button) leaves a member at work a memo for when
+/// its turn ends instead of steering the work.
+pub fn plan(model: &Model, text: &str, later: bool) -> Plan {
     let text = text.trim();
     if text.is_empty() {
         return Plan::default();
@@ -234,10 +237,16 @@ pub fn plan(model: &Model, text: &str) -> Plan {
     let away = target.session != selected.session;
     match target.presence {
         Presence::Closed => Plan { restore: Some(text.to_owned()), ..Plan::say(format!("{}은(는) 더 이상 스쿼드에 없습니다", target.name)) },
+        // A memo: the core holds it until the turn ends. Only Claude can be steered.
+        Presence::Working if later || target.engine != Some(Engine::Claude) => Plan {
+            commands: vec![Command::SubmitLater { session: target.session, text: text.to_owned() }],
+            flash: Some(format!("{}에게 메모를 남겼습니다 — 이번 턴이 끝나면 읽습니다", target.name)),
+            ..Plan::default()
+        },
+        // Steering: read at its next step, the work carrying on.
         Presence::Working => Plan {
             commands: vec![Command::Submit { session: target.session, text: text.to_owned() }],
-            // Left as a memo: the core holds it until the turn ends.
-            flash: Some(format!("{}에게 메모를 남겼습니다 — 이번 턴이 끝나면 읽습니다. Esc로 멈추면 바로 읽습니다.", target.name)),
+            flash: Some(format!("{}이(가) 다음 단계에서 읽습니다, 하던 일은 멈추지 않습니다 · Tab으로 보내면 끝난 뒤 읽는 메모", target.name)),
             ..Plan::default()
         },
         Presence::Ready => Plan {
@@ -472,6 +481,10 @@ mod tests {
         squad(vec![session(1, "pm", SessionState::Ready), session(2, "frontend", SessionState::Ready), session(3, "backend", SessionState::Working)])
     }
 
+    fn plan(model: &Model, text: &str) -> Plan {
+        super::plan(model, text, false)
+    }
+
     fn submit(session: SessionId, text: &str) -> Command {
         Command::Submit { session, text: text.into() }
     }
@@ -509,11 +522,31 @@ mod tests {
     }
 
     #[test]
-    fn a_message_to_a_working_member_is_left_as_a_memo() {
+    fn a_message_to_a_working_member_steers_it_and_does_not_claim_a_memo() {
         let model = team();
         let p = plan(&model, "@backend 이것도");
         assert_eq!(p.commands, vec![submit(3, "이것도")]);
-        assert!(p.flash.unwrap().contains("메모"));
+        let flash = p.flash.unwrap();
+        assert!(flash.contains("다음 단계") && !flash.contains("메모를 남겼"), "{flash}");
+    }
+
+    #[test]
+    fn tab_leaves_a_working_member_a_memo() {
+        let model = team();
+        let p = super::plan(&model, "@backend 이것도", true);
+        assert_eq!(p.commands, vec![Command::SubmitLater { session: 3, text: "이것도".into() }]);
+        assert!(p.flash.unwrap().contains("메모를 남겼"));
+        // A member at rest is simply told: there is nothing to wait for.
+        assert_eq!(super::plan(&model, "@frontend 안녕", true).commands, vec![submit(2, "안녕")]);
+    }
+
+    #[test]
+    fn a_codex_member_at_work_always_gets_a_memo() {
+        let mut codex = session(3, "backend", SessionState::Working);
+        codex.engine = Engine::Codex;
+        let model = squad(vec![session(1, "pm", SessionState::Ready), codex]);
+        let p = plan(&model, "@backend 이것도");
+        assert_eq!(p.commands, vec![Command::SubmitLater { session: 3, text: "이것도".into() }]);
     }
 
     #[test]

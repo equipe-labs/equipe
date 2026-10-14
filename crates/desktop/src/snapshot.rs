@@ -4,7 +4,7 @@
 //!
 //! `EQUIPE_SCRIPT="wait:1500;say:안녕;wait:800;shot:/tmp/a.png"` — steps split on `;`:
 //! `wait:<ms>` · `shot:<png>` · `say:<text>` (type it in the box and send) ·
-//! `type:<text>` (type, don't send) · `key:<y|a|n|o>` (answer a request) · `esc` (stop the member) · `up`/`down`
+//! `memo:<text>` (send it as a memo, as Tab does) · `type:<text>` (type, don't send) · `key:<y|a|n|o>` (answer a request) · `esc` (stop the member) · `up`/`down`
 //! (history) · `project:<name|all>` · `select:<member>` · `board` · `chat` ·
 //! `folds` · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
 //! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
@@ -41,11 +41,13 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     Ok(image) => eprintln!("shot {arg}: {:?}", image.save(&arg)),
                     Err(err) => eprintln!("shot failed: {err}"),
                 },
-                "say" | "type" => shell.update(cx, |shell, cx| {
+                "say" | "type" | "memo" => shell.update(cx, |shell, cx| {
                     shell.composer.set_text(&arg, window, cx);
                     shell.on_composer_event(&gpui_kit::component::input::InputEvent::Change, window, cx);
                     if verb == "say" {
                         shell.send(window, cx);
+                    } else if verb == "memo" {
+                        shell.send_as(true, window, cx);
                     }
                 }),
                 "key" => shell.update(cx, |shell, cx| {

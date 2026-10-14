@@ -145,12 +145,16 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             Command::Submit { session, text } => {
                                 let busy = turns.lock().await.get(&session).is_some_and(|t| !t.is_finished());
                                 if busy {
-                                    let _ = events.send(Event::MessageQueued { session, text, project: None });
+                                    // Like the daemon: said to a member at work, it steers.
+                                    let _ = events.send(Event::SteerQueued { session, text });
                                 } else {
                                     let _ = events.send(Event::UserMessage { session, text });
                                     let task = tokio::spawn(turn(session, events.clone(), seconds));
                                     turns.lock().await.insert(session, task);
                                 }
+                            }
+                            Command::SubmitLater { session, text } => {
+                                let _ = events.send(Event::MessageQueued { session, text, project: None });
                             }
                             Command::Interrupt { session } => {
                                 if let Some(task) = turns.lock().await.remove(&session) {
@@ -198,4 +202,5 @@ async fn turn(session: SessionId, events: broadcast::Sender<Event>, seconds: f32
     }
     let usage = Usage { input_tokens: Some(1200), output_tokens: Some(340), context_tokens: Some(420), context_window: Some(1000), ..Default::default() };
     let _ = events.send(Event::TurnEnded { session, outcome: TurnOutcome::Completed, usage: Some(usage) });
+    let _ = events.send(Event::Suggestion { session, text: "다른 페이지도 정리해줘".into() });
 }

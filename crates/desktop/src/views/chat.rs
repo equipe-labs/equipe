@@ -262,7 +262,12 @@ fn row(p: Palette, block: &Block, ix: usize, serial: u64, expanded: bool, look: 
         Block::Memo(text) => v_flex()
             .text_color(p.muted)
             .child(h_flex().gap_3().text_size(px(BODY)).line_height(px(24.)).child(div().flex_none().child("›")).child(div().min_w_0().child(text.clone())))
-            .child(div().pl_5().text_size(px(SMALL)).child("메모 · 이번 턴이 끝나면 읽습니다 · Esc로 멈추면 바로 읽습니다"))
+            .child(div().pl_5().text_size(px(SMALL)).child("메모 · 이번 턴이 끝나면 읽습니다"))
+            .into_any_element(),
+        Block::Steering(text) => v_flex()
+            .text_color(p.muted)
+            .child(h_flex().gap_3().text_size(px(BODY)).line_height(px(24.)).child(div().flex_none().text_color(p.accent).child("›")).child(div().min_w_0().child(text.clone())))
+            .child(div().pl_5().text_size(px(SMALL)).child("조종 · 다음 단계에서 읽힘, 하던 일은 멈추지 않습니다"))
             .into_any_element(),
     }
 }

@@ -34,6 +34,15 @@ pub struct Convo {
     pub thread_view: Option<String>,
     /// Memos waiting for the turn in progress to end.
     pub queued: Vec<String>,
+    /// The project each memo was left about (`None`: the whole squad): each
+    /// shows in that project's conversation.
+    pub queued_in: Vec<Option<String>>,
+    /// What the person said while it works, not read yet (steering).
+    pub steering: Vec<String>,
+    /// The greyed guess at what the person says next, while it rests.
+    pub suggestion: Option<String>,
+    /// Working on a ticket: it has one conversation, so every memo is for it.
+    on_ticket: bool,
     /// Subagents it handed work to this turn and that haven't handed back.
     pub subagents: Vec<Sub>,
     /// Where it works now; tool paths are shown relative to it.
@@ -49,6 +58,10 @@ impl Convo {
             transcript: Transcript::default(),
             thread_view: None,
             queued: Vec::new(),
+            queued_in: Vec::new(),
+            steering: Vec::new(),
+            suggestion: None,
+            on_ticket: false,
             subagents: Vec::new(),
             desk: base.clone(),
             base,
@@ -63,6 +76,10 @@ impl Convo {
         convo.desk = info.project.clone();
         convo.transcript = Transcript::from_entries(info.recent.clone());
         convo.queued = info.queued.clone();
+        // From an older daemon: one project for them all.
+        convo.queued_in = if info.queued_in.len() == info.queued.len() { info.queued_in.clone() } else { vec![info.queued_project.clone(); info.queued.len()] };
+        convo.steering = info.steering.clone();
+        convo.on_ticket = info.work.is_some();
         // Attached mid-turn: the clock starts now, not when the turn did.
         if info.state == equipe_core::protocol::SessionState::Working {
             convo.working_since = Some(now);
@@ -84,15 +101,38 @@ impl Convo {
             }
             Event::UserMessage { .. } => {
                 self.working_since.get_or_insert(now);
-                // Waiting memos are delivered together as one message.
-                self.queued.clear();
+                self.suggestion = None;
+                // The memos of one project are delivered together, into its
+                // conversation; another project's wait for the next turn's end.
+                self.deliver_memos();
             }
-            Event::MessageQueued { text, .. } => self.queued.push(text.clone()),
+            Event::SteerQueued { text, .. } => self.steering.push(text.clone()),
+            Event::Steered { text, .. } => {
+                if let Some(at) = self.steering.iter().position(|t| t == text) {
+                    self.steering.remove(at);
+                }
+            }
+            Event::Suggestion { text, .. } => {
+                // Too late once it is at work again, or a memo is on its way.
+                if self.working_since.is_none() && self.queued.is_empty() {
+                    self.suggestion = Some(text.clone());
+                }
+            }
+            Event::MessageQueued { text, project, .. } => {
+                self.suggestion = None;
+                self.queued.push(text.clone());
+                self.queued_in.push(project.clone());
+            }
             Event::WorkStarted { project, workspace, .. } => {
+                self.on_ticket = true;
+                self.suggestion = None;
                 self.base = workspace.as_ref().map_or_else(|| project.clone(), |ws| ws.path.clone());
                 self.working_since.get_or_insert(now);
             }
-            Event::WorkEnded { .. } => self.base = self.desk.clone(),
+            Event::WorkEnded { .. } => {
+                self.on_ticket = false;
+                self.base = self.desk.clone();
+            }
             Event::SubagentStarted { id, what, .. } => self.subagents.push(Sub { id: id.clone(), what: what.clone(), step: None }),
             Event::SubagentStep { id, step, .. } => {
                 if let Some(sub) = self.subagents.iter_mut().find(|s| s.id == *id) {
@@ -102,11 +142,30 @@ impl Convo {
             Event::SubagentEnded { id, .. } => self.subagents.retain(|s| s.id != *id),
             Event::TurnEnded { outcome, .. } => {
                 self.subagents.clear();
+                // Unread, it comes back as a memo, delivered now.
+                self.steering.clear();
                 self.stop_working(now, at, *outcome);
             }
             _ => {}
         }
         true
+    }
+
+    /// The memos sent as its new turn starts: those of the first project one
+    /// was left in.
+    fn deliver_memos(&mut self) {
+        let Some(project) = self.queued_in.first().cloned() else {
+            self.queued.clear();
+            return;
+        };
+        let (queued, queued_in) = std::mem::take(&mut self.queued).into_iter().zip(std::mem::take(&mut self.queued_in)).filter(|(_, about)| *about != project).unzip();
+        (self.queued, self.queued_in) = (queued, queued_in);
+    }
+
+    /// Whether what belongs to `project`'s conversation (`None`: the squad's)
+    /// shows in the one in view.
+    fn in_view(&self, project: Option<&str>) -> bool {
+        project == self.thread_view.as_deref() || (self.thread_view.is_none() && !self.is_pm)
     }
 
     /// Its turn ended: leave a quiet line saying how long it took.
@@ -176,9 +235,13 @@ impl Convo {
     /// steps, note — then each memo still waiting.
     pub fn blocks(&self) -> Vec<Block> {
         let mut blocks = build_blocks(&self.shown(), &self.base);
-        for memo in &self.queued {
+        // Memos wait below the conversation they go into until the turn ends —
+        // each only in the project it was left in. On a ticket there is one
+        // conversation, the ticket's: every memo is for it.
+        for (memo, _) in self.queued.iter().zip(&self.queued_in).filter(|(_, about)| self.on_ticket || self.in_view(about.as_deref())) {
             blocks.push(Block::Memo(memo.clone()));
         }
+        blocks.extend(self.steering.iter().map(|text| Block::Steering(text.clone())));
         blocks
     }
 }
@@ -242,6 +305,8 @@ pub enum Block {
     Landed { branch: String, stat: String },
     /// A memo left while the member works.
     Memo(String),
+    /// Said while it works: read at its next step, the work carrying on.
+    Steering(String),
 }
 
 /// Gather entries into blocks: tool use into runs (merging looking-around
@@ -571,6 +636,54 @@ mod tests {
         feed(&mut c, &[Event::UserMessage { session: 1, text: "also this".into() }]);
         assert!(c.queued.is_empty());
         assert!(!c.blocks().iter().any(|b| matches!(b, Block::Memo(_))));
+    }
+
+    #[test]
+    fn memos_show_only_in_the_project_they_were_left_in() {
+        let mut c = convo(false);
+        feed(
+            &mut c,
+            &[
+                Event::UserMessage { session: 1, text: "work".into() },
+                Event::MessageQueued { session: 1, text: "for site".into(), project: Some("site".into()) },
+                Event::MessageQueued { session: 1, text: "for app".into(), project: Some("app".into()) },
+            ],
+        );
+        let memos = |c: &Convo| c.blocks().into_iter().filter_map(|b| if let Block::Memo(t) = b { Some(t) } else { None }).collect::<Vec<_>>();
+        c.thread_view = Some("site".into());
+        assert_eq!(memos(&c), ["for site"]);
+        c.thread_view = Some("app".into());
+        assert_eq!(memos(&c), ["for app"]);
+        // A member's whole-squad view has them all.
+        c.thread_view = None;
+        assert_eq!(memos(&c), ["for site", "for app"]);
+        // The next turn takes the first project's; the other waits.
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "for site".into() }]);
+        assert_eq!(c.queued, ["for app"]);
+    }
+
+    #[test]
+    fn steering_shows_as_read_next_step_until_read_or_the_turn_ends() {
+        let mut c = convo(false);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "work".into() }, Event::SteerQueued { session: 1, text: "skip the footer".into() }]);
+        assert_eq!(c.blocks().last(), Some(&Block::Steering("skip the footer".into())));
+        feed(&mut c, &[Event::Steered { session: 1, text: "skip the footer".into() }]);
+        assert!(c.steering.is_empty());
+        feed(&mut c, &[Event::SteerQueued { session: 1, text: "and the nav".into() }, Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }]);
+        assert!(!c.blocks().iter().any(|b| matches!(b, Block::Steering(_))));
+    }
+
+    #[test]
+    fn a_suggestion_waits_for_rest_and_goes_when_work_or_a_memo_comes() {
+        let mut c = convo(false);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "work".into() }, Event::Suggestion { session: 1, text: "too early".into() }]);
+        assert_eq!(c.suggestion, None, "still at work");
+        feed(&mut c, &[Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }, Event::Suggestion { session: 1, text: "다른 페이지도".into() }]);
+        assert_eq!(c.suggestion.as_deref(), Some("다른 페이지도"));
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "다른 페이지도".into() }]);
+        assert_eq!(c.suggestion, None);
+        feed(&mut c, &[Event::MessageQueued { session: 1, text: "m".into(), project: None }, Event::Suggestion { session: 1, text: "late".into() }]);
+        assert_eq!(c.suggestion, None, "a memo is on its way");
     }
 
     #[test]

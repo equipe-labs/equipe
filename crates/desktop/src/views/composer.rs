@@ -6,7 +6,7 @@
 
 use std::time::Instant;
 
-use equipe_core::protocol::{Command, SessionId};
+use equipe_core::protocol::{Command, Engine, SessionId};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -38,11 +38,16 @@ pub struct Composer {
     holds: Option<(SessionId, Option<String>)>,
     /// A member the person has asked to stop and who hasn't yet.
     stopping: Option<SessionId>,
+    /// The greyed guess at what comes next, shown while the box is empty;
+    /// → takes it.
+    suggestion: Option<String>,
 }
+
+const PLACEHOLDER: &str = "메시지 쓰기…";
 
 impl Composer {
     pub fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
-        let state = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, MAX_LINES).submit_on_enter(true).placeholder("메시지 쓰기…"));
+        let state = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, MAX_LINES).submit_on_enter(true).placeholder(PLACEHOLDER));
         Self {
             state,
             history: History::default(),
@@ -54,6 +59,7 @@ impl Composer {
             dismissed: None,
             holds: None,
             stopping: None,
+            suggestion: None,
         }
     }
 
@@ -91,6 +97,12 @@ impl Composer {
     /// or the project in focus changes, the old draft is put away and the
     /// new one's comes out.
     pub fn follow(&mut self, model: &Model, window: &mut Window, cx: &mut App) {
+        let guess = model.convo().and_then(|c| c.suggestion.clone()).filter(|_| model.selected_member().is_some_and(|m| m.presence == Presence::Ready));
+        if guess != self.suggestion {
+            let hint = guess.as_ref().map_or_else(|| PLACEHOLDER.to_owned(), |g| format!("{g}  →"));
+            self.state.update(cx, |s, cx| s.set_placeholder(hint, window, cx));
+            self.suggestion = guess;
+        }
         let key = model.selected.map(|id| (id, model.focus.clone()));
         if key == self.holds {
             return;
@@ -133,12 +145,17 @@ impl Shell {
 
     /// Send what is in the box: to the member on screen, to `@name`, or as a command.
     pub fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.send_as(false, window, cx);
+    }
+
+    /// As `send`; `later` leaves a member at work a memo instead of steering it.
+    pub fn send_as(&mut self, later: bool, window: &mut Window, cx: &mut Context<Self>) {
         // The Enter that ends a Korean composition is only that.
         if !self.composer.guard.allows_send(Instant::now()) {
             return;
         }
         let text = self.composer.text(cx);
-        let plan = compose::plan(&self.model, &text);
+        let plan = compose::plan(&self.model, &text, later);
         if plan.commands.is_empty() && plan.flash.is_none() && plan.effect.is_none() && plan.restore.is_none() {
             return;
         }
@@ -212,6 +229,23 @@ impl Shell {
                     }
                     None => false,
                 }
+            }
+            // → on an empty box takes the greyed suggestion.
+            "right" if plain && self.composer.text(cx).is_empty() && self.composer.suggestion.is_some() => {
+                if let Some(guess) = self.composer.suggestion.clone() {
+                    self.composer.set_text(&guess, window, cx);
+                    cx.notify();
+                }
+                true
+            }
+            // Tab with something written to a member at work: a memo for after.
+            "tab" if plain && !self.composer.open() && self.model.selected_member().is_some_and(|m| m.presence == Presence::Working) && {
+                let text = self.composer.text(cx);
+                !text.trim().is_empty() && !text.starts_with('/')
+            } =>
+            {
+                self.send_as(true, window, cx);
+                true
             }
             "tab" if plain && self.composer.open() => {
                 self.take_choice(self.composer.pick, window, cx);
@@ -312,6 +346,34 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             .child("보내기 ⏎")
     };
 
+    // What Enter does with a line to a member at work: steer it (Claude) or
+    // leave a memo (Codex, which cannot be steered).
+    let steerable = member.is_some_and(|m| m.engine == Some(Engine::Claude));
+    let says = working && !text.trim().is_empty() && !text.starts_with('/');
+    let hint = match (says, steerable) {
+        (true, true) => "⏎ 조종 · ⇥ 메모 · ⇧⏎ 줄바꿈",
+        (true, false) => "⏎ 메모 · ⇧⏎ 줄바꿈",
+        _ => "⇧⏎ 줄바꿈",
+    };
+    let memo_button = (says && steerable).then(|| {
+        div()
+            .id("memo")
+            .h(px(28.))
+            .px_4()
+            .flex()
+            .items_center()
+            .rounded(px(6.))
+            .text_size(px(SMALL))
+            .font_weight(FontWeight::SEMIBOLD)
+            .border_1()
+            .border_color(p.hair)
+            .text_color(p.text)
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.wash))
+            .on_click(cx.listener(|this, _, window, cx| this.send_as(true, window, cx)))
+            .child("메모 ⇥")
+    });
+
     v_flex()
         .w_full()
         .max_w(px(720.))
@@ -349,7 +411,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                                 .child(div().text_color(to_color).font_weight(FontWeight::SEMIBOLD).child(to_label))
                                 .children(project.map(|name| div().text_color(p.muted).child(format!("· {name}")))),
                         )
-                        .child(div().flex_1().text_size(px(12.)).text_color(p.muted).child("⇧⏎ 줄바꿈"))
+                        .child(div().flex_1().text_size(px(12.)).text_color(p.muted).child(hint))
+                        .children(memo_button)
                         .child(button),
                 ),
         )
