@@ -211,6 +211,36 @@ unless TextEdit has keyboard focus. Clean-up after the spike: remove
    them: the lease should also yield when the person is active (HID idle time <
    N s), not only to other members.
 
+## T-35: the tools on the real Mac
+
+Built as decided above (`crates/desktop-control`, see ARCHITECTURE *Desktop
+tools*), with two names changed: the helper is `im.equipe.desktop-helper`
+(*equipe Desktop Helper*), since `equipe-desktop` is already the GPUI app. Run
+on the person's Mac mini (macOS 26.2, Korean UI, display 1472×828 @1×),
+2026-10-14, with a scratch home and a stand-in daemon, the member being a
+headless `claude` given exactly the MCP config a member gets.
+
+| Step | Result |
+|---|---|
+| Permissions missing, `screenshot` through member MCP → daemon → helper | ✅ refused: "isn't allowed to see the screen yet (missing: Screen Recording). Ask the person to run `equipe desktop setup`" |
+| Helper bundle under `~/.equipe/desktop/…` | ❌ never listed in System Settings — Launch Services leaves out bundles in hidden folders. Moved to `~/Applications/equipe Desktop Helper.app` |
+| Accessibility after that | ✅ listed; on after the person's toggle and password |
+| Screen Recording | ⚠️ tccd logged `kTCCServiceScreenCapture … Auth Right: Allowed (System Set)` for the helper while `CGPreflightScreenCaptureAccess()` stayed **false**. The helper now asks ScreenCaptureKit (`SCShareableContent`) when the preflight says no |
+| Rebuilt and re-signed helper, three times | ✅ every grant kept (same self-signed certificate) |
+| Member: `open_app`, `key cmd+n`, `type_text` "equipe 데스크톱 테스트: 안녕하세요, 반갑습니다!" | ✅ typed into a new TextEdit document; nothing refused |
+| Read back with `elements` | ✅ `AXTextArea = "Equipe 데스크톱 테스트: 안녕하세요, 반갑습니다!"` (TextEdit capitalised the first letter) |
+| `screenshot` (1430×804 JPEG, 1 px = 1.03 pt) | ✅ the member described the window "무제 — 편집됨" and the same line |
+| `app: "TextEdit"` on a Korean Mac | ❌ at first "no app called TextEdit": its name there is "텍스트 편집기". Apps now also match the last part of their bundle id |
+| macOS's "bypass the private window picker" dialogs left up, focus moved to Chrome | ✅ `type_text` refused ("Keyboard focus is in no app, not 텍스트 편집기: nothing typed"); `click` into TextEdit refused: "At (735, 450) is UserNotificationCenter (AXButton "허용"), not 텍스트 편집기: nothing done" — it would have pressed the dialog's Allow |
+
+Also seen: each capture attempt before the person answers adds another
+"bypass the private window picker" dialog (they stack), and "Privacy & Security
+blocked 'equipe' from modifying apps" when setup, run under the daemon, swapped
+the bundle in `~/Applications` — the swap itself went through.
+
+Not done here: Teams' AX tree (`AXManualAccessibility` is set, untested — no
+Teams on this Mac), the screen lease (T-22), send approval (T-23).
+
 ## Notes for the follow-up tickets
 
 - **T-21 (tools):** build `equipe-desktop` as its own binary + LaunchAgent

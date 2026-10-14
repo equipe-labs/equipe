@@ -11,7 +11,7 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::AnyThread as _;
-use objc2_app_kit::{NSApplicationActivationPolicy, NSWorkspace};
+use objc2_app_kit::{NSApplicationActivationPolicy, NSRunningApplication, NSWorkspace};
 use objc2_core_graphics::CGImage;
 use objc2_foundation::{NSArray, NSDictionary, NSError, NSNumber, NSString};
 use objc2_screen_capture_kit::{SCContentFilter, SCScreenshotManager, SCShareableContent, SCStreamConfiguration, SCWindow};
@@ -367,7 +367,14 @@ impl Desktop for Mac {
     fn permissions(&self) -> Permissions {
         // SAFETY: plain queries.
         unsafe {
-            Permissions { screen: CGPreflightScreenCaptureAccess(), accessibility: AXIsProcessTrusted(), post_events: CGPreflightPostEventAccess() }
+            Permissions {
+                // The preflight can say no while macOS allows the capture (seen on
+                // macOS 26: tccd "Allowed (System Set)", preflight false), so
+                // ScreenCaptureKit itself has the last word.
+                screen: CGPreflightScreenCaptureAccess() || shareable().is_ok(),
+                accessibility: AXIsProcessTrusted(),
+                post_events: CGPreflightPostEventAccess(),
+            }
         }
     }
 
@@ -607,11 +614,22 @@ impl Desktop for Mac {
     fn pause(&self, ms: u64) {
         sleep(ms);
     }
+
+    fn process_name(&self, pid: i32) -> Option<String> {
+        if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+            && let Some(name) = app.localizedName()
+        {
+            return Some(name.to_string());
+        }
+        // A system process: its executable's name (UserNotificationCenter, for a macOS dialog).
+        let out = std::process::Command::new("ps").args(["-o", "comm=", "-p", &pid.to_string()]).output().ok()?;
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        path.rsplit('/').next().filter(|n| !n.is_empty()).map(str::to_owned)
+    }
 }
 
-/// One capture with ScreenCaptureKit, sized by the capture itself. The image
-/// comes back retained.
-fn capture(window: Option<u32>, width: usize, height: usize) -> Result<Ref, String> {
+/// What ScreenCaptureKit may capture: refused without Screen Recording.
+fn shareable() -> Result<Retained<SCShareableContent>, String> {
     let (tx, rx) = mpsc::channel::<Result<usize, String>>();
     let tx = Mutex::new(tx);
     let handler = RcBlock::new(move |content: *mut SCShareableContent, error: *mut NSError| {
@@ -628,7 +646,13 @@ fn capture(window: Option<u32>, width: usize, height: usize) -> Result<Ref, Stri
     unsafe { SCShareableContent::getShareableContentWithCompletionHandler(&handler) };
     let content = rx.recv_timeout(Duration::from_secs(10)).map_err(|_| "ScreenCaptureKit didn't answer".to_owned())??;
     // SAFETY: the +1 reference taken in the handler.
-    let content = unsafe { Retained::from_raw(content as *mut SCShareableContent) }.ok_or("no content")?;
+    unsafe { Retained::from_raw(content as *mut SCShareableContent) }.ok_or_else(|| "no content".to_owned())
+}
+
+/// One capture with ScreenCaptureKit, sized by the capture itself. The image
+/// comes back retained.
+fn capture(window: Option<u32>, width: usize, height: usize) -> Result<Ref, String> {
+    let content = shareable()?;
     let filter = match window {
         Some(id) => {
             let windows = unsafe { content.windows() };

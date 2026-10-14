@@ -113,6 +113,11 @@ pub trait Desktop {
     fn type_char(&self, c: char);
     fn key(&self, combo: Combo);
     fn pause(&self, ms: u64);
+    /// What to call a process that isn't one of [`Desktop::apps`] — a system
+    /// dialog, an overlay — when it is in the way.
+    fn process_name(&self, _pid: i32) -> Option<String> {
+        None
+    }
 }
 
 /// A tool's answer: text, whether it was refused or failed, and a screenshot.
@@ -215,7 +220,10 @@ impl<D: Desktop> Controller<D> {
     fn name_of(&self, pid: Option<i32>) -> String {
         match pid {
             None => "no app".into(),
-            Some(pid) => self.desktop.apps().into_iter().find(|a| a.pid == pid).map_or(format!("pid {pid}"), |a| a.name),
+            Some(pid) => match self.desktop.apps().into_iter().find(|a| a.pid == pid) {
+                Some(app) => app.name,
+                None => self.desktop.process_name(pid).map_or(format!("pid {pid}"), |name| format!("{name} (pid {pid})")),
+            },
         }
     }
 
@@ -223,9 +231,14 @@ impl<D: Desktop> Controller<D> {
         let q = query.trim().to_lowercase();
         let apps = self.desktop.apps();
         let by = |f: &dyn Fn(&App) -> bool| apps.iter().find(|a| f(a)).cloned();
+        // The name macOS shows is localised (TextEdit is "텍스트 편집기" on a Korean
+        // Mac); the bundle id's last part is the English name members write.
+        let short = |a: &App| a.bundle_id.as_deref().and_then(|b| b.rsplit('.').next()).map(str::to_lowercase).unwrap_or_default();
         by(&|a| a.bundle_id.as_deref().is_some_and(|b| b.to_lowercase() == q))
             .or_else(|| by(&|a| a.name.to_lowercase() == q))
+            .or_else(|| by(&|a| short(a) == q))
             .or_else(|| by(&|a| a.name.to_lowercase().starts_with(&q)))
+            .or_else(|| by(&|a| !q.is_empty() && short(a).starts_with(&q)))
     }
 
     /// The app a call means: `app` when given, else the member's last one.
@@ -714,7 +727,7 @@ mod tests {
         }
         fn apps(&self) -> Vec<App> {
             vec![
-                App { pid: TEXTEDIT, name: "TextEdit".into(), bundle_id: Some("com.apple.TextEdit".into()) },
+                App { pid: TEXTEDIT, name: "텍스트 편집기".into(), bundle_id: Some("com.apple.TextEdit".into()) },
                 App { pid: GHOSTTY, name: "Ghostty".into(), bundle_id: Some("com.mitchellh.ghostty".into()) },
             ]
         }
