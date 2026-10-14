@@ -101,6 +101,35 @@ const SLEPT: Duration = Duration::from_secs(10);
 pub struct Link {
     commands: UnboundedSender<Command>,
     retry: Arc<Notify>,
+    /// The live connection's way to ask the daemon things, while there is one.
+    asking: Asking,
+}
+
+/// The current connection's request door; empty while not attached.
+type Asking = Arc<std::sync::Mutex<Option<wire::Commands>>>;
+
+/// Keeps images on the daemon's machine, from any thread.
+#[derive(Clone)]
+pub struct Uploader(Asking);
+
+impl Uploader {
+    /// Send `bytes` to the daemon and wait for where it kept them. Blocks:
+    /// call it off the UI thread.
+    pub fn upload(&self, name: &str, bytes: &[u8]) -> Result<std::path::PathBuf, String> {
+        let door = self
+            .0
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or("데몬에 연결되어 있지 않습니다")?;
+        match door
+            .upload(name, bytes)
+            .recv_timeout(Duration::from_secs(120))
+        {
+            Ok(answer) => answer,
+            Err(_) => Err("데몬이 이미지를 받았다고 답하지 않았습니다".into()),
+        }
+    }
 }
 
 impl Link {
@@ -108,6 +137,10 @@ impl Link {
     /// asks for only makes sense against the snapshot it is looking at.
     pub fn send(&self, command: Command) {
         let _ = self.commands.send(command);
+    }
+
+    pub fn uploader(&self) -> Uploader {
+        Uploader(self.asking.clone())
     }
 
     /// Try again now (after the person fixed what was wrong).
@@ -132,14 +165,27 @@ pub fn spawn(target: Target, backoff: Backoff) -> Spawned {
     let (prompt_tx, prompt_rx) = mpsc::unbounded_channel();
     let retry = Arc::new(Notify::new());
     let again = retry.clone();
+    let asking = Asking::default();
+    let door = asking.clone();
     std::thread::Builder::new()
         .name("equipe-daemon-link".into())
         .spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a tokio runtime");
-            runtime.block_on(run(target, backoff, cmd_rx, upd_tx, again, prompt_tx));
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a tokio runtime");
+            runtime.block_on(run(target, backoff, cmd_rx, upd_tx, again, prompt_tx, door));
         })
         .expect("spawn the daemon link thread");
-    Spawned { link: Link { commands: cmd_tx, retry }, updates: upd_rx, prompts: prompt_rx }
+    Spawned {
+        link: Link {
+            commands: cmd_tx,
+            retry,
+            asking,
+        },
+        updates: upd_rx,
+        prompts: prompt_rx,
+    }
 }
 
 /// A live connection.
@@ -194,6 +240,7 @@ async fn run(
     updates: UnboundedSender<Update>,
     retry: Arc<Notify>,
     prompts: UnboundedSender<Prompt>,
+    asking: Asking,
 ) {
     let side = match &target.endpoint {
         Endpoint::Ssh(host) => {
@@ -223,7 +270,17 @@ async fn run(
                 if updates.send(Update::Squads(conn.greeting.squads.clone())).is_err() || updates.send(Update::Attached(conn.greeting.hello.clone())).is_err() {
                     return;
                 }
-                match follow(&mut conn, &mut commands, &updates, &mut sleep, side.as_ref()).await {
+                *asking.lock().unwrap() = Some(conn.wire.commands.clone());
+                let followed = follow(
+                    &mut conn,
+                    &mut commands,
+                    &updates,
+                    &mut sleep,
+                    side.as_ref(),
+                )
+                .await;
+                *asking.lock().unwrap() = None;
+                match followed {
                     Followed::Window => return,
                     Followed::Ended(failure) => {
                         if updates.send(Update::Down(failure.clone())).is_err() {
@@ -460,6 +517,20 @@ mod tests {
                             (Some(rpc::COMMAND), None) => {
                                 let _ = cmd_tx.send(message.params_as().unwrap());
                             }
+                            (Some(rpc::UPLOAD), Some(id)) => {
+                                let upload: rpc::Upload = message.params_as().unwrap();
+                                let reply = if upload.name.ends_with(".png") {
+                                    Message::response(
+                                        id,
+                                        rpc::Uploaded {
+                                            path: format!("/up/{}", upload.data).into(),
+                                        },
+                                    )
+                                } else {
+                                    Message::failure(id, -32000, "only images can be uploaded")
+                                };
+                                writer.write_all(reply.to_line().as_bytes()).await.unwrap();
+                            }
                             _ => {}
                         }
                     }
@@ -515,6 +586,39 @@ mod tests {
         }
         assert_eq!(next(&mut spawned.updates).await, Update::Event(event));
         let _ = std::fs::remove_file(&socket);
+    }
+
+    #[tokio::test]
+    async fn an_image_is_kept_by_the_daemon_and_its_path_comes_back() {
+        let socket = socket();
+        let _fake = Fake::start(&socket, "daemon-1", vec![]);
+        let mut spawned = spawn(target(&socket), FAST);
+        attached_version(next_main(&mut spawned.updates).await);
+
+        let uploader = spawned.link.uploader();
+        let asked = tokio::task::spawn_blocking(move || {
+            (
+                uploader.upload("a.png", b"hi"),
+                uploader.upload("a.txt", b"hi"),
+            )
+        })
+        .await
+        .unwrap();
+        // The fake answers with the bytes' base64 in the path.
+        assert_eq!(asked.0, Ok(std::path::PathBuf::from("/up/aGk=")));
+        assert_eq!(asked.1, Err("only images can be uploaded".to_owned()));
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    #[tokio::test]
+    async fn an_image_cannot_be_kept_while_the_daemon_is_off() {
+        let socket = socket();
+        let spawned = spawn(target(&socket), FAST);
+        let uploader = spawned.link.uploader();
+        let asked = tokio::task::spawn_blocking(move || uploader.upload("a.png", b"hi"))
+            .await
+            .unwrap();
+        assert!(asked.is_err());
     }
 
     #[tokio::test]

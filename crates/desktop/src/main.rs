@@ -6,6 +6,7 @@
 //! see docs/DESKTOP.md. `EQUIPE_LOG_RENDER=1` prints a line per frame, to see that.
 
 mod askpass;
+mod attach;
 mod board;
 mod commands;
 mod diffs;
@@ -225,6 +226,7 @@ impl Shell {
         }));
         shell.attach(Target::new(endpoint, env!("CARGO_PKG_VERSION")), window, cx);
         shell.composer.focus(window, cx);
+        shell.watch_inbox(cx);
         shell
     }
 
@@ -426,7 +428,7 @@ impl Shell {
 
     // ── questions from ssh ──
 
-    fn overlay_open(&self) -> bool {
+    pub fn overlay_open(&self) -> bool {
         self.connect.open || !self.ask.queue.is_empty()
     }
 
@@ -717,6 +719,7 @@ impl Render for Shell {
                     .child(div().flex_1().min_w_0().h_full().flex().flex_col().child(self.body(cx))),
             )
             // Over everything: the chooser, then a question from ssh above it.
+            .children(views::composer::drop_overlay(self, cx))
             .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
             .children(views::connect::question(self, cx))
     }

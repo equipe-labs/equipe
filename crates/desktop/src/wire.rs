@@ -6,6 +6,10 @@
 //! Handshake: `[attached]` → `squads` request → choose the squad → `hello`.
 //! After it, events come out of one channel and commands go into another.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use equipe_core::protocol::rpc::{self, Attached, Hello, HelloParams, Message, Squads};
@@ -17,6 +21,8 @@ use crate::failure::Failure;
 
 const SQUADS_ID: u64 = 1;
 const HELLO_ID: u64 = 2;
+/// Requests after the handshake count up from here.
+const FIRST_ASKED_ID: u64 = 100;
 
 /// How the handshake goes.
 #[derive(Debug, Clone)]
@@ -42,13 +48,46 @@ pub struct Greeting {
     pub hello: Hello,
 }
 
+/// Answers still awaited, by request id: the waiting thread's end of each.
+type Pending = Arc<Mutex<HashMap<u64, std::sync::mpsc::Sender<Result<PathBuf, String>>>>>;
+
 /// Where a split connection's commands go.
 #[derive(Clone)]
-pub struct Commands(UnboundedSender<Message>);
+pub struct Commands {
+    out: UnboundedSender<Message>,
+    pending: Pending,
+    next: Arc<AtomicU64>,
+}
 
 impl Commands {
     pub fn send(&self, command: Command) {
-        let _ = self.0.send(Message::command(&command));
+        let _ = self.out.send(Message::command(&command));
+    }
+
+    /// Ask the daemon to keep an image (`upload`); the answer, its path on the
+    /// daemon's machine, comes on the returned channel — or it is dropped
+    /// unanswered when the connection ends.
+    pub fn upload(
+        &self,
+        name: &str,
+        bytes: &[u8],
+    ) -> std::sync::mpsc::Receiver<Result<PathBuf, String>> {
+        use base64::Engine as _;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let params = rpc::Upload {
+            name: name.to_owned(),
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        };
+        self.pending.lock().unwrap().insert(id, tx);
+        if self
+            .out
+            .send(Message::request(id, rpc::UPLOAD, params))
+            .is_err()
+        {
+            self.pending.lock().unwrap().remove(&id);
+        }
+        rx
     }
 }
 
@@ -156,16 +195,35 @@ where
     let hello = response(&mut lines, HELLO_ID, opts.step, "hello").await?.result_as::<Hello>().ok_or_else(|| Failure::Other("the daemon refused the hello".into()))?;
 
     let (events_tx, events) = mpsc::unbounded_channel();
+    let pending: Pending = Arc::default();
+    let answers = pending.clone();
     tokio::spawn(async move {
         while let Ok(Some(line)) = lines.next_line().await {
-            if let Ok(message) = Message::from_line(&line)
-                && message.method.as_deref() == Some(rpc::EVENT)
+            let Ok(message) = Message::from_line(&line) else {
+                continue;
+            };
+            if message.method.is_none()
+                && let Some(id) = message.id
+            {
+                // The answer to an `upload`.
+                if let Some(waiting) = answers.lock().unwrap().remove(&id) {
+                    let _ = waiting.send(
+                        match (&message.error, message.result_as::<rpc::Uploaded>()) {
+                            (Some(error), _) => Err(error.message.clone()),
+                            (None, Some(saved)) => Ok(saved.path),
+                            (None, None) => Err("the daemon's answer is unreadable".into()),
+                        },
+                    );
+                }
+            } else if message.method.as_deref() == Some(rpc::EVENT)
                 && let Some(event) = message.params_as::<Event>()
                 && events_tx.send(event).is_err()
             {
                 break;
             }
         }
+        // The connection is over: whoever still waits for an answer is let go.
+        answers.lock().unwrap().clear();
     });
     let (commands_tx, mut commands_rx) = mpsc::unbounded_channel::<Message>();
     tokio::spawn(async move {
@@ -178,7 +236,21 @@ where
         // bridge) learns this screen left.
         let _ = writer.shutdown().await;
     });
-    Ok((Greeting { bridge, squads, hello }, Wire { commands: Commands(commands_tx), events }))
+    Ok((
+        Greeting {
+            bridge,
+            squads,
+            hello,
+        },
+        Wire {
+            commands: Commands {
+                out: commands_tx,
+                pending,
+                next: Arc::new(AtomicU64::new(FIRST_ASKED_ID)),
+            },
+            events,
+        },
+    ))
 }
 
 #[cfg(test)]

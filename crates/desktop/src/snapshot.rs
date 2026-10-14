@@ -7,7 +7,7 @@
 //! `type:<text>` (type, don't send) · `key:<y|a|n|o>` (answer a request) · `esc` (stop the member) · `up`/`down`
 //! (history) · `project:<name|all>` · `select:<member>` · `board` · `chat` ·
 //! `bkey:<key>` (a board key) · `pick:<n>` (a ticket) · `find:<words>` · `note:<text>` (in the open question's box) · `submit` (its main button) · `folds` · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
-//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
+//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<image file>` · `paste` (⌘V with what the clipboard holds) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 
 use std::time::Duration;
@@ -81,6 +81,11 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 }),
                 "trust" => shell.update(cx, |shell, cx| shell.answer_prompt(crate::askpass::Answer::Yes, window, cx)),
                 "decline" => shell.update(cx, |shell, cx| shell.answer_prompt(crate::askpass::Answer::Cancel, window, cx)),
+                "attach" => shell.update(cx, |shell, cx| shell.attach_sources(vec![crate::attach::Source::File(arg.clone().into())], cx)),
+                "paste" => shell.update(cx, |shell, cx| {
+                    let taken = cx.read_from_clipboard().is_some_and(|item| shell.paste_item(&item, cx));
+                    eprintln!("paste: images taken = {taken}");
+                }),
                 "retry" => shell.update(cx, |shell, cx| shell.retry(cx)),
                 other => eprintln!("script: no step {other}"),
             });

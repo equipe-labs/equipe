@@ -2133,12 +2133,14 @@ dependencies = [
 name = "equipe-desktop"
 version = "0.30.0"
 dependencies = [
+ "base64 0.23.1",
  "equipe-core",
  "equipe-providers",
  "gpui-kit",
  "image",
  "libc",
  "mac-notification-sys",
+ "notify",
  "objc2 0.6.5",
  "serde_json",
  "tokio",
