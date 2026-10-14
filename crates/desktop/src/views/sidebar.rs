@@ -66,7 +66,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .child(kicker(p, "멤버"))
         // Behind a daemon that is off the list is only what we last saw.
         .child(v_flex().flex_1().min_h_0().overflow_hidden().when(dim, |l| l.opacity(0.8)).children(model.ordered().into_iter().map(|m| member_row(p, shell, m, cx))))
-        .child(footer(p, shell))
+        .child(footer(p, shell, cx))
 }
 
 fn kicker(p: Palette, text: &'static str) -> impl IntoElement {
@@ -188,15 +188,18 @@ fn verb_text(verb: Verb) -> &'static str {
     }
 }
 
-fn footer(p: Palette, shell: &Shell) -> impl IntoElement + use<> {
+fn footer(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let text = match &shell.model.conn {
         Conn::Connecting => "연결 중…".to_owned(),
         Conn::Connected { last_event: Some(at) } => format!("데몬 연결됨 · {}", at.hm()),
         Conn::Connected { last_event: None } => "데몬 연결됨".to_owned(),
         Conn::Down { .. } => "데몬 끊김".to_owned(),
     };
+    // Which machine's daemon this is; a click chooses another.
+    let machine = shell.endpoint.label();
     h_flex()
-        .h(px(36.))
+        .id("machine")
+        .h(px(48.))
         .flex_none()
         .px_5()
         .gap_2()
@@ -205,6 +208,10 @@ fn footer(p: Palette, shell: &Shell) -> impl IntoElement + use<> {
         .border_color(p.hair)
         .text_size(px(SMALL))
         .text_color(p.muted)
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.wash))
+        .on_click(cx.listener(|this, _, window, cx| this.open_chooser(window, cx)))
         .child(div().text_size(px(9.)).text_color(if matches!(shell.model.conn, Conn::Connected { .. }) { p.accent } else { p.muted }).child("●"))
-        .child(text)
+        .child(v_flex().flex_1().min_w_0().child(div().child(text)).child(div().overflow_hidden().whitespace_nowrap().text_color(p.text2).child(machine)))
+        .child(div().child("▾"))
 }
