@@ -15,7 +15,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{composer, header};
+use super::{approvals, composer, header};
 use crate::convo::{Block, RunRow, link_tickets, ticket_of_link};
 use crate::state::{Model, Presence};
 use crate::theme::{BODY, MONO, Palette, SMALL, look};
@@ -111,7 +111,14 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .min_h_0()
         .items_center()
         .child(body)
-        .child(div().w_full().max_w(px(COLUMN)).px_4().child(composer::render(shell, cx)))
+        .child(
+            div()
+                .w_full()
+                .max_w(px(COLUMN))
+                .px_4()
+                .child(v_flex().children(approvals::for_you(shell, cx)).children(approvals::approval(shell, cx)))
+                .child(composer::render(shell, cx)),
+        )
 }
 
 /// What a blank conversation says. The PM's names the thread it is.

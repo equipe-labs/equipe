@@ -4,7 +4,7 @@
 //!
 //! `EQUIPE_SCRIPT="wait:1500;say:안녕;wait:800;shot:/tmp/a.png"` — steps split on `;`:
 //! `wait:<ms>` · `shot:<png>` · `say:<text>` (type it in the box and send) ·
-//! `type:<text>` (type, don't send) · `esc` (stop the member) · `up`/`down`
+//! `type:<text>` (type, don't send) · `key:<y|a|n|o>` (answer a request) · `esc` (stop the member) · `up`/`down`
 //! (history) · `project:<name|all>` · `select:<member>` · `board` · `chat` ·
 //! `folds` · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
@@ -46,6 +46,9 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     if verb == "say" {
                         shell.send(window, cx);
                     }
+                }),
+                "key" => shell.update(cx, |shell, cx| {
+                    shell.on_approval_key(&arg, true, cx);
                 }),
                 "esc" => shell.update(cx, |shell, cx| shell.interrupt(cx)),
                 "up" | "down" => shell.update(cx, |shell, cx| {
