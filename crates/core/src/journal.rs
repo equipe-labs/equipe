@@ -77,6 +77,11 @@ pub fn member_memory_dir(home: &Path, squad: &str, role: &str) -> PathBuf {
     squad_dir(home, squad).join("members").join(role).join("memory")
 }
 
+/// Where a member's builds go (`CARGO_TARGET_DIR`), kept from ticket to ticket.
+pub fn build_dir(home: &Path, squad: &str, member: &str) -> PathBuf {
+    home.join("cache").join("build").join(squad).join(member)
+}
+
 /// Fold what members like `backend-3` learned, from when each kept its own,
 /// into their role's memory: lessons it lacks move over, a lesson of the same
 /// name but other words keeps both, and the index gains their lines. Returns

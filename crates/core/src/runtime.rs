@@ -1262,6 +1262,16 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
         // A member in Auto that may write is fenced in by the operating system; what it
         // can't do inside the fence, and anything Ask needs, goes to the person.
         let member_rules = session.member.is_some();
+        // A member builds in one place of its own, whichever ticket it is on: a
+        // Rust build is gigabytes, and one in every ticket's worktree filled the disk.
+        // Its own, not the squad's: two builds at once in one place overwrite each
+        // other's binaries.
+        let builds = session.squad.as_deref().zip(session.name()).map(|(squad, name)| journal::build_dir(&self.config.home, squad, name));
+        if let Some(dir) = &builds {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let env: Vec<(String, String)> = builds.iter().map(|d| ("CARGO_TARGET_DIR".to_owned(), d.to_string_lossy().into_owned())).collect();
+        let writable: Vec<String> = builds.iter().map(|d| d.to_string_lossy().into_owned()).collect();
         let fenced = member_rules && access == claude_code::Access::EditFiles && mode == Mode::Auto;
         // Directories added for reading stay read-only in every mode, and no other
         // squad's home is read at all.
@@ -1359,8 +1369,10 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
                             ask: &outward,
                             deny_read: &private,
                             deny_write: &read_only,
+                            allow_write: &writable,
                         }),
                         prompt_tool: prompt_tool.as_deref(),
+                        env: &env,
                     };
                     // A browser just started may still be loading.
                     if let Some(port) = browser {
@@ -3168,6 +3180,22 @@ check what is already done in your worktree first."
         for journal in self.journals.values() {
             let _ = journal.prune(cutoff);
         }
+        // Tickets' worktrees give back their space: builds where no one works,
+        // the worktrees no ticket keeps any more. Gigabytes: off the loop.
+        let in_use: Vec<PathBuf> = self.sessions.values().filter_map(|s| s.work.as_ref()?.sandbox.as_ref().map(|w| w.path.clone())).collect();
+        let kept: Vec<PathBuf> = self
+            .journals
+            .values()
+            .flat_map(|j| j.tickets().unwrap_or_default())
+            .filter(|t| !t.status.is_closed())
+            .filter_map(|t| t.worktree)
+            .collect();
+        let home = self.config.home.clone();
+        std::thread::spawn(move || {
+            for line in worktree::tidy(&home, &in_use, &kept) {
+                eprintln!("equipe: {line}");
+            }
+        });
     }
 }
 

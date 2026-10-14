@@ -122,6 +122,8 @@ pub struct Sandbox<'a> {
     pub deny_read: &'a [String],
     /// Paths no fenced command may write: directories added for reading only.
     pub deny_write: &'a [String],
+    /// Paths outside the working directory fenced commands may write: a build cache.
+    pub allow_write: &'a [String],
 }
 
 /// Arguments for one headless turn.
@@ -170,7 +172,7 @@ pub fn turn_args(request: &TurnRequest<'_>) -> Vec<String> {
                 // everyday work; on macOS that needs local ports, else every
                 // preview leaves the sandbox and asks the person.
                 "network": { "allowedDomains": sandbox.allowed_domains, "allowLocalBinding": true },
-                "filesystem": { "denyRead": sandbox.deny_read, "denyWrite": sandbox.deny_write },
+                "filesystem": { "denyRead": sandbox.deny_read, "denyWrite": sandbox.deny_write, "allowWrite": sandbox.allow_write },
             }),
         );
     }
@@ -245,6 +247,8 @@ pub struct TurnRequest<'a> {
     pub sandbox: Option<Sandbox<'a>>,
     /// The MCP tool that answers permission prompts (`mcp__equipe__approve`).
     pub prompt_tool: Option<&'a str>,
+    /// More environment for the turn's process, and so for its commands.
+    pub env: &'a [(String, String)],
 }
 
 /// One turn's outcome, with the id that continues the conversation.
@@ -555,6 +559,7 @@ pub async fn run_turn(
     if !request.add_dirs.is_empty() {
         command.env("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "1");
     }
+    command.envs(request.env.iter().map(|(k, v)| (k, v)));
     let mut child = command
         .args(turn_args(&request))
         .current_dir(cwd)
@@ -761,7 +766,7 @@ mod tests {
             prompt: "x",
             access: Access::EditFiles,
             memory: Some(Path::new("/m")),
-            sandbox: Some(Sandbox { allowed_domains: &domains, ask: &ask, deny_read: &["/h/browser".to_owned()], deny_write: &["/code/api".to_owned()] }),
+            sandbox: Some(Sandbox { allowed_domains: &domains, ask: &ask, deny_read: &["/h/browser".to_owned()], deny_write: &["/code/api".to_owned()], allow_write: &["/h/cache".to_owned()] }),
             prompt_tool: Some("mcp__equipe__approve"),
             disallowed_tools: &blocked,
             ..Default::default()

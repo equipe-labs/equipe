@@ -259,6 +259,43 @@ impl Sandbox {
     }
 }
 
+/// Give back the space tickets' worktrees hold. In a worktree no one works in
+/// now, build output (`target/`, rebuilt when wanted) goes; a worktree no
+/// ticket keeps either — its work landed, or it was dropped — goes too, once
+/// nothing in it is uncommitted (its branch stays). `in_use` and `kept` are
+/// worktree paths. Returns what it did, one line each.
+pub fn tidy(home: &Path, in_use: &[PathBuf], kept: &[PathBuf]) -> Vec<String> {
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
+    let in_use: Vec<PathBuf> = in_use.iter().map(|p| canon(p)).collect();
+    let kept: Vec<PathBuf> = kept.iter().map(|p| canon(p)).collect();
+    let mut done = Vec::new();
+    let Ok(repos) = std::fs::read_dir(home.join("worktrees")) else {
+        return done;
+    };
+    for dir in repos.flatten().flat_map(|r| std::fs::read_dir(r.path()).into_iter().flatten().flatten()) {
+        let path = canon(&dir.path());
+        // Only a worktree: its `.git` is a file pointing back at its repository.
+        if !path.join(".git").is_file() || in_use.iter().any(|u| u.starts_with(&path) || path.starts_with(u)) {
+            continue;
+        }
+        let target = path.join("target");
+        if target.is_dir() && std::fs::remove_dir_all(&target).is_ok() {
+            done.push(format!("cleared {}", target.display()));
+        }
+        if kept.contains(&path) || !git(&path, &["status", "--porcelain"]).is_ok_and(|s| s.is_empty()) {
+            continue;
+        }
+        let Ok(common) = git(&path, &["rev-parse", "--path-format=absolute", "--git-common-dir"]) else {
+            continue;
+        };
+        let repo = Path::new(&common).parent().map(Path::to_owned).unwrap_or_default();
+        if git(&repo, &["worktree", "remove", "--force", &path.to_string_lossy()]).is_ok() {
+            done.push(format!("removed {}", path.display()));
+        }
+    }
+    done
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,6 +321,36 @@ mod tests {
         git(&dir, &["add", "-A"]).unwrap();
         git(&dir, &["commit", "-q", "-m", "init"]).unwrap();
         dir
+    }
+
+    #[test]
+    fn idle_worktrees_give_back_their_builds_and_finished_ones_go() {
+        let repo = repo();
+        let home = scratch("tidy-home");
+        let working = create(&repo, &home, "t1-a", "x").unwrap();
+        let waiting = create(&repo, &home, "t2-b", "x").unwrap();
+        let landed = create(&repo, &home, "t3-c", "x").unwrap();
+        let unsaved = create(&repo, &home, "t4-d", "x").unwrap();
+        for s in [&working, &waiting, &landed, &unsaved] {
+            std::fs::create_dir_all(s.path.join("target/debug")).unwrap();
+            std::fs::write(s.path.join("target/debug/app"), "binary").unwrap();
+        }
+        // An untracked target/ isn't a change worth keeping, but this is.
+        std::fs::write(unsaved.path.join(".gitignore"), "target\n").unwrap();
+        for s in [&working, &waiting, &landed] {
+            std::fs::write(s.path.join(".gitignore"), "target\n").unwrap();
+            git(&s.path, &["add", "-A"]).unwrap();
+            git(&s.path, &["commit", "-q", "-m", "ignore builds"]).unwrap();
+        }
+
+        let done = tidy(&home, std::slice::from_ref(&working.path), std::slice::from_ref(&waiting.path));
+        assert!(working.path.join("target/debug/app").exists(), "the one at work keeps everything");
+        assert!(waiting.path.exists() && !waiting.path.join("target").exists(), "kept, its build given back");
+        assert!(!landed.path.exists(), "no ticket keeps it: gone");
+        assert!(git(&repo, &["rev-parse", "--verify", "-q", &landed.branch]).is_ok(), "its branch stays");
+        assert!(unsaved.path.exists() && !unsaved.path.join("target").exists(), "uncommitted work stays");
+        assert_eq!(done.len(), 4, "{done:?}");
+        assert!(tidy(&home, std::slice::from_ref(&working.path), std::slice::from_ref(&waiting.path)).is_empty(), "nothing more");
     }
 
     #[test]
