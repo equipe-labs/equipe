@@ -1389,7 +1389,10 @@ async fn a_member_asks_the_person_before_doing_something_on_their_behalf() {
 async fn in_auto_a_member_on_a_ticket_is_fenced_in_and_asks_for_the_rest() {
     let repo = repo();
     let (claude, recorded) = recording_claude(&answering("ok"));
-    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&repo])));
+    let home = squad_home(&[&repo]);
+    // Once always allowed, vercel neither asks again nor finds its service fenced off.
+    Journal::for_squad(&home, "acme").unwrap().allow("Bash(vercel:*)", "you").unwrap();
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
     add(&handle, &mut events, 2, member(&repo, "frontend")).await;
     let call = first_ticket_turn(&handle, &mut events, &recorded, "frontend").await;
@@ -1400,6 +1403,8 @@ async fn in_auto_a_member_on_a_ticket_is_fenced_in_and_asks_for_the_rest() {
     assert_eq!(settings["sandbox"]["autoAllowBashIfSandboxed"], true, "inside the fence, no questions");
     assert!(settings["sandbox"]["network"]["allowedDomains"].as_array().unwrap().iter().any(|d| d == "registry.npmjs.org"));
     assert!(settings["permissions"]["ask"].as_array().unwrap().iter().any(|r| r == "Bash(git push:*)"), "pushing asks");
+    assert!(!settings["permissions"]["ask"].as_array().unwrap().iter().any(|r| r == "Bash(vercel:*)"), "always means always");
+    assert!(settings["sandbox"]["network"]["allowedDomains"].as_array().unwrap().iter().any(|d| d == "*.vercel.com"));
     assert_eq!(arg(&call, "--permission-prompt-tool"), Some("mcp__equipe__approve"));
     assert!(call.iter().any(|a| a == "Bash(sudo:*)"), "the blocklist travels with every member turn");
     let unread = settings["sandbox"]["filesystem"]["denyRead"].as_array().unwrap();

@@ -1320,13 +1320,15 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
                 if browses_freely {
                     allowed.push(format!("mcp__{}", browser::SERVER));
                 }
+                // What the person always allows no longer asks, and reaches its service from inside the fence.
+                let outward = permissions::still_asks(&squad_rules);
+                let mut domains: Vec<String> = permissions::ALLOWED_DOMAINS.iter().map(|d| (*d).to_owned()).collect();
+                domains.extend(permissions::domains_allowed(&squad_rules));
                 if member_rules {
                     allowed.extend(squad_rules);
                 }
                 let blocked: Vec<String> =
                     if member_rules { permissions::BLOCKED.iter().map(|r| (*r).to_owned()).collect() } else { Vec::new() };
-                let domains: Vec<String> = permissions::ALLOWED_DOMAINS.iter().map(|d| (*d).to_owned()).collect();
-                let outward: Vec<String> = permissions::OUTWARD.iter().map(|r| (*r).to_owned()).collect();
                 // The person's browser sign-ins and equipe's logins: no fenced command reads them.
                 // Nor other squads' homes.
                 let private: Vec<String> = [self.config.home.join("browser"), self.config.home.join("credentials")]

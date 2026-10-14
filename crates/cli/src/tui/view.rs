@@ -1419,48 +1419,12 @@ You can talk to it directly — the PM hears about it."
         }
     }
     flush(&mut run, &mut lines, &mut last);
-    // Memos wait below the conversation they go into until the turn ends;
-    // another project's conversation lists its own, shortly, and where they are.
-    let memos = || agent.queued.iter().zip(&agent.queued_in);
-    for (memo, _) in memos().filter(|(_, about)| agent.in_view(about.as_deref())) {
+    // Memos wait below the conversation they go into until the turn ends —
+    // each only in the conversation of the project it was left in.
+    for (memo, _) in agent.queued.iter().zip(&agent.queued_in).filter(|(_, about)| agent.in_view(about.as_deref())) {
         gap(&mut lines);
         lines.extend(wrapped(vec![Span::styled("› ", theme.dim())], memo, theme.dim(), 2, width));
         lines.push(Line::from(Span::styled("  memo · read when this turn ends · Esc to read now", theme.dim())));
-    }
-    let mut elsewhere: Vec<(Option<&str>, Vec<&str>)> = Vec::new();
-    for (memo, about) in memos().filter(|(_, about)| !agent.in_view(about.as_deref())) {
-        match elsewhere.iter_mut().find(|(p, _)| *p == about.as_deref()) {
-            Some((_, texts)) => texts.push(memo),
-            None => elsewhere.push((about.as_deref(), vec![memo])),
-        }
-    }
-    for (project, texts) in elsewhere {
-        gap(&mut lines);
-        let n = texts.len();
-        let count = if n == 1 { "1 memo".to_owned() } else { format!("{n} memos") };
-        let text = match project {
-            Some(project) => format!("· {count} waiting in {project}'s conversation · Ctrl-P {project} shows it"),
-            None => format!("· {count} waiting in the squad's conversation · Ctrl-P › all shows it"),
-        };
-        lines.push(Line::from(Span::styled(text, theme.dim())));
-        use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
-        for memo in texts {
-            let first = memo.lines().next().unwrap_or_default();
-            let room = width.saturating_sub(6);
-            let short: String = if first.width() > room || memo.lines().nth(1).is_some() {
-                let mut kept = String::new();
-                for c in first.chars() {
-                    if kept.width() + c.width().unwrap_or(1) + 1 > room {
-                        break;
-                    }
-                    kept.push(c);
-                }
-                format!("{kept}…")
-            } else {
-                first.to_owned()
-            };
-            lines.push(Line::from(Span::styled(format!("  › {short}"), theme.dim())));
-        }
     }
     lines
 }
@@ -2582,9 +2546,8 @@ mod tests {
         // Looking at site: the turn is here, the memo is app's.
         app.agents[0].thread_view = Some("site".into());
         let shot = screen(&app, 110, 24);
-        assert!(!shot.contains("memo · read when this turn ends"), "{shot}");
-        assert!(shot.contains("1 memo waiting in app"), "{shot}");
-        assert!(shot.contains("  › and the app icon"), "what it says, in short: {shot}");
+        assert!(!shot.contains("and the app icon"), "another project's memo isn't shown here: {shot}");
+        assert!(!shot.contains("memo waiting"), "{shot}");
         assert!(!shot.contains("in site ·"), "{shot}");
         assert!(shot.contains("esc to stop"), "{shot}");
         // A memo left here shows here, in full, whatever was left elsewhere first.
@@ -2592,7 +2555,7 @@ mod tests {
         let shot = screen(&app, 110, 24);
         assert!(shot.contains("› and the site footer"), "{shot}");
         assert!(shot.contains("memo · read when this turn ends"), "{shot}");
-        assert!(shot.contains("1 memo waiting in app"), "{shot}");
+        assert!(!shot.contains("and the app icon"), "{shot}");
         // The turn ends: app's memo goes, into app's conversation; site's waits for the next.
         app.on_event(Event::UserMessage { session: pm, text: "and the app icon".into() });
         assert_eq!(app.agents[0].queued, ["and the site footer"]);

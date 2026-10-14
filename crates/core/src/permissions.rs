@@ -50,6 +50,47 @@ pub const OUTWARD: [&str; 11] = [
     "Bash(twine upload:*)",
 ];
 
+/// Where an outward program talks to: once the person always allows it, its
+/// commands reach these from inside the fence too.
+const SERVICE_DOMAINS: [(&str, &[&str]); 7] = [
+    ("vercel", &["vercel.com", "*.vercel.com"]),
+    ("gh", &["api.github.com", "uploads.github.com"]),
+    ("netlify", &["netlify.com", "*.netlify.com"]),
+    ("fly", &["fly.io", "*.fly.io"]),
+    ("docker push", &["*.docker.io"]),
+    ("twine upload", &["upload.pypi.org"]),
+    ("cargo publish", &["crates.io"]),
+];
+
+/// The command prefix of a `Bash(prefix:*)` rule.
+fn bash_prefix(rule: &str) -> Option<&str> {
+    rule.strip_prefix("Bash(").and_then(|r| r.strip_suffix(":*)"))
+}
+
+/// Whether allowing `allow` takes in every command `ask` would ask about.
+fn covers(allow: &str, ask: &str) -> bool {
+    match (bash_prefix(allow), bash_prefix(ask)) {
+        (Some(a), Some(k)) => k == a || k.strip_prefix(a).is_some_and(|rest| rest.starts_with(' ')),
+        _ => false,
+    }
+}
+
+/// The outward commands that still ask, given what the person always allows
+/// for the squad: an ask outranks an allow in Claude Code, so one they always
+/// allow must leave the list, or "always" would ask again every time.
+pub fn still_asks(allowed: &[String]) -> Vec<String> {
+    OUTWARD.iter().filter(|ask| !allowed.iter().any(|a| covers(a, ask))).map(|r| (*r).to_owned()).collect()
+}
+
+/// The services the person always allows, for the fence's network list.
+pub fn domains_allowed(allowed: &[String]) -> Vec<String> {
+    SERVICE_DOMAINS
+        .iter()
+        .filter(|(program, _)| allowed.iter().any(|a| covers(a, &format!("Bash({program}:*)"))))
+        .flat_map(|(_, domains)| domains.iter().map(|d| (*d).to_owned()))
+        .collect()
+}
+
 /// Never, in any mode, whoever asks: the hard floor.
 pub const BLOCKED: [&str; 12] = [
     "Bash(sudo:*)",
@@ -273,6 +314,22 @@ fn host(url: &str) -> Option<&str> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn what_the_person_always_allows_stops_asking_and_reaches_its_service() {
+        let allowed = vec!["Bash(vercel:*)".to_owned(), "Bash(npm install:*)".to_owned(), "Bash(git:*)".to_owned()];
+        let asks = still_asks(&allowed);
+        assert!(!asks.iter().any(|r| r == "Bash(vercel:*)"), "{asks:?}");
+        assert!(!asks.iter().any(|r| r == "Bash(git push:*)"), "git, always: pushes included");
+        assert!(asks.iter().any(|r| r == "Bash(gh:*)"));
+        assert!(asks.iter().any(|r| r == "Bash(npm publish:*)"), "npm install isn't npm publish");
+        assert_eq!(domains_allowed(&allowed), ["vercel.com", "*.vercel.com"]);
+        // A narrower allow can't lift a wider ask.
+        let narrow = vec!["Bash(vercel whoami:*)".to_owned()];
+        assert!(still_asks(&narrow).iter().any(|r| r == "Bash(vercel:*)"));
+        assert!(domains_allowed(&narrow).is_empty());
+        assert_eq!(still_asks(&[]).len(), OUTWARD.len());
+    }
 
     #[test]
     fn a_prompt_reads_as_what_it_would_do() {

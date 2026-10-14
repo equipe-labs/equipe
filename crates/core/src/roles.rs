@@ -333,7 +333,9 @@ your session or change your permission mode, so never ask them to — nor to edi
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
 use them as they are, and never search the environment or files for tokens — that asks the person every time. \
-Run one command at a time where you can: a single command can be allowed for good, a chain only once. Your memory \
+A command whose output shows `<sandbox_violations>` was stopped by the fence equipe runs it in, whatever error it \
+prints (\"token not valid\", \"not logged in\"): the login is fine, so never log in again or touch tokens over it — \
+run it outside the fence, which asks the person once; their \"always\" stops it asking. Run one command at a time where you can: a single command can be allowed for good, a chain only once. Your memory \
 outlives every ticket: when the person corrects you, sends work back or tells you how they like things, save the \
 lesson there — their taste, the project's conventions, what to avoid — and check it before new work. When the person's message names an image — \
 `[image: <path>]` — look at it with Read before you answer. Side work that \
