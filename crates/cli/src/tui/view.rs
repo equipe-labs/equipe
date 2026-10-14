@@ -291,7 +291,7 @@ impl Layouts {
 
 fn layout_key(agent: &Agent, width: usize) -> LayoutKey {
     let entries = agent.shown();
-    let last = entries.last().map_or(0, |entry| match entry {
+    let last = entries.last().map_or(0, |entry| match entry.as_ref() {
         Entry::User { text } | Entry::Reply { text } | Entry::Note { text } => text.len(),
         Entry::Tool { tool, target } => tool.len() + target.as_ref().map_or(0, String::len),
         Entry::Error { message, .. } => message.len(),
@@ -461,7 +461,17 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
     let top = content(screen);
     let name_x = top.x + 10;
     hits.push((name_x, name_x + unicode_width::UnicodeWidthStr::width(app.squad.as_str()) as u16 + 2, top.y, Hit::Squads));
-    let narrow = columns(app, body).0.is_none();
+    let (squad_pane, _, _) = columns(app, body);
+    let narrow = squad_pane.is_none();
+    // The squad's rows: a click talks to that member.
+    if let Some(squad) = squad_pane {
+        for (row, at) in app.display_order().into_iter().enumerate() {
+            let y = squad.y + 2 + row as u16;
+            if y < squad.y + squad.height {
+                hits.push((squad.x, squad.x + squad.width, y, Hit::Member(at)));
+            }
+        }
+    }
     for (from, to, hit) in header(app, theme, narrow, top.width as usize).1 {
         hits.push((top.x + from, top.x + to, top.y, hit));
     }
@@ -1223,6 +1233,7 @@ You can talk to it directly — the PM hears about it."
         }
     };
     for entry in agent.shown() {
+        let entry = entry.as_ref();
         match entry {
             Entry::Thread { .. } => {}
             // Claude Code loading tool descriptions: its business, not the person's.
@@ -1995,11 +2006,18 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         (Some(flash), _) => vec![Span::styled(flash, theme.bold())],
         (None, Some((name, direct))) => {
             let style = member_style(app, &name, theme).add_modifier(Modifier::BOLD);
-            let mut spans = vec![Span::styled("→ ", theme.dim()), Span::styled(name, style)];
+            let mut spans = vec![Span::styled("→ ", theme.dim()), Span::styled(name.clone(), style)];
             // Where new work goes, with a project filter on; without, the squad.
             if let Some(project) = app.focus.as_ref() {
                 spans.push(Span::styled(" · ", theme.dim()));
                 spans.push(Span::styled(project_name(project), project_style(app, Some(project), theme).add_modifier(Modifier::BOLD)));
+            }
+            // At work on another project's ticket: the message goes to that work.
+            if let Some(agent) = app.agents.iter().find(|a| a.label() == name)
+                && let (Some(ticket), Some(focus)) = (agent.ticket, app.focus.as_ref())
+                && let Some(project) = app.agent_project(agent).filter(|p| p != focus)
+            {
+                spans.push(Span::styled(format!(" · at work on {} T-{ticket} — your message goes there", project_name(&project)), theme.dim()));
             }
             if direct {
                 spans.push(Span::styled(" · the PM hears about it", theme.dim()));
@@ -2858,6 +2876,31 @@ mod tests {
         assert!(laid.hits.iter().any(|h| h.3 == Hit::Projects));
         // Shown in their own order, not by importance.
         assert!(top.find("project-number-6").unwrap() < top.find("project-number-8").unwrap());
+    }
+
+    #[test]
+    fn a_message_to_a_member_at_work_elsewhere_says_where_it_goes() {
+        let (mut app, _) = working();
+        app.projects = vec!["/code/site".into(), "/code/app".into()];
+        let mut hero = ticket(4, TicketStatus::InProgress, "Hero");
+        hero.project = Some("/code/site".into());
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: hero });
+        app.on_event(Event::SessionStarted {
+            session: 9,
+            project: "/code/site".into(),
+            engine: Engine::Claude,
+            model: None,
+            workspace: None,
+            member: Some(Member { role: "frontend".into(), name: "frontend".into() }),
+            squad: Some("acme".into()),
+        });
+        let at = app.agents.iter().position(|a| a.id == 9).unwrap();
+        app.agents[at].ticket = Some(4);
+        app.selected = at;
+        app.focus = Some("/code/app".into());
+        app.flash = None;
+        let shot = screen(&app, 140, 30);
+        assert!(shot.lines().last().unwrap().contains("at work on site T-4 — your message goes there"), "{shot}");
     }
 
     #[test]

@@ -2134,9 +2134,27 @@ async fn a_folder_inside_a_repository_is_a_project_of_its_own_worked_in_its_fold
     let started = until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
     let Some(Event::WorkStarted { workspace: Some(ws), project, .. }) = started.last() else { panic!("{started:#?}") };
     assert_eq!(project, &desktop);
+    // Its conversation marks what follows as that project's.
+    assert!(started.iter().any(|e| matches!(e, Event::Thread { session: 2, project: Some(p) } if *p == name)), "{started:#?}");
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
     // The worktree is the whole repository's; the member works in the folder.
     let ran = std::fs::read_to_string(wd.join("cwd")).unwrap();
     let ran = std::fs::canonicalize(ran.trim()).unwrap();
     assert_eq!(ran, std::fs::canonicalize(ws.path.join("crates").join("desktop")).unwrap());
+}
+
+#[tokio::test]
+async fn every_member_talks_about_a_project_in_that_projects_conversation() {
+    let site = named("site");
+    let app = named("app");
+    let (claude, recorded) = recording_claude(&answering_per_call("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
+    add(&handle, &mut events, 1, member(&site, "designer")).await;
+    for (project, text) in [(Some("app"), "the app icon"), (Some("site"), "the site colours"), (Some("app"), "the icon again")] {
+        handle.send(Command::Focus { squad: "acme".into(), project: project.map(str::to_owned) });
+        handle.send(Command::Submit { session: 1, text: text.into() });
+        until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    }
+    let resumed: Vec<Option<String>> = calls(&recorded).iter().map(|c| arg(c, "--resume").map(str::to_owned)).collect();
+    assert_eq!(resumed, [None, None, Some("sess-0".to_owned())]);
 }

@@ -50,6 +50,8 @@ pub enum Hit {
     Squads,
     /// "+N" in the header, for the projects that didn't fit: the picker.
     Projects,
+    /// A member's row in the squad: talk to it.
+    Member(usize),
     /// A project's chip in the header — or "all" (`None`): filters to it.
     Project(Option<usize>),
     Pane(Pane),
@@ -143,18 +145,58 @@ impl Agent {
         }
     }
 
-    /// The conversation as it shows: for the PM, only the thread on screen
-    /// (what came before any thread was the whole squad's); never the markers.
-    pub fn shown(&self) -> Vec<&Entry> {
-        let mut current: Option<&str> = None;
-        let mut out = Vec::new();
-        for entry in self.transcript.entries() {
-            match entry {
-                Entry::Thread { project } => current = project.as_deref(),
-                _ if !self.is_pm() || current == self.thread_view.as_deref() => out.push(entry),
-                _ => {}
+    /// The conversation as it shows, through the project in focus. The PM's
+    /// is its thread for that project (what came before any thread was the
+    /// whole squad's). A member's is everything with the whole squad in view —
+    /// each ticket headed with its project — or that project's part, with a
+    /// line where other projects' parts were left out. Never the markers.
+    pub fn shown(&self) -> Vec<std::borrow::Cow<'_, Entry>> {
+        use std::borrow::Cow;
+        let entries = self.transcript.entries();
+        let pm = self.is_pm();
+        let mut projects = std::collections::HashSet::new();
+        for entry in entries {
+            if let Entry::Thread { project: Some(p) } = entry {
+                projects.insert(p.as_str());
             }
         }
+        let several = projects.len() > 1;
+        let mut current: Option<&str> = None;
+        let mut out = Vec::new();
+        // Left out in a row: whether anything was, and how many tickets.
+        let mut left_out: Option<usize> = None;
+        let say_left_out = |out: &mut Vec<Cow<'_, Entry>>, left: Option<usize>| {
+            let text = match left {
+                None => return,
+                Some(0) => "· earlier talk about other projects hidden — Ctrl-P › all shows it".to_owned(),
+                Some(1) => "· 1 ticket in other projects hidden — Ctrl-P › all shows it".to_owned(),
+                Some(n) => format!("· {n} tickets in other projects hidden — Ctrl-P › all shows them"),
+            };
+            out.push(Cow::Owned(Entry::Note { text }));
+        };
+        for entry in entries {
+            if let Entry::Thread { project } = entry {
+                current = project.as_deref();
+                continue;
+            }
+            let ticket_header = matches!(entry, Entry::Note { text } if text.starts_with("── T-"));
+            let visible = if pm { current == self.thread_view.as_deref() } else { self.thread_view.is_none() || current == self.thread_view.as_deref() };
+            if !visible {
+                if !pm {
+                    let n = left_out.get_or_insert(0);
+                    *n += usize::from(ticket_header);
+                }
+                continue;
+            }
+            say_left_out(&mut out, left_out.take());
+            match (entry, current) {
+                (Entry::Note { text }, Some(project)) if ticket_header && !pm && self.thread_view.is_none() && several => {
+                    out.push(Cow::Owned(Entry::Note { text: format!("── {project} · {}", &text["── ".len()..]) }));
+                }
+                _ => out.push(Cow::Borrowed(entry)),
+            }
+        }
+        say_left_out(&mut out, left_out);
         out
     }
 
@@ -678,6 +720,13 @@ impl App {
                 self.outbox.extend(commands);
             }
             Some(Hit::Projects) => self.pick_project(),
+            Some(Hit::Member(at)) if at < self.agents.len() => {
+                self.selected = at;
+                self.pane = Pane::Conversation;
+                self.help_open = false;
+                self.usage_open = false;
+            }
+            Some(Hit::Member(_)) => {}
             Some(Hit::Squads) => {
                 self.pane = Pane::Conversation;
                 self.help_open = false;
@@ -1598,9 +1647,10 @@ impl App {
             },
         };
         self.focus = project.clone();
-        // The PM's conversation on screen is its thread for that project.
+        // Conversations on screen follow: the PM's thread for that project, and
+        // each member's part of its work there.
         let thread = project.as_deref().map(equipe_core::board::project_name);
-        for agent in self.agents.iter_mut().filter(|a| a.is_pm()) {
+        for agent in self.agents.iter_mut() {
             if agent.thread_view != thread {
                 agent.thread_view = thread.clone();
                 agent.scroll_back = 0;
@@ -2924,7 +2974,7 @@ mod tests {
             app.on_event(event);
         }
         let said = |app: &App| -> Vec<String> {
-            app.agents.iter().find(|a| a.id == pm).unwrap().shown().iter().filter_map(|e| match e {
+            app.agents.iter().find(|a| a.id == pm).unwrap().shown().iter().filter_map(|e| match e.as_ref() {
                 Entry::User { text } => Some(text.clone()),
                 _ => None,
             }).collect()
@@ -2934,9 +2984,48 @@ mod tests {
         assert_eq!(said(&app), ["about the app"]);
         app.focus_on("site");
         assert_eq!(said(&app), ["about the site"]);
-        // Members' conversations are theirs, whatever the focus.
-        let frontend = app.agents.iter().find(|a| !a.is_pm()).unwrap();
-        assert!(frontend.shown().len() == frontend.transcript.entries().len());
+    }
+
+    #[test]
+    fn a_members_conversation_shows_the_project_in_focus_and_says_what_it_hides() {
+        let mut app = two_projects();
+        let frontend = app.agents.iter().find(|a| !a.is_pm()).unwrap().id;
+        for event in [
+            Event::Thread { session: frontend, project: Some("site".into()) },
+            Event::Notice { session: frontend, text: "── T-4 · Hero — on branch b".into() },
+            Event::UserMessage { session: frontend, text: "site work".into() },
+            Event::Thread { session: frontend, project: Some("app".into()) },
+            Event::Notice { session: frontend, text: "── T-2 · Onboarding — on branch c".into() },
+            Event::UserMessage { session: frontend, text: "app work".into() },
+        ] {
+            app.on_event(event);
+        }
+        let texts = |app: &App| -> Vec<String> {
+            app.agents.iter().find(|a| a.id == frontend).unwrap().shown().iter().filter_map(|e| match e.as_ref() {
+                Entry::User { text } | Entry::Note { text } => Some(text.clone()),
+                _ => None,
+            }).collect()
+        };
+        // All: everything, each ticket with its project.
+        let all = texts(&app);
+        assert!(all.contains(&"── site · T-4 · Hero — on branch b".to_owned()) && all.contains(&"app work".to_owned()), "{all:?}");
+        // One project: its part, and a line for what's hidden.
+        app.focus_on("app");
+        let app_only = texts(&app);
+        assert!(!app_only.iter().any(|t| t.contains("site work")), "{app_only:?}");
+        assert!(app_only.iter().any(|t| t.contains("1 ticket in other projects hidden")), "{app_only:?}");
+        assert!(app_only.contains(&"app work".to_owned()));
+    }
+
+    #[test]
+    fn clicking_a_member_in_the_squad_opens_its_conversation() {
+        let (mut app, _, frontend) = team();
+        app.pane = Pane::Board;
+        let at = app.agents.iter().position(|a| a.id == frontend).unwrap();
+        app.set_hits(vec![(0, 20, 5, Hit::Member(at))], None);
+        app.on_click(3, 5);
+        assert_eq!(app.selected, at);
+        assert_eq!(app.pane, Pane::Conversation);
     }
 
     #[test]

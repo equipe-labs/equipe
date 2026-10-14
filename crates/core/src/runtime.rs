@@ -911,7 +911,7 @@ impl Runtime {
         };
         // With several projects, which one the person is looking at.
         if let Some(project) = session.squad.as_ref().and_then(|s| self.focus.get(s)) {
-            prompt = if session.is_pm() && session.work.is_none() {
+            prompt = if session.member.is_some() && session.work.is_none() {
                 format!(
                     "[equipe: this is your conversation about the project {project} — the whole squad's, and each other \
 project's, are conversations of their own. New work is for {project} unless the person says otherwise; what \
@@ -925,7 +925,7 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
         self.start_turn(id, prompt);
     }
 
-    /// Move the PM's desk conversation to its thread for the project the person
+    /// Move a member's desk conversation to its thread for the project the person
     /// looks at (the whole squad's when none): the current one is put aside,
     /// the thread's own taken up — or started — so what's said about one
     /// project never fills another's conversation.
@@ -933,7 +933,7 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
         let Some(session) = self.sessions.get(&id) else {
             return;
         };
-        if !session.is_pm() || session.work.is_some() {
+        if session.member.is_none() || session.work.is_some() {
             return;
         }
         let wanted = session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned();
@@ -1645,6 +1645,8 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
             });
         }
         self.publish(Event::TicketChanged { squad: squad.clone(), ticket: ticket.clone() });
+        // What follows in its conversation is about the ticket's project.
+        self.publish(Event::Thread { session: id, project: ticket.project.as_deref().map(board::project_name) });
         self.publish(Event::WorkStarted {
             session: id,
             ticket: ticket_id,
@@ -1775,6 +1777,9 @@ should last beyond this conversation goes in the squad's memory.]\n\n{prompt}"
         let shown = format!("{line} · {}.", ticket.title);
         self.publish(Event::TicketChanged { squad: squad.clone(), ticket });
         self.publish(Event::WorkEnded { session: id, ticket: ticket_id });
+        // Back at its desk: the thread it was in there.
+        let desk = self.sessions.get(&id).and_then(|s| s.thread.clone());
+        self.publish(Event::Thread { session: id, project: desk });
         self.publish(Event::Notice { session: id, text: shown.clone() });
         let briefing = match &summary {
             Some(summary) => format!("{line}: {summary}"),
