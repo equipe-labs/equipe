@@ -5,6 +5,7 @@
 //! - **claude**: the user's installed Claude Code, which signs itself in. equipe
 //!   never sees Claude credentials (see `equipe_providers::claude_code`).
 
+mod attach;
 mod clip;
 mod daemon;
 mod home;
@@ -154,6 +155,16 @@ enum Command {
         #[command(subcommand)]
         action: Option<TelegramAction>,
     },
+    /// Connect a screen on another machine to the daemon here, over SSH:
+    /// `ssh <host> equipe attach --stdio`
+    Attach {
+        /// Carry the daemon's protocol on standard input and output
+        #[arg(long)]
+        stdio: bool,
+        /// Fail when the daemon isn't running instead of starting it
+        #[arg(long)]
+        no_start: bool,
+    },
     /// Update equipe to the latest release
     Update,
     /// The background daemon the team lives in
@@ -252,6 +263,8 @@ async fn main() -> ExitCode {
         Command::Try { prompt, engine, model, edit } => app.run_try(&prompt, engine, model.as_deref(), edit).await,
         Command::Daemon { action } => daemon_command(action).await,
         Command::Update => update().await,
+        Command::Attach { stdio: true, no_start } => attach::stdio(no_start).await,
+        Command::Attach { stdio: false, .. } => return attach::usage(),
         Command::SendImage { host } => match clip::send_image(&host) {
             Ok(()) => {
                 println!("{}", ui::out().ok_line(&format!("Sent — the console on {host} attaches it to the message you're writing.")));

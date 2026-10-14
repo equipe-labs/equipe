@@ -279,7 +279,12 @@ background by `equipe` when none is answering and detached from the terminal
 - **The door** is a Unix socket, `~/.equipe/equipe.sock` (0600 in a 0700
   directory): no network port, and only its owner can drive the squad. Messages
   are the protocol in JSON-RPC 2.0, one per line — `hello` (attach to a squad,
-  get its snapshot), `command`, `event`, `shutdown`.
+  get its snapshot), `command`, `event`, `shutdown`, `version`, and for screens
+  that can't read the daemon's disk `squads` and `upload` (`equipe_protocol::rpc`).
+- **From another machine** a screen reaches the door over SSH:
+  `ssh <host> equipe attach --stdio` carries it on standard input and output,
+  after one `attached` line saying which builds answered. SSH signs in; equipe
+  adds no port and no credential. See [DESKTOP.md, "Remote"](./DESKTOP.md#remote-a-daemon-over-ssh).
 - **Attaching** is one step of the runtime loop: the snapshot and the
   subscription to everything after it are taken together, so no event is missed
   or doubled. A screen follows one squad, wherever it was opened; sessions opened
