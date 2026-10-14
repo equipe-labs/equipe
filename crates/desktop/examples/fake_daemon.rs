@@ -39,6 +39,7 @@ fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
         tokens: 0,
         context: Some((310, 1000)),
         queued_project: None,
+        queued_in: vec![],
         recent,
         queued: vec![],
         work: None,
