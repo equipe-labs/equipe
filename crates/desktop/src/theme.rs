@@ -7,6 +7,10 @@ use gpui_kit::*;
 pub struct Palette {
     pub bg: Rgba,
     pub side: Rgba,
+    /// A sidebar row under the pointer, and the one open: solid, so a title
+    /// can fade into them.
+    pub side_hover: Rgba,
+    pub side_sel: Rgba,
     pub wash: Rgba,
     pub text: Rgba,
     pub text2: Rgba,
@@ -40,6 +44,8 @@ impl Palette {
         Self {
             bg: rgb(0x0A0A0C),
             side: rgb(0x0E0E11),
+            side_hover: rgb(0x19191D),
+            side_sel: rgb(0x222227),
             wash: rgba(0xFFFFFF0E),
             text: rgb(0xEFEDE7),
             text2: rgb(0xCFCCC4),
@@ -62,6 +68,8 @@ impl Palette {
         Self {
             bg: rgb(0xF6F5F1),
             side: rgb(0xEFEEE9),
+            side_hover: rgb(0xE6E5DF),
+            side_sel: rgb(0xDDDCD5),
             wash: rgba(0x0000000B),
             text: rgb(0x15161A),
             text2: rgb(0x3A3C42),

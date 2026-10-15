@@ -436,6 +436,40 @@ pub fn dependency_tree(model: &Model, open: &[&Ticket]) -> Vec<(TicketId, usize)
     out
 }
 
+/// The sidebar's groups: a project each (the squad's folder last), its open
+/// tickets — what waits for the person first, then work under way, to do,
+/// proposed; the latest first in each — and its finished ones apart.
+pub struct ProjectGroup<'a> {
+    /// `None`: the squad's own folder.
+    pub name: Option<String>,
+    pub at: Option<usize>,
+    pub open: Vec<&'a Ticket>,
+    pub done: Vec<&'a Ticket>,
+}
+
+pub fn project_groups(model: &Model) -> Vec<ProjectGroup<'_>> {
+    let rank = |t: &Ticket| match t.status {
+        TicketStatus::Review | TicketStatus::Waiting => 0,
+        TicketStatus::InProgress => 1,
+        TicketStatus::Todo => 2,
+        _ => 3,
+    };
+    let names = model.project_names();
+    let mut out = Vec::new();
+    for (at, name) in names.iter().cloned().map(Some).enumerate().map(|(i, n)| (Some(i), n)).chain([(None, None)]) {
+        let here: Vec<&Ticket> = model.tickets.iter().filter(|t| model.ticket_project_name(t) == name).collect();
+        let latest = |t: &&Ticket| (std::cmp::Reverse(model.since.get(&t.id).copied().unwrap_or(0)), std::cmp::Reverse(t.id));
+        let mut open: Vec<&Ticket> = here.iter().copied().filter(|t| !t.status.is_closed()).collect();
+        open.sort_by_key(|t| (rank(t), latest(t)));
+        let mut done: Vec<&Ticket> = here.iter().copied().filter(|t| t.status.is_closed()).collect();
+        done.sort_by_key(latest);
+        if name.is_some() || !open.is_empty() || !done.is_empty() {
+            out.push(ProjectGroup { name, at, open, done });
+        }
+    }
+    out
+}
+
 /// The things listed, in order.
 pub fn items(rows: &[Row]) -> Vec<Need> {
     rows.iter().filter_map(|r| if let Row::Item { need, .. } = r { Some(*need) } else { None }).collect()
@@ -798,6 +832,21 @@ mod tests {
         let mut t = ticket(1, "waiting", "/p", &[]);
         t.note = Some(note.into());
         assert_eq!(first_need(&t).as_deref(), Some("Create the API key"));
+    }
+
+    #[test]
+    fn the_sidebar_groups_tickets_by_project_what_waits_first_the_finished_apart() {
+        let mut task = ticket(9, "todo", "/a", &[]);
+        task.kind = TicketKind::Task;
+        task.project = None;
+        let m = model(vec![ticket(1, "todo", "/a", &[]), ticket(2, "review", "/a", &[]), ticket(3, "in_progress", "/a", &[]), ticket(4, "done", "/a", &[]), ticket(5, "todo", "/b", &[]), task], &["/a", "/b"]);
+        let groups = project_groups(&m);
+        let names: Vec<Option<String>> = groups.iter().map(|g| g.name.clone()).collect();
+        assert_eq!(names, [Some("a".to_string()), Some("b".to_string()), None], "the squad's folder last");
+        let open: Vec<u32> = groups[0].open.iter().map(|t| t.id).collect();
+        assert_eq!(open, [2, 3, 1]);
+        assert_eq!(groups[0].done.iter().map(|t| t.id).collect::<Vec<_>>(), [4]);
+        assert_eq!(groups[0].at, Some(0));
     }
 
     #[test]

@@ -163,6 +163,10 @@ pub struct Remembered {
     pub merge_ways: Vec<(String, String)>,
     /// The views the person saved (⌥V), in their order.
     pub views: Vec<KeptView>,
+    /// How wide the sidebar was left (px).
+    pub sidebar_width: Option<f32>,
+    /// The language picked in settings (`ko`, `en`, …); `None`: the Mac's.
+    pub lang: Option<String>,
 }
 
 impl Remembered {
@@ -190,6 +194,10 @@ impl Remembered {
                 if let (Some(pinned), Some(group), Some(name), Some(query)) = (parts.next(), parts.next(), parts.next(), parts.next()) {
                     out.views.push(KeptView { name: name.to_owned(), query: query.to_owned(), group: group.to_owned(), pinned: pinned == "1" });
                 }
+            } else if let Some(rest) = line.strip_prefix("sidebar-width ") {
+                out.sidebar_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
+            } else if let Some(rest) = line.strip_prefix("lang ") {
+                out.lang = Some(rest.trim().to_owned()).filter(|l| !l.is_empty());
             } else if let Some(rest) = line.strip_prefix("board-split ") {
                 out.board_split = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("recent ssh ")
@@ -213,6 +221,12 @@ impl Remembered {
         }
         if let Some(split) = self.board_split {
             text.push_str(&format!("board-split {split:.0}\n"));
+        }
+        if let Some(width) = self.sidebar_width {
+            text.push_str(&format!("sidebar-width {width:.0}\n"));
+        }
+        if let Some(lang) = &self.lang {
+            text.push_str(&format!("lang {lang}\n"));
         }
         for (project, way) in &self.merge_ways {
             text.push_str(&format!("merge {project} {way}\n"));
@@ -354,6 +368,8 @@ mod tests {
         remembered.use_endpoint(&Endpoint::Ssh(host("b:2222")));
         remembered.use_endpoint(&Endpoint::Ssh(host("me@a")));
         remembered.board_split = Some(212.4);
+        remembered.sidebar_width = Some(301.6);
+        remembered.lang = Some("ko".into());
         remembered.set_merge_way("my site", "merge");
         remembered.set_merge_way("app", "push");
         remembered.set_merge_way("app", "branch");
@@ -361,6 +377,7 @@ mod tests {
         remembered.save(&dir);
 
         let loaded = Remembered::load(&dir);
+        assert_eq!((loaded.sidebar_width, loaded.lang.as_deref()), (Some(302.), Some("ko")));
         assert_eq!(loaded.merge_way("my site"), Some("merge"), "a project's way is kept, spaces and all");
         assert_eq!(loaded.merge_way("app"), Some("branch"), "the last word wins");
         assert_eq!(loaded.merge_way("web"), None);

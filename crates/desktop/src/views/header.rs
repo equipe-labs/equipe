@@ -1,6 +1,8 @@
-//! The conversation's header (52 tall, T-54 §3.1): who it is with, the project
-//! slice — one control, "모든 프로젝트 ▾", opening a list with what works and
-//! what waits in each, ⌘0–9 — and the context fill. Still text.
+//! The conversation's header, which is the window's title bar on the right:
+//! the conversation's name with ⌄ (the team, to switch), a small chip for the
+//! project slice — opening a list with what works and what waits in each,
+//! ⌘0–9 — and the context fill. With the sidebar away, its buttons sit here,
+//! beside the traffic lights.
 
 use equipe_core::t;
 use gpui_kit::component::input::Input;
@@ -13,7 +15,7 @@ use crate::state::{Member, Model, Presence};
 use crate::theme::{PROJECT_HUES, Palette, SANS, SMALL, look};
 use crate::Shell;
 
-pub const HEIGHT: f32 = 52.;
+pub const HEIGHT: f32 = 48.;
 /// Past this many projects the list offers a search.
 const SEARCH_FROM: usize = 7;
 
@@ -21,7 +23,33 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let p = shell.palette;
     let model = &shell.model;
     let member = model.selected_member();
-    let who = member.map(|m| title(p, m));
+    let open = shell.board.popover == Some(Popover::Members);
+    let ticket = model.opened.and_then(|id| model.tickets.iter().find(|t| t.id == id));
+    let who = member.map(|m| {
+        div()
+            .relative()
+            .flex_none()
+            .child(
+                h_flex()
+                    .id("conversation-title")
+                    .h(px(28.))
+                    .px_2()
+                    .gap(px(6.))
+                    .items_center()
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .when(open, |b| b.bg(p.wash))
+                    .hover(move |s| s.bg(p.wash))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.board.popover = if this.board.popover == Some(Popover::Members) { None } else { Some(Popover::Members) };
+                        cx.notify();
+                    }))
+                    .child(title(p, m))
+                    .children(ticket.map(|t| div().max_w(px(320.)).truncate().text_size(px(14.)).text_color(p.text2).child(format!("· {}", t.title))))
+                    .child(super::sidebar::icon(IconName::ChevronDown, 13., p.muted)),
+            )
+            .children(open.then(|| members(shell, cx)))
+    });
     let context = member.and_then(|m| m.context).map(|c| {
         div()
             .text_size(px(SMALL))
@@ -29,19 +57,57 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             .when(c >= 50, |d| d.font_weight(FontWeight::SEMIBOLD))
             .child(t!("header.context", c = c))
     });
+    let hidden = shell.board.sidebar_hidden;
     h_flex()
         .h(px(HEIGHT))
         .flex_none()
-        .px_5()
-        .gap_4()
+        .px_3()
+        .gap_2()
         .items_center()
         .border_b_1()
         .border_color(p.hair)
         .font_family(SANS)
+        .window_control_area(WindowControlArea::Drag)
+        .when(hidden, |h| h.pl(px(super::sidebar::LIGHTS)).child(super::sidebar::strip_buttons(shell, false, cx)))
         .children(who)
         .child(slice_control(shell, "chat", cx))
         .child(div().flex_1())
         .children(context)
+}
+
+/// The team, to switch the conversation: under the title's ⌄.
+fn members(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let model = &shell.model;
+    let rows: Vec<AnyElement> = model
+        .team()
+        .into_iter()
+        .filter_map(|s| model.members.iter().find(|m| m.session == s))
+        .map(|m| {
+            let session = m.session;
+            let (mark, hue) = look(&m.role, &m.name);
+            let on = model.selected == Some(session) && model.opened.is_none();
+            h_flex()
+                .id(("switch-member", session))
+                .h(px(30.))
+                .px_2()
+                .gap_2()
+                .items_center()
+                .rounded(px(6.))
+                .text_size(px(SMALL))
+                .cursor_pointer()
+                .when(on, |r| r.bg(p.wash))
+                .hover(move |s| s.bg(p.wash))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.board.popover = None;
+                    this.select_member(session, window, cx);
+                }))
+                .child(div().w(px(16.)).text_center().text_color(p.member(hue)).child(mark))
+                .child(div().flex_1().child(m.name.clone()))
+                .into_any_element()
+        })
+        .collect();
+    deferred(v_flex().id("member-list").absolute().top(px(32.)).left_0().w(px(220.)).p_1().rounded(px(8.)).bg(p.raised).border_1().border_color(p.hair).shadow_lg().occlude().children(rows)).into_any_element()
 }
 
 /// `◆ pm`, in the member's colour; a member who left is dimmed.
@@ -54,7 +120,7 @@ fn title(p: Palette, member: &Member) -> impl IntoElement + use<> {
         .flex_none()
         .text_color(color)
         .child(div().text_size(px(14.)).child(mark))
-        .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(member.name.clone()))
+        .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(member.name.clone()))
 }
 
 /// A project's colour, by its place in the squad.
@@ -82,15 +148,18 @@ pub fn slice_control(shell: &Shell, place: &'static str, cx: &mut Context<Shell>
     let at = focus.as_ref().and_then(|f| names.iter().position(|n| n == f));
     let open = shell.board.popover == Some(Popover::Projects) && shell.board.slice_place == place;
     let label = focus.clone().unwrap_or_else(|| t!("header.all_projects").into());
+    // A small chip, as Claude's project beside a conversation's title.
     let button = h_flex()
         .id(SharedString::from(format!("slice-{place}")))
-        .h(px(28.))
+        .h(px(24.))
         .px_2()
         .gap(px(6.))
         .flex_none()
         .items_center()
         .rounded(px(6.))
-        .text_size(px(SMALL))
+        .border_1()
+        .border_color(p.hair)
+        .text_size(px(12.))
         .cursor_pointer()
         .when(open, |b| b.bg(p.wash))
         .hover(move |s| s.bg(p.wash))
@@ -108,7 +177,7 @@ pub fn slice_control(shell: &Shell, place: &'static str, cx: &mut Context<Shell>
         }))
         .when_some(at, |b, at| b.child(dot(project_color(p, at), 7.)))
         .child(div().max_w(px(160.)).truncate().text_color(if focus.is_some() { p.text } else { p.text2 }).child(label))
-        .child(div().text_color(p.muted).text_size(px(11.)).child("▾"));
+        .child(super::sidebar::icon(IconName::ChevronDown, 12., p.muted));
     div().relative().flex_none().child(button).children(open.then(|| list(shell, cx))).into_any_element()
 }
 

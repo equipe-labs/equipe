@@ -52,6 +52,8 @@ pub enum Flow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Popover {
     Projects,
+    /// The team, under the conversation's title.
+    Members,
     Filter,
     Group,
 }
@@ -81,8 +83,24 @@ pub struct BoardUi {
     pub ticked: HashMap<TicketId, BTreeSet<usize>>,
     /// `g` was pressed: the next key goes somewhere (i, l, b).
     chord: bool,
-    /// The sidebar's list of squads is open.
-    pub squads_open: bool,
+    /// The sidebar is away (⌘\), how wide it is, and its edge held to drag.
+    pub sidebar_hidden: bool,
+    pub sidebar_width: f32,
+    pub sidebar_drag: Option<(f32, f32)>,
+    /// When the sidebar last came or went, to slide it.
+    pub sidebar_shown_at: Option<Instant>,
+    /// The sidebar's groups folded (by project name), and those showing their finished.
+    pub folded: std::collections::HashSet<String>,
+    pub done_shown: std::collections::HashSet<String>,
+    /// A small menu out of the sidebar's foot.
+    pub popup: Option<super::sidebar::Popup>,
+    /// A language was picked: it takes a new start.
+    pub restart_for_language: bool,
+    /// Where the window has been, for back and forward.
+    pub history: Vec<super::sidebar::Place>,
+    pub history_at: usize,
+    /// How far the sidebar's spinners have turned.
+    pub spin: f32,
     /// The keys' sheet is open (?).
     pub keys_open: bool,
     /// The window is wide enough for the peek beside the list.
@@ -116,7 +134,17 @@ impl BoardUi {
             undo: Undo::default(),
             ticked: HashMap::new(),
             chord: false,
-            squads_open: false,
+            sidebar_hidden: false,
+            sidebar_width: super::sidebar::WIDTH,
+            sidebar_drag: None,
+            sidebar_shown_at: None,
+            folded: Default::default(),
+            done_shown: Default::default(),
+            popup: None,
+            restart_for_language: false,
+            history: Vec::new(),
+            history_at: 0,
+            spin: 0.,
             keys_open: false,
             wide: true,
             list_width: 900.,
@@ -530,9 +558,11 @@ impl Shell {
                 self.send_command(command);
             }
         }
-        if self.screen == Screen::Board && self.board.diff.is_none() && self.board_rows().iter().any(|r| matches!(r, Row::Item { need, .. } if board::ticket_of(&self.model, *need).is_some_and(|t| self.model.is_live(t)))) {
+        // The live dots pulse and the sidebar's spinners turn while a member works.
+        if self.model.tickets.iter().any(|t| self.model.is_live(t)) || self.model.members.iter().any(|m| m.presence == Presence::Working) {
             self.board.pulse_step = self.board.pulse_step.wrapping_add(1);
-            self.board.pulse = [1.0, 0.75, 0.45, 0.3, 0.45, 0.75][self.board.pulse_step as usize % 6];
+            self.board.pulse = [1.0, 0.75, 0.45, 0.3, 0.45, 0.75][(self.board.pulse_step / 2) as usize % 6];
+            self.board.spin = super::sidebar::spin(self.board.pulse_step);
             changed = true;
         }
         changed
@@ -545,14 +575,14 @@ impl Shell {
         }
         self.board._ticker = Some(cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_millis(180)).await;
+                cx.background_executor().timer(Duration::from_millis(100)).await;
                 let keep = this.update(cx, |this, cx| {
                     let changed = this.tick(Instant::now());
                     if changed {
                         cx.notify();
                     }
-                    let live = this.model.tickets.iter().any(|t| this.model.is_live(t));
-                    let keep = !this.board.undo.pending.is_empty() || (this.screen == Screen::Board && live);
+                    let live = this.model.tickets.iter().any(|t| this.model.is_live(t)) || this.model.members.iter().any(|m| m.presence == Presence::Working);
+                    let keep = !this.board.undo.pending.is_empty() || live;
                     if !keep {
                         this.board._ticker = None;
                     }
@@ -973,7 +1003,9 @@ impl Shell {
         let width = f32::from(window.viewport_size().width);
         self.board.wide = width >= PEEK_BESIDE_FROM;
         let peek = self.board.view.peek && self.board.wide && self.board.view.page.is_none();
-        self.board.list_width = width - super::sidebar::WIDTH - if peek { PEEK } else { 0. } - 16.;
+        let side = if self.board.sidebar_hidden { 0. } else { self.board.sidebar_width };
+        self.board.list_width = width - side - if peek { PEEK } else { 0. } - 16.;
+        self.note_place();
     }
 }
 
@@ -1137,6 +1169,8 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                 .px_4()
                 .gap_3()
                 .items_center()
+                .window_control_area(WindowControlArea::Drag)
+                .when(shell.board.sidebar_hidden, |h| h.pl(px(super::sidebar::LIGHTS)).child(super::sidebar::strip_buttons(shell, false, cx)))
                 .child(h_flex().gap_2().items_baseline().flex_none().child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(title)).child(div().text_size(px(SMALL)).text_color(p.muted).child(count.to_string())))
                 .child(super::header::slice_control(shell, "board", cx))
                 .child(
@@ -1197,7 +1231,7 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                             }))
                             .child(div().text_color(p.muted).child(t!("board.group_by")))
                             .child(group.label())
-                            .child(div().text_color(p.muted).child("▾")),
+                            .child(super::sidebar::icon(IconName::ChevronDown, 12., p.muted)),
                     )
                 })
                 .children(popover(shell, cx)),
@@ -1233,7 +1267,7 @@ fn popover(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .child(label)
     };
     let body: Vec<AnyElement> = match which {
-        Popover::Projects => return None,
+        Popover::Projects | Popover::Members => return None,
         Popover::Group => GroupBy::ALL
             .into_iter()
             .map(|g| {
@@ -1391,7 +1425,7 @@ fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, cx: &mut Co
                 )
                 .child(count.to_string())
                 .when(window != DoneWindow::All && total > count, |r| r.child(div().opacity(0.7).child(t!("board.done_total", n = total))))
-                .child(if open { "▾" } else { "▸" })
+                .child(super::sidebar::icon(if open { IconName::ChevronDown } else { IconName::ChevronRight }, 12., p.muted))
                 .into_any_element()
         }
         Row::Item { need, depth } => item_row(shell, *need, *depth, pick == Some(*need), cx),
@@ -1796,11 +1830,3 @@ fn keys_sheet(p: Palette, cx: &mut Context<Shell>) -> AnyElement {
     .into_any_element()
 }
 
-/// For the sidebar's counts.
-pub fn count_working(model: &Model) -> usize {
-    model.tickets.iter().filter(|t| t.status == TicketStatus::InProgress && model.in_focus(t)).count()
-}
-
-pub fn count_all(model: &Model) -> usize {
-    model.tickets.iter().filter(|t| !t.status.is_closed() && model.in_focus(t)).count()
-}

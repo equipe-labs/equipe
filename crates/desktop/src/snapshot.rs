@@ -9,7 +9,7 @@
 //! `menu:<inbox|working|all|view0…>` (a sidebar item) · `bkey:<key>` (a work
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
-//! (its main button) · `size:<w>x<h>` (the window) · `theme:<light|dark>` · `folds` · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
+//! (its main button) · `size:<w>x<h>` (the window) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:<settings|account>` · `open:<n>` (a ticket's sidebar row) · `folds` · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
 //! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<image file>` · `paste` (⌘V with what the clipboard holds) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 
@@ -117,6 +117,16 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     eprintln!("paste: images taken = {taken}");
                 }),
                 "retry" => shell.update(cx, |shell, cx| shell.retry(cx)),
+                "sidebar" => shell.update(cx, |shell, cx| shell.toggle_sidebar(cx)),
+                "popup" => shell.update(cx, |shell, cx| {
+                    shell.board.popup = match arg.as_str() {
+                        "settings" => Some(crate::views::sidebar::Popup::Settings),
+                        "account" => Some(crate::views::sidebar::Popup::Account),
+                        _ => None,
+                    };
+                    cx.notify();
+                }),
+                "open" => shell.update(cx, |shell, cx| shell.open_ticket_row(arg.parse().unwrap_or(0), window, cx)),
                 "theme" => shell.update(cx, |shell, cx| {
                     shell.palette = crate::theme::Palette::new(if arg == "light" { WindowAppearance::Light } else { WindowAppearance::Dark });
                     cx.notify();

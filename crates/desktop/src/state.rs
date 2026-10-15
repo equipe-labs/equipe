@@ -257,6 +257,8 @@ pub struct Model {
     /// Tickets the person just acted on, as they looked then: out of what
     /// waits for them until the daemon says they changed.
     pub acted: HashMap<TicketId, Look>,
+    /// Tickets that moved since the person last looked at them: news.
+    pub news: std::collections::HashSet<TicketId>,
 }
 
 impl Model {
@@ -280,6 +282,7 @@ impl Model {
             unix: 0,
             since: HashMap::new(),
             acted: HashMap::new(),
+            news: Default::default(),
         }
     }
 
@@ -721,6 +724,9 @@ impl Model {
         let was = self.tickets.iter().find(|t| t.id == ticket.id).map(|t| t.status);
         if was != Some(ticket.status) {
             self.since.insert(ticket.id, self.unix);
+            if was.is_some() {
+                self.news.insert(ticket.id);
+            }
         }
         // What the person acted on came back changed: its look is news again.
         if self.acted.get(&ticket.id).is_some_and(|look| *look != look_of(ticket)) {
@@ -832,6 +838,11 @@ impl Model {
             self.acted.insert(id, look_of(t));
             self.revision += 1;
         }
+    }
+
+    /// The person looked at a ticket: no longer news.
+    pub fn seen(&mut self, id: TicketId) {
+        self.news.remove(&id);
     }
 
     /// An action taken back: the ticket waits for the person again.
