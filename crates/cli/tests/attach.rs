@@ -39,7 +39,8 @@ impl Home {
     /// `equipe <args>` as run on the daemon's machine, through its shell — or
     /// through `ssh` when `EQUIPE_TEST_SSH` names a host.
     fn equipe_cmd(&self, args: &str) -> Command {
-        let env = format!("HOME='{}' EQUIPE_HOME='{}'", self.0.display(), self.equipe().display());
+        // In English, whatever this machine's language: the tests read its words.
+        let env = format!("HOME='{}' EQUIPE_HOME='{}' EQUIPE_LANG=en", self.0.display(), self.equipe().display());
         match std::env::var("EQUIPE_TEST_SSH") {
             Ok(host) => {
                 let mut ssh = Command::new("ssh");
