@@ -598,14 +598,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                                     div().text_color(p.muted).child(format!("· {name}"))
                                 })),
                         )
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_size(px(12.))
-                                .text_color(p.muted)
-                                .child("⇧⏎ 줄바꿈 · ⌘V 이미지"),
-                        )
-                        .child(div().flex_1().text_size(px(12.)).text_color(p.muted).child(hint))
+                        .child(div().flex_1().text_size(px(12.)).text_color(p.muted).child(format!("{hint} · ⌘V 이미지")))
                         .children(memo_button)
                         .child(button),
                 ),

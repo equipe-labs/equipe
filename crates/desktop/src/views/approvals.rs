@@ -370,9 +370,11 @@ pub fn for_you(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .hover(move |s| s.bg(p.wash))
             .on_click(cx.listener(move |this, _, _, cx| this.open_ticket(id, cx)))
             .child(div().w(px(48.)).flex_none().font_family(MONO).text_color(p.accent).child(format!("T-{id}")))
-            .child(div().w(px(96.)).flex_none().overflow_hidden().text_color(hue.unwrap_or(p.muted)).child(project.unwrap_or_default()))
-            .child(div().flex_1().min_w_0().overflow_hidden().child(t.title.clone()))
-            .child(div().flex_none().max_w(px(260.)).overflow_hidden().text_color(p.muted).child(ask_of(t)))
+            // One line each, cut short with "…": a row is 32 high, and a long
+            // title or ask must never spill onto the rows below.
+            .child(div().w(px(96.)).flex_none().whitespace_nowrap().overflow_hidden().text_ellipsis().text_color(hue.unwrap_or(p.muted)).child(project.unwrap_or_default()))
+            .child(div().flex_1().min_w_0().whitespace_nowrap().overflow_hidden().text_ellipsis().child(t.title.clone()))
+            .child(div().flex_shrink_0().max_w(px(260.)).whitespace_nowrap().overflow_hidden().text_ellipsis().text_color(p.muted).child(ask_of(t)))
             .when(is_wait, |r| r.child(resume(shell, p, id, cx)))
     });
     let more = waiting.len().saturating_sub(CARD_SHOWN);
