@@ -5,6 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
+use equipe_core::t;
+
 /// Where attached images are kept: a temp folder only the person can read,
 /// which members may read without asking.
 pub fn pastes_dir() -> Result<PathBuf, String> {
@@ -50,7 +52,7 @@ pub fn clipboard_image() -> Result<PathBuf, String> {
         return Ok(path);
     }
     let _ = std::fs::remove_file(&path);
-    Err("No image on the clipboard. Copy a screenshot (⌃⇧⌘4 on a Mac), then Ctrl-V.".into())
+    Err(t!("clip.no_image").into())
 }
 
 /// Images that arrived in the inbox, moved to where attachments are kept.
@@ -85,9 +87,9 @@ pub fn send_image(host: &str) -> Result<(), String> {
         .arg(remote)
         .stdin(file)
         .status()
-        .map_err(|err| format!("Couldn't run ssh: {err}"))?;
+        .map_err(|err| t!("clip.ssh_failed", err = err))?;
     let _ = std::fs::remove_file(&image);
-    if status.success() { Ok(()) } else { Err(format!("ssh to {host} didn't take the image")) }
+    if status.success() { Ok(()) } else { Err(t!("clip.ssh_refused", host = host)) }
 }
 
 /// `equipe paste-setup`, for the Mac the person types on: ⌃⇧V in iTerm2 types
@@ -120,11 +122,11 @@ pub fn pasted_image(text: &str) -> Option<Result<PathBuf, String>> {
     let compact: String = body.chars().filter(|c| !c.is_ascii_whitespace()).collect();
     let bytes = match base64::engine::general_purpose::STANDARD.decode(&compact) {
         Ok(bytes) => bytes,
-        Err(_) if claimed.is_some() => return Some(Err("That image didn't come through whole — try ⌃⇧V again".into())),
+        Err(_) if claimed.is_some() => return Some(Err(t!("clip.image_cut").into())),
         Err(_) => return None,
     };
     let Some(extension) = image_kind(&bytes) else {
-        return claimed.map(|_| Err("That paste isn't an image equipe can attach".into()));
+        return claimed.map(|_| Err(t!("clip.not_an_image").into()));
     };
     Some(pastes_dir().and_then(|dir| {
         let path = dir.join(format!("paste-{}.{extension}", stamp()));
@@ -165,7 +167,7 @@ pub fn unpack_upload(base64_data: &str) -> Result<Vec<PathBuf>, String> {
     use std::io::Write as _;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(base64_data.trim())
-        .map_err(|err| format!("The upload didn't decode: {err}"))?;
+        .map_err(|err| t!("clip.upload_undecodable", err = err))?;
     let into = pastes_dir()?.join(format!("upload-{}", stamp()));
     std::fs::create_dir_all(&into).map_err(|err| err.to_string())?;
     let mut tar = std::process::Command::new("tar")
@@ -178,7 +180,7 @@ pub fn unpack_upload(base64_data: &str) -> Result<Vec<PathBuf>, String> {
         .map_err(|err| err.to_string())?;
     tar.stdin.take().expect("piped").write_all(&bytes).map_err(|err| err.to_string())?;
     if !tar.wait().is_ok_and(|s| s.success()) {
-        return Err("The upload didn't unpack".into());
+        return Err(t!("clip.upload_unpacked").into());
     }
     let mut images = Vec::new();
     collect_images(&into, &mut images);

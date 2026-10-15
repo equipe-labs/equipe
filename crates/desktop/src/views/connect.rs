@@ -3,6 +3,7 @@
 //! when the window can't attach — one per cause, in words for someone who has
 //! never used SSH.
 
+use equipe_core::t;
 use std::collections::VecDeque;
 
 use gpui_kit::component::input::{Input, InputState};
@@ -34,14 +35,14 @@ pub struct AskUi {
 
 impl ConnectUi {
     pub fn new(window: &mut Window, cx: &mut Context<Shell>, hosts: Vec<String>) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("user@host 또는 user@host:포트"));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("connect.host_placeholder")));
         Self { open: false, input, hosts, error: None }
     }
 }
 
 impl AskUi {
     pub fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("입력 후 Enter"));
+        let input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("connect.secret_placeholder")));
         Self { queue: VecDeque::new(), input }
     }
 }
@@ -96,7 +97,7 @@ fn command_line(p: Palette, ix: usize, text: String) -> impl IntoElement {
                 .text_color(p.text2)
                 .child(text),
         )
-        .child(button(p, "copy", "복사", false).id(("copy", ix)).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
+        .child(button(p, "copy", t!("connect.copy"), false).id(("copy", ix)).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
 }
 
 /// The body when nothing is attached: the cause, what to do, the lines to paste.
@@ -133,8 +134,8 @@ pub fn guide_screen(shell: &Shell, guide: &Guide, cx: &mut Context<Shell>) -> An
                     h_flex()
                         .gap_2()
                         .pt_2()
-                        .child(button(p, "retry", "다시 시도", true).on_click(cx.listener(|this, _, _, cx| this.retry(cx))))
-                        .child(button(p, "switch", "연결 대상 바꾸기", false).on_click(cx.listener(|this, _, window, cx| this.open_chooser(window, cx)))),
+                        .child(button(p, "retry", t!("connect.retry"), true).on_click(cx.listener(|this, _, _, cx| this.retry(cx))))
+                        .child(button(p, "switch", t!("connect.switch_target"), false).on_click(cx.listener(|this, _, window, cx| this.open_chooser(window, cx)))),
                 ),
         )
         .into_any_element()
@@ -191,10 +192,10 @@ pub fn chooser(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
 
     // The one in use may be neither in the config nor remembered (picked by an env var).
     let in_use = match current {
-        Endpoint::Ssh(h) if !ui.hosts.contains(&h.spec()) && !remembered.contains(&h.spec()) => Some((h.spec(), "현재")),
+        Endpoint::Ssh(h) if !ui.hosts.contains(&h.spec()) && !remembered.contains(&h.spec()) => Some((h.spec(), t!("connect.host_current"))),
         _ => None,
     };
-    let hosts = in_use.into_iter().chain(ui.hosts.iter().cloned().map(|h| (h, "~/.ssh/config"))).chain(remembered.into_iter().map(|h| (h, "최근")));
+    let hosts = in_use.into_iter().chain(ui.hosts.iter().cloned().map(|h| (h, "~/.ssh/config"))).chain(remembered.into_iter().map(|h| (h, t!("connect.host_recent"))));
     let hosts: Vec<_> = hosts
         .enumerate()
         .map(|(ix, (spec, note))| {
@@ -208,19 +209,19 @@ pub fn chooser(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         p,
         v_flex()
             .gap_3()
-            .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child("연결 대상"))
-            .child(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).child("equipe 데몬이 돌고 있는 기계를 고릅니다. 마지막으로 고른 곳에 다음 실행 때도 그대로 연결합니다."))
-            .child(row(p, "this-mac", "이 맥".into(), "같은 맥의 데몬", matches!(current, Endpoint::Local { .. })).on_click(cx.listener(move |this, _, window, cx| this.connect_to(this_mac.clone(), window, cx))))
+            .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(t!("connect.title")))
+            .child(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).child(t!("connect.intro")))
+            .child(row(p, "this-mac", t!("connect.this_mac").into(), t!("connect.this_mac_note"), matches!(current, Endpoint::Local { .. })).on_click(cx.listener(move |this, _, window, cx| this.connect_to(this_mac.clone(), window, cx))))
             .when(!hosts.is_empty(), |c| {
-                c.child(div().text_size(px(SMALL)).text_color(p.muted).child("SSH 호스트"))
+                c.child(div().text_size(px(SMALL)).text_color(p.muted).child(t!("connect.ssh_hosts")))
                     .child(v_flex().id("hosts").max_h(px(190.)).overflow_y_scroll().children(hosts))
             })
-            .child(div().text_size(px(SMALL)).text_color(p.muted).child("직접 입력 — user@host 또는 user@host:포트"))
+            .child(div().text_size(px(SMALL)).text_color(p.muted).child(t!("connect.type_host")))
             .child(
                 h_flex()
                     .gap_2()
                     .child(div().flex_1().child(field(p, &ui.input)))
-                    .child(button(p, "connect", "연결", true).on_click(cx.listener(|this, _, window, cx| {
+                    .child(button(p, "connect", t!("connect.connect"), true).on_click(cx.listener(|this, _, window, cx| {
                         let text = this.connect.input.read(cx).value().to_string();
                         this.connect_typed(&text, window, cx);
                     }))),
@@ -228,10 +229,10 @@ pub fn chooser(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
             .children(ui.error.clone().map(|e| div().text_size(px(SMALL)).text_color(p.accent).child(e)))
             .child(
                 div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).child(
-                    "SSH가 처음이라면: 연결할 기계에서 '원격 로그인'(맥: 시스템 설정 → 일반 → 공유)을 켜 두고, 그 기계에도 equipe를 설치해 두세요. 비밀번호는 저장하지 않으며, 처음 보는 기계는 지문을 확인한 뒤에만 연결합니다.",
+                    t!("connect.ssh_first_time"),
                 ),
             )
-            .child(h_flex().justify_end().child(button(p, "close", "닫기", false).on_click(cx.listener(|this, _, window, cx| this.close_chooser(window, cx))))),
+            .child(h_flex().justify_end().child(button(p, "close", t!("connect.close"), false).on_click(cx.listener(|this, _, window, cx| this.close_chooser(window, cx))))),
     )
 }
 
@@ -248,21 +249,21 @@ pub fn question(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let card = match &prompt.ask {
         Ask::Secret { label } => v_flex()
             .gap_3()
-            .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(format!("{who}에 로그인")))
+            .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(t!("connect.sign_in_to", who = who)))
             .child(div().text_size(px(BODY)).line_height(px(24.)).text_color(p.text2).child(label.clone()))
             .child(field(p, &shell.ask.input))
-            .child(div().text_size(px(SMALL)).text_color(p.muted).child("입력한 값은 SSH에 전달하고 바로 버립니다. 저장하지 않습니다."))
+            .child(div().text_size(px(SMALL)).text_color(p.muted).child(t!("connect.secret_note")))
             .child(
                 h_flex()
                     .gap_2()
                     .justify_end()
-                    .child(button(p, "ask-cancel", "취소", false).on_click(answer(Answer::Cancel)))
-                    .child(button(p, "ask-ok", "확인", true).on_click(cx.listener(|this, _, window, cx| this.submit_secret(window, cx)))),
+                    .child(button(p, "ask-cancel", t!("connect.cancel"), false).on_click(answer(Answer::Cancel)))
+                    .child(button(p, "ask-ok", t!("connect.ok"), true).on_click(cx.listener(|this, _, window, cx| this.submit_secret(window, cx)))),
             ),
         Ask::HostKey { host, fingerprint, text } => v_flex()
             .gap_3()
-            .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child("처음 보는 기계입니다"))
-            .child(div().text_size(px(BODY)).line_height(px(24.)).text_color(p.text2).child(format!("{} 의 지문이 아래와 같습니다. 그 기계의 관리자에게 받았거나, 그 기계에서 직접 확인한 지문과 같을 때만 연결하세요.", if host.is_empty() { who.clone() } else { format!("'{host}'") })))
+            .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(t!("connect.new_machine")))
+            .child(div().text_size(px(BODY)).line_height(px(24.)).text_color(p.text2).child(t!("connect.host_key_text", host = if host.is_empty() { who.clone() } else { format!("'{host}'") })))
             .when(!fingerprint.is_empty(), |c| {
                 c.child(div().px_3().py_2().rounded(px(8.)).bg(p.code_bg).border_1().border_color(p.hair).font_family(MONO).text_size(px(SMALL)).text_color(p.text).child(fingerprint.clone()))
             })
@@ -271,19 +272,19 @@ pub fn question(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 h_flex()
                     .gap_2()
                     .justify_end()
-                    .child(button(p, "ask-no", "연결하지 않음", false).on_click(answer(Answer::Cancel)))
-                    .child(button(p, "ask-yes", "지문이 맞습니다 — 연결", true).on_click(answer(Answer::Yes))),
+                    .child(button(p, "ask-no", t!("connect.dont_connect"), false).on_click(answer(Answer::Cancel)))
+                    .child(button(p, "ask-yes", t!("connect.fingerprint_ok"), true).on_click(answer(Answer::Yes))),
             ),
         Ask::Confirm { text } => v_flex()
             .gap_3()
-            .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child("SSH가 확인을 요청합니다"))
+            .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(t!("connect.ssh_confirm")))
             .child(div().text_size(px(BODY)).line_height(px(24.)).text_color(p.text2).child(text.clone()))
             .child(
                 h_flex()
                     .gap_2()
                     .justify_end()
-                    .child(button(p, "ask-no", "아니오", false).on_click(answer(Answer::Cancel)))
-                    .child(button(p, "ask-yes", "예", true).on_click(answer(Answer::Yes))),
+                    .child(button(p, "ask-no", t!("connect.no"), false).on_click(answer(Answer::Cancel)))
+                    .child(button(p, "ask-yes", t!("connect.yes"), true).on_click(answer(Answer::Yes))),
             ),
     };
     Some(modal(p, card))

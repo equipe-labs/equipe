@@ -39,7 +39,7 @@ async fn bridge(no_start: bool) -> io::Result<()> {
     let socket = daemon::socket();
     let started = if no_start {
         if !gateway::is_running(&socket).await {
-            return Err(io::Error::new(io::ErrorKind::NotConnected, "the daemon isn't running — start it with `equipe daemon start`"));
+            return Err(io::Error::new(io::ErrorKind::NotConnected, equipe_core::t!("attach.not_running")));
         }
         false
     } else {
@@ -79,6 +79,6 @@ async fn bridge(no_start: bool) -> io::Result<()> {
 
 /// What `equipe attach` without `--stdio` says.
 pub fn usage() -> ExitCode {
-    eprintln!("equipe attach --stdio connects standard input and output to the daemon, for a screen on another machine:\n  ssh <host> equipe attach --stdio\nTo open the console here, run equipe.");
+    eprintln!("{}", equipe_core::t!("attach.usage"));
     ExitCode::from(2)
 }

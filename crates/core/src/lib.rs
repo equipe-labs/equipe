@@ -16,6 +16,7 @@ pub mod desktop;
 pub mod desktop_gate;
 pub mod eta;
 pub mod gateway;
+pub mod i18n;
 pub mod journal;
 pub mod language;
 pub mod mcp;

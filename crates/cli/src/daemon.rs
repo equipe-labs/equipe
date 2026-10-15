@@ -71,7 +71,7 @@ pub async fn ensure_running() -> io::Result<bool> {
     }
     Err(io::Error::new(
         io::ErrorKind::TimedOut,
-        format!("the daemon didn't start — see {}", log_path().display()),
+        equipe_core::t!("daemon.didnt_start", log = log_path().display()),
     ))
 }
 
@@ -218,7 +218,7 @@ pub mod service {
                     return Ok(());
                 }
             }
-            Err(io::Error::other("launchctl couldn't load the service"))
+            Err(io::Error::other(equipe_core::t!("daemon.launchctl_failed")))
         } else {
             let file = unit_path();
             std::fs::create_dir_all(file.parent().expect("systemd/user has a parent"))?;
@@ -226,7 +226,7 @@ pub mod service {
             if run("systemctl", &["--user", "daemon-reload"]) && run("systemctl", &["--user", "enable", "--now", "equipe"]) {
                 Ok(())
             } else {
-                Err(io::Error::other("systemctl --user couldn't start the service"))
+                Err(io::Error::other(equipe_core::t!("daemon.systemctl_failed")))
             }
         }
     }

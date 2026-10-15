@@ -2,6 +2,7 @@
 //! chips that filter the squad (and pick the PM's thread), the context fill, and
 //! the two tabs, conversation and board. Still text; nothing here moves.
 
+use equipe_core::t;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -26,12 +27,12 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             .text_size(px(SMALL))
             .text_color(if c >= 50 { p.text2 } else { p.muted })
             .when(c >= 50, |d| d.font_weight(FontWeight::SEMIBOLD))
-            .child(format!("context {c}%"))
+            .child(t!("header.context", c = c))
     });
 
     let mut chips = Vec::new();
     if !projects.is_empty() {
-        chips.push(chip(p, "all", "All".into(), Some("⌘0"), None, model.focus.is_none(), cx.listener(|this, _, window, cx| this.focus_project(None, window, cx))));
+        chips.push(chip(p, "all", t!("header.all").into(), Some("⌘0"), None, model.focus.is_none(), cx.listener(|this, _, window, cx| this.focus_project(None, window, cx))));
         for (ix, name) in projects.iter().take(CHIPS_SHOWN).enumerate() {
             let target = name.clone();
             chips.push(chip(
@@ -136,5 +137,5 @@ fn tabs(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement 
             .on_click(cx.listener(move |this, _, _, cx| this.show(screen, cx)))
             .child(label)
     };
-    h_flex().flex_none().gap_1().child(tab("tab-chat", "대화", Screen::Chat)).child(tab("tab-board", "보드 ⌘B", Screen::Board))
+    h_flex().flex_none().gap_1().child(tab("tab-chat", t!("header.tab_chat"), Screen::Chat)).child(tab("tab-board", t!("header.tab_board"), Screen::Board))
 }

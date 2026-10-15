@@ -23,6 +23,24 @@ use equipe_core::protocol::{Entry, Estimate, SessionId, TicketId, TicketStatus};
 use super::app::{Agent, AgentState, App, BoardRule, Divider, Group, Hit, Pane, Side, Spot, TextView, elapsed, relative, tool_verb};
 use super::markdown;
 use crate::ui;
+use equipe_core::t;
+
+/// How many columns `text` takes on screen — a Korean letter takes two.
+fn cols(text: &str) -> usize {
+    unicode_width::UnicodeWidthStr::width(text)
+}
+
+/// `text` with spaces after it up to `width` columns: `{:<width$}` by what
+/// shows on screen, so double-width words line up too.
+fn pad(text: &str, width: usize) -> String {
+    format!("{text}{}", " ".repeat(width.saturating_sub(cols(text))))
+}
+
+/// A translated sentence around one `{name}` in it: what comes before the
+/// value and what after, so the value can take its own style.
+fn around<'a>(template: &'a str, name: &str) -> (&'a str, &'a str) {
+    template.split_once(&format!("{{{name}}}")).unwrap_or((template, ""))
+}
 
 /// Prose is laid out no wider than this: past it, lines get hard to read.
 const PROSE_MAX: usize = 96;
@@ -218,8 +236,8 @@ fn content(area: Rect) -> Rect {
 /// wide enough for its names and what follows them.
 fn squad_width(app: &App, body: Rect) -> u16 {
     let fit = || {
-        let name = app.agents.iter().map(|a| a.label().chars().count()).max().unwrap_or(4).clamp(4, 12);
-        let detail = app.agents.iter().filter_map(|a| a.short_model()).map(|m| m.chars().count()).max().unwrap_or(0).max(9);
+        let name = app.agents.iter().map(|a| cols(&a.label())).max().unwrap_or(4).clamp(4, 12);
+        let detail = app.agents.iter().filter_map(|a| a.short_model()).map(|m| cols(&m)).max().unwrap_or(0).max(9);
         // Room for " · 65%" once a conversation is past half full.
         let full = app.agents.iter().any(|a| a.context.is_some_and(|(u, w)| w > 0 && u * 2 >= w));
         let detail = detail + if full { 6 } else { 0 };
@@ -425,29 +443,29 @@ fn overview(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Option
     let width_of = |s: &str| unicode_width::UnicodeWidthStr::width(s);
     let mut rows = vec![(
         Line::from(vec![
-            Span::styled("All projects", theme.bold()),
-            Span::styled("   click one to go in, or ctrl-p", theme.dim()),
+            Span::styled(t!("view.all_projects"), theme.bold()),
+            Span::styled(format!("   {}", t!("view.overview_hint")), theme.dim()),
         ]),
         None,
     )];
     for line in lines.iter().take(OVERVIEW_SHOWN) {
         let project = app.projects.get(line.at).cloned();
-        let mut spans = vec![Span::styled(format!("{:<tags$}  ", ui::fit(&line.name, tags)), project_style(app, project.as_deref(), theme))];
+        let mut spans = vec![Span::styled(format!("{}  ", pad(&ui::fit(&line.name, tags), tags)), project_style(app, project.as_deref(), theme))];
         // What waits, at the right: for the person first.
         let mut tail: Vec<Span<'static>> = Vec::new();
         if line.for_you > 0 {
-            tail.push(Span::styled(format!("⚑{} for you", line.for_you), theme.accent().add_modifier(Modifier::BOLD)));
+            tail.push(Span::styled(t!("view.overview_for_you", n = line.for_you), theme.accent().add_modifier(Modifier::BOLD)));
         }
         if line.open > 0 {
             if !tail.is_empty() {
                 tail.push(Span::styled(" · ", theme.dim()));
             }
-            tail.push(Span::styled(format!("{} open", line.open), theme.dim()));
+            tail.push(Span::styled(t!("view.overview_open", n = line.open), theme.dim()));
         }
         let tail_width: usize = tail.iter().map(Span::width).sum();
         let mut room = width.saturating_sub(tags + 2 + tail_width + 2);
         if line.busy.is_empty() {
-            let quiet = if line.for_you + line.open == 0 { "quiet" } else { "no one on it now" };
+            let quiet = if line.for_you + line.open == 0 { t!("view.quiet") } else { t!("view.no_one_on_it") };
             let quiet = ui::fit(quiet, room);
             room = room.saturating_sub(width_of(&quiet));
             spans.push(Span::styled(quiet, theme.dim()));
@@ -485,7 +503,7 @@ fn overview(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Option
         rows.push((Line::from(spans), Some(line.at)));
     }
     if lines.len() > OVERVIEW_SHOWN {
-        rows.push((Line::from(Span::styled(format!("+{} more · ctrl-p", lines.len() - OVERVIEW_SHOWN), theme.dim())), None));
+        rows.push((Line::from(Span::styled(t!("view.overview_more", n = lines.len() - OVERVIEW_SHOWN), theme.dim())), None));
     }
     rows
 }
@@ -511,12 +529,12 @@ fn waiting_card(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Op
     }
     let bar = || Span::styled("▎ ", theme.accent());
     let tags = tag_width(app);
-    let heading = if waiting.iter().all(|t| t.status == TicketStatus::Review) { "Waiting for your review" } else { "Waiting for you" };
+    let heading = if waiting.iter().all(|t| t.status == TicketStatus::Review) { t!("view.waiting_for_your_review") } else { t!("view.waiting_for_you") };
     let mut rows = vec![(
         Line::from(vec![
             bar(),
             Span::styled(format!("{heading} · {}", waiting.len()), theme.accent().add_modifier(Modifier::BOLD)),
-            Span::styled("   click one, or ctrl-b", theme.dim()),
+            Span::styled(format!("   {}", t!("view.card_hint")), theme.dim()),
         ]),
         None,
     )];
@@ -529,11 +547,11 @@ fn waiting_card(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Op
         let title_room = width.saturating_sub(2 + 6 + 2 + 12 + tags + 2).min(56);
         // A waiting ticket says what the person has to do, after its title.
         let needs = t.note.as_deref().filter(|_| t.status == TicketStatus::Waiting).map(board::waiting_needs).unwrap_or_default();
-        let needs = if needs.is_empty() { String::new() } else { format!(" · needs {}", needs.join(", ")) };
+        let needs = if needs.is_empty() { String::new() } else { format!(" · {}", t!("view.card_needs", what = needs.join(", "))) };
         let width_of = |s: &str| unicode_width::UnicodeWidthStr::width(s);
         // The card is short of room: only work that isn't code names its kind.
         let kind = if t.kind.in_home() { format!("{} · ", t.kind.label()) } else { String::new() };
-        let title_room = title_room.saturating_sub(kind.len());
+        let title_room = title_room.saturating_sub(cols(&kind));
         let title = ui::fit(&t.title, if needs.is_empty() { title_room } else { title_room.min(width_of(&t.title)).min(title_room / 2) });
         let needs = ui::fit(&needs, title_room.saturating_sub(width_of(&title)));
         let pad = title_room.saturating_sub(width_of(&title) + width_of(&needs));
@@ -555,7 +573,7 @@ fn waiting_card(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Op
         ));
     }
     if waiting.len() > CARD_SHOWN {
-        rows.push((Line::from(vec![bar(), Span::styled(format!("+{} more on the board", waiting.len() - CARD_SHOWN), theme.dim())]), None));
+        rows.push((Line::from(vec![bar(), Span::styled(t!("view.card_more", n = waiting.len() - CARD_SHOWN), theme.dim())]), None));
     }
     rows
 }
@@ -763,20 +781,20 @@ fn render_choices(frame: &mut Frame, above: Rect, app: &App, theme: Theme) {
     }
     let picked = app.pick.min(choices.len() - 1);
     let first = (picked + 1).saturating_sub(SHOWN);
-    let label_width = choices.iter().map(|c| c.label.chars().count()).max().unwrap_or(0).min(40) + 3;
+    let label_width = choices.iter().map(|c| cols(&c.label)).max().unwrap_or(0).min(40) + 3;
     let mut lines: Vec<Line> = vec![Line::from(Span::styled("─".repeat(above.width as usize), theme.dim()))];
     for (i, choice) in choices.iter().enumerate().skip(first).take(SHOWN) {
         let (mark, label_style) =
             if i == picked { (Span::styled("› ", theme.accent()), theme.accent().add_modifier(Modifier::BOLD)) } else { (Span::raw("  "), theme.bold()) };
         lines.push(Line::from(vec![
             mark,
-            Span::styled(format!("{:<label_width$}", ui::fit(&choice.label, label_width - 3)), label_style),
+            Span::styled(pad(&ui::fit(&choice.label, label_width - 3), label_width), label_style),
             Span::styled(ui::fit(&choice.about, (above.width as usize).saturating_sub(label_width + 2)), theme.dim()),
         ]));
     }
     let more = choices.len().saturating_sub(first + SHOWN);
     lines.push(Line::from(Span::styled(
-        format!("  ↑↓ pick · tab or enter takes it · esc closes{}", if more > 0 { format!(" · {more} more") } else { String::new() }),
+        format!("  {}{}", t!("view.choices_keys"), if more > 0 { format!(" · {}", t!("view.choices_more", n = more)) } else { String::new() }),
         theme.dim(),
     )));
     let height = (lines.len() as u16).min(above.height);
@@ -825,10 +843,10 @@ fn now_unix() -> u64 {
 fn time_left(at: u64, now: u64) -> String {
     let minutes = at.saturating_sub(now).div_ceil(60);
     match minutes {
-        0 => "<1m".to_owned(),
-        m if m < 60 => format!("{m}m"),
-        m if m % 60 == 0 => format!("{}h", m / 60),
-        m => format!("{}h {}m", m / 60, m % 60),
+        0 => t!("view.time_under_minute").to_owned(),
+        m if m < 60 => t!("view.time_minutes", m = m),
+        m if m % 60 == 0 => t!("view.time_hours", h = m / 60),
+        m => t!("view.time_hours_minutes", h = m / 60, m = m % 60),
     }
 }
 
@@ -837,10 +855,10 @@ fn time_left(at: u64, now: u64) -> String {
 /// `usually done ~20:52 (12m)`, `longer than usual`.
 fn done_phrase(at: u64, guessed: bool, now: u64) -> String {
     match (at > now, guessed) {
-        (true, false) => format!("done ~{} ({})", clock(at), time_left(at, now)),
-        (true, true) => format!("usually done ~{} ({})", clock(at), time_left(at, now)),
-        (false, false) => format!("expected ~{}, still going", clock(at)),
-        (false, true) => "longer than usual".to_owned(),
+        (true, false) => t!("view.done_at", at = clock(at), left = time_left(at, now)),
+        (true, true) => t!("view.usually_done_at", at = clock(at), left = time_left(at, now)),
+        (false, false) => t!("view.expected_still_going", at = clock(at)),
+        (false, true) => t!("view.longer_than_usual").to_owned(),
     }
 }
 
@@ -848,7 +866,7 @@ fn done_phrase(at: u64, guessed: bool, now: u64) -> String {
 fn live_phrase(estimate: &Estimate, now: u64) -> Option<String> {
     let at = estimate.live_at?;
     let what = estimate.live_what.as_deref().map(|w| format!("{w} ")).unwrap_or_default();
-    Some(if at > now { format!("{what}live ~{} ({})", clock(at), time_left(at, now)) } else { format!("{what}live any minute") })
+    Some(if at > now { t!("view.live_at", what = what, at = clock(at), left = time_left(at, now)) } else { t!("view.live_any_minute", what = what) })
 }
 
 /// The shortest word on it, for a narrow row: time left until done, else
@@ -857,7 +875,7 @@ fn estimate_short(estimate: &Estimate, now: u64) -> Option<String> {
     let about = if estimate.guessed { "≈" } else { "~" };
     match (estimate.done_at, estimate.live_at) {
         (Some(at), _) if at > now => Some(format!("{about}{}", time_left(at, now))),
-        (Some(_), _) => Some(if estimate.guessed { "long" } else { "late" }.to_owned()),
+        (Some(_), _) => Some(if estimate.guessed { t!("view.estimate_long") } else { t!("view.estimate_late") }.to_owned()),
         (None, Some(at)) if at > now => Some(format!("↑{}", time_left(at, now))),
         _ => None,
     }
@@ -866,35 +884,38 @@ fn estimate_short(estimate: &Estimate, now: u64) -> Option<String> {
 /// `/usage`: the plan's windows, then each member — how full its context is,
 /// what it has processed, how much of that came from the cache.
 fn render_usage(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
-    let area = pane_title(vec![Span::styled("Usage", theme.bold())], vec![Span::styled("esc closes", theme.dim())], area, frame);
+    let area = pane_title(vec![Span::styled(t!("view.usage_title"), theme.bold())], vec![Span::styled(t!("view.esc_closes"), theme.dim())], area, frame);
     let width = (area.width as usize).saturating_sub(1);
     let heading = |h: &str| Line::from(Span::styled(h.to_owned(), theme.accent().add_modifier(Modifier::BOLD)));
-    let row = |k: &str, what: String| wrapped(vec![Span::styled(format!("  {:<14}", ui::fit(k, 13)), theme.bold())], &what, theme.dim(), 16, width);
-    let mut lines = vec![heading("CLAUDE PLAN")];
+    let row = |k: &str, what: String| wrapped(vec![Span::styled(format!("  {}", pad(&ui::fit(k, 13), 14)), theme.bold())], &what, theme.dim(), 16, width);
+    let mut lines = vec![heading(t!("view.usage_plan"))];
     match app.plan {
         Some(plan) => {
-            for (label, window) in [("5-hour", plan.five_hour), ("week", plan.seven_day)] {
+            for (label, window) in [(t!("view.window_five_hour"), plan.five_hour), (t!("view.window_week"), plan.seven_day)] {
                 if let Some(w) = window {
-                    lines.extend(row(label, format!("{}% used · starts over {}", w.used_percent, local_time(w.resets_at))));
+                    lines.extend(row(label, t!("view.window_used", percent = w.used_percent, when = local_time(w.resets_at))));
                 }
             }
         }
-        None => lines.extend(row("—", "reported after a member's next turn on Claude Code".into())),
+        None => lines.extend(row("—", t!("view.plan_not_reported").into())),
     }
     lines.push(Line::raw(""));
-    lines.push(heading("MEMBERS"));
+    lines.push(heading(t!("view.usage_members")));
     for agent in app.agents.iter().filter(|a| a.is_open()) {
         let context = agent
             .context
             .filter(|(_, w)| *w > 0)
-            .map_or_else(|| "context —".to_owned(), |(u, w)| format!("context {}% ({}k of {}k)", u * 100 / w, u / 1000, w / 1000));
-        let cache = (agent.seen.1 * 100).checked_div(agent.seen.0).map_or_else(String::new, |p| format!(" · {p}% from cache"));
-        lines.extend(row(&agent.label(), format!("{context} · {} tokens{cache}", short_count(agent.tokens))));
+            .map_or_else(
+                || t!("view.context_unknown").to_owned(),
+                |(u, w)| t!("view.context_of", percent = u * 100 / w, used = u / 1000, window = w / 1000),
+            );
+        let cache = (agent.seen.1 * 100).checked_div(agent.seen.0).map_or_else(String::new, |p| format!(" · {}", t!("view.from_cache", percent = p)));
+        lines.extend(row(&agent.label(), t!("view.usage_member", context = context, tokens = short_count(agent.tokens), cache = cache)));
     }
     lines.push(Line::raw(""));
     lines.extend(wrapped(
         Vec::new(),
-        "Tokens count everything a member's turns processed, the cached history read again each turn among them — at about a tenth of the price. A desk conversation starts afresh past 60% full; /compact or /clear does it now.",
+        t!("view.usage_note"),
         theme.dim(),
         0,
         width,
@@ -905,8 +926,8 @@ fn render_usage(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
 /// `/help`: what the console does, grouped — talking, looking around,
 /// answering — and every command, from the list completion uses.
 fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
-    let title = vec![Span::styled("Help", theme.bold())];
-    let area = pane_title(title, vec![Span::styled("esc closes", theme.dim())], area, frame);
+    let title = vec![Span::styled(t!("view.help_title"), theme.bold())];
+    let area = pane_title(title, vec![Span::styled(t!("view.esc_closes"), theme.dim())], area, frame);
     let width = (area.width as usize).saturating_sub(1);
     let commands: Vec<(String, &str)> =
         super::commands::COMMANDS.iter().map(|c| (format!("/{} {}", c.name, c.args).trim_end().to_owned(), c.about)).collect();
@@ -916,7 +937,7 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
         pairs
             .iter()
             .flat_map(|(k, what)| {
-                wrapped(vec![Span::styled(format!("  {:<column$}", ui::fit(k, column - 1)), theme.bold())], what, theme.dim(), column + 2, width)
+                wrapped(vec![Span::styled(format!("  {}", pad(&ui::fit(k, column - 1), column)), theme.bold())], what, theme.dim(), column + 2, width)
             })
             .collect()
     };
@@ -924,47 +945,50 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
     let pairs = |list: &[(&str, &'static str)]| -> Vec<(String, &'static str)> { list.iter().map(|(k, w)| ((*k).to_owned(), *w)).collect() };
     let mut lines = wrapped(
         Vec::new(),
-        "The PM is your one conversation: tell it what you want — it answers what's quick and puts the rest on tickets, which equipe hands to their owners. On the left: the PM, then every ticket by where it stands — waiting for you, in progress, to do, done — then the team. Open a ticket to see its work and steer it. A project chip in the header, or /project <name>, filters to one.",
+        t!("view.help_intro"),
         Style::new(),
         0,
         width,
     );
-    lines.extend(heading("TALK"));
-    // The keys of all three groups share one column.
-    let keys = 19;
-    lines.extend(rows(&pairs(&[
-        ("Enter", "send to the PM — or, with a ticket open, to the member on it, read at its next step"),
-        ("Tab", "with words typed to a member at work: a memo, read when its turn ends"),
-        ("@name …", "send to someone else — the PM hears about it"),
-        ("Tab · Shift-Tab", "walk the list on the left: the PM, the tickets, the team"),
-        ("Alt-Enter · Ctrl-J", "a new line (or \\ then Enter)"),
-        ("Esc", "stop a member mid-turn; what it hasn't read goes in at once"),
-        ("Ctrl-V", "attach the clipboard's image — or drop an image file on the terminal"),
-        ("⌃⇧V", "over SSH: your Mac's screenshot (once `equipe paste-setup` ran there)"),
-        ("→", "take the greyed suggestion in an empty composer"),
-    ]), keys));
-    lines.extend(heading("LOOK AROUND"));
-    lines.extend(rows(&pairs(&[
-        ("Ctrl-B", "the board, and back"),
-        ("Ctrl-P", "pick a project — the list, the board and new work follow · Enter takes the next, typing finds one"),
-        ("PgUp · PgDn · wheel", "scroll · End for the latest · Ctrl-O unfolds steps"),
-        ("Ctrl-W", "with nothing typed: watch the member's browser live, above its conversation · again to stop"),
-        ("click · drag", "a line on the left opens it · a ticket number opens it on the board · drag over text to copy it · drag the list's edge to resize it"),
-    ]), keys));
-    lines.extend(heading("ANSWER"));
-    lines.extend(rows(&pairs(&[
-        ("y · a · n", "allow · always allow · decline a request"),
-        ("on the board", "a accept · r ask for changes · d the diff · Enter talk to its owner"),
-    ]), keys));
-    lines.extend(heading("MODES — how much members do on their own · /mode [member] <mode>"));
+    let talk = pairs(&[
+        ("Enter", t!("view.help_enter")),
+        ("Tab", t!("view.help_tab")),
+        ("@name …", t!("view.help_at_name")),
+        ("Tab · Shift-Tab", t!("view.help_walk")),
+        ("Alt-Enter · Ctrl-J", t!("view.help_new_line")),
+        ("Esc", t!("view.help_esc")),
+        ("Ctrl-V", t!("view.help_ctrl_v")),
+        ("⌃⇧V", t!("view.help_ssh_paste")),
+        ("→", t!("view.help_suggestion")),
+    ]);
+    let look = pairs(&[
+        ("Ctrl-B", t!("view.help_ctrl_b")),
+        ("Ctrl-P", t!("view.help_ctrl_p")),
+        ("PgUp · PgDn · wheel", t!("view.help_scroll")),
+        ("Ctrl-W", t!("view.help_ctrl_w")),
+        (t!("view.help_click_drag_key"), t!("view.help_click_drag")),
+    ]);
+    let answer = pairs(&[
+        ("y · a · n", t!("view.help_yan")),
+        (t!("view.help_on_board_key"), t!("view.help_on_board")),
+    ]);
+    // The keys of all three groups share one column, as wide as the widest.
+    let keys = talk.iter().chain(&look).chain(&answer).map(|(k, _)| cols(k)).max().unwrap_or(0);
+    lines.extend(heading(t!("view.help_talk")));
+    lines.extend(rows(&talk, keys));
+    lines.extend(heading(t!("view.help_look_around")));
+    lines.extend(rows(&look, keys));
+    lines.extend(heading(t!("view.help_answer")));
+    lines.extend(rows(&answer, keys));
+    lines.extend(heading(t!("view.help_modes")));
     let modes: Vec<(String, &str)> =
         equipe_core::protocol::Mode::ALL.iter().map(|m| (m.label().to_owned(), m.summary())).collect();
     lines.extend(rows(&modes, keys));
-    lines.extend(heading("COMMANDS — type / to complete"));
-    let widest = commands.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
+    lines.extend(heading(t!("view.help_commands")));
+    let widest = commands.iter().map(|(k, _)| cols(k)).max().unwrap_or(0);
     lines.extend(rows(&commands, widest));
     lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled("Ctrl-C twice leaves — the squad keeps working in the background.", theme.dim())));
+    lines.push(Line::from(Span::styled(t!("view.help_leave"), theme.dim())));
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -983,17 +1007,19 @@ fn project_style(app: &App, project: Option<&std::path::Path>, theme: Theme) -> 
 /// work — padded to `width` so tags line up.
 fn project_tag(app: &App, ticket: &equipe_core::protocol::Ticket, theme: Theme, width: usize) -> Span<'static> {
     let project = app.ticket_project(ticket);
-    let name = project.as_deref().map_or_else(|| HOME_TAG.to_owned(), project_name);
+    let name = project.as_deref().map_or_else(|| home_tag().to_owned(), project_name);
     let style = if project.is_some() { project_style(app, project.as_deref(), theme) } else { theme.dim() };
-    Span::styled(format!("{:<width$}", ui::fit(&name, width)), style)
+    Span::styled(pad(&ui::fit(&name, width), width), style)
 }
 
 /// What the squad home's work is tagged with on the board.
-const HOME_TAG: &str = "home";
+fn home_tag() -> &'static str {
+    t!("view.home_tag")
+}
 
 /// The widest project tag a squad needs — "home" at least — up to 12 columns.
 fn tag_width(app: &App) -> usize {
-    app.projects.iter().map(|p| unicode_width::UnicodeWidthStr::width(project_name(p).as_str())).chain([HOME_TAG.len()]).max().unwrap_or(0).min(12)
+    app.projects.iter().map(|p| cols(&project_name(p))).chain([cols(home_tag())]).max().unwrap_or(0).min(12)
 }
 
 /// The header: the wordmark, the squad (a click lists the others), its home,
@@ -1012,7 +1038,11 @@ fn header(app: &App, theme: Theme, narrow: bool, width: usize) -> (Vec<Span<'sta
     if narrow {
         let working = app.working();
         let open = app.agents.iter().filter(|a| a.is_open()).count();
-        let summary = if working > 0 { format!("   {open} members · {working} working") } else { format!("   {open} members") };
+        let summary = if working > 0 {
+            format!("   {}", t!("view.members_working", open = open, working = working))
+        } else {
+            format!("   {}", t!("view.members", open = open))
+        };
         spans.push(Span::styled(summary, theme.dim()));
     }
     // Who has the Mac's screen, whichever squad: there is only one.
@@ -1048,7 +1078,8 @@ fn header(app: &App, theme: Theme, narrow: bool, width: usize) -> (Vec<Span<'sta
         let all: Vec<(Vec<Span<'static>>, u8)> = app.projects.iter().map(one).collect();
         let width_of = |spans: &[Span]| spans.iter().map(Span::width).sum::<usize>();
         let sep = 3; // " · "
-        let all_chip = 3; // "all"
+        let all_label = t!("view.all");
+        let all_chip = cols(all_label);
         let more = |hidden: usize| if hidden == 0 { 0 } else { sep + format!("+{hidden} ▾").chars().count() };
         // As much as fits next to the squad's name; the rest behind "+N".
         let room = width.saturating_sub(used(&spans) + 3);
@@ -1083,7 +1114,7 @@ fn header(app: &App, theme: Theme, narrow: bool, width: usize) -> (Vec<Span<'sta
             chip(&mut chips, vec![Span::styled(format!("+{hidden} ▾"), theme.bold())], Hit::Projects);
         }
         let style = if app.focus.is_none() { theme.bold().add_modifier(Modifier::UNDERLINED) } else { theme.dim() };
-        chip(&mut chips, vec![Span::styled("all", style)], Hit::Project(None));
+        chip(&mut chips, vec![Span::styled(all_label, style)], Hit::Project(None));
     }
     // The squad home, between the name and the chips: what doesn't fit of it
     // goes first, keeping its end.
@@ -1164,30 +1195,30 @@ fn glyph(app: &App, agent: &Agent, theme: Theme) -> Span<'static> {
 fn doing(agent: &Agent) -> &'static str {
     match agent.transcript.entries().last() {
         Some(Entry::Tool { tool, .. }) => match tool_verb(tool) {
-            "read" => "reading",
-            "edit" | "write" => "editing",
-            "run" => "running",
-            "search" => "searching",
-            "fetch" => "looking it up",
-            "board" => "checking the board",
-            "ticket" => "updating the board",
-            "comment" => "commenting",
-            "hand in" => "handing in",
-            "browse" => "browsing",
-            "delegate" => "delegating",
-            "ask you" => "waiting for you",
-            _ => "working",
+            "read" => t!("view.doing_reading"),
+            "edit" | "write" => t!("view.doing_editing"),
+            "run" => t!("view.doing_running"),
+            "search" => t!("view.doing_searching"),
+            "fetch" => t!("view.doing_looking_up"),
+            "board" => t!("view.doing_checking_board"),
+            "ticket" => t!("view.doing_updating_board"),
+            "comment" => t!("view.doing_commenting"),
+            "hand in" => t!("view.doing_handing_in"),
+            "browse" => t!("view.doing_browsing"),
+            "delegate" => t!("view.doing_delegating"),
+            "ask you" => t!("view.waiting_for_you_lower"),
+            _ => t!("view.working"),
         },
-        Some(Entry::Reply { .. }) => "writing",
-        _ => "thinking",
+        Some(Entry::Reply { .. }) => t!("view.doing_writing"),
+        _ => t!("view.doing_thinking"),
     }
 }
 
 /// The side list, a line each: the PM, then the tickets by where they stand,
 /// then the team — and what a click on each line opens.
 fn side_lines(app: &App, theme: Theme, area: Rect) -> Vec<(Line<'static>, Option<Side>)> {
-    let mut lines: Vec<(Line<'static>, Option<Side>)> = vec![(Line::from(Span::styled("SQUAD", theme.dim())), None), (Line::raw(""), None)];
-    let name_width = app.agents.iter().map(|a| a.label().chars().count()).max().unwrap_or(4).clamp(4, 12);
+    let mut lines: Vec<(Line<'static>, Option<Side>)> = vec![(Line::from(Span::styled(t!("view.side_squad"), theme.dim())), None), (Line::raw(""), None)];
+    let name_width = app.agents.iter().map(|a| cols(&a.label())).max().unwrap_or(4).clamp(4, 12);
     let open = (app.pane == Pane::Conversation).then(|| app.side_open());
     for side in app.side() {
         match side {
@@ -1250,13 +1281,13 @@ fn ticket_line(app: &App, ticket: &equipe_core::protocol::Ticket, open: bool, ar
         _ => Span::styled(mark, theme.member(hue)),
     };
     let (detail, detail_style) = match ticket.status {
-        TicketStatus::Review => ("review".to_owned(), theme.accent()),
-        TicketStatus::Waiting => ("needs you".to_owned(), theme.accent()),
-        TicketStatus::Proposed => ("proposed".to_owned(), theme.dim()),
+        TicketStatus::Review => (t!("view.review").to_owned(), theme.accent()),
+        TicketStatus::Waiting => (t!("view.needs_you").to_owned(), theme.accent()),
+        TicketStatus::Proposed => (t!("view.proposed").to_owned(), theme.dim()),
         TicketStatus::InProgress => (on_it.and_then(|a| app.estimate_of(a)).and_then(|e| estimate_short(e, now_unix())).unwrap_or_default(), theme.dim()),
         TicketStatus::Todo => (ticket.owner.clone().unwrap_or_default(), theme.dim()),
         TicketStatus::Done => ("✓".to_owned(), theme.dim()),
-        TicketStatus::Cancelled => ("cancelled".to_owned(), theme.dim()),
+        TicketStatus::Cancelled => (t!("view.cancelled").to_owned(), theme.dim()),
     };
     let id = format!("T-{}", ticket.id);
     let project = app.ticket_project(ticket);
@@ -1285,22 +1316,22 @@ fn member_line(app: &App, agent: &Agent, open: bool, name_width: usize, area: Re
     let marker = if open { Span::styled("› ", theme.accent()) } else { Span::raw("  ") };
     let name = ui::fit(&agent.label(), name_width);
     let style = theme.member(agent_look(agent).1);
-    let name = Span::styled(format!("{name:<name_width$}"), if open { style.add_modifier(Modifier::BOLD) } else { style });
+    let name = Span::styled(pad(&name, name_width), if open { style.add_modifier(Modifier::BOLD) } else { style });
     // What it is doing, the most pressing first: needs you, a memo waiting,
     // its ticket, its model.
     let detail = if app.needs_you(agent) {
-        Span::styled("needs you", theme.accent())
+        Span::styled(t!("view.needs_you"), theme.accent())
     } else {
         let text = match (agent.queued.len() + agent.steering.len(), agent.ticket) {
-            (1, _) if agent.steering.is_empty() => "1 memo".to_owned(),
-            (n @ 2.., _) if agent.steering.is_empty() => format!("{n} memos"),
-            (n @ 1.., _) => format!("{n} unread"),
+            (1, _) if agent.steering.is_empty() => t!("view.one_memo").to_owned(),
+            (n @ 2.., _) if agent.steering.is_empty() => t!("view.memos", n = n),
+            (n @ 1.., _) => t!("view.unread", n = n),
             (0, Some(ticket)) => format!("T-{ticket}"),
             (0, None) => agent.short_model().unwrap_or_default(),
         };
         // Several of its conversations at work at once.
         let at_once = app.lanes_working(agent) + usize::from(agent.state == AgentState::Working);
-        let text = if at_once > 1 { format!("{at_once} at once") } else { text };
+        let text = if at_once > 1 { t!("view.at_once", n = at_once) } else { text };
         // When it expects to be done — or what it ships, live.
         let text = match app.estimate_of(agent).and_then(|e| estimate_short(e, now_unix())) {
             Some(left) if text.is_empty() => left,
@@ -1353,7 +1384,7 @@ fn subagent_rows(agent: &Agent) -> Vec<String> {
         })
         .collect();
     if agent.subagents.len() > SUBAGENTS_SHOWN {
-        rows.push(format!("↳ +{} more subagents", agent.subagents.len() - SUBAGENTS_SHOWN));
+        rows.push(format!("↳ {}", t!("view.more_subagents", n = agent.subagents.len() - SUBAGENTS_SHOWN)));
     }
     rows
 }
@@ -1412,7 +1443,30 @@ fn tool_line(line: &ToolLine, theme: Theme, width: usize) -> Vec<Line<'static>> 
     if line.targets.len() > TARGETS_SHOWN {
         named.push(format!("+{}", line.targets.len() - TARGETS_SHOWN));
     }
-    wrapped(vec![mark], &format!("{:<6} {}", line.verb, named.join(", ")), theme.dim(), 2, width)
+    wrapped(vec![mark], &format!("{} {}", pad(verb_word(&line.verb), 6), named.join(", ")), theme.dim(), 2, width)
+}
+
+/// A step's verb as the person reads it — `read`, `edit`, `run` — in their
+/// language; a tool equipe has no word for keeps its own name.
+fn verb_word(verb: &str) -> &str {
+    match verb {
+        "read" => t!("view.verb_read"),
+        "edit" => t!("view.verb_edit"),
+        "write" => t!("view.verb_write"),
+        "run" => t!("view.verb_run"),
+        "search" => t!("view.verb_search"),
+        "fetch" => t!("view.verb_fetch"),
+        "delegate" => t!("view.verb_delegate"),
+        "board" => t!("view.verb_board"),
+        "ticket" => t!("view.verb_ticket"),
+        "comment" => t!("view.verb_comment"),
+        "hand in" => t!("view.verb_hand_in"),
+        "wait on you" => t!("view.verb_wait_on_you"),
+        "ask you" => t!("view.verb_ask_you"),
+        "browse" => t!("view.verb_browse"),
+        "recall" => t!("view.verb_recall"),
+        other => other,
+    }
 }
 
 /// A run of tool use longer than this folds to its first and last lines.
@@ -1434,9 +1488,9 @@ fn tool_run(run: Vec<ToolLine>, expanded: bool, theme: Theme, width: usize) -> V
     }
     let hidden = run.len() - head - tail;
     lines.push(Line::from(vec![
-        Span::styled(format!("· {hidden} more steps · "), theme.dim()),
+        Span::styled(format!("· {} · ", t!("view.more_steps", n = hidden)), theme.dim()),
         Span::styled("ctrl-o", theme.bold()),
-        Span::styled(" to unfold", theme.dim()),
+        Span::styled(format!(" {}", t!("view.to_unfold")), theme.dim()),
     ]));
     for line in &run[run.len() - tail..] {
         lines.extend(tool_line(line, theme, width));
@@ -1569,19 +1623,14 @@ fn transcript_lines(agent: &Agent, looks: &Looks, theme: Theme, width: usize) ->
     if agent.shown().is_empty() && agent.queued.is_empty() {
         let thread_hello;
         let hello = if let Some(project) = agent.thread_view.as_deref().filter(|_| agent.is_pm()) {
-            thread_hello = format!(
-                "The PM's conversation about {project} — its own, apart from the other projects' and the whole squad's. \
-Write to start it; the PM knows the board and what the squad remembers. Ctrl-P picks another project."
-            );
+            thread_hello = t!("view.hello_pm_thread", project = project);
             thread_hello.as_str()
         } else if agent.is_pm() {
-            "Tell the PM what you want to build — it plans the work and puts it on the board, and equipe hands \
-each ticket to its owner. Tab or @name talks to anyone directly; Ctrl-B shows the board."
+            t!("view.hello_pm")
         } else if agent.edit {
-            "It picks up its tickets from the board and works on each in a worktree of its own. \
-You can talk to it directly — the PM hears about it."
+            t!("view.hello_member_edits")
         } else {
-            "Talk to it directly — the PM hears about it."
+            t!("view.hello_member")
         };
         return wrapped(Vec::new(), hello, theme.dim(), 0, width);
     }
@@ -1678,10 +1727,12 @@ You can talk to it directly — the PM hears about it."
                 }
             }
             Entry::Landed { branch, stat } => {
+                let (before, after) = around(t!("view.changes_committed"), "branch");
                 lines.push(Line::from(vec![
                     Span::styled("✓ ", theme.accent()),
-                    Span::raw("Changes committed to "),
+                    Span::raw(before),
                     Span::styled(branch.clone(), theme.bold()),
+                    Span::raw(after),
                 ]));
                 for row in stat.lines() {
                     lines.push(Line::from(Span::styled(format!("  {}", row.trim()), theme.dim())));
@@ -1698,13 +1749,13 @@ You can talk to it directly — the PM hears about it."
     for (memo, _) in agent.queued.iter().zip(&agent.queued_in).filter(|(_, about)| here(about)) {
         gap(&mut lines);
         lines.extend(wrapped(vec![Span::styled("› ", theme.dim())], memo, theme.dim(), 2, width));
-        lines.push(Line::from(Span::styled("  memo · read when this turn ends", theme.dim())));
+        lines.push(Line::from(Span::styled(format!("  {}", t!("view.memo_note")), theme.dim())));
     }
     // Said while it works: read at its next step, the work carrying on.
     for text in &agent.steering {
         gap(&mut lines);
         lines.extend(wrapped(vec![Span::styled("› ", theme.accent())], text, theme.dim(), 2, width));
-        lines.push(Line::from(Span::styled("  steering · read at its next step, nothing stopped", theme.dim())));
+        lines.push(Line::from(Span::styled(format!("  {}", t!("view.steering_note")), theme.dim())));
     }
     lines
 }
@@ -1732,19 +1783,19 @@ fn switch_label(app: &App, pane: Pane, theme: Theme) -> Vec<Span<'static>> {
         Pane::Conversation => {
             let review = app.to_review().len();
             let waiting = app.tickets.iter().filter(|t| t.status == TicketStatus::Waiting).count();
-            let mut spans = vec![Span::styled("Board", theme.bold())];
+            let mut spans = vec![Span::styled(t!("view.board"), theme.bold())];
             if review > 0 {
-                spans.push(Span::styled(format!(" · {review} to review"), theme.accent()));
+                spans.push(Span::styled(format!(" · {}", t!("view.to_review", n = review)), theme.accent()));
             }
             if waiting > 0 {
-                spans.push(Span::styled(format!(" · {waiting} waiting on you"), theme.accent()));
+                spans.push(Span::styled(format!(" · {}", t!("view.waiting_on_you", n = waiting)), theme.accent()));
             }
             spans.push(Span::styled("  ctrl-b", theme.dim()));
             spans
         }
         Pane::Board => {
             let Some(agent) = app.selected() else {
-                return vec![Span::styled("← conversation", theme.bold()), Span::styled("  ctrl-b", theme.dim())];
+                return vec![Span::styled(format!("← {}", t!("view.conversation")), theme.bold()), Span::styled("  ctrl-b", theme.dim())];
             };
             vec![
                 Span::styled("← ", theme.bold()),
@@ -1761,11 +1812,11 @@ fn render_watch(frame: &mut Frame, area: Rect, app: &App, agent: &Agent, theme: 
     let [head, picture, _] = Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)]).areas(area);
     let name = agent.label();
     let shown = app.frame.as_ref().filter(|f| f.session == agent.id);
-    let mut line = vec![Span::styled(format!("{name}'s browser"), theme.bold())];
+    let mut line = vec![Span::styled(t!("view.browser_of", name = name), theme.bold())];
     if let Some(url) = shown.and_then(|f| f.url.as_deref()) {
         line.push(Span::styled(format!("  ·  {url}"), theme.dim()));
     }
-    line.push(Span::styled("  ·  live · Ctrl-W stops", theme.dim()));
+    line.push(Span::styled(format!("  ·  {}", t!("view.watch_live")), theme.dim()));
     frame.render_widget(Paragraph::new(Line::from(line)), head);
     let drawn = match (shown, &layouts.picker) {
         (Some(shot), Some(picker)) => {
@@ -1787,9 +1838,9 @@ fn render_watch(frame: &mut Frame, area: Rect, app: &App, agent: &Agent, theme: 
     };
     if !drawn {
         let text = if shown.is_some() {
-            format!("A picture of {name}'s browser came in — this terminal can't draw it.")
+            t!("view.watch_cant_draw", name = name)
         } else {
-            format!("Waiting for {name}'s browser · a picture comes while it has a page open.")
+            t!("view.watch_waiting", name = name)
         };
         frame.render_widget(Paragraph::new(Span::styled(text, theme.dim())), picture);
     }
@@ -1808,7 +1859,7 @@ fn render_ticket(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let width = (area.width as usize).saturating_sub(1).min(PROSE_MAX + 20);
     let mut lines = ticket_detail(app, theme, width);
     lines.push(Line::raw(""));
-    let hint = ticket_hint(app).unwrap_or_else(|| format!("What you write goes to the PM, about T-{}.", ticket.id));
+    let hint = ticket_hint(app).unwrap_or_else(|| t!("view.write_goes_to_pm", id = ticket.id));
     lines.push(Line::from(Span::styled(hint, theme.dim())));
     frame.render_widget(Paragraph::new(lines).scroll((app.board_scroll as u16, 0)), area);
 }
@@ -1817,8 +1868,8 @@ fn render_ticket(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
 fn ticket_hint(app: &App) -> Option<String> {
     let ticket = app.opened.and_then(|id| app.tickets.iter().find(|t| t.id == id))?;
     match ticket.status {
-        TicketStatus::Review => Some(format!("/accept T-{0} · /reopen T-{0} <why> · ctrl-b shows the changes", ticket.id)),
-        TicketStatus::Waiting => Some(format!("/resume T-{} once you have done what it needs", ticket.id)),
+        TicketStatus::Review => Some(t!("view.hint_review", id = ticket.id)),
+        TicketStatus::Waiting => Some(t!("view.hint_waiting", id = ticket.id)),
         _ => None,
     }
 }
@@ -1838,14 +1889,14 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
     } else { match agent.ticket.and_then(|id| app.tickets.iter().find(|t| t.id == id)) {
         Some(ticket) => title.push(Span::styled(format!("  ·  T-{} {}", ticket.id, ticket.title), theme.dim())),
         // With every project in view, the PM's is the whole squad's conversation.
-        None if app.shows_overview() => title.push(Span::styled("  ·  the whole squad", theme.dim())),
+        None if app.shows_overview() => title.push(Span::styled(format!("  ·  {}", t!("view.whole_squad")), theme.dim())),
         None => title.push(Span::styled(format!("  ·  {}", agent.engine_label()), theme.dim())),
     } }
     // How full its conversation is: past half, in the accent, with what to do.
     if let Some((used, window)) = agent.context.filter(|(_, w)| *w > 0) {
         let percent = used * 100 / window;
         let style = if percent >= 50 { theme.accent() } else { theme.dim() };
-        title.push(Span::styled(format!("  ·  context {percent}%"), style));
+        title.push(Span::styled(format!("  ·  {}", t!("view.context_percent", percent = percent)), style));
         if percent >= 50 {
             title.push(Span::styled(" · /compact", theme.dim()));
         }
@@ -1857,7 +1908,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
     let mut footer: Vec<Line<'static>> = Vec::new();
     if agent.scroll_back > 0 && agent.unseen > 0 {
         footer.push(Line::from(vec![
-            Span::styled(format!("↓ {} new lines", agent.unseen), theme.accent()),
+            Span::styled(t!("view.new_lines", n = agent.unseen), theme.accent()),
             Span::styled(" · End", theme.dim()),
         ]));
     } else if agent.state == AgentState::Working {
@@ -1866,7 +1917,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
         let mut row = vec![theme.spinner(now), Span::raw(" ")];
         // A turn in another project's conversation says where.
         if !agent.in_view(agent.current_thread()) {
-            row.push(Span::styled(format!("in {} · ", agent.current_thread().unwrap_or("the squad")), theme.dim()));
+            row.push(Span::styled(format!("{} · ", t!("view.working_in", place = agent.current_thread().unwrap_or(t!("view.the_squad")))), theme.dim()));
         }
         row.extend(theme.shimmer(doing(agent), now));
         let shown = agent.shown_estimate();
@@ -1878,7 +1929,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
             Span::styled(live.map(|l| format!(" · {l}")).unwrap_or_default(), theme.accent()),
             // What it has written so far, as Claude Code shows it.
             Span::styled(if agent.output > 0 { format!(" · ↓ {}", short_count(agent.output)) } else { String::new() }, theme.dim()),
-            Span::styled(" · esc to stop", theme.dim()),
+            Span::styled(format!(" · {}", t!("view.esc_to_stop")), theme.dim()),
         ]);
         footer.push(Line::from(row));
     } else if let Some(live) = agent.estimate.as_ref().and_then(|e| live_phrase(e, now_unix())) {
@@ -2029,7 +2080,7 @@ fn render_scrollbar(frame: &mut Frame, area: Rect, top: usize, height: usize, to
 
 /// A ticket's kind, as a column before its title: `code`, `task` or `action`.
 fn kind_tag(t: &equipe_core::protocol::Ticket) -> String {
-    format!("{:<8}", t.kind.label())
+    pad(t.kind.label(), 8)
 }
 
 /// A ticket that waits on the person: to review, or for their part done.
@@ -2050,21 +2101,21 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
     let query = app.board_query();
     let heading = |t: &equipe_core::protocol::Ticket| -> String {
         if let Some(q) = &query {
-            return format!("FOUND for “{q}” · esc clears");
+            return t!("view.heading_found", query = q);
         }
         if app.board_graph {
-            return "BY WHAT WAITS FOR WHAT · g for the board by state".into();
+            return t!("view.heading_by_dependency").into();
         }
         match t.status {
-            TicketStatus::Review => "YOUR REVIEW".into(),
-            TicketStatus::Waiting => "WAITING ON YOU".into(),
+            TicketStatus::Review => t!("view.heading_review").into(),
+            TicketStatus::Waiting => t!("view.heading_waiting").into(),
             TicketStatus::InProgress | TicketStatus::Todo | TicketStatus::Proposed if lanes => {
-                app.ticket_project(t).as_deref().map_or_else(|| HOME_TAG.to_owned(), project_name)
+                app.ticket_project(t).as_deref().map_or_else(|| home_tag().to_owned(), project_name)
             }
-            TicketStatus::InProgress => "IN PROGRESS".into(),
-            TicketStatus::Todo => "TO DO".into(),
-            TicketStatus::Proposed => "PROPOSED".into(),
-            TicketStatus::Done | TicketStatus::Cancelled => "DONE".into(),
+            TicketStatus::InProgress => t!("view.heading_in_progress").into(),
+            TicketStatus::Todo => t!("view.heading_todo").into(),
+            TicketStatus::Proposed => t!("view.heading_proposed").into(),
+            TicketStatus::Done | TicketStatus::Cancelled => t!("view.heading_done").into(),
         }
     };
     let mut rows: Vec<(Line<'static>, Option<u32>)> = Vec::new();
@@ -2080,8 +2131,8 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
     let folded = |label: &str| -> Option<Line<'static>> {
         let more = totals.get(label).copied().unwrap_or(0).saturating_sub(shown(label));
         // Done work stays at its latest few; finding reaches the rest.
-        let how = if label == "DONE" { "f finds them" } else { "e shows all · f finds" };
-        (more > 0).then(|| Line::from(Span::styled(format!("    … {more} more · {how}"), theme.dim())))
+        let how = if label == t!("view.heading_done") { t!("view.fold_done") } else { t!("view.fold_more") };
+        (more > 0).then(|| Line::from(Span::styled(format!("    … {}", t!("view.folded", n = more, how = how)), theme.dim())))
     };
     for id in &order {
         let Some(t) = app.tickets.iter().find(|t| t.id == *id) else {
@@ -2109,17 +2160,17 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
         let selected = picked == Some(t.id);
         let who = t.assignee.as_ref().or(t.owner.as_ref()).cloned().unwrap_or_default();
         let state = match t.status {
-            TicketStatus::Review => "waits for you".to_owned(),
-            TicketStatus::Waiting => "needs you".to_owned(),
-            TicketStatus::InProgress => "working".to_owned(),
+            TicketStatus::Review => t!("view.waits_for_you").to_owned(),
+            TicketStatus::Waiting => t!("view.needs_you").to_owned(),
+            TicketStatus::InProgress => t!("view.working").to_owned(),
             TicketStatus::Todo if !t.depends_on.is_empty() => {
-                format!("after {}", t.depends_on.iter().map(|d| format!("T-{d}")).collect::<Vec<_>>().join(", "))
+                t!("view.after_tickets", ids = t.depends_on.iter().map(|d| format!("T-{d}")).collect::<Vec<_>>().join(", "))
             }
-            TicketStatus::Todo => "to do".to_owned(),
-            TicketStatus::Proposed => "proposed".to_owned(),
-            TicketStatus::Done if t.not_on_main() => "not on main".to_owned(),
-            TicketStatus::Done => "done".to_owned(),
-            TicketStatus::Cancelled => "cancelled".to_owned(),
+            TicketStatus::Todo => t!("view.to_do").to_owned(),
+            TicketStatus::Proposed => t!("view.proposed").to_owned(),
+            TicketStatus::Done if t.not_on_main() => t!("view.not_on_main").to_owned(),
+            TicketStatus::Done => t!("view.done").to_owned(),
+            TicketStatus::Cancelled => t!("view.cancelled").to_owned(),
         };
         // Columns: marker, id, project, kind, title (what's left), owner, state.
         // Fixed columns, so owners and states line up down the list.
@@ -2133,8 +2184,8 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
             Some(&d) if d > 0 => format!("{}└ ", "  ".repeat(d - 1)),
             _ => String::new(),
         };
-        let title = format!("{branch}{}", ui::fit(&t.title, title_room.saturating_sub(kind.len() + branch.chars().count())));
-        let pad = title_room.saturating_sub(kind.len() + unicode_width::UnicodeWidthStr::width(title.as_str()));
+        let title = format!("{branch}{}", ui::fit(&t.title, title_room.saturating_sub(cols(&kind) + cols(&branch))));
+        let gap = title_room.saturating_sub(cols(&kind) + cols(&title));
         let closed = t.status.is_closed();
         let title_style = match (selected, closed) {
             (true, _) => theme.bold(),
@@ -2150,8 +2201,8 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
         spans.extend([
             Span::styled(kind, theme.dim()),
             Span::styled(title, title_style),
-            Span::raw(" ".repeat(pad + 2)),
-            Span::styled(format!("{who:<10}  "), if closed { theme.dim() } else { member_style(app, &who, theme) }),
+            Span::raw(" ".repeat(gap + 2)),
+            Span::styled(format!("{}  ", pad(&who, 10)), if closed { theme.dim() } else { member_style(app, &who, theme) }),
             Span::styled(ui::fit(&state, tail_width.saturating_sub(12)), state_style),
         ]);
         rows.push((Line::from(spans), Some(t.id)));
@@ -2170,7 +2221,7 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         if let Some(focus) = app.focus.as_deref().filter(|_| !app.tickets.is_empty()) {
             return wrapped(
                 Vec::new(),
-                &format!("Nothing on the board for {} · /project all shows every project.", project_name(focus)),
+                &t!("view.nothing_for_project", project = project_name(focus)),
                 theme.dim(),
                 0,
                 width,
@@ -2178,7 +2229,7 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         }
         return wrapped(
             Vec::new(),
-            "The board is empty. Tell the PM what you want to build — it puts the work here.",
+            t!("view.board_empty"),
             theme.dim(),
             0,
             width,
@@ -2191,14 +2242,14 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     }
     facts.push(
         match t.status {
-            TicketStatus::Review => "handed in — waits for your review",
-            TicketStatus::Waiting => "put down — waits for you to do your part",
-            TicketStatus::InProgress => "in progress",
-            TicketStatus::Todo => "to do",
-            TicketStatus::Proposed => "proposed",
-            TicketStatus::Done if t.not_on_main() => "accepted — not on main yet",
-            TicketStatus::Done => "done",
-            TicketStatus::Cancelled => "cancelled",
+            TicketStatus::Review => t!("view.detail_review"),
+            TicketStatus::Waiting => t!("view.detail_waiting"),
+            TicketStatus::InProgress => t!("view.in_progress"),
+            TicketStatus::Todo => t!("view.to_do"),
+            TicketStatus::Proposed => t!("view.proposed"),
+            TicketStatus::Done if t.not_on_main() => t!("view.detail_not_on_main"),
+            TicketStatus::Done => t!("view.done"),
+            TicketStatus::Cancelled => t!("view.cancelled"),
         }
         .to_owned(),
     );
@@ -2221,10 +2272,12 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         }
     };
     let unblocks: Vec<TicketId> = app.tickets.iter().filter(|o| o.depends_on.contains(&t.id) && !o.status.is_closed()).map(|o| o.id).collect();
-    for (label, ids) in [("after", t.depends_on.clone()), ("unblocks", unblocks)] {
+    let links = [(t!("view.label_after"), t.depends_on.clone()), (t!("view.label_unblocks"), unblocks)];
+    let column = links.iter().map(|(label, _)| cols(label) + 1).max().unwrap_or(0).max(10);
+    for (label, ids) in links {
         if !ids.is_empty() {
             let text = ids.into_iter().map(named).collect::<Vec<_>>().join(" · ");
-            lines.push(Line::from(vec![Span::styled(format!("{label:<10}"), theme.dim()), Span::raw(ui::fit(&text, width.saturating_sub(10)))]));
+            lines.push(Line::from(vec![Span::styled(pad(label, column), theme.dim()), Span::raw(ui::fit(&text, width.saturating_sub(column)))]));
         }
     }
     // The keys come right under the title, so a long hand-in never pushes
@@ -2233,31 +2286,31 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     let mut actions: Vec<(&str, String)> = Vec::new();
     match t.status {
         TicketStatus::Review => {
-            actions.push(("a", "accept".into()));
-            actions.push(("r", "ask for changes".into()));
+            actions.push(("a", t!("view.action_accept").into()));
+            actions.push(("r", t!("view.action_ask_changes").into()));
         }
         TicketStatus::Waiting => {
-            actions.push(("r", "done — resume".into()));
-            actions.push(("a", "mark done".into()));
+            actions.push(("r", t!("view.action_resume").into()));
+            actions.push(("a", t!("view.action_mark_done").into()));
         }
         TicketStatus::Done => {
             if t.not_on_main() {
-                actions.push(("m", "merge into main".into()));
+                actions.push(("m", t!("view.action_merge").into()));
             }
-            actions.push(("r", "reopen".into()));
+            actions.push(("r", t!("view.action_reopen").into()));
         }
-        TicketStatus::InProgress | TicketStatus::Todo | TicketStatus::Proposed => actions.push(("a", "mark done".into())),
+        TicketStatus::InProgress | TicketStatus::Todo | TicketStatus::Proposed => actions.push(("a", t!("view.action_mark_done").into())),
         TicketStatus::Cancelled => {}
     }
     if t.branch.is_some() {
-        actions.push(("d", "see the diff".into()));
+        actions.push(("d", t!("view.action_diff").into()));
     }
     if let Some(who) = who {
-        actions.push(("enter", format!("talk to {who}")));
+        actions.push(("enter", t!("view.action_talk_to", name = who)));
     }
-    actions.push(("↑↓", "tickets".into()));
-    actions.push(("g", if app.board_graph { "by state".into() } else { "what waits for what".into() }));
-    actions.push(("f", "find".into()));
+    actions.push(("↑↓", t!("view.action_tickets").into()));
+    actions.push(("g", if app.board_graph { t!("view.action_by_state").into() } else { t!("view.action_by_dependency").into() }));
+    actions.push(("f", t!("view.action_find").into()));
     let mut keys = Vec::new();
     for (i, (k, what)) in actions.into_iter().enumerate() {
         if i > 0 {
@@ -2281,26 +2334,28 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         lines.extend(markdown::lines(&t.body, width, &theme.markdown()));
     }
     // What changed, and where to see it.
-    let key = |k: &str| Span::styled(format!("{k:<9}"), theme.dim());
+    let (changed, branch_label, look_in) = (t!("view.label_changed"), t!("view.label_branch"), t!("view.label_look_in"));
+    let column = [changed, branch_label, look_in].iter().map(|k| cols(k) + 1).max().unwrap_or(0).max(9);
+    let key = |k: &str| Span::styled(pad(k, column), theme.dim());
     let mut place = Vec::new();
     if let Some((branch, stat)) = app.diffs.get(&t.id).filter(|(b, _)| Some(b) == t.branch.as_ref()) {
         let files: Vec<&str> = stat.lines().filter(|l| l.contains('|')).map(|l| l.split('|').next().unwrap_or("").trim()).collect();
         let summary = stat.lines().last().map(str::trim).unwrap_or("").to_owned();
         if !summary.is_empty() {
-            place.push(Line::from(vec![key("changed"), Span::raw(summary)]));
+            place.push(Line::from(vec![key(changed), Span::raw(summary)]));
             let shown: Vec<&str> = files.iter().take(4).copied().collect();
             let more = if files.len() > 4 { format!(" +{}", files.len() - 4) } else { String::new() };
-            place.push(Line::from(vec![key(""), Span::styled(ui::fit(&format!("{}{more}", shown.join(" · ")), width.saturating_sub(9)), theme.dim())]));
+            place.push(Line::from(vec![key(""), Span::styled(ui::fit(&format!("{}{more}", shown.join(" · ")), width.saturating_sub(column)), theme.dim())]));
         }
         // The squad's folder shows no git words.
         if !t.kind.in_home() {
-            place.push(Line::from(vec![key("branch"), Span::styled(branch.clone(), theme.dim())]));
+            place.push(Line::from(vec![key(branch_label), Span::styled(branch.clone(), theme.dim())]));
         }
     } else if let Some(branch) = t.branch.as_ref().filter(|_| !t.kind.in_home()) {
-        place.push(Line::from(vec![key("branch"), Span::styled(branch.clone(), theme.dim())]));
+        place.push(Line::from(vec![key(branch_label), Span::styled(branch.clone(), theme.dim())]));
     }
     if let Some(worktree) = &t.worktree {
-        place.push(Line::from(vec![key("look in"), Span::styled(display_path(worktree), theme.dim())]));
+        place.push(Line::from(vec![key(look_in), Span::styled(display_path(worktree), theme.dim())]));
     }
     if !place.is_empty() {
         lines.push(Line::raw(""));
@@ -2329,7 +2384,7 @@ fn list_top(rows: &[(Line<'static>, Option<u32>)], picked: Option<u32>, height: 
 }
 
 fn render_board(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
-    let title = vec![Span::styled("Board", theme.bold())];
+    let title = vec![Span::styled(t!("view.board"), theme.bold())];
     let area = pane_title(title, switch_label(app, Pane::Board, theme), area, frame);
     let width = (area.width as usize).saturating_sub(1).min(PROSE_MAX + 20);
     let rows = board_list(app, theme, width);
@@ -2353,15 +2408,15 @@ fn render_board(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         && let Some(last) = shown.last_mut()
     {
         *last = Line::from(vec![
-            Span::styled(format!("↓ {} more lines · ", below + 1), theme.accent()),
+            Span::styled(format!("↓ {} · ", t!("view.more_lines", n = below + 1)), theme.accent()),
             Span::styled("PgDn", theme.bold()),
-            Span::styled(" or scroll here", theme.dim()),
+            Span::styled(format!(" {}", t!("view.or_scroll_here")), theme.dim()),
         ]);
     }
     if top > 0 && height > 2
         && let Some(first) = shown.first_mut()
     {
-        *first = Line::from(vec![Span::styled(format!("↑ {} lines above · ", top + 1), theme.dim()), Span::styled("PgUp", theme.bold())]);
+        *first = Line::from(vec![Span::styled(format!("↑ {} · ", t!("view.lines_above", n = top + 1)), theme.dim()), Span::styled("PgUp", theme.bold())]);
     }
     frame.render_widget(Paragraph::new(shown), body);
     reverse_selection(frame, app, body, top, detail_width(body));
@@ -2383,12 +2438,12 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         return Vec::new();
     };
     let verb = match approval.tool.as_str() {
-        "Bash" => "run",
-        "Write" | "Edit" | "MultiEdit" => "edit",
-        "WebFetch" => "fetch",
-        "Confirm" => "do",
-        equipe_core::desktop_gate::SEND => "send",
-        equipe_core::permissions::BROWSER_CODE => "code",
+        "Bash" => t!("view.verb_run"),
+        "Write" | "Edit" | "MultiEdit" => t!("view.verb_edit"),
+        "WebFetch" => t!("view.verb_fetch"),
+        "Confirm" => t!("view.verb_do"),
+        equipe_core::desktop_gate::SEND => t!("view.verb_send"),
+        equipe_core::permissions::BROWSER_CODE => t!("view.verb_code"),
         other => other,
     };
     let bar = || Span::styled("▎ ", theme.accent());
@@ -2397,7 +2452,7 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
         bar(),
         Span::styled(approval.member.clone(), theme.bold()),
-        Span::styled(format!(" asks{ticket}"), theme.accent()),
+        Span::styled(format!(" {}{ticket}", t!("view.asks")), theme.accent()),
     ])];
     // A few lines of the command, never the whole script: the conversation keeps
     // its room, and the keys always show.
@@ -2410,16 +2465,16 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     };
     let rows: Vec<&str> = approval.action.lines().collect();
     for (i, row) in rows.iter().take(shown).enumerate() {
-        let lead = if i == 0 { format!("{verb}  ") } else { " ".repeat(verb.chars().count() + 2) };
-        let room = width.saturating_sub(lead.chars().count());
+        let lead = if i == 0 { format!("{verb}  ") } else { " ".repeat(cols(verb) + 2) };
+        let room = width.saturating_sub(cols(&lead));
         lines.push(Line::from(vec![bar(), Span::styled(lead, theme.dim()), Span::styled(ui::fit(row, room), theme.bold())]));
     }
     let writes = files_written(&approval.action);
     if !writes.is_empty() {
-        lines.push(Line::from(vec![bar(), Span::styled(ui::fit(&format!("writes {}", writes.join(", ")), width), theme.dim())]));
+        lines.push(Line::from(vec![bar(), Span::styled(ui::fit(&t!("view.writes", files = writes.join(", ")), width), theme.dim())]));
     }
     if rows.len() > shown {
-        lines.push(Line::from(vec![bar(), Span::styled(format!("… {} more lines", rows.len() - shown), theme.dim())]));
+        lines.push(Line::from(vec![bar(), Span::styled(format!("… {}", t!("view.more_lines", n = rows.len() - shown)), theme.dim())]));
     }
     if let Some(reason) = &approval.reason {
         lines.push(Line::from(vec![bar(), Span::styled(ui::fit(reason, width), theme.dim())]));
@@ -2427,10 +2482,10 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     if let Some(preview) = &approval.preview {
         lines.push(Line::from(vec![
             bar(),
-            Span::styled("screen  ", theme.dim()),
+            Span::styled(format!("{}  ", t!("view.screen")), theme.dim()),
             Span::styled(ui::fit(preview, width.saturating_sub(20)), theme.dim()),
             Span::styled("  o", theme.bold()),
-            Span::styled(" open", theme.dim()),
+            Span::styled(format!(" {}", t!("view.open")), theme.dim()),
         ]));
     }
     // "Always" only where it can become a rule — a chain, an edit outside the
@@ -2438,17 +2493,17 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     // equipe can't keep.
     if app.pane == Pane::Board {
         // On the board these keys act on tickets; answers wait for the conversation.
-        lines.push(Line::from(vec![bar(), Span::styled("ctrl-b", theme.bold()), Span::styled(" to answer", theme.dim())]));
+        lines.push(Line::from(vec![bar(), Span::styled("ctrl-b", theme.bold()), Span::styled(format!(" {}", t!("view.to_answer")), theme.dim())]));
         return lines;
     }
-    let mut keys = vec![bar(), Span::styled("y", theme.bold()), Span::styled(" allow   ", theme.dim())];
+    let mut keys = vec![bar(), Span::styled("y", theme.bold()), Span::styled(format!(" {}   ", t!("view.allow")), theme.dim())];
     if let Some(rule) = equipe_core::permissions::rule_for(&approval.tool, &approval.action) {
         keys.push(Span::styled("a", theme.bold()));
-        keys.push(Span::styled(format!(" always allow {}   ", always_label(&rule)), theme.dim()));
+        keys.push(Span::styled(format!(" {}   ", t!("view.always_allow", what = always_label(&rule))), theme.dim()));
     }
-    keys.extend([Span::styled("n", theme.bold()), Span::styled(" decline", theme.dim())]);
+    keys.extend([Span::styled("n", theme.bold()), Span::styled(format!(" {}", t!("view.decline")), theme.dim())]);
     if app.approvals.len() > 1 {
-        keys.push(Span::styled(format!("   · {} more waiting", app.approvals.len() - 1), theme.dim()));
+        keys.push(Span::styled(format!("   · {}", t!("view.more_waiting", n = app.approvals.len() - 1)), theme.dim()));
     }
     lines.push(Line::from(keys));
     // A send asks in every mode: no mode stops it.
@@ -2459,7 +2514,7 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     let member = &approval.member;
     lines.push(Line::from(vec![
         bar(),
-        Span::styled(ui::fit(&format!("/mode {member} full stops {member} asking · /mode for all modes"), width), theme.dim()),
+        Span::styled(ui::fit(&t!("view.mode_hint", member = member), width), theme.dim()),
     ]));
     lines
 }
@@ -2511,15 +2566,15 @@ fn render_composer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         Paragraph::new(Line::from(vec![
             Span::styled("› ", theme.accent()),
             Span::styled(hint, theme.dim().add_modifier(Modifier::ITALIC)),
-            Span::styled("   → to fill in", theme.dim()),
+            Span::styled(format!("   {}", t!("view.to_fill_in")), theme.dim()),
         ]))
     } else if app.composer.text().is_empty() {
-        let to = app.addressee().map(|(name, _)| name).unwrap_or_else(|| "the squad".into());
+        let to = app.addressee().map(|(name, _)| name).unwrap_or_else(|| t!("view.the_squad").into());
         // A ticket open: what is written steers its work, or goes to the PM about it.
         let say = match (app.opened, app.viewed()) {
-            (Some(t), Some(agent)) if agent.ticket == Some(t) => format!("Tell {} about T-{t} — read at its next step…", agent.label()),
-            (Some(t), _) => format!("Message the PM about T-{t}…  tab to move on"),
-            _ => format!("Message {to}…  @name for someone else · /help"),
+            (Some(id), Some(agent)) if agent.ticket == Some(id) => t!("view.compose_steer", name = agent.label(), id = id),
+            (Some(id), _) => t!("view.compose_pm_about", id = id),
+            _ => t!("view.compose_to", name = to),
         };
         Paragraph::new(Line::from(vec![Span::styled("› ", theme.accent()), Span::styled(say, theme.dim())]))
     } else {
@@ -2556,10 +2611,10 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
                 && let (Some(ticket), Some(focus)) = (agent.ticket, app.focus.as_ref())
                 && let Some(project) = app.agent_project(agent).filter(|p| p != focus)
             {
-                spans.push(Span::styled(format!(" · at work on {} T-{ticket} — this talk goes on beside it", project_name(&project)), theme.dim()));
+                spans.push(Span::styled(format!(" · {}", t!("view.at_work_beside", project = project_name(&project), id = ticket)), theme.dim()));
             }
             if direct {
-                spans.push(Span::styled(" · the PM hears about it", theme.dim()));
+                spans.push(Span::styled(format!(" · {}", t!("view.pm_hears")), theme.dim()));
             }
             if let Some(agent) = app.selected().filter(|a| a.member.is_some()) {
                 spans.push(Span::styled(format!(" · {}", app.mode_of(agent).label()), theme.dim()));
@@ -2574,19 +2629,22 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let waiting = app.tickets.iter().filter(|t| t.status == TicketStatus::Waiting).count();
     match (review, waiting) {
         (0, 0) => {}
-        (_, 0) => facts.push((format!("{review} to review · ctrl-b"), theme.accent())),
-        (0, _) => facts.push((format!("{waiting} waiting on you · ctrl-b"), theme.accent())),
-        _ => facts.push((format!("{review} to review · {waiting} waiting on you · ctrl-b"), theme.accent())),
+        (_, 0) => facts.push((format!("{} · ctrl-b", t!("view.to_review", n = review)), theme.accent())),
+        (0, _) => facts.push((format!("{} · ctrl-b", t!("view.waiting_on_you", n = waiting)), theme.accent())),
+        _ => facts.push((
+            format!("{} · {} · ctrl-b", t!("view.to_review", n = review), t!("view.waiting_on_you", n = waiting)),
+            theme.accent(),
+        )),
     }
     // A multi-line draft (often a paste) says how big it is before it's sent.
     let draft_lines = app.composer.line_count();
     if draft_lines > 1 {
-        facts.push((format!("{draft_lines} lines"), theme.dim()));
+        facts.push((t!("view.draft_lines", n = draft_lines), theme.dim()));
     }
     // What counts on a subscription: how much of the plan's windows is used.
     // Tokens and context are on /usage.
     if let Some(plan) = app.plan {
-        for (label, window) in [("5h", plan.five_hour), ("week", plan.seven_day)] {
+        for (label, window) in [(t!("view.window_5h"), plan.five_hour), (t!("view.window_week"), plan.seven_day)] {
             if let Some(w) = window {
                 let style = if w.used_percent >= 80 { theme.accent().add_modifier(Modifier::BOLD) } else { theme.dim() };
                 facts.push((format!("{label} {}%", w.used_percent), style));
@@ -2596,7 +2654,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let left_width: usize = left.iter().map(|s| s.width()).sum();
     // Facts first; the key hints — key in bold, what it does dim — go when space runs short.
     let mut right: Vec<Vec<Span<'static>>> = facts.into_iter().map(|(text, style)| vec![Span::styled(text, style)]).collect();
-    let keys: Vec<Vec<Span<'static>>> = [("enter", "send"), ("tab", "next"), ("/help", "")]
+    let keys: Vec<Vec<Span<'static>>> = [("enter", t!("view.key_send")), ("tab", t!("view.key_next")), ("/help", "")]
         .iter()
         .map(|(key, what)| {
             let mut spans = vec![Span::styled(*key, theme.bold())];

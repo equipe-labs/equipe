@@ -114,6 +114,12 @@ pub fn fit(text: &str, width: usize) -> String {
     format!("{}…", out.trim_end())
 }
 
+/// `text` padded with spaces to `width` columns, as the terminal draws it —
+/// `format!("{:<9}")` counts characters, and Hangul takes two columns each.
+pub fn pad(text: &str, width: usize) -> String {
+    format!("{text}{}", " ".repeat(width.saturating_sub(visible_len(text))))
+}
+
 /// Word-wrap `text` to `width` columns. The first line starts at column `first`
 /// (text already printed before it); continuation lines are indented by `rest`.
 /// A word longer than a line — a URL — stays whole so it still copies cleanly.
@@ -232,7 +238,7 @@ impl Painter {
         const VALUE_COL: usize = 13;
         format!(
             "  {}  {}",
-            self.dim(&format!("{key:<9}")),
+            self.dim(&pad(key, 9)),
             wrap(value, VALUE_COL, VALUE_COL, width())
         )
     }

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use equipe_core::squad_home::{self, Change};
 use equipe_core::squad_memory;
+use equipe_core::t;
 
 /// The squad `equipe home` is about, run from `cwd`: the one named, the one
 /// whose project or folder `cwd` is in, else the only squad (or the first).
@@ -45,10 +46,10 @@ pub fn line(n: usize, change: &Change, now: i64) -> String {
 
 fn ago(secs: i64) -> String {
     match secs.max(0) {
-        s if s < 60 => "just now".to_owned(),
-        s if s < 3600 => format!("{}m ago", s / 60),
-        s if s < 86_400 => format!("{}h ago", s / 3600),
-        s => format!("{}d ago", s / 86_400),
+        s if s < 60 => t!("home.just_now").to_owned(),
+        s if s < 3600 => t!("home.minutes_ago", n = s / 60),
+        s if s < 86_400 => t!("home.hours_ago", n = s / 3600),
+        s => t!("home.days_ago", n = s / 86_400),
     }
 }
 
@@ -60,17 +61,17 @@ pub fn now() -> i64 {
 /// `Err` a reason it couldn't.
 pub fn run(dir: &Path, words: &[&str]) -> Result<Vec<String>, String> {
     if !dir.join(".git").exists() {
-        return Err("The squad's folder isn't made yet — it is when equipe's daemon next starts.".into());
+        return Err(t!("home.not_made").into());
     }
     match words {
         [] => {
             open(dir);
-            Ok(vec![format!("The squad's folder: {}", dir.display())])
+            Ok(vec![t!("home.folder", dir = dir.display())])
         }
         ["changes"] | ["recent"] => {
             let changes = squad_home::changes(dir, 10)?;
             if changes.is_empty() {
-                return Ok(vec!["Nothing has changed in the squad's folder yet.".into()]);
+                return Ok(vec![t!("home.no_changes").into()]);
             }
             let now = now();
             Ok(changes.iter().enumerate().map(|(i, c)| line(i + 1, c, now)).collect())
@@ -78,9 +79,9 @@ pub fn run(dir: &Path, words: &[&str]) -> Result<Vec<String>, String> {
         ["undo"] => undo(dir, 1),
         ["undo", n] => match n.trim_start_matches('#').parse::<usize>() {
             Ok(n) if n >= 1 => undo(dir, n),
-            _ => Err("Which change? /home changes numbers them: /home undo 2".into()),
+            _ => Err(t!("home.which_change").into()),
         },
-        _ => Err("/home opens the squad's folder · /home changes · /home undo [n]".into()),
+        _ => Err(t!("home.usage").into()),
     }
 }
 
@@ -89,7 +90,7 @@ pub fn run(dir: &Path, words: &[&str]) -> Result<Vec<String>, String> {
 /// Undoing one is `/home undo`, like any change to the squad's folder.
 pub fn memory(dir: &Path, words: &[&str]) -> Result<Vec<String>, String> {
     if !dir.join(".git").exists() {
-        return Err("The squad's folder isn't made yet — it is when equipe's daemon next starts.".into());
+        return Err(t!("home.not_made").into());
     }
     let now = now();
     match words {
@@ -99,28 +100,29 @@ pub fn memory(dir: &Path, words: &[&str]) -> Result<Vec<String>, String> {
             open(&folder);
             let facts = squad_memory::facts(dir);
             let mut lines = vec![match facts.len() {
-                0 => format!("The squad remembers nothing yet: {}", folder.display()),
-                n => format!("The squad remembers {n} {}: {}", if n == 1 { "thing" } else { "things" }, folder.display()),
+                0 => t!("home.remembers_nothing", folder = folder.display()),
+                1 => t!("home.remembers_one", n = 1, folder = folder.display()),
+                n => t!("home.remembers_many", n = n, folder = folder.display()),
             }];
             lines.extend(facts.iter().map(|f| format!("{} — {}", f.name, f.description)));
             let recent = squad_memory::changes(dir, 3)?;
-            lines.extend(recent.iter().enumerate().map(|(i, c)| format!("lately: {}", line(i + 1, c, now))));
+            lines.extend(recent.iter().enumerate().map(|(i, c)| t!("home.lately", change = line(i + 1, c, now))));
             Ok(lines)
         }
         ["changes"] | ["recent"] => {
             let changes = squad_memory::changes(dir, 10)?;
             if changes.is_empty() {
-                return Ok(vec!["Nothing has changed in the squad's memory yet.".into()]);
+                return Ok(vec![t!("home.no_memory_changes").into()]);
             }
             Ok(changes.iter().enumerate().map(|(i, c)| line(i + 1, c, now)).collect())
         }
-        _ => Err("/memory opens what the squad remembers · /memory changes".into()),
+        _ => Err(t!("home.memory_usage").into()),
     }
 }
 
 fn undo(dir: &Path, n: usize) -> Result<Vec<String>, String> {
     let change = squad_home::undo(dir, n)?;
-    Ok(vec![format!("Taken back: {} · /home undo brings it back", change.what())])
+    Ok(vec![t!("home.taken_back", what = change.what())])
 }
 
 /// The squad's folder under equipe's home.

@@ -3,6 +3,7 @@
 //! search. The same rules as the terminal board (`tui/app.rs` `board_order`,
 //! `lanes`, `dependency_tree`), so both screens show the same board.
 
+use equipe_core::t;
 use std::path::PathBuf;
 
 use equipe_core::protocol::{Ticket, TicketId, TicketKind, TicketStatus};
@@ -96,15 +97,15 @@ fn matches(model: &Model, t: &Ticket, q: &str) -> bool {
 fn heading(model: &Model, t: &Ticket, lanes: bool) -> (String, Tone) {
     let project_index = |t: &Ticket| model.ticket_project(t).and_then(|p| model.projects.iter().position(|q| *q == p));
     match t.status {
-        TicketStatus::Review => ("내 검토".into(), Tone::ForYou),
-        TicketStatus::Waiting => ("내 차례".into(), Tone::ForYou),
+        TicketStatus::Review => (t!("board.heading_review").into(), Tone::ForYou),
+        TicketStatus::Waiting => (t!("board.heading_waiting").into(), Tone::ForYou),
         TicketStatus::InProgress | TicketStatus::Todo | TicketStatus::Proposed if lanes => {
-            (model.ticket_project_name(t).unwrap_or_else(|| "스쿼드 폴더".into()), Tone::Lane(project_index(t)))
+            (model.ticket_project_name(t).unwrap_or_else(|| t!("board.heading_squad_folder").into()), Tone::Lane(project_index(t)))
         }
-        TicketStatus::InProgress => ("진행 중".into(), Tone::Plain),
-        TicketStatus::Todo => ("할 일".into(), Tone::Plain),
-        TicketStatus::Proposed => ("제안".into(), Tone::Plain),
-        TicketStatus::Done | TicketStatus::Cancelled => ("끝남".into(), Tone::Plain),
+        TicketStatus::InProgress => (t!("board.heading_in_progress").into(), Tone::Plain),
+        TicketStatus::Todo => (t!("board.todo").into(), Tone::Plain),
+        TicketStatus::Proposed => (t!("board.heading_proposed").into(), Tone::Plain),
+        TicketStatus::Done | TicketStatus::Cancelled => (t!("board.done").into(), Tone::Plain),
     }
 }
 
@@ -168,10 +169,10 @@ pub fn rows(model: &Model, view: &View) -> Vec<Row> {
     let depth: std::collections::HashMap<TicketId, usize> = if view.graph && q.is_none() { dependency_tree(model).into_iter().collect() } else { Default::default() };
     let label_of = |t: &Ticket| -> (String, Tone) {
         if q.is_some() {
-            return ("찾은 티켓".into(), Tone::Plain);
+            return (t!("board.heading_found").into(), Tone::Plain);
         }
         if view.graph {
-            return ("무엇이 무엇을 기다리나".into(), Tone::Plain);
+            return (t!("board.heading_graph").into(), Tone::Plain);
         }
         heading(model, t, lanes)
     };
@@ -239,15 +240,15 @@ pub fn next_review_after(model: &Model, view: &mut View, done: TicketId) {
 /// The short state column: what is waiting on whom.
 pub fn state_text(t: &Ticket) -> String {
     match t.status {
-        TicketStatus::Review => "내 검토 대기".into(),
-        TicketStatus::Waiting => "내가 할 일".into(),
-        TicketStatus::InProgress => "작업 중".into(),
-        TicketStatus::Todo if !t.depends_on.is_empty() => format!("after {}", t.depends_on.iter().map(|d| format!("T-{d}")).collect::<Vec<_>>().join(", ")),
-        TicketStatus::Todo => "할 일".into(),
-        TicketStatus::Proposed => "제안됨".into(),
-        TicketStatus::Done if t.not_on_main() => "main에 없음".into(),
-        TicketStatus::Done => "끝남".into(),
-        TicketStatus::Cancelled => "취소됨".into(),
+        TicketStatus::Review => t!("board.state_review").into(),
+        TicketStatus::Waiting => t!("board.state_waiting").into(),
+        TicketStatus::InProgress => t!("board.state_in_progress").into(),
+        TicketStatus::Todo if !t.depends_on.is_empty() => t!("board.state_after", tickets = t.depends_on.iter().map(|d| format!("T-{d}")).collect::<Vec<_>>().join(", ")),
+        TicketStatus::Todo => t!("board.todo").into(),
+        TicketStatus::Proposed => t!("board.state_proposed").into(),
+        TicketStatus::Done if t.not_on_main() => t!("board.state_not_on_main").into(),
+        TicketStatus::Done => t!("board.done").into(),
+        TicketStatus::Cancelled => t!("board.state_cancelled").into(),
     }
 }
 

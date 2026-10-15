@@ -14,6 +14,8 @@ mod askpass;
 mod daemon;
 #[path = "../src/failure.rs"]
 mod failure;
+#[path = "../src/i18n.rs"]
+mod i18n;
 #[path = "../src/install.rs"]
 mod install;
 #[path = "../src/ssh.rs"]

@@ -1,6 +1,7 @@
 //! The sidebar (248 wide): the squads, the board, and the selected squad's
 //! members with how each one stands. Plain, still text — nothing here moves.
 
+use equipe_core::t;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -47,8 +48,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .when(shell.screen == Screen::Board, |row| row.bg(p.wash).font_weight(FontWeight::SEMIBOLD))
         .when(shell.screen != Screen::Board, |row| row.hover(move |s| s.bg(p.wash)).cursor_pointer())
         .on_click(cx.listener(|this, _, _, cx| this.show(Screen::Board, cx)))
-        .child("보드")
-        .when(for_you > 0, |row| row.child(div().text_size(px(SMALL)).text_color(p.accent).child(format!("나에게 {for_you}"))));
+        .child(t!("sidebar.board"))
+        .when(for_you > 0, |row| row.child(div().text_size(px(SMALL)).text_color(p.accent).child(t!("sidebar.for_you", for_you = for_you))));
 
     v_flex()
         .w(px(WIDTH))
@@ -59,7 +60,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .border_color(p.hair)
         .font_family(SANS)
         .text_color(p.text)
-        .child(kicker(p, "스쿼드"))
+        .child(kicker(p, t!("sidebar.squads")))
         .children(squads)
         .child(div().h(px(8.)))
         .child(board)
@@ -139,13 +140,13 @@ fn ticket_row(p: Palette, shell: &Shell, id: u32, cx: &mut Context<Shell>) -> Op
     let working = on_it.is_some_and(|m| m.presence == crate::state::Presence::Working);
     use equipe_core::protocol::TicketStatus as S;
     let (detail, accent) = match ticket.status {
-        S::Review => ("리뷰".to_owned(), true),
-        S::Waiting => ("나를 기다림".to_owned(), true),
-        S::Proposed => ("제안".to_owned(), false),
-        S::InProgress => (if working { "작업 중".to_owned() } else { String::new() }, false),
+        S::Review => (t!("sidebar.ticket_review").to_owned(), true),
+        S::Waiting => (t!("sidebar.ticket_waiting").to_owned(), true),
+        S::Proposed => (t!("sidebar.ticket_proposed").to_owned(), false),
+        S::InProgress => (if working { t!("sidebar.working").to_owned() } else { String::new() }, false),
         S::Todo => (ticket.owner.clone().unwrap_or_default(), false),
         S::Done => ("✓".to_owned(), false),
-        S::Cancelled => ("취소".to_owned(), false),
+        S::Cancelled => (t!("sidebar.ticket_cancelled").to_owned(), false),
     };
     let on = shell.screen == Screen::Chat && model.side_open() == Some(Side::Ticket(id));
     Some(
@@ -260,7 +261,7 @@ fn sub_rows(p: Palette, subs: &[Sub]) -> Vec<AnyElement> {
         })
         .collect();
     if subs.len() > 3 {
-        rows.push(div().h(px(24.)).pl(px(40.)).text_size(px(SMALL)).text_color(p.muted).child(format!("외 {}개", subs.len() - 3)).into_any_element());
+        rows.push(div().h(px(24.)).pl(px(40.)).text_size(px(SMALL)).text_color(p.muted).child(t!("sidebar.more_subs", n = subs.len() - 3)).into_any_element());
     }
     rows
 }
@@ -273,36 +274,36 @@ fn status_is_ready(status: &Status) -> bool {
 pub fn status_line(member: &Member, status: &Status, at_once: usize, p: Palette) -> (String, Rgba) {
     let ticket = |t: Option<u32>| t.map(|t| format!("T-{t}"));
     let join = |parts: Vec<Option<String>>| parts.into_iter().flatten().collect::<Vec<_>>().join(" · ");
-    let memos = (member.memos > 0).then(|| format!("메모 {}개", member.memos));
+    let memos = (member.memos > 0).then(|| t!("sidebar.memos", n = member.memos));
     let context = member.context.filter(|c| *c >= 50).map(|c| format!("{c}%"));
     match status {
-        Status::NeedsYou(t) => (join(vec![Some("사람 대기".into()), ticket(*t)]), p.accent),
+        Status::NeedsYou(t) => (join(vec![Some(t!("sidebar.needs_you").into()), ticket(*t)]), p.accent),
         // Several of its conversations at work at once.
-        Status::Working { ticket: t, .. } if at_once > 1 => (join(vec![memos, ticket(*t), Some(format!("{at_once}개 동시")), context]), p.muted),
+        Status::Working { ticket: t, .. } if at_once > 1 => (join(vec![memos, ticket(*t), Some(t!("sidebar.at_once", at_once = at_once)), context]), p.muted),
         Status::Working { ticket: t, verb } => (join(vec![memos, ticket(*t), Some(verb_text(*verb).into()), context]), p.muted),
-        Status::Ready { ticket: t, .. } => (join(vec![memos, Some("쉬는 중".into()), ticket(*t), context]), p.muted),
-        Status::Closed => ("닫힘".into(), p.muted),
+        Status::Ready { ticket: t, .. } => (join(vec![memos, Some(t!("sidebar.idle").into()), ticket(*t), context]), p.muted),
+        Status::Closed => (t!("sidebar.closed").into(), p.muted),
     }
 }
 
 fn verb_text(verb: Verb) -> &'static str {
     match verb {
-        Verb::Thinking => "생각 중",
-        Verb::Reading => "읽는 중",
-        Verb::Editing => "수정 중",
-        Verb::Running => "실행 중",
-        Verb::Searching => "찾는 중",
-        Verb::Writing => "작성 중",
-        Verb::Working => "작업 중",
+        Verb::Thinking => t!("sidebar.thinking"),
+        Verb::Reading => t!("sidebar.reading"),
+        Verb::Editing => t!("sidebar.editing"),
+        Verb::Running => t!("sidebar.running"),
+        Verb::Searching => t!("sidebar.searching"),
+        Verb::Writing => t!("sidebar.writing"),
+        Verb::Working => t!("sidebar.working"),
     }
 }
 
 fn footer(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let text = match &shell.model.conn {
-        Conn::Connecting => "연결 중…".to_owned(),
-        Conn::Connected { last_event: Some(at) } => format!("데몬 연결됨 · {}", at.hm()),
-        Conn::Connected { last_event: None } => "데몬 연결됨".to_owned(),
-        Conn::Down { .. } => "데몬 끊김".to_owned(),
+        Conn::Connecting => t!("sidebar.connecting").to_owned(),
+        Conn::Connected { last_event: Some(at) } => t!("sidebar.connected_at", at = at.hm()),
+        Conn::Connected { last_event: None } => t!("sidebar.connected").to_owned(),
+        Conn::Down { .. } => t!("sidebar.disconnected").to_owned(),
     };
     // Which machine's daemon this is; a click chooses another.
     let machine = shell.endpoint.label();

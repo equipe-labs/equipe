@@ -6,6 +6,7 @@
 //! and what a click or a key does. The board changes only when the daemon says
 //! so: every action here is a command, never an edit of the list.
 
+use equipe_core::t;
 use std::collections::{HashMap, HashSet};
 
 use equipe_core::protocol::{Command, Ticket, TicketId, TicketStatus};
@@ -101,9 +102,9 @@ impl BoardUi {
     pub fn new(window: &mut Window, cx: &mut Context<Shell>, split: Option<f32>, fetched: tokio::sync::mpsc::UnboundedSender<Fetched>) -> Self {
         Self {
             view: View::default(),
-            search: cx.new(|cx| InputState::new(window, cx).placeholder("제목·본문·T-n 찾기  /")),
-            send_back: cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 8).submit_on_enter(false).placeholder("무엇을 바꿔야 하나요?")),
-            resume: cx.new(|cx| InputState::new(window, cx).placeholder("한 일 (비워도 됩니다)")),
+            search: cx.new(|cx| InputState::new(window, cx).placeholder(t!("board.search_placeholder"))),
+            send_back: cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 8).submit_on_enter(false).placeholder(t!("board.send_back_placeholder"))),
+            resume: cx.new(|cx| InputState::new(window, cx).placeholder(t!("board.resume_placeholder"))),
             flow: None,
             split,
             drag: None,
@@ -300,11 +301,11 @@ impl Shell {
         self.send_command(Command::Accept { squad: self.model.squad.clone(), ticket: t.id });
         if board::asks_to_merge(&t) {
             self.board.flow = Some(Flow::Merge(t.id));
-            self.say(format!("T-{} 수락함 — main에 병합할까요?", t.id));
+            self.say(t!("board.accepted_ask_merge", id = t.id));
         } else if t.kind.in_home() {
-            self.say(format!("T-{} 수락함 — 결과물이 스쿼드 폴더에 들어갑니다", t.id));
+            self.say(t!("board.accepted_home", id = t.id));
         } else {
-            self.say(format!("T-{} 수락함 — 다시 열려면 '다시 열기'", t.id));
+            self.say(t!("board.accepted", id = t.id));
         }
         board::next_review_after(&self.model, &mut self.board.view, t.id);
         self.board_changed(cx);
@@ -321,13 +322,13 @@ impl Shell {
     fn board_merge(&mut self, ticket: TicketId, push: bool, cx: &mut Context<Self>) {
         self.board.flow = None;
         self.send_command(Command::Merge { squad: self.model.squad.clone(), ticket, push });
-        self.say(format!("T-{ticket}을 main에 병합하는 중…"));
+        self.say(t!("board.merging", ticket = ticket));
         cx.notify();
     }
 
     fn board_decline_merge(&mut self, ticket: TicketId, cx: &mut Context<Self>) {
         self.board.flow = None;
-        self.say(format!("T-{ticket}은 브랜치에 남습니다 — 원할 때 보드에서 'main에 병합'"));
+        self.say(t!("board.stays_on_branch", ticket = ticket));
         cx.notify();
     }
 
@@ -354,7 +355,7 @@ impl Shell {
     fn board_close_flow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(flow) = self.board.flow.take() {
             if let Flow::Merge(t) | Flow::Push(t) = flow {
-                self.say(format!("T-{t}은 브랜치에 남습니다 — 원할 때 보드에서 'main에 병합'"));
+                self.say(t!("board.stays_on_branch", ticket = t));
             }
             window.blur(cx);
             cx.notify();
@@ -370,7 +371,7 @@ impl Shell {
         self.send_command(Command::Reopen { squad: self.model.squad.clone(), ticket: id, note });
         self.board.flow = None;
         self.board.diff = None;
-        self.say(format!("T-{id}을 되돌려 보냈습니다"));
+        self.say(t!("board.sent_back", id = id));
         window.blur(cx);
         cx.notify();
     }
@@ -383,7 +384,7 @@ impl Shell {
         let note = self.board.resume.read(cx).value().trim().to_owned();
         self.send_command(Command::Resume { squad: self.model.squad.clone(), ticket: id, note });
         self.board.flow = None;
-        self.say(format!("T-{id}이 담당 멤버에게 돌아갑니다"));
+        self.say(t!("board.resumed", id = id));
         window.blur(cx);
         cx.notify();
     }
@@ -395,7 +396,7 @@ impl Shell {
         }
         self.send_command(Command::Cancel { squad: self.model.squad.clone(), ticket: id });
         self.board.flow = None;
-        self.say(format!("T-{id}을 취소했습니다 — 브랜치는 남습니다"));
+        self.say(t!("board.cancelled", id = id));
         cx.notify();
     }
 
@@ -542,7 +543,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// Dev tool: the "취소…" button.
+    /// Dev tool: the t!("board.cancel_ellipsis") button.
     #[cfg(feature = "snapshot")]
     pub fn board_ask_cancel(&mut self, cx: &mut Context<Self>) {
         if let Some(t) = self.picked() {
@@ -660,9 +661,9 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let waiting = model.tickets.iter().filter(|t| t.status == TicketStatus::Waiting).count();
     let summary = match (review, waiting) {
         (0, 0) => String::new(),
-        (r, 0) => format!("검토 {r}"),
-        (0, w) => format!("내 차례 {w}"),
-        (r, w) => format!("검토 {r} · 내 차례 {w}"),
+        (r, 0) => t!("board.summary_review", r = r),
+        (0, w) => t!("board.summary_waiting", w = w),
+        (r, w) => t!("board.summary_both", r = r, w = w),
     };
     let graph = shell.board.view.graph;
     let seg = |id: &'static str, label: &'static str, on: bool, graph_value: bool, cx: &mut Context<Shell>| {
@@ -686,7 +687,7 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         .px_5()
         .gap_3()
         .items_center()
-        .child(h_flex().gap_1().child(seg("by-state", "상태별", !graph, false, cx)).child(seg("by-tree", "무엇이 무엇을 기다리나 G", graph, true, cx)))
+        .child(h_flex().gap_1().child(seg("by-state", t!("board.by_state"), !graph, false, cx)).child(seg("by-tree", t!("board.by_tree"), graph, true, cx)))
         .child(
             div()
                 .flex_1()
@@ -751,11 +752,11 @@ fn split_view(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
 fn empty_note(shell: &Shell) -> Div {
     let p = shell.palette;
     let text = if let Some(q) = board::query(&shell.board.view) {
-        format!("“{q}”에 맞는 티켓이 없습니다. Esc로 지웁니다.")
+        t!("board.empty_query", q = q)
     } else if let Some(focus) = shell.model.focus.as_ref().filter(|_| !shell.model.tickets.is_empty()) {
-        format!("{focus}에는 보드에 올라온 일이 없습니다 — ⌘0으로 모든 프로젝트를 봅니다.")
+        t!("board.empty_focus", focus = focus)
     } else {
-        "보드가 비었습니다. PM에게 만들고 싶은 것을 말하면 일이 여기 올라옵니다.".to_owned()
+        t!("board.empty").to_owned()
     };
     div().py_6().text_size(px(BODY)).text_color(p.muted).child(text)
 }
@@ -797,7 +798,7 @@ fn list_row(shell: &Shell, ix: usize, row: &Row, cx: &mut Context<Shell>) -> Any
                 this.board.view.expanded = true;
                 this.board_changed(cx);
             }))
-            .child(format!("… {more}개 더 · E로 모두 보기 · 끝난 일은 찾기(F)로"))
+            .child(t!("board.more_rows", more = more))
             .into_any_element(),
         Row::Ticket { id, depth } => {
             let Some(t) = model.tickets.iter().find(|t| t.id == *id) else { return div().into_any_element() };
@@ -851,21 +852,21 @@ fn detail(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let model = &shell.model;
     let column = v_flex().id("board-detail").flex_1().min_h_0().overflow_y_scroll().track_scroll(&shell.board.detail_scroll).px_5().pt_3().pb_6();
     let Some(t) = board::selected(model, &shell.board.view) else {
-        return column.child(div().text_size(px(BODY)).text_color(p.muted).child("티켓을 고르면 여기에 보입니다"));
+        return column.child(div().text_size(px(BODY)).text_color(p.muted).child(t!("board.pick_ticket")));
     };
     let can = shell.can_act();
     let id = t.id;
     let who = board::who(t).map(str::to_owned);
     let kind = t.kind.label();
     let status = match t.status {
-        TicketStatus::Review => "제출됨 — 내 검토를 기다립니다",
-        TicketStatus::Waiting => "내려놓음 — 내가 할 일이 끝나길 기다립니다",
-        TicketStatus::InProgress => "작업 중",
-        TicketStatus::Todo => "할 일",
-        TicketStatus::Proposed => "제안됨",
-        TicketStatus::Done if t.not_on_main() => "수락됨 — 아직 main에 없습니다",
-        TicketStatus::Done => "끝남",
-        TicketStatus::Cancelled => "취소됨",
+        TicketStatus::Review => t!("board.detail_review"),
+        TicketStatus::Waiting => t!("board.detail_waiting"),
+        TicketStatus::InProgress => t!("board.state_in_progress"),
+        TicketStatus::Todo => t!("board.todo"),
+        TicketStatus::Proposed => t!("board.state_proposed"),
+        TicketStatus::Done if t.not_on_main() => t!("board.detail_not_on_main"),
+        TicketStatus::Done => t!("board.done"),
+        TicketStatus::Cancelled => t!("board.state_cancelled"),
     };
     let project = model.ticket_project_name(t).filter(|_| model.projects.len() > 1 || t.kind.in_home());
 
@@ -873,26 +874,26 @@ fn detail(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let mut buttons: Vec<AnyElement> = Vec::new();
     let for_you = matches!(t.status, TicketStatus::Review | TicketStatus::Waiting);
     let accept_label = match t.status {
-        TicketStatus::Proposed => "제안 수락",
-        TicketStatus::Review => "수락",
-        _ => "완료로 표시",
+        TicketStatus::Proposed => t!("board.accept_proposal"),
+        TicketStatus::Review => t!("board.accept"),
+        _ => t!("board.mark_done"),
     };
     let mut primary = Some(());
     let mut take_primary = || primary.take().is_some();
     match t.status {
         TicketStatus::Review => {
             buttons.push(btn(p, "accept", accept_label, Some("A"), take_primary(), can).on_click(cx.listener(|this, _, _, cx| this.board_accept(cx))).into_any_element());
-            buttons.push(btn(p, "send-back", "변경 요청…", Some("R"), false, can).on_click(cx.listener(move |this, _, w, cx| this.board_open_flow(Flow::SendBack(id), w, cx))).into_any_element());
+            buttons.push(btn(p, "send-back", t!("board.request_changes"), Some("R"), false, can).on_click(cx.listener(move |this, _, w, cx| this.board_open_flow(Flow::SendBack(id), w, cx))).into_any_element());
         }
         TicketStatus::Waiting => {
-            buttons.push(btn(p, "resume", "했습니다 — 이어서 진행", Some("R"), take_primary(), can).on_click(cx.listener(move |this, _, w, cx| this.board_open_flow(Flow::Resume(id), w, cx))).into_any_element());
-            buttons.push(btn(p, "accept", "완료로 표시", Some("A"), false, can).on_click(cx.listener(|this, _, _, cx| this.board_accept(cx))).into_any_element());
+            buttons.push(btn(p, "resume", t!("board.resume_done"), Some("R"), take_primary(), can).on_click(cx.listener(move |this, _, w, cx| this.board_open_flow(Flow::Resume(id), w, cx))).into_any_element());
+            buttons.push(btn(p, "accept", t!("board.mark_done"), Some("A"), false, can).on_click(cx.listener(|this, _, _, cx| this.board_accept(cx))).into_any_element());
         }
         TicketStatus::Done => {
             if t.not_on_main() {
-                buttons.push(btn(p, "merge", "main에 병합", Some("M"), take_primary(), can).on_click(cx.listener(|this, _, _, cx| this.board_ask_merge(cx))).into_any_element());
+                buttons.push(btn(p, "merge", t!("board.merge_into_main"), Some("M"), take_primary(), can).on_click(cx.listener(|this, _, _, cx| this.board_ask_merge(cx))).into_any_element());
             }
-            buttons.push(btn(p, "reopen", "다시 열기…", Some("R"), false, can).on_click(cx.listener(move |this, _, w, cx| this.board_open_flow(Flow::SendBack(id), w, cx))).into_any_element());
+            buttons.push(btn(p, "reopen", t!("board.reopen"), Some("R"), false, can).on_click(cx.listener(move |this, _, w, cx| this.board_open_flow(Flow::SendBack(id), w, cx))).into_any_element());
         }
         TicketStatus::Proposed | TicketStatus::Todo | TicketStatus::InProgress => {
             buttons.push(btn(p, "accept", accept_label, Some("A"), take_primary() && t.status == TicketStatus::Proposed, can).on_click(cx.listener(|this, _, _, cx| this.board_accept(cx))).into_any_element());
@@ -900,14 +901,14 @@ fn detail(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         TicketStatus::Cancelled => {}
     }
     if board::has_branch(t) {
-        buttons.push(btn(p, "diff", "변경 보기", Some("D"), false, true).on_click(cx.listener(|this, _, _, cx| this.board_open_diff(cx))).into_any_element());
+        buttons.push(btn(p, "diff", t!("board.view_changes"), Some("D"), false, true).on_click(cx.listener(|this, _, _, cx| this.board_open_diff(cx))).into_any_element());
     }
     if let Some(who) = &who {
         let open = model.members.iter().any(|m| m.presence != Presence::Closed && (m.name == *who || m.role == *who));
-        buttons.push(btn(p, "talk", format!("{who}와 대화"), Some("⏎"), false, open).on_click(cx.listener(|this, _, w, cx| this.board_talk(w, cx))).into_any_element());
+        buttons.push(btn(p, "talk", t!("board.talk_to", who = who), Some("⏎"), false, open).on_click(cx.listener(|this, _, w, cx| this.board_talk(w, cx))).into_any_element());
     }
     if !t.status.is_closed() {
-        buttons.push(btn(p, "cancel", "취소…", None, false, can).on_click(cx.listener(move |this, _, _, cx| {
+        buttons.push(btn(p, "cancel", t!("board.cancel_ellipsis"), None, false, can).on_click(cx.listener(move |this, _, _, cx| {
             this.board.flow = Some(Flow::Cancel(id));
             cx.notify();
         })).into_any_element());
@@ -953,22 +954,22 @@ fn detail(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         .children(checklist.is_empty().not_then(|| {
             v_flex()
                 .gap_1()
-                .child(kicker(p, "내가 할 일"))
+                .child(kicker(p, t!("board.kicker_for_me")))
                 .children(checklist.iter().map(|item| h_flex().gap_2().items_start().text_size(px(BODY)).line_height(px(24.)).text_color(p.text2).child(div().flex_none().text_color(if for_you { p.accent } else { p.muted }).child("□")).child(div().flex_1().min_w_0().child(item.clone()))))
         }))
         .children(text.map(|text| div().child(super::chat::markdown(p, ("board-text", id as u64), text, 14., 22., p.text2, &handle))))
-        .children((!after.is_empty()).then(|| v_flex().child(kicker(p, "먼저 끝나야 함")).children(after)))
-        .children((!unblocks.is_empty()).then(|| v_flex().child(kicker(p, "이게 끝나면 풀리는 것")).children(unblocks)))
+        .children((!after.is_empty()).then(|| v_flex().child(kicker(p, t!("board.kicker_after"))).children(after)))
+        .children((!unblocks.is_empty()).then(|| v_flex().child(kicker(p, t!("board.kicker_unblocks"))).children(unblocks)))
         .child(
             v_flex()
                 .gap_1()
                 .text_size(px(SMALL))
-                .child(kicker(p, "위치"))
+                .child(kicker(p, t!("board.kicker_where")))
                 .children(match (&stat, board::has_branch(t)) {
                     (Some(s), _) if !s.summary.is_empty() => {
                         let more = if s.files.len() > 4 { format!(" +{}", s.files.len() - 4) } else { String::new() };
                         vec![
-                            h_flex().gap_3().child(div().w(px(56.)).text_color(p.muted).child("변경")).child(div().text_color(p.text2).child(s.summary.clone())).into_any_element(),
+                            h_flex().gap_3().child(div().w(px(56.)).text_color(p.muted).child(t!("board.where_changes"))).child(div().text_color(p.text2).child(s.summary.clone())).into_any_element(),
                             h_flex()
                                 .gap_3()
                                 .child(div().w(px(56.)).flex_none())
@@ -976,10 +977,10 @@ fn detail(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                                 .into_any_element(),
                         ]
                     }
-                    (None, true) => vec![h_flex().gap_3().child(div().w(px(56.)).text_color(p.muted).child("변경")).child(div().text_color(p.muted).child("…")).into_any_element()],
+                    (None, true) => vec![h_flex().gap_3().child(div().w(px(56.)).text_color(p.muted).child(t!("board.where_changes"))).child(div().text_color(p.muted).child("…")).into_any_element()],
                     _ => Vec::new(),
                 })
-                .children(branch.map(|b| h_flex().gap_3().child(div().w(px(56.)).text_color(p.muted).child("브랜치")).child(div().min_w_0().truncate().font_family(MONO).text_size(px(12.)).text_color(p.text2).child(b))))
+                .children(branch.map(|b| h_flex().gap_3().child(div().w(px(56.)).text_color(p.muted).child(t!("board.where_branch"))).child(div().min_w_0().truncate().font_family(MONO).text_size(px(12.)).text_color(p.text2).child(b))))
                 .children(worktree.map(|w| {
                     let local = matches!(shell.endpoint, Endpoint::Local { .. });
                     let path = w.clone();
@@ -987,7 +988,7 @@ fn detail(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                         .id("look-in")
                         .gap_3()
                         .when(local, |d| d.cursor_pointer().on_click(cx.listener(move |this, _, _, _| this.board_look_in(&path))))
-                        .child(div().w(px(56.)).flex_none().text_color(p.muted).child("작업 폴더"))
+                        .child(div().w(px(56.)).flex_none().text_color(p.muted).child(t!("board.where_worktree")))
                         .child(div().min_w_0().truncate().font_family(MONO).text_size(px(12.)).text_color(p.text2).child(w.display().to_string()))
                 })),
         )
@@ -1036,32 +1037,32 @@ fn flow_card(shell: &Shell, flow: Flow, t: &Ticket, can: bool, cx: &mut Context<
     let ask = |text: String| div().text_size(px(BODY)).line_height(px(24.)).text_color(p.text).child(text);
     match flow {
         Flow::Merge(_) => card()
-            .child(ask(format!("T-{id} 수락함. {branch}를 main에 병합할까요?")))
+            .child(ask(t!("board.ask_merge", id = id, branch = branch)))
             .child(
                 h_flex()
                     .gap_2()
-                    .child(btn(p, "merge-yes", "병합", Some("Y"), true, can).on_click(cx.listener(move |this, _, _, cx| {
+                    .child(btn(p, "merge-yes", t!("board.merge"), Some("Y"), true, can).on_click(cx.listener(move |this, _, _, cx| {
                         this.board.flow = Some(Flow::Push(id));
                         cx.notify();
                     })))
-                    .child(btn(p, "merge-no", "지금은 안 함", Some("N"), false, true).on_click(cx.listener(move |this, _, _, cx| this.board_decline_merge(id, cx)))),
+                    .child(btn(p, "merge-no", t!("board.not_now"), Some("N"), false, true).on_click(cx.listener(move |this, _, _, cx| this.board_decline_merge(id, cx)))),
             )
             .into_any_element(),
         Flow::Push(_) => card()
-            .child(ask(format!("T-{id}을 main에 병합하고 origin에도 push할까요?")))
+            .child(ask(t!("board.ask_push", id = id)))
             .child(
                 h_flex()
                     .flex_wrap()
                     .gap_2()
-                    .child(btn(p, "push-yes", "병합하고 push", Some("Y"), true, can).on_click(cx.listener(move |this, _, _, cx| this.board_merge(id, true, cx))))
-                    .child(btn(p, "push-no", "병합만", Some("N"), false, can).on_click(cx.listener(move |this, _, _, cx| this.board_merge(id, false, cx))))
-                    .child(btn(p, "push-skip", "병합 안 함", Some("Esc"), false, true).on_click(cx.listener(|this, _, w, cx| this.board_close_flow(w, cx)))),
+                    .child(btn(p, "push-yes", t!("board.merge_and_push"), Some("Y"), true, can).on_click(cx.listener(move |this, _, _, cx| this.board_merge(id, true, cx))))
+                    .child(btn(p, "push-no", t!("board.merge_only"), Some("N"), false, can).on_click(cx.listener(move |this, _, _, cx| this.board_merge(id, false, cx))))
+                    .child(btn(p, "push-skip", t!("board.dont_merge"), Some("Esc"), false, true).on_click(cx.listener(|this, _, w, cx| this.board_close_flow(w, cx)))),
             )
             .into_any_element(),
         Flow::SendBack(_) => {
             let empty = shell.board.send_back.read(cx).value().trim().is_empty();
             card()
-                .child(ask(format!("무엇을 바꿔야 하나요? — {}에게 T-{id}과 함께 보냅니다", board::who(t).unwrap_or("담당"))))
+                .child(ask(t!("board.ask_send_back", who = board::who(t).unwrap_or(t!("board.assignee")), id = id)))
                 .child(
                     div()
                         .w_full()
@@ -1078,13 +1079,13 @@ fn flow_card(shell: &Shell, flow: Flow, t: &Ticket, can: bool, cx: &mut Context<
                 .child(
                     h_flex()
                         .gap_2()
-                        .child(btn(p, "send-cancel", "취소", Some("Esc"), false, true).on_click(cx.listener(|this, _, w, cx| this.board_close_flow(w, cx))))
-                        .child(btn(p, "send-back-go", "되돌려 보내기", Some("⌘⏎"), true, can && !empty).on_click(cx.listener(|this, _, w, cx| this.board_send_back(w, cx)))),
+                        .child(btn(p, "send-cancel", t!("board.cancel"), Some("Esc"), false, true).on_click(cx.listener(|this, _, w, cx| this.board_close_flow(w, cx))))
+                        .child(btn(p, "send-back-go", t!("board.send_back"), Some("⌘⏎"), true, can && !empty).on_click(cx.listener(|this, _, w, cx| this.board_send_back(w, cx)))),
                 )
                 .into_any_element()
         }
         Flow::Resume(_) => card()
-            .child(ask(format!("T-{id}을 담당 멤버에게 돌려보냅니다 — 한 일을 적으면 함께 전합니다")))
+            .child(ask(t!("board.ask_resume", id = id)))
             .child(
                 div()
                     .w_full()
@@ -1101,17 +1102,17 @@ fn flow_card(shell: &Shell, flow: Flow, t: &Ticket, can: bool, cx: &mut Context<
             .child(
                 h_flex()
                     .gap_2()
-                    .child(btn(p, "resume-cancel", "취소", Some("Esc"), false, true).on_click(cx.listener(|this, _, w, cx| this.board_close_flow(w, cx))))
-                    .child(btn(p, "resume-go", "이어서 진행", Some("⏎"), true, can).on_click(cx.listener(|this, _, w, cx| this.board_resume(w, cx)))),
+                    .child(btn(p, "resume-cancel", t!("board.cancel"), Some("Esc"), false, true).on_click(cx.listener(|this, _, w, cx| this.board_close_flow(w, cx))))
+                    .child(btn(p, "resume-go", t!("board.carry_on"), Some("⏎"), true, can).on_click(cx.listener(|this, _, w, cx| this.board_resume(w, cx)))),
             )
             .into_any_element(),
         Flow::Cancel(_) => card()
-            .child(ask(format!("T-{id}을 취소할까요? 멤버는 멈추고, 브랜치는 남습니다.")))
+            .child(ask(t!("board.ask_cancel", id = id)))
             .child(
                 h_flex()
                     .gap_2()
-                    .child(btn(p, "cancel-yes", "티켓 취소", Some("Y"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_cancel(cx))))
-                    .child(btn(p, "cancel-no", "그대로 둠", Some("N"), false, true).on_click(cx.listener(|this, _, _, cx| {
+                    .child(btn(p, "cancel-yes", t!("board.cancel_ticket"), Some("Y"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_cancel(cx))))
+                    .child(btn(p, "cancel-no", t!("board.keep"), Some("N"), false, true).on_click(cx.listener(|this, _, _, cx| {
                         this.board.flow = None;
                         cx.notify();
                     }))),
@@ -1132,7 +1133,7 @@ fn diff_view(shell: &Shell, diff: &DiffUi, cx: &mut Context<Shell>) -> impl Into
     let patch = diff.patch.clone();
     let stat = diff.files.as_ref().map(|f| {
         let (a, r) = f.iter().fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
-        format!("파일 {}개 · +{a} −{r}", f.len())
+        t!("board.diff_stat", n = f.len(), a = a, r = r)
     });
     let bar = h_flex()
         .h(px(44.))
@@ -1143,25 +1144,25 @@ fn diff_view(shell: &Shell, diff: &DiffUi, cx: &mut Context<Shell>) -> impl Into
         .border_t_1()
         .border_b_1()
         .border_color(p.hair)
-        .child(btn(p, "diff-back", "← 티켓", Some("Esc"), false, true).on_click(cx.listener(|this, _, _, cx| {
+        .child(btn(p, "diff-back", t!("board.back_to_ticket"), Some("Esc"), false, true).on_click(cx.listener(|this, _, _, cx| {
             this.board.diff = None;
             cx.notify();
         })))
         .child(div().flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
         .child(div().flex_1().min_w_0().truncate().text_size(px(SMALL)).text_color(p.text2).child(format!("{} · {}", diff.branch, stat.unwrap_or_default())))
-        .child(btn(p, "diff-copy", "패치 복사", Some("⌘⇧C"), false, !patch.is_empty()).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(patch.clone()))))
-        .children(review.then(|| btn(p, "diff-accept", "수락", Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| {
+        .child(btn(p, "diff-copy", t!("board.copy_patch"), Some("⌘⇧C"), false, !patch.is_empty()).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(patch.clone()))))
+        .children(review.then(|| btn(p, "diff-accept", t!("board.accept"), Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| {
             this.board.diff = None;
             this.board_accept(cx);
         }))))
-        .children(review.then(|| btn(p, "diff-ask", "변경 요청…", Some("R"), false, can).on_click(cx.listener(move |this, _, w, cx| {
+        .children(review.then(|| btn(p, "diff-ask", t!("board.request_changes"), Some("R"), false, can).on_click(cx.listener(move |this, _, w, cx| {
             this.board.diff = None;
             this.board_open_flow(Flow::SendBack(id), w, cx);
         }))));
     let body: AnyElement = match (&diff.files, &diff.error) {
-        (_, Some(why)) => div().p_6().text_size(px(BODY)).text_color(p.muted).child(format!("변경을 가져오지 못했습니다: {why}")).into_any_element(),
-        (None, _) => div().p_6().text_size(px(BODY)).text_color(p.muted).child("변경을 가져오는 중…").into_any_element(),
-        (Some(files), _) if files.is_empty() => div().p_6().text_size(px(BODY)).text_color(p.muted).child("기준 브랜치와 다른 줄이 없습니다").into_any_element(),
+        (_, Some(why)) => div().p_6().text_size(px(BODY)).text_color(p.muted).child(t!("board.diff_failed", why = why)).into_any_element(),
+        (None, _) => div().p_6().text_size(px(BODY)).text_color(p.muted).child(t!("board.diff_loading")).into_any_element(),
+        (Some(files), _) if files.is_empty() => div().p_6().text_size(px(BODY)).text_color(p.muted).child(t!("board.diff_none")).into_any_element(),
         (Some(files), _) => {
             let list = v_flex()
                 .id("diff-files")

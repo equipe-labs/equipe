@@ -15,6 +15,7 @@
 //! host key) is not retried on a timer; the window offers "try again". A Mac
 //! that wakes from sleep drops its SSH connection and starts over at once.
 
+use equipe_core::t;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -121,13 +122,13 @@ impl Uploader {
             .lock()
             .unwrap()
             .clone()
-            .ok_or("데몬에 연결되어 있지 않습니다")?;
+            .ok_or(t!("daemon.not_connected"))?;
         match door
             .upload(name, bytes)
             .recv_timeout(Duration::from_secs(120))
         {
             Ok(answer) => answer,
-            Err(_) => Err("데몬이 이미지를 받았다고 답하지 않았습니다".into()),
+            Err(_) => Err(t!("daemon.upload_no_answer").into()),
         }
     }
 }

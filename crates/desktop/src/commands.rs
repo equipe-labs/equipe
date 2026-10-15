@@ -3,6 +3,7 @@
 //! (`crates/cli/src/tui/commands.rs`), kept the same on purpose; if one changes,
 //! change the other.
 
+use equipe_core::t;
 use equipe_core::protocol::{Mode, TicketId};
 
 pub struct Spec {
@@ -12,33 +13,33 @@ pub struct Spec {
 }
 
 pub const COMMANDS: [Spec; 27] = [
-    Spec { name: "usage", args: "", about: "Plan limits, each member's context and tokens" },
-    Spec { name: "scale", args: "[0-6|off]", about: "Extra members a role may get when its work waits" },
-    Spec { name: "compact", args: "[member]", about: "Start its next conversation afresh, from a summary of this one" },
-    Spec { name: "model", args: "[member] <model>", about: "The model a member works on from its next turn — any its engine offers" },
-    Spec { name: "clear", args: "[member]", about: "Start its next conversation clean — memory and board stay" },
-    Spec { name: "squad", args: "[name] · new <name> [folder] · add|remove <folder>", about: "Switch, start, or change what a squad works on" },
-    Spec { name: "home", args: "[changes · undo [n]]", about: "Open the squad's folder, see what changed there, take a change back" },
-    Spec { name: "memory", args: "[changes]", about: "What the squad remembers about you and the work — open it to fix, or see what changed" },
-    Spec { name: "project", args: "[name|all]", about: "Filter to one project — board, reviews and new work; all takes it off" },
-    Spec { name: "accept", args: "T-n", about: "Approve handed-in work" },
-    Spec { name: "merge", args: "T-n", about: "Merge accepted work into main, and push if you say so" },
-    Spec { name: "reopen", args: "T-n <what to change>", about: "Send work back with what to change" },
-    Spec { name: "resume", args: "T-n [what you did]", about: "You did what a waiting ticket needed: it goes back to its member" },
-    Spec { name: "cancel", args: "T-n", about: "Drop a ticket" },
-    Spec { name: "board", args: "", about: "The board (Ctrl-B)" },
-    Spec { name: "find", args: "<words>", about: "Find tickets on the board, done ones too (f on the board) — Esc clears" },
-    Spec { name: "tidy", args: "", about: "Ask the PM to look the board over and propose what to close, merge or keep" },
-    Spec { name: "add", args: "<role…> | custom <name> [--edits]", about: "Bring in teammates" },
-    Spec { name: "close", args: "", about: "Remove the selected member" },
-    Spec { name: "mode", args: "[member] read-only|ask|auto|full", about: "How much members do on their own" },
-    Spec { name: "browser", args: "[show|hide [member] · max <n>]", about: "Sign in to sites; show, hide or cap members' browsers" },
-    Spec { name: "send-apps", args: "[add|remove <app> · reset]", about: "Apps where a member's send waits for your yes" },
-    Spec { name: "desktop", args: "stop|resume", about: "Take the Mac's screen back from the members, or open it to them again" },
-    Spec { name: "export", args: "", about: "Open the conversation in your editor" },
-    Spec { name: "mouse", args: "", about: "Hand the mouse to the terminal (dragging over text already copies it)" },
-    Spec { name: "help", args: "", about: "Keys and commands" },
-    Spec { name: "quit", args: "", about: "Leave — the squad keeps working" },
+    Spec { name: "usage", args: "", about: "commands.about_usage" },
+    Spec { name: "scale", args: "[0-6|off]", about: "commands.about_scale" },
+    Spec { name: "compact", args: "[member]", about: "commands.about_compact" },
+    Spec { name: "model", args: "[member] <model>", about: "commands.about_model" },
+    Spec { name: "clear", args: "[member]", about: "commands.about_clear" },
+    Spec { name: "squad", args: "[name] · new <name> [folder] · add|remove <folder>", about: "commands.about_squad" },
+    Spec { name: "home", args: "[changes · undo [n]]", about: "commands.about_home" },
+    Spec { name: "memory", args: "[changes]", about: "commands.about_memory" },
+    Spec { name: "project", args: "[name|all]", about: "commands.about_project" },
+    Spec { name: "accept", args: "T-n", about: "commands.about_accept" },
+    Spec { name: "merge", args: "T-n", about: "commands.about_merge" },
+    Spec { name: "reopen", args: "T-n <what to change>", about: "commands.about_reopen" },
+    Spec { name: "resume", args: "T-n [what you did]", about: "commands.about_resume" },
+    Spec { name: "cancel", args: "T-n", about: "commands.about_cancel" },
+    Spec { name: "board", args: "", about: "commands.about_board" },
+    Spec { name: "find", args: "<words>", about: "commands.about_find" },
+    Spec { name: "tidy", args: "", about: "commands.about_tidy" },
+    Spec { name: "add", args: "<role…> | custom <name> [--edits]", about: "commands.about_add" },
+    Spec { name: "close", args: "", about: "commands.about_close" },
+    Spec { name: "mode", args: "[member] read-only|ask|auto|full", about: "commands.about_mode" },
+    Spec { name: "browser", args: "[show|hide [member] · max <n>]", about: "commands.about_browser" },
+    Spec { name: "send-apps", args: "[add|remove <app> · reset]", about: "commands.about_send_apps" },
+    Spec { name: "desktop", args: "stop|resume", about: "commands.about_desktop" },
+    Spec { name: "export", args: "", about: "commands.about_export" },
+    Spec { name: "mouse", args: "", about: "commands.about_mouse" },
+    Spec { name: "help", args: "", about: "commands.about_help" },
+    Spec { name: "quit", args: "", about: "commands.about_quit" },
 ];
 
 /// One completion: what the composer holds once it's taken, and how it is
@@ -100,7 +101,7 @@ pub fn complete(text: &str, ctx: &Context<'_>) -> Vec<Choice> {
                 .map(|c| Choice {
                     text: if c.args.is_empty() { format!("/{}", c.name) } else { format!("/{} ", c.name) },
                     label: format!("/{} {}", c.name, c.args).trim_end().to_owned(),
-                    about: c.about.to_owned(),
+                    about: crate::i18n::catalog().get(c.about).to_owned(),
                 })
                 .collect(),
             Some((name, rest)) => arguments(name, rest, ctx),
@@ -141,13 +142,13 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
         // Each mode says what it lets members do, and which one is on now.
         ("mode", 1) => {
             let mut choices: Vec<Choice> =
-                MODES.iter().filter(|w| starts(w)).map(|m| word(m, &mode_about(m, ctx.mode, "the squad"), "")).collect();
+                MODES.iter().filter(|w| starts(w)).map(|m| word(m, &mode_about(m, ctx.mode, t!("commands.the_squad")), "")).collect();
             choices.extend(ctx.members.iter().filter(|(m, _)| starts(m)).map(|(m, _)| {
                 let own = ctx.member_modes.iter().find(|(name, _)| name == m).map(|(_, mode)| *mode);
                 let now = match (own, ctx.mode) {
-                    (Some(mode), _) => format!("just this member · on {} of its own", mode.label()),
-                    (None, Some(mode)) => format!("just this member · on the squad's {}", mode.label()),
-                    (None, None) => "just this member".to_owned(),
+                    (Some(mode), _) => t!("commands.mode_member_own", mode = mode.label()),
+                    (None, Some(mode)) => t!("commands.mode_member_squad", mode = mode.label()),
+                    (None, None) => t!("commands.mode_member").to_owned(),
                 };
                 word(m, &now, " ")
             }));
@@ -159,7 +160,7 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
                 MODES.iter().filter(|w| starts(w)).map(|m| word(m, &mode_about(m, own, words[0]), "")).collect();
             if starts("squad") {
                 let squad = ctx.mode.map_or(String::new(), |m| format!(" ({})", m.label()));
-                choices.push(word("squad", &format!("back on the squad's mode{squad}"), ""));
+                choices.push(word("squad", &t!("commands.mode_back_on_squad", squad = squad), ""));
             }
             choices
         }
@@ -168,7 +169,7 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
         // A member, then a model of its engine — or straight a model, for the member selected.
         ("model", 1) => {
             let mut choices: Vec<Choice> = ctx.members.iter().filter(|(m, _)| starts(m)).map(|(m, role)| word(m, role, " ")).collect();
-            choices.extend(ctx.selected_models.iter().filter(|m| starts(m)).map(|m| word(m, "for the member selected", "")));
+            choices.extend(ctx.selected_models.iter().filter(|m| starts(m)).map(|m| word(m, t!("commands.for_selected_member"), "")));
             choices
         }
         ("model", 2) => ctx
@@ -177,12 +178,12 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             .find(|(name, _)| *name == words[0])
             .map(|(_, models)| models.iter().filter(|m| starts(m)).map(|m| word(m, "", "")).collect())
             .unwrap_or_default(),
-        ("home", 1) => [("changes", "what changed in the squad's folder lately", ""), ("undo", "take the latest change back", "")]
+        ("home", 1) => [("changes", t!("commands.home_changes"), ""), ("undo", t!("commands.home_undo"), "")]
             .iter()
             .filter(|(w, _, _)| starts(w))
             .map(|(w, about, end)| word(w, about, end))
             .collect(),
-        ("memory", 1) => [("changes", "what changed in the squad's memory lately", "")]
+        ("memory", 1) => [("changes", t!("commands.memory_changes"), "")]
             .iter()
             .filter(|(w, _, _)| starts(w))
             .map(|(w, about, end)| word(w, about, end))
@@ -190,13 +191,13 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
         ("squad", 1) => {
             let mut choices: Vec<Choice> = ctx.squads.iter().filter(|(n, _)| starts(n)).map(|(n, about)| word(n, about, "")).collect();
             if starts("new") {
-                choices.push(word("new", "start a squad: a name, then the folder it works in", " "));
+                choices.push(word("new", t!("commands.squad_new"), " "));
             }
             if starts("add") {
-                choices.push(word("add", "a folder for this squad to work on too", " "));
+                choices.push(word("add", t!("commands.squad_add"), " "));
             }
             if starts("remove") {
-                choices.push(word("remove", "stop working on one of its projects", " "));
+                choices.push(word("remove", t!("commands.squad_remove"), " "));
             }
             choices
         }
@@ -207,17 +208,17 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             let wanted = typed.to_lowercase();
             let mut choices: Vec<Choice> = ctx.projects.iter().filter(|(p, _)| p.to_lowercase().contains(&wanted)).map(|(p, about)| word(p, about, "")).collect();
             if "all".contains(&wanted) {
-                choices.push(word("all", "every project", ""));
+                choices.push(word("all", t!("commands.project_all"), ""));
             }
             choices
         }
         ("squad", 3) if words[0] == "new" => folders(typed).into_iter().map(|f| word(&f, "", "")).collect(),
-        ("browser", 1) => [("show", "browsers on this Mac's screen"), ("hide", "browsers hidden again"), ("max", "how many open at once")]
+        ("browser", 1) => [("show", t!("commands.browser_show")), ("hide", t!("commands.browser_hide")), ("max", t!("commands.browser_max"))]
             .iter()
             .filter(|(w, _)| starts(w))
             .map(|(w, about)| word(w, about, ""))
             .collect(),
-        ("desktop", 1) => [("stop", "no member clicks or types"), ("resume", "members may use the screen again")]
+        ("desktop", 1) => [("stop", t!("commands.desktop_stop")), ("resume", t!("commands.desktop_resume"))]
             .iter()
             .filter(|(w, _)| starts(w))
             .map(|(w, about)| word(w, about, ""))
@@ -234,7 +235,7 @@ fn mode_about(word: &str, now: Option<Mode>, who: &str) -> String {
     let Some(mode) = Mode::parse(word) else {
         return String::new();
     };
-    let on = if now == Some(mode) { format!("now, for {who} · ") } else { String::new() };
+    let on = if now == Some(mode) { t!("commands.mode_now_for", who = who) } else { String::new() };
     format!("{on}{}", mode.short())
 }
 

@@ -2,6 +2,7 @@
 //! one stands, kept up to date from the daemon's snapshot and events alone.
 //! No UI types here, so the rules can be tested without a window.
 
+use equipe_core::t;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
@@ -136,11 +137,11 @@ pub enum Group {
 impl Group {
     pub fn label(self) -> &'static str {
         match self {
-            Group::ForYou => "나를 기다림",
-            Group::Working => "진행 중",
-            Group::ToDo => "할 일",
-            Group::Done => "완료",
-            Group::Team => "팀",
+            Group::ForYou => t!("state.group_for_you"),
+            Group::Working => t!("state.group_working"),
+            Group::ToDo => t!("state.group_todo"),
+            Group::Done => t!("state.group_done"),
+            Group::Team => t!("state.group_team"),
         }
     }
 }
@@ -675,12 +676,12 @@ impl Model {
         if was.is_some() && was != Some(ticket.status) {
             match ticket.status {
                 TicketStatus::Review => {
-                    self.flash = Some(format!("T-{0} 검토 대기 · /accept T-{0} 또는 /reopen T-{0} <바꿀 것>", ticket.id));
+                    self.flash = Some(t!("state.review_flash", id = ticket.id));
                     self.alerts.push(Alert::Review { ticket: ticket.id, title: ticket.title.clone(), by: ticket.assignee.clone().or(ticket.owner.clone()), project: self.ticket_project_name(ticket) });
                 }
                 TicketStatus::Waiting => {
                     let needs = ticket.note.as_deref().map(equipe_core::board::waiting_needs).unwrap_or_default().join(", ");
-                    self.flash = Some(format!("T-{0}: 당신을 기다립니다 — {needs} · 끝나면 /resume T-{0}", ticket.id));
+                    self.flash = Some(t!("state.waiting_flash", id = ticket.id, needs = needs));
                     self.alerts.push(Alert::Waiting { ticket: ticket.id, by: ticket.assignee.clone().or(ticket.owner.clone()) });
                 }
                 _ => {}

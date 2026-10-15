@@ -2,6 +2,7 @@
 //! (docs/DESKTOP.md, "What the app does on this Mac, and over SSH"), and the
 //! unified diff taken apart into files and lines for the viewer. No UI types.
 
+use equipe_core::t;
 use std::path::PathBuf;
 
 use equipe_core::protocol::{Ticket, TicketId};
@@ -68,7 +69,7 @@ pub fn run(endpoint: &Endpoint, source: &Source, full: bool) -> Result<String, S
 }
 
 fn last_line(text: &str) -> String {
-    text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("git이 답하지 않았습니다").trim().to_owned()
+    text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or(t!("diffs.git_no_answer")).trim().to_owned()
 }
 
 /// What came back from a fetch thread.

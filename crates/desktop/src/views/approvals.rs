@@ -4,6 +4,7 @@
 //! the card's text are plain code, tested without a window; the drawing is
 //! below them.
 
+use equipe_core::t;
 use equipe_core::protocol::{Approval, Command, Decision, SessionId, Ticket, TicketId, TicketStatus};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -102,12 +103,12 @@ pub fn decision_for(key: &str) -> Option<Decision> {
 /// What kind of thing is asked, as a noun phrase.
 pub fn noun(tool: &str) -> &'static str {
     match tool {
-        "Bash" => "명령 실행",
-        "Write" | "Edit" | "MultiEdit" => "파일 수정",
-        "WebFetch" => "웹 주소 열람",
-        equipe_core::desktop_gate::SEND => "메시지 전송",
-        equipe_core::permissions::BROWSER_CODE => "브라우저 코드 실행",
-        _ => "작업",
+        "Bash" => t!("approvals.noun_bash"),
+        "Write" | "Edit" | "MultiEdit" => t!("approvals.noun_edit"),
+        "WebFetch" => t!("approvals.noun_web_fetch"),
+        equipe_core::desktop_gate::SEND => t!("approvals.noun_send"),
+        equipe_core::permissions::BROWSER_CODE => t!("approvals.noun_browser_code"),
+        _ => t!("approvals.noun_other"),
     }
 }
 
@@ -187,9 +188,9 @@ pub fn ask_of(ticket: &Ticket) -> String {
     match ticket.status {
         TicketStatus::Waiting => {
             let needs = ticket.note.as_deref().map(equipe_core::board::waiting_needs).unwrap_or_default();
-            if needs.is_empty() { "해야 할 일".into() } else { format!("필요: {}", needs.join(", ")) }
+            if needs.is_empty() { t!("approvals.ask_todo").into() } else { t!("approvals.ask_needs", needs = needs.join(", ")) }
         }
-        _ => format!("리뷰 · {}", ticket.assignee.as_deref().or(ticket.owner.as_deref()).unwrap_or("—")),
+        _ => t!("approvals.ask_review", who = ticket.assignee.as_deref().or(ticket.owner.as_deref()).unwrap_or("—")),
     }
 }
 
@@ -285,14 +286,14 @@ pub fn approval(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                     .gap_2()
                     .text_size(px(12.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(div().text_color(p.accent).child("✻ 당신을 기다립니다"))
+                    .child(div().text_color(p.accent).child(t!("approvals.waiting_on_you_mark")))
                     .child(div().text_color(p.member(hue)).child(format!("{mark} {}", approval.member)))
                     .children(approval.ticket.map(|t| div().text_color(p.muted).child(format!("T-{t}"))))
                     .child(div().flex_1())
-                    .when(waiting > 1, |h| h.child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(format!("1 / {waiting} · 다음은 같은 키로"))))
+                    .when(waiting > 1, |h| h.child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(t!("approvals.queue", waiting = waiting))))
                     .when(waiting == 1 && on_chat, |h| h.child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child("Y / A / N"))),
             )
-            .child(div().text_size(px(15.)).text_color(p.text).child(format!("{}을 허락할까요?", card.noun)))
+            .child(div().text_size(px(15.)).text_color(p.text).child(t!("approvals.allow_question", what = card.noun)))
             .child(
                 v_flex()
                     .px_3()
@@ -305,15 +306,15 @@ pub fn approval(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                     .text_size(px(12.5))
                     .line_height(px(20.))
                     .children(card.lines.iter().map(|l| div().child(l.clone())))
-                    .when(card.more > 0, |c| c.child(div().text_color(p.muted).child(format!("… {}줄 더", card.more)))),
+                    .when(card.more > 0, |c| c.child(div().text_color(p.muted).child(t!("approvals.more_lines", n = card.more)))),
             )
-            .when(!card.writes.is_empty(), |c| c.child(div().text_size(px(SMALL)).text_color(p.muted).child(format!("쓰는 파일: {}", card.writes.join(", ")))))
+            .when(!card.writes.is_empty(), |c| c.child(div().text_size(px(SMALL)).text_color(p.muted).child(t!("approvals.writes", files = card.writes.join(", ")))))
             .children(approval.reason.clone().map(|r| div().text_size(px(SMALL)).text_color(p.muted).child(r)))
             .children(preview.map(|path| {
-                h_flex().gap_3().items_center().text_size(px(SMALL)).text_color(p.muted).child(div().min_w_0().child(format!("화면 · {path}"))).child(button(
+                h_flex().gap_3().items_center().text_size(px(SMALL)).text_color(p.muted).child(div().min_w_0().child(t!("approvals.screen", path = path))).child(button(
                     p,
                     "preview",
-                    "미리보기 열기",
+                    t!("approvals.open_preview"),
                     "O",
                     false,
                     {
@@ -328,17 +329,17 @@ pub fn approval(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(button(p, "allow", "한 번 허용", "Y", true, act(Decision::Allow)))
-                    .when(card.always.is_some(), |h| h.child(button(p, "always", "항상", "A", false, act(Decision::Always))))
-                    .child(button(p, "deny", "거절", "N", false, act(Decision::Deny)))
+                    .child(button(p, "allow", t!("approvals.allow_once"), "Y", true, act(Decision::Allow)))
+                    .when(card.always.is_some(), |h| h.child(button(p, "always", t!("approvals.always"), "A", false, act(Decision::Always))))
+                    .child(button(p, "deny", t!("approvals.deny"), "N", false, act(Decision::Deny)))
                     .child(div().flex_1())
                     .child(div().text_size(px(12.)).text_color(p.muted).child(match &card.always {
-                        Some(label) => format!("“항상”은 {label} 규칙을 만듭니다"),
-                        None if card.is_send => "전송은 항상 매번 묻습니다".to_owned(),
-                        None => "한 번씩만 허용할 수 있는 요청입니다".to_owned(),
+                        Some(label) => t!("approvals.always_rule", label = label),
+                        None if card.is_send => t!("approvals.send_always_asks").to_owned(),
+                        None => t!("approvals.once_only").to_owned(),
                     })),
             )
-            .when(!on_chat, |c| c.child(div().text_size(px(12.)).text_color(p.muted).child("보드에서는 글자 키가 티켓에 쓰이므로 버튼으로 답하세요 · ⌘B로 대화에서는 Y/A/N")))
+            .when(!on_chat, |c| c.child(div().text_size(px(12.)).text_color(p.muted).child(t!("approvals.board_keys_hint"))))
             .into_any_element(),
     )
 }
@@ -353,7 +354,7 @@ pub fn for_you(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         return None;
     }
     let all_reviews = waiting.iter().all(|t| t.status == TicketStatus::Review);
-    let heading = if all_reviews { "리뷰를 기다립니다" } else { "당신을 기다립니다" };
+    let heading = if all_reviews { t!("approvals.heading_reviews") } else { t!("approvals.heading_for_you") };
     let rows = waiting.iter().take(CARD_SHOWN).map(|t| {
         let id = t.id;
         let is_wait = t.status == TicketStatus::Waiting;
@@ -403,7 +404,7 @@ pub fn for_you(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                         .cursor_pointer()
                         .on_click(cx.listener(|this, _, _, cx| this.show(Screen::Board, cx)))
                         .child(format!("+{more}"))
-                        .child("보드에서 모두 보기 ⌘B"),
+                        .child(t!("approvals.see_all_on_board")),
                 )
             })
             .into_any_element(),
@@ -430,7 +431,7 @@ fn resume(shell: &Shell, p: Palette, id: TicketId, cx: &mut Context<Shell>) -> i
             cx.stop_propagation();
             this.resume_ticket(id, cx);
         }))
-        .child("끝냈어요 · 재개")
+        .child(t!("approvals.done_resume"))
 }
 
 impl Shell {

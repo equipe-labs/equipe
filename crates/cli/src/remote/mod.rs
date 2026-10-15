@@ -17,6 +17,7 @@ pub mod seal;
 
 use std::path::{Path, PathBuf};
 
+use equipe_core::t;
 use serde::{Deserialize, Serialize};
 
 /// Where the relay is, unless `EQUIPE_RELAY` says otherwise.
@@ -124,7 +125,7 @@ pub fn hostname() -> String {
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
         .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "this machine".into())
+        .unwrap_or_else(|| t!("remote.this_machine").into())
 }
 
 /// Register this machine with the relay: its id and token there, and a key pair.
@@ -135,17 +136,17 @@ pub async fn register(home: &Path) -> Result<Config, String> {
         .timeout(std::time::Duration::from_secs(20))
         .send()
         .await
-        .map_err(|err| format!("Couldn't reach the relay at {relay}: {}", err.without_url()))?;
+        .map_err(|err| t!("remote.couldnt_reach_relay_at", relay = relay, err = err.without_url()))?;
     if !answer.status().is_success() {
-        return Err(format!("The relay at {relay} said {}", answer.status()));
+        return Err(t!("remote.relay_said", relay = relay, status = answer.status()));
     }
     let body: serde_json::Value = answer.json().await.map_err(|err| err.without_url().to_string())?;
     let (Some(id), Some(token)) = (body["id"].as_str(), body["token"].as_str()) else {
-        return Err("The relay's answer had no id".into());
+        return Err(t!("remote.relay_no_id").into());
     };
     let keys = seal::generate();
     let config = Config { relay, id: id.to_owned(), token: token.to_owned(), private: keys.private, public: keys.public, devices: Vec::new() };
-    save(home, &config).map_err(|err| format!("Couldn't keep it: {err}"))?;
+    save(home, &config).map_err(|err| t!("remote.couldnt_keep", err = err))?;
     Ok(config)
 }
 

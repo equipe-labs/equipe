@@ -4,6 +4,7 @@
 //! The text editing is GPUI Kit's `Textarea`; what happens around it —
 //! completion, history, drafts, sending — is `compose.rs`, tested without a window.
 
+use equipe_core::t;
 use std::time::Instant;
 
 use equipe_core::protocol::{Command, Engine, SessionId};
@@ -48,11 +49,9 @@ pub struct Composer {
     inbox_watch: Option<fs_notify::RecommendedWatcher>,
 }
 
-const PLACEHOLDER: &str = "메시지 쓰기…";
-
 impl Composer {
     pub fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
-        let state = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, MAX_LINES).submit_on_enter(true).placeholder(PLACEHOLDER));
+        let state = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, MAX_LINES).submit_on_enter(true).placeholder(t!("composer.placeholder")));
         Self {
             state,
             history: History::default(),
@@ -110,7 +109,7 @@ impl Composer {
             self.stopping = None;
         }
         if guess != self.suggestion {
-            let hint = guess.as_ref().map_or_else(|| PLACEHOLDER.to_owned(), |g| format!("{g}  →"));
+            let hint = guess.as_ref().map_or_else(|| t!("composer.placeholder").to_owned(), |g| format!("{g}  →"));
             self.state.update(cx, |s, cx| s.set_placeholder(hint, window, cx));
             self.suggestion = guess;
         }
@@ -167,7 +166,7 @@ impl Shell {
         }
         let typed = self.composer.text(cx);
         if self.composer.strip.busy() {
-            self.composer.flash = Some("이미지를 올리는 중입니다 — 끝나면 보내집니다".into());
+            self.composer.flash = Some(t!("composer.uploading_wait").into());
             cx.notify();
             return;
         }
@@ -214,17 +213,14 @@ impl Shell {
         let uploader = self.link.as_ref().map(|link| link.uploader());
         for source in sources {
             let Some(id) = self.composer.strip.begin(&source.name()) else {
-                self.composer.flash = Some(format!(
-                    "이미지는 한 번에 {}장까지 붙일 수 있습니다",
-                    attach::MAX_IMAGES
-                ));
+                self.composer.flash = Some(t!("composer.too_many_images", n = attach::MAX_IMAGES));
                 break;
             };
             let uploader = uploader.clone();
             let work = cx.background_spawn(async move {
                 let prepared = attach::prepare(source)?;
                 let kept = uploader
-                    .ok_or("데몬에 연결되어 있지 않습니다")?
+                    .ok_or(t!("composer.not_connected"))?
                     .upload(&prepared.name, &prepared.bytes)?;
                 Ok::<_, String>((prepared, kept.to_string_lossy().into_owned()))
             });
@@ -337,7 +333,7 @@ impl Shell {
                 }
                 if this
                     .update(cx, |this, cx| {
-                        this.composer.flash = Some("Mac에서 보낸 이미지를 붙였습니다".into());
+                        this.composer.flash = Some(t!("composer.inbox_attached").into());
                         this.attach_sources(arrived, cx);
                     })
                     .is_err()
@@ -496,7 +492,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             .border_color(p.hair)
             .text_color(if stopping { p.muted } else { p.text })
             .when(!stopping, |b| b.cursor_pointer().hover(move |s| s.bg(p.wash)).on_click(cx.listener(|this, _, _, cx| this.interrupt(cx))))
-            .child(if stopping { "중단하는 중…" } else { "■ 중단 ⎋" })
+            .child(if stopping { t!("composer.stopping") } else { t!("composer.stop") })
     } else {
         let can = (!text.trim().is_empty() || composer.strip.ready() > 0) && !composer.strip.busy();
         div()
@@ -511,7 +507,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             .bg(if can { p.primary } else { p.wash })
             .text_color(if can { p.on_primary } else { p.muted })
             .when(can, |b| b.cursor_pointer().on_click(cx.listener(|this, _, window, cx| this.send(window, cx))))
-            .child("보내기 ⏎")
+            .child(t!("composer.send"))
     };
 
     // What Enter does with a line to a member at work: steer it (Claude) or
@@ -519,9 +515,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let steerable = member.is_some_and(|m| m.engine == Some(Engine::Claude));
     let says = working && !text.trim().is_empty() && !text.starts_with('/');
     let hint = match (says, steerable) {
-        (true, true) => "⏎ 조종 · ⇥ 메모 · ⇧⏎ 줄바꿈",
-        (true, false) => "⏎ 메모 · ⇧⏎ 줄바꿈",
-        _ => "⇧⏎ 줄바꿈",
+        (true, true) => t!("composer.hint_steer"),
+        (true, false) => t!("composer.hint_memo"),
+        _ => t!("composer.hint_newline"),
     };
     let memo_button = (says && steerable).then(|| {
         div()
@@ -539,7 +535,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             .cursor_pointer()
             .hover(move |s| s.bg(p.wash))
             .on_click(cx.listener(|this, _, window, cx| this.send_as(true, window, cx)))
-            .child("메모 ⇥")
+            .child(t!("composer.memo"))
     });
 
     let shell_entity = cx.entity().downgrade();
@@ -587,7 +583,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                                 .gap_2()
                                 .min_w_0()
                                 .text_size(px(SMALL))
-                                .child(div().text_color(p.muted).child("받는 사람"))
+                                .child(div().text_color(p.muted).child(t!("composer.to")))
                                 .child(
                                     div()
                                         .text_color(to_color)
@@ -598,7 +594,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                                     div().text_color(p.muted).child(format!("· {name}"))
                                 })),
                         )
-                        .child(div().flex_1().text_size(px(12.)).text_color(p.muted).child(format!("{hint} · ⌘V 이미지")))
+                        .child(div().flex_1().text_size(px(12.)).text_color(p.muted).child(t!("composer.hint_image", hint = hint)))
                         .children(memo_button)
                         .child(button),
                 ),
@@ -612,7 +608,7 @@ fn recipient(p: Palette, model: &Model, text: &str) -> (String, Rgba) {
         (format!("{mark} {}", m.name), p.member(hue))
     };
     if text.starts_with('/') {
-        return ("명령".into(), p.accent);
+        return (t!("composer.command").into(), p.accent);
     }
     if let Some(rest) = text.strip_prefix('@') {
         let name = rest.split(char::is_whitespace).next().unwrap_or("");
@@ -645,7 +641,7 @@ fn strip_row(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement 
                 .justify_center()
                 .text_size(px(12.))
                 .text_color(p.muted)
-                .child("올리는 중…")
+                .child(t!("composer.uploading"))
                 .into_any_element(),
         };
         div()
@@ -726,7 +722,7 @@ fn strip_row(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement 
                     .child(
                         div()
                             .text_color(p.accent)
-                            .child(format!("{count}장 — 메시지와 함께 보냅니다")),
+                            .child(t!("composer.strip_count", count = count)),
                     ),
             ),
     )
@@ -775,17 +771,13 @@ pub fn drop_overlay(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoE
                             .text_size(px(18.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(p.text)
-                            .child("놓으면 이미지가 첨부됩니다"),
+                            .child(t!("composer.drop_title")),
                     )
                     .child(
                         div()
                             .text_size(px(SMALL))
                             .text_color(p.text2)
-                            .child(format!(
-                                "{}장까지 · 한 장에 {} MB까지",
-                                attach::MAX_IMAGES,
-                                attach::MAX_BYTES >> 20
-                            )),
+                            .child(t!("composer.drop_limits", n = attach::MAX_IMAGES, mb = attach::MAX_BYTES >> 20)),
                     ),
             ),
     )

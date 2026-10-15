@@ -4,6 +4,7 @@
 //! centre. The wording and grouping are plain functions, tested here; only
 //! `send` touches the system.
 
+use equipe_core::t;
 use equipe_core::protocol::{Approval, SessionId, TicketId};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -43,12 +44,16 @@ pub fn toasts(alerts: &[Alert], squad: &str, titles: bool) -> Vec<Toast> {
         let approvals = alerts.iter().filter(|a| matches!(a, Alert::Approval { .. })).count();
         let reviews = alerts.iter().filter(|a| matches!(a, Alert::Review { .. })).count();
         let waits = alerts.len() - approvals - reviews;
-        let parts: Vec<String> = [("승인", approvals), ("리뷰", reviews), ("사람 대기", waits)]
-            .into_iter()
-            .filter(|(_, n)| *n > 0)
-            .map(|(what, n)| format!("{what} {n}"))
-            .collect();
-        return vec![Toast { title: format!("{squad}에서 {}건이 당신을 기다립니다", alerts.len()), body: parts.join(" · "), go: Go::Board }];
+        let parts: Vec<String> = [
+            (approvals, t!("notify.count_approvals", n = approvals)),
+            (reviews, t!("notify.count_reviews", n = reviews)),
+            (waits, t!("notify.count_waits", n = waits)),
+        ]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(_, text)| text)
+        .collect();
+        return vec![Toast { title: t!("notify.grouped_title", squad = squad, n = alerts.len()), body: parts.join(" · "), go: Go::Board }];
     }
     alerts
         .iter()
@@ -57,20 +62,20 @@ pub fn toasts(alerts: &[Alert], squad: &str, titles: bool) -> Vec<Toast> {
                 let ticket = approval.ticket.map(|t| format!(" · T-{t}")).unwrap_or_default();
                 let send = approval.tool == equipe_core::desktop_gate::SEND;
                 Toast {
-                    title: format!("{}: {}을 요청합니다", approval.member, noun(&approval.tool)),
-                    body: format!("{squad}{ticket}{}", if send { " · 전송은 사람의 허락을 기다립니다" } else { "" }),
+                    title: t!("notify.approval_title", member = approval.member, what = noun(&approval.tool)),
+                    body: format!("{squad}{ticket}{}", if send { t!("notify.send_waits") } else { "" }),
                     go: Go::Member(approval.session),
                 }
             }
             Alert::Review { ticket, title, by, project } => {
-                let who = by.as_deref().map(|b| format!("{b} 제출")).unwrap_or_else(|| "제출됨".into());
+                let who = by.as_deref().map(|b| t!("notify.submitted_by", b = b)).unwrap_or_else(|| t!("notify.submitted").into());
                 let what = if titles { format!(" · {title}") } else { String::new() };
                 let project = project.as_deref().map(|p| format!(" · {p}")).unwrap_or_default();
-                Toast { title: format!("T-{ticket} 검토를 기다립니다"), body: format!("{who}{what}{project}"), go: Go::Ticket(*ticket) }
+                Toast { title: t!("notify.review_title", ticket = ticket), body: format!("{who}{what}{project}"), go: Go::Ticket(*ticket) }
             }
             Alert::Waiting { ticket, by } => Toast {
-                title: format!("T-{ticket} · 당신을 기다립니다"),
-                body: format!("{}사람만 할 수 있는 일이 남았습니다", by.as_deref().map(|b| format!("{b} · ")).unwrap_or_default()),
+                title: t!("notify.waiting_title", ticket = ticket),
+                body: t!("notify.waiting_body", by = by.as_deref().map(|b| format!("{b} · ")).unwrap_or_default()),
                 go: Go::Ticket(*ticket),
             },
         })
@@ -82,7 +87,7 @@ pub fn toasts(alerts: &[Alert], squad: &str, titles: bool) -> Vec<Toast> {
 pub fn stale_daemon(daemon: &str, own: &str) -> Option<String> {
     let release = |v: &str| -> Option<Vec<u64>> { v.split('+').next()?.split('.').map(|n| n.parse().ok()).collect() };
     let (theirs, ours) = (release(daemon)?, release(own)?);
-    (theirs < ours).then(|| format!("데몬이 더 오래된 버전({})으로 실행 중입니다 — 멤버가 쉴 때 `equipe daemon restart`로 다시 시작하세요", daemon.split('+').next().unwrap_or(daemon)))
+    (theirs < ours).then(|| t!("notify.stale_daemon", version = daemon.split('+').next().unwrap_or(daemon)))
 }
 
 /// Show `toast`; when it is clicked, say where on `clicked`. The system call

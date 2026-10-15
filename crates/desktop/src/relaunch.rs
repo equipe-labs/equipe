@@ -3,6 +3,7 @@
 //! it in the background and says so (src/update.rs); a click installs it and
 //! starts the app again, and quitting installs it anyway.
 
+use equipe_core::t;
 use std::sync::OnceLock;
 
 use tokio::sync::watch;
@@ -25,7 +26,7 @@ pub fn ready(version: String) {
 
 /// What the sidebar's button says.
 pub fn label(version: &str) -> String {
-    format!("다시 시작해 업데이트 · {version}")
+    t!("relaunch.label", version = version)
 }
 
 /// Install the waiting update now and start again. False when there is none

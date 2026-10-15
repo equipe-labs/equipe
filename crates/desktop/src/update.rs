@@ -12,6 +12,7 @@
 //! framework next to the binary, so there is nothing to start and the menu item
 //! is greyed out.
 
+use equipe_core::t;
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -44,7 +45,7 @@ define_class!(
         #[unsafe(method(updater:willInstallUpdateOnQuit:immediateInstallationBlock:))]
         fn will_install_on_quit(&self, _updater: &AnyObject, item: &AnyObject, install: &Block<dyn Fn()>) -> Bool {
             INSTALL.with(|slot| *slot.borrow_mut() = Some(install.copy()));
-            crate::relaunch::ready(version_of(item).unwrap_or_else(|| "새 버전".to_owned()));
+            crate::relaunch::ready(version_of(item).unwrap_or_else(|| t!("update.new_version").to_owned()));
             Bool::YES
         }
     }

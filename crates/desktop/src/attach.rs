@@ -4,6 +4,7 @@
 //! terminal console, an image reaches a member as a file on the daemon's
 //! machine plus `[image: <path>] ` in the message; the protocol has no image field.
 
+use equipe_core::t;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -11,8 +12,8 @@ use std::sync::Arc;
 use gpui_kit::{Image, ImageFormat};
 use image::ImageFormat as Kind;
 
-/// How many images one message may carry (T-54 §4, a proposal).
-pub const MAX_IMAGES: usize = 5;
+/// How many images one message may carry.
+pub const MAX_IMAGES: usize = 20;
 /// The largest one image may be once ready, in bytes.
 pub const MAX_BYTES: usize = 8 << 20;
 /// A longer side than this is shrunk before it is kept (what a member can use).
@@ -80,15 +81,15 @@ pub fn prepare(source: Source) -> Result<Prepared, String> {
         Source::Bytes { name, bytes } => (name, bytes),
         Source::File(path) => {
             let name = Source::File(path.clone()).name();
-            let big = std::fs::metadata(&path).map_err(|_| "이미지를 읽지 못했습니다")?.len() > READ_MAX;
+            let big = std::fs::metadata(&path).map_err(|_| t!("attach.unreadable"))?.len() > READ_MAX;
             if big {
-                return Err(format!("{name}은(는) 너무 큽니다"));
+                return Err(t!("attach.too_big_file", name = name));
             }
-            (name, std::fs::read(&path).map_err(|_| "이미지를 읽지 못했습니다")?)
+            (name, std::fs::read(&path).map_err(|_| t!("attach.unreadable"))?)
         }
     };
-    let kind = image::guess_format(&bytes).map_err(|_| "이미지를 읽지 못했습니다".to_owned())?;
-    let decoded = image::load_from_memory_with_format(&bytes, kind).map_err(|_| "이미지를 읽지 못했습니다".to_owned())?;
+    let kind = image::guess_format(&bytes).map_err(|_| t!("attach.unreadable").to_owned())?;
+    let decoded = image::load_from_memory_with_format(&bytes, kind).map_err(|_| t!("attach.unreadable").to_owned())?;
     let thumb = png(&decoded.thumbnail(THUMB, THUMB))?;
     let shrink = decoded.width().max(decoded.height()) > LONG_SIDE;
     let (name, bytes) = match (shrink, extension(kind)) {
@@ -104,7 +105,7 @@ pub fn prepare(source: Source) -> Result<Prepared, String> {
         }
     };
     if bytes.len() > MAX_BYTES {
-        return Err(format!("이미지는 한 장에 {} MB까지입니다", MAX_BYTES >> 20));
+        return Err(t!("attach.too_big", mb = MAX_BYTES >> 20));
     }
     Ok(Prepared { name, bytes, thumb })
 }
@@ -341,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn the_strip_holds_five_and_names_them_for_the_message() {
+    fn the_strip_holds_up_to_its_limit_and_names_them_for_the_message() {
         let mut strip = Strip::default();
         let ids: Vec<u64> = (0..MAX_IMAGES).map(|n| strip.begin(&format!("{n}.png")).unwrap()).collect();
         assert!(strip.begin("6.png").is_none());
@@ -350,7 +351,7 @@ mod tests {
             assert_eq!(strip.finish(*id, Ok((ready("a.png"), format!("/up/{n}.png")))), None);
         }
         assert!(!strip.busy());
-        assert_eq!(strip.ready(), 5);
+        assert_eq!(strip.ready(), MAX_IMAGES);
         assert!(strip.tags().starts_with("[image: /up/0.png] [image: /up/1.png] "));
         strip.remove(ids[0]);
         assert!(strip.has_room() && strip.begin("again.png").is_some());

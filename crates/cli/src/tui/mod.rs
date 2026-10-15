@@ -25,6 +25,8 @@ use crossterm::event::{PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags
 use crossterm::execute;
 use futures_util::StreamExt as _;
 
+use equipe_core::t;
+
 use crate::onboard::Start;
 use crate::{daemon, ui};
 
@@ -132,7 +134,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
     if daemon_build != daemon::build_id() {
         // A daemon from an older build keeps running old code; say so, but don't
         // restart it under agents that may be mid-turn.
-        app.flash = Some("The daemon runs an older build — `equipe daemon restart` when its agents are idle.".into());
+        app.flash = Some(t!("tui.daemon_older").into());
     }
 
     // ratatui::init enters the alternate screen and raw mode, and restores them
@@ -147,7 +149,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
     let picker = ratatui_image::picker::Picker::from_query_stdio().unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks());
     tell_keys_apart();
     if app.mouse && first_time("mouse-select") {
-        app.flash = Some("The wheel scrolls here, and dragging over text copies it.".into());
+        app.flash = Some(t!("tui.mouse_hint").into());
     }
     // Pastes arrive whole, so a newline inside one never sends the message.
     execute!(std::io::stdout(), EnableBracketedPaste)?;
@@ -195,7 +197,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                     continue;
                 }
                 arrived.iter().for_each(|path| app.attach_image(path));
-                app.flash = Some("Image from your Mac attached".into());
+                app.flash = Some(t!("tui.image_from_mac").into());
             }
             Some(Ok(event)) = input.next() => {
                 if !on_input(&mut app, &client, event) {
@@ -261,9 +263,9 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                         }
                         terminal.clear()?;
                     }
-                    app.flash = Some(format!("Saved to {}", path.display()));
+                    app.flash = Some(t!("tui.saved_to", path = path.display()));
                 }
-                Err(err) => app.flash = Some(format!("Couldn't export: {err}")),
+                Err(err) => app.flash = Some(t!("tui.couldnt_export", err = err)),
             }
         }
         if let Some(id) = app.view_diff.take() {
@@ -301,8 +303,8 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
             }
             terminal.clear()?;
             app.flash = Some(match signed_in {
-                Ok(status) if status.success() => "Signed in. Members use the browser from their next turn.".into(),
-                _ => "The browser didn't open — run `equipe browser` in a terminal to see why.".into(),
+                Ok(status) if status.success() => t!("tui.signed_in").into(),
+                _ => t!("tui.browser_didnt_open").into(),
             });
         }
         if std::mem::take(&mut app.paste_image) {
@@ -317,15 +319,15 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                 let _ = out.flush();
                 app.upload = Some(app::Upload::default());
                 app.flash = Some(if first_time("paste-over-ssh") {
-                    "Pick the image in the window iTerm2 opened on your Mac · Esc cancels. Quicker: run `equipe paste-setup` on your Mac once, then ⌃⇧V pastes a screenshot straight in.".into()
+                    t!("tui.pick_image_first").into()
                 } else {
-                    "Pick the image in the window iTerm2 opened on your Mac · Esc cancels · ⌃⇧V pastes it directly once `equipe paste-setup` ran there".into()
+                    t!("tui.pick_image").into()
                 });
             } else {
                 match crate::clip::clipboard_image() {
                     Ok(path) => app.attach_image(&path),
                     Err(_) if over_ssh => {
-                        app.flash = Some("The clipboard here isn't your Mac's. In iTerm2 on your Mac, run `equipe paste-setup` once — then ⌃⇧V pastes its screenshot here.".into())
+                        app.flash = Some(t!("tui.clipboard_not_mac").into())
                     }
                     Err(why) => app.flash = Some(why),
                 }
@@ -333,7 +335,7 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
         }
         if let Some(data) = app.uploaded.take() {
             match crate::clip::unpack_upload(&data) {
-                Ok(images) if images.is_empty() => app.flash = Some("That upload held no image".into()),
+                Ok(images) if images.is_empty() => app.flash = Some(t!("tui.upload_no_image").into()),
                 Ok(images) => images.iter().for_each(|path| app.attach_image(path)),
                 Err(why) => app.flash = Some(why),
             }
@@ -344,18 +346,18 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                 copy(&text);
                 let lines = text.lines().count();
                 app.flash = Some(if first_time("copy-osc52") {
-                    "Copied. Over SSH it reaches your Mac's clipboard if iTerm2 allows it: Settings › General › Selection › Applications in terminal may access clipboard.".into()
+                    t!("tui.copied_first").into()
                 } else if lines > 1 {
-                    format!("Copied {lines} lines")
+                    t!("tui.copied_lines", lines = lines)
                 } else {
-                    "Copied".into()
+                    t!("tui.copied").into()
                 });
             }
         }
         if let Some(repo) = app.declined.take()
             && let Err(err) = equipe_core::squads::decline(&equipe_providers::credentials::equipe_home(), &repo)
         {
-            app.flash = Some(format!("Couldn't remember that: {err}"));
+            app.flash = Some(t!("tui.couldnt_remember", err = err));
         }
         if let Some((squad, members)) = app.switch_to.take() {
             // Another squad: attach to it and show it in place — this one keeps
@@ -376,14 +378,14 @@ pub async fn run(cwd: PathBuf, start: Start) -> std::io::Result<Summary> {
                     fresh.board_split = app.board_split;
                     fresh.mouse = app.mouse;
                     fresh.flash = Some(if members.is_empty() {
-                        format!("Now on {squad} · /squad switches back")
+                        t!("tui.now_on", squad = squad)
                     } else {
-                        format!("Started {squad}: the PM joins first, then the team · tell the PM what to build")
+                        t!("tui.started_squad", squad = squad)
                     });
                     app = fresh;
                     layouts = view::Layouts::with_picker(picker.clone());
                 }
-                Err(err) => app.flash = Some(format!("Couldn't open {squad}: {err}")),
+                Err(err) => app.flash = Some(t!("tui.couldnt_open_squad", squad = squad, err = err)),
             }
         }
         if app.pane == app::Pane::Board {
@@ -444,7 +446,7 @@ fn copy(text: &str) {
 /// Write the selected member's conversation to a Markdown file under
 /// `~/.equipe/exports`, and name the editor to open it in, if one is set.
 fn export(app: &app::App) -> std::io::Result<(PathBuf, Option<String>)> {
-    let agent = app.viewed().ok_or_else(|| std::io::Error::other("nobody is selected"))?;
+    let agent = app.viewed().ok_or_else(|| std::io::Error::other(t!("tui.nobody_selected")))?;
     let dir = equipe_providers::credentials::equipe_home().join("exports");
     std::fs::create_dir_all(&dir)?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
@@ -565,33 +567,33 @@ fn on_input(app: &mut app::App, client: &equipe_core::gateway::Client, event: In
 pub fn print_summary(summary: &Summary) {
     let p = ui::out();
     let team = match summary.agents {
-        0 => "nobody on the squad".to_owned(),
-        1 => "1 member".to_owned(),
-        n => format!("{n} members"),
+        0 => t!("tui.nobody_on_squad").to_owned(),
+        1 => t!("tui.one_member").to_owned(),
+        n => t!("tui.n_members", n = n),
     };
     println!(
         "{}  {}",
         p.wordmark(),
-        p.dim(&format!("detached from {} · {team} · {} tokens", summary.squad, summary.tokens))
+        p.dim(&t!("tui.detached", squad = summary.squad, team = team, tokens = summary.tokens))
     );
     if summary.daemon_lost {
-        println!("{}", p.fail_line("The daemon stopped while you watched."));
+        println!("{}", p.fail_line(t!("tui.daemon_stopped")));
         println!("  {}", p.hint("equipe daemon start"));
     } else if summary.working > 0 {
-        let who = if summary.working == 1 { "1 member is".to_owned() } else { format!("{} members are", summary.working) };
-        println!("{}", p.ok_line(&format!("{who} still working. The squad keeps going without this screen.")));
+        let line = if summary.working == 1 { t!("tui.one_still_working").to_owned() } else { t!("tui.n_still_working", n = summary.working) };
+        println!("{}", p.ok_line(&line));
     }
     if summary.to_review > 0 {
-        let what = if summary.to_review == 1 { "1 ticket waits".to_owned() } else { format!("{} tickets wait", summary.to_review) };
-        println!("{}", p.note(2, &format!("{what} for your review.")));
+        let line = if summary.to_review == 1 { t!("tui.one_ticket_waits").to_owned() } else { t!("tui.n_tickets_wait", n = summary.to_review) };
+        println!("{}", p.note(2, &line));
     }
     for (ticket, title, branch) in &summary.accepted {
-        println!("\n{}", p.ok_line(&format!("T-{ticket} {title} — accepted, on {}", p.bold(branch))));
-        println!("{}", p.row("review", &p.bold(&format!("git log -p main..{branch}"))));
-        println!("{}", p.row("merge", &p.bold(&format!("git merge {branch}"))));
+        println!("\n{}", p.ok_line(&t!("tui.accepted_on", ticket = ticket, title = title, branch = p.bold(branch))));
+        println!("{}", p.row(t!("tui.row_review"), &p.bold(&format!("git log -p main..{branch}"))));
+        println!("{}", p.row(t!("tui.row_merge"), &p.bold(&format!("git merge {branch}"))));
     }
     if !summary.daemon_lost {
-        println!("\n  {}", p.hint("equipe   to come back"));
+        println!("\n  {}", p.hint(t!("tui.come_back")));
     }
     let _ = std::io::stdout().flush();
 }

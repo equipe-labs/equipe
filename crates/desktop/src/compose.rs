@@ -5,6 +5,7 @@
 //! commands. The same rules as the terminal console (`tui/app.rs` `submit`,
 //! `slash`); the daemon commands are the ones it sends.
 
+use equipe_core::t;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -153,7 +154,7 @@ pub fn choices(model: &Model, text: &str) -> Vec<Choice> {
             .project_names()
             .into_iter()
             .map(|name| {
-                let about = if model.focus.as_deref() == Some(name.as_str()) { "in focus" } else { "" };
+                let about = if model.focus.as_deref() == Some(name.as_str()) { t!("compose.in_focus") } else { "" };
                 (name, about.to_owned())
             })
             .collect(),
@@ -222,7 +223,7 @@ pub fn plan(model: &Model, text: &str, later: bool) -> Plan {
         return slash(model, command);
     }
     let Some(selected) = model.selected_member() else {
-        return Plan { restore: Some(text.to_owned()), ..Plan::say("대화할 멤버가 아직 없습니다") };
+        return Plan { restore: Some(text.to_owned()), ..Plan::say(t!("compose.no_member_yet")) };
     };
     let (target, text) = match text.strip_prefix('@') {
         // `@frontend fix the header` goes to frontend without leaving this view.
@@ -231,7 +232,7 @@ pub fn plan(model: &Model, text: &str, later: bool) -> Plan {
             match model.open_member(name) {
                 Some(member) if rest.trim().is_empty() => return Plan { effect: Some(Effect::Select(member.session)), ..Plan::default() },
                 Some(member) => (member, rest.trim()),
-                None => return Plan { restore: Some(text.to_owned()), ..Plan::say(format!("스쿼드에 @{name}라는 멤버가 없습니다")) },
+                None => return Plan { restore: Some(text.to_owned()), ..Plan::say(t!("compose.no_member_mention", name = name)) },
             }
         }
         None => (selected, text),
@@ -257,27 +258,27 @@ pub fn plan(model: &Model, text: &str, later: bool) -> Plan {
     // at work in another project's — the daemon then opens a lane beside it.
     let presence = if away { model.presence_to_talk(target) } else { model.viewed_presence().unwrap_or(target.presence) };
     match presence {
-        Presence::Closed => Plan { restore: Some(text.to_owned()), ..Plan::say(format!("{}은(는) 더 이상 스쿼드에 없습니다", target.name)) },
+        Presence::Closed => Plan { restore: Some(text.to_owned()), ..Plan::say(t!("compose.member_gone", name = target.name)) },
         // A memo: the core holds it until the turn ends. Only Claude can be steered.
         Presence::Working if later || target.engine != Some(Engine::Claude) => Plan {
             commands: vec![Command::SubmitLater { session: target.session, text: text.to_owned() }],
-            flash: Some(format!("{}에게 메모를 남겼습니다 — 이번 턴이 끝나면 읽습니다", target.name)),
+            flash: Some(t!("compose.memo_left", name = target.name)),
             ..Plan::default()
         },
         // Steering: read at its next step, the work carrying on.
         Presence::Working => Plan {
             commands: vec![Command::Submit { session: target.session, text: text.to_owned() }],
-            flash: Some(format!("{}이(가) 다음 단계에서 읽습니다, 하던 일은 멈추지 않습니다 · Tab으로 보내면 끝난 뒤 읽는 메모", target.name)),
+            flash: Some(t!("compose.steered", name = target.name)),
             ..Plan::default()
         },
         Presence::Ready if !away && model.opens_lane() => Plan {
             commands: vec![Command::Submit { session: target.session, text: text.to_owned() }],
-            flash: Some(format!("{}이(가) 하던 일과 나란히 바로 답합니다", target.name)),
+            flash: Some(t!("compose.answers_alongside", name = target.name)),
             ..Plan::default()
         },
         Presence::Ready => Plan {
             commands: vec![Command::Submit { session: target.session, text: text.to_owned() }],
-            flash: away.then(|| format!("{}에게 보냈습니다", target.name)),
+            flash: away.then(|| t!("compose.sent_to", name = target.name)),
             ..Plan::default()
         },
     }
@@ -299,7 +300,7 @@ fn slash(model: &Model, command: &str) -> Plan {
                 name => match model.project_names().into_iter().find(|p| p == name) {
                     Some(p) => Some(p),
                     None => {
-                        return Plan::say(format!("{}에 {name}라는 프로젝트가 없습니다 · {}", model.squad, model.project_names().join(", ")));
+                        return Plan::say(t!("compose.no_project", squad = model.squad, name = name, projects = model.project_names().join(", ")));
                     }
                 },
             };
@@ -316,7 +317,7 @@ fn slash(model: &Model, command: &str) -> Plan {
 what to do with each — close, merge into another, or keep, and why. Don't cancel anything yourself; I'll decide."
                     .into(),
             }),
-            None => Plan::say("물어볼 PM이 스쿼드에 없습니다"),
+            None => Plan::say(t!("compose.no_pm")),
         },
         "mode" => set_mode(model, rest),
         "close" => match model.selected_member().filter(|m| m.presence != Presence::Closed) {
@@ -324,14 +325,14 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             None => Plan::default(),
         },
         "scale" => match rest {
-            "" => Plan::say("/scale <0-6> · /scale off — 한 역할의 일이 밀릴 때 equipe가 추가로 들이는 멤버 수"),
+            "" => Plan::say(t!("compose.scale_usage")),
             word => match if word == "off" { Some(0) } else { word.parse::<usize>().ok().filter(|n| *n <= 6) } {
                 Some(extra) => Plan {
                     commands: vec![Command::Scale { squad, extra }],
-                    flash: Some(if extra == 0 { "추가 멤버 없음: 각 역할의 일은 그 역할 멤버를 기다립니다".into() } else { format!("일이 밀리면 한 역할에 최대 {extra}명 더") }),
+                    flash: Some(if extra == 0 { t!("compose.scale_off").into() } else { t!("compose.scale_set", extra = extra) }),
                     ..Plan::default()
                 },
-                None => Plan::say("0에서 6 사이 숫자: /scale 3 · /scale off"),
+                None => Plan::say(t!("compose.scale_bad")),
             },
         },
         "compact" | "clear" => {
@@ -341,7 +342,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             };
             match target {
                 Some(m) => Plan::send(Command::Refresh { session: m.session, summary: name == "compact" }),
-                None => Plan::say(format!("누구요? /{name} <멤버>")),
+                None => Plan::say(t!("compose.who", name = name)),
             }
         }
         "model" => {
@@ -349,20 +350,20 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             let (target, wanted) = match words.as_slice() {
                 [n, m] => (member_named(n), *m),
                 [m] => (model.selected_member(), *m),
-                _ => return Plan::say("/model [멤버] <모델> — 예: /model mobile opus"),
+                _ => return Plan::say(t!("compose.model_usage")),
             };
             match target {
                 Some(t) => Plan {
                     commands: vec![Command::SetModel { session: t.session, model: wanted.to_owned() }],
-                    flash: Some(format!("{}은(는) 다음 턴부터 {wanted}로 일합니다", t.name)),
+                    flash: Some(t!("compose.model_set", name = t.name, wanted = wanted)),
                     ..Plan::default()
                 },
-                None => Plan::say(format!("{}라는 멤버가 없습니다 · /model [멤버] <모델>", words[0])),
+                None => Plan::say(t!("compose.model_no_member", name = words[0])),
             }
         }
         "desktop" => match rest {
-            "stop" => Plan { commands: vec![Command::Desktop { open: false }], flash: Some("화면을 회수했습니다: /desktop resume 전까지 멤버는 클릭도 입력도 못 합니다".into()), ..Plan::default() },
-            "resume" => Plan { commands: vec![Command::Desktop { open: true }], flash: Some("멤버가 화면을 다시 쓸 수 있습니다".into()), ..Plan::default() },
+            "stop" => Plan { commands: vec![Command::Desktop { open: false }], flash: Some(t!("compose.desktop_stopped").into()), ..Plan::default() },
+            "resume" => Plan { commands: vec![Command::Desktop { open: true }], flash: Some(t!("compose.desktop_resumed").into()), ..Plan::default() },
             _ => Plan::say("/desktop stop · /desktop resume"),
         },
         "browser" => {
@@ -371,13 +372,13 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 [verb @ ("show" | "hide")] => Plan::send(Command::ShowBrowser { squad, member: None, show: *verb == "show" }),
                 [verb @ ("show" | "hide"), who] => match member_named(who) {
                     Some(m) => Plan::send(Command::ShowBrowser { squad, member: Some(m.name.clone()), show: *verb == "show" }),
-                    None => Plan::say(format!("{who}라는 멤버가 없습니다")),
+                    None => Plan::say(t!("compose.no_member", who = who)),
                 },
-                _ => Plan::say("/browser show|hide [멤버] — 로그인과 개수 제한은 터미널의 /browser에서"),
+                _ => Plan::say(t!("compose.browser_usage")),
             }
         }
-        "help" => Plan::say("입력창에서 / 를 누르면 명령 목록, @ 를 누르면 멤버 목록이 나옵니다"),
-        other => Plan::say(format!("/{other}은(는) 아직 데스크톱에 없습니다 — 터미널의 equipe에서 쓰세요")),
+        "help" => Plan::say(t!("compose.help")),
+        other => Plan::say(t!("compose.not_in_desktop", other = other)),
     }
 }
 
@@ -389,13 +390,13 @@ fn decide(model: &Model, verb: &str, rest: &str) -> Plan {
     let note = note.trim();
     let Some(ticket) = parse_ticket_id(id).filter(|_| !id.is_empty()) else {
         let (status, what) = match verb {
-            "resume" => (TicketStatus::Waiting, "사람을 기다리는 일"),
-            _ => (TicketStatus::Review, "검토를 기다리는 일"),
+            "resume" => (TicketStatus::Waiting, t!("compose.waiting_on_person")),
+            _ => (TicketStatus::Review, t!("compose.waiting_for_review")),
         };
         let waiting: Vec<String> = model.tickets.iter().filter(|t| t.status == status).map(|t| format!("T-{}", t.id)).collect();
         return Plan::say(match waiting.as_slice() {
-            [] => format!("어느 티켓요? /{verb} T-3"),
-            ids => format!("어느 티켓요? {what}: {}", ids.join(", ")),
+            [] => t!("compose.which_ticket", verb = verb),
+            ids => t!("compose.which_ticket_of", what = what, tickets = ids.join(", ")),
         });
     };
     let squad = model.squad.clone();
@@ -404,7 +405,7 @@ fn decide(model: &Model, verb: &str, rest: &str) -> Plan {
             let merges = model.tickets.iter().find(|t| t.id == ticket).is_some_and(|t| !t.kind.in_home() && t.branch.is_some());
             Plan {
                 commands: vec![Command::Accept { squad, ticket }],
-                flash: Some(if merges { format!("T-{ticket} 수락 · main에 합치려면 /merge T-{ticket}") } else { format!("T-{ticket} 수락 · 되돌리려면 /reopen T-{ticket} <바꿀 것>") }),
+                flash: Some(if merges { t!("compose.accepted_merge", ticket = ticket) } else { t!("compose.accepted", ticket = ticket) }),
                 ..Plan::default()
             }
         }
@@ -412,14 +413,14 @@ fn decide(model: &Model, verb: &str, rest: &str) -> Plan {
             let push = note == "push";
             Plan {
                 commands: vec![Command::Merge { squad, ticket, push }],
-                flash: Some(format!("T-{ticket}를 main에 합칩니다{}…", if push { " (origin에 푸시까지)" } else { " (푸시는 /merge T-n push)" })),
+                flash: Some(if push { t!("compose.merging_push", ticket = ticket) } else { t!("compose.merging", ticket = ticket) }),
                 ..Plan::default()
             }
         }
         // Sent back with no word, the member can only guess what to change.
         "reopen" if note.is_empty() => Plan {
             restore: Some(format!("/reopen T-{ticket} ")),
-            ..Plan::say(format!("T-{ticket}에서 무엇을 바꿔야 하나요? /reopen T-{ticket} 뒤에 적어 주세요 — 멤버는 그 글로 일합니다"))
+            ..Plan::say(t!("compose.reopen_needs_note", ticket = ticket))
         },
         "reopen" => Plan::send(Command::Reopen { squad, ticket, note: note.to_owned() }),
         "resume" => Plan::send(Command::Resume { squad, ticket, note: note.to_owned() }),
@@ -433,21 +434,21 @@ fn set_mode(model: &Model, rest: &str) -> Plan {
     let words: Vec<&str> = rest.split_whitespace().collect();
     let usage = || {
         let modes: Vec<String> = Mode::ALL.iter().map(|m| format!("{} ({})", m.label(), m.short())).collect();
-        format!("모드: {} · /mode <모드> 는 스쿼드 전체, /mode <멤버> <모드> 는 한 명", modes.join(" · "))
+        t!("compose.mode_usage", modes = modes.join(" · "))
     };
     let squad = model.squad.clone();
     if words.contains(&"plan") {
-        return Plan::say("읽기만 하는 모드의 이름은 read-only입니다: /mode read-only");
+        return Plan::say(t!("compose.mode_plan"));
     }
     match words.as_slice() {
-        [] => Plan::say(format!("스쿼드는 {} 모드입니다. {}", model.mode.label(), usage())),
+        [] => Plan::say(t!("compose.mode_current", mode = model.mode.label(), usage = usage())),
         [mode] => match Mode::parse(mode) {
             Some(mode) => Plan::send(Command::SetMode { squad, member: None, mode: Some(mode) }),
             None => Plan::say(usage()),
         },
         [name, mode, ..] => {
             if model.open_member(name).is_none() {
-                return Plan::say(format!("스쿼드에 {name}라는 멤버가 없습니다"));
+                return Plan::say(t!("compose.no_member_in_squad", name = name));
             }
             let mode = match *mode {
                 "squad" | "default" => None,

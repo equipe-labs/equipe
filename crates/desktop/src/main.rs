@@ -23,6 +23,7 @@ mod snapshot;
 mod state;
 mod target;
 mod theme;
+mod i18n;
 mod relaunch;
 #[cfg(target_os = "macos")]
 mod update;
@@ -30,6 +31,8 @@ mod views;
 mod wire;
 
 use std::time::Duration;
+
+use equipe_core::t;
 
 use equipe_providers::credentials::equipe_home;
 use gpui_kit::component::input::{Enter, InputEvent};
@@ -339,7 +342,7 @@ impl Shell {
                             // Over SSH the bridge had to start a daemon nobody installed
                             // as a login service: it won't see the screen.
                             daemon::Update::Bridge(bridge) if bridge.started => {
-                                this.composer.flash = Some("원격 데몬을 방금 시작했습니다 — 그 기계에서 `equipe daemon install`을 한 번 실행해 두면 항상 켜져 있습니다".into());
+                                this.composer.flash = Some(t!("main.remote_daemon_started").into());
                                 changed = true;
                             }
                             _ => {}
@@ -519,10 +522,10 @@ impl Shell {
                             let local = ssh::scratch_dir().join(format!("{}-{}", std::process::id(), ssh::safe_name(std::path::Path::new(&path))));
                             match std::fs::write(&local, bytes) {
                                 Ok(()) => drop(std::process::Command::new("open").arg(&local).spawn()),
-                                Err(e) => drop(notices.send(format!("미리보기를 저장하지 못했습니다: {e}"))),
+                                Err(e) => drop(notices.send(t!("main.preview_save_failed", e = e))),
                             }
                         }
-                        Err(failure) => drop(notices.send(format!("{}에서 미리보기를 가져오지 못했습니다: {}", host.spec(), failure.guide(&Endpoint::Ssh(host.clone())).short))),
+                        Err(failure) => drop(notices.send(t!("main.preview_fetch_failed", host = host.spec(), why = failure.guide(&Endpoint::Ssh(host.clone())).short))),
                     }
                 });
             }
@@ -533,7 +536,7 @@ impl Shell {
     /// "다시 시작해 업데이트": the downloaded update goes in, and the app starts again.
     pub fn relaunch_to_update(&mut self, cx: &mut Context<Self>) {
         if !relaunch::now() {
-            self.composer.flash = Some("업데이트는 앱을 끄면 설치됩니다".into());
+            self.composer.flash = Some(t!("main.update_on_quit").into());
             cx.notify();
         }
     }
@@ -575,8 +578,8 @@ impl Shell {
                 .text_color(p.muted)
                 .when(self.connecting_shown, |d| {
                     d.child(match &self.endpoint {
-                        Endpoint::Local { .. } => "데몬에 연결하는 중…".to_owned(),
-                        remote => format!("{}에 SSH로 연결하는 중…", remote.label()),
+                        Endpoint::Local { .. } => t!("main.connecting_local").to_owned(),
+                        remote => t!("main.connecting_ssh", name = remote.label()),
                     })
                 })
                 .into_any_element(),
@@ -616,7 +619,7 @@ impl Shell {
                 .text_size(px(SMALL))
                 .child(div().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child("✗"))
                 .child(div().text_color(p.text).child(format!("{} · {since}", guide.short)))
-                .child(div().flex_1().min_w_0().text_color(p.muted).child(if waits { "확인이 필요합니다" } else { "다시 연결하는 중 — 켜지면 자동으로 이어집니다" }))
+                .child(div().flex_1().min_w_0().text_color(p.muted).child(if waits { t!("main.banner_needs_you") } else { t!("main.banner_reconnecting") }))
                 .child(
                     div()
                         .id("banner-retry")
@@ -628,7 +631,7 @@ impl Shell {
                         .cursor_pointer()
                         .hover(move |s| s.bg(p.wash))
                         .on_click(cx.listener(|this, _, _, cx| this.retry(cx)))
-                        .child("다시 시도"),
+                        .child(t!("main.retry")),
                 ),
         )
     }
@@ -654,7 +657,7 @@ fn install_screen(p: Palette) -> AnyElement {
         .items_center()
         .justify_center()
         .gap_3()
-        .child(div().text_size(px(18.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("이 맥에 equipe가 없습니다"))
+        .child(div().text_size(px(18.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("main.install_title")))
         .child(
             div()
                 .max_w(px(520.))
@@ -662,7 +665,7 @@ fn install_screen(p: Palette) -> AnyElement {
                 .line_height(px(24.))
                 .text_color(p.text2)
                 .text_center()
-                .child("이 앱은 equipe 데몬을 보여 주는 창입니다. 터미널에 아래 한 줄을 붙여 넣어 equipe를 설치한 뒤 `equipe`를 실행하세요. 데몬이 켜지면 이 창이 알아서 연결합니다."),
+                .child(t!("main.install_text")),
         )
         .child(
             div()
@@ -681,10 +684,10 @@ fn install_screen(p: Palette) -> AnyElement {
         .child(
             h_flex()
                 .gap_2()
-                .child(button("명령 복사").id("copy-install").on_click(|_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(install::INSTALL_COMMAND.to_owned()))))
-                .child(button("설치 안내 (equipe.im)").id("open-site").on_click(|_, _, cx| cx.open_url(install::SITE))),
+                .child(button(t!("main.copy_command")).id("copy-install").on_click(|_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(install::INSTALL_COMMAND.to_owned()))))
+                .child(button(t!("main.install_guide")).id("open-site").on_click(|_, _, cx| cx.open_url(install::SITE))),
         )
-        .child(div().text_size(px(SMALL)).text_color(p.muted).child("Homebrew를 쓰면: brew install equipe-labs/tap/equipe"))
+        .child(div().text_size(px(SMALL)).text_color(p.muted).child(t!("main.homebrew_hint")))
         .into_any_element()
 }
 
@@ -777,14 +780,14 @@ fn app_menu(cx: &mut App) {
         KeyBinding::new("cmd-q", Quit, None),
     ]);
     cx.set_menus(vec![Menu::new("equipe").items([
-        MenuItem::action("연결 대상…", ChooseTarget),
-        MenuItem::action("업데이트 확인…", CheckForUpdates).disabled(!can_update),
+        MenuItem::action(t!("main.menu_choose_target"), ChooseTarget),
+        MenuItem::action(t!("main.menu_check_updates"), CheckForUpdates).disabled(!can_update),
         MenuItem::separator(),
-        MenuItem::action("equipe 가리기", Hide),
-        MenuItem::action("기타 가리기", HideOthers),
-        MenuItem::action("모두 보기", ShowAll),
+        MenuItem::action(t!("main.menu_hide"), Hide),
+        MenuItem::action(t!("main.menu_hide_others"), HideOthers),
+        MenuItem::action(t!("main.menu_show_all"), ShowAll),
         MenuItem::separator(),
-        MenuItem::action("equipe 종료", Quit),
+        MenuItem::action(t!("main.menu_quit"), Quit),
     ])]);
 }
 

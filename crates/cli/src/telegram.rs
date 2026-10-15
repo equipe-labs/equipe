@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use equipe_core::gateway::{Client, Commands};
 use equipe_core::protocol::{Approval, Command, Decision, Event, SessionId, SessionState, Snapshot, Ticket, TicketId, TicketStatus, TurnOutcome};
+use equipe_core::t;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -202,44 +203,56 @@ impl Bridge {
     }
 
     fn name_of(&self, squad: &str, session: SessionId) -> String {
-        self.squads.get(squad).and_then(|s| s.members.get(&session)).map(|(name, _)| name.clone()).unwrap_or_else(|| "a member".into())
+        self.squads.get(squad).and_then(|s| s.members.get(&session)).map(|(name, _)| name.clone()).unwrap_or_else(|| t!("telegram.a_member").into())
     }
 
     fn approval_text(&self, squad: &str, a: &Approval) -> String {
-        let verb = match a.tool.as_str() {
-            "Bash" => "to run",
-            "Write" | "Edit" | "MultiEdit" => "to edit",
-            "WebFetch" => "to fetch",
-            "Confirm" => "to",
-            equipe_core::permissions::BROWSER_CODE => "to run code in its browser",
-            _ => "to use",
+        let member = escape(&a.member);
+        let asks = match a.tool.as_str() {
+            "Bash" => t!("telegram.asks_to_run", member = member),
+            "Write" | "Edit" | "MultiEdit" => t!("telegram.asks_to_edit", member = member),
+            "WebFetch" => t!("telegram.asks_to_fetch", member = member),
+            "Confirm" => t!("telegram.asks_to", member = member),
+            equipe_core::permissions::BROWSER_CODE => t!("telegram.asks_to_run_browser_code", member = member),
+            _ => t!("telegram.asks_to_use", member = member),
         };
         let ticket = a.ticket.map(|t| format!(" · T-{t}")).unwrap_or_default();
-        let mut text = format!("🔐 <b>{}</b> asks {verb}{ticket}{}\n<pre>{}</pre>", escape(&a.member), self.where_(squad), escape(&cut(&a.action, ACTION_SHOWN)));
+        let mut text = format!("🔐 {asks}{ticket}{}\n<pre>{}</pre>", self.where_(squad), escape(&cut(&a.action, ACTION_SHOWN)));
         if let Some(reason) = &a.reason {
             text.push_str(&format!("\n<i>{}</i>", escape(reason)));
         }
         text
     }
 
+    /// The line under a review that says how to ask for changes.
+    fn review_hint() -> String {
+        format!("\n\n<i>{}</i>", t!("telegram.review_reply_hint"))
+    }
+
+    /// The line under a ticket waiting on the person that says how to answer it.
+    fn waiting_hint() -> String {
+        format!("\n\n<i>{}</i>", t!("telegram.waiting_reply_hint"))
+    }
+
     fn review_text(&self, squad: &str, t: &Ticket) -> String {
-        let who = t.assignee.as_ref().or(t.owner.as_ref()).cloned().unwrap_or_else(|| "A member".into());
-        let mut text = format!("📝 <b>T-{}</b> {}{}\n{} handed it in for your review.", t.id, escape(&t.title), self.where_(squad), escape(&who));
+        let who = t.assignee.as_ref().or(t.owner.as_ref()).cloned().unwrap_or_else(|| t!("telegram.a_member_cap").into());
+        let handed = t!("telegram.handed_in_for_review", who = escape(&who));
+        let mut text = format!("📝 <b>T-{}</b> {}{}\n{handed}", t.id, escape(&t.title), self.where_(squad));
         if let Some(note) = t.note.as_deref().filter(|n| !n.trim().is_empty()) {
             text.push_str(&format!("\n\n{}", escape(&cut(note, 1500))));
         }
-        text.push_str("\n\n<i>Reply to this message to ask for changes.</i>");
+        text.push_str(&Self::review_hint());
         text
     }
 
     fn waiting_text(&self, squad: &str, t: &Ticket) -> String {
-        let who = t.assignee.as_ref().or(t.owner.as_ref()).cloned().unwrap_or_else(|| "A member".into());
-        let mut text = format!("✋ <b>T-{}</b> {}{}\n{} needs you", t.id, escape(&t.title), self.where_(squad), escape(&who));
+        let who = escape(&t.assignee.as_ref().or(t.owner.as_ref()).cloned().unwrap_or_else(|| t!("telegram.a_member_cap").into()));
+        let mut text = format!("✋ <b>T-{}</b> {}{}\n", t.id, escape(&t.title), self.where_(squad));
         match t.note.as_deref().filter(|n| !n.trim().is_empty()) {
-            Some(note) => text.push_str(&format!(":\n\n{}", escape(&cut(note, 1500)))),
-            None => text.push('.'),
+            Some(note) => text.push_str(&format!("{}\n\n{}", t!("telegram.needs_you_with_note", who = who), escape(&cut(note, 1500)))),
+            None => text.push_str(&t!("telegram.needs_you", who = who)),
         }
-        text.push_str("\n\n<i>Reply to this message with what you did — they carry on from it.</i>");
+        text.push_str(&Self::waiting_hint());
         text
     }
 
@@ -272,7 +285,7 @@ impl Bridge {
                 if matches!(self.hearing.get(session), Some((_, Hearing::Waiting(sent))) if sent == text) {
                     let name = self.name_of(squad, *session);
                     outs.push(Out::Send {
-                        text: format!("⏳ {} is mid-turn — your message goes in when it's done.", escape(&name)),
+                        text: format!("⏳ {}", t!("telegram.mid_turn", name = escape(&name))),
                         buttons: vec![],
                         ask: None,
                         key: None,
@@ -301,9 +314,9 @@ impl Bridge {
                     let said = said.trim();
                     if said.is_empty() {
                         let why = match outcome {
-                            TurnOutcome::Failed => "its turn failed — the console says why",
-                            TurnOutcome::Interrupted => "it was stopped",
-                            _ => "it finished without a word",
+                            TurnOutcome::Failed => t!("telegram.turn_failed"),
+                            TurnOutcome::Interrupted => t!("telegram.turn_stopped"),
+                            _ => t!("telegram.turn_silent"),
                         };
                         outs.push(Out::Send { text: format!("<b>{}</b>: {why}", escape(&name)), buttons: vec![], ask: None, key: None });
                     } else {
@@ -331,8 +344,8 @@ impl Bridge {
                 state!().approvals.insert(approval.id, approval.clone());
                 if !self.sent.contains_key(&key) {
                     let text = self.approval_text(squad, approval);
-                    let allow = self.button("Allow", Act::Decide(squad.to_owned(), approval.id, Decision::Allow));
-                    let decline = self.button("Decline", Act::Decide(squad.to_owned(), approval.id, Decision::Deny));
+                    let allow = self.button(t!("telegram.button_allow"), Act::Decide(squad.to_owned(), approval.id, Decision::Allow));
+                    let decline = self.button(t!("telegram.button_decline"), Act::Decide(squad.to_owned(), approval.id, Decision::Deny));
                     outs.push(Out::Send { text, buttons: vec![allow, decline], ask: None, key: Some(key) });
                 }
             }
@@ -341,8 +354,8 @@ impl Bridge {
                     && let Some(message) = self.sent.get(&Key::Approval(squad.to_owned(), *approval)).copied()
                 {
                     let answer = match decision {
-                        Decision::Allow | Decision::Always => "✅ Allowed",
-                        Decision::Deny => "❌ Declined",
+                        Decision::Allow | Decision::Always => format!("✅ {}", t!("telegram.allowed")),
+                        Decision::Deny => format!("❌ {}", t!("telegram.declined")),
                     };
                     outs.push(Out::Edit { message, text: format!("{}\n\n<b>{answer}</b>", self.approval_text(squad, &a)) });
                 }
@@ -359,29 +372,29 @@ impl Bridge {
                     && let Some(message) = self.sent.get(&review).copied()
                 {
                     let how = match ticket.status {
-                        TicketStatus::Done => "✅ Accepted",
-                        TicketStatus::Cancelled => "Cancelled",
-                        _ => "↩ Sent back",
+                        TicketStatus::Done => format!("✅ {}", t!("telegram.accepted")),
+                        TicketStatus::Cancelled => t!("telegram.cancelled").to_owned(),
+                        _ => format!("↩ {}", t!("telegram.sent_back")),
                     };
-                    let text = self.review_text(squad, ticket).replace("\n\n<i>Reply to this message to ask for changes.</i>", "");
+                    let text = self.review_text(squad, ticket).replace(&Self::review_hint(), "");
                     outs.push(Out::Edit { message, text: format!("{text}\n\n<b>{how}</b>") });
                 }
                 if before == Some(TicketStatus::Waiting)
                     && let Some(message) = self.sent.get(&waiting).copied()
                 {
-                    let text = self.waiting_text(squad, ticket).replace("\n\n<i>Reply to this message with what you did — they carry on from it.</i>", "");
-                    outs.push(Out::Edit { message, text: format!("{text}\n\n<b>↪ Back with them</b>") });
+                    let text = self.waiting_text(squad, ticket).replace(&Self::waiting_hint(), "");
+                    outs.push(Out::Edit { message, text: format!("{text}\n\n<b>↪ {}</b>", t!("telegram.back_with_them")) });
                 }
                 match ticket.status {
                     TicketStatus::Review => {
                         let text = self.review_text(squad, ticket);
-                        let accept = self.button("Accept", Act::Accept(squad.to_owned(), ticket.id));
-                        let reopen = self.button("Ask for changes", Act::Reopen(squad.to_owned(), ticket.id));
+                        let accept = self.button(t!("telegram.button_accept"), Act::Accept(squad.to_owned(), ticket.id));
+                        let reopen = self.button(t!("telegram.button_ask_for_changes"), Act::Reopen(squad.to_owned(), ticket.id));
                         outs.push(Out::Send { text, buttons: vec![accept, reopen], ask: None, key: Some(review) });
                     }
                     TicketStatus::Waiting => {
                         let text = self.waiting_text(squad, ticket);
-                        let done = self.button("Done — carry on", Act::Resume(squad.to_owned(), ticket.id));
+                        let done = self.button(t!("telegram.button_done_carry_on"), Act::Resume(squad.to_owned(), ticket.id));
                         outs.push(Out::Send { text, buttons: vec![done], ask: None, key: Some(waiting) });
                     }
                     _ => {}
@@ -396,42 +409,42 @@ impl Bridge {
     pub fn on_button(&mut self, callback: &str, data: &str) -> (Vec<(String, Command)>, Vec<Out>) {
         let toast = |text: &str| Out::Toast { callback: callback.to_owned(), text: text.to_owned() };
         let Some(act) = self.buttons.get(data).cloned() else {
-            return (vec![], vec![toast("That's no longer waiting")]);
+            return (vec![], vec![toast(t!("telegram.no_longer_waiting"))]);
         };
         match act {
             Act::Decide(squad, id, decision) => {
                 if !self.squads.get(&squad).is_some_and(|s| s.approvals.contains_key(&id)) {
-                    return (vec![], vec![toast("Already answered")]);
+                    return (vec![], vec![toast(t!("telegram.already_answered"))]);
                 }
-                let said = if decision == Decision::Deny { "Declined" } else { "Allowed" };
+                let said = if decision == Decision::Deny { t!("telegram.declined") } else { t!("telegram.allowed") };
                 (vec![(squad.clone(), Command::Decide { squad, approval: id, decision })], vec![toast(said)])
             }
             Act::Accept(squad, ticket) => {
                 if !self.is(&squad, ticket, TicketStatus::Review) {
-                    return (vec![], vec![toast("It isn't waiting for review any more")]);
+                    return (vec![], vec![toast(t!("telegram.not_waiting_for_review"))]);
                 }
-                (vec![(squad.clone(), Command::Accept { squad, ticket })], vec![toast("Accepted")])
+                (vec![(squad.clone(), Command::Accept { squad, ticket })], vec![toast(t!("telegram.accepted"))])
             }
             Act::Reopen(squad, ticket) => {
                 if !self.is(&squad, ticket, TicketStatus::Review) {
-                    return (vec![], vec![toast("It isn't waiting for review any more")]);
+                    return (vec![], vec![toast(t!("telegram.not_waiting_for_review"))]);
                 }
                 let ask = Out::Send {
-                    text: format!("What should change in <b>T-{ticket}</b>?"),
+                    text: t!("telegram.what_should_change", ticket = ticket),
                     buttons: vec![],
-                    ask: Some("what to change".into()),
+                    ask: Some(t!("telegram.what_to_change_placeholder").into()),
                     key: Some(Key::Reopen(squad, ticket)),
                 };
                 (vec![], vec![toast(""), ask])
             }
             Act::Resume(squad, ticket) => {
                 if !self.is(&squad, ticket, TicketStatus::Waiting) {
-                    return (vec![], vec![toast("It isn't waiting on you any more")]);
+                    return (vec![], vec![toast(t!("telegram.not_waiting_on_you"))]);
                 }
                 let ask = Out::Send {
-                    text: format!("What did you do for <b>T-{ticket}</b>? They carry on from it."),
+                    text: t!("telegram.what_did_you_do", ticket = ticket),
                     buttons: vec![],
-                    ask: Some("what you did".into()),
+                    ask: Some(t!("telegram.what_you_did_placeholder").into()),
                     key: Some(Key::Resume(squad, ticket)),
                 };
                 (vec![], vec![toast(""), ask])
@@ -463,14 +476,14 @@ impl Bridge {
             match key {
                 Key::Reopen(squad, ticket) | Key::Review(squad, ticket) => {
                     if !self.is(&squad, ticket, TicketStatus::Review) {
-                        return (vec![], vec![Self::say(format!("T-{ticket} isn't waiting for review any more."))]);
+                        return (vec![], vec![Self::say(t!("telegram.ticket_not_waiting_for_review", ticket = ticket))]);
                     }
                     let command = Command::Reopen { squad: squad.clone(), ticket, note: text.to_owned() };
                     return (vec![(squad, command)], vec![Out::Seen { message }]);
                 }
                 Key::Resume(squad, ticket) | Key::Waiting(squad, ticket) => {
                     if !self.is(&squad, ticket, TicketStatus::Waiting) {
-                        return (vec![], vec![Self::say(format!("T-{ticket} isn't waiting on you any more."))]);
+                        return (vec![], vec![Self::say(t!("telegram.ticket_not_waiting_on_you", ticket = ticket))]);
                     }
                     let command = Command::Resume { squad: squad.clone(), ticket, note: text.to_owned() };
                     return (vec![(squad, command)], vec![Out::Seen { message }]);
@@ -480,7 +493,7 @@ impl Bridge {
                         return self.submit(&squad, session, text, message);
                     }
                 }
-                Key::Approval(..) => return (vec![], vec![Self::say("Answer it with its buttons.".into())]),
+                Key::Approval(..) => return (vec![], vec![Self::say(t!("telegram.answer_with_buttons").into())]),
             }
         }
         let (word, rest) = text.split_once(char::is_whitespace).map_or((text, ""), |(w, r)| (w, r.trim()));
@@ -494,53 +507,52 @@ impl Bridge {
                 if rest.is_empty() {
                     let names: Vec<String> = self.squads.keys().map(|s| escape(s)).collect();
                     let here = self.current().map(|s| escape(&s)).unwrap_or_default();
-                    return (vec![], vec![Self::say(format!("Writing to <b>{here}</b>. Squads: {} · /squad &lt;name&gt; switches", names.join(", ")))]);
+                    return (vec![], vec![Self::say(t!("telegram.writing_to", here = here, squads = names.join(", ")))]);
                 }
                 if !self.squads.contains_key(rest) {
-                    return (vec![], vec![Self::say(format!("No squad {} · /squad lists them", escape(rest)))]);
+                    return (vec![], vec![Self::say(t!("telegram.no_such_squad", name = escape(rest)))]);
                 }
                 self.current = Some(rest.to_owned());
-                return (vec![], vec![Self::say(format!("Now writing to <b>{}</b>", escape(rest)))]);
+                return (vec![], vec![Self::say(t!("telegram.now_writing_to", name = escape(rest)))]);
             }
-            _ if word.starts_with('/') => return (vec![], vec![Self::say(format!("No command {} · /help", escape(word)))]),
+            _ if word.starts_with('/') => return (vec![], vec![Self::say(t!("telegram.no_such_command", command = escape(word)))]),
             _ => {}
         }
         let Some(squad) = self.current() else {
-            return (vec![], vec![Self::say("No squad yet — start one with equipe in a project.".into())]);
+            return (vec![], vec![Self::say(t!("telegram.no_squad_yet_start").into())]);
         };
         let members = &self.squads[&squad].members;
         // `@name …` is for that member; anything else for the PM.
         let (session, said) = match word.strip_prefix('@') {
             Some(name) => match members.iter().find(|(_, (n, _))| n == name) {
                 Some((id, _)) if !rest.is_empty() => (*id, rest),
-                Some(_) => return (vec![], vec![Self::say(format!("What should I tell {}?", escape(name)))]),
-                None => return (vec![], vec![Self::say(format!("No one called @{} in {}", escape(name), escape(&squad)))]),
+                Some(_) => return (vec![], vec![Self::say(t!("telegram.what_should_i_tell", name = escape(name)))]),
+                None => return (vec![], vec![Self::say(t!("telegram.no_one_called", name = escape(name), squad = escape(&squad)))]),
             },
             None => match members.iter().find(|(_, (_, role))| role == equipe_core::roles::PM) {
                 Some((id, _)) => (*id, text),
-                None => return (vec![], vec![Self::say(format!("{} has no PM right now · @name writes to a member", escape(&squad)))]),
+                None => return (vec![], vec![Self::say(t!("telegram.no_pm", squad = escape(&squad)))]),
             },
         };
         self.submit(&squad, session, said, message)
     }
 
     fn help(&self) -> String {
-        let here = self.current().map(|s| format!(" of <b>{}</b>", escape(&s))).unwrap_or_default();
-        format!(
-            "Write here to talk to the PM{here}; <code>@name …</code> writes to someone else. Reply to a member's message to keep talking with them.\n\n\
-Requests for permission, work to review and tickets that need you arrive here, with buttons.\n\n\
-/status — where every squad stands\n/board — the board\n/squad — which squad you write to"
-        )
+        let talk = match self.current() {
+            Some(squad) => t!("telegram.help_talk_squad", squad = escape(&squad)),
+            None => t!("telegram.help_talk").to_owned(),
+        };
+        format!("{talk}\n\n{}\n\n{}", t!("telegram.help_arrive"), t!("telegram.help_commands"))
     }
 
     fn status(&self) -> String {
         if self.squads.is_empty() {
-            return "No squads yet.".into();
+            return t!("telegram.no_squads_yet").into();
         }
         let here = self.current();
         let mut out = Vec::new();
         for (name, s) in &self.squads {
-            let mark = if here.as_deref() == Some(name.as_str()) && self.squads.len() > 1 { " ← you write here" } else { "" };
+            let mark = if here.as_deref() == Some(name.as_str()) && self.squads.len() > 1 { t!("telegram.you_write_here") } else { "" };
             let mut lines = vec![format!("<b>{}</b>{mark}", escape(name))];
             let working: Vec<String> = s
                 .working
@@ -554,21 +566,21 @@ Requests for permission, work to review and tickets that need you arrive here, w
                     }
                 })
                 .collect();
-            lines.push(if working.is_empty() { "nobody working".into() } else { format!("working: {}", working.join(", ")) });
+            lines.push(if working.is_empty() { t!("telegram.nobody_working").into() } else { t!("telegram.working", members = working.join(", ")) });
             let review = s.tickets.values().filter(|t| t.status == TicketStatus::Review).count();
             let waiting = s.tickets.values().filter(|t| t.status == TicketStatus::Waiting).count();
             let mut yours = Vec::new();
             if review > 0 {
-                yours.push(format!("{review} to review"));
+                yours.push(t!("telegram.n_to_review", n = review));
             }
             if waiting > 0 {
-                yours.push(format!("{waiting} waiting on you"));
+                yours.push(t!("telegram.n_waiting_on_you", n = waiting));
             }
             if !s.approvals.is_empty() {
-                yours.push(format!("{} requests", s.approvals.len()));
+                yours.push(t!("telegram.n_requests", n = s.approvals.len()));
             }
             if !yours.is_empty() {
-                lines.push(format!("for you: {}", yours.join(" · ")));
+                lines.push(t!("telegram.for_you_list", items = yours.join(" · ")));
             }
             out.push(lines.join("\n"));
         }
@@ -577,14 +589,14 @@ Requests for permission, work to review and tickets that need you arrive here, w
 
     fn board(&self) -> String {
         let Some(name) = self.current() else {
-            return "No squad yet.".into();
+            return t!("telegram.no_squad_yet").into();
         };
         let s = &self.squads[&name];
         let mut out = vec![format!("<b>{}</b>", escape(&name))];
         for (heading, statuses) in [
-            ("For you", &[TicketStatus::Review, TicketStatus::Waiting][..]),
-            ("In progress", &[TicketStatus::InProgress][..]),
-            ("To do", &[TicketStatus::Todo][..]),
+            (t!("telegram.board_for_you"), &[TicketStatus::Review, TicketStatus::Waiting][..]),
+            (t!("telegram.board_in_progress"), &[TicketStatus::InProgress][..]),
+            (t!("telegram.board_to_do"), &[TicketStatus::Todo][..]),
         ] {
             let tickets: Vec<String> = s
                 .tickets
@@ -600,7 +612,7 @@ Requests for permission, work to review and tickets that need you arrive here, w
             }
         }
         if out.len() == 1 {
-            out.push("Nothing open.".into());
+            out.push(t!("telegram.nothing_open").into());
         }
         out.join("\n")
     }
@@ -633,7 +645,7 @@ impl Api {
         if value["ok"] == true {
             Ok(value["result"].clone())
         } else {
-            Err(value["description"].as_str().unwrap_or("Telegram said no").to_owned())
+            Err(value["description"].as_str().unwrap_or(t!("telegram.telegram_said_no")).to_owned())
         }
     }
 
@@ -703,7 +715,7 @@ fn on_update(config: &Config, bridge: &mut Bridge, update: &Value) -> (Vec<(Stri
     let reply_to = message["reply_to_message"]["message_id"].as_i64();
     match message["text"].as_str() {
         Some(text) => bridge.on_text(text, reply_to, id),
-        None => (vec![], vec![Bridge::say("Only text for now — screenshots go in at the console.".into())]),
+        None => (vec![], vec![Bridge::say(t!("telegram.only_text").into())]),
     }
 }
 
@@ -818,30 +830,27 @@ async fn run(home: &Path, socket: &Path, version: &str, config: Config) -> Resul
 pub async fn setup(home: &Path) -> Result<String, String> {
     use std::io::Write as _;
     if let Some(config) = load(home) {
-        return Err(format!("Already connected to @{} — `equipe telegram off` first to connect another bot", config.bot));
+        return Err(t!("telegram.already_connected", bot = config.bot));
     }
-    println!("Talk to your squad from Telegram: requests, reviews and questions come to your phone, with buttons to answer.\n");
-    println!("1. In Telegram, open @BotFather, send /newbot and pick a name. It gives you a token.");
-    println!("   (Messages go through Telegram's servers, encrypted to them — not end to end.)\n");
+    println!("{}\n", t!("telegram.setup_intro"));
+    println!("{}", t!("telegram.setup_step1"));
+    println!("   {}\n", t!("telegram.setup_step1_note"));
     let pasted = dialoguer::Password::new()
-        .with_prompt("2. Paste the token here (or BotFather's whole message)")
+        .with_prompt(t!("telegram.setup_step2_prompt"))
         .interact()
         .map_err(|err| err.to_string())?;
     let Some(token) = token_in(&pasted) else {
-        return Err(format!(
-            "No bot token in what was pasted ({} characters) — it looks like 123456789:AAH… ; in @BotFather, /mybots › your bot › API Token shows it",
-            pasted.chars().count()
-        ));
+        return Err(t!("telegram.no_token_pasted", n = pasted.chars().count()));
     };
     let api = Api::new(&token);
     let me = api.call("getMe", json!({})).await.map_err(|why| match why.as_str() {
-        "Not Found" | "Unauthorized" => format!("Telegram doesn't know that token ({why}) — copy it again from @BotFather: /mybots › your bot › API Token"),
-        _ => format!("Couldn't reach Telegram: {why}"),
+        "Not Found" | "Unauthorized" => t!("telegram.unknown_token", why = why),
+        _ => t!("telegram.couldnt_reach", why = why),
     })?;
-    let bot = me["username"].as_str().ok_or("Telegram didn't say the bot's name")?.to_owned();
+    let bot = me["username"].as_str().ok_or(t!("telegram.no_bot_name"))?.to_owned();
     let code = pairing_code();
-    println!("\n3. Open https://t.me/{bot}?start={code} on your phone and press Start");
-    println!("   (or send /start {code} to @{bot}). Waiting up to 10 minutes…");
+    println!("\n{}", t!("telegram.setup_step3", bot = bot, code = code));
+    println!("   {}", t!("telegram.setup_step3_alt", bot = bot, code = code));
     let _ = std::io::stdout().flush();
     let deadline = std::time::Instant::now() + Duration::from_secs(600);
     let mut offset = 0i64;
@@ -862,22 +871,22 @@ pub async fn setup(home: &Path) -> Result<String, String> {
             // Past this update, so the daemon doesn't see the pairing again.
             let _ = api.call("getUpdates", json!({ "offset": offset, "timeout": 0 })).await;
             let config = Config { token, bot: bot.clone(), user, chat };
-            save(home, &config).map_err(|err| format!("Couldn't keep the connection: {err}"))?;
+            save(home, &config).map_err(|err| t!("telegram.couldnt_keep", err = err))?;
             let commands = json!({ "commands": [
-                { "command": "status", "description": "Where every squad stands" },
-                { "command": "board", "description": "The board" },
-                { "command": "squad", "description": "Which squad you write to" },
-                { "command": "help", "description": "How this works" },
+                { "command": "status", "description": t!("telegram.command_status") },
+                { "command": "board", "description": t!("telegram.command_board") },
+                { "command": "squad", "description": t!("telegram.command_squad") },
+                { "command": "help", "description": t!("telegram.command_help") },
             ]});
             let _ = api.call("setMyCommands", commands).await;
             let host = hostname();
             let _ = api
-                .send(chat, &format!("✅ Paired with equipe on <b>{}</b>.\n\n{}", escape(&host), Bridge::default().help()), None)
+                .send(chat, &format!("✅ {}\n\n{}", t!("telegram.paired_on", host = escape(&host)), Bridge::default().help()), None)
                 .await;
-            return Ok(format!("Paired with @{bot}. Requests, reviews and replies come to your Telegram from now on."));
+            return Ok(t!("telegram.paired_with", bot = bot));
         }
     }
-    Err("Nobody sent the code in time — run `equipe telegram setup` again".into())
+    Err(t!("telegram.code_timeout").into())
 }
 
 /// `equipe telegram off`.
@@ -885,17 +894,17 @@ pub fn off(home: &Path) -> Result<String, String> {
     match load(home) {
         Some(config) => {
             std::fs::remove_file(config_path(home)).map_err(|err| err.to_string())?;
-            Ok(format!("Disconnected from @{}. The bot stays in Telegram until you delete it with @BotFather.", config.bot))
+            Ok(t!("telegram.disconnected", bot = config.bot))
         }
-        None => Ok("Telegram isn't connected".into()),
+        None => Ok(t!("telegram.not_connected_short").into()),
     }
 }
 
 /// `equipe telegram`: whether it's connected.
 pub fn status(home: &Path) -> String {
     match load(home) {
-        Some(config) => format!("Connected: @{} — it answers only your Telegram account. `equipe telegram off` disconnects.", config.bot),
-        None => "Not connected. `equipe telegram setup` connects a bot of your own.".into(),
+        Some(config) => t!("telegram.connected", bot = config.bot),
+        None => t!("telegram.not_connected").into(),
     }
 }
 
@@ -933,7 +942,7 @@ fn hostname() -> String {
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
         .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "this machine".into())
+        .unwrap_or_else(|| t!("telegram.this_machine").into())
 }
 
 #[cfg(test)]

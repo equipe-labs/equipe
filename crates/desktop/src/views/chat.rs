@@ -6,6 +6,7 @@
 //! blocks are rebuilt, the list told which rows differ, and the window drawn
 //! once. When the last piece has come nothing asks for another frame.
 
+use equipe_core::t;
 use std::rc::Rc;
 
 use equipe_core::protocol::SessionId;
@@ -95,7 +96,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let p = shell.palette;
     let model = &shell.model;
     let body = match model.selected_member() {
-        None => empty(p, "대화할 멤버가 아직 없습니다", "터미널에서 `equipe`를 실행해 스쿼드를 시작하세요.").into_any_element(),
+        None => empty(p, t!("chat.no_member_title"), t!("chat.no_member_text")).into_any_element(),
         Some(member) if shell.chat.blocks.is_empty() => {
             let (title, text) = hello(model, member.role.as_str(), member.name.as_str(), member.presence);
             empty(p, title, text).into_any_element()
@@ -109,9 +110,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     // A ticket open: its number, title and where it stands, over its work.
     let banner = model.opened.and_then(|id| model.tickets.iter().find(|t| t.id == id)).map(|t| {
         let hint = match t.status {
-            equipe_core::protocol::TicketStatus::Review => format!("리뷰 대기 · /accept T-{0} · /reopen T-{0} 이유", t.id),
-            equipe_core::protocol::TicketStatus::Waiting => format!("사람 대기 · 할 일을 마치면 /resume T-{}", t.id),
-            _ => "여기에 쓰면 작업 중인 멤버가 다음 단계에서 읽습니다".to_owned(),
+            equipe_core::protocol::TicketStatus::Review => t!("chat.hint_review", id = t.id),
+            equipe_core::protocol::TicketStatus::Waiting => t!("chat.hint_waiting", id = t.id),
+            _ => t!("chat.hint_working").to_owned(),
         };
         v_flex()
             .w_full()
@@ -140,12 +141,12 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
 /// What a blank conversation says. The PM's names the thread it is.
 fn hello(model: &Model, role: &str, name: &str, presence: Presence) -> (&'static str, String) {
     if presence == Presence::Closed {
-        return ("스쿼드를 떠난 멤버입니다", format!("{name}은(는) 더 이상 일하지 않습니다."));
+        return (t!("chat.member_left_title"), t!("chat.member_left_text", name = name));
     }
     match (role, model.focus.as_deref()) {
-        ("pm", Some(project)) => ("PM에게 말하세요", format!("지금 보고 있는 {project} 이야기로 전달됩니다. 금방 끝나는 건 PM이 바로 답하고, 일은 티켓이 되어 왼쪽에 나타납니다.")),
-        ("pm", None) => ("PM에게 만들고 싶은 것을 말하세요", "금방 끝나는 건 PM이 바로 답하고, 일은 티켓이 되어 왼쪽에 나타납니다. 티켓을 열면 그 작업을 보고 바로 지시할 수 있습니다.".into()),
-        _ => ("직접 말을 걸 수 있습니다", "이 멤버에게 바로 말하면 PM도 알게 됩니다. 일은 보드에서 가져가 자기 작업 폴더에서 합니다.".into()),
+        ("pm", Some(project)) => (t!("chat.pm_title"), t!("chat.pm_project_text", project = project)),
+        ("pm", None) => (t!("chat.pm_build_title"), t!("chat.pm_text").into()),
+        _ => (t!("chat.member_title"), t!("chat.member_text").into()),
     }
 }
 
@@ -181,7 +182,7 @@ fn conversation(shell: &Shell, look: Look, cx: &mut Context<Shell>) -> impl Into
         })
         .with_jump_button_transition(std::time::Duration::ZERO)
         .with_row_style(StyleRefinement::default().pb(px(8.)))
-        .with_jump_button_label("↓ 맨 아래로"),
+        .with_jump_button_label(t!("chat.jump_to_bottom")),
     )
 }
 
@@ -241,7 +242,7 @@ fn row(p: Palette, block: &Block, ix: usize, serial: u64, expanded: bool, look: 
                             handle.update(cx, |shell, cx| shell.toggle_folds(cx)).ok();
                         })
                         .child(div().w(px(12.)).flex_none().child("·"))
-                        .child(format!("{hidden}단계 더 · 펼치기 ⌘⇧O"))
+                        .child(t!("chat.more_steps", hidden = hidden))
                         .into_any_element()
                 }
             }))
@@ -270,7 +271,7 @@ fn row(p: Palette, block: &Block, ix: usize, serial: u64, expanded: bool, look: 
                     .gap_2()
                     .text_size(px(SMALL))
                     .child(div().text_color(p.accent).child("✓"))
-                    .child("변경을 커밋했습니다 ·")
+                    .child(t!("chat.committed"))
                     .child(div().font_family(MONO).font_weight(FontWeight::SEMIBOLD).child(branch.clone())),
             )
             .child(v_flex().pl_5().font_family(MONO).text_size(px(12.5)).line_height(px(20.)).text_color(p.muted).children(stat.lines().map(|l| div().child(l.trim().to_owned()))))
@@ -278,12 +279,12 @@ fn row(p: Palette, block: &Block, ix: usize, serial: u64, expanded: bool, look: 
         Block::Memo(text) => v_flex()
             .text_color(p.muted)
             .child(h_flex().gap_3().text_size(px(BODY)).line_height(px(24.)).child(div().flex_none().child("›")).child(div().min_w_0().child(text.clone())))
-            .child(div().pl_5().text_size(px(SMALL)).child("메모 · 이번 턴이 끝나면 읽습니다"))
+            .child(div().pl_5().text_size(px(SMALL)).child(t!("chat.memo_note")))
             .into_any_element(),
         Block::Steering(text) => v_flex()
             .text_color(p.muted)
             .child(h_flex().gap_3().text_size(px(BODY)).line_height(px(24.)).child(div().flex_none().text_color(p.accent).child("›")).child(div().min_w_0().child(text.clone())))
-            .child(div().pl_5().text_size(px(SMALL)).child("조종 · 다음 단계에서 읽힘, 하던 일은 멈추지 않습니다"))
+            .child(div().pl_5().text_size(px(SMALL)).child(t!("chat.steering_note")))
             .into_any_element(),
     }
 }
@@ -325,7 +326,7 @@ pub fn markdown(p: Palette, id: (&'static str, u64), text: &str, size: f32, line
                     .text_color(muted)
                     .cursor_pointer()
                     .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(code.to_string())))
-                    .child("copy")
+                    .child(t!("chat.copy"))
             })
             .on_link_click(move |url, _, _, cx| {
                 if let Some(ticket) = ticket_of_link(url) {

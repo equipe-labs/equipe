@@ -18,6 +18,7 @@ use equipe_core::protocol::{
     SessionState, Snapshot, Ticket, TicketId, TicketStatus, Transcript, new_session_id,
 };
 use equipe_core::roles;
+use equipe_core::t;
 
 use super::commands;
 use super::composer::Composer;
@@ -88,11 +89,11 @@ pub enum Group {
 impl Group {
     pub fn label(self) -> &'static str {
         match self {
-            Group::ForYou => "Waiting for you",
-            Group::Working => "In progress",
-            Group::ToDo => "To do",
-            Group::Done => "Done",
-            Group::Team => "Team",
+            Group::ForYou => t!("app.group_for_you"),
+            Group::Working => t!("app.group_working"),
+            Group::ToDo => t!("app.group_todo"),
+            Group::Done => t!("app.group_done"),
+            Group::Team => t!("app.group_team"),
         }
     }
 }
@@ -1221,12 +1222,12 @@ impl App {
             KeyCode::Char('r') if ticket.as_ref().is_some_and(|t| t.status == TicketStatus::Waiting) => {
                 let ticket = ticket?;
                 self.composer.insert_str(&format!("/resume T-{} ", ticket.id));
-                self.flash = Some("Done? Say what you did (or nothing), then Enter — it goes back to its member.".into());
+                self.flash = Some(t!("app.resume_prompt").into());
             }
             KeyCode::Char('r') => {
                 let ticket = ticket.filter(|t| matches!(t.status, TicketStatus::Review | TicketStatus::Done))?;
                 self.composer.insert_str(&format!("/reopen T-{} ", ticket.id));
-                self.flash = Some("Say what to change, then Enter.".into());
+                self.flash = Some(t!("app.reopen_prompt").into());
             }
             KeyCode::Char('m') => {
                 let ticket = ticket.filter(Ticket::not_on_main)?;
@@ -1511,8 +1512,8 @@ impl App {
             Event::Error { message, .. } if agent.state == AgentState::Starting => {
                 agent.state = AgentState::Failed;
                 // Said in the footer too: the member may not be the one on screen.
-                let again = agent.member.as_ref().map(|m| format!(" · /add {} tries again", m.role)).unwrap_or_default();
-                self.flash = Some(format!("{} couldn't join: {message}{again}", agent.label()));
+                let again = agent.member.as_ref().map(|m| t!("app.add_tries_again", role = m.role)).unwrap_or_default();
+                self.flash = Some(t!("app.couldnt_join", name = agent.label(), message = message, again = again));
             }
             _ => {}
         }
@@ -1528,11 +1529,11 @@ impl App {
             self.accepted.push((ticket.id, ticket.title.clone(), branch.clone()));
         }
         if ticket.status == TicketStatus::Review && was != Some(TicketStatus::Review) {
-            self.flash = Some(format!("T-{} is ready for your review · /accept T-{0} or /reopen T-{0} <what to change>", ticket.id));
+            self.flash = Some(t!("app.ticket_ready", id = ticket.id));
         }
         if ticket.status == TicketStatus::Waiting && was != Some(TicketStatus::Waiting) {
             let needs = ticket.note.as_deref().map(board::waiting_needs).unwrap_or_default().join(", ");
-            self.flash = Some(format!("T-{} waits for you: {needs} · /resume T-{0} when it's done", ticket.id));
+            self.flash = Some(t!("app.ticket_waits", id = ticket.id, needs = needs));
         }
         match self.tickets.iter_mut().find(|t| t.id == ticket.id) {
             Some(slot) => *slot = ticket,
@@ -1563,7 +1564,7 @@ impl App {
     /// Put an image in the message: the member looks at it when it reads it.
     pub fn attach_image(&mut self, path: &std::path::Path) {
         self.composer.insert_str(&format!("[image: {}] ", path.display()));
-        self.flash = Some("Image attached — the member looks at it with your message".into());
+        self.flash = Some(t!("app.image_attached").into());
     }
 
     /// The rows the open ticket shows in on the board, as last drawn.
@@ -1622,8 +1623,8 @@ impl App {
         self.watch = session;
         self.frame = None;
         self.flash = Some(match session {
-            Some(_) => "Watching this member's browser · it follows who you talk to · Ctrl-W stops".into(),
-            None => "Stopped watching".into(),
+            Some(_) => t!("app.watching").into(),
+            None => t!("app.stopped_watching").into(),
         });
         vec![Command::WatchBrowser { squad: self.squad.clone(), session }]
     }
@@ -1761,13 +1762,13 @@ impl App {
                     let status = self.project_status(p);
                     let mut about = Vec::new();
                     if status.for_you > 0 {
-                        about.push(format!("⚑{} waiting on you", status.for_you));
+                        about.push(t!("app.project_for_you", n = status.for_you));
                     }
                     if status.working > 0 {
-                        about.push(format!("●{} working", status.working));
+                        about.push(t!("app.project_working", n = status.working));
                     }
                     if self.focus.as_ref() == Some(p) {
-                        about.push("in focus".into());
+                        about.push(t!("app.in_focus").into());
                     }
                     (equipe_core::board::project_name(p), about.join(" · "))
                 })
@@ -1807,7 +1808,7 @@ impl App {
                 UploadStep::More => {}
                 UploadStep::Cancelled => {
                     self.upload = None;
-                    self.flash = Some("No image was sent".into());
+                    self.flash = Some(t!("app.no_image_sent").into());
                 }
                 UploadStep::Done(data) => {
                     self.upload = None;
@@ -1844,11 +1845,11 @@ impl App {
             }
             let path = adding.folder.path.display().to_string();
             if !adding.offered {
-                self.flash = Some(format!("Not added: {path}"));
+                self.flash = Some(t!("app.not_added", path = path));
                 return Vec::new();
             }
             if key.code == KeyCode::Char('n') && plain {
-                self.flash = Some(format!("Not added, and not asked again · /squad add {path} adds it"));
+                self.flash = Some(t!("app.not_added_never", path = path));
                 self.declined = Some(adding.folder.path);
                 return Vec::new();
             }
@@ -2027,7 +2028,7 @@ impl App {
             Some(at) if now.duration_since(at) <= QUIT_WINDOW => self.should_quit = true,
             _ => {
                 self.quit_armed = Some(now);
-                self.flash = Some("Press Ctrl-C again to leave. The squad keeps working.".into());
+                self.flash = Some(t!("app.ctrl_c_again").into());
             }
         }
         Vec::new()
@@ -2107,7 +2108,7 @@ impl App {
                 }
                 None => {
                     self.composer.insert_str(&text);
-                    self.flash = Some(format!("No one called @{name} on the squad. /add brings someone in."));
+                    self.flash = Some(t!("app.no_one_called_at", name = name));
                     return Vec::new();
                 }
             }
@@ -2144,25 +2145,25 @@ impl App {
         };
         let name = agent.label();
         if let (AgentState::Ready, Some(project)) = (state, &about) {
-            self.flash = Some(format!("{name} answers now, beside its work on {project}."));
+            self.flash = Some(t!("app.answers_beside", name = name, project = project));
             return vec![Command::Submit { session: agent.id, text }];
         }
         match state {
             // The message shows once the daemon echoes it, the same on every screen.
             AgentState::Ready => {
                 if away {
-                    self.flash = Some(format!("Sent to {name}."));
+                    self.flash = Some(t!("app.sent_to", name = name));
                 }
                 vec![Command::Submit { session: agent.id, text }]
             }
             AgentState::Working if later || agent.engine != Some(Engine::Claude) => {
                 // A memo: the core holds it until the turn ends.
-                self.flash = Some(format!("Left {name} a memo — it reads it when this turn ends."));
+                self.flash = Some(t!("app.left_memo", name = name));
                 vec![Command::SubmitLater { session: agent.id, text }]
             }
             AgentState::Working => {
                 // Steering: read at its next step, the work carrying on.
-                self.flash = Some(format!("{name} reads it at its next step, without stopping · Tab instead: a memo for after"));
+                self.flash = Some(t!("app.reads_next_step", name = name));
                 vec![Command::Submit { session: agent.id, text }]
             }
             AgentState::Starting => {
@@ -2172,7 +2173,7 @@ impl App {
             }
             AgentState::Closing | AgentState::Closed | AgentState::Failed => {
                 self.composer.insert_str(&text);
-                self.flash = Some(format!("{name} is no longer on the squad. /add brings in someone new."));
+                self.flash = Some(t!("app.no_longer_on_squad", name = name));
                 Vec::new()
             }
         }
@@ -2193,7 +2194,7 @@ impl App {
                 self.pane = Pane::Board;
                 self.board_selected = None;
                 if words.is_empty() {
-                    self.flash = Some("/find <words> — titles, notes and T-numbers, done work too".into());
+                    self.flash = Some(t!("app.find_usage").into());
                 }
                 Vec::new()
             }
@@ -2205,7 +2206,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                         .into(),
                 }],
                 None => {
-                    self.flash = Some("No PM on the squad to ask".into());
+                    self.flash = Some(t!("app.no_pm").into());
                     Vec::new()
                 }
             },
@@ -2245,7 +2246,8 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 self.flash = Some(match crate::home::memory(&dir, &words) {
                     // The folder is open in Finder; the line says how much is there and what changed last.
                     Ok(lines) if words.is_empty() => {
-                        let latest = lines.iter().find(|l| l.starts_with("lately: ")).map(|l| format!(" · {l}")).unwrap_or_default();
+                        let lately = equipe_core::t!("home.lately", change = "");
+                        let latest = lines.iter().find(|l| l.starts_with(&lately)).map(|l| format!(" · {l}")).unwrap_or_default();
                         format!("{}{latest} · /memory changes", lines[0])
                     }
                     Ok(lines) => lines.join("  ·  "),
@@ -2266,15 +2268,15 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 };
                 self.suggestions = on;
                 self.flash = Some(if on {
-                    "After a member answers you, your likely next message waits greyed in the composer — → takes it, typing ignores it".into()
+                    t!("app.suggest_on").into()
                 } else {
-                    "No more guesses at your next message · /suggest on brings them back".into()
+                    t!("app.suggest_off").into()
                 });
                 vec![Command::Suggestions { squad: self.squad.clone(), on }]
             }
             // Gone: members split big work across subagents, and the person adds teammates.
             "scale" => {
-                self.flash = Some("equipe no longer adds members on its own: each splits big work across subagents · /add <role> brings in a teammate".into());
+                self.flash = Some(t!("app.scale_gone").into());
                 Vec::new()
             }
             "compact" | "clear" => {
@@ -2285,7 +2287,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 match target.filter(|a| a.member.is_some()) {
                     Some(agent) => vec![Command::Refresh { session: agent.id, summary: name == "compact" }],
                     None => {
-                        self.flash = Some(format!("Whose? /{name} <member>"));
+                        self.flash = Some(t!("app.whose", name = name));
                         Vec::new()
                     }
                 }
@@ -2296,17 +2298,17 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                     [name, model] => (self.agents.iter().find(|a| a.member.as_ref().is_some_and(|m| m.name == *name)), *model),
                     [model] => (self.agents.get(self.selected), *model),
                     _ => {
-                        self.flash = Some("/model [member] <model> — e.g. /model mobile opus".into());
+                        self.flash = Some(t!("app.model_usage").into());
                         return Vec::new();
                     }
                 };
                 match target.filter(|a| a.member.is_some()) {
                     Some(agent) => {
-                        self.flash = Some(format!("{} works on {model} from its next turn", agent.label()));
+                        self.flash = Some(t!("app.model_set", name = agent.label(), model = model));
                         vec![Command::SetModel { session: agent.id, model: model.to_owned() }]
                     }
                     None => {
-                        self.flash = Some(format!("No member called {} · /model [member] <model>", words[0]));
+                        self.flash = Some(t!("app.no_member_model", name = words[0]));
                         Vec::new()
                     }
                 }
@@ -2314,9 +2316,9 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             "mouse" => {
                 self.mouse = !self.mouse;
                 self.flash = Some(if self.mouse {
-                    "The wheel scrolls again.".into()
+                    t!("app.wheel_again").into()
                 } else {
-                    "Mouse released — select and copy freely. /mouse brings the wheel back.".into()
+                    t!("app.mouse_released").into()
                 });
                 Vec::new()
             }
@@ -2336,7 +2338,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 Vec::new()
             }
             other => {
-                self.flash = Some(format!("Unknown command /{other} — /help lists them."));
+                self.flash = Some(t!("app.unknown_command", name = other));
                 Vec::new()
             }
         }
@@ -2353,7 +2355,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 Some(p) => Some(p.clone()),
                 None => {
                     let names: Vec<String> = self.projects.iter().map(|p| equipe_core::board::project_name(p)).collect();
-                    self.flash = Some(format!("No project {name} in {} · {}", self.squad, names.join(", ")));
+                    self.flash = Some(t!("app.no_project", name = name, squad = self.squad, names = names.join(", ")));
                     return Vec::new();
                 }
             },
@@ -2371,8 +2373,8 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
         self.board_selected = None;
         let label = project.as_deref().map(equipe_core::board::project_name);
         self.flash = Some(match &label {
-            Some(name) => format!("Only {name}: the board and reviews show it, and new work goes there · /project all"),
-            None => format!("All of {}: every project and the squad home", self.squad),
+            Some(name) => t!("app.only_project", name = name),
+            None => t!("app.all_projects", squad = self.squad),
         });
         vec![Command::Focus { squad: self.squad.clone(), project: label }]
     }
@@ -2385,7 +2387,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             .filter(|s| s.name != self.squad)
             .map(|s| {
                 let projects: Vec<String> = s.projects.iter().map(|p| equipe_core::board::project_name(p)).collect();
-                (s.name, format!("works on {}", projects.join(", ")))
+                (s.name, t!("app.works_on", projects = projects.join(", ")))
             })
             .collect()
     }
@@ -2399,8 +2401,8 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             [] => {
                 let others: Vec<String> = self.other_squads().into_iter().map(|(name, _)| name).collect();
                 self.flash = Some(match others.as_slice() {
-                    [] => format!("This is {}, your only squad · /squad new <name> [folder] starts another", self.squad),
-                    names => format!("On {} · also {} · /squad <name> switches, /squad new starts one", self.squad, names.join(", ")),
+                    [] => t!("app.only_squad", squad = self.squad),
+                    names => t!("app.on_squad_also", squad = self.squad, names = names.join(", ")),
                 });
             }
             ["add", folder] => {
@@ -2412,18 +2414,18 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                     }
                 };
                 if self.projects.contains(&folder.path) {
-                    self.flash = Some(format!("{} already works on {}", self.squad, folder.path.display()));
+                    self.flash = Some(t!("app.already_works_on", squad = self.squad, path = folder.path.display()));
                     return Vec::new();
                 }
                 if let Some(owner) = equipe_core::squads::find(&home, &folder.path).filter(|o| *o != self.squad) {
-                    self.flash = Some(format!("{} already belongs to the squad {owner}", folder.path.display()));
+                    self.flash = Some(t!("app.belongs_to_squad", path = folder.path.display(), owner = owner));
                     return Vec::new();
                 }
                 self.ask_to_add(Adding { new_squad: None, folder, offered: false });
             }
             ["remove", name] => {
                 let Some(project) = self.projects.iter().find(|p| equipe_core::board::project_name(p) == *name || p.to_string_lossy() == *name).cloned() else {
-                    self.flash = Some(format!("{} doesn't work on {name}", self.squad));
+                    self.flash = Some(t!("app.doesnt_work_on", squad = self.squad, name = name));
                     return Vec::new();
                 };
                 match equipe_core::squads::remove_project(&home, &self.squad, &project) {
@@ -2432,14 +2434,14 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                         if self.focus.as_ref() == Some(&project) {
                             self.focus = None;
                         }
-                        self.flash = Some(format!("{} no longer works on {name} — its tickets and branches stay", self.squad));
+                        self.flash = Some(t!("app.no_longer_works_on", squad = self.squad, name = name));
                     }
                     Err(err) => self.flash = Some(err),
                 }
             }
             ["add"] | ["remove"] => self.flash = Some("/squad add <folder> · /squad remove <project>".into()),
             ["new"] => {
-                self.flash = Some("A name, and the folder it works in if any: /squad new shop ~/Projects/shop".into());
+                self.flash = Some(t!("app.squad_new_usage").into());
             }
             ["new", name] => match equipe_core::squads::create_without_project(&home, name) {
                 Ok(()) => self.switch_to = Some(((*name).to_owned(), crate::onboard::starting_team())),
@@ -2454,20 +2456,20 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                     }
                 };
                 if let Some(owner) = equipe_core::squads::find(&home, &folder.path) {
-                    self.flash = Some(format!("{} is already {owner}'s · /squad {owner}", folder.name));
+                    self.flash = Some(t!("app.already_owned", name = folder.name, owner = owner));
                     return Vec::new();
                 }
                 self.ask_to_add(Adding { new_squad: Some((*name).to_owned()), folder, offered: false });
             }
-            [name] if *name == self.squad => self.flash = Some(format!("Already on {name}")),
+            [name] if *name == self.squad => self.flash = Some(t!("app.already_on", name = name)),
             [name] => {
                 if equipe_core::squads::list(&home).iter().any(|s| s.name == *name) {
                     self.switch_to = Some(((*name).to_owned(), Vec::new()));
                 } else {
-                    self.flash = Some(format!("No squad called {name} · /squad new {name} starts it"));
+                    self.flash = Some(t!("app.no_squad", name = name));
                 }
             }
-            _ => self.flash = Some("/squad <name> switches · /squad new <name> [folder] starts one".into()),
+            _ => self.flash = Some(t!("app.squad_usage").into()),
         }
         Vec::new()
     }
@@ -2490,19 +2492,19 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
         let adding = self.confirming.as_ref()?;
         let folder = &adding.folder;
         let question = match &adding.new_squad {
-            Some(name) => format!("Start the squad {name} on {}?", folder.path.display()),
+            Some(name) => t!("app.start_squad_on", name = name, path = folder.path.display()),
             None if adding.offered => {
-                return Some(format!(
-                    "{} isn't in a squad. Add {} to {}? y adds, n never asks again · {}",
-                    folder.name,
-                    folder.path.display(),
-                    self.squad,
-                    folder.describe()
+                return Some(t!(
+                    "app.offer_folder",
+                    name = folder.name,
+                    path = folder.path.display(),
+                    squad = self.squad,
+                    about = folder.describe()
                 ));
             }
-            None => format!("Add {} to {}?", folder.path.display(), self.squad),
+            None => t!("app.add_folder_to", path = folder.path.display(), squad = self.squad),
         };
-        Some(format!("{question} y adds, any other key cancels · {}", folder.describe()))
+        Some(t!("app.confirm_add", question = question, about = folder.describe()))
     }
 
     /// The person said yes: the folder joins this squad, or starts a new one.
@@ -2516,9 +2518,9 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                         self.projects.push(project.clone());
                     }
                     let has_mobile = self.agents.iter().any(|a| a.member.as_ref().is_some_and(|m| m.role == "mobile"));
-                    let tip = if looks_like_an_app(&project) && !has_mobile { " · an app: /add mobile brings in a mobile engineer" } else { "" };
+                    let tip = if looks_like_an_app(&project) && !has_mobile { t!("app.app_tip") } else { "" };
                     let tip = many_projects_tip(self.projects.len()).unwrap_or(tip);
-                    self.flash = Some(format!("{} works on {} too · members see it from their next turn{tip}", self.squad, project.display()));
+                    self.flash = Some(t!("app.works_on_too", squad = self.squad, path = project.display(), tip = tip));
                 }
                 Err(err) => self.flash = Some(err),
             }
@@ -2543,9 +2545,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                     self.open_browser = true;
                     return Vec::new();
                 };
-                self.flash = Some(format!(
-                    "{name}'s browser comes on this Mac's screen — watch it work, sign in there; no need to close it · /browser hide puts it away"
-                ));
+                self.flash = Some(t!("app.browser_on_screen", name = name));
                 return vec![Command::ShowBrowser { squad: self.squad.clone(), member: Some(name), show: true }];
             }
             ["signin"] => {
@@ -2562,38 +2562,38 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                     return self.watch(Some(id));
                 }
                 None => {
-                    self.flash = Some(format!("No one called {name} in the squad"));
+                    self.flash = Some(t!("app.no_one_in_squad", name = name));
                     return Vec::new();
                 }
             },
             ["max"] => {
                 let home = equipe_providers::credentials::equipe_home();
-                self.flash = Some(format!("Up to {} browsers open at once · /browser max <n> changes it", equipe_core::browser::at_once(&home)));
+                self.flash = Some(t!("app.browser_max", n = equipe_core::browser::at_once(&home)));
                 return Vec::new();
             }
             ["max", n] => {
                 let home = equipe_providers::credentials::equipe_home();
                 self.flash = Some(match n.parse::<usize>() {
                     Ok(max @ 1..=16) => match equipe_core::browser::set_at_once(&home, max) {
-                        Ok(()) => format!("Up to {max} browsers open at once, from the next one that opens"),
-                        Err(err) => format!("Couldn't keep it: {err}"),
+                        Ok(()) => t!("app.browser_max_set", n = max),
+                        Err(err) => t!("app.couldnt_keep", err = err),
                     },
-                    _ => "A number from 1 to 16: /browser max 6".into(),
+                    _ => t!("app.browser_max_range").into(),
                 });
                 return Vec::new();
             }
             ["show", rest @ ..] if rest.len() <= 1 => (true, rest.first()),
             ["hide", rest @ ..] if rest.len() <= 1 => (false, rest.first()),
             _ => {
-                self.flash = Some("/browser shows the member's browser · /browser watch [member] here · /browser signin · /browser show|hide [member]".into());
+                self.flash = Some(t!("app.browser_usage").into());
                 return Vec::new();
             }
         };
-        let whose = member.map_or_else(|| "Members' browsers".to_owned(), |m| format!("{m}'s browser"));
-        self.flash = Some(if show {
-            format!("{whose} open on this Mac's screen from the next turn · /browser hide to stop")
-        } else {
-            format!("{whose} run hidden from the next turn")
+        self.flash = Some(match (show, member) {
+            (true, None) => t!("app.browsers_shown").to_owned(),
+            (true, Some(m)) => t!("app.browser_shown", name = m),
+            (false, None) => t!("app.browsers_hidden").to_owned(),
+            (false, Some(m)) => t!("app.browser_hidden", name = m),
         });
         vec![Command::ShowBrowser { squad: self.squad.clone(), member: member.map(|m| (*m).to_owned()), show }]
     }
@@ -2605,15 +2605,15 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             "stop" => false,
             "resume" => true,
             _ => {
-                let now = self.desktop.summary(Some(&self.squad)).unwrap_or_else(|| "nobody on the screen".into());
-                self.flash = Some(format!("{now} · /desktop stop takes the screen back from every member · /desktop resume"));
+                let now = self.desktop.summary(Some(&self.squad)).unwrap_or_else(|| t!("app.nobody_on_screen").into());
+                self.flash = Some(t!("app.desktop_usage", now = now));
                 return Vec::new();
             }
         };
         self.flash = Some(if open {
-            "The screen is open to the members again".into()
+            t!("app.screen_open").into()
         } else {
-            "Screen taken back: no member clicks or types until /desktop resume".into()
+            t!("app.screen_taken").into()
         });
         vec![Command::Desktop { open }]
     }
@@ -2626,17 +2626,17 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
         if found.is_some_and(|t| !t.kind.in_home() && t.branch.is_some()) {
             self.ask(Question::Merge(ticket));
         } else if found.is_some_and(|t| t.kind.in_home()) {
-            self.flash = Some(format!("Accepted T-{ticket} · its work goes into the squad's folder"));
+            self.flash = Some(t!("app.accepted_home", id = ticket));
         } else {
-            self.flash = Some(format!("Accepted T-{ticket} · /reopen T-{ticket} brings it back"));
+            self.flash = Some(t!("app.accepted", id = ticket));
         }
         vec![Command::Accept { squad: self.squad.clone(), ticket }]
     }
 
     fn ask(&mut self, question: Question) {
         self.flash = Some(match question {
-            Question::Merge(id) => format!("Accepted T-{id} · merge it into main now? y/n"),
-            Question::Push(id) => format!("Merge T-{id} into main — and push main to origin too? y/n · Esc: don't merge"),
+            Question::Merge(id) => t!("app.ask_merge", id = id),
+            Question::Push(id) => t!("app.ask_push", id = id),
         });
         self.question = Some(question);
     }
@@ -2650,11 +2650,11 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 Vec::new()
             }
             (Question::Push(ticket), KeyCode::Char(c @ ('y' | 'n'))) => {
-                self.flash = Some(format!("Merging T-{ticket} into main…"));
+                self.flash = Some(t!("app.merging", id = ticket));
                 vec![Command::Merge { squad, ticket, push: c == 'y' }]
             }
             (Question::Merge(id) | Question::Push(id), KeyCode::Char('n') | KeyCode::Esc) => {
-                self.flash = Some(format!("T-{id} stays on its branch, not on main · /merge T-{id} when you want it there"));
+                self.flash = Some(t!("app.stays_on_branch", id = id));
                 Vec::new()
             }
             _ => return None,
@@ -2669,21 +2669,21 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
         let (id, note) = rest.split_once(' ').unwrap_or((rest, ""));
         let Some(ticket) = board::parse_ticket_id(id).filter(|_| !id.is_empty()) else {
             let (status, what) = match verb {
-                "resume" => (TicketStatus::Waiting, "Waiting on you"),
-                _ => (TicketStatus::Review, "Waiting for your review"),
+                "resume" => (TicketStatus::Waiting, t!("app.waiting_on_you")),
+                _ => (TicketStatus::Review, t!("app.waiting_for_review")),
             };
             let waiting: Vec<String> =
                 self.tickets.iter().filter(|t| t.status == status).map(|t| format!("T-{}", t.id)).collect();
             self.flash = Some(match waiting.as_slice() {
-                [] => format!("Which ticket? /{verb} T-3"),
-                ids => format!("Which ticket? {what}: {}", ids.join(", ")),
+                [] => t!("app.which_ticket", verb = verb),
+                ids => t!("app.which_ticket_of", what = what, ids = ids.join(", ")),
             });
             return Vec::new();
         };
         // Sent back with no word, the member can only guess what to change.
         if verb == "reopen" && note.trim().is_empty() {
             self.composer.insert_str(&format!("/reopen T-{ticket} "));
-            self.flash = Some(format!("What should change on T-{ticket}? Write it after /reopen T-{ticket} — that's what the member works from."));
+            self.flash = Some(t!("app.what_to_change", id = ticket));
             return Vec::new();
         }
         let squad = self.squad.clone();
@@ -2705,17 +2705,17 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
         let words: Vec<&str> = rest.split_whitespace().collect();
         let usage = || {
             let modes: Vec<String> = Mode::ALL.iter().map(|m| format!("{} ({})", m.label(), m.short())).collect();
-            format!("Modes: {} · /mode <mode> for the squad, /mode <member> <mode> for one", modes.join(" · "))
+            t!("app.modes_usage", modes = modes.join(" · "))
         };
         let squad = self.squad.clone();
         // The mode that only reads is called that; "plan" isn't one of the names.
         if words.contains(&"plan") {
-            self.flash = Some("The mode that only reads is called read-only: /mode read-only".into());
+            self.flash = Some(t!("app.mode_plan").into());
             return Vec::new();
         }
         match words.as_slice() {
             [] => {
-                self.flash = Some(format!("The squad works in {} mode. {}", self.mode.label(), usage()));
+                self.flash = Some(t!("app.squad_mode", mode = self.mode.label(), usage = usage()));
                 Vec::new()
             }
             [mode] => match Mode::parse(mode) {
@@ -2727,7 +2727,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             },
             [name, mode, ..] => {
                 if !self.agents.iter().any(|a| a.member.as_ref().is_some_and(|m| m.name == *name)) {
-                    self.flash = Some(format!("No one called {name} on the squad."));
+                    self.flash = Some(t!("app.no_one_called", name = name));
                     return Vec::new();
                 }
                 let mode = match *mode {
@@ -2761,16 +2761,16 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
         }
         let wanted: Vec<String> = match words.as_slice() {
             [] => {
-                self.flash = Some(format!("Who? /add designer frontend · roles: {}, or custom <name>", role_names()));
+                self.flash = Some(t!("app.add_who", roles = role_names()));
                 return Vec::new();
             }
             ["custom"] => {
-                self.flash = Some("Name the role: /add custom writer".into());
+                self.flash = Some(t!("app.add_custom_name").into());
                 return Vec::new();
             }
             ["custom", name, ..] => vec![name.to_lowercase()],
             _ if custom_edits => {
-                self.flash = Some("--edits is for a custom role: /add custom writer --edits".into());
+                self.flash = Some(t!("app.edits_custom").into());
                 return Vec::new();
             }
             ids => {
@@ -2779,7 +2779,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                     match roles::role(id) {
                         Some(role) => wanted.push(role.id.to_owned()),
                         None => {
-                            self.flash = Some(format!("No role '{id}'. Roles: {} — or /add custom {id}", role_names()));
+                            self.flash = Some(t!("app.no_role", id = id, roles = role_names()));
                             return Vec::new();
                         }
                     }
@@ -2787,9 +2787,9 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 wanted
             }
         };
-        let names = wanted.join(" and ");
+        let names = wanted.join(t!("app.and"));
         let commands = wanted.iter().flat_map(|role| self.add_member(role, engine, custom_edits)).collect();
-        self.flash = Some(format!("{names} joining · Tab or @name to talk to them directly."));
+        self.flash = Some(t!("app.joining", names = names));
         commands
     }
 }
@@ -2799,17 +2799,17 @@ pub fn transcript_markdown(agent: &Agent, squad: &str) -> String {
     let mut out = format!("# {} · {squad}\n\n", agent.label());
     for entry in agent.transcript.entries() {
         match entry {
-            Entry::User { text } => out.push_str(&format!("**You:** {text}\n\n")),
+            Entry::User { text } => out.push_str(&format!("**{}:** {text}\n\n", t!("app.md_you"))),
             Entry::Reply { text } => out.push_str(&format!("{text}\n\n")),
             Entry::Tool { tool, target } => {
                 out.push_str(&format!("- {} {}\n", tool_verb(tool), target.as_deref().unwrap_or("")));
             }
             Entry::Note { text } => out.push_str(&format!("_{text}_\n\n")),
-            Entry::Thread { project } => out.push_str(&format!("## {}\n\n", project.as_deref().unwrap_or("The whole squad"))),
+            Entry::Thread { project } => out.push_str(&format!("## {}\n\n", project.as_deref().unwrap_or(t!("app.md_whole_squad")))),
             Entry::Error { message, next } => {
                 out.push_str(&format!("> ✗ {message}{}\n\n", next.as_ref().map(|n| format!(" → `{n}`")).unwrap_or_default()))
             }
-            Entry::Landed { branch, stat } => out.push_str(&format!("✓ Landed on `{branch}`\n\n```\n{stat}\n```\n\n")),
+            Entry::Landed { branch, stat } => out.push_str(&format!("{}\n\n```\n{stat}\n```\n\n", t!("app.md_landed", branch = branch))),
         }
     }
     out
@@ -2907,7 +2907,7 @@ fn engine_models(agent: &Agent) -> Vec<String> {
 /// Past six projects, a word that unrelated ones may do better in a squad of
 /// their own: the PM's priorities and the members' memory stay sharp.
 pub fn many_projects_tip(projects: usize) -> Option<&'static str> {
-    (projects > 6).then_some(" · many projects now: unrelated ones may do better in a squad of their own — /squad new <name> <folder>")
+    (projects > 6).then(|| t!("app.many_projects_tip"))
 }
 
 /// The built-in roles, as `/add` takes them.
@@ -2917,18 +2917,18 @@ pub fn many_projects_tip(projects: usize) -> Option<&'static str> {
 fn send_apps(squad: &str, words: &str) -> String {
     let journal = match equipe_core::journal::Journal::for_squad(&equipe_providers::credentials::equipe_home(), squad) {
         Ok(journal) => journal,
-        Err(err) => return format!("Couldn't open the squad's settings: {err}"),
+        Err(err) => return t!("app.couldnt_open_settings", err = err),
     };
     let apps = journal.messaging_apps();
     if words.trim().is_empty() {
-        let list = if apps.is_empty() { "no app".to_owned() } else { apps.join(", ") };
-        return format!("Sends from {list} wait for your yes · /send-apps add|remove <app> · reset");
+        let list = if apps.is_empty() { t!("app.no_app").to_owned() } else { apps.join(", ") };
+        return t!("app.send_apps_list", list = list);
     }
     match equipe_core::desktop_gate::edit_apps(&apps, words) {
         Ok(apps) => match journal.set_messaging_apps(&apps) {
-            Ok(()) if apps.is_empty() => "No app asks before a send now · /send-apps reset brings the usual ones back".into(),
-            Ok(()) => format!("Sends wait for your yes in: {}", apps.join(", ")),
-            Err(err) => format!("Couldn't keep it: {err}"),
+            Ok(()) if apps.is_empty() => t!("app.no_app_asks").into(),
+            Ok(()) => t!("app.sends_wait_in", apps = apps.join(", ")),
+            Err(err) => t!("app.couldnt_keep", err = err),
         },
         Err(why) => why,
     }
@@ -2959,7 +2959,7 @@ pub fn is_image(path: &std::path::Path) -> bool {
 
 /// The folder the person typed, read exactly — see [`crate::onboard::resolve_folder`].
 fn typed_folder(typed: &str) -> Result<crate::onboard::Folder, String> {
-    let home = dirs::home_dir().ok_or("No home folder to read ~ from")?;
+    let home = dirs::home_dir().ok_or(t!("app.no_home_folder"))?;
     crate::onboard::resolve_folder(typed, &home, &std::env::current_dir().unwrap_or_default())
 }
 

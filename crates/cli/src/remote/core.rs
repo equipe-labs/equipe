@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use equipe_core::protocol::rpc::{self, Hello, Message};
 use equipe_core::protocol::{Command, Decision, Event, Snapshot, TicketId, TicketStatus};
+use equipe_core::t;
 use serde_json::{Value, json};
 
 use super::seal::{self, Kind};
@@ -162,9 +163,9 @@ impl Core {
 
     /// `equipe pair`: open a slot; the QR code's address, and what to tell the relay.
     pub fn begin_pairing(&mut self, now: u64) -> Result<(String, Vec<Action>), String> {
-        let config = self.config.as_ref().ok_or("not registered with the relay")?;
+        let config = self.config.as_ref().ok_or(t!("remote.not_registered"))?;
         if self.pairing.as_ref().is_some_and(|p| p.expires > now) {
-            return Err("A pairing is already under way — finish it, or wait a few minutes".into());
+            return Err(t!("remote.pairing_under_way").into());
         }
         let secret = super::random::<32>();
         let slot = slot(&secret);
@@ -177,10 +178,10 @@ impl Core {
     /// The person's answer to a pairing request.
     pub fn answer_pairing(&mut self, approve: bool, now: u64) -> Vec<Action> {
         let Some(pairing) = self.pairing.take() else {
-            return vec![Action::Local(json!({ "error": "nothing to answer" }))];
+            return vec![Action::Local(json!({ "error": t!("remote.nothing_to_answer") }))];
         };
         let (Some(request), Some(config)) = (pairing.request, self.config.as_mut()) else {
-            return vec![Action::Local(json!({ "error": "no device asked yet" }))];
+            return vec![Action::Local(json!({ "error": t!("remote.no_device_asked") }))];
         };
         let keys = config.keys();
         let aad = config.id.clone();
@@ -200,14 +201,14 @@ impl Core {
                 out.extend([close, Action::Local(json!({ "paired": name }))]);
                 out
             }
-            None => vec![close, Action::Local(json!({ "error": "the device's key didn't work" }))],
+            None => vec![close, Action::Local(json!({ "error": t!("remote.device_key_failed") }))],
         }
     }
 
     /// `equipe demo serve`: keep a code open for good, with this secret, and
     /// pair every phone that brings it. Its address, which never changes.
     pub fn open_standing(&mut self, secret: [u8; 32], name: &str) -> Result<String, String> {
-        let config = self.config.as_ref().ok_or("not registered with the relay")?;
+        let config = self.config.as_ref().ok_or(t!("remote.not_registered"))?;
         let url = pairing_url(&config.relay, &config.id, &config.public, &secret, name);
         self.standing = Some(Standing { slot: slot(&secret), secret, name: name.to_owned(), opened: 0 });
         Ok(url)
@@ -274,7 +275,7 @@ impl Core {
         }
         if self.pairing.as_ref().is_some_and(|p| p.expires <= now) {
             let mut out = self.end_pairing();
-            out.push(Action::Local(json!({ "error": "The code expired — run equipe pair again" })));
+            out.push(Action::Local(json!({ "error": t!("remote.code_expired") })));
             return out;
         }
         // A relay that doesn't say the slot opened: show the code after a moment anyway.
@@ -287,10 +288,10 @@ impl Core {
 
     /// `equipe devices remove <name>`.
     pub fn remove_device(&mut self, name: &str) -> Result<Vec<Action>, String> {
-        let config = self.config.as_mut().ok_or("No devices are paired")?;
+        let config = self.config.as_mut().ok_or(t!("remote.no_devices_paired"))?;
         let Some(at) = config.devices.iter().position(|d| d.name == name || d.id == name) else {
             let names: Vec<&str> = config.devices.iter().map(|d| d.name.as_str()).collect();
-            return Err(format!("No device called {name} · paired: {}", if names.is_empty() { "none".into() } else { names.join(", ") }));
+            return Err(t!("remote.no_device_called", name = name, paired = if names.is_empty() { t!("remote.none").into() } else { names.join(", ") }));
         };
         let device = config.devices.remove(at);
         self.online.remove(&device.id);
@@ -478,18 +479,19 @@ impl Core {
     fn push(&mut self, squad: &str, event: &Event, only: Option<&str>) -> Vec<Action> {
         let (title, body, category, collapse, event) = match event {
             Event::ApprovalRequested { approval, .. } => {
-                let verb = match approval.tool.as_str() {
-                    "Bash" => "to run a command",
-                    "Write" | "Edit" | "MultiEdit" => "to edit a file",
-                    "WebFetch" => "to fetch a page",
-                    "Confirm" => "you to confirm something",
-                    _ => "for permission",
+                let member = &approval.member;
+                let title = match approval.tool.as_str() {
+                    "Bash" => t!("remote.push_asks_run", member = member),
+                    "Write" | "Edit" | "MultiEdit" => t!("remote.push_asks_edit", member = member),
+                    "WebFetch" => t!("remote.push_asks_fetch", member = member),
+                    "Confirm" => t!("remote.push_asks_confirm", member = member),
+                    _ => t!("remote.push_asks_permission", member = member),
                 };
                 let mut short = approval.clone();
                 short.action = short.action.chars().take(PUSH_ACTION).collect();
                 let ticket = approval.ticket.map(|t| format!(" · T-{t}")).unwrap_or_default();
                 (
-                    format!("{} asks {verb}", approval.member),
+                    title,
                     format!("{squad}{ticket}"),
                     "approval",
                     format!("approval-{}", approval.id),
@@ -503,10 +505,10 @@ impl Core {
                 if before == Some(ticket.status) {
                     return vec![];
                 }
-                let who = ticket.assignee.clone().or(ticket.owner.clone()).unwrap_or_else(|| "A member".into());
+                let who = ticket.assignee.clone().or(ticket.owner.clone()).unwrap_or_else(|| t!("remote.a_member").into());
                 let (title, category) = match ticket.status {
-                    TicketStatus::Review => (format!("{who} handed in work to review"), "review"),
-                    TicketStatus::Waiting => (format!("{who} needs you"), "waiting"),
+                    TicketStatus::Review => (t!("remote.push_review", who = who), "review"),
+                    TicketStatus::Waiting => (t!("remote.push_waiting", who = who), "waiting"),
                     _ => return vec![],
                 };
                 let mut short = ticket.clone();

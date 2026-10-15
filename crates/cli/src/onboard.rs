@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use equipe_core::protocol::Mode;
+use equipe_core::t;
 use equipe_core::{runtime, squad_home, squads};
 use equipe_providers::CredentialStore;
 use equipe_providers::claude_code;
@@ -53,8 +54,8 @@ impl Folder {
         let mut line = self.name.clone();
         match (&self.remote, self.git) {
             (Some(remote), _) => line.push_str(&format!(" · {remote}")),
-            (None, true) => line.push_str(" · no remote"),
-            (None, false) => line.push_str(" · not a git repository: engineers can't work on branches there"),
+            (None, true) => line.push_str(&format!(" · {}", t!("onboard.no_remote"))),
+            (None, false) => line.push_str(&format!(" · {}", t!("onboard.not_git"))),
         }
         line
     }
@@ -70,24 +71,24 @@ pub fn resolve_folder(typed: &str, home: &Path, cwd: &Path) -> Result<Folder, St
         Some("") => home.to_owned(),
         Some(rest) if rest.starts_with('/') => home.join(rest.trim_start_matches('/')),
         // `~user` isn't read: it would be a guess.
-        Some(_) => return Err(format!("No folder at {typed} · type the full path")),
+        Some(_) => return Err(t!("onboard.no_folder_full_path", typed = typed)),
         None => cwd.join(typed),
     };
     let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
     let path = match path.canonicalize() {
         Ok(path) if path.is_dir() => path,
-        Ok(_) => return Err(format!("{typed} is a file, not a folder")),
-        Err(_) => return Err(format!("No folder at {typed}")),
+        Ok(_) => return Err(t!("onboard.is_a_file", typed = typed)),
+        Err(_) => return Err(t!("onboard.no_folder", typed = typed)),
     };
     if path == Path::new("/") || path == canon(home) {
-        return Err(format!("{} is your home folder or the disk's root — a squad works on project folders", path.display()));
+        return Err(t!("onboard.too_wide", path = path.display()));
     }
     let git = match equipe_core::worktree::repo_root(&path) {
         Ok(root) if canon(&root) == path => true,
         Ok(root) => {
             let root = canon(&root);
             if root == Path::new("/") || root == canon(home) {
-                return Err(format!("{} is inside a git repository at {} — a squad works on project folders", path.display(), root.display()));
+                return Err(t!("onboard.inside_wide_repo", path = path.display(), root = root.display()));
             }
             // A folder of a repository — an app in a monorepo — is a project of
             // its own: the squad works on it in the repository's worktrees.
@@ -137,7 +138,7 @@ fn pick(home: &Path, cwd: &Path, named: Option<String>) -> Result<Pick, String> 
         if squads::list(home).iter().any(|s| s.name == name) {
             return open(name, None);
         }
-        return Err(format!("No squad called {name} · equipe squads lists yours"));
+        return Err(t!("onboard.no_squad_called", name = name));
     }
     let project = runtime::project_of(cwd);
     let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
@@ -190,21 +191,22 @@ fn main_repository(dir: &Path) -> Option<PathBuf> {
 async fn onboard(home: &Path, repo: Option<Folder>) -> Result<Start, String> {
     let e = ui::err();
     let theme = ui::select_theme();
-    eprintln!("{}  {}\n", e.wordmark(), e.dim("a software squad of AI agents"));
+    eprintln!("{}  {}\n", e.wordmark(), e.dim(t!("onboard.tagline")));
 
     // Engines first: a squad needs one to run on.
     let codex = matches!(CredentialStore::default_location().load("openai"), Ok(Some(_)));
     let claude = claude_code::auth_status(claude_code::DEFAULT_BINARY).await.ok().flatten();
     let claude_ready = claude.as_ref().is_some_and(|s| s.logged_in);
     let mark = |ready: bool| if ready { e.accent("✓") } else { e.dim("○") };
-    eprintln!("  {} {:<13}{}", mark(claude_ready), "claude code", e.dim(if claude_ready { "signed in" } else { "not signed in" }));
-    eprintln!("  {} {:<13}{}", mark(codex), "codex", e.dim(if codex { "signed in" } else { "not signed in" }));
+    let signed_in = |ready: bool| if ready { t!("onboard.signed_in") } else { t!("onboard.not_signed_in") };
+    eprintln!("  {} {:<13}{}", mark(claude_ready), "claude code", e.dim(signed_in(claude_ready)));
+    eprintln!("  {} {:<13}{}", mark(codex), "codex", e.dim(signed_in(codex)));
     if !claude_ready && !codex {
         eprintln!();
-        return Err("No engine is signed in yet — a squad needs one to run on.".into());
+        return Err(t!("onboard.no_engine").into());
     }
     if !claude_ready {
-        eprintln!("\n{}", e.note(2, "The PM and the engineers run on Claude Code; without it they can't start."));
+        eprintln!("\n{}", e.note(2, t!("onboard.needs_claude")));
     }
     eprintln!();
 
@@ -215,56 +217,56 @@ async fn onboard(home: &Path, repo: Option<Folder>) -> Result<Start, String> {
     let owner = repo.as_ref().and_then(|r| r.remote.as_deref()).and_then(owner_of).map(str::to_owned);
     let user = std::env::var("USER").ok();
     let suggestion = squads::suggest_name(home, Path::new(&squad_name_for(owner.as_deref(), user.as_deref())));
-    eprintln!("{}", e.note(2, "A squad is your team, not one repository: it can work on all your projects."));
+    eprintln!("{}", e.note(2, t!("onboard.squad_is_team")));
     let squad: String = dialoguer::Input::with_theme(&*theme)
-        .with_prompt("Name your squad")
+        .with_prompt(t!("onboard.name_prompt"))
         .default(suggestion)
         .validate_with(|name: &String| {
-            if squads::valid_name(name) { Ok(()) } else { Err("lowercase letters, digits and dashes") }
+            if squads::valid_name(name) { Ok(()) } else { Err(t!("onboard.name_rule")) }
         })
         .interact_text()
         .map_err(|err| err.to_string())?;
     // The PM heads the list, ticked, so the person sees who leads the team; it
     // joins whatever is toggled — a squad always has its PM.
-    let mut labels = vec![menu_item(&format!("{:<10}your main contact — plans the work · always on the team", "pm"), menu)];
+    let mut labels = vec![menu_item(&format!("{:<10}{}", "pm", t!("onboard.pm_item")), menu)];
     labels.extend(STARTERS.iter().map(|(id, _)| {
         let role = equipe_core::roles::role(id).expect("a built-in role");
         menu_item(&format!("{id:<10}{}", role.summary), menu)
     }));
     let ticked: Vec<bool> = std::iter::once(true).chain(STARTERS.iter().map(|(_, on)| *on)).collect();
-    eprintln!("{}", e.note(2, "Space toggles, enter confirms. The PM is always on the team."));
+    eprintln!("{}", e.note(2, t!("onboard.menu_keys")));
     let picked = dialoguer::MultiSelect::with_theme(&*theme)
-        .with_prompt(ui::fit("Who's on the team?", menu))
+        .with_prompt(ui::fit(t!("onboard.team_prompt"), menu))
         .items(&labels)
         .defaults(&ticked)
         .report(false)
         .interact_opt()
         .map_err(|err| err.to_string())?
-        .ok_or("Nothing changed.")?;
+        .ok_or(t!("onboard.nothing_changed"))?;
     let team = team_from_picks(&picked);
     // The answer in a line, not the whole menu again.
-    eprintln!("{} {} {} {}", e.accent("✓"), e.bold("Team"), e.dim("·"), team.join(", "));
+    eprintln!("{} {} {} {}", e.accent("✓"), e.bold(t!("onboard.team")), e.dim("·"), team.join(", "));
     // How much the squad does on its own: Auto unless the person says otherwise.
     let modes: Vec<String> = Mode::ALL
         .iter()
         .map(|m| {
             // Up front, so a narrow terminal cuts the description, not the advice.
-            let note = if *m == Mode::Auto { "recommended · " } else { "" };
+            let note = if *m == Mode::Auto { format!("{} · ", t!("onboard.recommended")) } else { String::new() };
             menu_item(&format!("{:<13}{note}{}", m.label(), m.short()), menu)
         })
         .collect();
     let auto = Mode::ALL.iter().position(|m| *m == Mode::Auto).unwrap_or(0);
-    eprintln!("{}", e.note(2, "How much may members do on their own? /mode changes it any time."));
+    eprintln!("{}", e.note(2, t!("onboard.mode_note")));
     let picked_mode = dialoguer::Select::with_theme(&*theme)
-        .with_prompt(ui::fit("Mode", menu))
+        .with_prompt(ui::fit(t!("onboard.mode"), menu))
         .items(&modes)
         .default(auto)
         .report(false)
         .interact_opt()
         .map_err(|err| err.to_string())?
-        .ok_or("Nothing changed.")?;
+        .ok_or(t!("onboard.nothing_changed"))?;
     let mode = Mode::ALL[picked_mode];
-    eprintln!("{} {} {} {}", e.accent("✓"), e.bold("Mode"), e.dim("·"), mode.label());
+    eprintln!("{} {} {} {}", e.accent("✓"), e.bold(t!("onboard.mode")), e.dim("·"), mode.label());
     squads::create_without_project(home, &squad)?;
     equipe_core::journal::Journal::for_squad(home, &squad)
         .and_then(|j| j.set_mode(mode))
@@ -273,7 +275,7 @@ async fn onboard(home: &Path, repo: Option<Folder>) -> Result<Start, String> {
     if let Some(repo) = repo {
         eprintln!("{}", e.note(2, &format!("{} · {}", repo.path.display(), repo.describe())));
         let add = dialoguer::Confirm::with_theme(&*theme)
-            .with_prompt(ui::fit(&format!("Add {} to the squad?", repo.name), menu))
+            .with_prompt(ui::fit(&t!("onboard.add_repo", name = repo.name), menu))
             .default(true)
             .interact_opt()
             .map_err(|err| err.to_string())?

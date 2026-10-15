@@ -14,6 +14,8 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_tungstenite::tungstenite::Message as Ws;
 
+use equipe_core::t;
+
 use super::core::{Action, Core};
 
 /// What `equipe pair` / `equipe devices` ask, from their connection.
@@ -128,7 +130,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                                 backoff = Duration::from_secs(2);
                             }
                             Err(err) => {
-                                let _ = conn.send(json!({ "error": format!("Couldn't reach the relay: {err}") }));
+                                let _ = conn.send(json!({ "error": t!("link.couldnt_reach_relay", err = err) }));
                                 continue;
                             }
                         }
@@ -169,7 +171,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                     }
                 },
                 Ask::DemoReset { conn, .. } => {
-                    let _ = conn.send(json!({ "error": "not a demo daemon" }));
+                    let _ = conn.send(json!({ "error": t!("link.not_demo_daemon") }));
                 }
             },
             Some(Input::Device(device, squad, event)) => actions.extend(core.on_event(&device, &squad, &event)),
@@ -268,7 +270,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                     retry_at = tokio::time::Instant::now() + backoff;
                     backoff = (backoff * 2).min(Duration::from_secs(60));
                     if let Some(conn) = &pair_conn {
-                        let _ = conn.send(json!({ "error": format!("Couldn't reach the relay: {err}") }));
+                        let _ = conn.send(json!({ "error": t!("link.couldnt_reach_relay", err = err) }));
                         pair_conn = None;
                         core.end_pairing();
                     }
@@ -288,13 +290,13 @@ pub async fn serve_demo(home: PathBuf, version: String) -> Result<(), String> {
     };
     // `EQUIPE_RELAY` may point it elsewhere after it registered: the code says where it is.
     config.relay = super::relay_url(Some(&config));
-    let secret = super::demo::secret(&home, false).map_err(|err| format!("Couldn't keep the demo's code: {err}"))?;
+    let secret = super::demo::secret(&home, false).map_err(|err| t!("link.couldnt_keep_demo_code", err = err))?;
     let mut core = Core::new(Some(config));
     core.squads = vec![(super::demo::SQUAD.to_owned(), vec!["website".into(), "server".into()])];
     let url = core.open_standing(secret, super::demo::NAME)?;
     show_code(&home, &url);
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Input>();
-    listen_demo(&home, input_tx.clone()).map_err(|err| format!("Couldn't open {}: {err}", home.join("demo.sock").display()))?;
+    listen_demo(&home, input_tx.clone()).map_err(|err| t!("link.couldnt_open", path = home.join("demo.sock").display(), err = err))?;
     let mut demo = super::demo::Demo::default();
     let mut relay: Option<UnboundedSender<Ws>> = None;
     let mut retry_at = tokio::time::Instant::now();
@@ -338,7 +340,7 @@ pub async fn serve_demo(home: PathBuf, version: String) -> Result<(), String> {
                             }
                             Err(why) => said["error"] = json!(why),
                         },
-                        Err(err) => said["error"] = json!(format!("Couldn't make a new code: {err}")),
+                        Err(err) => said["error"] = json!(t!("link.couldnt_make_code", err = err)),
                     }
                 }
                 let _ = conn.send(said);
@@ -405,10 +407,10 @@ fn show_code(home: &Path, url: &str) {
     if let Some(svg) = super::demo::qr_svg(url) {
         let _ = std::fs::write(home.join("pairing-qr.svg"), svg);
     }
-    println!("equipe demo — the code for store reviewers, the same until `equipe demo reset --new-code`:\n");
+    println!("{}\n", t!("link.demo_code_header"));
     println!("{}", super::cli::qr(url));
     println!("{url}\n");
-    println!("Also in {} and pairing-qr.svg next to it.", home.join("pairing-url.txt").display());
+    println!("{}", t!("link.also_in", path = home.join("pairing-url.txt").display()));
 }
 
 /// `equipe demo reset`'s socket: one JSON object per line each way.
@@ -448,7 +450,7 @@ async fn connect(config: &super::Config, input: UnboundedSender<Input>) -> Resul
     let base = super::relay_url(Some(config)).replacen("https://", "wss://", 1).replacen("http://", "ws://", 1);
     let mut request = format!("{base}/v1/daemons/{}/connect", config.id).into_client_request().map_err(|err| err.to_string())?;
     request.headers_mut().insert("Authorization", format!("Bearer {}", config.token).parse().map_err(|_| "bad token")?);
-    let (stream, _) = tokio_tungstenite::connect_async(request).await.map_err(|err| format!("the relay: {err}"))?;
+    let (stream, _) = tokio_tungstenite::connect_async(request).await.map_err(|err| t!("link.the_relay", err = err))?;
     let (mut sink, mut source) = stream.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Ws>();
     tokio::spawn(async move {

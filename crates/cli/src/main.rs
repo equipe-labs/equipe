@@ -9,6 +9,7 @@ mod attach;
 mod clip;
 mod daemon;
 mod home;
+mod i18n;
 mod onboard;
 mod remote;
 mod telegram;
@@ -24,6 +25,7 @@ use clap::{CommandFactory as _, Parser, Subcommand, ValueEnum};
 use equipe_core::protocol::{self, Command as Cmd, Event, SessionSpec, TurnOutcome, Usage};
 use equipe_core::roles::Tier;
 use equipe_core::runtime;
+use equipe_core::t;
 use equipe_providers::claude_code::{self, AuthStatus};
 use equipe_providers::openai::{codex, login};
 use equipe_providers::{AuthMethod, CredentialStore, Credentials};
@@ -268,7 +270,7 @@ async fn main() -> ExitCode {
             Ok(start) => start,
             Err(err) => {
                 eprintln!("{}", ui::err().fail_line(&err));
-                let hint = if err.contains("engine") { "equipe login" } else { "equipe squads" };
+                let hint = if err == t!("onboard.no_engine") { "equipe login" } else { "equipe squads" };
                 eprintln!("  {}", ui::err().hint(hint));
                 return ExitCode::FAILURE;
             }
@@ -279,7 +281,7 @@ async fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(err) => {
-                eprintln!("{}", ui::err().fail_line(&format!("The terminal UI stopped: {err}")));
+                eprintln!("{}", ui::err().fail_line(&t!("main.tui_stopped", err = err)));
                 ExitCode::FAILURE
             }
         };
@@ -296,7 +298,7 @@ async fn main() -> ExitCode {
         Command::Attach { stdio: false, .. } => return attach::usage(),
         Command::SendImage { host } => match clip::send_image(&host) {
             Ok(()) => {
-                println!("{}", ui::out().ok_line(&format!("Sent — the console on {host} attaches it to the message you're writing.")));
+                println!("{}", ui::out().ok_line(&t!("main.image_sent", host = host)));
                 Ok(())
             }
             Err(why) => Err(Failure::new(why)),
@@ -305,8 +307,8 @@ async fn main() -> ExitCode {
             let ran = std::process::Command::new("sh").arg("-c").arg(clip::PASTE_SETUP).arg("sh").args(remove.then_some("--remove")).status();
             match ran {
                 Ok(status) if status.success() => Ok(()),
-                Ok(_) => Err(Failure::new("The paste setup didn't finish")),
-                Err(err) => Err(Failure::new(format!("Couldn't run sh: {err}"))),
+                Ok(_) => Err(Failure::new(t!("main.paste_setup_unfinished"))),
+                Err(err) => Err(Failure::new(t!("main.sh_failed", err = err))),
             }
         }
         Command::Pair | Command::Devices { .. } => {
@@ -358,7 +360,7 @@ async fn main() -> ExitCode {
             let home = equipe_providers::credentials::equipe_home();
             let cwd = std::env::current_dir().unwrap_or_default();
             match home::squad_for(&home, &cwd, squad) {
-                None => Err(Failure::new("No squad yet. Run equipe to start one.")),
+                None => Err(Failure::new(t!("main.no_squad"))),
                 Some(squad) => {
                     let words: Vec<&str> = words.iter().map(String::as_str).collect();
                     match home::run(&home::dir(&home, &squad), &words) {
@@ -382,14 +384,14 @@ async fn main() -> ExitCode {
             let cwd = std::env::current_dir().unwrap_or_default();
             let words: Vec<&str> = words.iter().map(String::as_str).collect();
             match home::squad_for(&home, &cwd, squad).map(|squad| home::memory(&home::dir(&home, &squad), &words)) {
-                None => Err(Failure::new("No squad yet. Run equipe to start one.")),
+                None => Err(Failure::new(t!("main.no_squad"))),
                 Some(Err(why)) => Err(Failure::new(why)),
                 Some(Ok(lines)) => {
                     for line in lines {
                         println!("  {line}");
                     }
                     if words.is_empty() {
-                        println!("  {}", ui::out().hint("equipe memory changes · edit or delete a file to change what the squad knows · equipe home undo [n]"));
+                        println!("  {}", ui::out().hint(t!("main.memory_hint")));
                     }
                     Ok(())
                 }
@@ -398,9 +400,9 @@ async fn main() -> ExitCode {
         Command::Squads => {
             let p = ui::out();
             let squads = equipe_core::squads::list(&equipe_providers::credentials::equipe_home());
-            println!("{}\n", p.kicker("squads"));
+            println!("{}\n", p.kicker(t!("main.squads_kicker")));
             if squads.is_empty() {
-                println!("{}", p.note(2, "None yet. Run equipe, from any folder, to start one."));
+                println!("{}", p.note(2, t!("main.squads_none")));
             }
             for squad in squads {
                 println!("  {}  {}", p.bold(&squad.name), p.dim(&home::dir(&equipe_providers::credentials::equipe_home(), &squad.name).display().to_string()));
@@ -412,20 +414,20 @@ async fn main() -> ExitCode {
         }
         Command::Roles => {
             let p = ui::out();
-            println!("{}\n", p.kicker("squad roles"));
+            println!("{}\n", p.kicker(t!("main.roles_kicker")));
             for role in equipe_core::ROLES {
                 println!("  {}  {}", p.bold(&format!("{:<9}", role.id)), ui::wrap(role.summary, 13, 13, ui::width()));
-                let work = if role.edits { "edits files on its own branch" } else { "reads and reports" };
+                let work = if role.edits { t!("main.role_edits") } else { t!("main.role_reads") };
                 let model = match role.tier {
-                    Tier::Top => "opus · Codex's top model",
-                    Tier::Upper => "sonnet · Codex's top model",
-                    Tier::Mid => "sonnet · a lighter Codex model",
+                    Tier::Top => t!("main.tier_top"),
+                    Tier::Upper => t!("main.tier_upper"),
+                    Tier::Mid => t!("main.tier_mid"),
                 };
                 println!("{}", p.row("", &p.dim(&format!("{work} · {model}"))));
             }
-            println!("  {}  {}", p.bold(&format!("{:<9}", "custom")), ui::wrap("any role you name: /add custom writer", 13, 13, ui::width()));
-            println!("{}", p.row("", &p.dim("reads and reports — or edits files on its own branch, with --edits · sonnet")));
-            println!("\n  {}", p.hint("equipe   then /add designer frontend"));
+            println!("  {}  {}", p.bold(&format!("{:<9}", "custom")), ui::wrap(t!("main.role_custom"), 13, 13, ui::width()));
+            println!("{}", p.row("", &p.dim(t!("main.role_custom_detail"))));
+            println!("\n  {}", p.hint(t!("main.roles_hint")));
             Ok(())
         }
     };
@@ -484,7 +486,7 @@ async fn sign_in(url: Option<String>, forget: bool) -> CmdResult {
     let state = browser::state_file(&home);
     if forget {
         let _ = std::fs::remove_file(&state);
-        println!("{}", p.ok_line("Signed out everywhere. Members have no browser until you sign in again."));
+        println!("{}", p.ok_line(t!("main.browser_forgot")));
         return Ok(());
     }
     // Members share one Chrome, run by the daemon: the person signs in there,
@@ -492,28 +494,28 @@ async fn sign_in(url: Option<String>, forget: bool) -> CmdResult {
     if daemon::ensure_running().await.is_ok()
         && equipe_core::gateway::person_window(&daemon::socket(), &url.clone().unwrap_or_else(start_page)).await.unwrap_or(false)
     {
-        println!("{}\n", p.kicker("browser"));
-        println!("{}", p.note(2, "A window opened in your squads' Chrome, on this Mac's screen. Sign in — or sign up — wherever"));
-        println!("{}", p.note(2, "they should work: Google, GitHub, Vercel… Once is enough: every member works in that Chrome, in a"));
-        println!("{}", p.note(2, "window of its own, signed in as you. Leave the window open or close it, as you like."));
+        println!("{}\n", p.kicker(t!("main.browser_kicker")));
+        println!("{}", p.note(2, t!("main.browser_chrome_1")));
+        println!("{}", p.note(2, t!("main.browser_chrome_2")));
+        println!("{}", p.note(2, t!("main.browser_chrome_3")));
         if std::env::var_os("SSH_CONNECTION").is_some() {
-            println!("\n{}", p.note(2, "You're connected over SSH: reach this machine's screen with Screen Sharing."));
+            println!("\n{}", p.note(2, t!("main.browser_ssh_chrome")));
         }
         return Ok(());
     }
-    let npx = browser::find_npx().ok_or_else(|| Failure::new("The browser runs on Node.js, which isn't installed.").next("brew install node"))?;
+    let npx = browser::find_npx().ok_or_else(|| Failure::new(t!("main.no_node")).next("brew install node"))?;
     let dir = state.parent().expect("the state file has a folder");
-    std::fs::create_dir_all(dir).map_err(|err| Failure::new(format!("Couldn't make {}: {err}", dir.display())))?;
+    std::fs::create_dir_all(dir).map_err(|err| Failure::new(t!("main.mkdir_failed", dir = dir.display(), err = err)))?;
     let _ = std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700));
 
-    println!("{}\n", p.kicker("browser"));
-    println!("{}", p.note(2, "A browser opens. Sign in — or sign up — wherever your squad should work: Vercel, PostHog, GitHub…"));
-    println!("{}", p.note(2, "Close the window when you're done. Members then work there signed in as you, and ask you before"));
-    println!("{}", p.note(2, "creating accounts, accepting terms, paying, or deleting anything."));
-    println!("{}", p.note(2, "Google (Gmail, Drive…) isn't shared this way: Google ends a sign-in seen in two browsers. A member"));
-    println!("{}", p.note(2, "that needs it brings its own browser up on this screen, and you sign in there once."));
+    println!("{}\n", p.kicker(t!("main.browser_kicker")));
+    println!("{}", p.note(2, t!("main.browser_open_1")));
+    println!("{}", p.note(2, t!("main.browser_open_2")));
+    println!("{}", p.note(2, t!("main.browser_open_3")));
+    println!("{}", p.note(2, t!("main.browser_open_4")));
+    println!("{}", p.note(2, t!("main.browser_open_5")));
     if std::env::var_os("SSH_CONNECTION").is_some() {
-        println!("\n{}", p.note(2, "You're connected over SSH: the window opens on this machine's own screen. Reach it with Screen Sharing."));
+        println!("\n{}", p.note(2, t!("main.browser_ssh")));
     }
     // Chrome as an ordinary browser, not an automated one: Google refuses to sign
     // anyone in to the latter.
@@ -522,18 +524,18 @@ async fn sign_in(url: Option<String>, forget: bool) -> CmdResult {
         .arg(browser::sign_in_script(&home))
         .arg(&state)
         .arg(url.unwrap_or_else(start_page));
-    let status = open.status().map_err(|err| Failure::new(format!("Couldn't open the browser: {err}")))?;
+    let status = open.status().map_err(|err| Failure::new(t!("main.browser_open_failed", err = err)))?;
     let _ = std::fs::set_permissions(&state, std::os::unix::fs::PermissionsExt::from_mode(0o600));
     if !status.success() {
-        return Err(Failure::new("The browser closed with an error — needs Google Chrome installed.").next("equipe browser"));
+        return Err(Failure::new(t!("main.browser_error")).next("equipe browser"));
     }
     let sites = browser::sites(&std::fs::read_to_string(&state).unwrap_or_default());
     println!();
     if sites.is_empty() {
-        println!("{}", p.note(2, "Nothing signed in yet. Run equipe browser again whenever you're ready."));
+        println!("{}", p.note(2, t!("main.browser_nothing")));
     } else {
-        println!("{}", p.ok_line(&format!("Members can work signed in on: {}", sites.join(", "))));
-        println!("{}", p.note(2, "equipe browser --forget signs them out everywhere."));
+        println!("{}", p.ok_line(&t!("main.browser_sites", sites = sites.join(", "))));
+        println!("{}", p.note(2, t!("main.browser_forget_hint")));
     }
     Ok(())
 }
@@ -551,14 +553,15 @@ fn start_page() -> String {
     ];
     let links: String = sites.iter().map(|(name, url)| format!("<li><a href='{url}'>{name}</a></li>")).collect();
     let html = format!(
-        "<!doctype html><meta charset=utf-8><title>equipe · sign in</title>\
+        "<!doctype html><meta charset=utf-8><title>equipe · {title}</title>\
 <body style='font:16px -apple-system,system-ui,sans-serif;max-width:560px;margin:64px auto;line-height:1.6;color:#111'>\
-<h1 style='font-size:22px'>equipe<span style='color:#8f9aa8'>.</span> sign in for your squad</h1>\
-<p>Sign in, or sign up, wherever your squad should work. Open as many tabs as you like; close the window when \
-you're done.</p><ul>{links}</ul><p style='color:#666'>Members work there signed in as you. They ask you before \
-creating accounts, accepting terms, paying, or deleting anything.</p><p style='color:#666'>Google (Gmail, Drive…) \
-isn't shared from here: Google ends a sign-in it sees in two browsers. A member that needs it brings its own browser \
-up on your screen, and you sign in there once.</p>"
+<h1 style='font-size:22px'>equipe<span style='color:#8f9aa8'>.</span> {heading}</h1>\
+<p>{intro}</p><ul>{links}</ul><p style='color:#666'>{members}</p><p style='color:#666'>{google}</p>",
+        title = t!("main.page_title"),
+        heading = t!("main.page_heading"),
+        intro = t!("main.page_intro"),
+        members = t!("main.page_members"),
+        google = t!("main.page_google"),
     );
     let encoded: String = html
         .bytes()
@@ -576,29 +579,29 @@ async fn update() -> CmdResult {
     let p = ui::out();
     let exe = std::env::current_exe()
         .and_then(|exe| exe.canonicalize())
-        .map_err(|err| Failure::new(format!("Couldn't tell where equipe is installed: {err}")))?;
+        .map_err(|err| Failure::new(t!("main.where_installed_err", err = err)))?;
     if update_by_homebrew(&exe) {
-        println!("{}", p.note(0, "equipe came from Homebrew, so Homebrew updates it:"));
+        println!("{}", p.note(0, t!("main.homebrew")));
         println!("  {}", p.hint("brew upgrade equipe"));
         return Ok(());
     }
-    let dir = exe.parent().ok_or_else(|| Failure::new("Couldn't tell where equipe is installed."))?;
+    let dir = exe.parent().ok_or_else(|| Failure::new(t!("main.where_installed")))?;
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg(format!("curl -fsSL {INSTALL_SCRIPT} | sh"))
         .env("EQUIPE_INSTALL_DIR", dir)
         .env("EQUIPE_NO_MODIFY_PATH", "1")
         .status()
-        .map_err(|err| Failure::new(format!("Couldn't run the installer: {err}")))?;
+        .map_err(|err| Failure::new(t!("main.installer_failed", err = err)))?;
     if status.success() {
         // The squad keeps running the old build until the daemon restarts.
         if equipe_core::gateway::is_running(&daemon::socket()).await {
-            println!("{}", p.note(2, "Your squad still runs the old build. This restarts it once no one is mid-turn:"));
+            println!("{}", p.note(2, t!("main.old_build")));
             println!("  {}", p.hint("equipe daemon restart --when-idle"));
         }
         Ok(())
     } else {
-        Err(Failure::new("The update didn't finish — equipe is unchanged.").next(format!("curl -fsSL {INSTALL_SCRIPT} | sh")))
+        Err(Failure::new(t!("main.update_failed")).next(format!("curl -fsSL {INSTALL_SCRIPT} | sh")))
     }
 }
 
@@ -618,9 +621,13 @@ async fn wait_until_idle(p: &ui::Painter) -> CmdResult {
         };
         let mut waiting = busy.working.clone();
         if busy.approvals > 0 {
-            waiting.push(format!("{} request{} for you", busy.approvals, if busy.approvals == 1 { "" } else { "s" }));
+            waiting.push(if busy.approvals == 1 {
+                t!("main.requests_for_you_one", n = busy.approvals)
+            } else {
+                t!("main.requests_for_you_many", n = busy.approvals)
+            });
         }
-        let line = format!("Waiting for {} — Ctrl-C to leave it running", waiting.join(", "));
+        let line = t!("main.waiting_for", who = waiting.join(", "));
         if said.as_ref() != Some(&line) {
             println!("{}", p.note(0, &line));
             said = Some(line);
@@ -634,25 +641,25 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
     match action {
         DaemonAction::Run => daemon::run_foreground()
             .await
-            .map_err(|err| Failure::new(format!("The daemon stopped: {err}"))),
+            .map_err(|err| Failure::new(t!("main.daemon_stopped_err", err = err))),
         DaemonAction::Start => match daemon::ensure_running().await {
             Ok(true) => {
-                println!("{}", p.ok_line("Daemon started. The team lives here now; terminals come and go."));
+                println!("{}", p.ok_line(t!("main.daemon_started")));
                 Ok(())
             }
             Ok(false) => {
-                println!("{}", p.ok_line("Daemon already running."));
+                println!("{}", p.ok_line(t!("main.daemon_already")));
                 Ok(())
             }
             Err(err) => Err(Failure::new(err.to_string())),
         },
         DaemonAction::Stop => match daemon::stop().await {
             Ok(true) => {
-                println!("{}", p.ok_line("Daemon stopped. Open sessions resume when it starts again."));
+                println!("{}", p.ok_line(t!("main.daemon_stopped")));
                 Ok(())
             }
             Ok(false) => {
-                println!("{}", p.note(0, "No daemon was running."));
+                println!("{}", p.note(0, t!("main.daemon_none")));
                 Ok(())
             }
             Err(err) => Err(Failure::new(err.to_string())),
@@ -663,7 +670,7 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             }
             let _ = daemon::stop().await;
             daemon::ensure_running().await.map_err(|err| Failure::new(err.to_string()))?;
-            println!("{}", p.ok_line("Daemon restarted on this build."));
+            println!("{}", p.ok_line(t!("main.daemon_restarted")));
             Ok(())
         }
         DaemonAction::Install => {
@@ -674,35 +681,35 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             daemon::service::install(&exe, &daemon::log_path()).map_err(|err| Failure::new(err.to_string()))?;
             for _ in 0..100 {
                 if equipe_core::gateway::is_running(&daemon::socket()).await {
-                    println!("{}", p.ok_line("The daemon runs as a login service: it starts when you log in and comes back if it crashes."));
-                    println!("{}", p.note(2, "equipe daemon uninstall goes back to starting it on demand."));
+                    println!("{}", p.ok_line(t!("main.service_installed")));
+                    println!("{}", p.note(2, t!("main.service_uninstall_hint")));
                     return Ok(());
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            Err(Failure::new("The service was installed but the daemon didn't answer.").next(format!("tail {}", daemon::log_path().display())))
+            Err(Failure::new(t!("main.service_no_answer")).next(format!("tail {}", daemon::log_path().display())))
         }
         DaemonAction::Uninstall => {
             if daemon::service::uninstall().map_err(|err| Failure::new(err.to_string()))? {
-                println!("{}", p.ok_line("No longer a login service. equipe starts the daemon when it needs it."));
+                println!("{}", p.ok_line(t!("main.service_removed")));
             } else {
-                println!("{}", p.note(0, "The daemon wasn't installed as a service."));
+                println!("{}", p.note(0, t!("main.service_none")));
             }
             Ok(())
         }
         DaemonAction::Status => {
             if equipe_core::gateway::is_running(&daemon::socket()).await {
-                println!("{}", p.ok_line("Daemon running."));
-                println!("{}", p.row("socket", &daemon::socket().display().to_string()));
-                let how = if daemon::service::installed() { "login service — starts at login, back after a crash" } else { "on demand · equipe daemon install keeps it up" };
-                println!("{}", p.row("runs as", how));
+                println!("{}", p.ok_line(t!("main.daemon_running")));
+                println!("{}", p.row(t!("main.row_socket"), &daemon::socket().display().to_string()));
+                let how = if daemon::service::installed() { t!("main.runs_as_service") } else { t!("main.runs_on_demand") };
+                println!("{}", p.row(t!("main.row_runs_as"), how));
                 if let Ok(Some(busy)) = equipe_core::gateway::busy(&daemon::socket()).await {
-                    let working = if busy.working.is_empty() { "nobody mid-turn".to_owned() } else { busy.working.join(", ") };
-                    println!("{}", p.row("working", &working));
-                    println!("{}", p.row("screen", &busy.desktop.summary(None).unwrap_or_else(|| "free".into())));
+                    let working = if busy.working.is_empty() { t!("main.nobody_working").to_owned() } else { busy.working.join(", ") };
+                    println!("{}", p.row(t!("main.row_working"), &working));
+                    println!("{}", p.row(t!("main.row_screen"), &busy.desktop.summary(None).unwrap_or_else(|| t!("main.screen_free").into())));
                 }
             } else {
-                println!("{}", p.note(0, "Daemon not running. `equipe` starts it when you open the console."));
+                println!("{}", p.note(0, t!("main.daemon_not_running")));
             }
             Ok(())
         }
@@ -752,7 +759,7 @@ impl App {
             None if ui::interactive() => match self.pick_engine().await {
                 Some(engine) => (vec![engine], true),
                 None => {
-                    println!("{}", p.note(0, "Cancelled."));
+                    println!("{}", p.note(0, t!("main.cancelled")));
                     return Ok(());
                 }
             },
@@ -766,15 +773,15 @@ impl App {
                 Engine::Codex => match self.store.load("openai") {
                     Ok(Some(cred)) if !again && !chosen => {
                         let account = cred.account_id.map(|a| format!(" · {a}")).unwrap_or_default();
-                        println!("{}", p.ok_line(&format!("codex · already signed in{account}")));
-                        println!("{}", p.note(2, "Sign in again: equipe login codex --again"));
+                        println!("{}", p.ok_line(&t!("main.codex_already", account = account)));
+                        println!("{}", p.note(2, t!("main.codex_again")));
                     }
                     _ => self.login_codex(timeout, no_browser).await?,
                 },
                 Engine::Claude => match claude_code::auth_status(claude_code::DEFAULT_BINARY).await {
                     Ok(Some(status)) if status.logged_in && !again => {
-                        println!("{}", p.ok_line(&format!("claude code · already signed in · {}", describe_claude_login(&status))));
-                        println!("{}", p.note(2, "Sign in again: equipe login claude --again (changes Claude Code's login everywhere)"));
+                        println!("{}", p.ok_line(&t!("main.claude_already", how = describe_claude_login(&status))));
+                        println!("{}", p.note(2, t!("main.claude_again")));
                     }
                     _ => self.login_claude().await?,
                 },
@@ -793,30 +800,30 @@ impl App {
         let e = ui::err();
         let state = |ready: bool, missing: &str| {
             if ready {
-                format!("{} {:<15}", e.accent("✓"), "signed in")
+                format!("{} {}", e.accent("✓"), ui::pad(t!("main.signed_in"), 15))
             } else {
-                format!("{} {:<15}", e.dim("○"), missing)
+                format!("{} {}", e.dim("○"), ui::pad(missing, 15))
             }
         };
         let claude_plan = match &claude {
             Some(s) if s.logged_in => plan_label(s),
-            _ => "your claude".to_owned(),
+            _ => t!("main.your_claude").to_owned(),
         };
         let items = [
-            format!("{:<13}{}{}", "codex", state(codex_ready, "not signed in"), e.dim("ChatGPT plan")),
+            format!("{:<13}{}{}", "codex", state(codex_ready, t!("main.not_signed_in")), e.dim(t!("main.chatgpt_plan"))),
             format!(
                 "{:<13}{}{}",
                 "claude code",
-                state(claude_ready, if claude.is_none() { "not installed" } else { "not signed in" }),
+                state(claude_ready, if claude.is_none() { t!("main.not_installed") } else { t!("main.not_signed_in") }),
                 e.dim(&claude_plan)
             ),
         ];
         // Start on the first engine that still needs a sign-in.
         let default = if !codex_ready { 0 } else if !claude_ready { 1 } else { 0 };
 
-        eprintln!("{}  {}\n", e.wordmark(), e.dim("sign in"));
+        eprintln!("{}  {}\n", e.wordmark(), e.dim(t!("main.sign_in")));
         let picked = dialoguer::Select::with_theme(&*ui::select_theme())
-            .with_prompt("Which engine?")
+            .with_prompt(t!("main.which_engine"))
             .items(&items)
             .default(default)
             .interact_opt()
@@ -831,20 +838,20 @@ impl App {
         let p = ui::out();
         let path = self.store.path("openai");
         match std::fs::remove_file(&path) {
-            Ok(()) => println!("{}", p.ok_line("codex · signed out")),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => println!("{}", p.note(0, "codex · wasn't signed in")),
-            Err(err) => return Err(Failure::new(format!("couldn't remove {}: {err}", path.display()))),
+            Ok(()) => println!("{}", p.ok_line(t!("main.codex_signed_out"))),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => println!("{}", p.note(0, t!("main.codex_wasnt_signed_in"))),
+            Err(err) => return Err(Failure::new(t!("main.remove_failed", path = path.display(), err = err))),
         }
-        println!("{}", p.note(2, "Claude Code keeps its own login."));
+        println!("{}", p.note(2, t!("main.claude_own_login")));
         println!("\n  {}", p.hint("equipe login codex"));
         Ok(())
     }
 
     async fn login_codex(&self, timeout_min: u64, no_browser: bool) -> CmdResult {
         let p = ui::out();
-        println!("{}  {}\n", p.wordmark(), p.dim("sign in · codex"));
-        println!("{}", p.para(0, "Sign in with your ChatGPT subscription — your account, your plan."));
-        println!("{}\n", p.note(0, "equipe introduces itself to OpenAI as equipe, never as Codex CLI."));
+        println!("{}  {}\n", p.wordmark(), p.dim(&format!("{} · codex", t!("main.sign_in"))));
+        println!("{}", p.para(0, t!("main.codex_intro")));
+        println!("{}\n", p.note(0, t!("main.codex_identity")));
 
         let options = login::LoginOptions {
             timeout: Duration::from_secs(timeout_min * 60),
@@ -871,19 +878,19 @@ impl App {
             }
             match opened {
                 Ok(()) => {
-                    println!("{}", p.ok_line("Opened the sign-in page in your browser."));
-                    println!("{}", p.note(2, "Not there? Press Enter to print the link."));
+                    println!("{}", p.ok_line(t!("main.signin_opened")));
+                    println!("{}", p.note(2, t!("main.signin_not_there")));
                 }
                 Err(reason) => {
                     if !no_browser {
-                        println!("{}", p.fail_line(&format!("Couldn't open a browser: {reason}")));
+                        println!("{}", p.fail_line(&t!("main.no_browser", reason = reason)));
                     }
                     // Alone on its line and unindented, so it copies cleanly.
-                    println!("Open this link to sign in:\n");
+                    println!("{}\n", t!("main.open_link"));
                     println!("{url}\n");
                 }
             }
-            println!("\n{}", p.note(0, &format!("Waiting for the browser ({timeout_min} min) · Ctrl-C to cancel")));
+            println!("\n{}", p.note(0, &t!("main.waiting_browser", minutes = timeout_min)));
         })
         .await
         .map_err(|err| {
@@ -892,21 +899,21 @@ impl App {
             } else {
                 "equipe login codex".into()
             };
-            Failure::new(format!("Sign-in didn't complete: {err}")).next(retry)
+            Failure::new(t!("main.signin_incomplete", err = err)).next(retry)
         })?;
 
         let account = cred.account_id.as_deref().map(|a| format!(" · {a}")).unwrap_or_default();
-        println!("\n{}", p.ok_line(&format!("Signed in to ChatGPT{account}")));
-        println!("{}", p.row("saved", &self.store.path("openai").display().to_string()));
+        println!("\n{}", p.ok_line(&t!("main.signed_in_chatgpt", account = account)));
+        println!("{}", p.row(t!("main.row_saved"), &self.store.path("openai").display().to_string()));
         println!("\n  {}", p.hint("equipe try \"hello\""));
         Ok(())
     }
 
     async fn login_claude(&self) -> CmdResult {
         let p = ui::out();
-        println!("{}  {}\n", p.wordmark(), p.dim("sign in · claude code"));
-        println!("{}", p.para(0, "Claude Code signs itself in, on Anthropic's own page."));
-        println!("{}\n", p.note(0, "equipe never sees your Claude credentials."));
+        println!("{}  {}\n", p.wordmark(), p.dim(&format!("{} · claude code", t!("main.sign_in"))));
+        println!("{}", p.para(0, t!("main.claude_intro")));
+        println!("{}\n", p.note(0, t!("main.claude_identity")));
 
         let status = tokio::process::Command::new(claude_code::DEFAULT_BINARY)
             .args(["auth", "login"])
@@ -914,7 +921,7 @@ impl App {
             .await
             .map_err(|_| claude_missing())?;
         if !status.success() {
-            return Err(Failure::new("Claude Code sign-in didn't complete").next("claude auth login"));
+            return Err(Failure::new(t!("main.claude_incomplete")).next("claude auth login"));
         }
         println!();
         self.claude_section(&ui::out()).await;
@@ -936,25 +943,25 @@ impl App {
             .collect();
         println!();
         if ready.is_empty() {
-            return Err(Failure::new("No engine is ready yet").next("equipe login codex"));
+            return Err(Failure::new(t!("main.no_engine_ready")).next("equipe login codex"));
         }
-        println!("{}", p.row("ready", &p.bold(&ready.join(" · "))));
+        println!("{}", p.row(t!("main.row_ready"), &p.bold(&ready.join(" · "))));
         // The Mac's screen, when a member has it, waits for it, or the person took it back.
         if let Ok(Some(busy)) = equipe_core::gateway::busy(&daemon::socket()).await
             && let Some(desktop) = busy.desktop.summary(None)
         {
-            println!("{}", p.row("screen", &desktop));
+            println!("{}", p.row(t!("main.row_screen"), &desktop));
         }
         Ok(())
     }
 
     /// Prints the Codex section; returns whether Codex is usable.
     async fn codex_section(&self, p: &ui::Painter) -> bool {
-        println!("{}", p.section("codex", "ChatGPT plan · equipe signs in"));
+        println!("{}", p.section("codex", t!("main.codex_section")));
         let cred = match self.codex_credentials().await {
             Ok(cred) => cred,
             Err(failure) => {
-                println!("{}", p.row("login", &p.fail(&failure.message)));
+                println!("{}", p.row(t!("main.row_login"), &p.fail(&failure.message)));
                 if let Some(next) = failure.next {
                     println!("{}", p.row("", &p.hint(&next)));
                 }
@@ -962,24 +969,24 @@ impl App {
             }
         };
         if let Some(account) = &cred.account_id {
-            println!("{}", p.row("account", account));
+            println!("{}", p.row(t!("main.row_account"), account));
         }
         if let Some(residency) = &cred.residency {
-            println!("{}", p.row("residency", residency));
+            println!("{}", p.row(t!("main.row_residency"), residency));
         }
         if let Some(exp) = cred.expires {
             let left = (exp - now_secs()) / 60;
-            println!("{}", p.row("token", &format!("valid · {left} min left")));
+            println!("{}", p.row(t!("main.row_token"), &t!("main.token_left", minutes = left)));
         }
         match codex::list_models(&self.client, &cred, VERSION).await {
             Ok(models) => {
                 let shown = models.iter().take(4).cloned().collect::<Vec<_>>().join(", ");
                 let more = if models.len() > 4 { ", …" } else { "" };
-                println!("{}", p.row("backend", &p.ok(&format!("{} models  {}", models.len(), p.dim(&format!("{shown}{more}"))))));
+                println!("{}", p.row(t!("main.row_backend"), &p.ok(&t!("main.models", n = models.len(), list = p.dim(&format!("{shown}{more}"))))));
                 true
             }
             Err(err) => {
-                println!("{}", p.row("backend", &p.fail(&err.to_string())));
+                println!("{}", p.row(t!("main.row_backend"), &p.fail(&err.to_string())));
                 false
             }
         }
@@ -987,24 +994,24 @@ impl App {
 
     /// Prints the Claude Code section; returns whether Claude Code is usable.
     async fn claude_section(&self, p: &ui::Painter) -> bool {
-        println!("{}", p.section("claude code", "your claude · signs itself in"));
+        println!("{}", p.section("claude code", t!("main.claude_section")));
         match claude_code::auth_status(claude_code::DEFAULT_BINARY).await {
             Ok(Some(status)) if status.logged_in => {
-                println!("{}", p.row("login", &p.ok(&describe_claude_login(&status))));
+                println!("{}", p.row(t!("main.row_login"), &p.ok(&describe_claude_login(&status))));
                 true
             }
             Ok(Some(_)) => {
-                println!("{}", p.row("login", &p.fail("not signed in")));
+                println!("{}", p.row(t!("main.row_login"), &p.fail(t!("main.not_signed_in"))));
                 println!("{}", p.row("", &p.hint("equipe login claude")));
                 false
             }
             Ok(None) => {
-                println!("{}", p.row("install", &p.fail("`claude` not found on PATH")));
-                println!("{}", p.row("", &p.dim("Install Claude Code, then run `equipe login claude`.")));
+                println!("{}", p.row(t!("main.row_install"), &p.fail(t!("main.claude_not_on_path"))));
+                println!("{}", p.row("", &p.dim(t!("main.install_claude"))));
                 false
             }
             Err(err) => {
-                println!("{}", p.row("login", &p.fail(&err.to_string())));
+                println!("{}", p.row(t!("main.row_login"), &p.fail(&err.to_string())));
                 false
             }
         }
@@ -1016,12 +1023,12 @@ impl App {
         let cred = self
             .store
             .load("openai")
-            .map_err(|err| Failure::new(format!("couldn't read {}: {err}", path.display())).next("equipe login codex"))?
+            .map_err(|err| Failure::new(t!("main.read_failed", path = path.display(), err = err)).next("equipe login codex"))?
             .filter(|c| c.method == AuthMethod::OauthSubscription)
-            .ok_or_else(|| Failure::new("not signed in").next("equipe login codex"))?;
+            .ok_or_else(|| Failure::new(t!("main.not_signed_in")).next("equipe login codex"))?;
         codex::ensure_fresh(&self.client, &self.store, cred)
             .await
-            .map_err(|err| Failure::new(format!("couldn't refresh the login: {err}")).next("equipe login codex"))
+            .map_err(|err| Failure::new(t!("main.refresh_failed", err = err)).next("equipe login codex"))
     }
 
     // ── try ──
@@ -1029,7 +1036,7 @@ impl App {
     /// One turn, as a client of the runtime: send commands, render events.
     async fn run_try(&self, prompt: &str, engine: Option<Engine>, model: Option<&str>, edit: bool) -> CmdResult {
         if prompt.trim().is_empty() {
-            return Err(Failure::new("try needs a prompt").next("equipe try \"summarize this repo\""));
+            return Err(Failure::new(t!("main.try_needs_prompt")).next("equipe try \"summarize this repo\""));
         }
         let cwd = std::env::current_dir().map_err(|err| Failure::new(err.to_string()))?;
         let access = if edit { protocol::Access::EditFiles } else { protocol::Access::ReadOnly };
@@ -1055,10 +1062,10 @@ impl App {
                     let model = model.map(|m| format!(" · {m}")).unwrap_or_default();
                     match &workspace {
                         Some(ws) => {
-                            eprintln!("{}", e.dim(&format!("{}{model} · may edit files", engine.label())));
+                            eprintln!("{}", e.dim(&t!("main.may_edit", engine = engine.label(), model = model)));
                             let base = &ws.base[..ws.base.len().min(7)];
-                            eprintln!("{}", e.row("branch", &format!("{}  {}", e.bold(&ws.branch), e.dim(&format!("from {base}")))));
-                            eprintln!("{}\n", e.row("", &e.dim("Your checkout stays untouched.")));
+                            eprintln!("{}", e.row(t!("main.row_branch"), &format!("{}  {}", e.bold(&ws.branch), e.dim(&t!("main.from_base", base = base)))));
+                            eprintln!("{}\n", e.row("", &e.dim(t!("main.checkout_untouched"))));
                             printer = Printer::new(&ws.path);
                         }
                         None => eprintln!("{}\n", e.dim(&format!("{}{model}", engine.label()))),
@@ -1070,23 +1077,23 @@ impl App {
                 Event::ModelKnown { .. } | Event::UserMessage { .. } | Event::Thread { .. } => {}
                 // Work handed to a subagent shows as it starts and as it hands back.
                 Event::SubagentStarted { what, .. } => eprintln!("{}", e.dim(&format!("  ↳ {what}"))),
-                Event::SubagentEnded { .. } => eprintln!("{}", e.dim("  ↳ handed back")),
+                Event::SubagentEnded { .. } => eprintln!("{}", e.dim(&format!("  ↳ {}", t!("main.handed_back")))),
                 Event::SubagentStep { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::Estimated { .. } => {}
                 Event::TurnEnded { outcome, usage, .. } => {
                     printer.end(outcome, usage);
                     core.send(Cmd::Close { session: ID });
                 }
                 Event::BranchLanded { branch, stat, .. } => {
-                    println!("\n{}", p.ok_line(&format!("Changes committed to {}", p.bold(&branch))));
+                    println!("\n{}", p.ok_line(&t!("main.committed_to", branch = p.bold(&branch))));
                     for line in stat.lines() {
                         println!("  {}", p.dim(line.trim()));
                     }
                     println!();
-                    println!("{}", p.row("review", &p.bold(&format!("git show {branch}"))));
-                    println!("{}", p.row("keep", &p.bold(&format!("git merge {branch}"))));
-                    println!("{}", p.row("discard", &p.bold(&format!("git branch -D {branch}"))));
+                    println!("{}", p.row(t!("main.row_review"), &p.bold(&format!("git show {branch}"))));
+                    println!("{}", p.row(t!("main.row_keep"), &p.bold(&format!("git merge {branch}"))));
+                    println!("{}", p.row(t!("main.row_discard"), &p.bold(&format!("git branch -D {branch}"))));
                 }
-                Event::NothingChanged { .. } => println!("\n{}", p.note(0, "No files changed, so no branch was kept.")),
+                Event::NothingChanged { .. } => println!("\n{}", p.note(0, t!("main.nothing_changed"))),
                 Event::SessionClosed { .. } => break,
                 // One prompt, one turn: no memos, no squad, no board.
                 Event::MessageQueued { .. }
@@ -1118,25 +1125,25 @@ fn plan_label(status: &AuthStatus) -> String {
         let plan = status.subscription_type.as_deref().unwrap_or("claude.ai");
         let mut chars = plan.chars();
         let plan: String = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
-        format!("{plan} plan")
+        t!("main.plan", plan = plan)
     } else {
-        "billed per token".to_owned()
+        t!("main.billed_per_token").to_owned()
     }
 }
 
 fn describe_claude_login(status: &AuthStatus) -> String {
     if status.uses_subscription() {
         let plan = status.subscription_type.as_deref().unwrap_or("claude.ai");
-        format!("claude.ai · {plan} subscription")
+        t!("main.subscription", plan = plan)
     } else {
         // Billed per token, not against a subscription — worth saying out loud.
-        let how = status.auth_method.as_deref().unwrap_or("signed in");
-        format!("{how} · billed per token")
+        let how = status.auth_method.as_deref().unwrap_or(t!("main.signed_in"));
+        format!("{how} · {}", t!("main.billed_per_token"))
     }
 }
 
 fn claude_missing() -> Failure {
-    Failure::new("Claude Code isn't installed (no `claude` on PATH)").next("see https://code.claude.com/docs/en/setup")
+    Failure::new(t!("main.claude_missing")).next(t!("main.claude_setup"))
 }
 
 fn now_secs() -> i64 {
@@ -1178,7 +1185,16 @@ impl Printer {
         let target = target.map(|t| self.relative(&t)).unwrap_or_default();
         let e = ui::err();
         let mark = if matches!(verb, "edit" | "write") { e.accent("✎") } else { e.dim("·") };
-        eprintln!("{mark} {}", e.dim(&format!("{verb:<6} {target}")));
+        let shown = match verb {
+            "read" => t!("main.verb_read"),
+            "edit" => t!("main.verb_edit"),
+            "write" => t!("main.verb_write"),
+            "run" => t!("main.verb_run"),
+            "search" => t!("main.verb_search"),
+            "fetch" => t!("main.verb_fetch"),
+            other => other,
+        };
+        eprintln!("{mark} {}", e.dim(&format!("{} {target}", ui::pad(shown, 6))));
     }
 
     fn relative(&self, target: &str) -> String {
@@ -1199,12 +1215,12 @@ impl Printer {
         let mut footer = Vec::new();
         match outcome {
             TurnOutcome::Completed | TurnOutcome::Failed => {}
-            TurnOutcome::Incomplete => footer.push("ended early".to_owned()),
-            TurnOutcome::Interrupted => footer.push("interrupted".to_owned()),
+            TurnOutcome::Incomplete => footer.push(t!("main.ended_early").to_owned()),
+            TurnOutcome::Interrupted => footer.push(t!("main.interrupted").to_owned()),
         }
         if let Some(usage) = usage {
             let n = |v: Option<u64>| v.map_or("?".into(), |v| v.to_string());
-            footer.push(format!("{} in · {} out tokens", n(usage.input_tokens), n(usage.output_tokens)));
+            footer.push(t!("main.tokens", input = n(usage.input_tokens), output = n(usage.output_tokens)));
         }
         if !footer.is_empty() {
             eprintln!("\n{}", e.dim(&footer.join(" · ")));

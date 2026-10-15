@@ -5,6 +5,7 @@
 //! Nothing here assumes a host, a user, a path or a shell: the names come from
 //! the person's own `~/.ssh/config` or from what they type (`user@host[:port]`).
 
+use equipe_core::t;
 use std::path::{Path, PathBuf};
 
 /// How many hosts typed by hand are kept to pick again.
@@ -24,19 +25,19 @@ impl SshHost {
     pub fn parse(text: &str) -> Result<Self, String> {
         let text = text.trim();
         if text.is_empty() {
-            return Err("호스트를 입력하세요 (예: user@mini.local)".into());
+            return Err(t!("target.host_empty").into());
         }
         let (user, rest) = match text.rsplit_once('@') {
             Some((user, rest)) => (Some(user), rest),
             None => (None, text),
         };
         if user.is_some_and(str::is_empty) {
-            return Err("@ 앞에 사용자 이름이 비어 있습니다".into());
+            return Err(t!("target.user_empty").into());
         }
         let (host, port) = split_port(rest)?;
         let valid_name = |s: &str| !s.is_empty() && !s.starts_with('-') && !s.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '\'' | '"' | '\\' | '`' | '$' | ';' | '&' | '|' | '<' | '>' | '(' | ')' | '*' | '?' | '!'));
         if !valid_name(&host) || !user.is_none_or(valid_name) {
-            return Err("호스트나 사용자 이름에 쓸 수 없는 문자가 있습니다".into());
+            return Err(t!("target.bad_chars").into());
         }
         Ok(Self { user: user.map(str::to_owned), host, port })
     }
@@ -67,9 +68,9 @@ impl SshHost {
 }
 
 fn split_port(rest: &str) -> Result<(String, Option<u16>), String> {
-    let bad_port = || "포트는 1–65535 사이의 숫자여야 합니다".to_owned();
+    let bad_port = || t!("target.bad_port").to_owned();
     if let Some(inner) = rest.strip_prefix('[') {
-        let (host, after) = inner.split_once(']').ok_or("닫는 ]가 없습니다")?;
+        let (host, after) = inner.split_once(']').ok_or(t!("target.no_closing_bracket"))?;
         return match after {
             "" => Ok((host.to_owned(), None)),
             _ => {
@@ -106,7 +107,7 @@ impl Endpoint {
     /// What the window calls it.
     pub fn label(&self) -> String {
         match self {
-            Self::Local { .. } => "이 맥".to_owned(),
+            Self::Local { .. } => t!("target.this_mac").to_owned(),
             Self::Ssh(host) => host.spec(),
         }
     }
@@ -133,6 +134,7 @@ impl Endpoint {
     pub fn parse(text: &str) -> Result<Self, String> {
         match text.trim() {
             "local" | "this" | "이 맥" => Ok(Self::this_mac()),
+            other if other == t!("target.this_mac") => Ok(Self::this_mac()),
             other => SshHost::parse(other).map(Self::Ssh),
         }
     }
