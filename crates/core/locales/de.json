@@ -64,6 +64,8 @@
   "news.accepted_home": "Du hast T-{id} angenommen; die Arbeit liegt im Ordner des Squads · {title}.",
   "news.cancelled": "Du hast T-{id} abgebrochen · {title}.",
   "news.cannot_start": "✗ T-{id} konnte für {name} nicht starten: {reason}",
+  "news.decision.one": "{name} bittet dich um eine Entscheidung · {question}",
+  "news.decision.other": "{name} bittet dich um {count} Entscheidungen · {question}",
   "news.desk_saved": "✎ {name} {what} im Ordner des Squads · /home undo nimmt es zurück",
   "news.handed_in": "{name} hat T-{id} zur Review abgegeben · {title}.",
   "news.helper_left": "{name} ist gegangen, die Arbeit erledigt: die Rolle bleibt",

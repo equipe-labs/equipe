@@ -21,6 +21,8 @@ pub enum Alert {
     Waiting { ticket: TicketId, by: Option<String> },
     /// A member's turn failed: its work stopped until someone looks.
     Failed { session: SessionId, member: String },
+    /// A member puts a decision to the person: `count` questions.
+    Decision { session: SessionId, member: String, count: usize },
 }
 
 /// What the person wants to be told of (settings → 알림), kept with the
@@ -33,7 +35,7 @@ impl Pings {
         match alert {
             Alert::Approval { .. } => self.approvals,
             Alert::Review { .. } => self.reviews,
-            Alert::Waiting { .. } => self.waiting,
+            Alert::Waiting { .. } | Alert::Decision { .. } => self.waiting,
             Alert::Failed { .. } => self.failed,
         }
     }
@@ -99,6 +101,8 @@ pub fn toasts(alerts: &[Alert], squad: &str, titles: bool) -> Vec<Toast> {
                 go: Go::Ticket(*ticket),
             },
             Alert::Failed { session, member } => Toast { title: t!("notify.failed_title", member = member), body: t!("notify.failed_body", squad = squad), go: Go::Member(*session) },
+            // Who asks and how many — never the questions.
+            Alert::Decision { session, member, count } => Toast { title: t!("notify.decision_title", member = member, count = count), body: squad.to_owned(), go: Go::Member(*session) },
         })
         .collect()
 }
@@ -153,6 +157,12 @@ mod tests {
         assert_eq!(t[0].body, "acme · T-52");
         assert!(!format!("{:?}", t[0]).contains("secret"));
         assert_eq!(t[0].go, Go::Member(4));
+    }
+
+    #[test]
+    fn a_decision_says_who_asks_and_how_many_and_opens_their_conversation() {
+        let t = toasts(&[Alert::Decision { session: 3, member: "backend".into(), count: 2 }], "acme", true);
+        assert_eq!((t[0].title.as_str(), t[0].body.as_str(), t[0].go), ("backend이(가) 2가지 결정을 기다립니다", "acme", Go::Member(3)));
     }
 
     #[test]

@@ -1167,6 +1167,8 @@ impl App {
                 | Event::ModeChanged { .. }
                 | Event::ApprovalRequested { .. }
                 | Event::ApprovalResolved { .. }
+                | Event::QuestionsAsked { .. }
+                | Event::QuestionsClosed { .. }
                 | Event::Allowed { .. } => {}
                 Event::Error { message, next, .. } => {
                     failure.get_or_insert(Failure { message, next });

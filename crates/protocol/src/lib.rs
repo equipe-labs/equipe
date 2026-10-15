@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub mod asks;
+pub mod decide;
 pub mod rpc;
 pub mod stream;
 pub mod tags;
@@ -429,6 +430,13 @@ pub enum Command {
     SetMode { squad: SquadName, member: Option<String>, mode: Option<Mode> },
     /// The person answers a member's request for permission.
     Decide { squad: SquadName, approval: u64, decision: Decision },
+    /// The person's answers to a member's questions ([`Event::QuestionsAsked`]),
+    /// one per question in order — an empty one skips it. They go to the member
+    /// as its next message. Answered by [`Event::QuestionsClosed`].
+    AnswerQuestions { squad: SquadName, id: u64, answers: Vec<decide::Answer> },
+    /// The person closes a member's questions without answering: the member is
+    /// told to go on without them.
+    DismissQuestions { squad: SquadName, id: u64 },
     /// How many extra members of a role equipe may bring in when several of
     /// its tickets are ready at once; 0 brings in none.
     Scale { squad: SquadName, extra: usize },
@@ -725,6 +733,17 @@ pub enum Event {
     ApprovalRequested { squad: SquadName, approval: Approval },
     /// It was answered — by the person, or by nobody in time (`Deny`).
     ApprovalResolved { squad: SquadName, approval: u64, decision: Decision },
+    /// A member puts a decision to the person (`ask_decision`): questions with
+    /// options, waiting until they answer — it doesn't hold the member up.
+    QuestionsAsked { squad: SquadName, questions: decide::QuestionSet },
+    /// No longer waiting: answered (`answers`, on any screen), or closed
+    /// unanswered by the person or because its member left (`None`).
+    QuestionsClosed {
+        squad: SquadName,
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answers: Option<Vec<decide::Answer>>,
+    },
     /// The squad's "always allow" rules changed (one added by an answer of
     /// [`Decision::Always`], one taken back): all of them, oldest first.
     Allowed { squad: SquadName, rules: Vec<String> },
@@ -894,6 +913,8 @@ impl Event {
             | Event::ModeChanged { squad, .. }
             | Event::ApprovalRequested { squad, .. }
             | Event::ApprovalResolved { squad, .. }
+            | Event::QuestionsAsked { squad, .. }
+            | Event::QuestionsClosed { squad, .. }
             | Event::Allowed { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } => squad.as_deref(),
             _ => None,
@@ -935,6 +956,8 @@ impl Event {
             | Event::ModeChanged { .. }
             | Event::ApprovalRequested { .. }
             | Event::ApprovalResolved { .. }
+            | Event::QuestionsAsked { .. }
+            | Event::QuestionsClosed { .. }
             | Event::Allowed { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
@@ -1134,6 +1157,9 @@ pub struct Snapshot {
     /// Requests for permission waiting for the person, oldest first.
     #[serde(default)]
     pub approvals: Vec<Approval>,
+    /// Members' questions waiting for the person, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<decide::QuestionSet>,
     /// How many extra members of a role equipe may bring in when its work waits.
     #[serde(default)]
     pub scale: Option<usize>,
@@ -1334,6 +1360,19 @@ mod tests {
             tickets: vec![ticket(1)],
             mode: Mode::ReadOnly,
             approvals: Vec::new(),
+            questions: vec![decide::QuestionSet {
+                id: 3,
+                session: 9,
+                member: "pm".into(),
+                ticket: None,
+                questions: vec![decide::Question {
+                    question: "Which plan?".into(),
+                    header: "Plan".into(),
+                    options: vec![decide::Choice { label: "Pro".into(), description: String::new() }, decide::Choice { label: "Free".into(), description: "for now".into() }],
+                    multi_select: false,
+                }],
+                asked_at: 1,
+            }],
             scale: Some(2),
             suggestions_off: false,
             plan: None,
@@ -1366,6 +1405,33 @@ mod tests {
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert_eq!(serde_json::from_str::<Snapshot>(&json).unwrap(), snapshot);
+    }
+
+    #[test]
+    fn questions_are_asked_answered_and_closed_as_json_and_older_snapshots_have_none() {
+        let answers = vec![decide::Answer { picked: vec![0], other: None }, decide::Answer::skipped()];
+        let cmd = Command::AnswerQuestions { squad: "acme".into(), id: 7, answers: answers.clone() };
+        assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "answer_questions", "squad": "acme", "id": 7, "answers": [{ "picked": [0] }, {}] }));
+        let dismiss = Command::DismissQuestions { squad: "acme".into(), id: 7 };
+        assert_eq!(serde_json::to_value(&dismiss).unwrap(), json!({ "type": "dismiss_questions", "squad": "acme", "id": 7 }));
+        for command in [cmd, dismiss] {
+            assert_eq!(serde_json::from_str::<Command>(&serde_json::to_string(&command).unwrap()).unwrap(), command);
+        }
+        let set = decide::QuestionSet { id: 7, session: 2, member: "backend".into(), ticket: Some(3), questions: vec![], asked_at: 5 };
+        let events = [
+            Event::QuestionsAsked { squad: "acme".into(), questions: set },
+            Event::QuestionsClosed { squad: "acme".into(), id: 7, answers: Some(answers) },
+            Event::QuestionsClosed { squad: "acme".into(), id: 7, answers: None },
+        ];
+        for event in events {
+            assert_eq!((event.squad(), event.session()), (Some("acme"), None));
+            let json = serde_json::to_string(&event).unwrap();
+            assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event, "{json}");
+        }
+        assert_eq!(serde_json::to_value(Event::QuestionsClosed { squad: "a".into(), id: 1, answers: None }).unwrap(), json!({ "type": "questions_closed", "squad": "a", "id": 1 }));
+        let old: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[]}"#).unwrap();
+        assert!(old.questions.is_empty());
+        assert!(serde_json::to_value(&old).unwrap().get("questions").is_none(), "none: the wire as before");
     }
 
     #[test]

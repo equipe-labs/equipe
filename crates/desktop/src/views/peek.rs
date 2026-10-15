@@ -34,6 +34,7 @@ pub fn panel(shell: &Shell, need: Need, cx: &mut Context<Shell>) -> AnyElement {
             .child(kicker(p, t!("state.section_permission")))
             .children(super::approvals::card(shell, id, false, cx))
             .into_any_element(),
+        Need::Questions(id) => super::decide::peek(shell, id, cx),
         Need::Ticket(id) => {
             let Some(t) = shell.model.tickets.iter().find(|t| t.id == id).cloned() else { return div().into_any_element() };
             v_flex()

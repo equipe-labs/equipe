@@ -64,6 +64,8 @@
   "news.accepted_home": "You accepted T-{id}; its work is in the squad's folder · {title}.",
   "news.cancelled": "You cancelled T-{id} · {title}.",
   "news.cannot_start": "✗ T-{id} couldn't start for {name}: {reason}",
+  "news.decision.one": "{name} asks you to decide · {question}",
+  "news.decision.other": "{name} asks you to decide {count} things · {question}",
   "news.desk_saved": "✎ {name} {what} in the squad's folder · /home undo takes it back",
   "news.handed_in": "{name} handed in T-{id} for your review · {title}.",
   "news.helper_left": "{name} left, its work done: its role carries on",

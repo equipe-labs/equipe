@@ -64,6 +64,8 @@
   "news.accepted_home": "你接受了 T-{id}；成果已在小隊資料夾中 · {title}。",
   "news.cancelled": "你取消了 T-{id} · {title}。",
   "news.cannot_start": "✗ {name} 無法開始 T-{id}：{reason}",
+  "news.decision.one": "{name} 請你做個決定 · {question}",
+  "news.decision.other": "{name} 請你決定 {count} 件事 · {question}",
   "news.desk_saved": "✎ {name} 在小隊資料夾中{what} · /home undo 可復原",
   "news.handed_in": "{name} 提交了 T-{id} 等你審查 · {title}。",
   "news.helper_left": "{name} 完成工作後離開了：它的角色繼續保留",

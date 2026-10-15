@@ -416,6 +416,16 @@ impl Journal {
         Ok(())
     }
 
+    /// Members' questions waiting for the person (`ask_decision`), oldest
+    /// first: kept so a restart doesn't lose them.
+    pub fn questions(&self) -> Vec<equipe_protocol::decide::QuestionSet> {
+        self.meta("questions").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    pub fn set_questions(&self, sets: &[equipe_protocol::decide::QuestionSet]) -> Result<()> {
+        self.set_meta("questions", &serde_json::to_string(sets).unwrap_or_default())
+    }
+
     /// The PM's conversation threads: the project its desk conversation is
     /// about now (`None`: the whole squad), and each other thread's
     /// conversation id, put aside — keyed by project, `""` for the squad's.

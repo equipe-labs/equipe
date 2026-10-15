@@ -303,7 +303,7 @@ pub fn inbox(model: &Model, filter: &Filter) -> Vec<Row> {
                 *s == section
                     && match need {
                         Need::Ticket(id) => model.tickets.iter().find(|t| t.id == *id).is_some_and(|t| filter.matches(model, t)),
-                        Need::Permission(_) => filter.is_empty(),
+                        Need::Permission(_) | Need::Questions(_) => filter.is_empty(),
                     }
             })
             .map(|(_, need)| need)
@@ -586,6 +586,10 @@ pub fn ticket_of(model: &Model, need: Need) -> Option<&Ticket> {
         Need::Ticket(id) => model.tickets.iter().find(|t| t.id == id),
         Need::Permission(id) => {
             let ticket = model.approvals.get(id)?.ticket?;
+            model.tickets.iter().find(|t| t.id == ticket)
+        }
+        Need::Questions(id) => {
+            let ticket = model.asked.get(id)?.ticket?;
             model.tickets.iter().find(|t| t.id == ticket)
         }
     }

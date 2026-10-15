@@ -64,6 +64,8 @@
   "news.accepted_home": "T-{id} を承認しました。成果はスクワッドのフォルダにあります · {title}。",
   "news.cancelled": "T-{id} をキャンセルしました · {title}。",
   "news.cannot_start": "✗ T-{id} を {name} が開始できませんでした: {reason}",
+  "news.decision.one": "{name} があなたの決定を求めています · {question}",
+  "news.decision.other": "{name} が {count} 件の決定を求めています · {question}",
   "news.desk_saved": "✎ {name} がスクワッドのフォルダで {what} · /home undo で元に戻せます",
   "news.handed_in": "{name} が T-{id} をレビューに出しました · {title}。",
   "news.helper_left": "{name} は仕事を終えて抜けました。役割はそのまま続きます",

@@ -13,6 +13,7 @@
 //! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
 //! `answer:<ticket>,<n>,<words>` / `aok:<ticket>,<n>` / `atick:<ticket>,<n>` / `asend:<ticket>` (a waiting ticket's card: type in box n, its quick OK, tick thing n off, send) ·
+//! `dkey:<key>` (a member's questions' card: `1`–`9`, `up`, `down`, `space`, `enter`, `cmd-enter`, `tab`, `left`, `escape`) · `dtype:<words>` (in its box for the person's own words) · `decided` (open the latest decided row) · `dpick:<id>` (a set in 나에게, peeking) ·
 //! `browser` (the browser panel, ⌘⇧B) · `bpick:<n>` (its nth tab) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 
@@ -209,6 +210,17 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                         "atick" => shell.turn_tick(ticket, n, cx),
                         _ => shell.turn_send(ticket, window, cx),
                     }
+                }),
+                // A member's questions: the card's keys, and words of the person's own.
+                "dkey" => shell.update(cx, |shell, cx| {
+                    let taken = shell.decide_script_key(&arg, window, cx);
+                    eprintln!("dkey {arg}: taken = {taken}");
+                }),
+                "dtype" => shell.update(cx, |shell, cx| shell.decide_type(&arg, window, cx)),
+                "decided" => shell.update(cx, |shell, cx| shell.chat_open_decided(cx)),
+                "dpick" => shell.update(cx, |shell, cx| {
+                    shell.board.view.peek = true;
+                    shell.board_pick(crate::state::Need::Questions(arg.parse().unwrap_or(0)), cx);
                 }),
                 "browser" => shell.update(cx, |shell, cx| shell.toggle_browser(window, cx)),
                 "bopen" => {

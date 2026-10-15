@@ -145,6 +145,8 @@ pub const SUBMIT_FOR_REVIEW: &str = "submit_for_review";
 pub const BLOCK_ON_PERSON: &str = "block_on_person";
 /// A member asks the person's yes before something done in their name.
 pub const ASK_PERSON: &str = "ask_person";
+/// A member puts a decision to the person: questions with options to pick.
+pub const ASK_DECISION: &str = "ask_decision";
 pub const SHOW_BROWSER: &str = "show_my_browser";
 /// A member writes a fact into the squad's memory.
 pub const REMEMBER: &str = "remember";
@@ -276,6 +278,50 @@ wrote and answers yes or no; wait for the answer and do only what they said yes 
         },
     }));
     tools.push(json!({
+        "name": ASK_DECISION,
+        "description": "Put a decision to the person as questions with options to pick from — for a real choice \
+between distinct options that is theirs to make (an approach, a scope, a provider, a trade-off), not one you can \
+settle yourself. 1 to 4 questions at once, each with 2 to 4 options: the one you recommend first, its label ending \
+in \"(Recommended)\" in the person's language. They can also pick several where multi_select is set, write their \
+own answer, or skip a question. It doesn't wait: the person answers when they can, and their answers come to you as \
+their next message (\"Answers to your question: 1) … → …\"). Then end your turn, or carry on with work that doesn't \
+depend on it. Not for open-ended information or something only they can do (that is block_on_person), never for a \
+yes before acting in their name (ask_person) or for permissions.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "questions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question": { "type": "string", "description": "The question, one sentence ending in a question mark — in the person's language." },
+                            "header": { "type": "string", "description": "A word or two for it, at most 12 characters: Database, Scope." },
+                            "options": {
+                                "type": "array",
+                                "minItems": 2,
+                                "maxItems": 4,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": { "type": "string", "description": "The option in 1 to 5 words." },
+                                        "description": { "type": "string", "description": "One line: what it means, or what it costs." },
+                                    },
+                                    "required": ["label"],
+                                },
+                            },
+                            "multi_select": { "type": "boolean", "description": "Set when several options can be picked together." },
+                        },
+                        "required": ["question", "options"],
+                    },
+                },
+            },
+            "required": ["questions"],
+        },
+    }));
+    tools.push(json!({
         "name": REMEMBER,
         "description": "Write a fact into the squad's memory, which every member is given each turn: something about \
 the person (a preference, their schedule, a service they use), a decision, a recurring deadline, a term, a contact. \
@@ -367,6 +413,48 @@ pub fn waiting_note(needs: &[String], why: Option<&str>) -> String {
 /// What a `waiting` ticket's note asks of the person, item by item.
 pub fn waiting_needs(note: &str) -> Vec<String> {
     crate::protocol::asks::waiting_needs(note)
+}
+
+/// The questions of an `ask_decision` call, checked: 1 to 4, each with a
+/// question and 2 to 4 options with distinct labels. What is wrong is said
+/// so the member can call again.
+pub fn questions_arg(args: &Value) -> Result<Vec<crate::protocol::decide::Question>, String> {
+    use crate::protocol::decide::{Choice, OPTIONS, QUESTIONS, Question};
+    let items = match args.get("questions") {
+        Some(Value::Array(items)) => items.clone(),
+        // One question given on its own.
+        Some(one @ Value::Object(_)) => vec![one.clone()],
+        _ => return Err("Give `questions`: 1 to 4, each with a question and 2 to 4 options.".into()),
+    };
+    if !QUESTIONS.contains(&items.len()) {
+        return Err(format!("Ask 1 to 4 questions at once, not {}.", items.len()));
+    }
+    let mut out = Vec::new();
+    for (n, item) in items.iter().enumerate() {
+        let n = n + 1;
+        let question = arg_str(item, "question").ok_or_else(|| format!("Question {n} has no `question`."))?;
+        let options: Vec<Choice> = item
+            .get("options")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|o| match o {
+                Value::String(label) => Some(Choice { label: label.trim().to_owned(), description: String::new() }),
+                o => Some(Choice { label: arg_str(o, "label")?.to_owned(), description: arg_str(o, "description").unwrap_or_default().to_owned() }),
+            })
+            .filter(|c| !c.label.is_empty())
+            .collect();
+        if !OPTIONS.contains(&options.len()) {
+            return Err(format!("Question {n} needs 2 to 4 options with a label each, not {}.", options.len()));
+        }
+        if options.iter().enumerate().any(|(i, c)| options[..i].iter().any(|d| d.label == c.label)) {
+            return Err(format!("Question {n} has two options with the same label."));
+        }
+        let header: String = arg_str(item, "header").unwrap_or_default().chars().take(24).collect();
+        let multi_select = item.get("multi_select").and_then(Value::as_bool).unwrap_or(false);
+        out.push(Question { question: question.to_owned(), header, options, multi_select });
+    }
+    Ok(out)
 }
 
 /// A list of strings, blanks dropped; a single string counts as one item.
@@ -554,6 +642,39 @@ mod tests {
         assert_eq!(waiting_needs(&waiting_note(&needs, None)), ["GitHub token", "PostHog secrets"]);
         assert_eq!(arg_strs(&json!({ "needs": "a token" }), "needs"), ["a token"]);
         assert!(arg_strs(&json!({}), "needs").is_empty());
+    }
+
+    #[test]
+    fn a_decision_asks_one_to_four_questions_of_two_to_four_options() {
+        let q = |options: Value| json!({ "question": "Which database?", "header": "Database", "options": options });
+        let two = json!([{ "label": "Postgres (Recommended)", "description": "Relational" }, { "label": "SQLite" }]);
+        let asked = questions_arg(&json!({ "questions": [q(two.clone()), { "question": "Ship what?", "options": ["Auth", "Pay", "Search"], "multi_select": true }] })).unwrap();
+        assert_eq!(asked.len(), 2);
+        assert_eq!((asked[0].header.as_str(), asked[0].options[0].label.as_str(), asked[0].options[0].description.as_str()), ("Database", "Postgres (Recommended)", "Relational"));
+        assert!(asked[1].multi_select && asked[1].options.len() == 3 && asked[1].header.is_empty());
+        // One question on its own counts.
+        assert_eq!(questions_arg(&json!({ "questions": q(two.clone()) })).unwrap().len(), 1);
+
+        let refused = |args: Value| questions_arg(&args).unwrap_err();
+        assert!(refused(json!({})).contains("1 to 4"));
+        assert!(refused(json!({ "questions": [] })).contains("not 0"));
+        assert!(refused(json!({ "questions": vec![q(two.clone()); 5] })).contains("not 5"));
+        assert!(refused(json!({ "questions": [q(json!(["only one"]))] })).contains("2 to 4 options"));
+        assert!(refused(json!({ "questions": [q(json!(["a", "b", "c", "d", "e"]))] })).contains("not 5"));
+        assert!(refused(json!({ "questions": [q(json!(["a", " "]))] })).contains("not 1"), "a blank label isn't an option");
+        assert!(refused(json!({ "questions": [q(json!(["a", "a"]))] })).contains("same label"));
+        assert!(refused(json!({ "questions": [{ "options": ["a", "b"] }] })).contains("no `question`"));
+
+        // The schema says the same limits, for the PM and members alike.
+        for is_pm in [true, false] {
+            let tool = tools(is_pm).into_iter().find(|t| t["name"] == ASK_DECISION).unwrap();
+            let questions = &tool["inputSchema"]["properties"]["questions"];
+            assert_eq!((questions["minItems"].as_u64(), questions["maxItems"].as_u64()), (Some(1), Some(4)));
+            let options = &questions["items"]["properties"]["options"];
+            assert_eq!((options["minItems"].as_u64(), options["maxItems"].as_u64()), (Some(2), Some(4)));
+            let doc = tool["description"].as_str().unwrap();
+            assert!(doc.contains("(Recommended)") && doc.contains("block_on_person") && doc.contains("permissions"), "{doc}");
+        }
     }
 
     #[test]
