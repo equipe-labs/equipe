@@ -67,9 +67,14 @@ pub struct Palette {
     pub accent_bg: Rgba,
     pub code_bg: Rgba,
     pub raised: Rgba,
-    /// The main button: the text colour on the background's, inverted.
+    /// The main action's fill (a button, the composer's send): in the dark a
+    /// deep slate of the accent's hue, a step above the cards, with the text
+    /// colour on it — emphasis that belongs to the window rather than a white
+    /// slab; in the light, the text colour, inverted.
     pub primary: Rgba,
     pub on_primary: Rgba,
+    /// Words or a mark on an `accent` fill (a count badge, a tick).
+    pub on_accent: Rgba,
     /// Work under way.
     pub amber: Rgba,
     /// Blocked: waits for other work.
@@ -105,8 +110,9 @@ impl Palette {
             accent_bg: rgba(0xB4CDE61A),
             code_bg: rgb(0x111114),
             raised: rgb(0x141417),
-            primary: rgb(0xEFEDE7),
-            on_primary: rgb(0x0A0A0C),
+            primary: rgb(0x2F4256),
+            on_primary: rgb(0xEFEDE7),
+            on_accent: rgb(0x0A0A0C),
             amber: rgb(0xE2B865),
             orange: rgb(0xEC9A62),
             red: rgb(0xEE7B74),
@@ -132,6 +138,7 @@ impl Palette {
             raised: rgb(0xFFFFFF),
             primary: rgb(0x15161A),
             on_primary: rgb(0xF6F5F1),
+            on_accent: rgb(0xF6F5F1),
             // Darker than the dark appearance's, to be read as words (a
             // status in the sidebar) at 4.5:1 on any surface.
             amber: rgb(0x825600),
@@ -270,6 +277,50 @@ impl Palette {
     pub fn danger_bg(&self) -> Rgba {
         if self.is_dark() { rgba(0xF0918A1F) } else { rgba(0xB3261E14) }
     }
+
+    // ── controls ──
+
+    /// The main button under the pointer: a step lighter (dark) or softer (light).
+    pub fn primary_hover(&self) -> Rgba {
+        if self.is_dark() { rgb(0x384D63) } else { rgb(0x2C2E34) }
+    }
+
+    /// The main button held down: a step deeper.
+    pub fn primary_press(&self) -> Rgba {
+        if self.is_dark() { rgb(0x283849) } else { rgb(0x050506) }
+    }
+
+    /// A key hint inside the main button (⌘↵): the label's colour, held back.
+    pub fn primary_key(&self) -> Rgba {
+        mix(self.on_primary, self.primary, 0.3)
+    }
+
+    /// A secondary or ghost button held down: the hover wash, doubled.
+    pub fn press(&self) -> Rgba {
+        Rgba { a: (self.wash.a * 2.).min(1.), ..self.wash }
+    }
+
+    /// A switch that is on: the accent, deep enough to carry a white knob.
+    pub fn switch_on(&self) -> Rgba {
+        if self.is_dark() { rgb(0x4A76A0) } else { self.accent }
+    }
+
+    /// A switch that is off: a neutral track, a step off the card.
+    pub fn switch_off(&self) -> Rgba {
+        if self.is_dark() { rgb(0x3A3A40) } else { rgb(0xD9D8D2) }
+    }
+
+    /// The switch's knob, in either state.
+    pub fn knob(&self) -> Rgba {
+        if self.is_dark() { rgb(0xF3F2EE) } else { rgb(0xFFFFFF) }
+    }
+}
+
+/// `a` moved `t` (0–1) of the way to `b`, alpha too.
+pub fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
+    let t = t.clamp(0., 1.);
+    let lerp = |x: f32, y: f32| x + (y - x) * t;
+    Rgba { r: lerp(a.r, b.r), g: lerp(a.g, b.g), b: lerp(a.b, b.b), a: lerp(a.a, b.a) }
 }
 
 /// WCAG's contrast ratio of two colours (1 to 21), alpha ignored.

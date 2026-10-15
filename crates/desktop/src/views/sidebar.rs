@@ -146,7 +146,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(icon(name, 16., if on { p.text } else { p.text2 })))
             .child(div().flex_1().min_w_0().truncate().text_color(if on { p.text } else { p.text2 }).child(label))
             .when(badge > 0, |r| {
-                r.child(div().flex_none().min_w(px(18.)).h(px(18.)).px(px(5.)).flex().items_center().justify_center().rounded(px(9.)).bg(p.accent).text_color(p.on_primary).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child(badge.to_string()))
+                r.child(div().flex_none().min_w(px(18.)).h(px(18.)).px(px(5.)).flex().items_center().justify_center().rounded(px(9.)).bg(p.accent).text_color(p.on_accent).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child(badge.to_string()))
             })
             .when(count > 0, |r| r.child(div().flex_none().pr(px(4.)).text_size(px(12.)).text_color(p.muted).child(count.to_string())))
     };
