@@ -176,6 +176,9 @@ pub struct Remembered {
     pub start: Start,
     /// What the person wants to be told of while the window is out of sight.
     pub pings: Pings,
+    /// The PM's conversation shows whole whatever project is in focus — as it
+    /// did before it followed the project (settings ▸ 일반).
+    pub whole_conversation: bool,
 }
 
 /// Light or dark, as the person picked in settings; the Mac's by default
@@ -329,6 +332,8 @@ impl Remembered {
                 out.appearance = Appearance::parse(rest.trim()).unwrap_or_default();
             } else if let Some(rest) = line.strip_prefix("start ") {
                 out.start = Start::parse(rest.trim()).unwrap_or_default();
+            } else if line.trim() == "conversation whole" {
+                out.whole_conversation = true;
             } else if let Some(rest) = line.strip_prefix("quiet ") {
                 if let Some(ping) = Ping::ALL.into_iter().find(|p| p.code() == rest.trim()) {
                     out.pings.set(ping, false);
@@ -373,6 +378,9 @@ impl Remembered {
         }
         if self.start != Start::Pm {
             text.push_str(&format!("start {}\n", self.start.code()));
+        }
+        if self.whole_conversation {
+            text.push_str("conversation whole\n");
         }
         for ping in Ping::ALL.into_iter().filter(|p| !self.pings.get(*p)) {
             text.push_str(&format!("quiet {}\n", ping.code()));
@@ -555,7 +563,8 @@ mod tests {
         let fresh = Remembered::load(&dir);
         assert_eq!((fresh.appearance, fresh.start, fresh.pings), (Appearance::System, Start::Pm, Pings::default()), "the system's look, the PM, every notice");
 
-        let mut prefs = Remembered { appearance: Appearance::Dark, start: Start::Inbox, ..Remembered::default() };
+        assert!(!fresh.whole_conversation, "the conversation follows the project by default");
+        let mut prefs = Remembered { appearance: Appearance::Dark, start: Start::Inbox, whole_conversation: true, ..Remembered::default() };
         prefs.pings.set(Ping::Failed, false);
         prefs.pings.set(Ping::Sound, false);
         prefs.set_merge_way("app", "push");
@@ -563,7 +572,7 @@ mod tests {
         prefs.clear_merge_way("app");
         prefs.save(&dir);
         let loaded = Remembered::load(&dir);
-        assert_eq!((loaded.appearance, loaded.start), (Appearance::Dark, Start::Inbox));
+        assert_eq!((loaded.appearance, loaded.start, loaded.whole_conversation), (Appearance::Dark, Start::Inbox, true));
         assert!(!loaded.pings.failed && !loaded.pings.sound && loaded.pings.approvals && loaded.pings.reviews && loaded.pings.waiting);
         assert_eq!((loaded.merge_way("app"), loaded.merge_way("site")), (None, Some("merge")), "back to asking each time");
 

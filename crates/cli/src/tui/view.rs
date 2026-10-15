@@ -272,7 +272,7 @@ fn transcript_width(app: &App, total: u16) -> usize {
 /// What a laid-out conversation depends on: the width it was laid out for, and
 /// enough of the conversation to notice it changed — its length, the length of
 /// its last line (a reply grows as it streams), the memos waiting.
-type LayoutKey = (usize, usize, usize, usize, bool, Option<TicketId>);
+type LayoutKey = (usize, usize, usize, usize, bool, Option<TicketId>, Option<String>);
 
 /// Conversations already laid out, per member. Laying one out means reading all
 /// of its Markdown; scrolling must not do that again for every wheel event.
@@ -321,7 +321,7 @@ impl Layouts {
 }
 
 fn layout_key(agent: &Agent, width: usize) -> LayoutKey {
-    let entries = agent.shown();
+    let entries = agent.drawn();
     let last = entries.last().map_or(0, |entry| match entry.as_ref() {
         Entry::User { text } | Entry::Reply { text } | Entry::Note { text } => text.len(),
         Entry::Tool { tool, target, .. } => tool.len() + target.as_ref().map_or(0, String::len),
@@ -329,7 +329,7 @@ fn layout_key(agent: &Agent, width: usize) -> LayoutKey {
         Entry::Landed { stat, .. } => stat.len(),
         Entry::Thread { .. } => 0,
     });
-    (width, entries.len(), last, agent.queued.len(), agent.expanded, agent.showing)
+    (width, entries.len(), last, agent.queued.len(), agent.expanded, agent.showing, agent.thread_view.clone())
 }
 
 // ── the screen ──
@@ -1641,7 +1641,7 @@ fn transcript_lines(agent: &Agent, looks: &Looks, theme: Theme, width: usize) ->
             lines.extend(tool_run(std::mem::take(run), agent.expanded, theme, width));
         }
     };
-    for entry in agent.shown() {
+    for entry in agent.drawn() {
         let entry = entry.as_ref();
         match entry {
             Entry::Thread { .. } => {}
@@ -1699,6 +1699,13 @@ fn transcript_lines(agent: &Agent, looks: &Looks, theme: Theme, width: usize) ->
                     spans.extend(line.spans);
                     lines.push(mark_tickets(Line::from(spans).style(style), theme));
                 }
+            }
+            // Other projects' talk, folded: one quiet line saying how much.
+            Entry::Note { text } if text.starts_with(super::app::FOLDED) => {
+                let said: usize = text[super::app::FOLDED.len_utf8()..].parse().unwrap_or(0);
+                begin(Block::Note, &mut lines, &mut last);
+                gap(&mut lines);
+                lines.push(Line::from(Span::styled(format!("── {} ──", t!("view.elsewhere", count = said)), theme.dim())));
             }
             Entry::Note { text } => match news_lines(&equipe_core::i18n::note(crate::i18n::lang(), text), looks, theme, width) {
                 Some(news) => {

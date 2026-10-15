@@ -6,9 +6,11 @@
 //! `tui/view.rs`).
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use equipe_core::protocol::transcript::scope::{self, Part};
 use equipe_core::protocol::{Entry, Event, SessionInfo, TicketId, ToolOutcome, Transcript, TurnOutcome};
 use equipe_core::t;
 
@@ -261,10 +263,19 @@ impl Convo {
     /// work. Otherwise everything — but the PM's own tickets' work, which each
     /// shows as its ticket. Never the markers.
     pub fn shown(&self) -> Vec<Cow<'_, Entry>> {
+        self.shown_about().into_iter().map(|(entry, _)| entry).collect()
+    }
+
+    /// The same, each line with the project it is about (`None`: the whole
+    /// squad; see `transcript::scope`).
+    pub fn shown_about(&self) -> Vec<(Cow<'_, Entry>, Option<String>)> {
+        let entries = self.transcript.entries();
+        let mut about = scope::of(entries).into_iter();
         let mut out = Vec::new();
         // The ticket whose work the lines are, while they are.
         let mut on: Option<TicketId> = None;
-        for entry in self.transcript.entries() {
+        for entry in entries {
+            let here = about.next().flatten();
             match entry {
                 Entry::Thread { .. } => {
                     on = None;
@@ -280,7 +291,7 @@ impl Convo {
                 None => on.is_none() || !self.is_pm,
             };
             if keep {
-                out.push(Cow::Borrowed(entry));
+                out.push((Cow::Borrowed(entry), here));
             }
         }
         out
@@ -290,14 +301,25 @@ impl Convo {
     /// steps, note — then each memo still waiting.
     pub fn blocks(&self) -> Vec<Block> {
         let mut blocks = build_blocks(&self.shown(), &self.base);
-        let working = self.working_since.is_some();
-        for block in &mut blocks {
+        self.finish(&mut blocks, true);
+        blocks.extend(self.queued.iter().map(|memo| Block::Memo(memo.clone())));
+        blocks.extend(self.steering.iter().map(|text| Block::Steering(text.clone())));
+        blocks
+    }
+
+    /// The thoughts' words in place; while it works, the reply streaming and
+    /// the steps not answered yet — when the end of the conversation is in
+    /// sight (`end_shown`) — and the reasoning going on.
+    fn finish(&self, blocks: &mut Vec<Block>, end_shown: bool) {
+        for block in blocks.iter_mut() {
             if let Block::Thought { n, text, .. } = block {
                 *text = self.thought(*n).unwrap_or_default().to_owned();
             }
         }
-        if working {
-            // The reply still streaming, and the steps not answered yet.
+        if !end_shown {
+            return;
+        }
+        if self.working_since.is_some() {
             let thinking = self.thinking.is_some();
             match blocks.last_mut() {
                 Some(Block::Reply { live, .. }) if !thinking => *live = true,
@@ -312,11 +334,116 @@ impl Convo {
         if let Some((_, text)) = &self.thinking {
             blocks.push(Block::Thinking(text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default().to_owned()));
         }
-        // Memos wait below the conversation until the turn ends.
-        blocks.extend(self.queued.iter().map(|memo| Block::Memo(memo.clone())));
-        blocks.extend(self.steering.iter().map(|text| Block::Steering(text.clone())));
-        blocks
     }
+
+    /// Whether the conversation can be shown a project at a time: the PM's
+    /// (or its lane's), not a ticket's work.
+    pub fn sliceable(&self) -> bool {
+        self.is_pm && self.showing.is_none()
+    }
+
+    /// The conversation as the person looks at it with `slice` in focus
+    /// (`None`: every project). The PM's shows that project's lines only;
+    /// stretches about other projects or the whole squad fold into a row
+    /// each, open in place when `open` holds its key. Every project's: the
+    /// lines all, each block with the project it is about. Any other
+    /// conversation shows whole.
+    pub fn sliced(&self, slice: Option<&str>, open: &HashSet<u64>) -> Sliced {
+        if !self.sliceable() {
+            let blocks = self.blocks();
+            return Sliced { about: vec![None; blocks.len()], blocks, answered_in: None };
+        }
+        let lines = self.shown_about();
+        let parts = match slice {
+            Some(project) => scope::slice(&lines, project, self.working_since.is_some()),
+            None if lines.is_empty() => Vec::new(),
+            None => vec![Part::Here(0..lines.len())],
+        };
+        let mut out = Sliced::default();
+        let mut seen = vec![false; lines.len()];
+        for part in parts {
+            let (range, fold) = match part {
+                Part::Here(range) => (range, None),
+                Part::Elsewhere { lines: range, said } => {
+                    let key = elsewhere_key(slice, lines[range.start].0.as_ref());
+                    (range, Some((key, said, open.contains(&key))))
+                }
+            };
+            if let Some((key, said, open)) = fold {
+                out.blocks.push(Block::Elsewhere { key, said, open });
+                out.about.push(None);
+                if !open {
+                    continue;
+                }
+            }
+            seen[range.clone()].iter_mut().for_each(|s| *s = true);
+            // A block per run of lines about one project, so each says which.
+            let mut at = range.start;
+            while at < range.end {
+                let about = lines[at].1.clone();
+                let end = (at..range.end).find(|&i| lines[i].1 != about).unwrap_or(range.end);
+                let run: Vec<Cow<'_, Entry>> = lines[at..end].iter().map(|(e, _)| Cow::Borrowed(e.as_ref())).collect();
+                let blocks = build_blocks(&run, &self.base);
+                out.about.extend(std::iter::repeat_n(about, blocks.len()));
+                out.blocks.extend(blocks);
+                at = end;
+            }
+        }
+        // Only the first reply in sight names who speaks.
+        let mut named = false;
+        for block in &mut out.blocks {
+            if let Block::Reply { first, .. } = block {
+                *first = !named;
+                named = true;
+            }
+        }
+        let end_shown = seen.last().copied().unwrap_or(true);
+        let before = out.blocks.len();
+        self.finish(&mut out.blocks, end_shown);
+        out.about.extend(std::iter::repeat_n(slice.map(str::to_owned), out.blocks.len() - before));
+        // The latest reply, about another project and after all in sight: a
+        // pill offers to go there, rather than the view jumping.
+        if let Some(project) = slice
+            && let Some(at) = lines.iter().rposition(|(e, _)| matches!(e.as_ref(), Entry::Reply { .. }))
+            && !seen[at..].iter().any(|s| *s)
+            && lines[at].1.as_deref() != Some(project)
+        {
+            out.answered_in = Some(lines[at].1.clone());
+        }
+        // Memos wait below the conversation they go into until the turn ends.
+        for (memo, about) in self.queued.iter().zip(self.queued_in.iter().chain(std::iter::repeat(&None))) {
+            if slice.is_none() || about.as_deref() == slice {
+                out.blocks.push(Block::Memo(memo.clone()));
+                out.about.push(about.clone());
+            }
+        }
+        for text in &self.steering {
+            out.blocks.push(Block::Steering(text.clone()));
+            out.about.push(None);
+        }
+        out
+    }
+}
+
+/// The conversation as a project's slice shows it ([`Convo::sliced`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Sliced {
+    pub blocks: Vec<Block>,
+    /// What each block is about (`None`: the whole squad, or not said).
+    pub about: Vec<Option<String>>,
+    /// The latest reply came about another project than the one in focus —
+    /// which (`Some(None)`: the whole squad).
+    pub answered_in: Option<Option<String>>,
+}
+
+/// What names a folded stretch while it is there: the project in focus and
+/// the line it starts with.
+fn elsewhere_key(slice: Option<&str>, first: &Entry) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    slice.hash(&mut h);
+    format!("{first:?}").hash(&mut h);
+    h.finish()
 }
 
 /// `1m 05s`, `42s`, `1h 02m` — how long something has been going.
@@ -417,6 +544,9 @@ pub enum Block {
     Memo(String),
     /// Said while it works: read at its next step, the work carrying on.
     Steering(String),
+    /// A stretch about other projects folded into a row, saying how many
+    /// things were said there; open, they follow it in place.
+    Elsewhere { key: u64, said: usize, open: bool },
 }
 
 impl Block {
@@ -431,7 +561,7 @@ impl Block {
             Block::Steps(lines) => Some(lines.iter().map(|l| format!("{} {}", verb_word(&l.verb), l.targets.join(" "))).collect::<Vec<_>>().join("\n")),
             Block::Error { message, .. } => Some(message.clone()),
             Block::Landed { branch, stat } => Some(format!("{branch}\n{stat}")),
-            Block::Thought { .. } | Block::Thinking(_) => None,
+            Block::Thought { .. } | Block::Thinking(_) | Block::Elsewhere { .. } => None,
         }
     }
 }
@@ -798,6 +928,131 @@ mod tests {
         assert!(c.has_work_on(4) && !c.has_work_on(5));
         c.showing = Some(4);
         assert_eq!(texts(&c), ["ticket work"]);
+    }
+
+    /// Two turns about the app around one about the site, news of the site,
+    /// and one about the whole squad.
+    fn two_projects() -> Convo {
+        let mut c = convo(true);
+        let say = |text: &str| Event::UserMessage { session: 1, text: text.into() };
+        let reply = |text: &str| Event::TextDelta { session: 1, text: text.into() };
+        let end = Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None };
+        let about = |p: Option<&str>| Event::Thread { session: 1, project: p.map(str::to_owned) };
+        feed(
+            &mut c,
+            &[
+                about(Some("app")), say("app one"), tool("Read", "/work/site/a.rs"), reply("app answer"), end.clone(),
+                about(Some("site")), say("site one"), reply("site answer"), end.clone(),
+                Event::Notice { session: 1, text: "frontend이(가) T-4을(를) 검토해 달라고 넘겼습니다 · 히어로.".into() },
+                about(None), say("everyone"), reply("squad answer"), end.clone(),
+                about(Some("app")), say("app two"), reply("app again"), end,
+            ],
+        );
+        c
+    }
+
+    fn users(blocks: &[Block]) -> Vec<String> {
+        blocks.iter().filter_map(|b| if let Block::User(t) = b { Some(t.clone()) } else { None }).collect()
+    }
+
+    #[test]
+    fn a_project_in_focus_shows_its_own_lines_and_folds_the_rest() {
+        let c = two_projects();
+        let app = c.sliced(Some("app"), &HashSet::new());
+        assert_eq!(users(&app.blocks), ["app one", "app two"]);
+        let folds: Vec<(usize, bool)> = app.blocks.iter().filter_map(|b| if let Block::Elsewhere { said, open, .. } = b { Some((*said, *open)) } else { None }).collect();
+        assert_eq!(folds, [(5, false)], "the site's turn, its news and the squad's turn: five things said");
+        assert!(app.about.iter().all(|a| a.as_deref() != Some("site")));
+        let first: Vec<bool> = app.blocks.iter().filter_map(|b| if let Block::Reply { first, .. } = b { Some(*first) } else { None }).collect();
+        assert_eq!(first, [true, false], "who speaks is named once");
+        // The site's: the app's turns fold before and after it.
+        let site = c.sliced(Some("site"), &HashSet::new());
+        assert_eq!(users(&site.blocks), ["site one"]);
+        assert!(matches!(site.blocks[0], Block::Elsewhere { said: 2, .. }), "{:?}", site.blocks);
+        assert!(site.blocks.iter().any(|b| matches!(b, Block::News(n) if n.len() == 1)), "news of the site's ticket shows in the site");
+        // A project with nothing said yet: the rest in one fold.
+        assert_eq!(c.sliced(Some("web"), &HashSet::new()).blocks.len(), 1);
+    }
+
+    #[test]
+    fn a_fold_opens_in_place() {
+        let c = two_projects();
+        let closed = c.sliced(Some("app"), &HashSet::new());
+        let Some(&Block::Elsewhere { key, .. }) = closed.blocks.iter().find(|b| matches!(b, Block::Elsewhere { .. })) else { panic!() };
+        let open = c.sliced(Some("app"), &HashSet::from([key]));
+        assert_eq!(users(&open.blocks), ["app one", "site one", "everyone", "app two"]);
+        let at = open.blocks.iter().position(|b| matches!(b, Block::Elsewhere { open: true, .. })).unwrap();
+        assert!(matches!(&open.blocks[at + 1], Block::User(t) if t == "site one"), "what was folded follows its row");
+        assert_eq!(open.about[at + 1].as_deref(), Some("site"));
+    }
+
+    #[test]
+    fn every_project_shows_everything_saying_what_each_message_was_about() {
+        let c = two_projects();
+        let all = c.sliced(None, &HashSet::new());
+        assert!(!all.blocks.iter().any(|b| matches!(b, Block::Elsewhere { .. })));
+        assert_eq!(users(&all.blocks), ["app one", "site one", "everyone", "app two"]);
+        let said_in: Vec<Option<&str>> = all.blocks.iter().zip(&all.about).filter_map(|(b, a)| matches!(b, Block::User(_)).then_some(a.as_deref())).collect();
+        assert_eq!(said_in, [Some("app"), Some("site"), None, Some("app")]);
+        let news = all.blocks.iter().position(|b| matches!(b, Block::News(_))).unwrap();
+        assert_eq!(all.about[news].as_deref(), Some("site"), "news carries the project of the turn it came in");
+        // Unchanged from the whole conversation otherwise.
+        let whole = c.blocks();
+        assert_eq!(all.blocks, whole);
+        assert_eq!(all.answered_in, None);
+    }
+
+    #[test]
+    fn a_reply_about_another_project_offers_to_go_there_rather_than_showing() {
+        let mut c = two_projects();
+        feed(&mut c, &[Event::Thread { session: 1, project: Some("site".into()) }, Event::UserMessage { session: 1, text: "site two".into() }, Event::TextDelta { session: 1, text: "stream".into() }]);
+        let app = c.sliced(Some("app"), &HashSet::new());
+        assert_eq!(app.answered_in, Some(Some("site".into())));
+        assert!(!app.blocks.iter().any(|b| matches!(b, Block::Reply { live: true, .. })), "the app's last reply isn't the one streaming");
+        let site = c.sliced(Some("site"), &HashSet::new());
+        assert_eq!(site.answered_in, None);
+        assert!(matches!(site.blocks.last(), Some(Block::Reply { live: true, .. })));
+    }
+
+    #[test]
+    fn a_squad_wide_reply_streaming_shows_in_the_project_in_focus() {
+        let mut c = two_projects();
+        feed(&mut c, &[Event::Thread { session: 1, project: None }, Event::UserMessage { session: 1, text: "all of you".into() }, Event::TextDelta { session: 1, text: "stream".into() }]);
+        let app = c.sliced(Some("app"), &HashSet::new());
+        assert!(matches!(app.blocks.last(), Some(Block::Reply { text, live: true, .. }) if text == "stream"), "{:?}", app.blocks);
+        assert!(!users(&app.blocks).contains(&"all of you".to_owned()));
+        assert_eq!(app.answered_in, None);
+        // Once it ended, it folds with the rest.
+        feed(&mut c, &[Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }]);
+        let app = c.sliced(Some("app"), &HashSet::new());
+        assert!(!app.blocks.iter().any(|b| matches!(b, Block::Reply { text, .. } if text == "stream")));
+        assert_eq!(app.answered_in, Some(None));
+    }
+
+    #[test]
+    fn memos_show_in_the_project_they_were_left_about() {
+        let mut c = two_projects();
+        feed(
+            &mut c,
+            &[
+                Event::UserMessage { session: 1, text: "work".into() },
+                Event::MessageQueued { session: 1, text: "for site".into(), project: Some("site".into()) },
+                Event::MessageQueued { session: 1, text: "for app".into(), project: Some("app".into()) },
+            ],
+        );
+        let memos = |s: &Sliced| s.blocks.iter().filter_map(|b| if let Block::Memo(t) = b { Some(t.clone()) } else { None }).collect::<Vec<_>>();
+        assert_eq!(memos(&c.sliced(Some("app"), &HashSet::new())), ["for app"]);
+        assert_eq!(memos(&c.sliced(None, &HashSet::new())), ["for site", "for app"]);
+    }
+
+    #[test]
+    fn a_members_conversation_and_a_tickets_work_are_never_sliced() {
+        let mut c = two_projects();
+        c.is_pm = false;
+        assert_eq!(c.sliced(Some("app"), &HashSet::new()).blocks, c.blocks());
+        let mut c = two_projects();
+        c.showing = Some(4);
+        assert_eq!(c.sliced(Some("app"), &HashSet::new()).blocks, c.blocks());
     }
 
     #[test]

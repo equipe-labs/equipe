@@ -36,6 +36,10 @@ const WHEEL_NOTCH: isize = 3;
 /// Wheel events closer together than this are one gesture — a trackpad's —
 /// and each moves one line, so the view follows the fingers exactly.
 const WHEEL_GESTURE: Duration = Duration::from_millis(40);
+/// Opens the screen's own line for a stretch of other projects folded out of
+/// the PM's conversation; how many things were said there follows. A
+/// private-use character, so no note from the daemon starts so.
+pub const FOLDED: char = '\u{E010}';
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
@@ -328,11 +332,40 @@ impl Agent {
     /// work. Otherwise everything — but the PM's own tickets' work, which each
     /// shows as its ticket. Never the markers.
     pub fn shown(&self) -> Vec<std::borrow::Cow<'_, Entry>> {
+        self.shown_about().into_iter().map(|(entry, _)| entry).collect()
+    }
+
+    /// The conversation as the screen draws it: [`Agent::shown`] — and, for
+    /// the PM with a project in focus, that project's lines only, each
+    /// stretch about others folded into a line ([`FOLDED`] and how many
+    /// things were said there). The PM still has the whole conversation.
+    pub fn drawn(&self) -> Vec<std::borrow::Cow<'_, Entry>> {
+        use equipe_core::protocol::transcript::scope::{self, Part};
         use std::borrow::Cow;
+        let lines = self.shown_about();
+        let Some(project) = self.thread_view.as_deref().filter(|_| self.is_pm() && self.showing.is_none()) else {
+            return lines.into_iter().map(|(entry, _)| entry).collect();
+        };
+        let mut out = Vec::new();
+        for part in scope::slice(&lines, project, self.state == AgentState::Working) {
+            match part {
+                Part::Here(range) => out.extend(lines[range].iter().map(|(entry, _)| entry.clone())),
+                Part::Elsewhere { said, .. } => out.push(Cow::Owned(Entry::Note { text: format!("{FOLDED}{said}") })),
+            }
+        }
+        out
+    }
+
+    /// The same as [`Agent::shown`], each line with the project it is about.
+    fn shown_about(&self) -> Vec<(std::borrow::Cow<'_, Entry>, Option<String>)> {
+        use std::borrow::Cow;
+        let entries = self.transcript.entries();
+        let mut about = equipe_core::protocol::transcript::scope::of(entries).into_iter();
         let mut out = Vec::new();
         // The ticket whose work the lines are, while they are.
         let mut on: Option<TicketId> = None;
-        for entry in self.transcript.entries() {
+        for entry in entries {
+            let here = about.next().flatten();
             match entry {
                 Entry::Thread { .. } => {
                     on = None;
@@ -348,7 +381,7 @@ impl Agent {
                 None => on.is_none() || !self.is_pm(),
             };
             if keep {
-                out.push(Cow::Borrowed(entry));
+                out.push((Cow::Borrowed(entry), here));
             }
         }
         out
@@ -3960,6 +3993,38 @@ mod tests {
         assert_eq!(said(&app), ["ticket work"]);
         app.open(Side::Pm);
         assert_eq!(said(&app), ["hello", "about the app", "after"]);
+    }
+
+    #[test]
+    fn with_a_project_in_focus_the_pms_conversation_shows_that_project_and_folds_the_rest() {
+        let mut app = two_projects();
+        let pm = app.agents.iter().find(|a| a.is_pm()).unwrap().id;
+        for event in [
+            Event::Thread { session: pm, project: Some("app".into()) },
+            Event::UserMessage { session: pm, text: "app one".into() },
+            Event::TextDelta { session: pm, text: "app answer".into() },
+            Event::Thread { session: pm, project: Some("site".into()) },
+            Event::UserMessage { session: pm, text: "site one".into() },
+            Event::TextDelta { session: pm, text: "site answer".into() },
+            Event::Thread { session: pm, project: Some("app".into()) },
+            Event::UserMessage { session: pm, text: "app two".into() },
+        ] {
+            app.on_event(event);
+        }
+        let drawn = |app: &App| -> Vec<String> {
+            app.viewed().unwrap().drawn().iter().filter_map(|e| match e.as_ref() {
+                Entry::User { text } => Some(text.clone()),
+                Entry::Note { text } if text.starts_with(FOLDED) => Some(format!("folded {}", &text[FOLDED.len_utf8()..])),
+                _ => None,
+            }).collect()
+        };
+        app.focus_on("app");
+        assert_eq!(drawn(&app), ["app one", "folded 2", "app two"]);
+        app.focus_on("site");
+        assert_eq!(drawn(&app), ["folded 2", "site one", "folded 1"]);
+        app.focus_on("all");
+        assert_eq!(drawn(&app), ["app one", "site one", "app two"], "every project: all of it");
+        assert_eq!(app.viewed().unwrap().shown().len(), app.viewed().unwrap().drawn().len());
     }
 
     #[test]

@@ -433,6 +433,27 @@ impl Model {
         self.convos.get(&self.viewed()?)
     }
 
+    /// The slice of the conversation in view the person sees: the project in
+    /// focus (`Some(None)`: every project) — when they want the conversation
+    /// to follow the project (`follow`) and it is the PM's. `None`: whole, as
+    /// it always was.
+    pub fn chat_slice(&self, follow: bool) -> Option<Option<String>> {
+        self.convo().filter(|c| follow && c.sliceable()).map(|_| self.focus.clone())
+    }
+
+    /// The conversation in view as it shows (see [`Convo::sliced`]); folded
+    /// stretches the person opened are in `open`.
+    pub fn conversation(&self, follow: bool, open: &std::collections::HashSet<u64>) -> crate::convo::Sliced {
+        let Some(convo) = self.convo() else { return Default::default() };
+        match self.chat_slice(follow) {
+            Some(slice) => convo.sliced(slice.as_deref(), open),
+            None => {
+                let blocks = convo.blocks();
+                crate::convo::Sliced { about: vec![None; blocks.len()], blocks, answered_in: None }
+            }
+        }
+    }
+
     pub fn convo_mut(&mut self) -> Option<&mut Convo> {
         let id = self.viewed()?;
         self.convos.get_mut(&id)
@@ -1104,6 +1125,60 @@ mod tests {
 
     fn names(model: &Model) -> Vec<&str> {
         model.ordered().iter().map(|m| m.name.as_str()).collect()
+    }
+
+    /// A PM whose history went over the app, then the site.
+    fn pm_in_two_projects() -> Model {
+        let mut model = Model::new("acme");
+        let mut pm = session(1, "pm", "pm", SessionState::Ready);
+        let about = |p: &str| Entry::Thread { project: Some(p.into()) };
+        let said = |t: &str| Entry::User { text: t.into() };
+        let reply = |t: &str| Entry::Reply { text: t.into() };
+        pm.recent = vec![about("app"), said("app q"), reply("app a"), about("site"), said("site q"), reply("site a")];
+        model.apply(hello(vec![pm, session(2, "frontend", "frontend", SessionState::Ready)]), T0);
+        model
+    }
+
+    fn said(sliced: &crate::convo::Sliced) -> Vec<String> {
+        use crate::convo::Block;
+        sliced.blocks.iter().filter_map(|b| if let Block::User(t) = b { Some(t.clone()) } else { None }).collect()
+    }
+
+    #[test]
+    fn the_conversation_follows_the_project_in_focus_to_its_latest_line() {
+        let mut model = pm_in_two_projects();
+        let none = std::collections::HashSet::new();
+        assert_eq!(model.chat_slice(true), Some(None), "every project: everything");
+        assert_eq!(said(&model.conversation(true, &none)), ["app q", "site q"]);
+        let before = model.revision;
+        assert!(model.set_focus(Some("app".into())));
+        assert!(model.revision > before, "a draw is due");
+        assert_eq!(model.chat_slice(true), Some(Some("app".into())), "a new slice: the list starts over at its end");
+        let app = model.conversation(true, &none);
+        assert_eq!(said(&app), ["app q"]);
+        assert!(matches!(app.blocks.last(), Some(crate::convo::Block::Elsewhere { said: 2, .. })), "the site's turn after, folded: {:?}", app.blocks);
+        assert_eq!(app.answered_in, Some(Some("site".into())), "the latest reply is the site's");
+        model.set_focus(Some("site".into()));
+        let site = model.conversation(true, &none);
+        assert!(matches!(site.blocks.last(), Some(crate::convo::Block::Reply { text, .. }) if text == "site a"), "the slice's latest line last");
+    }
+
+    #[test]
+    fn with_the_setting_off_the_conversation_is_as_it_always_was() {
+        let mut model = pm_in_two_projects();
+        let none = std::collections::HashSet::new();
+        let whole = model.convo().unwrap().blocks();
+        for focus in [None, Some("app"), Some("site")] {
+            model.set_focus(focus.map(str::to_owned));
+            assert_eq!(model.chat_slice(false), None);
+            let shown = model.conversation(false, &none);
+            assert_eq!(shown.blocks, whole);
+            assert!(shown.about.iter().all(Option::is_none) && shown.answered_in.is_none());
+        }
+        // A member's conversation never follows the project.
+        model.set_focus(Some("app".into()));
+        model.select(2);
+        assert_eq!(model.chat_slice(true), None);
     }
 
     #[test]

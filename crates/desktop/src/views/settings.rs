@@ -339,6 +339,9 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let appearance = Line::new(t!("settings.appearance"), t!("settings.appearance_desc")).words("appearance theme dark light").control(segmented(shell, "appearance", looks, shell.remembered.appearance, |this, a, window, cx| this.set_appearance(a, window, cx), cx));
     let starts = Start::ALL.into_iter().map(|s| (s, start_word(s).to_owned())).collect();
     let start = Line::new(t!("settings.start"), t!("settings.start_desc")).words("launch").control(segmented(shell, "start", starts, shell.remembered.start, |this, s, _, _| this.set_start(s), cx));
+    let follow = Line::new(t!("settings.follow_project"), t!("settings.follow_project_desc"))
+        .words("project conversation slice filter")
+        .control(switch(shell, "follow-project", shell.chat.follow, true, |this, on, _, cx| this.set_follow_project(on, cx), cx));
 
     let pings = shell.remembered.pings;
     let ping = |ping: Ping, label: &'static str, desc: &'static str, cx: &mut Context<Shell>| {
@@ -357,6 +360,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     vec![
         Section::new(t!("settings.section_look"), vec![language, appearance]).foot(format!("{} {}", t!("settings.language_note"), t!("settings.this_mac_foot"))),
         Section::new(t!("settings.section_start"), vec![start]),
+        Section::new(t!("settings.section_conversation"), vec![follow]),
         Section::new(t!("settings.section_notifications"), notifications).foot(t!("settings.notifications_foot")),
     ]
 }

@@ -698,6 +698,8 @@
   "view.members": "{open} members",
   "view.members_working": "{open} members · {working} working",
   "view.memo_note": "memo · read when this turn ends",
+  "view.elsewhere.one": "{count} message from other projects · /project all shows it",
+  "view.elsewhere.other": "{count} messages from other projects · /project all shows them",
   "view.memos": "{n} memos",
   "view.mode_hint": "/mode {member} full stops {member} asking · /mode for all modes",
   "view.more_lines.one": "{count} more line",
