@@ -26,7 +26,10 @@ mod state;
 mod stream;
 mod target;
 mod theme;
+mod tips;
 mod i18n;
+mod icons;
+mod motion;
 mod relaunch;
 mod render;
 #[cfg(target_os = "macos")]
@@ -847,6 +850,7 @@ impl Render for Shell {
             .children(views::composer::lightbox(self, cx))
             .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
             .children(views::connect::question(self, cx))
+            .children(tips::layer(cx))
     }
 }
 
@@ -907,8 +911,9 @@ fn main() {
     }
     // Images a reply points at on the web come through this client.
     let http = std::sync::Arc::new(reqwest_client::ReqwestClient::user_agent("equipe-desktop").unwrap_or_else(|_| reqwest_client::ReqwestClient::new()));
-    gpui_kit::application().with_http_client(http).run(|cx| {
+    gpui_kit::application().with_http_client(http).with_assets(icons::AppAssets).run(|cx| {
         gpui_kit::init(cx);
+        tips::init(cx);
         cx.bind_keys([
             KeyBinding::new("cmd-b", ToggleBoard, None),
             KeyBinding::new("cmd-shift-b", ToggleBrowser, None),

@@ -423,7 +423,7 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
             .with_jump_button_label(t!("chat.jump_to_bottom"))
             // In the app's colours, with its words beside the arrow: on its own
             // the arrow sat white on white.
-            .with_jump_button_style(StyleRefinement::default().bg(to_hsla(p.raised)).text_color(to_hsla(p.text)).border_color(to_hsla(p.hair)))
+            .with_jump_button_style(StyleRefinement::default().bg(Hsla::from(p.raised)).text_color(Hsla::from(p.text)).border_color(Hsla::from(p.hair)))
             .with_jump_button_renderer(|button| button.label(t!("chat.jump_to_bottom")).px_3()),
     )
 }

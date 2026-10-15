@@ -24,8 +24,11 @@ use crate::attach::{self, Kind, Source, Stage, Strip};
 use crate::commands::Choice;
 use crate::compose::{self, Draft, Drafts, Effect, EnterGuard, History, Said};
 use crate::state::{Model, Presence};
+use crate::icons::{Icon, icon};
+use crate::motion;
 use crate::target::Endpoint;
-use crate::theme::{MONO, Palette, SMALL, look};
+use crate::theme::{CONTROL, GAP, ICON, ICON_SM, MONO, Palette, R_LG, R_MD, R_SM, R_XL, ROW, SMALL, look};
+use crate::tips::tip;
 use crate::{Screen, Shell, files, media};
 
 /// How tall the box may grow, in lines, before it scrolls inside.
@@ -58,7 +61,7 @@ pub fn takes(key: &str) -> bool {
 // ── menus ──
 
 /// Which of the bar's menus is open.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MenuKind {
     Attach,
     Recent,
@@ -83,21 +86,81 @@ enum Act {
     Refresh(bool),
 }
 
+impl MenuKind {
+    /// The control a menu opens from: recent files open where the "+" menu was.
+    fn trigger(self) -> MenuKind {
+        match self {
+            MenuKind::Recent => MenuKind::Attach,
+            kind => kind,
+        }
+    }
+
+    /// The edge of its trigger a menu lines up with: the bar's left-hand
+    /// controls open menus flush with their left edge, the right-hand ones
+    /// (model, effort, context) flush with their right edge.
+    fn align(self) -> gpui_kit::base::Align {
+        match self {
+            MenuKind::Model | MenuKind::Effort | MenuKind::Context => gpui_kit::base::Align::End,
+            _ => gpui_kit::base::Align::Start,
+        }
+    }
+
+    fn width(self) -> f32 {
+        match self {
+            MenuKind::Recent => 340.,
+            MenuKind::Context => 300.,
+            MenuKind::Model => 280.,
+            _ => 248.,
+        }
+    }
+}
+
+/// What leads a menu row: an icon, a member's mark in their colour, or nothing
+/// (the column stays, so every label starts at the same place).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Lead {
+    None,
+    Icon(Icon),
+    Mark(&'static str, usize),
+}
+
 #[derive(Debug, Clone)]
 struct Row {
     label: String,
     hint: String,
+    /// The shortcut that does the same, right-aligned.
+    keys: Option<&'static str>,
+    lead: Lead,
+    /// Opens another menu (a chevron at the end).
+    more: bool,
     on: bool,
     act: Option<Act>,
 }
 
 impl Row {
     fn new(label: impl Into<String>, hint: impl Into<String>, act: Act) -> Self {
-        Self { label: label.into(), hint: hint.into(), on: false, act: Some(act) }
+        Self { label: label.into(), hint: hint.into(), keys: None, lead: Lead::None, more: false, on: false, act: Some(act) }
+    }
+
+    /// A line of words that does nothing (the context menu's explanation).
+    fn note(label: impl Into<String>) -> Self {
+        Self { label: label.into(), hint: String::new(), keys: None, lead: Lead::None, more: false, on: false, act: None }
     }
 
     fn checked(self, on: bool) -> Self {
         Self { on, ..self }
+    }
+
+    fn icon(self, icon: Icon) -> Self {
+        Self { lead: Lead::Icon(icon), ..self }
+    }
+
+    fn keys(self, keys: &'static str) -> Self {
+        Self { keys: Some(keys), ..self }
+    }
+
+    fn submenu(self) -> Self {
+        Self { more: true, ..self }
     }
 }
 
@@ -174,6 +237,11 @@ pub struct Composer {
     chip: Option<usize>,
     /// A menu of the bar, open.
     menu: Option<Menu>,
+    /// The menu just closed, fading out (its number keys the fade).
+    leaving: Option<(Menu, u64)>,
+    menus_closed: u64,
+    /// Where each control that opens a menu was last drawn: menus open from there.
+    anchors: Rc<std::cell::RefCell<std::collections::HashMap<MenuKind, Bounds<Pixels>>>>,
     /// What a drag over the window would attach, said before the drop.
     drag: Option<(Vec<PathBuf>, attach::Preview)>,
     /// The drop frame shown without a drag (for the snapshot tool).
@@ -224,6 +292,9 @@ impl Composer {
             strip: Strip::default(),
             chip: None,
             menu: None,
+            leaving: None,
+            menus_closed: 0,
+            anchors: Rc::default(),
             drag: None,
             drag_shown: false,
             inline_paste: false,
@@ -368,15 +439,6 @@ fn placeholder(model: &Model) -> String {
     }
 }
 
-/// A local colour for what went wrong: the palette has none.
-fn danger(p: Palette) -> Rgba {
-    if p.bg.r < 0.5 { rgb(0xF0918A) } else { rgb(0xB3261E) }
-}
-
-fn danger_bg(p: Palette) -> Rgba {
-    if p.bg.r < 0.5 { rgba(0xF0918A1F) } else { rgba(0xB3261E14) }
-}
-
 impl Shell {
     // ── typing ──
 
@@ -493,7 +555,7 @@ impl Shell {
         }
         self.composer.flash = plan.flash;
         self.composer.choices.clear();
-        self.composer.menu = None;
+        self.close_menu(cx);
         self.composer.dismissed = None;
         let box_text = plan.restore.map(|_| typed.trim().to_owned()).unwrap_or_default();
         self.composer.set_text(&box_text, window, cx);
@@ -807,10 +869,30 @@ impl Shell {
 
     // ── menus ──
 
+    /// Close the bar's menu; it fades out where it was.
+    pub(crate) fn close_menu(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = self.composer.menu.take() else { return };
+        self.composer.menus_closed += 1;
+        let n = self.composer.menus_closed;
+        self.composer.leaving = Some((menu, n));
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(motion::FAST + Duration::from_millis(40)).await;
+            this.update(cx, |this, cx| {
+                if this.composer.leaving.as_ref().is_some_and(|(_, at)| *at == n) {
+                    this.composer.leaving = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
     pub(crate) fn open_menu(&mut self, kind: MenuKind, window: &mut Window, cx: &mut Context<Self>) {
+        crate::tips::hide(cx);
         if self.composer.menu.as_ref().is_some_and(|m| m.kind == kind) {
-            self.composer.menu = None;
-            cx.notify();
+            self.close_menu(cx);
             return;
         }
         let member = self.model.selected_member();
@@ -818,22 +900,26 @@ impl Shell {
         let rows: Vec<Row> = match kind {
             MenuKind::Attach => {
                 let recent = self.composer.drafts.recent.iter().any(|p| p.exists());
-                let mut rows = vec![Row::new(t!("composer.menu_files"), "⌘U", Act::PickFiles)];
+                let mut rows = vec![Row::new(t!("composer.menu_files"), "", Act::PickFiles).icon(Icon::Paperclip).keys("⌘U")];
                 if recent {
-                    rows.push(Row::new(t!("composer.menu_recent"), "›", Act::Recent));
+                    rows.push(Row::new(t!("composer.menu_recent"), "", Act::Recent).icon(Icon::Clock).submenu());
                 }
-                rows.push(Row::new(t!("composer.menu_screenshot"), "", Act::Screenshot));
-                rows.push(Row::new(t!("composer.menu_commands"), "/", Act::Commands));
+                rows.push(Row::new(t!("composer.menu_screenshot"), "", Act::Screenshot).icon(Icon::Camera));
+                rows.push(Row::new(t!("composer.menu_commands"), "", Act::Commands).icon(Icon::Slash).keys("/"));
                 rows
             }
             MenuKind::Recent => {
                 title = Some(t!("composer.menu_recent").to_owned());
-                self.composer.drafts.recent.iter().filter(|p| p.exists()).map(|p| Row::new(p.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()), p.parent().map_or_else(String::new, short_dir), Act::Again(p.clone()))).collect()
+                self.composer.drafts.recent.iter().filter(|p| p.exists()).map(|p| Row::new(p.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()), p.parent().map_or_else(String::new, short_dir), Act::Again(p.clone())).icon(Icon::File)).collect()
             }
             MenuKind::To => {
                 title = Some(t!("composer.menu_to").to_owned());
                 let selected = self.model.selected;
-                self.model.ordered().iter().filter(|m| m.presence != Presence::Closed).map(|m| Row::new(m.name.clone(), m.role.clone(), Act::Select(m.session)).checked(Some(m.session) == selected)).collect()
+                self.model.ordered().iter().filter(|m| m.presence != Presence::Closed).map(|m| {
+                        let (mark, hue) = look(&m.role, &m.name);
+                        Row { lead: Lead::Mark(mark, hue), ..Row::new(m.name.clone(), m.role.clone(), Act::Select(m.session)).checked(Some(m.session) == selected) }
+                    })
+                    .collect()
             }
             MenuKind::Model => {
                 let Some(member) = member else { return };
@@ -870,9 +956,9 @@ impl Shell {
                 let used = member.context.unwrap_or(0);
                 title = Some(t!("composer.context_title", name = member.name, used = used));
                 vec![
-                    Row { label: t!("composer.context_explain").into(), hint: String::new(), on: false, act: None },
-                    Row::new(t!("composer.context_compact"), "/compact", Act::Refresh(true)),
-                    Row::new(t!("composer.context_clear"), "/clear", Act::Refresh(false)),
+                    Row::note(t!("composer.context_explain")),
+                    Row::new(t!("composer.context_compact"), "/compact", Act::Refresh(true)).icon(Icon::Compact),
+                    Row::new(t!("composer.context_clear"), "/clear", Act::Refresh(false)).icon(Icon::Clear),
                 ]
             }
         };
@@ -880,6 +966,8 @@ impl Shell {
             return;
         }
         let pick = Menu::first_pick(&rows);
+        // A menu opening takes the place of one still fading out.
+        self.composer.leaving = None;
         self.composer.menu = Some(Menu { kind, title, rows, pick });
         self.composer.choices.clear();
         self.composer.focus(window, cx);
@@ -888,7 +976,12 @@ impl Shell {
 
     fn run_row(&mut self, at: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(act) = self.composer.menu.as_ref().and_then(|m| m.rows.get(at)).and_then(|r| r.act.clone()) else { return };
-        self.composer.menu = None;
+        if matches!(act, Act::Recent) {
+            // The next menu opens in its place, with no fade between.
+            self.composer.menu = None;
+        } else {
+            self.close_menu(cx);
+        }
         let member = self.model.selected_member().map(|m| (m.session, m.name.clone()));
         match act {
             Act::PickFiles => self.pick_files(cx),
@@ -957,7 +1050,7 @@ impl Shell {
         // A menu of the bar is open: it has the keys.
         if let Some(menu) = self.composer.menu.as_mut() {
             match key {
-                "escape" => self.composer.menu = None,
+                "escape" => self.close_menu(cx),
                 "up" | "down" => menu.step(key == "up"),
                 "enter" | "tab" => {
                     let at = menu.pick;
@@ -1209,7 +1302,8 @@ fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, run: impl Fn
         }))
 }
 
-/// The composer: what waits, the card (attachments, the box, the bar) and its hint.
+/// The composer: what waits, then the card (attachments, the box, the bar),
+/// and — only while a member works — what Enter and Tab do now.
 pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
     let composer = &shell.composer;
@@ -1218,11 +1312,15 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .max_w(px(720.))
         .flex_none()
         .pb_3()
-        .children(composer.flash.clone().map(|flash| div().px_1().pb_2().text_size(px(SMALL)).text_color(p.text2).child(flash)))
+        // Lined up with the text in the card: its padding and border.
+        .children(composer.flash.clone().map(|flash| motion::fade(div().px(px(INSET + 1.)).pb_2().text_size(px(SMALL)).text_color(p.text2).child(flash.clone()), ElementId::Name(format!("flash-{}", crate::render::hash_of(&flash)).into()), motion::BASE)))
         .children(rail(shell, cx))
         .child(card(shell, cx))
-        .child(hint_line(shell, cx))
+        .children(hint_line(shell, cx))
 }
+
+/// The card's inner padding: the text and the bar's controls start here.
+const INSET: f32 = 12.;
 
 fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
@@ -1234,7 +1332,7 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         .id("composer")
         .key_context("Composer")
         .relative()
-        .rounded(px(14.))
+        .rounded(px(R_XL))
         .bg(p.raised)
         .border_1()
         .border_color(p.hair)
@@ -1250,36 +1348,46 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         }))
         .on_action(cx.listener(|this, _: &SendInverted, window, cx| this.send_inverted(window, cx)))
         .children(completion(shell, cx))
-        .children(menu(shell, cx))
+        .children(menu_layer(shell, cx))
         .children(strip(shell, cx))
         .child(
-            div().px_4().pt_3().pb_1().text_size(px(crate::theme::BODY)).line_height(px(24.)).child(
-                Textarea::new(&composer.state)
-                    .appearance(false)
-                    .bordered(false)
-                    .aria_label(composer.placeholder.clone())
-                    .token(move |token, _, _| {
-                        div()
-                            .px_1()
-                            .rounded(px(5.))
-                            .bg(token_bg)
-                            .text_color(token_color)
-                            .font_family(MONO)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(token.token().label().clone())
-                    })
-                    .on_paste(move |item, _, cx| shell_entity.update(cx, |shell, cx| shell.paste_item(item, cx)).unwrap_or(false)),
+            motion::SmoothHeight::new(
+                "composer-text",
+                div()
+                    .px(px(INSET))
+                    .pt(px(INSET))
+                    .pb_1()
+                    .child(
+                        Textarea::new(&composer.state)
+                            .appearance(false)
+                            .bordered(false)
+                            .text_size(px(crate::theme::BODY))
+                            .line_height(px(24.))
+                            .aria_label(composer.placeholder.clone())
+                            .token(move |token, _, _| {
+                                div()
+                                    .px_1()
+                                    .rounded(px(5.))
+                                    .bg(token_bg)
+                                    .text_color(token_color)
+                                    .font_family(MONO)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(token.token().label().clone())
+                            })
+                            .on_paste(move |item, _, cx| shell_entity.update(cx, |shell, cx| shell.paste_item(item, cx)).unwrap_or(false)),
+                    )
+                    .into_any_element(),
             ),
         )
         .children(composer.dictating.clone().map(|heard| {
             h_flex()
-                .px_4()
+                .px(px(INSET))
                 .pb_1()
                 .gap_2()
                 .items_center()
                 .text_size(px(crate::theme::BODY))
                 .line_height(px(24.))
-                .child(div().size(px(8.)).flex_none().rounded_full().bg(danger(p)))
+                .child(div().size(px(8.)).flex_none().rounded_full().bg(p.danger()).with_animation("listening", Animation::new(Duration::from_millis(1200)).repeat().with_easing(pulsating_between(0.35, 1.)), |d, t| d.opacity(t)))
                 .child(div().min_w_0().text_color(p.muted).italic().child(if heard.is_empty() { t!("composer.dictation_listening").to_owned() } else { heard }))
         }))
         .child(bar(shell, cx))
@@ -1298,44 +1406,41 @@ fn completion(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement
     for (ix, choice) in composer.choices.iter().take(ROWS * 2).enumerate() {
         if choice.group.is_some() && choice.group != group {
             group = choice.group;
-            rows.push(div().px_4().pt_2().pb_1().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child(choice.group.unwrap_or_default()).into_any_element());
+            rows.push(div().h(px(28.)).px_2().flex().items_end().pb_1().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child(choice.group.unwrap_or_default()).into_any_element());
         }
         let on = ix == composer.pick;
-        rows.push(
-            h_flex()
-                .id(("choice", ix))
-                .h(px(32.))
-                .px_4()
-                .gap_3()
-                .items_center()
-                .cursor_pointer()
-                .when(on, |r| r.bg(p.wash))
-                .hover(move |s| s.bg(p.wash))
-                .on_click(cx.listener(move |this, _, window, cx| this.take_choice(ix, window, cx)))
-                .child(highlighted(p, &choice.label, &choice.hits).flex_none().max_w(px(320.)).overflow_hidden())
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(SMALL)).text_color(p.muted).child(choice.about.clone()))
-                .children(choice.badge.clone().map(|badge| div().flex_none().px_2().h(px(18.)).flex().items_center().rounded(px(9.)).bg(p.wash).text_size(px(10.5)).text_color(p.muted).child(badge)))
-                .into_any_element(),
-        );
+        let row = h_flex()
+            .id(("choice", ix))
+            .h(px(ROW))
+            .px_2()
+            .gap_3()
+            .items_center()
+            .rounded(px(R_SM))
+            .cursor_pointer()
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered && this.composer.pick != ix {
+                    this.composer.pick = ix;
+                    cx.notify();
+                }
+            }))
+            .on_click(cx.listener(move |this, _, window, cx| this.take_choice(ix, window, cx)))
+            .child(highlighted(p, &choice.label, &choice.hits).flex_none().max_w(px(320.)).overflow_hidden())
+            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(SMALL)).text_color(p.muted).child(choice.about.clone()))
+            .children(choice.badge.clone().map(|badge| div().flex_none().px_2().h(px(18.)).flex().items_center().rounded(px(9.)).bg(p.wash).text_size(px(10.5)).text_color(p.muted).child(badge)));
+        rows.push(motion::hover_fill(row, ("choice-fill", ix), p.wash, on).into_any_element());
     }
-    Some(
-        v_flex()
-            .id("completion")
-            .absolute()
-            .left_0()
-            .right_0()
-            .bottom(relative(1.))
-            .mb_2()
-            .py_1()
-            .max_h(px(ROWS as f32 * 32. + 48.))
-            .overflow_y_scroll()
-            .rounded(px(12.))
-            .bg(p.raised)
-            .border_1()
-            .border_color(p.hair)
-            .shadow_lg()
-            .children(rows),
-    )
+    // The list sits over the card's top edge; the surface inside it moves.
+    let surface = v_flex()
+        .id("completion")
+        .p_1()
+        .max_h(px(ROWS as f32 * ROW + 48.))
+        .overflow_y_scroll()
+        .rounded(px(R_LG))
+        .bg(p.popover())
+        .border_1()
+        .border_color(p.hair)
+        .children(rows);
+    Some(div().absolute().left_0().right_0().bottom(relative(1.)).mb(px(GAP)).child(motion::pop(surface, "completion-in", true)))
 }
 
 /// A label with the matched letters bright and bold, the rest quieter.
@@ -1361,58 +1466,128 @@ fn highlighted(p: Palette, label: &str, hits: &[usize]) -> Div {
     flush(row, &mut run, run_hit)
 }
 
-/// A menu of the bar, above it: the "+" menu, recent files, who to, model,
-/// effort, mode, context. Numbers pick a row.
-fn menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
+/// The bar's menu, open over its control — and the one just closed, fading.
+fn menu_layer(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
+    let mut layers = Vec::new();
+    if let Some((menu, n)) = &shell.composer.leaving {
+        layers.extend(menu_popup(shell, menu, Some(*n), cx));
+    }
+    if let Some(menu) = &shell.composer.menu {
+        layers.extend(menu_popup(shell, menu, None, cx));
+    }
+    layers
+}
+
+/// A menu of the bar, anchored to the control that opened it: directly above
+/// it (below when there's no room), flush with its edge, `GAP` away. A leading
+/// column for icons, the label, the shortcut or detail on the right in a
+/// quieter tone, a chevron for a menu that opens another. `leaving`: the
+/// menu has closed and fades out, taking no clicks.
+fn menu_popup(shell: &Shell, menu: &Menu, leaving: Option<u64>, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
-    let menu = shell.composer.menu.as_ref()?;
-    let right = menu.kind == MenuKind::Context;
-    // A column for ✓ only in menus that pick one of several.
-    let checks = menu.rows.iter().any(|r| r.on);
-    let mut n = 0;
-    let rows = menu.rows.iter().enumerate().map(|(ix, row)| {
-        let number = row.act.is_some().then(|| {
-            n += 1;
-            n
+    let anchor = *shell.composer.anchors.borrow().get(&menu.kind.trigger())?;
+    let live = leaving.is_none();
+    let rows: Vec<AnyElement> = menu
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(ix, row)| {
+            let base = h_flex().min_h(px(ROW)).px_2().gap_2().items_center().rounded(px(R_SM));
+            match &row.act {
+                None => base.py_1().child(div().flex_1().min_w_0().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(row.label.clone())).into_any_element(),
+                Some(_) => {
+                    let picked = ix == menu.pick;
+                    let lead = match row.lead {
+                        Lead::Icon(name) => icon(name, ICON, p.text2).into_any_element(),
+                        Lead::Mark(mark, hue) => div().text_size(px(12.)).text_color(p.member(hue)).child(mark).into_any_element(),
+                        Lead::None if row.on => icon(Icon::Check, ICON, p.accent).into_any_element(),
+                        Lead::None => div().into_any_element(),
+                    };
+                    let trail: Option<AnyElement> = match (row.keys, row.on && row.lead != Lead::None, row.more) {
+                        (_, _, true) => Some(icon(Icon::ChevronRight, ICON_SM, p.muted).into_any_element()),
+                        (_, true, _) => Some(icon(Icon::Check, ICON_SM, p.accent).into_any_element()),
+                        (Some(keys), _, _) => Some(div().text_size(px(12.)).text_color(p.muted).child(keys).into_any_element()),
+                        _ => None,
+                    };
+                    let row_el = base
+                        .id(("menu-row", ix))
+                        .when(live, |r| {
+                            r.cursor_pointer()
+                                // The pointer moves the highlight, as the arrows do.
+                                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                                    if let Some(menu) = this.composer.menu.as_mut()
+                                        && *hovered
+                                        && menu.pick != ix
+                                    {
+                                        menu.pick = ix;
+                                        cx.notify();
+                                    }
+                                }))
+                                .on_click(cx.listener(move |this, _, window, cx| this.run_row(ix, window, cx)))
+                        })
+                        .child(div().w(px(ICON)).flex_none().flex().justify_center().child(lead))
+                        .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).text_color(p.text).child(row.label.clone()))
+                        .when(!row.hint.is_empty(), |r| r.child(div().flex_none().max_w(px(160.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.)).text_color(p.muted).child(row.hint.clone())))
+                        .children(trail.map(|t| div().flex_none().flex().items_center().child(t)));
+                    motion::hover_fill(row_el, ("menu-row-fill", ix), p.wash, picked).into_any_element()
+                }
+            }
+        })
+        .collect();
+    let kind = menu.kind;
+    let surface = v_flex()
+        .id(if live { "bar-menu" } else { "bar-menu-leaving" })
+        .w(px(kind.width()))
+        .p_1()
+        .rounded(px(R_MD))
+        .bg(p.popover())
+        .border_1()
+        .border_color(p.hair)
+        .text_color(p.text)
+        .children(menu.title.clone().map(|title| div().h(px(28.)).px_2().flex().items_center().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child(title)))
+        .children(rows)
+        .when(live, |s| {
+            // A click anywhere else closes it — but not on its own control,
+            // whose click does that already.
+            s.on_mouse_down_out(cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                if !anchor.contains(&e.position) {
+                    this.close_menu(cx);
+                }
+            }))
         });
-        let on = ix == menu.pick && row.act.is_some();
-        let base = h_flex().min_h(px(32.)).px_3().gap_3().items_center().rounded(px(8.)).when(on, |r| r.bg(p.wash));
-        match &row.act {
-            None => base.py_1().pb_2().child(div().flex_1().min_w_0().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(row.label.clone())).into_any_element(),
-            Some(_) => base
-                .id(("menu-row", ix))
-                .cursor_pointer()
-                .hover(move |s| s.bg(p.wash))
-                .on_click(cx.listener(move |this, _, window, cx| this.run_row(ix, window, cx)))
-                .when(checks, |r| r.child(div().w(px(14.)).flex_none().text_size(px(12.)).text_color(p.accent).child(if row.on { "✓" } else { "" })))
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).text_color(p.text).child(row.label.clone()))
-                .child(div().flex_none().max_w(px(160.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.5)).text_color(p.muted).child(row.hint.clone()))
-                .children(number.filter(|n| *n <= 9).map(|n| div().flex_none().w(px(16.)).text_size(px(11.)).text_color(p.muted).text_right().child(format!("{n}"))))
-                .into_any_element(),
-        }
-    });
-    Some(
-        v_flex()
-            .id("bar-menu")
-            .absolute()
-            .bottom(relative(1.))
-            .when(right, |m| m.right_0())
-            .when(!right, |m| m.left_0())
-            .mb_2()
-            .w(px(320.))
-            .p_1()
-            .rounded(px(12.))
-            .bg(p.raised)
-            .border_1()
-            .border_color(p.hair)
-            .shadow_lg()
-            .children(menu.title.clone().map(|title| div().px_3().pt_2().pb_1().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child(title)))
-            .children(rows),
+    let surface: AnyElement = match leaving {
+        None => motion::pop(surface, ("menu-in", kind as u64), true).into_any_element(),
+        Some(n) => surface.shadow(motion::float_shadow(0.)).with_animation(("menu-out", n), Animation::new(motion::FAST).with_easing(motion::ease_out), |s, t| s.opacity(1. - t)).into_any_element(),
+    };
+    let positioner = gpui_kit::base::Positioner::side(anchor).placement(gpui_kit::base::Placement::Top).align(kind.align()).offset(px(GAP)).margin(px(8.));
+    let positioner = if live { positioner.occlude() } else { positioner };
+    Some(deferred(positioner.child(surface)).with_priority(2).into_any_element())
+}
+
+/// Remember where a control that opens a menu is, for the menu to open there.
+fn anchored<E: ParentElement>(el: E, anchors: &Rc<std::cell::RefCell<std::collections::HashMap<MenuKind, Bounds<Pixels>>>>, kind: MenuKind) -> E {
+    use gpui_kit::base::ElementExt as _;
+    let anchors = anchors.clone();
+    el.on_prepaint(move |bounds, _, _| {
+        anchors.borrow_mut().insert(kind, bounds);
+    })
+}
+
+/// A square button with an icon, a fill easing in under the pointer, and a
+/// tooltip: its name and its shortcut.
+fn icon_button(shell: &Shell, id: &'static str, glyph: Icon, label: &'static str, keys: Option<&'static str>, run: impl Fn(&mut Shell, &mut Window, &mut Context<Shell>) + 'static, cx: &mut Context<Shell>) -> Stateful<Div> {
+    let p = shell.palette;
+    tip(
+        button(id, label, run, cx).size(px(CONTROL)).flex_none().flex().items_center().justify_center().rounded(px(R_MD)).child(icon(glyph, ICON, p.text2)),
+        p,
+        label,
+        keys,
     )
 }
 
-/// The bar under the box: "+", who it is for, the member's model, effort and
-/// mode, how full its context is, and Send — or Stop while it works.
+/// The bar under the box. Left: "+", dictation, who it is for, the mode.
+/// Right: how full the context is, the model, the effort, and Send — or Stop
+/// while the member works. Every control is `CONTROL` tall, `GAP`-ish apart.
 fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
     let composer = &shell.composer;
@@ -1426,181 +1601,174 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let steerable = member.is_some_and(|m| m.engine == Some(Engine::Claude));
     let (to_label, to_color) = recipient(p, model, &text);
     let project = model.focus.clone().filter(|_| member.is_some_and(Model::is_pm));
+    let anchors = composer.anchors.clone();
+    let open = |kind: MenuKind| composer.menu.as_ref().is_some_and(|m| m.kind.trigger() == kind);
 
-    let plus = button("attach", t!("composer.aria_attach"), |this, window, cx| this.open_menu(MenuKind::Attach, window, cx), cx)
-        .size(px(28.))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_full()
+    // "+" wears a hairline, as Claude's does: its edge is where the text above starts.
+    let plus_open = open(MenuKind::Attach);
+    let plus = anchored(icon_button(shell, "attach", Icon::Plus, t!("composer.tip_attach"), Some("⌘U"), |this, window, cx| this.open_menu(MenuKind::Attach, window, cx), cx), &anchors, MenuKind::Attach)
         .border_1()
-        .border_color(p.hair)
-        .text_size(px(17.))
-        .text_color(p.text2)
-        .hover(move |s| s.bg(p.wash))
-        .when(composer.menu.as_ref().is_some_and(|m| matches!(m.kind, MenuKind::Attach | MenuKind::Recent)), |b| b.bg(p.wash))
-        .child("+");
-
-    let pill = |id: &'static str, aria: String, label: String, color: Rgba, kind: MenuKind, cx: &mut Context<Shell>| {
-        let open = composer.menu.as_ref().is_some_and(|m| m.kind == kind);
-        button(id, aria, move |this, window, cx| this.open_menu(kind, window, cx), cx)
-            .h(px(26.))
-            .px_2()
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap_1()
-            .rounded(px(7.))
-            .text_size(px(12.))
-            .text_color(color)
-            .whitespace_nowrap()
-            .hover(move |s| s.bg(p.wash))
-            .when(open, |b| b.bg(p.wash))
-            .child(label)
-            .child(div().text_size(px(9.)).text_color(p.muted).child("▾"))
-    };
-
-    let to = pill("to", t!("composer.aria_to", name = to_label.clone()), match &project {
-        Some(project) => format!("{to_label} · {project}"),
-        None => to_label.clone(),
-    }, to_color, MenuKind::To, cx)
-    .font_weight(FontWeight::SEMIBOLD);
-    let model_pill = member.and_then(|m| m.model.clone()).map(|m| pill("model", t!("composer.aria_model", model = m.clone()), short_model(&m), p.text2, MenuKind::Model, cx));
-    let effort_pill = member.map(|m| {
-        let now = composer.efforts.get(&m.session).cloned().flatten();
-        let label = now.clone().unwrap_or_else(|| t!("composer.effort_short").to_owned());
-        pill("effort", t!("composer.aria_effort", effort = label.clone()), label, if now.is_some() { p.text2 } else { p.muted }, MenuKind::Effort, cx)
-    });
-    let mode_pill = member.map(|_| pill("mode", t!("composer.aria_mode", mode = model.mode.label()), model.mode.label().to_owned(), p.muted, MenuKind::Mode, cx));
-    let ring = member.and_then(|m| m.context).map(|used| {
-        let open = composer.menu.as_ref().is_some_and(|m| m.kind == MenuKind::Context);
-        button("context", t!("composer.aria_context", used = used), |this, window, cx| this.open_menu(MenuKind::Context, window, cx), cx)
-            .h(px(26.))
-            .px_1()
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap_1()
-            .rounded(px(7.))
-            .hover(move |s| s.bg(p.wash))
-            .when(open, |b| b.bg(p.wash))
-            .child(context_ring(p, used))
-            .child(div().text_size(px(11.)).text_color(if used >= 80 { danger(p) } else { p.muted }).child(format!("{used}%")))
-    });
+        .border_color(p.hair);
+    let plus = motion::hover_fill(plus, "attach-fill", p.wash, plus_open);
 
     let listening = composer.dictating.is_some();
     let mic = composer.speech.read(cx).is_available(cx).then(|| {
-        button("mic", if listening { t!("composer.aria_mic_stop") } else { t!("composer.aria_mic") }, |this, _, cx| this.toggle_dictation(cx), cx)
-            .size(px(28.))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_full()
-            .when(listening, |b| b.bg(danger_bg(p)))
-            .hover(move |s| s.bg(p.wash))
-            .child(mic_glyph(if listening { danger(p) } else { p.text2 }))
-    });
-
-    let primary = |id: &'static str, label: String, aria: String, enabled: bool, run: fn(&mut Shell, &mut Window, &mut Context<Shell>), cx: &mut Context<Shell>| {
-        button(id, aria, move |this, window, cx| if enabled { run(this, window, cx) }, cx)
-            .h(px(28.))
-            .px_3()
-            .flex_none()
-            .flex()
-            .items_center()
-            .rounded(px(8.))
-            .text_size(px(SMALL))
-            .font_weight(FontWeight::SEMIBOLD)
-            .bg(if enabled { p.primary } else { p.wash })
-            .text_color(if enabled { p.on_primary } else { p.muted })
-            .when(!enabled, |b| b.cursor_default())
-            .child(label)
-    };
-    let quiet = |id: &'static str, label: String, aria: String, run: fn(&mut Shell, &mut Window, &mut Context<Shell>), cx: &mut Context<Shell>| {
-        button(id, aria, run, cx)
-            .h(px(28.))
-            .px_3()
-            .flex_none()
-            .flex()
-            .items_center()
-            .rounded(px(8.))
-            .text_size(px(SMALL))
-            .font_weight(FontWeight::SEMIBOLD)
-            .border_1()
-            .border_color(p.hair)
-            .text_color(p.text)
-            .hover(move |s| s.bg(p.wash))
-            .child(label)
-    };
-
-    let mut right: Vec<AnyElement> = Vec::new();
-    if working && has_words && steerable {
-        right.push(quiet("memo", t!("composer.memo").into(), t!("composer.aria_memo").into(), |this, window, cx| this.send_as(true, window, cx), cx).into_any_element());
-    }
-    if working && has_any {
-        // Words for a member at work: Send steers (or leaves a memo); Stop stays in reach.
-        right.push(
-            button("stop-small", t!("composer.aria_stop"), |this, _, cx| this.interrupt(cx), cx)
-                .size(px(28.))
+        let label = if listening { t!("composer.tip_mic_stop") } else { t!("composer.tip_mic") };
+        let b = tip(
+            button("mic", label, |this, _, cx| this.toggle_dictation(cx), cx)
+                .size(px(CONTROL))
                 .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(8.))
-                .border_1()
-                .border_color(p.hair)
-                .text_size(px(10.))
-                .text_color(if stopping { p.muted } else { p.text })
-                .hover(move |s| s.bg(p.wash))
-                .child("■")
-                .into_any_element(),
+                .rounded(px(R_MD))
+                .when(listening, |b| b.bg(p.danger_bg()))
+                .child(icon(Icon::Mic, ICON, if listening { p.danger() } else { p.text2 })),
+            p,
+            label,
+            None,
         );
-        let label = if steerable { t!("composer.steer_button") } else { t!("composer.memo_button") };
-        right.push(primary("send", label.into(), t!("composer.aria_send").into(), !composer.strip.busy(), |this, window, cx| this.send(window, cx), cx).into_any_element());
+        motion::hover_fill(b, "mic-fill", p.wash, false)
+    });
+
+    // A picker: what it is set to, and a chevron.
+    let picker = |id: &'static str, aria: String, label: String, color: Rgba, kind: MenuKind, tip_label: Option<(&'static str, &'static str)>, cx: &mut Context<Shell>| {
+        let is_open = open(kind);
+        let b = button(id, aria, move |this, window, cx| this.open_menu(kind, window, cx), cx)
+            .h(px(CONTROL))
+            .pl_2()
+            .pr(px(6.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap_1()
+            .rounded(px(R_MD))
+            .text_size(px(SMALL))
+            .text_color(color)
+            .whitespace_nowrap()
+            .child(label)
+            .child(icon(Icon::ChevronDown, ICON_SM, p.muted));
+        let b = anchored(b, &anchors, kind);
+        let b = match tip_label {
+            Some((label, keys)) => tip(b, p, label, Some(keys)),
+            None => b,
+        };
+        motion::hover_fill(b, (id, 1usize), p.wash, is_open)
+    };
+
+    let to = picker(
+        "to",
+        t!("composer.aria_to", name = to_label.clone()),
+        match &project {
+            Some(project) => format!("{to_label} · {project}"),
+            None => to_label.clone(),
+        },
+        to_color,
+        MenuKind::To,
+        None,
+        cx,
+    );
+    let mode_pill = member.map(|_| picker("mode", t!("composer.aria_mode", mode = model.mode.label()), model.mode.label().to_owned(), p.muted, MenuKind::Mode, Some((t!("composer.tip_mode"), "⌘⇧M")), cx));
+    let model_pill = member.and_then(|m| m.model.clone()).map(|m| picker("model", t!("composer.aria_model", model = m.clone()), short_model(&m), p.text2, MenuKind::Model, Some((t!("composer.tip_model"), "⌘⇧I")), cx));
+    let effort_pill = member.map(|m| {
+        let now = composer.efforts.get(&m.session).cloned().flatten();
+        let label = now.clone().unwrap_or_else(|| t!("composer.effort_short").to_owned());
+        picker("effort", t!("composer.aria_effort", effort = label.clone()), label, if now.is_some() { p.text2 } else { p.muted }, MenuKind::Effort, Some((t!("composer.tip_effort"), "⌘⇧E")), cx)
+    });
+    let ring = member.and_then(|m| m.context).map(|used| {
+        let is_open = open(MenuKind::Context);
+        let b = button("context", t!("composer.aria_context", used = used), |this, window, cx| this.open_menu(MenuKind::Context, window, cx), cx)
+            .h(px(CONTROL))
+            .px_2()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .rounded(px(R_MD))
+            .child(context_ring(p, used))
+            .child(div().text_size(px(12.)).text_color(if used >= 80 { p.danger() } else { p.muted }).child(format!("{used}%")));
+        let b = tip(anchored(b, &anchors, MenuKind::Context), p, t!("composer.tip_context"), None);
+        motion::hover_fill(b, "context-fill", p.wash, is_open)
+    });
+
+    // Send: a filled square with an arrow, quiet until there is something to send.
+    let send_button = |id: &'static str, glyph: Icon, label: &'static str, keys: Option<&'static str>, enabled: bool, run: fn(&mut Shell, &mut Window, &mut Context<Shell>), cx: &mut Context<Shell>| {
+        let b = button(id, label, move |this, window, cx| if enabled { run(this, window, cx) }, cx)
+            .size(px(CONTROL))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(R_MD))
+            .bg(if enabled { p.primary } else { p.wash })
+            .when(!enabled, |b| b.cursor_default())
+            .child(icon(glyph, ICON, if enabled { p.on_primary } else { p.muted }));
+        tip(b, p, label, keys)
+    };
+    let quiet = |id: &'static str, label: String, aria: String, tip_label: &'static str, keys: &'static str, run: fn(&mut Shell, &mut Window, &mut Context<Shell>), cx: &mut Context<Shell>| {
+        let b = button(id, aria, run, cx)
+            .h(px(CONTROL))
+            .px_3()
+            .flex_none()
+            .flex()
+            .items_center()
+            .rounded(px(R_MD))
+            .text_size(px(SMALL))
+            .border_1()
+            .border_color(p.hair)
+            .text_color(p.text)
+            .child(label);
+        motion::hover_fill(tip(b, p, tip_label, Some(keys)), (id, 1usize), p.wash, false)
+    };
+    let stop = |cx: &mut Context<Shell>| {
+        let label = if stopping { t!("composer.stopping") } else { t!("composer.tip_stop") };
+        let b = button("stop", t!("composer.aria_stop"), |this, _, cx| this.interrupt(cx), cx)
+            .size(px(CONTROL))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(R_MD))
+            .border_1()
+            .border_color(p.hair)
+            .child(div().size(px(10.)).rounded(px(2.)).bg(if stopping { p.muted } else { p.text }));
+        motion::hover_fill(tip(b, p, label, Some("⌘.")), "stop-fill", p.wash, false)
+    };
+
+    let mut right: Vec<AnyElement> = Vec::new();
+    right.extend(ring.map(IntoElement::into_any_element));
+    right.extend(model_pill.map(IntoElement::into_any_element));
+    right.extend(effort_pill.map(IntoElement::into_any_element));
+    if working && has_words && steerable {
+        right.push(quiet("memo", t!("composer.memo").into(), t!("composer.aria_memo").into(), t!("composer.tip_memo"), "⇥", |this, window, cx| this.send_as(true, window, cx), cx).into_any_element());
+    }
+    if working && has_any {
+        // Words for a member at work: Send steers (or leaves a memo); Stop stays in reach.
+        right.push(stop(cx).into_any_element());
+        let label = if steerable { t!("composer.tip_steer") } else { t!("composer.tip_memo") };
+        right.push(send_button("send", Icon::ArrowUp, label, Some("⏎"), !composer.strip.busy(), |this, window, cx| this.send(window, cx), cx).into_any_element());
     } else if working {
-        let label = if stopping { t!("composer.stopping") } else { t!("composer.stop") };
-        right.push(quiet("stop", label.into(), t!("composer.aria_stop").into(), |this, _, cx| this.interrupt(cx), cx).when(stopping, |b| b.text_color(p.muted)).into_any_element());
+        right.push(stop(cx).into_any_element());
     } else {
         let can = has_any && !composer.strip.busy();
-        right.push(primary("send", t!("composer.send").into(), t!("composer.aria_send").into(), can, |this, window, cx| this.send(window, cx), cx).into_any_element());
+        right.push(send_button("send", Icon::ArrowUp, t!("composer.tip_send"), Some("⏎"), can, |this, window, cx| this.send(window, cx), cx).into_any_element());
     }
 
     h_flex()
-        .h(px(44.))
-        .px_2()
+        .px(px(INSET))
+        .pt_1()
+        .pb(px(INSET - 2.))
         .gap_1()
         .items_center()
         .child(plus)
-        .child(
-            h_flex()
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .gap_0p5()
-                .items_center()
-                .child(to)
-                .children(model_pill)
-                .children(effort_pill)
-                .children(mode_pill),
-        )
-        .children(ring)
         .children(mic)
-        .child(h_flex().flex_none().gap_1p5().items_center().children(right))
-}
-
-/// A microphone, drawn: a capsule on a stand.
-fn mic_glyph(color: Rgba) -> impl IntoElement {
-    v_flex()
-        .items_center()
-        .child(div().w(px(7.)).h(px(11.)).rounded(px(4.)).border_2().border_color(color))
-        .child(div().mt(px(1.)).w(px(2.)).h(px(3.)).bg(color))
+        .child(h_flex().flex_1().min_w_0().overflow_hidden().gap_1().items_center().child(to).children(mode_pill))
+        .child(h_flex().flex_none().gap_1().items_center().children(right))
 }
 
 /// How full the context is, as a ring: 14 points, the used part bright.
 fn context_ring(p: Palette, used: u8) -> impl IntoElement {
-    let color = if used >= 80 { danger(p) } else { p.text2 };
+    let color = if used >= 80 { p.danger() } else { p.text2 };
     let track = p.hair;
     canvas(
         |_, _, _| (),
@@ -1627,25 +1795,29 @@ fn context_ring(p: Palette, used: u8) -> impl IntoElement {
             }
         },
     )
-    .size(px(14.))
+    .size(px(ICON_SM))
     .flex_none()
 }
 
-/// The line under the card: what the keys do now.
-fn hint_line(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+/// Under the card while a member works: what Enter and Tab do now, lined up
+/// with the text inside the card. Nothing when nobody works — the controls'
+/// tooltips say their keys.
+fn hint_line(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
     let p = shell.palette;
     let model = &shell.model;
     let text = shell.composer.text(cx);
     let working = model.viewed_presence() == Some(Presence::Working);
+    if !working {
+        return None;
+    }
     let steerable = model.selected_member().is_some_and(|m| m.engine == Some(Engine::Claude));
-    let says = working && !text.trim().is_empty() && !text.starts_with('/');
-    let hint = match (says, steerable, working) {
-        (true, true, _) => t!("composer.hint_steer"),
-        (true, false, _) => t!("composer.hint_memo"),
-        (false, _, true) if text.is_empty() => t!("composer.hint_stop"),
-        _ => t!("composer.hint_idle"),
+    let says = !text.trim().is_empty() && !text.starts_with('/');
+    let hint = match (says, steerable) {
+        (true, true) => t!("composer.hint_steer"),
+        (true, false) => t!("composer.hint_memo"),
+        (false, _) => t!("composer.hint_stop"),
     };
-    h_flex().h(px(22.)).px_2().justify_end().items_center().text_size(px(11.)).text_color(p.muted).child(hint)
+    Some(motion::fade(h_flex().h(px(24.)).px(px(INSET + 1.)).items_center().text_size(px(11.5)).text_color(p.muted).child(hint), "hint-in", motion::BASE))
 }
 
 /// Who the line goes to, as the bar shows it: always someone, never a guess.
@@ -1685,11 +1857,12 @@ fn strip(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + us
         return None;
     }
     let p = shell.palette;
-    let chips: Vec<AnyElement> = strip.items().iter().enumerate().map(|(n, item)| chip(shell, item, n, cx)).collect();
+    // A chip pops into place when it arrives.
+    let chips: Vec<AnyElement> = strip.items().iter().enumerate().map(|(n, item)| motion::rise(div().flex_none().child(chip(shell, item, n, cx)), ("chip-in", item.id)).into_any_element()).collect();
     let failed = strip.failed();
     let count = strip.len() - failed;
     let summary = h_flex()
-        .px_4()
+        .px(px(INSET))
         .pt_2()
         .gap_2()
         .items_center()
@@ -1697,7 +1870,7 @@ fn strip(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + us
         .text_color(p.muted)
         .when(count > 0, |r| r.child(t!("composer.strip_count", count = count, max = attach::MAX_ATTACHMENTS)))
         .when(failed >= 2, |r| {
-            r.child(div().text_color(danger(p)).child(t!("composer.failed_summary", n = failed)))
+            r.child(div().text_color(p.danger()).child(t!("composer.failed_summary", n = failed)))
                 .child(button("dismiss-failed", t!("composer.dismiss_failed"), |this, _, cx| {
                     this.composer.strip.dismiss_failed();
                     cx.notify();
@@ -1708,27 +1881,26 @@ fn strip(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + us
         });
     Some(
         v_flex()
-            .child(h_flex().px_3().pt_3().gap_2().flex_wrap().items_start().children(chips))
+            .child(h_flex().px(px(INSET)).pt(px(INSET)).gap_2().flex_wrap().items_start().children(chips))
             .child(summary),
     )
 }
 
 /// The ✕ on a chip.
 fn remove_button(p: Palette, id: u64, name: &str, cx: &mut Context<Shell>) -> Stateful<Div> {
-    button(("unattach", id), t!("composer.aria_remove", name = name), move |this, _, cx| this.unattach(id, cx), cx)
+    let b = button(("unattach", id), t!("composer.aria_remove", name = name), move |this, _, cx| this.unattach(id, cx), cx)
         .size(px(20.))
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
         .rounded_full()
-        .bg(p.raised)
+        .bg(p.popover())
         .border_1()
         .border_color(p.hair)
-        .text_size(px(10.))
-        .text_color(p.text2)
         .hover(move |s| s.bg(p.wash))
-        .child("✕")
+        .child(icon(Icon::X, 12., p.text2));
+    tip(b, p, t!("composer.tip_remove"), None)
 }
 
 /// What a chip says under its name.
@@ -1807,7 +1979,7 @@ fn chip(shell: &Shell, item: &attach::Item, n: usize, cx: &mut Context<Shell>) -
                 div()
                     .id(("thumb", id))
                     .size_full()
-                    .rounded(px(10.))
+                    .rounded(px(R_LG))
                     .overflow_hidden()
                     .bg(p.wash)
                     .border_1()
@@ -1828,7 +2000,7 @@ fn chip(shell: &Shell, item: &attach::Item, n: usize, cx: &mut Context<Shell>) -
             .relative()
             .size(px(36.))
             .flex_none()
-            .rounded(px(7.))
+            .rounded(px(R_SM))
             .overflow_hidden()
             .bg(p.wash)
             .child(img(thumb.clone()).size_full().object_fit(ObjectFit::Cover))
@@ -1840,11 +2012,11 @@ fn chip(shell: &Shell, item: &attach::Item, n: usize, cx: &mut Context<Shell>) -
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(7.))
-            .bg(if failed { danger_bg(p) } else { p.wash })
+            .rounded(px(R_SM))
+            .bg(if failed { p.danger_bg() } else { p.wash })
             .text_size(px(9.5))
             .font_weight(FontWeight::BOLD)
-            .text_color(if failed { danger(p) } else { kind_color(p, item.kind) })
+            .text_color(if failed { p.danger() } else { kind_color(p, item.kind) })
             .child(if failed { "!".to_owned() } else { attach::badge(&item.name, item.kind) })
             .into_any_element(),
     };
@@ -1864,11 +2036,11 @@ fn chip(shell: &Shell, item: &attach::Item, n: usize, cx: &mut Context<Shell>) -
                 .pr(px(28.))
                 .gap_2()
                 .items_center()
-                .rounded(px(10.))
+                .rounded(px(R_LG))
                 .overflow_hidden()
-                .bg(if failed { danger_bg(p) } else { p.bg })
+                .bg(if failed { p.danger_bg() } else { p.bg })
                 .border_1()
-                .border_color(if failed { danger(p) } else if focused { p.accent } else { p.hair })
+                .border_color(if failed { p.danger() } else if focused { p.accent } else { p.hair })
                 .when(focused, |d| d.border_2())
                 .when(opens, |d| {
                     d.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| this.show_big(Some(id), cx)))
@@ -1879,7 +2051,7 @@ fn chip(shell: &Shell, item: &attach::Item, n: usize, cx: &mut Context<Shell>) -
                         .flex_1()
                         .min_w_0()
                         .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.5)).line_height(px(17.)).text_color(p.text).child(if item.kind == Kind::Text && item.origin.is_none() { t!("composer.pasted_label").to_owned() } else { item.name.clone() }))
-                        .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.)).line_height(px(15.)).text_color(if failed { danger(p) } else { p.muted }).child(detail)),
+                        .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.)).line_height(px(15.)).text_color(if failed { p.danger() } else { p.muted }).child(detail)),
                 )
                 .children(progress),
         )
@@ -1905,47 +2077,50 @@ fn rail(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use
     let steerable = model.selected_member().is_some_and(|m| m.engine == Some(Engine::Claude));
     let working = model.viewed_presence() == Some(Presence::Working);
     let link = |id: (&'static str, usize), label: &'static str, run: Rc<Run>, cx: &mut Context<Shell>| {
-        button(id, label, move |this, window, cx| run(this, window, cx), cx).px_1p5().h(px(22.)).flex().items_center().rounded(px(6.)).text_size(px(11.5)).text_color(p.text2).hover(move |s| s.bg(p.wash)).child(label)
+        let b = button(id, label, move |this, window, cx| run(this, window, cx), cx).px_2().h(px(24.)).flex().items_center().rounded(px(R_SM)).text_size(px(12.)).text_color(p.text2).child(label);
+        motion::hover_fill(b, (id.0, id.1 + 1000), p.wash, false)
+    };
+    let badge = |label: &'static str, fg: Rgba, bg: Rgba| {
+        div().flex_none().h(px(20.)).px_1p5().flex().items_center().rounded(px(R_SM)).bg(bg).text_size(px(11.)).text_color(fg).child(label)
     };
     let mut cards: Vec<AnyElement> = Vec::new();
     for (i, memo) in convo.queued.iter().enumerate().take(4) {
         let (edit, drop_it, now) = (memo.clone(), memo.clone(), memo.clone());
         let card = h_flex()
-            .h(px(34.))
-            .px_3()
+            .h(px(36.))
+            .pl(px(INSET))
+            .pr_1()
             .gap_2()
             .items_center()
-            .rounded(px(10.))
+            .rounded(px(R_LG))
             .bg(p.raised)
             .border_1()
             .border_color(p.hair)
-            .child(div().flex_none().px_1p5().rounded(px(5.)).bg(p.wash).text_size(px(10.5)).text_color(p.text2).child(t!("composer.rail_memo")))
-            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.5)).text_color(p.text2).child(memo.lines().next().unwrap_or_default().to_owned()))
+            .child(badge(t!("composer.rail_memo"), p.text2, p.wash))
+            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(SMALL)).text_color(p.text2).child(memo.lines().next().unwrap_or_default().to_owned()))
             .child(link(("memo-edit", i), t!("composer.rail_edit"), Rc::new(move |this, window, cx| this.edit_memo(edit.clone(), window, cx)), cx))
             .child(link(("memo-drop", i), t!("composer.rail_delete"), Rc::new(move |this, _, cx| {
                 this.unqueue(&drop_it);
                 cx.notify();
             }), cx))
             .when(steerable && working, |c| c.child(link(("memo-now", i), t!("composer.rail_now"), Rc::new(move |this, _, cx| this.steer_now(now.clone(), cx)), cx)));
-        cards.push(card.into_any_element());
+        cards.push(motion::rise(card, ("memo-in", crate::render::hash_of(memo))).into_any_element());
     }
     for (i, steer) in convo.steering.iter().enumerate().take(3) {
-        cards.push(
-            h_flex()
-                .id(("steer", i))
-                .h(px(30.))
-                .px_3()
-                .gap_2()
-                .items_center()
-                .rounded(px(10.))
-                .border_1()
-                .border_dashed()
-                .border_color(p.hair)
-                .child(div().flex_none().text_size(px(10.5)).text_color(p.accent).child(t!("composer.rail_steer")))
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.5)).text_color(p.muted).child(steer.lines().next().unwrap_or_default().to_owned()))
-                .child(div().flex_none().text_size(px(11.)).text_color(p.muted).child(t!("composer.rail_unread")))
-                .into_any_element(),
-        );
+        let card = h_flex()
+            .id(("steer", i))
+            .h(px(36.))
+            .px(px(INSET))
+            .gap_2()
+            .items_center()
+            .rounded(px(R_LG))
+            .border_1()
+            .border_dashed()
+            .border_color(p.hair)
+            .child(badge(t!("composer.rail_steer"), p.accent, p.accent_bg))
+            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(SMALL)).text_color(p.muted).child(steer.lines().next().unwrap_or_default().to_owned()))
+            .child(div().flex_none().text_size(px(12.)).text_color(p.muted).child(t!("composer.rail_unread")));
+        cards.push(motion::rise(card, ("steer-in", crate::render::hash_of(steer))).into_any_element());
     }
     let more = convo.queued.len().saturating_sub(4) + convo.steering.len().saturating_sub(3);
     Some(
@@ -1953,7 +2128,8 @@ fn rail(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use
             .gap_1()
             .pb_2()
             .children(cards)
-            .when(more > 0, |r| r.child(div().px_2().text_size(px(11.)).text_color(p.muted).child(t!("composer.rail_more", n = more)))),
+            .when(more > 0, |r| r.child(div().px(px(INSET + 1.)).text_size(px(12.)).text_color(p.muted).child(t!("composer.rail_more", n = more)))),
+
     )
 }
 
@@ -1974,7 +2150,7 @@ pub fn drop_overlay(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoE
             .gap_2()
             .max_w(px(520.))
             .text_size(px(SMALL))
-            .child(div().flex_none().text_color(danger(p)).child("✕"))
+            .child(div().flex_none().text_color(p.danger()).child("✕"))
             .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(p.text2).child(if why.contains(name.as_str()) { why.clone() } else { format!("{name} — {why}") }))
     });
     Some(
@@ -1993,7 +2169,7 @@ pub fn drop_overlay(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoE
                 div()
                     .absolute()
                     .inset(px(8.))
-                    .rounded(px(14.))
+                    .rounded(px(R_XL))
                     .border_2()
                     .border_dashed()
                     .border_color(p.accent)
@@ -2018,7 +2194,7 @@ pub fn drop_overlay(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoE
                             .children(refused)
                             .when(preview.refused.len() > 3, |d| d.child(div().text_size(px(SMALL)).text_color(p.muted).child(t!("composer.drop_more_refused", n = preview.refused.len() - 3))))
                             .when(preview.folders > 0, |d| d.child(div().text_size(px(SMALL)).text_color(p.text2).child(t!("composer.drop_folders", n = preview.folders))))
-                            .when(preview.over > 0, |d| d.child(div().text_size(px(SMALL)).text_color(danger(p)).child(t!("composer.drop_over", n = preview.over, max = attach::MAX_ATTACHMENTS))))
+                            .when(preview.over > 0, |d| d.child(div().text_size(px(SMALL)).text_color(p.danger()).child(t!("composer.drop_over", n = preview.over, max = attach::MAX_ATTACHMENTS))))
                             .child(div().pt_1().text_size(px(12.)).text_color(p.muted).text_center().child(t!("composer.drop_limits", n = attach::MAX_ATTACHMENTS, mb = attach::MAX_BYTES >> 20))),
                     ),
             ),
@@ -2068,8 +2244,11 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoEleme
         _ => t!("composer.open_system"),
     };
     let n = items.len();
-    Some(
-        div()
+    let round = |b: Stateful<Div>, glyph: Icon, label: &'static str, keys: &'static str| {
+        let p = shell.palette;
+        tip(b.size(px(CONTROL)).flex().items_center().justify_center().rounded_full().hover(|s| s.bg(rgba(0xFFFFFF1F))).child(icon(glyph, ICON, rgb(0xFFFFFF))), p, label, Some(keys))
+    };
+    let backdrop = div()
             .id("lightbox")
             .absolute()
             .inset_0()
@@ -2084,7 +2263,7 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoEleme
                 this.composer.lightbox = None;
                 cx.notify();
             }))
-            .child(
+            .child(motion::rise(
                 div()
                     .id("lightbox-picture")
                     .flex_1()
@@ -2096,15 +2275,16 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoEleme
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .child(match shown {
                         Some(source) => img(source).max_w_full().max_h_full().object_fit(ObjectFit::Contain).rounded(px(8.)).into_any_element(),
-                        None => div().size(px(160.)).rounded(px(16.)).bg(rgba(0xFFFFFF14)).flex().items_center().justify_center().text_size(px(28.)).font_weight(FontWeight::BOLD).text_color(rgb(0xFFFFFF)).child(attach::badge(&item.name, item.kind)).into_any_element(),
+                        None => div().size(px(160.)).rounded(px(R_XL)).bg(rgba(0xFFFFFF14)).flex().items_center().justify_center().text_size(px(28.)).font_weight(FontWeight::BOLD).text_color(rgb(0xFFFFFF)).child(attach::badge(&item.name, item.kind)).into_any_element(),
                     }),
-            )
+                ("lightbox-shown", id),
+            ))
             .child(
                 h_flex()
                     .id("lightbox-bar")
                     .flex_none()
                     .h(px(44.))
-                    .px_3()
+                    .px_2()
                     .gap_3()
                     .items_center()
                     .rounded(px(22.))
@@ -2113,29 +2293,30 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoEleme
                     .border_color(rgba(0xFFFFFF1F))
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .when(n > 1, |b| {
-                        b.child(button("lightbox-prev", t!("composer.aria_previous"), |this, _, cx| {
+                        b.child(round(button("lightbox-prev", t!("composer.aria_previous"), |this, _, cx| {
                             this.step_lightbox(false, cx);
                             cx.notify();
-                        }, cx).size(px(28.)).flex().items_center().justify_center().rounded_full().hover(|s| s.bg(rgba(0xFFFFFF1F))).text_color(rgb(0xFFFFFF)).text_size(px(18.)).child("‹"))
+                        }, cx), Icon::ArrowLeft, t!("composer.aria_previous"), "←"))
                     })
                     .child(div().text_size(px(13.)).text_color(rgb(0xFFFFFF)).child(item.name.clone()))
                     .child(div().text_size(px(12.)).text_color(rgba(0xFFFFFFB3)).child(format!("{detail} · {}/{n}", at + 1)))
                     .children(open_in.map(|path| {
-                        button("lightbox-open", open_label, move |_, _, cx| cx.open_with_system(&path), cx).px_3().h(px(26.)).flex().items_center().rounded(px(7.)).border_1().border_color(rgba(0xFFFFFF4D)).text_size(px(12.)).text_color(rgb(0xFFFFFF)).child(open_label)
+                        button("lightbox-open", open_label, move |_, _, cx| cx.open_with_system(&path), cx).px_3().h(px(CONTROL)).flex().items_center().gap_1p5().rounded_full().border_1().border_color(rgba(0xFFFFFF4D)).hover(|s| s.bg(rgba(0xFFFFFF1F))).text_size(px(12.)).text_color(rgb(0xFFFFFF)).child(icon(Icon::External, ICON_SM, rgb(0xFFFFFF))).child(open_label)
                     }))
                     .when(n > 1, |b| {
-                        b.child(button("lightbox-next", t!("composer.aria_next"), |this, _, cx| {
+                        b.child(round(button("lightbox-next", t!("composer.aria_next"), |this, _, cx| {
                             this.step_lightbox(true, cx);
                             cx.notify();
-                        }, cx).size(px(28.)).flex().items_center().justify_center().rounded_full().hover(|s| s.bg(rgba(0xFFFFFF1F))).text_color(rgb(0xFFFFFF)).text_size(px(18.)).child("›"))
+                        }, cx), Icon::ArrowRight, t!("composer.aria_next"), "→"))
                     })
-                    .child(button("lightbox-close", t!("composer.aria_close"), |this, _, cx| {
+                    .child(round(button("lightbox-close", t!("composer.aria_close"), |this, _, cx| {
                         this.composer.lightbox = None;
                         cx.notify();
-                    }, cx).px_2().text_size(px(13.)).text_color(rgba(0xFFFFFFB3)).child("Esc")),
-            ),
-    )
+                    }, cx), Icon::X, t!("composer.aria_close"), "Esc")),
+            );
+    Some(motion::fade(backdrop, "lightbox-in", motion::BASE))
 }
+
 
 #[cfg(test)]
 mod tests {
