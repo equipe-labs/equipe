@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub mod rpc;
+pub mod stream;
 pub mod transcript;
 
 pub use transcript::Transcript;
@@ -426,6 +427,55 @@ pub enum Command {
     /// (`low` · `medium` · `high` · `xhigh` · `max`), Codex's reasoning effort
     /// (`minimal` · `low` · `medium` · `high`). `None`: the engine's default.
     SetEffort { session: SessionId, effort: Option<String> },
+    /// The browser panel moves a tab of the shared Chrome: back, forward,
+    /// reload, stop — or to `url`, an address or words to search.
+    BrowserNav { page: u64, action: BrowserNavAction, url: Option<String> },
+    /// A tab of the person's own in the shared Chrome, at `url` (blank without
+    /// one). Answered by [`Event::BrowserTabs`] for the person's lane (`""`).
+    BrowserNewTab { url: Option<String> },
+    BrowserCloseTab { page: u64 },
+    /// The person takes a member's browser (`lane`, as [`Event::BrowserTabs`]
+    /// names it) into their own hands, or gives it back. While they have it the
+    /// member's browser tools wait; given back, the member is told.
+    BrowserControl { lane: String, take: bool },
+    /// The person answers a page's `alert`, `confirm` or `prompt` (`text`).
+    BrowserDialog { page: u64, accept: bool, text: Option<String> },
+    /// The real Chrome window, with `page` in front — beside the app when
+    /// `bounds` says where (screen points) — for what a picture can't do.
+    BrowserPopOut { page: u64, bounds: Option<ScreenBounds> },
+}
+
+/// Where a window goes on the screen, in points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenBounds {
+    pub left: i32,
+    pub top: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// How the browser panel moves a tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserNavAction {
+    Back,
+    Forward,
+    Reload,
+    Stop,
+    /// To the `url` given.
+    Go,
+}
+
+/// One tab of the shared Chrome. `id` is the browser's own, stable while the
+/// tab is open: what [`crate::stream`] frames and commands name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserPage {
+    pub id: u64,
+    pub url: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub loading: bool,
 }
 
 /// A member, wherever it is: its squad and its name.
@@ -626,8 +676,49 @@ pub enum Event {
     /// The engine named its model (Claude Code does on its first turn), or the
     /// person changed it.
     ModelKnown { session: SessionId, model: String },
-    /// What a watched member's browser shows now: a PNG, base64, and the page.
+    /// What a watched member's browser shows now: a picture (JPEG, or PNG from
+    /// a browser of its own), base64, and the page.
     BrowserFrame { session: SessionId, image: String, url: Option<String> },
+    /// The tabs of one lane of the shared Chrome changed: a member
+    /// conversation's browser (`lane` = `squad/key`; `session` its
+    /// conversation), or the person's own (`lane` = `""`, `squad` none).
+    /// `agent_page`: the tab its member's tools last worked in.
+    BrowserTabs {
+        squad: Option<SquadName>,
+        lane: String,
+        #[serde(default)]
+        session: Option<SessionId>,
+        #[serde(default)]
+        member: Option<String>,
+        /// The member's colour, `r, g, b`.
+        #[serde(default)]
+        color: Option<String>,
+        pages: Vec<BrowserPage>,
+        #[serde(default)]
+        agent_page: Option<u64>,
+    },
+    /// Who has a member's browser in hand: the person (`by: "person"`) or the
+    /// member again (`None`). `why`: the member asked the person to do
+    /// something there (sign in) — the screen shows that browser.
+    BrowserControl {
+        squad: Option<SquadName>,
+        lane: String,
+        by: Option<String>,
+        #[serde(default)]
+        why: Option<String>,
+    },
+    /// A page asks: `kind` is `alert`, `confirm`, `prompt` or `beforeunload`.
+    BrowserDialog {
+        squad: Option<SquadName>,
+        lane: String,
+        page: u64,
+        kind: String,
+        message: String,
+        #[serde(default)]
+        default: Option<String>,
+    },
+    /// The page's question was answered (here or elsewhere), or it went away.
+    BrowserDialogClosed { page: u64 },
     /// The member handed `what` to a subagent, which works alongside it.
     SubagentStarted { session: SessionId, id: String, what: String },
     /// A subagent's latest step.
@@ -680,6 +771,7 @@ impl Event {
             | Event::ModeChanged { squad, .. }
             | Event::ApprovalRequested { squad, .. }
             | Event::ApprovalResolved { squad, .. } => Some(squad),
+            Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } => squad.as_deref(),
             _ => None,
         }
     }
@@ -720,13 +812,26 @@ impl Event {
             | Event::ApprovalRequested { .. }
             | Event::ApprovalResolved { .. }
             | Event::PlanUsage { .. }
-            | Event::Desktop { .. } => None,
+            | Event::Desktop { .. }
+            // A browser's own: never part of a conversation.
+            | Event::BrowserTabs { .. }
+            | Event::BrowserControl { .. }
+            | Event::BrowserDialog { .. }
+            | Event::BrowserDialogClosed { .. } => None,
         }
     }
 
     /// Whether every screen gets it, whatever squad it follows.
     pub fn for_everyone(&self) -> bool {
-        matches!(self, Event::PlanUsage { .. } | Event::Desktop { .. })
+        matches!(
+            self,
+            Event::PlanUsage { .. }
+                | Event::Desktop { .. }
+                | Event::BrowserDialogClosed { .. }
+                | Event::BrowserTabs { squad: None, .. }
+                | Event::BrowserControl { squad: None, .. }
+                | Event::BrowserDialog { squad: None, .. }
+        )
     }
 }
 

@@ -254,6 +254,42 @@ are for it.
 Spike knobs (env): `EQUIPE_AGENTS` (3), `EQUIPE_RATE` lines/s per mock agent
 (200, `0` = idle), `EQUIPE_TICK_MS` UI poll interval (33), `EQUIPE_W`/`EQUIPE_H`.
 
+## The browser panel
+
+⌘⇧B (or the header's 브라우저) opens the shared Chrome the members browse in,
+live, beside the conversation: tabs grouped by member (in its colour) and the
+person's own (내 탭), back/forward/reload, the address, Chrome에서 열기, and who
+has the page in hand. It follows the conversation on screen. It is not a web
+view: the page is the daemon's Chrome (`crates/core/assets/browser-host.cjs`),
+signed in once, so the person sees exactly what the members see.
+
+- **Where pages live.** Chrome stops drawing the front tab of a minimized
+  window after a cross-site navigation (no screenshot, no screencast); a tab
+  *behind* another keeps drawing for DevTools. So members' tabs open as
+  background tabs of one minimized "parking" window, behind an equipe
+  placeholder — no window comes up, no focus is taken, and screenshots work.
+- **Pictures.** A second connection (`browser_stream`, `equipe_protocol::stream`)
+  carries JPEG screencast frames of the watched page — only while a panel
+  watches it, ~30/s with the window in front, 5/s behind, quality 70 locally,
+  50 over SSH (a second `ssh … equipe attach --stdio` on the shared
+  connection). Credit-paced: the app gives credit back after drawing, so a
+  slow line gets fewer, newer frames. Frames never go on the event connection.
+- **The hand.** Mouse, wheel and keys go back through the same stream, mapped
+  through the frame's CSS size; Korean composition goes as
+  `Input.imeSetComposition`, commits as `insertText`, editing keys carry the
+  Mac's editing commands. Touching a member's page takes it (its browser tools
+  answer "The person is using this browser…" meanwhile); 돌려주기, Esc or two
+  idle minutes give it back. A member's `show_my_browser` opens the panel on
+  its browser in the person's hands instead of raising a window when a panel is
+  attached; handing back tells the member "The person finished in the browser."
+- JS dialogs show as a card over the page; what a picture can't do (passkeys,
+  permission prompts, a `<select>`'s list, file choosers) goes through
+  Chrome에서 열기.
+
+Snapshot steps: `browser`, `bopen:<url>`, `bpick:<n>`, `bclick:<fx>,<fy>`,
+`bkeys:<text>`, `bime:ㅎ|하|한`. The host's ops have a smoke test:
+`npx -y -p playwright@1.64.0 node scripts/browser-host-smoke.cjs`.
+
 ## Shipping the app
 
 Direct download from the website (the Mac App Store build is separate — it

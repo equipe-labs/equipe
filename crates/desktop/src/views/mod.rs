@@ -2,6 +2,7 @@
 
 pub mod approvals;
 pub mod board;
+pub mod browser;
 pub mod chat;
 pub mod composer;
 pub mod connect;

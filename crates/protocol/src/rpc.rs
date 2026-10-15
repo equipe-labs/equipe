@@ -13,6 +13,8 @@
 //!   any file) saved on the daemon's machine for a message to point at. A big
 //!   file goes over its own SSH channel instead (`equipe receive`), never as
 //!   one giant line.
+//! - `browser_stream` (request): the connection becomes the browser panel's
+//!   picture stream ([`crate::stream`])
 //! - `attached` (notification, `equipe attach --stdio` → screen): [`Attached`],
 //!   the first line a screen reads through the bridge, before anything the
 //!   daemon says
@@ -42,6 +44,10 @@ pub const BUSY: &str = "busy";
 /// A window for the person in the members' shared Chrome, at a page (`equipe
 /// browser`): `true` when there is such a Chrome.
 pub const BROWSER_WINDOW: &str = "browser_window";
+/// The live browser panel's own connection (params
+/// [`crate::stream::StreamHello`]), answered `true`; after the answer the
+/// connection carries [`crate::stream`]'s binary messages, both ways.
+pub const BROWSER_STREAM: &str = "browser_stream";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {

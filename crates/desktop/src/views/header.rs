@@ -137,5 +137,24 @@ fn tabs(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement 
             .on_click(cx.listener(move |this, _, _, cx| this.show(screen, cx)))
             .child(label)
     };
-    h_flex().flex_none().gap_1().child(tab("tab-chat", t!("header.tab_chat"), Screen::Chat)).child(tab("tab-board", t!("header.tab_board"), Screen::Board))
+    let browser_on = shell.browser.read(cx).open;
+    let browser = div()
+        .id("tab-browser")
+        .h(px(28.))
+        .px_3()
+        .flex()
+        .items_center()
+        .rounded(px(6.))
+        .text_size(px(UI))
+        .cursor_pointer()
+        .when(browser_on, |t| t.bg(p.wash).font_weight(FontWeight::SEMIBOLD))
+        .when(!browser_on, |t| t.text_color(p.text2).hover(move |s| s.bg(p.wash)))
+        .on_click(cx.listener(|this, _, window, cx| this.toggle_browser(window, cx)))
+        .child(t!("header.browser"));
+    h_flex()
+        .flex_none()
+        .gap_1()
+        .child(tab("tab-chat", t!("header.tab_chat"), Screen::Chat))
+        .child(tab("tab-board", t!("header.tab_board"), Screen::Board))
+        .child(browser)
 }

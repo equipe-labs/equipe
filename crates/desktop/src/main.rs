@@ -23,6 +23,7 @@ mod ssh;
 #[cfg(feature = "snapshot")]
 mod snapshot;
 mod state;
+mod stream;
 mod target;
 mod theme;
 mod i18n;
@@ -45,17 +46,18 @@ use gpui_kit::*;
 
 use daemon::{Backoff, Link, Spawned, Target};
 use target::{Endpoint, Remembered};
-use equipe_core::protocol::{Command, SessionId};
+use equipe_core::protocol::{Command, Event, SessionId};
 use state::{Clock, Conn, Model};
 use theme::{BODY, Palette, SANS, SMALL};
 use views::board::BoardUi;
+use views::browser::{BrowserPanel, PanelEvent};
 use views::chat::Chat;
 use views::composer::Composer;
 use views::connect::{AskUi, ConnectUi};
 
 actions!(
     equipe,
-    [ToggleBoard, ChooseTarget, AllProjects, Project1, Project2, Project3, Project4, Project5, Project6, Project7, Project8, Project9, ToggleFolds]
+    [ToggleBoard, ToggleBrowser, ChooseTarget, AllProjects, Project1, Project2, Project3, Project4, Project5, Project6, Project7, Project8, Project9, ToggleFolds]
 );
 // The conversation's: ⌘F, and Escape in its find bar.
 actions!(equipe, [FindInConversation, CloseFind]);
@@ -82,6 +84,8 @@ pub struct Shell {
     pub chat: Chat,
     pub composer: Composer,
     pub board: BoardUi,
+    /// The shared Chrome, live, beside the conversation (⌘⇧B).
+    pub browser: Entity<BrowserPanel>,
     /// The ticket a `T-n` link asked the board to open.
     pub board_ticket: Option<u32>,
     /// Where a click on a notification says to go: the notifier's threads send, we follow.
@@ -129,6 +133,9 @@ impl Shell {
             .unwrap_or_else(Endpoint::this_mac);
         let connect = ConnectUi::new(window, cx, target::ssh_dir().map(|d| target::config_hosts(&d)).unwrap_or_default());
         let ask = AskUi::new(window, cx);
+        let palette = Palette::new(window.appearance());
+        let browser_width = remembered.browser_width;
+        let browser = cx.new(|cx| BrowserPanel::new(browser_width, palette, window, cx));
         let mut shell = Self {
             palette: Palette::new(window.appearance()),
             model: Model::new(""),
@@ -137,6 +144,7 @@ impl Shell {
             chat: Chat::new(cx),
             composer: Composer::new(window, cx),
             board: BoardUi::new(window, cx, remembered.board_split, fetched_tx),
+            browser,
             board_ticket: None,
             clicks,
             update_ready: relaunch::watch().borrow().clone(),
@@ -214,6 +222,18 @@ impl Shell {
                 this.submit_secret(window, cx);
             }
         }));
+        let browser = shell.browser.clone();
+        shell._subscriptions.push(cx.subscribe_in(&browser, window, |this, _, event: &PanelEvent, window, cx| match event {
+            PanelEvent::Command(command) => this.send_command(command.clone()),
+            PanelEvent::Resized(width) => {
+                this.remembered.browser_width = Some(*width);
+                this.remembered.save(&equipe_home());
+            }
+            PanelEvent::Opened => {
+                this.show(Screen::Chat, cx);
+                this.sync_browser(window, cx);
+            }
+        }));
         let state = shell.composer.state.clone();
         shell._subscriptions.push(cx.subscribe_in(&state, window, |this, _, event: &InputEvent, window, cx| this.on_composer_event(event, window, cx)));
         shell._subscriptions.push(cx.observe_in(&state, window, |this, _, window, cx| this.on_composer_touched(window, cx)));
@@ -223,6 +243,10 @@ impl Shell {
         shell._subscriptions.push(cx.intercept_keystrokes(move |event, window, cx| {
             let key = event.keystroke.key.as_str();
             let modifiers = event.keystroke.modifiers;
+            // Typing into the browser panel's page: its keys are the page's.
+            if this.update(cx, |shell, cx| shell.browser.read(cx).focus.is_focused(window)).unwrap_or(false) {
+                return;
+            }
             // A box over the window has the keys: typing a password must never
             // answer a request for permission underneath.
             if this.update(cx, |shell, _| shell.overlay_open()).unwrap_or(false) {
@@ -265,6 +289,42 @@ impl Shell {
         self.composer.follow(&self.model, window, cx);
         self.chat.sync(&self.model, cx);
         self.board_sync(cx);
+        self.sync_browser(window, cx);
+    }
+
+    /// Tell the browser panel what it follows: this daemon and squad, the
+    /// conversation on screen and who each conversation is.
+    fn sync_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut who: std::collections::HashMap<SessionId, views::browser::Who> = self
+            .model
+            .members
+            .iter()
+            .map(|m| (m.session, views::browser::Who { name: m.name.clone(), hue: theme::look(&m.role, &m.name).1 }))
+            .collect();
+        for lane in &self.model.lanes {
+            if let Some(member) = who.get(&lane.of).cloned() {
+                who.insert(lane.session, member);
+            }
+        }
+        let (endpoint, squad, viewed, palette, chat) = (self.endpoint.clone(), self.model.squad.clone(), self.model.viewed(), self.palette, self.screen == Screen::Chat);
+        self.browser.update(cx, |b, cx| b.sync(&endpoint, &squad, viewed, who, palette, chat, window, cx));
+    }
+
+    /// ⌘⇧B, or the header's button: the browser panel opens or closes.
+    pub fn toggle_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.screen != Screen::Chat {
+            self.show(Screen::Chat, cx);
+            if self.browser.read(cx).open {
+                self.sync_browser(window, cx);
+                return;
+            }
+        }
+        self.browser.update(cx, |b, cx| b.toggle(window, cx));
+        self.sync_browser(window, cx);
+        if !self.browser.read(cx).open {
+            self.composer.focus(window, cx);
+        }
+        cx.notify();
     }
 
     pub fn send_command(&self, command: Command) {
@@ -334,6 +394,16 @@ impl Shell {
                     let now = Clock::now();
                     let mut changed = false;
                     for update in batch {
+                        // The shared Chrome's tabs and hands: the browser panel's.
+                        if let daemon::Update::Event(
+                            event @ (Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. }),
+                        ) = &update
+                        {
+                            // Told the squad first: these come right after the snapshot.
+                            this.sync_browser(window, cx);
+                            this.browser.update(cx, |b, cx| b.on_event(event, window, cx));
+                            continue;
+                        }
                         match &update {
                             // The daemon's own list, asked on every attach: a squad
                             // made since shows up, on this Mac or the far one.
@@ -722,6 +792,18 @@ impl Render for Shell {
                 this.show(next, cx);
             }))
             .on_action(cx.listener(|this, _: &ChooseTarget, window, cx| this.open_chooser(window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleBrowser, window, cx| this.toggle_browser(window, cx)))
+            // The browser panel's divider follows the pointer wherever it goes.
+            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
+                let pressed = e.pressed_button == Some(MouseButton::Left);
+                this.browser.update(cx, |b, cx| b.drag_to(f32::from(e.position.x), pressed, window, cx));
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, e: &MouseUpEvent, window, cx| {
+                    this.browser.update(cx, |b, cx| b.drag_to(f32::from(e.position.x), false, window, cx));
+                }),
+            )
             .on_action(cx.listener(|this, _: &AllProjects, window, cx| this.focus_project(None, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleFolds, _, cx| this.toggle_folds(cx)))
             .on_action(cx.listener(|this, _: &FindInConversation, window, cx| this.find_open(window, cx)))
@@ -757,7 +839,8 @@ impl Render for Shell {
                     .border_t_1()
                     .border_color(p.hair)
                     .child(views::sidebar::render(self, cx))
-                    .child(div().flex_1().min_w_0().h_full().flex().flex_col().child(self.body(cx))),
+                    .child(div().flex_1().min_w_0().h_full().flex().flex_col().child(self.body(cx)))
+                    .children((self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone())),
             )
             // Over everything: the chooser, then a question from ssh above it.
             .children(views::composer::drop_overlay(self, cx))
@@ -828,6 +911,7 @@ fn main() {
         gpui_kit::init(cx);
         cx.bind_keys([
             KeyBinding::new("cmd-b", ToggleBoard, None),
+            KeyBinding::new("cmd-shift-b", ToggleBrowser, None),
             KeyBinding::new("cmd-0", AllProjects, None),
             KeyBinding::new("cmd-1", Project1, None),
             KeyBinding::new("cmd-2", Project2, None),
