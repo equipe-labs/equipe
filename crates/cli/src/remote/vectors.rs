@@ -705,6 +705,8 @@ fn snapshot() -> Snapshot {
         plan: None,
         suggestions_off: false,
         desktop: Default::default(),
+        allowed: vec![],
+        browsers_shown: false,
     }
 }
 

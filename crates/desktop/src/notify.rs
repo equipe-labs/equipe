@@ -19,6 +19,24 @@ pub enum Alert {
     Approval { approval: Approval, squad: String },
     Review { ticket: TicketId, title: String, by: Option<String>, project: Option<String> },
     Waiting { ticket: TicketId, by: Option<String> },
+    /// A member's turn failed: its work stopped until someone looks.
+    Failed { session: SessionId, member: String },
+}
+
+/// What the person wants to be told of (settings → 알림), kept with the
+/// window's other choices in `target.rs`.
+pub use crate::target::{Ping, Pings};
+
+impl Pings {
+    /// Whether the person wants to be told of `alert`.
+    pub fn wants(&self, alert: &Alert) -> bool {
+        match alert {
+            Alert::Approval { .. } => self.approvals,
+            Alert::Review { .. } => self.reviews,
+            Alert::Waiting { .. } => self.waiting,
+            Alert::Failed { .. } => self.failed,
+        }
+    }
 }
 
 /// Where a click on the notification goes.
@@ -43,11 +61,13 @@ pub fn toasts(alerts: &[Alert], squad: &str, titles: bool) -> Vec<Toast> {
     if alerts.len() > GROUP_AFTER {
         let approvals = alerts.iter().filter(|a| matches!(a, Alert::Approval { .. })).count();
         let reviews = alerts.iter().filter(|a| matches!(a, Alert::Review { .. })).count();
-        let waits = alerts.len() - approvals - reviews;
+        let failed = alerts.iter().filter(|a| matches!(a, Alert::Failed { .. })).count();
+        let waits = alerts.len() - approvals - reviews - failed;
         let parts: Vec<String> = [
             (approvals, t!("notify.count_approvals", n = approvals)),
             (reviews, t!("notify.count_reviews", n = reviews)),
             (waits, t!("notify.count_waits", n = waits)),
+            (failed, t!("notify.count_failed", n = failed)),
         ]
         .into_iter()
         .filter(|(n, _)| *n > 0)
@@ -78,6 +98,7 @@ pub fn toasts(alerts: &[Alert], squad: &str, titles: bool) -> Vec<Toast> {
                 body: t!("notify.waiting_body", by = by.as_deref().map(|b| format!("{b} · ")).unwrap_or_default()),
                 go: Go::Ticket(*ticket),
             },
+            Alert::Failed { session, member } => Toast { title: t!("notify.failed_title", member = member), body: t!("notify.failed_body", squad = squad), go: Go::Member(*session) },
         })
         .collect()
 }
@@ -93,10 +114,16 @@ pub fn stale_daemon(daemon: &str, own: &str) -> Option<String> {
 /// Show `toast`; when it is clicked, say where on `clicked`. The system call
 /// waits for the click, so it runs on a thread of its own. Where the system
 /// refuses, the person still sees the badge and cards in the window.
+/// `sound`: with the system's sound, or silently.
 #[cfg(target_os = "macos")]
-pub fn send(toast: Toast, clicked: UnboundedSender<Go>) {
+pub fn send(toast: Toast, clicked: UnboundedSender<Go>, sound: bool) {
     std::thread::spawn(move || {
-        let sent = mac_notification_sys::Notification::new().title(&toast.title).message(&toast.body).default_sound().wait_for_click(true).send();
+        let mut notice = mac_notification_sys::Notification::new();
+        notice.title(&toast.title).message(&toast.body).wait_for_click(true);
+        if sound {
+            notice.default_sound();
+        }
+        let sent = notice.send();
         if matches!(sent, Ok(mac_notification_sys::NotificationResponse::Click | mac_notification_sys::NotificationResponse::ActionButton(_))) {
             let _ = clicked.send(toast.go);
         }
@@ -104,7 +131,7 @@ pub fn send(toast: Toast, clicked: UnboundedSender<Go>) {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn send(_: Toast, _: UnboundedSender<Go>) {}
+pub fn send(_: Toast, _: UnboundedSender<Go>, _: bool) {}
 
 #[cfg(test)]
 mod tests {
@@ -153,6 +180,30 @@ mod tests {
         assert_eq!(t[0].title, "acme에서 4건이 당신을 기다립니다");
         assert_eq!(t[0].body, "승인 2 · 리뷰 1 · 사람 대기 1");
         assert_eq!(t[0].go, Go::Board);
+    }
+
+    #[test]
+    fn a_failed_turn_names_the_member_and_goes_to_its_conversation() {
+        let t = toasts(&[Alert::Failed { session: 6, member: "qa".into() }], "acme", true);
+        assert!(t[0].title.contains("qa"), "{:?}", t[0]);
+        assert!(t[0].body.contains("acme"));
+        assert_eq!(t[0].go, Go::Member(6));
+        let many = vec![ask("Bash", "a"), ask("Bash", "b"), Alert::Failed { session: 6, member: "qa".into() }, Alert::Waiting { ticket: 3, by: None }];
+        assert_eq!(toasts(&many, "acme", true)[0].body, "승인 2 · 사람 대기 1 · 실패 1");
+    }
+
+    #[test]
+    fn each_kind_of_notice_can_be_turned_off_on_its_own() {
+        let mut pings = Pings::default();
+        let failed = Alert::Failed { session: 6, member: "qa".into() };
+        let waiting = Alert::Waiting { ticket: 3, by: None };
+        assert!(Ping::ALL.iter().all(|p| pings.get(*p)), "everything, by default");
+        pings.set(Ping::Failed, false);
+        assert!(!pings.wants(&failed) && pings.wants(&waiting) && pings.wants(&ask("Bash", "a")));
+        pings.set(Ping::Approvals, false);
+        assert!(!pings.wants(&ask("Bash", "a")));
+        pings.set(Ping::Sound, false);
+        assert!(!pings.sound && pings.wants(&waiting), "the sound is not a kind of notice");
     }
 
     #[test]

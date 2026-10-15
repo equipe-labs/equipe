@@ -33,6 +33,7 @@ mod icons;
 mod motion;
 mod relaunch;
 mod render;
+mod settings;
 #[cfg(target_os = "macos")]
 mod update;
 mod views;
@@ -69,6 +70,8 @@ actions!(equipe, [FindInConversation, CloseFind]);
 actions!(equipe, [CheckForUpdates, Hide, HideOthers, ShowAll, Quit]);
 // The sidebar's: hide or show it (⌘\), a new message (⌘N), search (⌘K).
 actions!(equipe, [ToggleSidebar, NewMessage, SearchAll]);
+// Settings (⌘,), from the app menu or anywhere.
+actions!(equipe, [OpenSettings]);
 
 /// How long the daemon gets to answer before the window says it is connecting.
 const CONNECTING_AFTER: Duration = Duration::from_millis(400);
@@ -80,6 +83,8 @@ const COALESCE: Duration = Duration::from_millis(80);
 pub enum Screen {
     Chat,
     Board,
+    /// Settings (⌘,): its own list in the sidebar's place.
+    Settings,
 }
 
 pub struct Shell {
@@ -90,6 +95,7 @@ pub struct Shell {
     pub chat: Chat,
     pub composer: Composer,
     pub board: BoardUi,
+    pub settings: views::settings::SettingsUi,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
     pub browser: Entity<BrowserPanel>,
     /// The ticket a `T-n` link asked the board to open.
@@ -124,7 +130,8 @@ pub struct Shell {
 impl Shell {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe_window_appearance(window, |this, window, cx| {
-            this.palette = Palette::new(window.appearance());
+            this.palette = Palette::new(this.remembered.appearance.resolve(window.appearance()));
+            this.sync_browser(window, cx);
             cx.notify();
         })
         .detach();
@@ -139,17 +146,20 @@ impl Shell {
             .unwrap_or_else(Endpoint::this_mac);
         let connect = ConnectUi::new(window, cx, target::ssh_dir().map(|d| target::config_hosts(&d)).unwrap_or_default());
         let ask = AskUi::new(window, cx);
-        let palette = Palette::new(window.appearance());
+        // Light or dark as the person picked, else as the Mac is.
+        remembered.appearance.apply();
+        let palette = Palette::new(remembered.appearance.resolve(window.appearance()));
         let browser_width = remembered.browser_width;
         let browser = cx.new(|cx| BrowserPanel::new(browser_width, palette, window, cx));
         let mut shell = Self {
-            palette: Palette::new(window.appearance()),
+            palette,
             model: Model::new(""),
             squads: Vec::new(),
             screen: Screen::Chat,
             chat: Chat::new(cx),
             composer: Composer::new(window, cx),
             board: BoardUi::new(window, cx, fetched_tx),
+            settings: views::settings::SettingsUi::new(window, cx),
             browser,
             board_ticket: None,
             clicks,
@@ -243,6 +253,13 @@ impl Shell {
                 this.sync_browser(window, cx);
             }
         }));
+        // Settings' search filters as it is typed.
+        let settings_search = shell.settings.search.clone();
+        shell._subscriptions.push(cx.subscribe_in(&settings_search, window, |_, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        }));
         let state = shell.composer.state.clone();
         shell._subscriptions.push(cx.subscribe_in(&state, window, |this, _, event: &InputEvent, window, cx| this.on_composer_event(event, window, cx)));
         shell._subscriptions.push(cx.observe_in(&state, window, |this, _, window, cx| this.on_composer_touched(window, cx)));
@@ -263,6 +280,11 @@ impl Shell {
                     this.update(cx, |shell, cx| shell.escape_overlay(window, cx)).ok();
                     cx.stop_propagation();
                 }
+                return;
+            }
+            // Settings has the page's keys: Esc, ↑↓, ⌘F.
+            if this.update(cx, |shell, cx| shell.on_settings_key(key, &modifiers, window, cx)).unwrap_or(false) {
+                cx.stop_propagation();
                 return;
             }
             // A small menu open (the project slice): Esc puts it away.
@@ -293,6 +315,7 @@ impl Shell {
         shell.attach(Target::new(endpoint, env!("CARGO_PKG_VERSION")), window, cx);
         shell.composer.focus(window, cx);
         shell.watch_inbox(cx);
+        shell.open_start(window, cx);
         shell
     }
 
@@ -439,10 +462,12 @@ impl Shell {
                         changed |= this.model.apply(update, now);
                     }
                     // Told while the window is out of sight; in sight, the cards say it.
-                    let alerts = this.model.take_alerts();
+                    // Only the kinds the person wants (settings → 알림).
+                    let pings = this.remembered.pings;
+                    let alerts: Vec<notify::Alert> = this.model.take_alerts().into_iter().filter(|a| pings.wants(a)).collect();
                     if !alerts.is_empty() && !window.is_window_active() {
                         for toast in notify::toasts(&alerts, &this.model.squad, true) {
-                            notify::send(toast, this.clicks.clone());
+                            notify::send(toast, this.clicks.clone(), pings.sound);
                         }
                     }
                     if let Some(flash) = this.model.take_flash() {
@@ -686,6 +711,7 @@ impl Shell {
                     Screen::Chat => views::chat::screen(self, cx).into_any_element(),
                     // 나에게, 작업 중, 모든 일, a saved view: the menu item chosen.
                     Screen::Board => views::board::render(self, cx).into_any_element(),
+                    Screen::Settings => views::settings::render(self, cx),
                 };
                 v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).child(screen).into_any_element()
             }
@@ -822,6 +848,7 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &NewMessage, window, cx| this.new_message(window, cx)))
             .on_action(cx.listener(|this, _: &SearchAll, window, cx| this.search_everything(window, cx)))
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.toggle_settings(window, cx)))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                 if this.board.sidebar_drag.is_some() {
                     if e.pressed_button == Some(MouseButton::Left) {
@@ -860,6 +887,10 @@ impl Render for Shell {
         );
         // The sidebar runs to the window's top, the traffic lights over its
         // strip; each screen's header is the title bar on the right.
+        if self.screen == Screen::Settings {
+            // Settings: its own list in the sidebar's place, the page beside it.
+            return root.relative().child(h_flex().flex_1().min_h_0().child(views::settings::render(self, cx))).children(self.connect.open.then(|| views::connect::chooser(self, cx))).children(views::connect::question(self, cx)).children(tips::layer(cx));
+        }
         let sidebar = self.sidebar(cx);
         let browser = (self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
         root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(div().flex_1().min_w_0().h_full().flex().flex_col().child(self.body(cx))).children(browser))
@@ -875,16 +906,9 @@ impl Render for Shell {
 /// The app menu: updates, hiding, quitting.
 fn app_menu(cx: &mut App) {
     #[cfg(target_os = "macos")]
-    let updater = update::Updater::start();
-    #[cfg(not(target_os = "macos"))]
-    let updater: Option<()> = None;
-    let can_update = updater.is_some();
-    cx.on_action(move |_: &CheckForUpdates, _| {
-        #[cfg(target_os = "macos")]
-        if let Some(updater) = &updater {
-            updater.check();
-        }
-    });
+    cx.set_global(update::Updates(update::Updater::start().map(std::rc::Rc::new)));
+    let can_update = relaunch::can_update(cx);
+    cx.on_action(|_: &CheckForUpdates, cx| relaunch::check_now(cx));
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
@@ -896,6 +920,7 @@ fn app_menu(cx: &mut App) {
     ]);
     cx.set_menus(vec![Menu::new("equipe").items([
         MenuItem::action(t!("main.menu_choose_target"), ChooseTarget),
+        MenuItem::action(t!("settings.menu_item"), OpenSettings),
         MenuItem::action(t!("main.menu_check_updates"), CheckForUpdates).disabled(!can_update),
         MenuItem::separator(),
         MenuItem::action(t!("main.menu_hide"), Hide),
@@ -943,6 +968,7 @@ fn main() {
             KeyBinding::new("cmd-\\", ToggleSidebar, None),
             KeyBinding::new("cmd-n", NewMessage, None),
             KeyBinding::new("cmd-k", SearchAll, None),
+            KeyBinding::new("cmd-,", OpenSettings, None),
             KeyBinding::new("cmd-0", AllProjects, None),
             KeyBinding::new("cmd-1", Project1, None),
             KeyBinding::new("cmd-2", Project2, None),

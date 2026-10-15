@@ -259,6 +259,20 @@ pub struct Model {
     pub acted: HashMap<TicketId, Look>,
     /// Tickets that moved since the person last looked at them: news.
     pub news: std::collections::HashSet<TicketId>,
+    /// The daemon's own version, as it said when the window attached.
+    pub daemon_version: String,
+    /// Each member's own mode, by session; absent: it follows the squad's.
+    pub member_modes: HashMap<SessionId, Mode>,
+    /// How hard each member thinks; absent: its engine's default.
+    pub efforts: HashMap<SessionId, String>,
+    /// The squad's "always allow" rules, oldest first.
+    pub allowed: Vec<String>,
+    /// The person turned off guesses at their next message.
+    pub suggestions_off: bool,
+    /// Every member's browser opens on screen.
+    pub browsers_shown: bool,
+    /// The person took the Mac's screen back from the members.
+    pub desktop_stopped: bool,
 }
 
 impl Model {
@@ -283,6 +297,13 @@ impl Model {
             since: HashMap::new(),
             acted: HashMap::new(),
             news: Default::default(),
+            daemon_version: String::new(),
+            member_modes: HashMap::new(),
+            efforts: HashMap::new(),
+            allowed: Vec::new(),
+            suggestions_off: false,
+            browsers_shown: false,
+            desktop_stopped: false,
         }
     }
 
@@ -491,9 +512,9 @@ impl Model {
             // The shell reads these two itself: the squad list and the bridge's greeting.
             Update::Squads(_) | Update::Bridge(_) => false,
             Update::Event(event) => {
-                let before = (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint());
+                let before = (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint());
                 self.on_event(event, now);
-                let mut changed = before != (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint());
+                let mut changed = before != (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint());
                 // The footer's "last event" moves when the minute does.
                 if let Conn::Connected { last_event } = &mut self.conn {
                     let stamp = Some(now);
@@ -507,6 +528,13 @@ impl Model {
         }
     }
 
+    /// What settings show of the squad, to tell when it changed.
+    fn settings_hint(&self) -> (Mode, Vec<(SessionId, Mode)>, Vec<String>, bool) {
+        let mut modes: Vec<(SessionId, Mode)> = self.member_modes.iter().map(|(s, m)| (*s, *m)).collect();
+        modes.sort_by_key(|(s, _)| *s);
+        (self.mode, modes, self.allowed.clone(), self.desktop_stopped)
+    }
+
     fn load(&mut self, hello: Hello) {
         let version = hello.version;
         let snapshot = hello.snapshot;
@@ -518,6 +546,13 @@ impl Model {
         if let Some(note) = crate::notify::stale_daemon(&version, env!("CARGO_PKG_VERSION")) {
             self.flash = Some(note);
         }
+        self.daemon_version = version;
+        self.member_modes = snapshot.sessions.iter().filter_map(|s| Some((s.session, s.mode?))).collect();
+        self.efforts = snapshot.sessions.iter().filter_map(|s| Some((s.session, s.effort.clone()?))).collect();
+        self.allowed = snapshot.allowed.clone();
+        self.suggestions_off = snapshot.suggestions_off;
+        self.browsers_shown = snapshot.browsers_shown;
+        self.desktop_stopped = snapshot.desktop.stopped;
         let (lanes, own): (Vec<&_>, Vec<&_>) = snapshot.sessions.iter().partition(|s| s.lane.is_some());
         self.lanes = lanes
             .iter()
@@ -605,6 +640,19 @@ impl Model {
                 }
             }
             Event::ApprovalResolved { approval, .. } => self.approvals.resolve(approval),
+            Event::ModeChanged { squad, member, mode } if squad == self.squad => match member {
+                None => self.mode = mode.unwrap_or_default(),
+                Some(name) => {
+                    if let Some(session) = self.members.iter().find(|m| m.name == name).map(|m| m.session) {
+                        match mode {
+                            Some(mode) => self.member_modes.insert(session, mode),
+                            None => self.member_modes.remove(&session),
+                        };
+                    }
+                }
+            },
+            Event::Allowed { squad, rules } if squad == self.squad => self.allowed = rules,
+            Event::Desktop { desktop } => self.desktop_stopped = desktop.stopped,
             Event::LaneOpened { session, of, project } => self.open_lane(session, of, project),
             // A memo taken back: it leaves the conversation's waiting ones.
             Event::MemoWithdrawn { session, text } => {
@@ -691,6 +739,9 @@ impl Model {
                     Event::ModelKnown { model, .. } => member.model = Some(model),
                     Event::TurnEnded { usage, outcome, .. } => {
                         member.failed = outcome == TurnOutcome::Failed;
+                        if member.failed {
+                            self.alerts.push(Alert::Failed { session: member.session, member: member.name.clone() });
+                        }
                         if member.presence == Presence::Working {
                             member.presence = Presence::Ready;
                         }
@@ -1039,6 +1090,7 @@ mod tests {
             estimate: None,
             work: None,
             mode: None,
+            effort: None,
         }
     }
 
@@ -1064,6 +1116,53 @@ mod tests {
         assert_eq!(model.conn, Conn::Connected { last_event: None });
         assert_eq!(model.status(&model.members[1]), Status::Working { ticket: Some(61), verb: Verb::Editing });
         assert_eq!(model.status(&model.members[0]), Status::Ready { ticket: None, model: Some("opus".into()) });
+    }
+
+    #[test]
+    fn what_settings_show_of_the_squad_follows_the_snapshot_and_the_daemon() {
+        let mut model = Model::new("acme");
+        let mut backend = session(2, "backend", "backend", SessionState::Ready);
+        backend.mode = Some(Mode::Ask);
+        backend.effort = Some("high".into());
+        let snapshot = Snapshot {
+            squad: "acme".into(),
+            sessions: vec![session(1, "pm", "pm", SessionState::Ready), backend],
+            mode: Mode::ReadOnly,
+            allowed: vec!["Bash(gh:*)".into()],
+            suggestions_off: true,
+            browsers_shown: true,
+            ..Default::default()
+        };
+        model.apply(Update::Attached(Hello { version: "0.37.0+1".into(), snapshot }), T0);
+        assert_eq!(model.daemon_version, "0.37.0+1");
+        assert_eq!((model.mode, model.member_modes.get(&2), model.member_modes.get(&1)), (Mode::ReadOnly, Some(&Mode::Ask), None));
+        assert_eq!(model.efforts.get(&2).map(String::as_str), Some("high"));
+        assert_eq!(model.allowed, ["Bash(gh:*)"]);
+        assert!(model.suggestions_off && model.browsers_shown && !model.desktop_stopped);
+
+        let event = |e: Event| Update::Event(e);
+        assert!(model.apply(event(Event::ModeChanged { squad: "acme".into(), member: None, mode: Some(Mode::Full) }), T0), "a mode changed redraws");
+        assert!(model.apply(event(Event::ModeChanged { squad: "acme".into(), member: Some("backend".into()), mode: None }), T0));
+        assert_eq!((model.mode, model.member_modes.get(&2)), (Mode::Full, None), "the member follows the squad again");
+        // Another squad's word changes nothing here.
+        model.apply(event(Event::Allowed { squad: "other".into(), rules: Vec::new() }), T0);
+        assert_eq!(model.allowed, ["Bash(gh:*)"]);
+        assert!(model.apply(event(Event::Allowed { squad: "acme".into(), rules: Vec::new() }), T0));
+        assert!(model.allowed.is_empty());
+        let stopped = equipe_core::protocol::DesktopState { stopped: true, ..Default::default() };
+        assert!(model.apply(event(Event::Desktop { desktop: stopped }), T0));
+        assert!(model.desktop_stopped);
+    }
+
+    #[test]
+    fn a_turn_that_failed_is_announced() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(2, "backend", "backend", SessionState::Working)]), T0);
+        let ended = |outcome| Update::Event(Event::TurnEnded { session: 2, outcome, usage: None });
+        model.apply(ended(equipe_core::protocol::TurnOutcome::Interrupted), T0);
+        assert!(model.take_alerts().is_empty(), "stopped by the person: nothing to say");
+        model.apply(ended(equipe_core::protocol::TurnOutcome::Failed), T0);
+        assert_eq!(model.take_alerts(), vec![Alert::Failed { session: 2, member: "backend".into() }]);
     }
 
     #[test]
