@@ -117,7 +117,11 @@ if [ -n "$public_key" ]; then
 	<key>SUVerifyUpdateBeforeExtraction</key>
 	<true/>
 	<key>SUEnableAutomaticChecks</key>
-	<true/>"
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>3600</integer>"
 fi
 
 cat > "$app/Contents/Info.plist" <<EOF

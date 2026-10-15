@@ -30,6 +30,8 @@ fs-notify = { package = "notify", version = "8", default-features = false, featu
 mac-notification-sys = "0.6.15"
 # Talks to Sparkle (updates) in the packaged app — see src/update.rs.
 objc2 = "0.6"
+# Sparkle's "install now" block, kept until the person asks for it.
+block2 = "0.6"
 
 [features]
 snapshot = ["gpui-kit/test-support"]

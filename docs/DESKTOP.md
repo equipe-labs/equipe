@@ -298,7 +298,12 @@ One command on a Mac, from the repo root; ~5 min cold (two architectures).
   `crates/desktop/macos/sparkle-public-ed-key`). Sparkle.framework goes into
   `Contents/Frameworks` (its XPC services removed — they are for sandboxed apps),
   and Info.plist gets `SUFeedURL`, `SUPublicEDKey`, `SURequireSignedFeed`,
-  `SUVerifyUpdateBeforeExtraction`, `SUEnableAutomaticChecks`. With the private
+  `SUVerifyUpdateBeforeExtraction`, `SUEnableAutomaticChecks`, `SUAutomaticallyUpdate`
+  and an hourly `SUScheduledCheckInterval`: a new version downloads in the background,
+  its signature checked, and then the sidebar offers **다시 시작해 업데이트** (Sparkle's
+  `updater:willInstallUpdateOnQuit:immediateInstallationBlock:`, kept by our delegate in
+  `src/update.rs`): a click installs it and relaunches; quitting installs it anyway.
+  The public key is committed (`crates/desktop/macos/sparkle-public-ed-key`). With the private
   half (`SPARKLE_ED_PRIVATE_KEY` = contents of the `generate_keys -x` file, or
   `SPARKLE_ED_KEY_FILE`) it writes `appcast.xml` for this DMG — EdDSA-signed
   enclosure, and the feed itself signed (`sign_update appcast.xml`).

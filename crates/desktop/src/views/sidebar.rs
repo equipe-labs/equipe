@@ -74,7 +74,34 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 .when(dim, |l| l.opacity(0.8))
                 .children(model.side().into_iter().filter_map(|side| side_row(p, shell, side, cx))),
         )
+        .children(relaunch(p, shell, cx))
         .child(footer(p, shell, cx))
+}
+
+/// An update downloaded in the background, ready: one click puts it in and
+/// starts the app again (as Claude's "Relaunch to update").
+fn relaunch(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
+    let version = shell.update_ready.as_deref()?;
+    Some(
+        h_flex()
+            .id("relaunch")
+            .h(px(40.))
+            .flex_none()
+            .mx_2()
+            .mb_2()
+            .px_3()
+            .rounded(px(8.))
+            .items_center()
+            .justify_between()
+            .bg(p.wash)
+            .text_size(px(UI))
+            .font_weight(FontWeight::SEMIBOLD)
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.hair))
+            .on_click(cx.listener(|this, _, _, cx| this.relaunch_to_update(cx)))
+            .child(crate::relaunch::label(version))
+            .child(div().text_color(p.text2).child("→")),
+    )
 }
 
 fn kicker(p: Palette, text: &'static str) -> impl IntoElement {

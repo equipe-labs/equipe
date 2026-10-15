@@ -23,6 +23,7 @@ mod snapshot;
 mod state;
 mod target;
 mod theme;
+mod relaunch;
 #[cfg(target_os = "macos")]
 mod update;
 mod views;
@@ -77,6 +78,8 @@ pub struct Shell {
     pub board_ticket: Option<u32>,
     /// Where a click on a notification says to go: the notifier's threads send, we follow.
     clicks: tokio::sync::mpsc::UnboundedSender<notify::Go>,
+    /// An update downloaded and waiting for a restart: its version.
+    pub update_ready: Option<String>,
     /// Whose daemon this window is a window onto, and what it remembers of that.
     pub endpoint: Endpoint,
     pub remembered: Remembered,
@@ -93,6 +96,7 @@ pub struct Shell {
     _pump: Option<Task<()>>,
     _connecting: Option<Task<()>>,
     _clicks: Option<Task<()>>,
+    _updates: Option<Task<()>>,
     _notices: Option<Task<()>>,
     _fetched: Option<Task<()>>,
     _prompts: Option<Task<()>>,
@@ -127,6 +131,7 @@ impl Shell {
             board: BoardUi::new(window, cx, remembered.board_split, fetched_tx),
             board_ticket: None,
             clicks,
+            update_ready: relaunch::watch().borrow().clone(),
             endpoint: endpoint.clone(),
             remembered,
             connect,
@@ -140,6 +145,7 @@ impl Shell {
             _pump: None,
             _connecting: None,
             _clicks: None,
+            _updates: None,
             _notices: None,
             _fetched: None,
             _prompts: None,
@@ -148,6 +154,21 @@ impl Shell {
         shell._clicks = Some(cx.spawn_in(window, async move |this, cx| {
             while let Some(go) = clicked.recv().await {
                 if this.update_in(cx, |this, window, cx| this.go(go, window, cx)).is_err() {
+                    break;
+                }
+            }
+        }));
+        // An update downloaded in the background: the sidebar offers the restart.
+        let mut updates = relaunch::watch();
+        shell._updates = Some(cx.spawn_in(window, async move |this, cx| {
+            while updates.changed().await.is_ok() {
+                let version = updates.borrow_and_update().clone();
+                if this.update_in(cx, |this, _, cx| {
+                    this.update_ready = version;
+                    cx.notify();
+                })
+                .is_err()
+                {
                     break;
                 }
             }
@@ -509,6 +530,14 @@ impl Shell {
     }
 
     /// A notification was clicked: bring the window forward, on what it was about.
+    /// "다시 시작해 업데이트": the downloaded update goes in, and the app starts again.
+    pub fn relaunch_to_update(&mut self, cx: &mut Context<Self>) {
+        if !relaunch::now() {
+            self.composer.flash = Some("업데이트는 앱을 끄면 설치됩니다".into());
+            cx.notify();
+        }
+    }
+
     fn go(&mut self, go: notify::Go, window: &mut Window, cx: &mut Context<Self>) {
         match go {
             notify::Go::Member(session) => self.select_member(session, window, cx),
