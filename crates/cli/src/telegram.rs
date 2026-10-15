@@ -996,6 +996,7 @@ mod tests {
             branch: None,
             worktree: None,
             merged: None,
+            off_main: None,
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: Some("Done: <form> & tests".into()),

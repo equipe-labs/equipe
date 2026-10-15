@@ -641,6 +641,7 @@ fn ticket(status: TicketStatus) -> Ticket {
         branch: Some("equipe/backend-t38-1a2b3c4d".into()),
         worktree: Some("/Users/you/.equipe/worktrees/api/t38-1a2b3c4d".into()),
         merged: None,
+        off_main: None,
         created_by: "pm".into(),
         note: None,
         asks: vec![],

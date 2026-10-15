@@ -430,6 +430,7 @@ mod tests {
             branch: None,
             worktree: None,
             merged: None,
+            off_main: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],

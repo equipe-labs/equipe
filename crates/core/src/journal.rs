@@ -325,6 +325,7 @@ impl Journal {
             let _ = conn.execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), []);
         }
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN merged INTEGER", []);
+        let _ = conn.execute("ALTER TABLE tickets ADD COLUMN off_main TEXT", []);
         // Tickets from before kinds: `code` with a project, `task` without — once,
         // when the column arrives.
         if conn.execute("ALTER TABLE tickets ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'", []).is_ok() {
@@ -561,7 +562,8 @@ impl Journal {
     pub fn save_ticket(&self, t: &Ticket) -> Result<()> {
         self.conn.execute(
             "UPDATE tickets SET title = ?1, body = ?2, status = ?3, owner = ?4, assignee = ?5, project = ?6,
-                                depends_on = ?7, branch = ?8, note = ?9, updated_at = ?10, merged = ?12, kind = ?13
+                                depends_on = ?7, branch = ?8, note = ?9, updated_at = ?10, merged = ?12, kind = ?13,
+                                off_main = ?14
              WHERE id = ?11",
             params![
                 t.title,
@@ -577,6 +579,7 @@ impl Journal {
                 t.id,
                 t.merged,
                 t.kind.label(),
+                t.off_main.as_ref().and_then(|o| serde_json::to_string(o).ok()),
             ],
         )?;
         Ok(())
@@ -613,7 +616,7 @@ impl Journal {
 
     fn query_tickets(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<Ticket>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree, merged, kind
+            "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree, merged, kind, off_main
              FROM tickets {filter} ORDER BY id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -633,6 +636,7 @@ impl Journal {
                 merged: r.get(12)?,
                 kind: TicketKind::parse(&r.get::<_, String>(13)?).unwrap_or_default(),
                 asks: Vec::new(),
+                off_main: r.get::<_, Option<String>>(14)?.and_then(|o| serde_json::from_str(&o).ok()),
             };
             // A waiting ticket's asks are kept in its note; they travel as a list.
             t.asks = t.asks();
@@ -1110,6 +1114,7 @@ mod tests {
             branch: None,
             worktree: None,
             merged: None,
+            off_main: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],
@@ -1157,6 +1162,7 @@ mod tests {
             t.status = TicketStatus::InProgress;
             t.assignee = Some("frontend".into());
             t.merged = Some(false);
+            t.off_main = Some(equipe_protocol::OffMain::Conflict { detail: "a.rs".into() });
             j.save_ticket(&t).unwrap();
             j.set_ticket_work(2, &TicketWork { base: Some("abc".into()), worktree: Some("/w/2".into()), engine_session: Some("s".into()) }).unwrap();
             j.ticket_event(2, "pm", "created", "Pricing").unwrap();
@@ -1167,6 +1173,7 @@ mod tests {
         assert_eq!(tickets.len(), 2);
         assert_eq!((tickets[1].status, tickets[1].depends_on.clone()), (TicketStatus::InProgress, vec![1]));
         assert_eq!((tickets[0].merged, tickets[1].merged), (None, Some(false)));
+        assert_eq!((tickets[0].off_main.clone(), tickets[1].off_main.clone()), (None, Some(equipe_protocol::OffMain::Conflict { detail: "a.rs".into() })));
         assert_eq!(j.ticket_work(2).unwrap().worktree, Some(PathBuf::from("/w/2")));
         assert_eq!(j.ticket_history(2).unwrap()[1], ("equipe".into(), "assigned".into(), "frontend".into()));
     }

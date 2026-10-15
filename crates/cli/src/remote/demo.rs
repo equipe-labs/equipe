@@ -117,6 +117,7 @@ fn ticket(id: TicketId, title: &str, status: TicketStatus, who: Option<&str>, no
         branch: None,
         worktree: None,
         merged: (status == TicketStatus::Done).then_some(true),
+        off_main: None,
         created_by: "pm".into(),
         note: note.map(str::to_owned),
         asks: vec![],

@@ -2165,8 +2165,10 @@ fn row_meta(app: &App, t: &equipe_core::protocol::Ticket, theme: Theme) -> (Vec<
     if unblocks > 0 && !t.status.is_closed() {
         flags.push(Span::styled(format!("->{unblocks} "), theme.dim()));
     }
-    if t.not_on_main() {
-        flags.push(Span::styled(format!("{} ", t!("app.not_on_main")), theme.accent()));
+    if t.waits_to_merge() {
+        flags.push(Span::styled(format!("{} ", t!("app.flag_not_on_main")), theme.accent()));
+    } else if t.not_on_main() {
+        flags.push(Span::styled(format!("{} ", t!("app.flag_kept")), theme.dim()));
     }
     let on_it = app.agents.iter().find(|a| a.ticket == Some(t.id) && a.is_open());
     let (activity, style) = match t.status {
@@ -2256,6 +2258,10 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
             let count = totals.get(&label).copied().unwrap_or_else(|| shown(&label));
             let style = if for_you(t) && app.board_menu != BoardMenu::All || matches!(t.status, TicketStatus::Review | TicketStatus::Waiting) { theme.accent().add_modifier(Modifier::BOLD) } else { theme.dim() };
             rows.push((Line::from(Span::styled(format!("{label}  {count}"), style)), None));
+            // What a section whose name alone doesn't say means, under it.
+            if app.board_menu == BoardMenu::Inbox && query.is_none() && section_of(t) == Some(Section::NotOnMain) {
+                rows.extend(wrapped(Vec::new(), t!("app.not_on_main_hint"), theme.dim(), 0, width).into_iter().map(|line| (line, None)));
+            }
             current = Some(label);
         }
         let selected = picked == Some(t.id);
@@ -2338,7 +2344,11 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     if let Some(who) = t.assignee.as_ref().or(t.owner.as_ref()) {
         facts.push(who.clone());
     }
-    facts.push(if t.not_on_main() { t!("app.not_on_main") } else { status_word(t.status) }.to_owned());
+    facts.push(match t.off_main {
+        _ if !t.not_on_main() => status_word(t.status),
+        Some(equipe_core::protocol::OffMain::Kept) => t!("app.accepted_kept"),
+        _ => t!("app.accepted_not_on_main"),
+    }.to_owned());
     if let Some(project) = t.project.as_deref().filter(|_| app.projects.len() > 1) {
         facts.push(project_name(project));
     }
@@ -2876,6 +2886,7 @@ mod tests {
             branch: None,
             worktree: None,
             merged: None,
+            off_main: None,
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: None,
@@ -3382,11 +3393,16 @@ mod tests {
         app.board_menu = BoardMenu::Inbox;
         app.flash = None;
         let shot = screen(&app, 100, 24);
-        assert!(shot.contains("Not merged  1"), "its own section in the inbox:\n{shot}");
-        assert!(shot.lines().any(|l| l.contains("T-1") && l.contains("Not merged")), "{shot}");
-        assert!(shot.contains("code · frontend · Not merged") && shot.contains("m merge into main"), "{shot}");
+        assert!(shot.contains("Accepted, not in main yet  1"), "its own section in the inbox:\n{shot}");
+        assert!(shot.contains("The work you accepted is only on the member's branch."), "what it means, under it:\n{shot}");
+        assert!(shot.lines().any(|l| l.contains("T-1") && l.contains("Not in main")), "{shot}");
+        assert!(shot.contains("code · frontend · Accepted · not in main yet") && shot.contains("m merge into main"), "{shot}");
+        // Kept on its branch by the person: out of the inbox, said so on the board.
+        let kept = Ticket { off_main: Some(equipe_core::protocol::OffMain::Kept), ..done.clone() };
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: kept });
+        assert!(!screen(&app, 100, 24).contains("Accepted, not in main yet"));
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: Ticket { merged: Some(true), ..done } });
-        assert!(!screen(&app, 100, 24).contains("Not merged"));
+        assert!(!screen(&app, 100, 24).contains("not in main"));
     }
 
     #[test]

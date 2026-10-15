@@ -196,7 +196,13 @@ can't go on without the person.
   merge is worked out apart from any checkout (`git merge-tree`) and a conflict
   merges nothing; a checkout that has main out follows by fast-forward, keeping
   its uncommitted changes, or refuses — and then nothing moves. Work accepted but
-  not on main says so on the board ("not on main").
+  not on main waits in the inbox ("Accepted, not in main yet") with why, when
+  equipe knows (`off_main` on the ticket: a conflict, a failed merge, or kept on
+  its branch by the person's `keep_on_branch` — which takes it out of the inbox
+  for good; a later `merge` still lands it). A branch with nothing left to bring
+  to main — in it already, or `+0 −0` because its changes landed another way or
+  cancel out — counts as merged: at acceptance, after any merge, and on the
+  daemon's minute.
 - **Accepted work is where the next ticket starts**, merged or not: a new
   ticket's worktree is cut from `HEAD` with the branches of the `done` tickets it
   depends on (and theirs) merged in. When they conflict, it doesn't start: it goes
