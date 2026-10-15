@@ -9,6 +9,7 @@ pub mod connect;
 pub mod diffview;
 pub mod header;
 pub mod icons;
+pub mod pair;
 pub mod peek;
 pub mod settings;
 pub mod sidebar;

@@ -2231,6 +2231,7 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-core-media",
  "objc2-foundation 0.3.2",
+ "qrcode",
  "ropey",
  "serde",
  "serde_json",

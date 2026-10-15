@@ -107,6 +107,7 @@
   "notice.refused": "✗ {why} 拒否: {action}",
   "notice.remembered": "✎ {name} がスクワッドのために覚えました: {what} · /memory でスクワッドが知っていることを表示",
   "notice.restarted": "equipe が再起動しました。T-{id} を再開します。",
+  "pairing.unavailable": "このデーモンは今スマートフォンを接続できません — `equipe daemon restart` で再起動してください。",
   "status.cancelled": "キャンセル済み",
   "status.done": "完了",
   "status.in_progress": "進行中",

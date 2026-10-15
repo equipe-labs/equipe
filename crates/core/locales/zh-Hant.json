@@ -107,6 +107,7 @@
   "notice.refused": "✗ {why} 已拒絕：{action}",
   "notice.remembered": "✎ {name} 為小隊記住了：{what} · /memory 查看小隊知道的內容",
   "notice.restarted": "equipe 已重新啟動；重新接手 T-{id}。",
+  "pairing.unavailable": "這個常駐程式現在無法連接手機 — 請用 `equipe daemon restart` 重新啟動它。",
   "status.cancelled": "已取消",
   "status.done": "已完成",
   "status.in_progress": "進行中",

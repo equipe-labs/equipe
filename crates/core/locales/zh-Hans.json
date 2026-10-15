@@ -107,6 +107,7 @@
   "notice.refused": "✗ {why} 已拒绝：{action}",
   "notice.remembered": "✎ {name} 为小队记住了：{what} · /memory 查看小队知道的内容",
   "notice.restarted": "equipe 已重启；重新接手 T-{id}。",
+  "pairing.unavailable": "这个守护进程现在无法连接手机 — 请用 `equipe daemon restart` 重新启动它。",
   "status.cancelled": "已取消",
   "status.done": "已完成",
   "status.in_progress": "进行中",

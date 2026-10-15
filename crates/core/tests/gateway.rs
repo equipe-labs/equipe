@@ -298,3 +298,77 @@ fn write_script(path: &std::path::Path, script: &str) {
     assert!(copied.success());
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
+
+/// A stand-in for the daemon's phone link on `home`'s `remote.sock`: a code
+/// for `pair`, the list for `devices`; every line it reads goes to the result.
+fn fake_phone_link(home: &Path) -> tokio::sync::mpsc::UnboundedReceiver<String> {
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::UnixListener::bind(equipe_core::pairing::socket_path(home)).unwrap();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let (reader, mut writer) = stream.into_split();
+                let mut lines = tokio::io::BufReader::new(reader).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let _ = tx.send(line.clone());
+                    let answer = if line.contains("\"pair\"") {
+                        let expires = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 300_000;
+                        format!("{{\"qr\":\"equipe://pair?s=secret\",\"expires\":{expires}}}\n")
+                    } else if line.contains("\"devices\"") {
+                        "{\"op\":\"devices\",\"devices\":[{\"id\":\"a1\",\"name\":\"iPhone\",\"platform\":\"ios\",\"added\":1}],\"relay\":\"https://r\",\"connected\":true}\n".to_owned()
+                    } else {
+                        continue;
+                    };
+                    let _ = writer.write_all(answer.as_bytes()).await;
+                }
+                let _ = tx.send("closed".into());
+            });
+        }
+    });
+    rx
+}
+
+#[tokio::test]
+async fn a_screen_pairs_a_phone_with_the_daemons_machine_and_only_it_sees_the_code() {
+    let (home, _project) = squad();
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    let mut link = fake_phone_link(&home);
+    let (mut asker, _) = Client::connect(&socket, "test", "acme").await.unwrap();
+    let (mut other, _) = Client::connect(&socket, "test", "acme").await.unwrap();
+    asker.send(Command::Devices);
+    let seen = until(&mut asker, |e| matches!(e, Event::Devices { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::Devices { devices, connected: true, .. }) if devices[0].name == "iPhone"));
+    asker.send(Command::PairStart);
+    let seen = until(&mut asker, |e| matches!(e, Event::PairOffer { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::PairOffer { url, seconds }) if url == "equipe://pair?s=secret" && *seconds > 290));
+    // The runtime never hears of it, and no other screen sees the code.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    while let Some(event) = other.try_event() {
+        assert!(!matches!(event, Event::PairOffer { .. } | Event::Devices { .. }), "{event:?}");
+    }
+    assert_eq!(link.recv().await.unwrap(), r#"{"op":"devices"}"#);
+    assert_eq!(link.recv().await.unwrap(), r#"{"op":"pair"}"#);
+    // The screen leaving closes its line to the link, which closes its code.
+    drop(asker);
+    let closed = tokio::time::timeout(Duration::from_secs(5), link.recv()).await.unwrap().unwrap();
+    assert_eq!(closed, "closed");
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_daemon_without_its_phone_link_says_so_in_the_screens_language() {
+    let (home, _project) = squad();
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    let (mut screen, _) = Client::connect_in(&socket, "test", "acme", Some(equipe_core::i18n::Lang::De)).await.unwrap();
+    screen.send(Command::PairStart);
+    let seen = until(&mut screen, |e| matches!(e, Event::PairEnded { .. })).await;
+    assert!(
+        matches!(seen.last(), Some(Event::PairEnded { why: equipe_core::protocol::PairEnd::Unavailable, message }) if message.contains("Daemon")),
+        "{seen:#?}"
+    );
+    gateway::shutdown(&socket).await.unwrap();
+}
