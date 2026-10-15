@@ -3377,7 +3377,7 @@ mod tests {
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: None,
-            asks: vec![],
+            asks: vec![], priority: Default::default(), rank: 0, updated: 0,
         }
     }
 

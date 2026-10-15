@@ -644,7 +644,7 @@ fn ticket(status: TicketStatus) -> Ticket {
         off_main: None,
         created_by: "pm".into(),
         note: None,
-        asks: vec![],
+        asks: vec![], priority: Default::default(), rank: 0, updated: 0,
     }
 }
 

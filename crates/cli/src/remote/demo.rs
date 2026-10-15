@@ -120,7 +120,7 @@ fn ticket(id: TicketId, title: &str, status: TicketStatus, who: Option<&str>, no
         off_main: None,
         created_by: "pm".into(),
         note: note.map(str::to_owned),
-        asks: vec![],
+        asks: vec![], priority: Default::default(), rank: 0, updated: 0,
     }
 }
 

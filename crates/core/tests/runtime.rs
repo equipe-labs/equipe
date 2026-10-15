@@ -10,7 +10,7 @@ use std::time::Duration;
 use equipe_core::journal::{self, Journal};
 use equipe_core::protocol::rpc::{ToolCall, ToolResult};
 use equipe_core::protocol::{
-    Access, Command, Engine, Entry, Event, OffMain, SessionSpec, SessionState, Ticket, TicketStatus, TurnOutcome,
+    Access, Command, Engine, Entry, Event, OffMain, Priority, SessionSpec, SessionState, Ticket, TicketDraft, TicketEdit, TicketStatus, TurnOutcome,
 };
 use equipe_core::runtime::{self, Config, Handle};
 use equipe_core::{squad_home, squads};
@@ -775,7 +775,7 @@ async fn work_not_on_main_says_why_can_be_kept_on_its_branch_and_settles_when_no
                     kind: equipe_core::protocol::TicketKind::Code,
                     created_by: "pm".into(),
                     note: None,
-                    asks: vec![],
+                    asks: vec![], priority: Default::default(), rank: 0, updated: 0,
                 })
                 .unwrap();
             let mut t = journal.ticket(made).unwrap().unwrap();
@@ -849,7 +849,7 @@ async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
                     kind: equipe_core::protocol::TicketKind::Code,
                     created_by: "pm".into(),
                     note: None,
-                    asks: vec![],
+                    asks: vec![], priority: Default::default(), rank: 0, updated: 0,
                 })
                 .unwrap();
             assert_eq!(made, id);
@@ -2734,4 +2734,175 @@ async fn after_a_member_answers_the_person_their_next_message_is_guessed() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(calls(&recorded).len(), 3, "the turn, its guess, the next turn");
     assert!(handle.snapshot("acme").await.suggestions_off);
+}
+
+// ── the person's own hand on the board ──
+
+fn draft(title: &str, assignee: Option<&str>) -> TicketDraft {
+    TicketDraft { title: title.into(), body: "- [ ] it works".into(), assignee: assignee.map(Into::into), ..Default::default() }
+}
+
+fn error_text(events: &[Event]) -> String {
+    match events.last() {
+        Some(Event::Error { message, .. }) => message.clone(),
+        other => panic!("not an error: {other:?}"),
+    }
+}
+
+fn notice_to(events: &[Event], session: u64) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Notice { session: s, text } if *s == session => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn the_person_writes_a_ticket_its_owner_takes_it_and_the_pm_hears_with_its_next_message() {
+    let cwd = scratch("cwd");
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), false));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    add(&handle, &mut events, 2, member(&cwd, "qa")).await;
+
+    let empty = TicketDraft { title: "  ".into(), ..Default::default() };
+    handle.send(Command::CreateTicket { squad: "acme".into(), draft: empty });
+    assert_eq!(error_text(&until(&mut events, |e| matches!(e, Event::Error { .. })).await), "A ticket needs a title.");
+    handle.send(Command::CreateTicket { squad: "acme".into(), draft: draft("Test plan", Some("designer")) });
+    assert_eq!(error_text(&until(&mut events, |e| matches!(e, Event::Error { .. })).await), "No one called designer on the squad.");
+
+    let plan = TicketDraft { priority: Priority::High, ..draft("Test plan", Some("qa")) };
+    handle.send(Command::CreateTicket { squad: "acme".into(), draft: plan });
+    let seen = until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+    let made = ticket_changed(&seen).into_iter().next().unwrap();
+    assert_eq!((made.status, made.created_by.as_str(), made.priority, made.owner.as_deref()), (TicketStatus::Todo, "you", Priority::High, Some("qa")));
+    assert!(made.updated > 0);
+    assert!(notice_to(&seen, 1).contains(&"You put T-1 on the board for qa · Test plan.".to_owned()), "{seen:#?}");
+
+    // With no owner, the PM is asked to give it one — with its next message.
+    handle.send(Command::CreateTicket { squad: "acme".into(), draft: draft("Release notes", None) });
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2)).await;
+    handle.send(Command::Submit { session: 1, text: "what's next?".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    let prompt = calls(&recorded).into_iter().filter_map(|c| arg(&c, "-p").map(str::to_owned)).find(|p| p.contains("what's next?")).unwrap();
+    assert!(prompt.contains("The person put T-1 on the board for qa, high priority: Test plan."), "{prompt}");
+    assert!(prompt.contains("The person put T-2 on the board, with no owner yet: Release notes. Give it one"), "{prompt}");
+}
+
+#[tokio::test]
+async fn the_persons_edits_are_checked_then_told_to_the_pm_and_the_members_concerned() {
+    let cwd = scratch("cwd");
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), false));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    add(&handle, &mut events, 2, member(&cwd, "qa")).await;
+    add(&handle, &mut events, 3, member(&cwd, "data")).await;
+    // Nobody on the squad designs: these wait.
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Logo", "body": "-", "owner": "designer" })).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Icons", "body": "-", "owner": "designer", "depends_on": [1] })).await;
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2)).await;
+    let edit = |ticket: u32, changes: TicketEdit| Command::EditTicket { squad: "acme".into(), ticket, changes };
+
+    handle.send(edit(1, TicketEdit { depends_on: Some(vec![2]), ..Default::default() }));
+    assert_eq!(error_text(&until(&mut events, |e| matches!(e, Event::Error { .. })).await), "That would make a loop of waiting: T-1 → T-2 → T-1.");
+    handle.send(edit(1, TicketEdit { depends_on: Some(vec![9]), ..Default::default() }));
+    assert!(error_text(&until(&mut events, |e| matches!(e, Event::Error { .. })).await).contains("T-9"));
+    handle.send(edit(1, TicketEdit { assignee: Some(Some("frontend".into())), ..Default::default() }));
+    assert_eq!(error_text(&until(&mut events, |e| matches!(e, Event::Error { .. })).await), "No one called frontend on the squad.");
+    handle.send(edit(2, TicketEdit { project: Some(Some("/nowhere".into())), ..Default::default() }));
+    assert!(error_text(&until(&mut events, |e| matches!(e, Event::Error { .. })).await).contains("no project"));
+
+    // Title, priority and owner at once: one change, saved, and told.
+    let changes = TicketEdit { title: Some("Brand logo".into()), priority: Some(Priority::Urgent), assignee: Some(Some("qa".into())), ..Default::default() };
+    handle.send(edit(1, changes));
+    let seen = until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+    let changed = ticket_changed(&seen).into_iter().next().unwrap();
+    assert_eq!((changed.title.as_str(), changed.priority, changed.owner.as_deref()), ("Brand logo", Priority::Urgent, Some("qa")));
+    let news = "You changed T-1: title “Brand logo” · priority normal → urgent · owner designer → qa";
+    assert!(notice_to(&seen, 1).contains(&news.to_owned()), "the PM's conversation says so: {seen:#?}");
+    assert!(notice_to(&seen, 2).contains(&news.to_owned()), "and the member it went to: {seen:#?}");
+    assert!(notice_to(&seen, 3).is_empty(), "nobody else");
+
+    // Given to someone else mid-work: its member stops, the other picks it up.
+    handle.send(edit(1, TicketEdit { assignee: Some(Some("data".into())), ..Default::default() }));
+    let moved = until(&mut events, |e| matches!(e, Event::WorkStarted { session: 3, ticket: 1, .. })).await;
+    assert!(moved.iter().any(|e| matches!(e, Event::WorkEnded { session: 2, ticket: 1 })), "{moved:#?}");
+    assert!(ticket_changed(&moved).iter().any(|t| t.status == TicketStatus::Todo && t.owner.as_deref() == Some("data")));
+    handle.send(edit(1, TicketEdit { assignee: Some(None), ..Default::default() }));
+    assert!(error_text(&until(&mut events, |e| matches!(e, Event::Error { .. })).await).contains("being worked on"));
+
+    // Its record keeps what the person did.
+    handle.send(Command::TicketHistory { squad: "acme".into(), ticket: 1 });
+    let history = until(&mut events, |e| matches!(e, Event::TicketHistory { .. })).await;
+    let Some(Event::TicketHistory { ticket: 1, entries, .. }) = history.last() else { panic!("{history:#?}") };
+    let kinds: Vec<(&str, &str)> = entries.iter().map(|e| (e.by.as_str(), e.kind.as_str())).collect();
+    assert!(kinds.contains(&("you", "edited")) && kinds.contains(&("you", "reassigned")), "{kinds:?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn moving_a_ticket_means_what_its_button_would_and_the_board_order_decides_what_goes_first() {
+    let cwd = scratch("cwd");
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), false));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    for title in ["One", "Two", "Three"] {
+        tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": title, "body": "-", "owner": "qa" })).await;
+    }
+    let to = |ticket: u32, status: Option<TicketStatus>, before: Option<u32>| Command::MoveTicket { squad: "acme".into(), ticket, status, before };
+
+    // Not the person's to do by hand.
+    handle.send(to(1, Some(TicketStatus::InProgress), None));
+    assert!(error_text(&until(&mut events, |e| matches!(e, Event::Error { .. })).await).contains("starts when its owner picks it up"));
+    handle.send(to(1, Some(TicketStatus::Done), None));
+    assert!(error_text(&until(&mut events, |e| matches!(e, Event::Error { .. })).await).contains("hasn't been handed in"));
+
+    // T-3 first, then T-2 above T-1.
+    handle.send(to(3, None, Some(1)));
+    handle.send(to(2, None, Some(1)));
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.rank != 0)).await;
+    let mut todo: Vec<Ticket> = handle.snapshot("acme").await.tickets;
+    todo.sort_by_key(|t| (t.order_key(), t.id));
+    assert_eq!(todo.iter().map(|t| t.id).collect::<Vec<_>>(), [3, 2, 1]);
+    // Urgent beats the order: T-1 goes first once someone can take it.
+    handle.send(Command::EditTicket { squad: "acme".into(), ticket: 1, changes: TicketEdit { priority: Some(Priority::Urgent), ..Default::default() } });
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.priority == Priority::Urgent)).await;
+    add(&handle, &mut events, 2, member(&cwd, "qa")).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+
+    // Back to a proposal, then taken on again — not done.
+    handle.send(to(2, Some(TicketStatus::Proposed), None));
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Proposed)).await;
+    handle.send(Command::Accept { squad: "acme".into(), ticket: 2 });
+    let taken = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2)).await;
+    assert_eq!(ticket_changed(&taken).pop().unwrap().status, TicketStatus::Todo, "a proposal accepted is work to do, not work done");
+    // Dropped by dragging to cancelled, and brought back.
+    handle.send(to(3, Some(TicketStatus::Cancelled), None));
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 3 && ticket.status == TicketStatus::Cancelled)).await;
+    handle.send(to(3, Some(TicketStatus::Todo), None));
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 3 && ticket.status == TicketStatus::Todo)).await;
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_persons_comment_reaches_the_member_on_it_or_waits_for_its_owner_and_the_pm() {
+    let cwd = scratch("cwd");
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), false));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Audit", "body": "-", "owner": "qa" })).await;
+    handle.send(Command::CommentTicket { squad: "acme".into(), ticket: 1, text: "check the login page too".into() });
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
+    assert!(notice_to(&seen, 1).contains(&"You commented on T-1: check the login page too".to_owned()));
+    let Some(Event::TicketHistory { entries, .. }) = seen.iter().find(|e| matches!(e, Event::TicketHistory { .. })) else { panic!("{seen:#?}") };
+    assert_eq!(entries.last().map(|e| (e.kind.as_str(), e.text.as_str())), Some(("comment", "check the login page too")));
+    // On it: the member reads it as the person talking to it.
+    add(&handle, &mut events, 2, member(&cwd, "qa")).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, .. })).await;
+    handle.send(Command::CommentTicket { squad: "acme".into(), ticket: 1, text: "and the footer".into() });
+    let said = until(&mut events, |e| matches!(e, Event::SteerQueued { session: 2, .. } | Event::MessageQueued { session: 2, .. })).await;
+    assert!(said.iter().any(|e| matches!(e, Event::SteerQueued { text, .. } | Event::MessageQueued { text, .. } if text == "[T-1] and the footer")), "{said:#?}");
+    handle.shutdown().await;
 }

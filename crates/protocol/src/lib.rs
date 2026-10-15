@@ -195,6 +195,47 @@ impl TicketKind {
     }
 }
 
+/// How soon a ticket should be done — the person's call. Ready work is picked
+/// up urgent first, then by its place on the board.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Priority {
+    Urgent,
+    High,
+    #[default]
+    Normal,
+    Low,
+}
+
+impl Priority {
+    pub const ALL: [Priority; 4] = [Priority::Urgent, Priority::High, Priority::Normal, Priority::Low];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Priority::Urgent => "urgent",
+            Priority::High => "high",
+            Priority::Normal => "normal",
+            Priority::Low => "low",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Priority::ALL.into_iter().find(|p| p.label() == text.trim().to_ascii_lowercase())
+    }
+
+    pub fn is_normal(&self) -> bool {
+        *self == Priority::Normal
+    }
+}
+
+fn is_zero_i64(n: &i64) -> bool {
+    *n == 0
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
+}
+
 /// A unit of work on the squad's board — the board is where the team agrees
 /// on what is being done, by whom, in which project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,9 +278,28 @@ pub struct Ticket {
     /// ([`Ticket::asks`] reads an older daemon's note when this is empty).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub asks: Vec<String>,
+    /// How soon it should be done; normal unless the person said.
+    #[serde(default, skip_serializing_if = "Priority::is_normal")]
+    pub priority: Priority,
+    /// Its place among the tickets of its status, lower first, as the person
+    /// put it; 0: by its number ([`Ticket::order_key`]).
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub rank: i64,
+    /// When it last changed, Unix seconds; 0: not known (an older daemon).
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub updated: u64,
 }
 
+/// The gap between two tickets' ranks when they are spread out again.
+pub const RANK_STEP: i64 = 1024;
+
 impl Ticket {
+    /// Where it sorts among the tickets of its status: its rank, else its
+    /// number spread out, so tickets never placed keep the order they were made in.
+    pub fn order_key(&self) -> i64 {
+        if self.rank != 0 { self.rank } else { i64::from(self.id) * RANK_STEP }
+    }
+
     /// Accepted, but its work isn't on the main branch yet.
     pub fn not_on_main(&self) -> bool {
         self.kind == TicketKind::Code && self.status == TicketStatus::Done && self.branch.is_some() && self.merged == Some(false)
@@ -263,6 +323,75 @@ pub enum OffMain {
     /// Merging it failed otherwise (main checked out with changes, the merge
     /// refused); nothing was merged.
     Failed { detail: String },
+}
+
+/// A ticket the person writes ([`Command::CreateTicket`]). It goes on the
+/// board ready (`todo`): equipe's rules hand it to its owner when it can start.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TicketDraft {
+    pub title: String,
+    /// What to do and how to know it's done (Markdown).
+    #[serde(default)]
+    pub body: String,
+    /// One of the squad's projects; `None`: the squad's only one for code, or
+    /// the squad's folder for a task or action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<PathBuf>,
+    /// Who it is for: a role or a member. `None`: the PM decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
+    #[serde(default, skip_serializing_if = "Priority::is_normal")]
+    pub priority: Priority,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<TicketId>,
+    /// `None`: code with a project, a task without.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<TicketKind>,
+}
+
+/// What the person changes in a ticket ([`Command::EditTicket`]): each field
+/// given is set, the rest stay. For project and assignee, `Some(None)` clears it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TicketEdit {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "some_of")]
+    pub project: Option<Option<PathBuf>>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "some_of")]
+    pub assignee: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<Priority>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depends_on: Option<Vec<TicketId>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<TicketKind>,
+}
+
+impl TicketEdit {
+    /// Nothing to change.
+    pub fn is_empty(&self) -> bool {
+        *self == TicketEdit::default()
+    }
+}
+
+/// A field present on the wire, even as `null`, is a change: `Some(None)` clears.
+fn some_of<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// A line of a ticket's record ([`Event::TicketHistory`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TicketEntry {
+    /// Unix seconds.
+    pub at: u64,
+    /// `you`, `equipe`, or a member.
+    pub by: String,
+    /// `created`, `assigned`, `handed in`, `edited`, `moved`, `comment`, `merged`…
+    pub kind: String,
+    #[serde(default)]
+    pub text: String,
 }
 
 /// How much a member may do on its own while it works a ticket — and, at its
@@ -419,6 +548,31 @@ pub enum Command {
     Resume { squad: SquadName, ticket: TicketId, note: String },
     /// The person drops a ticket.
     Cancel { squad: SquadName, ticket: TicketId },
+    /// The person puts a ticket of their own on the board, ready (`todo`).
+    /// Answered by [`Event::TicketChanged`]; the PM and its owner are told.
+    CreateTicket { squad: SquadName, draft: TicketDraft },
+    /// The person changes a ticket's fields. Refused (an [`Event::Error`]) when
+    /// a change doesn't make sense: a dependency loop, a member nobody is,
+    /// a project the squad hasn't, work under way moved to another project.
+    /// The PM and the members it concerns are told what changed.
+    EditTicket { squad: SquadName, ticket: TicketId, changes: TicketEdit },
+    /// The person moves a ticket on the board: to `status` (each move means
+    /// what its button would — to done accepts, to cancelled cancels, a
+    /// proposal to todo takes it on; see `equipe_core::board::move_rule`), and
+    /// within its column before `before` (`None`: last).
+    MoveTicket {
+        squad: SquadName,
+        ticket: TicketId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<TicketStatus>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<TicketId>,
+    },
+    /// The person writes on a ticket: kept in its record, and passed to the
+    /// member on it (or its owner) and the PM with their next message.
+    CommentTicket { squad: SquadName, ticket: TicketId, text: String },
+    /// A ticket's record, oldest first: answered by [`Event::TicketHistory`].
+    TicketHistory { squad: SquadName, ticket: TicketId },
     /// Set how much members may do on their own: the squad's default, or one
     /// member's (`member`); `mode: None` puts a member back on the squad's default.
     SetMode { squad: SquadName, member: Option<String>, mode: Option<Mode> },
@@ -713,6 +867,8 @@ pub enum Event {
     WorkEnded { session: SessionId, ticket: TicketId },
     /// A ticket was created or changed. Carries the whole ticket.
     TicketChanged { squad: SquadName, ticket: Ticket },
+    /// A ticket's record, oldest first ([`Command::TicketHistory`]).
+    TicketHistory { squad: SquadName, ticket: TicketId, entries: Vec<TicketEntry> },
     /// The squad's default mode, or one member's, changed. `mode: None`: the
     /// member follows the squad again.
     ModeChanged { squad: SquadName, member: Option<String>, mode: Option<Mode> },
@@ -886,6 +1042,7 @@ impl Event {
     pub fn squad(&self) -> Option<&str> {
         match self {
             Event::TicketChanged { squad, .. }
+            | Event::TicketHistory { squad, .. }
             | Event::ModeChanged { squad, .. }
             | Event::ApprovalRequested { squad, .. }
             | Event::ApprovalResolved { squad, .. }
@@ -927,6 +1084,7 @@ impl Event {
             | Event::Output { session, .. } => Some(*session),
             Event::Error { session, .. } => *session,
             Event::TicketChanged { .. }
+            | Event::TicketHistory { .. }
             | Event::ModeChanged { .. }
             | Event::ApprovalRequested { .. }
             | Event::ApprovalResolved { .. }
@@ -1183,7 +1341,7 @@ mod tests {
             kind: TicketKind::Code,
             created_by: "pm".into(),
             note: None,
-            asks: vec![],
+            asks: vec![], priority: Default::default(), rank: 0, updated: 0,
         }
     }
 
@@ -1204,6 +1362,50 @@ mod tests {
         let old: Ticket = serde_json::from_value(old).unwrap();
         assert!(old.asks.is_empty());
         assert_eq!(old.asks(), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_tickets_priority_and_place_travel_only_when_set_and_older_tickets_are_normal() {
+        let t = ticket(4);
+        let wire = serde_json::to_value(&t).unwrap();
+        assert!(wire.get("priority").is_none() && wire.get("rank").is_none() && wire.get("updated").is_none(), "the wire as before: {wire}");
+        assert_eq!((t.priority, t.order_key()), (Priority::Normal, 4 * RANK_STEP));
+        let set = Ticket { priority: Priority::Urgent, rank: -3, updated: 1_700_000_000, ..ticket(4) };
+        let wire = serde_json::to_value(&set).unwrap();
+        assert_eq!((wire["priority"].clone(), wire["rank"].clone()), (json!("urgent"), json!(-3)));
+        assert_eq!(serde_json::from_value::<Ticket>(wire).unwrap(), set);
+        assert!(Priority::Urgent < Priority::High && Priority::Normal < Priority::Low, "sorted most pressing first");
+        assert_eq!(Priority::parse(" High "), Some(Priority::High));
+    }
+
+    #[test]
+    fn the_persons_board_commands_round_trip_and_an_edit_says_what_it_clears() {
+        let commands = [
+            Command::CreateTicket {
+                squad: "acme".into(),
+                draft: TicketDraft { title: "Hero".into(), project: Some("/site".into()), assignee: Some("frontend".into()), priority: Priority::High, depends_on: vec![1], ..Default::default() },
+            },
+            Command::EditTicket { squad: "acme".into(), ticket: 3, changes: TicketEdit { assignee: Some(None), title: Some("x".into()), ..Default::default() } },
+            Command::MoveTicket { squad: "acme".into(), ticket: 3, status: Some(TicketStatus::Done), before: None },
+            Command::MoveTicket { squad: "acme".into(), ticket: 3, status: None, before: Some(2) },
+            Command::CommentTicket { squad: "acme".into(), ticket: 3, text: "also the footer".into() },
+            Command::TicketHistory { squad: "acme".into(), ticket: 3 },
+        ];
+        for command in commands {
+            let text = serde_json::to_string(&command).unwrap();
+            assert_eq!(serde_json::from_str::<Command>(&text).unwrap(), command, "{text}");
+        }
+        // `null` clears; left out, it stays.
+        let clear: TicketEdit = serde_json::from_value(json!({ "assignee": null })).unwrap();
+        assert_eq!(clear.assignee, Some(None));
+        let keep: TicketEdit = serde_json::from_value(json!({ "title": "x" })).unwrap();
+        assert_eq!((keep.assignee, keep.project), (None, None));
+        assert!(TicketEdit::default().is_empty());
+        let edit = Command::EditTicket { squad: "acme".into(), ticket: 3, changes: TicketEdit { project: Some(None), ..Default::default() } };
+        assert_eq!(serde_json::to_value(&edit).unwrap(), json!({ "type": "edit_ticket", "squad": "acme", "ticket": 3, "changes": { "project": null } }));
+        let history = Event::TicketHistory { squad: "acme".into(), ticket: 3, entries: vec![TicketEntry { at: 1, by: "you".into(), kind: "edited".into(), text: "title".into() }] };
+        assert_eq!(history.squad(), Some("acme"));
+        assert_eq!(serde_json::from_value::<Event>(serde_json::to_value(&history).unwrap()).unwrap(), history);
     }
 
     #[test]
