@@ -13,8 +13,7 @@ use gpui_kit::component::h_flex;
 use gpui_kit::*;
 
 use super::links::{self, Link};
-use super::{Open, ShellRef, base_dir, code, is_dark, open_file, plugins, stream, with_shell};
-use crate::convo::link_tickets;
+use super::{Open, ShellRef, base_dir, code, is_dark, open_file, plugins, prose, stream, with_shell};
 use crate::theme::{MONO, Palette};
 
 /// How a text view's text looks: its size and line height, its colour, and
@@ -61,15 +60,16 @@ pub fn style(p: Palette, look: &Look) -> TextViewStyle {
 }
 
 /// The Markdown a text view is given: a streaming reply's unfinished end held
-/// back, long fences cut (unless `expanded`), ticket numbers made links. With
-/// it, the whole code of each cut fence, for its copy button.
+/// back, long fences cut (unless `expanded`), ticket numbers made links and
+/// emphasis next to Korean closed (`prose`). With it, the whole code of each
+/// cut fence, for its copy button.
 pub fn prepare(raw: &str, live: bool, expanded: &dyn Fn(usize) -> bool) -> (String, HashMap<String, String>) {
     let shown = if live { stream::hold_back(raw) } else { raw };
     let more = |n: usize| t!("render.code_more", count = n);
     let rows = |n: usize| t!("render.table_more_rows", count = n);
     let words = code::Words { more: &more, less: t!("render.code_less"), rows: &rows };
     let fences = code::prepare(shown, expanded, &words);
-    (link_tickets(&fences.text), fences.full)
+    (prose::fix(&fences.text), fences.full)
 }
 
 /// Set a text view up the conversation's way. `scope` names the row, for the

@@ -52,6 +52,9 @@ base64 = "0.23.1"
 # `equipe send-image` drops files in an inbox; the folder is watched, not polled.
 # (Renamed: this crate has a module of its own called `notify`.)
 fs-notify = { package = "notify", version = "8", default-features = false, features = ["macos_fsevent"] }
+# Markdown parsed as the text view parses it (the version gpui-kit uses), so
+# ticket numbers are linked in text alone and emphasis next to Korean closes.
+markdown = "=1.0.0"
 # The text the code-block highlighter parses (the version gpui-component uses).
 ropey = "=2.0.0-beta.1"
 
