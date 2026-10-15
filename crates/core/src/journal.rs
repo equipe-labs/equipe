@@ -617,7 +617,7 @@ impl Journal {
              FROM tickets {filter} ORDER BY id"
         ))?;
         let rows = stmt.query_map(args, |r| {
-            Ok(Ticket {
+            let mut t = Ticket {
                 id: r.get(0)?,
                 title: r.get(1)?,
                 body: r.get(2)?,
@@ -632,7 +632,11 @@ impl Journal {
                 worktree: r.get::<_, Option<String>>(11)?.map(PathBuf::from),
                 merged: r.get(12)?,
                 kind: TicketKind::parse(&r.get::<_, String>(13)?).unwrap_or_default(),
-            })
+                asks: Vec::new(),
+            };
+            // A waiting ticket's asks are kept in its note; they travel as a list.
+            t.asks = t.asks();
+            Ok(t)
         })?;
         rows.collect()
     }
@@ -1108,6 +1112,7 @@ mod tests {
             merged: None,
             created_by: "pm".into(),
             note: None,
+            asks: vec![],
             kind: TicketKind::Code,
         }
     }

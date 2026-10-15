@@ -119,6 +119,7 @@ fn ticket(id: TicketId, title: &str, status: TicketStatus, who: Option<&str>, no
         merged: (status == TicketStatus::Done).then_some(true),
         created_by: "pm".into(),
         note: note.map(str::to_owned),
+        asks: vec![],
     }
 }
 

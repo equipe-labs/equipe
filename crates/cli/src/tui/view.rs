@@ -17,7 +17,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use equipe_core::board::{self, project_name};
+use equipe_core::board::project_name;
 use equipe_core::i18n::label;
 use equipe_core::protocol::{Entry, Estimate, SessionId, TicketId, TicketStatus};
 
@@ -272,7 +272,23 @@ fn transcript_width(app: &App, total: u16) -> usize {
 /// What a laid-out conversation depends on: the width it was laid out for, and
 /// enough of the conversation to notice it changed — its length, the length of
 /// its last line (a reply grows as it streams), the memos waiting.
-type LayoutKey = (usize, usize, usize, usize, bool, Option<TicketId>);
+type LayoutKey = (usize, usize, usize, usize, bool, Option<TicketId>, u64);
+
+/// Tickets waiting for the person, as their cards in a conversation show
+/// them: number, title and asks.
+type Turns = Vec<(TicketId, String, Vec<String>)>;
+
+fn turns(app: &App) -> Turns {
+    app.tickets.iter().filter(|t| t.status == TicketStatus::Waiting).map(|t| (t.id, t.title.clone(), t.asks())).collect()
+}
+
+/// What of the waiting tickets a laid-out conversation shows.
+fn turns_key(turns: &Turns) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    turns.hash(&mut h);
+    h.finish()
+}
 
 /// Conversations already laid out, per member. Laying one out means reading all
 /// of its Markdown; scrolling must not do that again for every wheel event.
@@ -300,27 +316,28 @@ impl Layouts {
         }
         let agent = app.viewed()?;
         let text_width = transcript_width(app, width);
-        let key = layout_key(agent, text_width);
+        let turns = turns(app);
+        let key = layout_key(agent, text_width, turns_key(&turns));
         let previous = match self.laid_out.get(&agent.id) {
             Some((k, _)) if *k == key => return None,
             Some((k, lines)) if k.0 == text_width => Some(lines.len()),
             _ => None,
         };
-        let lines = transcript_lines(agent, &squad_looks(app), theme, text_width);
+        let lines = transcript_lines(agent, &squad_looks(app), &turns, theme, text_width);
         let grew = previous.map(|before| lines.len().saturating_sub(before));
         self.laid_out.insert(agent.id, (key, lines));
         grew.filter(|n| *n > 0).map(|n| (agent.id, n))
     }
 
-    fn get(&self, agent: &Agent, width: usize) -> Option<&[Line<'static>]> {
+    fn get(&self, agent: &Agent, width: usize, turns: &Turns) -> Option<&[Line<'static>]> {
         match self.laid_out.get(&agent.id) {
-            Some((key, lines)) if *key == layout_key(agent, width) => Some(lines),
+            Some((key, lines)) if *key == layout_key(agent, width, turns_key(turns)) => Some(lines),
             _ => None,
         }
     }
 }
 
-fn layout_key(agent: &Agent, width: usize) -> LayoutKey {
+fn layout_key(agent: &Agent, width: usize, turns: u64) -> LayoutKey {
     let entries = agent.shown();
     let last = entries.last().map_or(0, |entry| match entry.as_ref() {
         Entry::User { text } | Entry::Reply { text } | Entry::Note { text } => text.len(),
@@ -329,7 +346,7 @@ fn layout_key(agent: &Agent, width: usize) -> LayoutKey {
         Entry::Landed { stat, .. } => stat.len(),
         Entry::Thread { .. } => 0,
     });
-    (width, entries.len(), last, agent.queued.len(), agent.expanded, agent.showing)
+    (width, entries.len(), last, agent.queued.len(), agent.expanded, agent.showing, turns)
 }
 
 // ── the screen ──
@@ -547,8 +564,12 @@ fn waiting_card(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Op
         // Owners line up: titles take a fixed width.
         let title_room = width.saturating_sub(2 + 6 + 2 + 12 + tags + 2).min(56);
         // A waiting ticket says what the person has to do, after its title.
-        let needs = t.note.as_deref().filter(|_| t.status == TicketStatus::Waiting).map(board::waiting_needs).unwrap_or_default();
-        let needs = if needs.is_empty() { String::new() } else { format!(" · {}", t!("view.card_needs", what = needs.join(", "))) };
+        let needs = if t.status == TicketStatus::Waiting { t.asks() } else { Vec::new() };
+        let needs = match needs.as_slice() {
+            [] => String::new(),
+            [one] => format!(" · {}", t!("view.card_needs", what = one)),
+            [first, rest @ ..] => format!(" · {}", t!("view.card_needs", what = format!("{first} +{}", rest.len()))),
+        };
         let width_of = |s: &str| unicode_width::UnicodeWidthStr::width(s);
         // The card is short of room: only work that isn't code names its kind.
         let kind = if t.kind.in_home() { format!("{} · ", label::kind(crate::i18n::lang(), t.kind)) } else { String::new() };
@@ -686,10 +707,10 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
     }
     let width = (text.width as usize).saturating_sub(1).min(PROSE_MAX);
     let fresh;
-    let laid: &[Line<'static>] = match layouts.get(agent, width) {
+    let laid: &[Line<'static>] = match layouts.get(agent, width, &turns(app)) {
         Some(lines) => lines,
         None => {
-            fresh = transcript_lines(agent, &squad_looks(app), theme, width);
+            fresh = transcript_lines(agent, &squad_looks(app), &turns(app), theme, width);
             &fresh
         }
     };
@@ -1616,7 +1637,28 @@ fn news_lines(text: &str, looks: &Looks, theme: Theme, width: usize) -> Option<V
     Some(wrapped(lead, rest, theme.dim(), 2, width).into_iter().map(|l| mark_tickets(l, theme)).collect())
 }
 
-fn transcript_lines(agent: &Agent, looks: &Looks, theme: Theme, width: usize) -> Vec<Line<'static>> {
+/// A ticket waiting for the person, in the conversation: a heading, its
+/// asks numbered one under another, and how to answer.
+fn your_turn_lines(id: TicketId, title: &str, asks: &[String], theme: Theme, width: usize) -> Vec<Line<'static>> {
+    let bar = || Span::styled("▎ ", theme.accent());
+    let inner = width.saturating_sub(2);
+    let mut out: Vec<Line<'static>> = wrapped(Vec::new(), &t!("view.your_turn_heading", id = id, title = title), theme.accent().add_modifier(Modifier::BOLD), 0, inner);
+    for (n, ask) in asks.iter().enumerate() {
+        let number = format!("{}. ", n + 1);
+        let indent = number.chars().count();
+        out.extend(wrapped(vec![Span::styled(number, theme.accent())], ask, Style::new(), indent, inner));
+    }
+    out.extend(wrapped(Vec::new(), &t!("view.your_turn_answer", id = id), theme.dim(), 0, inner));
+    out.into_iter()
+        .map(|line| {
+            let mut spans = vec![bar()];
+            spans.extend(line.spans);
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn transcript_lines(agent: &Agent, looks: &Looks, turns: &Turns, theme: Theme, width: usize) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     if agent.shown().is_empty() && agent.queued.is_empty() {
         let thread_hello;
@@ -1698,6 +1740,15 @@ fn transcript_lines(agent: &Agent, looks: &Looks, theme: Theme, width: usize) ->
                     let mut spans = vec![lead];
                     spans.extend(line.spans);
                     lines.push(mark_tickets(Line::from(spans).style(style), theme));
+                }
+            }
+            // A ticket still waiting for the person: its asks one under another.
+            Entry::Note { text } if equipe_core::i18n::waiting_ticket(text).is_some_and(|id| turns.iter().any(|(t, _, asks)| *t == id && !asks.is_empty())) => {
+                let id = equipe_core::i18n::waiting_ticket(text).unwrap_or_default();
+                if let Some((_, title, asks)) = turns.iter().find(|(t, ..)| *t == id) {
+                    begin(Block::Note, &mut lines, &mut last);
+                    gap(&mut lines);
+                    lines.extend(your_turn_lines(id, title, asks, theme, width));
                 }
             }
             Entry::Note { text } => match news_lines(&equipe_core::i18n::note(crate::i18n::lang(), text), looks, theme, width) {
@@ -1947,10 +1998,10 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
 
     let width = (text.width as usize).saturating_sub(1).min(PROSE_MAX);
     let fresh;
-    let lines: &[Line<'static>] = match layouts.get(agent, width) {
+    let lines: &[Line<'static>] = match layouts.get(agent, width, &turns(app)) {
         Some(lines) => lines,
         None => {
-            fresh = transcript_lines(agent, &squad_looks(app), theme, width);
+            fresh = transcript_lines(agent, &squad_looks(app), &turns(app), theme, width);
             &fresh
         }
     };
@@ -2013,10 +2064,10 @@ pub fn selection_text(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) 
     let agent = app.viewed()?;
     let width = (conversation_text(right, app, agent).width as usize).saturating_sub(1).min(PROSE_MAX);
     let fresh;
-    let lines: &[Line<'static>] = match layouts.get(agent, width) {
+    let lines: &[Line<'static>] = match layouts.get(agent, width, &turns(app)) {
         Some(lines) => lines,
         None => {
-            fresh = transcript_lines(agent, &squad_looks(app), theme, width);
+            fresh = transcript_lines(agent, &squad_looks(app), &turns(app), theme, width);
             &fresh
         }
     };
@@ -2124,7 +2175,7 @@ fn row_meta(app: &App, t: &equipe_core::protocol::Ticket, theme: Theme) -> (Vec<
             Some(agent) if agent.state == AgentState::Failed => (t!("view.flag_error").to_owned(), theme.member(1)),
             _ => (String::new(), theme.dim()),
         },
-        TicketStatus::Waiting => (t.note.as_deref().and_then(|n| board::waiting_needs(n).first().map(|s| (*s).to_owned())).unwrap_or_default(), theme.accent()),
+        TicketStatus::Waiting => (t.asks().into_iter().next().unwrap_or_default(), theme.accent()),
         TicketStatus::Proposed => (t!("view.proposed_by", who = t.created_by), theme.dim()),
         TicketStatus::Review | TicketStatus::Done if t.kind.in_home() => (label::kind(crate::i18n::lang(), t.kind).to_owned(), theme.dim()),
         TicketStatus::Review | TicketStatus::Done => (diff_short(app, t).unwrap_or_default(), theme.dim()),
@@ -2828,6 +2879,7 @@ mod tests {
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: None,
+            asks: vec![],
         }
     }
 
@@ -3501,6 +3553,36 @@ mod tests {
         let row = |text: &str| shot.lines().position(|l| l.contains(text)).unwrap();
         assert!(row("Your turn") < row("Review  1"), "내 차례 before 검토:\n{shot}");
         assert!(shot.lines().find(|l| l.contains("Analytics")).unwrap().contains("GitHub token"), "what it needs, in its row:\n{shot}");
+    }
+
+    #[test]
+    fn a_ticket_waiting_on_the_person_lists_its_asks_under_a_heading_in_the_conversation() {
+        let (mut app, id) = working();
+        let mut t = ticket(117, TicketStatus::Waiting, "App Store submission");
+        t.asks = vec![
+            "Tell me the review contact: name, phone, email. Only the review team sees it.".into(),
+            "Decide when and who does the iOS review.".into(),
+            "Check the shots in `outputs/T-117/shots/` and listing.json; if they're fine, just say OK.".into(),
+        ];
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t.clone() });
+        app.on_event(Event::Notice { session: id, text: "T-117 waits for you — backend needs something only you can do · App Store submission.".into() });
+        app.flash = None;
+        let shot = screen(&app, 140, 40);
+        let lines: Vec<&str> = shot.lines().collect();
+        let at = |text: &str| lines.iter().position(|l| l.contains(text)).unwrap_or_else(|| panic!("no {text:?} in:\n{shot}"));
+        assert!(lines[at("Your turn · T-117 · App Store submission")].contains("▎ Your turn"), "{shot}");
+        assert_eq!(at("1. Tell me the review contact"), at("Your turn · T-117") + 1, "{shot}");
+        assert_eq!(at("2. Decide when"), at("1. Tell me the review contact") + 1, "one ask a line:\n{shot}");
+        assert_eq!(at("3. Check the shots"), at("2. Decide when") + 1, "{shot}");
+        assert!(lines[at("3. Check the shots")].contains("▎"), "{shot}");
+        assert!(shot.contains("/resume T-117"), "answering stays as it was:\n{shot}");
+        assert!(!shot.contains("waits for you —"), "not one run-on line:\n{shot}");
+        // Answered: the line it came as.
+        t.status = TicketStatus::InProgress;
+        t.asks.clear();
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t });
+        let shot = screen(&app, 140, 40);
+        assert!(shot.contains("T-117 waits for you") && !shot.contains("1. Tell me"), "{shot}");
     }
 
     #[test]

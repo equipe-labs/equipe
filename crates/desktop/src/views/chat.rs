@@ -28,7 +28,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{approvals, attached, composer, header};
+use super::{approvals, attached, composer, header, yourturn};
 use crate::activity;
 use crate::convo::{Block, Status, ToolLine, relative};
 use crate::diffs::Kind;
@@ -179,13 +179,14 @@ impl Chat {
     }
 
     /// Bring the list up to what the model shows. Cheap when nothing moved.
-    pub fn sync(&mut self, model: &Model, cx: &mut App) {
+    pub fn sync(&mut self, model: &Model, looks: &HashMap<u32, u64>, cx: &mut App) {
         let key = model.viewed().map(|id| (id, model.opened));
         let moved = key != self.shown;
         if !moved && model.revision == self.seen_revision && self.expanded == self.shown_expanded {
             return;
         }
-        let new = model.convo().map(|c| c.blocks()).unwrap_or_default();
+        let mut new = model.convo().map(|c| c.blocks()).unwrap_or_default();
+        crate::yourturn::mark(&mut new, looks);
         let old = std::mem::replace(&mut self.blocks, Rc::new(new));
         self.seen_revision = model.revision;
         let folds_changed = self.expanded != self.shown_expanded;
@@ -259,6 +260,19 @@ impl Chat {
     /// A file a row shows came (or is gone): every row naming it is measured again.
     pub fn remeasure_mentioning(&self, path: &str, cx: &mut App) {
         let rows: Vec<usize> = self.blocks.iter().enumerate().filter(|(_, b)| matches!(b, Block::User(t) | Block::Memo(t) | Block::Steering(t) if t.contains(path))).map(|(ix, _)| ix).collect();
+        if rows.is_empty() {
+            return;
+        }
+        self.scroller.update(cx, |s, cx| {
+            for ix in rows {
+                s.remeasure_items(ix..ix + 1, cx);
+            }
+        });
+    }
+
+    /// The rows holding ticket `id`'s card are measured again (a box grew).
+    pub fn remeasure_turn(&self, id: u32, cx: &mut App) {
+        let rows: Vec<usize> = self.blocks.iter().enumerate().filter(|(_, b)| matches!(b, Block::YourTurn { ticket, live: true, .. } if *ticket == id)).map(|(ix, _)| ix).collect();
         if rows.is_empty() {
             return;
         }
@@ -485,6 +499,8 @@ struct Rows {
     arrived: Rc<HashMap<u64, std::time::Instant>>,
     /// What your messages attached, drawn with.
     attached: attached::Ctx,
+    /// The cards of tickets waiting for the person, as things stand.
+    turns: HashMap<u32, Rc<yourturn::Card>>,
 }
 
 impl Rows {
@@ -537,6 +553,13 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         base: render::base_dir(shell),
         arrived: shell.chat.arrived.clone(),
         attached: attached::Ctx::of(shell, cx.entity().downgrade(), COLUMN - 120.),
+        turns: shell
+            .chat
+            .blocks
+            .iter()
+            .filter_map(|b| if let Block::YourTurn { ticket, live: true, .. } = b { Some(*ticket) } else { None })
+            .filter_map(|id| yourturn::Card::of(shell, id, cx).map(|c| (id, c)))
+            .collect(),
     });
     // While a reply streams: a small pulse over the composer, where the jump
     // button would be (which has the place while you read back).
@@ -583,6 +606,13 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
         Block::Reply { text, first, live, worked } => reply_row(rows, ix, key, text, *first, *live, worked.as_ref(), window, cx),
         Block::Steps(lines) => group(rows, key, lines, window, cx),
         Block::News(news) => news_rows(rows, key, news, window, cx),
+        Block::YourTurn { ticket, news, live, .. } => match rows.turns.get(ticket).filter(|_| *live) {
+            Some(card) => {
+                let draw = yourturn::Draw { p, tones: rows.tones, handle: rows.handle.clone(), key, open: rows.is_open(key, yourturn::PART_SENT, false), place: yourturn::Place::Conversation, window: Some(window) };
+                yourturn::card(card, draw, cx)
+            }
+            None => yourturn::past(p, rows.tones, news),
+        },
         Block::Worked(worked) => h_flex()
             .h(px(24.))
             .gap(px(6.))
@@ -688,7 +718,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
     let body = view::configure(TextView::new(&state), p, look, key, Arc::new(full));
     let group: SharedString = format!("reply-{key}").into();
     // After a group of calls or the news, a little air before the words.
-    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::Thought { .. } | Block::Worked(_));
+    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::Thought { .. } | Block::Worked(_));
     let actions = (!live && rows.turn_ends.contains(&ix)).then(|| {
         let raw = text.to_owned();
         let mut items: Vec<AnyElement> = vec![action_button(p, ("reply-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))).into_any_element()];
@@ -1400,6 +1430,7 @@ impl Shell {
             (Some(n), _) => PART_ROW + n,
             (None, Some(Block::Thought { .. })) => PART_THOUGHT,
             (None, Some(Block::News(_))) => PART_NEWS,
+            (None, Some(Block::YourTurn { .. })) => yourturn::PART_SENT,
             _ => PART_GROUP,
         };
         self.chat_toggle(row, part, cx);
@@ -1428,8 +1459,19 @@ impl Shell {
 
     pub fn toggle_folds(&mut self, cx: &mut Context<Self>) {
         self.chat.expanded = !self.chat.expanded;
-        self.chat.sync(&self.model, cx);
+        self.chat_sync(cx);
         cx.notify();
+    }
+
+    /// The conversation brought up to what the model shows, its cards with it.
+    pub fn chat_sync(&mut self, cx: &mut Context<Self>) {
+        let looks = yourturn::looks(self, cx);
+        self.chat.sync(&self.model, &looks, cx);
+    }
+
+    /// A card's box changed: its rows are measured again.
+    pub fn chat_remeasure_turn(&mut self, id: u32, cx: &mut Context<Self>) {
+        self.chat.remeasure_turn(id, cx);
     }
 
     /// Open or close part of a row (an output, a change, a long message).
