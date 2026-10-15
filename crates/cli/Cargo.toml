@@ -23,6 +23,7 @@ ratatui = "0.30.2"
 ratatui-image = { version = "11.1.0", default-features = false, features = ["crossterm"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
+rustls = { version = "0.23.45", default-features = false, features = ["aws_lc_rs", "std"] }
 sha2 = "0.11.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

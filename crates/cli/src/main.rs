@@ -266,8 +266,16 @@ enum DaemonAction {
     Run,
 }
 
+/// rustls picks its crypto provider from crate features only when exactly one
+/// is on; a workspace build has two (the desktop's HTTP client brings `ring`),
+/// and the first `wss://` connect would panic. Settle it once, up front.
+fn install_tls() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
+    install_tls();
     let cli = Cli::parse();
     let app = App {
         store: CredentialStore::default_location(),
@@ -1300,5 +1308,20 @@ mod tests {
         assert!(update_by_homebrew(std::path::Path::new("/opt/homebrew/Cellar/equipe/0.1.0/bin/equipe")));
         assert!(update_by_homebrew(std::path::Path::new("/home/linuxbrew/.linuxbrew/bin/equipe")));
         assert!(!update_by_homebrew(std::path::Path::new("/Users/me/.local/bin/equipe")));
+    }
+
+    /// A `wss://` relay needs rustls's crypto provider; without one installed
+    /// the connect panics instead of failing. `cargo test -p equipe` alone
+    /// has one provider; `--features rustls/ring` gives it the workspace's two,
+    /// as the desktop does. The listener hangs up, so the handshake fails —
+    /// it just mustn't panic.
+    #[tokio::test]
+    async fn a_wss_relay_connects_without_panicking() {
+        install_tls();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { while let Ok((stream, _)) = listener.accept().await { drop(stream) } });
+        let url = format!("wss://localhost:{port}/v1/daemons/x/connect");
+        assert!(tokio_tungstenite::connect_async(url).await.is_err());
     }
 }
