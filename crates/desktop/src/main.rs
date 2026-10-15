@@ -131,7 +131,7 @@ impl Shell {
             screen: Screen::Chat,
             chat: Chat::new(cx),
             composer: Composer::new(window, cx),
-            board: BoardUi::new(window, cx, remembered.board_split, fetched_tx),
+            board: BoardUi::new(window, cx, fetched_tx),
             board_ticket: None,
             clicks,
             update_ready: relaunch::watch().borrow().clone(),
@@ -227,15 +227,19 @@ impl Shell {
                 }
                 return;
             }
-            let plain = !(modifiers.control || modifiers.alt || modifiers.platform || modifiers.shift || modifiers.function);
-            // The board's keys: tickets, questions, search.
-            if this.update(cx, |shell, cx| shell.on_board_key(key, plain, window, cx)).unwrap_or(false) {
+            // A small menu open (the project slice): Esc puts it away.
+            if key == "escape" && this.update(cx, |shell, cx| shell.close_popover(cx)).unwrap_or(false) {
                 cx.stop_propagation();
                 return;
             }
-            // y / a / n / o answer a request for permission while nothing is typed.
-            if matches!(key, "y" | "a" | "n" | "o") {
-                if this.update(cx, |shell, cx| shell.on_approval_key(key, plain, cx)).unwrap_or(false) {
+            // The work screens' keys: A R N…, moving, the peek, search.
+            if this.update(cx, |shell, cx| shell.on_board_key(key, &modifiers, window, cx)).unwrap_or(false) {
+                cx.stop_propagation();
+                return;
+            }
+            // y / a / ⇧a / n / o answer a request for permission while nothing is typed.
+            if matches!(key, "y" | "a" | "n" | "o") && !(modifiers.control || modifiers.alt || modifiers.platform || modifiers.function) {
+                if this.update(cx, |shell, cx| shell.on_approval_key(key, modifiers.shift, cx)).unwrap_or(false) {
                     cx.stop_propagation();
                 }
                 return;
@@ -327,6 +331,7 @@ impl Shell {
                 }
                 let alive = this.update_in(cx, |this, window, cx| {
                     let now = Clock::now();
+                    this.model.unix = state::now_unix();
                     let mut changed = false;
                     for update in batch {
                         match &update {
@@ -551,6 +556,15 @@ impl Shell {
         cx.activate(true);
     }
 
+    /// Put away a small menu open over the screen. True when one was.
+    pub fn close_popover(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.board.popover.take().is_some() {
+            cx.notify();
+            return true;
+        }
+        false
+    }
+
     pub fn show(&mut self, screen: Screen, cx: &mut Context<Self>) {
         if self.screen != screen {
             self.screen = screen;
@@ -586,14 +600,8 @@ impl Shell {
             conn => {
                 let screen = match self.screen {
                     Screen::Chat => views::chat::screen(self, cx).into_any_element(),
-                    Screen::Board => v_flex()
-                        .flex_1()
-                        .min_h_0()
-                        .child(views::header::render(self, cx))
-                        .child(views::board::render(self, cx))
-                        // A request still waits for its answer here; the buttons work.
-                        .children(views::approvals::approval(self, cx).map(|card| div().w_full().max_w(px(720.)).px_4().mx_auto().child(card)))
-                        .into_any_element(),
+                    // 나에게, 작업 중, 모든 일, a saved view: the menu item chosen.
+                    Screen::Board => views::board::render(self, cx).into_any_element(),
                 };
                 v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).child(screen).into_any_element()
             }

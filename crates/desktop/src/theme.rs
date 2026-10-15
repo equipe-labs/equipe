@@ -19,6 +19,12 @@ pub struct Palette {
     /// The main button: the text colour on the background's, inverted.
     pub primary: Rgba,
     pub on_primary: Rgba,
+    /// Work under way.
+    pub amber: Rgba,
+    /// Blocked: waits for other work.
+    pub orange: Rgba,
+    /// Something went wrong.
+    pub red: Rgba,
     members: [Rgba; 8],
 }
 
@@ -45,6 +51,9 @@ impl Palette {
             raised: rgb(0x141417),
             primary: rgb(0xEFEDE7),
             on_primary: rgb(0x0A0A0C),
+            amber: rgb(0xE2B865),
+            orange: rgb(0xEC9A62),
+            red: rgb(0xEE7B74),
             members: [0xE8BE78, 0xEC96BE, 0x78BEF0, 0x8CD096, 0xB6A2F2, 0x6ED4C8, 0xF0A06E, 0xCDD478].map(rgb),
         }
     }
@@ -64,6 +73,9 @@ impl Palette {
             raised: rgb(0xFFFFFF),
             primary: rgb(0x15161A),
             on_primary: rgb(0xF6F5F1),
+            amber: rgb(0xA8700F),
+            orange: rgb(0xB8551C),
+            red: rgb(0xC0392F),
             members: [0xA06814, 0xB0326E, 0x1E68AA, 0x28803C, 0x6446BE, 0x14807A, 0xB4501E, 0x6E7814].map(rgb),
         }
     }

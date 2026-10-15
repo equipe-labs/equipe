@@ -6,7 +6,10 @@
 //! `wait:<ms>` · `shot:<png>` · `say:<text>` (type it in the box and send) ·
 //! `memo:<text>` (send it as a memo, as Tab does) · `type:<text>` (type, don't send) · `key:<y|a|n|o>` (answer a request) · `esc` (stop the member) · `up`/`down`
 //! (history) · `project:<name|all>` · `select:<member>` · `board` · `chat` ·
-//! `bkey:<key>` (a board key) · `pick:<n>` (a ticket) · `find:<words>` · `note:<text>` (in the open question's box) · `submit` (its main button) · `folds` · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
+//! `menu:<inbox|working|all|view0…>` (a sidebar item) · `bkey:<key>` (a work
+//! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
+//! ticket) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
+//! (its main button) · `size:<w>x<h>` (the window) · `theme:<light|dark>` · `folds` · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
 //! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<image file>` · `paste` (⌘V with what the clipboard holds) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 
@@ -51,7 +54,7 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     }
                 }),
                 "key" => shell.update(cx, |shell, cx| {
-                    shell.on_approval_key(&arg, true, cx);
+                    shell.on_approval_key(&arg, false, cx);
                 }),
                 "esc" => shell.update(cx, |shell, cx| shell.interrupt(cx)),
                 "up" | "down" => shell.update(cx, |shell, cx| {
@@ -65,12 +68,37 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     }
                 }),
                 "bkey" => shell.update(cx, |shell, cx| {
-                    shell.on_board_key(&arg, true, window, cx);
+                    let mut modifiers = Modifiers::default();
+                    let mut key = arg.as_str();
+                    while let Some((m, rest)) = key.split_once('-').filter(|(_, rest)| !rest.is_empty()) {
+                        match m {
+                            "shift" => modifiers.shift = true,
+                            "cmd" => modifiers.platform = true,
+                            "alt" => modifiers.alt = true,
+                            "ctrl" => modifiers.control = true,
+                            _ => break,
+                        }
+                        key = rest;
+                    }
+                    shell.on_board_key(key, &modifiers, window, cx);
                 }),
-                "pick" => shell.update(cx, |shell, cx| shell.board_pick(arg.parse().unwrap_or(0), cx)),
+                "menu" => shell.update(cx, |shell, cx| {
+                    let menu = match arg.as_str() {
+                        "inbox" => crate::board::Menu::Inbox,
+                        "working" => crate::board::Menu::Working,
+                        "all" => crate::board::Menu::All,
+                        view => crate::board::Menu::View(view.trim_start_matches("view").parse().unwrap_or(0)),
+                    };
+                    shell.open_menu(menu, cx);
+                }),
+                "size" => {
+                    if let Some((w, h)) = arg.split_once('x').and_then(|(w, h)| Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?))) {
+                        window.resize(size(px(w), px(h)));
+                    }
+                }
+                "pick" => shell.update(cx, |shell, cx| shell.board_pick(crate::state::Need::Ticket(arg.parse().unwrap_or(0)), cx)),
                 "find" => shell.update(cx, |shell, cx| shell.board_find(&arg, cx)),
                 "note" => shell.update(cx, |shell, cx| shell.board_type(&arg, window, cx)),
-                "cancel" => shell.update(cx, |shell, cx| shell.board_ask_cancel(cx)),
                 "submit" => shell.update(cx, |shell, cx| shell.board_submit(window, cx)),
                 "board" => shell.update(cx, |shell, cx| shell.show(crate::Screen::Board, cx)),
                 "chat" => shell.update(cx, |shell, cx| shell.show(crate::Screen::Chat, cx)),
@@ -89,6 +117,10 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     eprintln!("paste: images taken = {taken}");
                 }),
                 "retry" => shell.update(cx, |shell, cx| shell.retry(cx)),
+                "theme" => shell.update(cx, |shell, cx| {
+                    shell.palette = crate::theme::Palette::new(if arg == "light" { WindowAppearance::Light } else { WindowAppearance::Dark });
+                    cx.notify();
+                }),
                 other => eprintln!("script: no step {other}"),
             });
             // Let the window draw what the step did.

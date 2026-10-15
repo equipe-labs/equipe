@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use equipe_core::protocol::rpc::Hello;
-use equipe_core::protocol::{Engine, Entry, Event, Mode, SessionId, SessionState, Ticket, TicketId, TicketStatus};
+use equipe_core::protocol::{Engine, Entry, Estimate, Event, Mode, SessionId, SessionState, Ticket, TicketId, TicketKind, TicketStatus, TurnOutcome};
 
 use crate::convo::Convo;
 use crate::daemon::Update;
@@ -98,6 +98,14 @@ pub struct Member {
     pub context: Option<u8>,
     pub model: Option<String>,
     pub engine: Option<Engine>,
+    /// When it expects what it is doing done, as it said (or equipe guessed).
+    pub estimate: Option<Estimate>,
+    /// What its latest tool was about: a file, a command.
+    pub target: Option<String>,
+    /// When it was last heard from (unix seconds; 0: not since the window opened).
+    pub last_seen: u64,
+    /// Its last turn failed, or it said something went wrong.
+    pub failed: bool,
 }
 
 /// A member's conversation about one project, run beside its others. Lanes
@@ -112,42 +120,74 @@ pub struct Lane {
     pub verb: Verb,
 }
 
-/// A line of the sidebar's list: what can be opened — the PM (the one
-/// conversation to talk to), a ticket (its work), someone on the team — and
-/// the headings between.
+/// What can be opened in the conversation's place: the PM (the one
+/// conversation to talk to), a ticket's work, someone on the team.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
-    Heading(Group, usize),
     Pm,
     Ticket(TicketId),
     Member(SessionId),
 }
 
-/// The sidebar list's groups, in their order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Group {
-    /// To review, waiting on the person, or proposed.
-    ForYou,
-    Working,
-    ToDo,
-    Done,
-    Team,
+/// The sections of what waits for the person, in their order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Section {
+    /// A member asks for permission.
+    Permission,
+    /// A ticket put down until the person does their part: 내 차례.
+    Waiting,
+    /// Work handed in: 검토.
+    Review,
+    /// Suggested work to take on or drop: 제안.
+    Proposed,
+    /// Accepted, but not on main yet: 병합 안 됨.
+    NotOnMain,
 }
 
-impl Group {
+impl Section {
+    pub const ALL: [Section; 5] = [Section::Permission, Section::Waiting, Section::Review, Section::Proposed, Section::NotOnMain];
+
     pub fn label(self) -> &'static str {
         match self {
-            Group::ForYou => t!("state.group_for_you"),
-            Group::Working => t!("state.group_working"),
-            Group::ToDo => t!("state.group_todo"),
-            Group::Done => t!("state.group_done"),
-            Group::Team => t!("state.group_team"),
+            Section::Permission => t!("state.section_permission"),
+            Section::Waiting => t!("state.status_waiting"),
+            Section::Review => t!("state.status_review"),
+            Section::Proposed => t!("state.status_proposed"),
+            Section::NotOnMain => t!("state.not_on_main"),
         }
     }
 }
 
-/// How many finished tickets the sidebar keeps in sight.
-const DONE_SHOWN: usize = 5;
+/// One thing waiting for the person: a request for permission, or a ticket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Need {
+    Permission(u64),
+    Ticket(TicketId),
+}
+
+/// What a status is called, everywhere: one word each.
+pub fn status_word(status: TicketStatus) -> &'static str {
+    match status {
+        TicketStatus::Waiting => t!("state.status_waiting"),
+        TicketStatus::Review => t!("state.status_review"),
+        TicketStatus::Proposed => t!("state.status_proposed"),
+        TicketStatus::Todo => t!("state.status_todo"),
+        TicketStatus::InProgress => t!("state.status_in_progress"),
+        TicketStatus::Done => t!("state.status_done"),
+        TicketStatus::Cancelled => t!("state.status_cancelled"),
+    }
+}
+
+/// How a ticket looked when the person acted on it: hidden from what waits
+/// for them until it looks different.
+pub type Look = (TicketStatus, Option<bool>);
+
+pub fn look_of(t: &Ticket) -> Look {
+    (t.status, t.merged)
+}
+
+/// A member at work on a ticket is quiet past this many seconds without a word.
+pub const QUIET_AFTER: u64 = 10 * 60;
 
 /// How a member shows in the list. The most pressing thing wins.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,6 +250,13 @@ pub struct Model {
     /// Bumped whenever the selected conversation shows something new, so a
     /// screen can tell it must draw again.
     pub revision: u64,
+    /// Now, in unix seconds: set by the shell before each update (never read here).
+    pub unix: u64,
+    /// When each ticket came to the state it is in, as seen from here.
+    pub since: HashMap<TicketId, u64>,
+    /// Tickets the person just acted on, as they looked then: out of what
+    /// waits for them until the daemon says they changed.
+    pub acted: HashMap<TicketId, Look>,
 }
 
 impl Model {
@@ -230,6 +277,9 @@ impl Model {
             focus: None,
             opened: None,
             revision: 0,
+            unix: 0,
+            since: HashMap::new(),
+            acted: HashMap::new(),
         }
     }
 
@@ -253,44 +303,20 @@ impl Model {
         self.lanes.iter().find(|l| l.of == member)
     }
 
-    /// The sidebar's list, in order: the PM first, then the tickets under the
-    /// project in focus by where they stand, then the rest of the team.
-    pub fn side(&self) -> Vec<Side> {
-        let mut out = Vec::new();
-        let pm = self.members.iter().find(|m| Self::is_pm(m)).or(self.members.first()).map(|m| m.session);
-        if pm.is_some() {
-            out.push(Side::Pm);
-        }
-        let here: Vec<&Ticket> = self.tickets.iter().filter(|t| self.in_focus(t)).collect();
-        let with = |statuses: &[TicketStatus]| {
-            let mut tickets: Vec<&Ticket> = here.iter().copied().filter(|t| statuses.contains(&t.status)).collect();
-            tickets.sort_by_key(|t| (t.status != TicketStatus::Review, t.id));
-            tickets
-        };
-        let mut done = with(&[TicketStatus::Done]);
-        done.sort_by_key(|t| std::cmp::Reverse(t.id));
-        done.truncate(DONE_SHOWN);
-        for (group, tickets) in [
-            (Group::ForYou, with(&[TicketStatus::Review, TicketStatus::Waiting, TicketStatus::Proposed])),
-            (Group::Working, with(&[TicketStatus::InProgress])),
-            (Group::ToDo, with(&[TicketStatus::Todo])),
-            (Group::Done, done),
-        ] {
-            if !tickets.is_empty() {
-                out.push(Side::Heading(group, tickets.len()));
-                out.extend(tickets.into_iter().map(|t| Side::Ticket(t.id)));
-            }
-        }
-        let team: Vec<SessionId> = self.ordered().into_iter().map(|m| m.session).filter(|s| Some(*s) != pm).collect();
-        if !team.is_empty() {
-            out.push(Side::Heading(Group::Team, team.len()));
-            out.extend(team.into_iter().map(Side::Member));
-        }
-        out
+    /// The team as the sidebar lists it: the PM first, then whoever needs
+    /// the person, who works, who rests, who left.
+    pub fn team(&self) -> Vec<SessionId> {
+        let pm = self.pm();
+        pm.into_iter().chain(self.ordered().into_iter().map(|m| m.session).filter(|s| Some(*s) != pm)).collect()
+    }
+
+    /// The PM's session, or whoever came first without one.
+    pub fn pm(&self) -> Option<SessionId> {
+        self.members.iter().find(|m| Self::is_pm(m)).or(self.members.first()).map(|m| m.session)
     }
 
     /// Whether a ticket shows under the project in focus.
-    fn in_focus(&self, ticket: &Ticket) -> bool {
+    pub fn in_focus(&self, ticket: &Ticket) -> bool {
         self.focus.is_none() || self.ticket_project_name(ticket) == self.focus
     }
 
@@ -313,7 +339,6 @@ impl Model {
         self.opened = None;
         self.revision += 1;
         match side {
-            Side::Heading(..) => true,
             Side::Pm => {
                 self.selected = self.members.iter().find(|m| Self::is_pm(m)).or(self.members.first()).map(|m| m.session);
                 true
@@ -522,6 +547,13 @@ impl Model {
                     context: s.context.and_then(percent),
                     model: s.model.clone(),
                     engine: Some(s.engine),
+                    estimate: s.estimate.clone(),
+                    target: s.recent.iter().rev().find_map(|e| match e {
+                        Entry::Tool { target, .. } => target.clone(),
+                        _ => None,
+                    }),
+                    last_seen: self.unix,
+                    failed: false,
                 }
             })
             .collect();
@@ -589,6 +621,10 @@ impl Model {
                     context: None,
                     model,
                     engine: Some(engine),
+                    estimate: None,
+                    target: None,
+                    last_seen: self.unix,
+                    failed: false,
                 });
             }
             other => {
@@ -603,30 +639,40 @@ impl Model {
                     }
                     return;
                 }
+                let unix = self.unix;
                 let Some(member) = self.members.iter_mut().find(|m| m.session == id) else { return };
+                if !matches!(other, Event::Output { .. }) {
+                    member.last_seen = unix;
+                }
                 match other {
                     Event::UserMessage { .. } => {
                         member.presence = Presence::Working;
                         member.verb = Verb::Thinking;
                         member.memos = 0;
+                        member.failed = false;
                     }
+                    Event::Estimated { estimate, .. } => member.estimate = estimate,
+                    Event::Error { .. } => member.failed = true,
                     Event::MessageQueued { .. } => member.memos += 1,
                     Event::WorkStarted { ticket, .. } => {
+                        member.failed = false;
                         member.ticket = Some(ticket);
                         member.presence = Presence::Working;
                         member.verb = Verb::Thinking;
                     }
                     Event::WorkEnded { .. } => member.ticket = None,
-                    Event::ToolUse { tool, .. } => {
+                    Event::ToolUse { tool, target, .. } => {
                         member.presence = Presence::Working;
                         member.verb = Verb::of_tool(&tool);
+                        member.target = target;
                     }
                     Event::TextDelta { .. } => {
                         member.presence = Presence::Working;
                         member.verb = Verb::Writing;
                     }
                     Event::ModelKnown { model, .. } => member.model = Some(model),
-                    Event::TurnEnded { usage, .. } => {
+                    Event::TurnEnded { usage, outcome, .. } => {
+                        member.failed = outcome == TurnOutcome::Failed;
                         if member.presence == Presence::Working {
                             member.presence = Presence::Ready;
                         }
@@ -673,6 +719,13 @@ impl Model {
 
     fn on_ticket(&mut self, ticket: &Ticket) {
         let was = self.tickets.iter().find(|t| t.id == ticket.id).map(|t| t.status);
+        if was != Some(ticket.status) {
+            self.since.insert(ticket.id, self.unix);
+        }
+        // What the person acted on came back changed: its look is news again.
+        if self.acted.get(&ticket.id).is_some_and(|look| *look != look_of(ticket)) {
+            self.acted.remove(&ticket.id);
+        }
         if was.is_some() && was != Some(ticket.status) {
             match ticket.status {
                 TicketStatus::Review => {
@@ -709,7 +762,7 @@ impl Model {
 
     /// What the sidebar derives from tickets and approvals, for change detection.
     fn ticket_hint(&self) -> (usize, Vec<Status>) {
-        (self.for_you(), self.members.iter().map(|m| self.status(m)).collect())
+        (self.needs_you_count(), self.members.iter().map(|m| self.status(m)).collect())
     }
 
     pub fn take_alerts(&mut self) -> Vec<Alert> {
@@ -733,22 +786,129 @@ impl Model {
         self.ticket_project(ticket).map(|p| equipe_core::board::project_name(&p))
     }
 
-    /// What waits for the person under the project in focus: reviews first,
-    /// then tickets put down for them, each in ticket order.
+    /// Everything waiting for the person, in one list, by section: requests
+    /// for permission, tickets put down for them, work handed in, proposals,
+    /// work accepted but not on main. The one definition the sidebar's count,
+    /// 나에게 and notifications all read. Tickets follow the project in focus
+    /// and leave once the person acted on them; requests always show.
+    pub fn needs_you(&self) -> Vec<(Section, Need)> {
+        let mut out: Vec<(Section, Need)> = self.approvals.open_items().map(|a| (Section::Permission, Need::Permission(a.id))).collect();
+        for section in &Section::ALL[1..] {
+            let mut tickets: Vec<&Ticket> = self.tickets.iter().filter(|t| self.section_of(t) == Some(*section) && self.in_focus(t) && !self.is_acted(t)).collect();
+            let since = |t: &Ticket| self.since.get(&t.id).copied().unwrap_or(0);
+            match section {
+                // What it unblocks first, then the longest waiting.
+                Section::Review => tickets.sort_by_key(|t| (std::cmp::Reverse(self.unblocks(t.id).len()), since(t), t.id)),
+                _ => tickets.sort_by_key(|t| (since(t), t.id)),
+            }
+            out.extend(tickets.into_iter().map(|t| (*section, Need::Ticket(t.id))));
+        }
+        out
+    }
+
+    /// How many things wait for the person.
+    pub fn needs_you_count(&self) -> usize {
+        self.needs_you().len()
+    }
+
+    /// Whether a ticket waits for the person, and under which section.
+    pub fn section_of(&self, t: &Ticket) -> Option<Section> {
+        match t.status {
+            TicketStatus::Waiting => Some(Section::Waiting),
+            TicketStatus::Review => Some(Section::Review),
+            TicketStatus::Proposed => Some(Section::Proposed),
+            TicketStatus::Done if t.not_on_main() => Some(Section::NotOnMain),
+            _ => None,
+        }
+    }
+
+    fn is_acted(&self, t: &Ticket) -> bool {
+        self.acted.get(&t.id).is_some_and(|look| *look == look_of(t))
+    }
+
+    /// The person acted on a ticket: out of what waits for them until it changes.
+    pub fn act_on(&mut self, id: TicketId) {
+        if let Some(t) = self.tickets.iter().find(|t| t.id == id) {
+            self.acted.insert(id, look_of(t));
+            self.revision += 1;
+        }
+    }
+
+    /// An action taken back: the ticket waits for the person again.
+    pub fn unact(&mut self, id: TicketId) {
+        if self.acted.remove(&id).is_some() {
+            self.revision += 1;
+        }
+    }
+
+    /// Open tickets that wait for `id`.
+    pub fn unblocks(&self, id: TicketId) -> Vec<TicketId> {
+        self.tickets.iter().filter(|o| o.depends_on.contains(&id) && !o.status.is_closed()).map(|o| o.id).collect()
+    }
+
+    /// The first thing a ticket waits for that is not done yet.
+    pub fn blocked_by(&self, t: &Ticket) -> Option<TicketId> {
+        if t.status.is_closed() {
+            return None;
+        }
+        t.depends_on.iter().copied().find(|d| self.tickets.iter().find(|o| o.id == *d).is_none_or(|o| o.status != TicketStatus::Done))
+    }
+
+    /// The member on a ticket now.
+    pub fn member_on(&self, id: TicketId) -> Option<&Member> {
+        self.members.iter().find(|m| m.ticket == Some(id) && m.presence != Presence::Closed)
+    }
+
+    /// Whether the member on a ticket is in the middle of a turn.
+    pub fn is_live(&self, t: &Ticket) -> bool {
+        t.status == TicketStatus::InProgress && self.member_on(t.id).is_some_and(|m| m.presence == Presence::Working)
+    }
+
+    /// How long, in seconds, the member on a ticket in progress has said nothing
+    /// — once past [`QUIET_AFTER`].
+    pub fn quiet_for(&self, t: &Ticket) -> Option<u64> {
+        if t.status != TicketStatus::InProgress {
+            return None;
+        }
+        let member = self.member_on(t.id)?;
+        let quiet = self.unix.saturating_sub(member.last_seen);
+        (member.last_seen > 0 && quiet >= QUIET_AFTER).then_some(quiet)
+    }
+
+    /// Whether the member on a ticket in progress hit an error.
+    pub fn failed(&self, t: &Ticket) -> bool {
+        t.status == TicketStatus::InProgress && self.member_on(t.id).is_some_and(|m| m.failed)
+    }
+
+    /// When the work on a ticket is expected done: the estimate of the member on it.
+    pub fn eta(&self, t: &Ticket) -> Option<Eta> {
+        if t.status != TicketStatus::InProgress {
+            return None;
+        }
+        let estimate = self.member_on(t.id)?.estimate.as_ref()?;
+        Some(Eta { at: estimate.done_at?, guessed: estimate.guessed })
+    }
+
+    /// How long a ticket has been where it is, in seconds, when known.
+    pub fn in_state_for(&self, t: &Ticket) -> Option<u64> {
+        self.since.get(&t.id).filter(|s| **s > 0).map(|s| self.unix.saturating_sub(*s))
+    }
+
+    /// Tickets put down for the person or handed in, under the project in focus:
+    /// reviews, then waits.
     pub fn for_you_here(&self) -> Vec<&Ticket> {
-        let here = |t: &&Ticket| self.focus.is_none() || self.ticket_project_name(t) == self.focus;
         let mut out: Vec<&Ticket> = Vec::new();
         for status in [TicketStatus::Review, TicketStatus::Waiting] {
-            let mut group: Vec<&Ticket> = self.tickets.iter().filter(|t| t.status == status).filter(here).collect();
+            let mut group: Vec<&Ticket> = self.tickets.iter().filter(|t| t.status == status && self.in_focus(t)).collect();
             group.sort_by_key(|t| t.id);
             out.extend(group);
         }
         out
     }
 
-    /// Tickets waiting for the person: handed in for review, or put down for them.
-    pub fn for_you(&self) -> usize {
-        self.tickets.iter().filter(|t| matches!(t.status, TicketStatus::Review | TicketStatus::Waiting)).count()
+    /// Whether a ticket's work changes a repository and lands by a merge.
+    pub fn merges(t: &Ticket) -> bool {
+        t.kind == TicketKind::Code && t.branch.is_some()
     }
 
     pub fn status(&self, member: &Member) -> Status {
@@ -785,6 +945,36 @@ impl Model {
         let mut list: Vec<&Member> = self.members.iter().collect();
         list.sort_by_key(|m| rank(m));
         list
+    }
+}
+
+/// When work is expected done (unix seconds), and whether that is equipe's guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Eta {
+    pub at: u64,
+    pub guessed: bool,
+}
+
+/// `14:30` in local time.
+pub fn local_hm(unix: u64) -> String {
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let secs = unix as libc::time_t;
+    unsafe { libc::localtime_r(&secs, &mut tm) };
+    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+}
+
+/// Now, in unix seconds: for the shell to hand the model.
+pub fn now_unix() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// A span of time, short: `45s`, `25m`, `3h`, `2d`.
+pub fn short_span(secs: u64) -> String {
+    match secs {
+        0..=59 => format!("{secs}s"),
+        60..=3599 => format!("{}m", secs / 60),
+        3600..=86_399 => format!("{}h", secs / 3600),
+        _ => format!("{}d", secs / 86_400),
     }
 }
 
@@ -882,7 +1072,7 @@ mod tests {
         let ticket: Ticket = serde_json::from_value(serde_json::json!({"id": 3, "title": "t", "body": "", "status": "waiting", "owner": "backend", "assignee": null, "project": null, "depends_on": [], "branch": null, "created_by": "pm", "note": null})).unwrap();
         model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket }), T0);
         assert_eq!(model.status(&model.members[0]), Status::NeedsYou(Some(3)));
-        assert_eq!(model.for_you(), 1);
+        assert_eq!(model.needs_you(), vec![(Section::Waiting, Need::Ticket(3))]);
     }
 
     fn ticket(id: u32, status: &str, note: Option<&str>) -> Ticket {
@@ -1016,9 +1206,12 @@ mod tests {
         assert!(model.set_focus(Some("site".into())));
         assert!(!model.set_focus(Some("site".into())));
         assert_eq!(model.viewed(), Some(1));
-        assert_eq!(model.side(), [Side::Pm, Side::Heading(Group::ForYou, 1), Side::Ticket(3)]);
+        assert_eq!(model.needs_you(), vec![(Section::Review, Need::Ticket(3))]);
+        assert!(!model.in_focus(&model.tickets[1].clone()));
+        model.set_focus(Some("app".into()));
+        assert!(model.needs_you().is_empty(), "the review is site's");
         assert!(model.set_focus(None));
-        assert_eq!(model.side().len(), 5);
+        assert!(model.in_focus(&model.tickets[1].clone()));
     }
 
     #[test]
@@ -1031,10 +1224,7 @@ mod tests {
         model.members[1].ticket = Some(7);
         model.apply(Update::Event(Event::Notice { session: 2, text: "── T-7 · Hero — on branch b".into() }), T0);
         model.apply(Update::Event(Event::UserMessage { session: 2, text: "hero work".into() }), T0);
-        assert_eq!(
-            model.side(),
-            [Side::Pm, Side::Heading(Group::Working, 1), Side::Ticket(7), Side::Heading(Group::ToDo, 1), Side::Ticket(8), Side::Heading(Group::Team, 1), Side::Member(2)]
-        );
+        assert_eq!(model.team(), [1, 2], "the PM heads the team");
         // A ticket at work: its member's work on it, and what is typed steers it.
         assert!(model.open(Side::Ticket(7)));
         assert_eq!((model.viewed(), model.side_open()), (Some(2), Some(Side::Ticket(7))));
@@ -1143,6 +1333,97 @@ mod tests {
         // Whatever project is in focus, it is the one shown.
         model.set_focus(Some("site".into()));
         assert_eq!(model.viewed(), Some(9));
+    }
+
+    fn needs_model() -> Model {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "backend", "backend", SessionState::Working)]), T0);
+        let mut merged_not = ticket(9, "done", None);
+        merged_not.branch = Some("b".into());
+        merged_not.merged = Some(false);
+        let mut unblocker = ticket(6, "review", None);
+        unblocker.branch = Some("b6".into());
+        let mut blocked = ticket(7, "todo", None);
+        blocked.depends_on = vec![6];
+        model.tickets = vec![ticket(5, "review", None), unblocker, blocked, ticket(4, "proposed", None), ticket(3, "waiting", None), merged_not, ticket(2, "in_progress", None), ticket(1, "done", None)];
+        model.approvals.push(approval(11, 2));
+        model
+    }
+
+    #[test]
+    fn what_needs_you_is_one_list_in_one_order() {
+        let model = needs_model();
+        let sections: Vec<Section> = model.needs_you().iter().map(|(s, _)| *s).collect();
+        assert_eq!(sections, [Section::Permission, Section::Waiting, Section::Review, Section::Review, Section::Proposed, Section::NotOnMain]);
+        let needs: Vec<Need> = model.needs_you().into_iter().map(|(_, n)| n).collect();
+        assert_eq!(needs, [Need::Permission(11), Need::Ticket(3), Need::Ticket(6), Need::Ticket(5), Need::Ticket(4), Need::Ticket(9)], "the review that unblocks work first");
+        assert_eq!(model.needs_you_count(), 6);
+    }
+
+    #[test]
+    fn reviews_that_unblock_as_much_go_oldest_first() {
+        let mut model = needs_model();
+        model.since.insert(6, 500);
+        model.since.insert(5, 100);
+        model.tickets.retain(|t| t.id != 7);
+        let reviews: Vec<Need> = model.needs_you().into_iter().filter(|(s, _)| *s == Section::Review).map(|(_, n)| n).collect();
+        assert_eq!(reviews, [Need::Ticket(5), Need::Ticket(6)]);
+    }
+
+    #[test]
+    fn what_the_person_acted_on_leaves_until_it_changes_and_comes_back_when_taken_back() {
+        let mut model = needs_model();
+        model.act_on(5);
+        assert!(!model.needs_you().contains(&(Section::Review, Need::Ticket(5))));
+        model.unact(5);
+        assert!(model.needs_you().contains(&(Section::Review, Need::Ticket(5))));
+        model.act_on(5);
+        // The daemon says it is done now: news again, and no longer waiting.
+        let mut done = ticket(5, "done", None);
+        done.owner = None;
+        model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: done }), T0);
+        assert!(model.acted.is_empty());
+    }
+
+    #[test]
+    fn a_status_change_is_stamped_and_reads_as_time_in_state() {
+        let mut model = needs_model();
+        model.unix = 1_000;
+        model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(2, "review", None) }), T0);
+        assert_eq!(model.since.get(&2), Some(&1_000));
+        model.unix = 1_000 + 25 * 60;
+        assert_eq!(model.in_state_for(&model.tickets.iter().find(|t| t.id == 2).unwrap().clone()), Some(25 * 60));
+        assert_eq!(short_span(25 * 60), "25m");
+        assert_eq!(short_span(3 * 3600), "3h");
+        assert_eq!(short_span(2 * 86_400), "2d");
+    }
+
+    #[test]
+    fn work_under_way_knows_its_blocker_eta_quiet_and_error() {
+        let mut model = needs_model();
+        let t = |m: &Model, id: u32| m.tickets.iter().find(|t| t.id == id).unwrap().clone();
+        assert_eq!(model.blocked_by(&t(&model, 7)), Some(6));
+        assert_eq!(model.unblocks(6), vec![7]);
+        model.unix = 10_000;
+        model.members[1].ticket = Some(2);
+        model.members[1].last_seen = 10_000 - 25 * 60;
+        model.members[1].estimate = Some(Estimate { done_at: Some(10_600), guessed: true, ..Default::default() });
+        let working = t(&model, 2);
+        assert_eq!(model.quiet_for(&working), Some(25 * 60));
+        assert_eq!(model.eta(&working), Some(Eta { at: 10_600, guessed: true }));
+        assert!(model.is_live(&working));
+        assert!(!model.failed(&working));
+        model.apply(Update::Event(Event::TurnEnded { session: 2, outcome: TurnOutcome::Failed, usage: None }), T0);
+        assert!(model.failed(&working));
+        assert!(model.quiet_for(&working).is_none(), "just heard from");
+    }
+
+    #[test]
+    fn every_status_has_one_word() {
+        let words: Vec<&str> = [TicketStatus::Waiting, TicketStatus::Review, TicketStatus::Proposed, TicketStatus::Todo, TicketStatus::InProgress, TicketStatus::Done, TicketStatus::Cancelled].into_iter().map(status_word).collect();
+        assert_eq!(words, ["내 차례", "검토", "제안", "할 일", "작업 중", "끝남", "취소"]);
+        assert_eq!(Section::NotOnMain.label(), "병합 안 됨");
+        assert_eq!(Section::Permission.label(), "허락 요청");
     }
 
     #[test]

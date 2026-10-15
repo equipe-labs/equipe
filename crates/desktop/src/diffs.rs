@@ -44,7 +44,7 @@ fn git_script(source: &Source, args: &str) -> String {
 
 /// Run git for `source`, here or on the daemon's machine. Blocks: call it on a thread.
 pub fn run(endpoint: &Endpoint, source: &Source, full: bool) -> Result<String, String> {
-    let args = if full { "diff --no-color --no-ext-diff" } else { "diff --no-color --stat=200" };
+    let args = if full { "diff --no-color --no-ext-diff" } else { "diff --no-color --numstat" };
     match endpoint {
         Endpoint::Local { .. } => {
             let out = std::process::Command::new("git")
@@ -81,17 +81,48 @@ pub struct Fetched {
     pub text: Result<String, String>,
 }
 
-/// The `--stat` summary and its files: `changed 3 files · +842 −0`.
+/// What a branch changed, file by file (`git diff --numstat`): lines added
+/// and removed; a binary file counts none.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Stat {
-    pub files: Vec<String>,
-    pub summary: String,
+    pub files: Vec<FileStat>,
+    pub added: usize,
+    pub removed: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FileStat {
+    pub path: String,
+    pub added: usize,
+    pub removed: usize,
+}
+
+impl Stat {
+    /// `+42 −7`.
+    pub fn short(&self) -> String {
+        format!("+{} −{}", self.added, self.removed)
+    }
 }
 
 pub fn parse_stat(text: &str) -> Stat {
-    let files = text.lines().filter(|l| l.contains('|')).map(|l| l.split('|').next().unwrap_or("").trim().to_owned()).collect();
-    let summary = text.lines().last().map(str::trim).unwrap_or("").to_owned();
-    Stat { files, summary: if summary.contains("changed") { summary } else { String::new() } }
+    let mut stat = Stat::default();
+    for line in text.lines() {
+        let mut parts = line.splitn(3, '\t');
+        let (Some(a), Some(r), Some(path)) = (parts.next(), parts.next(), parts.next()) else { continue };
+        let (added, removed) = (a.parse().unwrap_or(0), r.parse().unwrap_or(0));
+        // A rename reads `old => new`, or `dir/{old => new}/f`: the new name.
+        let path = match path.split_once(" => ") {
+            Some((before, after)) => match (before.rsplit_once('{'), after.split_once('}')) {
+                (Some((head, _)), Some((new, tail))) => format!("{head}{new}{tail}"),
+                _ => after.to_owned(),
+            },
+            None => path.to_owned(),
+        };
+        stat.added += added;
+        stat.removed += removed;
+        stat.files.push(FileStat { path, added, removed });
+    }
+    stat
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,10 +261,12 @@ Binary files /dev/null and b/img.png differ
     }
 
     #[test]
-    fn the_stat_gives_files_and_the_summary() {
-        let stat = parse_stat(" src/a.rs | 4 ++--\n docs/b.md | 10 ++++++++++\n 2 files changed, 12 insertions(+), 2 deletions(-)\n");
-        assert_eq!(stat.files, vec!["src/a.rs", "docs/b.md"]);
-        assert_eq!(stat.summary, "2 files changed, 12 insertions(+), 2 deletions(-)");
+    fn the_stat_gives_each_file_its_lines_and_the_sum() {
+        let stat = parse_stat("2\t2\tsrc/a.rs\n10\t0\tdocs/b.md\n-\t-\timg.png\n1\t1\tsrc/{old => new}/c.rs\n");
+        let paths: Vec<&str> = stat.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, vec!["src/a.rs", "docs/b.md", "img.png", "src/new/c.rs"]);
+        assert_eq!((stat.added, stat.removed), (13, 3));
+        assert_eq!(stat.short(), "+13 −3");
         assert_eq!(parse_stat(""), Stat::default());
     }
 

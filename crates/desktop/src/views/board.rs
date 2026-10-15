@@ -1,177 +1,225 @@
-//! The board (T-54 §5, T-62 §2.5): the terminal board's whole job in a window.
-//! Tickets by state or as a tree of what waits for what, a search, the picked
-//! ticket's detail, its diff, and the person's calls — accept (then the merge
-//! and push questions), send back, resume, cancel. The rules are in
-//! `crate::board`, the git side in `crate::diffs`; this file is what is drawn
-//! and what a click or a key does. The board changes only when the daemon says
-//! so: every action here is a command, never an edit of the list.
+//! The work screens: 나에게, 작업 중, 모든 일 and the saved views — a list of
+//! 32px rows, the picked one peeking at the right (Space), opened as a page
+//! (⏎), or its changes in the diff (D). Every need answers to the same keys:
+//! A yes, ⇧A how, R in words, N no, C talk, M merge; j/k move and the peek
+//! follows; after an action the next thing comes up, and for five seconds U
+//! takes it back. The rules are in `crate::board`; this file is what is drawn
+//! and what a click or a key does. The list changes only when the daemon says
+//! so: every action here is a command.
 
 use equipe_core::t;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
+use std::time::{Duration, Instant};
 
-use equipe_core::protocol::{Command, Ticket, TicketId, TicketStatus};
-use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use equipe_core::protocol::{Command, Decision, Ticket, TicketId, TicketStatus};
+use gpui_kit::component::input::{Input, InputEvent, InputState, TextareaState};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::board::{self, Row, Tone, View};
-use crate::diffs::{self, Fetched, Kind, Source, Stat};
-use crate::state::{Conn, Model, Presence};
-use crate::target::Endpoint;
-use crate::theme::{BODY, MONO, PROJECT_HUES, Palette, SMALL, look};
+use super::icons;
+use crate::board::{self, DoneWindow, Filter, GroupBy, Menu, MergeWay, Row, SavedView, Tab, Tone, Undo, View};
+use crate::diffs::{self, Fetched, Source, Stat};
+use crate::state::{Conn, Model, Need, Presence, Verb, local_hm, short_span, status_word};
+use crate::theme::{MONO, PROJECT_HUES, Palette, SMALL, look};
 use crate::{Screen, Shell};
 
-const ROW: f32 = 40.;
-const HEADING: f32 = 32.;
-const SPLIT_MIN: f32 = 96.;
-const DETAIL_MIN: f32 = 200.;
+/// A row of the list.
+pub const ROW: f32 = 32.;
+const HEADING: f32 = 30.;
+/// The peek's width, and the window width under which it lies over the list.
+pub const PEEK: f32 = 420.;
+pub const PEEK_BESIDE_FROM: f32 = 1100.;
 
-/// A question or a note being written, in the detail panel.
+/// A question or a note being written about the pick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {
-    /// `Accepted T-n. Merge <branch> into main?`
-    Merge(TicketId),
-    /// `…and push main to origin too?`
-    Push(TicketId),
-    /// What to change: required.
-    SendBack(TicketId),
-    /// What the person did: optional.
-    Resume(TicketId),
+    /// R: the words go with the action (changes asked for, what was done, a reply).
+    Reply(TicketId),
+    /// N on work under way or handed in: cancel it? (y / ⏎)
     Cancel(TicketId),
+    /// The first A in a project: what accepting lands there from now on.
+    Way { ticket: TicketId, remember: bool },
+    /// ⇧A (and M): how to land this one, this once.
+    Method(TicketId),
+    /// A or N on several chosen tickets, said back once before it goes.
+    Bulk { yes: bool },
+    /// ⌥V: a name for what is listed now.
+    SaveView,
 }
 
-impl Flow {
-    fn ticket(self) -> TicketId {
-        match self {
-            Flow::Merge(t) | Flow::Push(t) | Flow::SendBack(t) | Flow::Resume(t) | Flow::Cancel(t) => t,
-        }
-    }
+/// A small menu open over the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Popover {
+    Projects,
+    Filter,
+    Group,
 }
 
 type Seen = (Option<String>, String, Option<bool>);
 
-/// The diff open on screen.
-pub struct DiffUi {
-    pub ticket: TicketId,
-    pub branch: String,
-    /// `None` while git is asked.
-    pub files: Option<Vec<diffs::File>>,
-    pub patch: String,
-    pub error: Option<String>,
-    pub current: usize,
-    folded: HashSet<usize>,
-    /// What the list shows: `(file, line)`; a file's own row has `usize::MAX`.
-    flat: Vec<(usize, usize)>,
-    scroll: UniformListScrollHandle,
-}
-
-impl DiffUi {
-    fn rebuild(&mut self) {
-        self.flat.clear();
-        for (i, file) in self.files.iter().flatten().enumerate() {
-            self.flat.push((i, usize::MAX));
-            if !self.folded.contains(&i) {
-                self.flat.extend((0..file.lines.len()).map(|l| (i, l)));
-            }
-        }
-    }
-}
-
 pub struct BoardUi {
     pub view: View,
     pub search: Entity<InputState>,
-    send_back: Entity<TextareaState>,
-    resume: Entity<InputState>,
+    pub reply: Entity<TextareaState>,
+    pub naming: Entity<InputState>,
+    /// The project list's search, and which header opened it.
+    pub slice_search: Entity<InputState>,
+    pub slice_place: &'static str,
     pub flow: Option<Flow>,
-    /// The list's height as the person left it (px); `None`: as tall as it needs.
-    pub split: Option<f32>,
-    /// Dragging the divider: where the pointer was and how tall the list was.
-    drag: Option<(f32, f32)>,
-    list_scroll: ScrollHandle,
-    detail_scroll: ScrollHandle,
-    stats: HashMap<TicketId, (Seen, Stat)>,
+    pub popover: Option<Popover>,
+    pub list_scroll: ScrollHandle,
+    pub peek_scroll: ScrollHandle,
+    pub stats: HashMap<TicketId, (Seen, Stat)>,
     asked: HashMap<TicketId, Seen>,
-    pub diff: Option<DiffUi>,
-    fetched: tokio::sync::mpsc::UnboundedSender<Fetched>,
+    pub diff: Option<super::diffview::DiffUi>,
+    pub fetched: tokio::sync::mpsc::UnboundedSender<Fetched>,
     /// The text to put in the search box at the next draw (which has a window).
     pending_search: Option<String>,
+    pub undo: Undo,
+    /// Checklist lines of a waiting ticket the person ticked off (1–9).
+    pub ticked: HashMap<TicketId, BTreeSet<usize>>,
+    /// `g` was pressed: the next key goes somewhere (i, l, b).
+    chord: bool,
+    /// The sidebar's list of squads is open.
+    pub squads_open: bool,
+    /// The keys' sheet is open (?).
+    pub keys_open: bool,
+    /// The window is wide enough for the peek beside the list.
+    pub wide: bool,
+    /// How wide the list is, as last drawn: narrow lists drop columns.
+    pub list_width: f32,
+    /// How strong the live dots are now (0–1), stepped by the ticker.
+    pub pulse: f32,
+    pulse_step: u32,
+    _ticker: Option<Task<()>>,
 }
 
 impl BoardUi {
-    pub fn new(window: &mut Window, cx: &mut Context<Shell>, split: Option<f32>, fetched: tokio::sync::mpsc::UnboundedSender<Fetched>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Shell>, fetched: tokio::sync::mpsc::UnboundedSender<Fetched>) -> Self {
         Self {
-            view: View::default(),
+            view: View { peek: true, ..View::default() },
             search: cx.new(|cx| InputState::new(window, cx).placeholder(t!("board.search_placeholder"))),
-            send_back: cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 8).submit_on_enter(false).placeholder(t!("board.send_back_placeholder"))),
-            resume: cx.new(|cx| InputState::new(window, cx).placeholder(t!("board.resume_placeholder"))),
+            reply: cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 8).submit_on_enter(false).placeholder(t!("board.reply_placeholder"))),
+            naming: cx.new(|cx| InputState::new(window, cx).placeholder(t!("board.view_name_placeholder"))),
+            slice_search: cx.new(|cx| InputState::new(window, cx).placeholder(t!("header.find_project"))),
+            slice_place: "",
             flow: None,
-            split,
-            drag: None,
+            popover: None,
             list_scroll: ScrollHandle::new(),
-            detail_scroll: ScrollHandle::new(),
+            peek_scroll: ScrollHandle::new(),
             stats: HashMap::new(),
             asked: HashMap::new(),
             diff: None,
             fetched,
             pending_search: None,
+            undo: Undo::default(),
+            ticked: HashMap::new(),
+            chord: false,
+            squads_open: false,
+            keys_open: false,
+            wide: true,
+            list_width: 900.,
+            pulse: 1.,
+            pulse_step: 0,
+            _ticker: None,
         }
     }
 
-    /// Whether one of the board's text boxes has the keyboard.
+    /// Whether one of the work screens' text boxes has the keyboard.
     pub fn typing(&self, window: &Window, cx: &App) -> bool {
         self.search.read(cx).focus_handle(cx).is_focused(window)
-            || self.send_back.read(cx).focus_handle(cx).is_focused(window)
-            || self.resume.read(cx).focus_handle(cx).is_focused(window)
+            || self.reply.read(cx).focus_handle(cx).is_focused(window)
+            || self.naming.read(cx).focus_handle(cx).is_focused(window)
+            || self.slice_search.read(cx).focus_handle(cx).is_focused(window)
+            || self.diff.as_ref().is_some_and(|d| d.comment.read(cx).focus_handle(cx).is_focused(window))
+    }
+
+    /// The stat of a ticket's branch, while it still looks as it did when asked.
+    pub fn stat(&self, t: &Ticket) -> Option<&Stat> {
+        self.stats.get(&t.id).filter(|(seen, _)| *seen == diffs::fingerprint(t)).map(|(_, s)| s)
     }
 }
 
 // ── what a click or a key does ──
 
 impl Shell {
-    fn can_act(&self) -> bool {
+    pub fn can_act(&self) -> bool {
         matches!(self.model.conn, Conn::Connected { .. })
     }
 
-    fn picked(&self) -> Option<Ticket> {
-        board::selected(&self.model, &self.board.view).cloned()
+    /// The views in the sidebar: the built-in ones, then the person's.
+    pub fn saved_views(&self) -> Vec<SavedView> {
+        let kept = self.remembered.views.iter().map(|v| SavedView { name: v.name.clone(), query: v.query.clone(), group: GroupBy::parse(&v.group), pinned: v.pinned });
+        board::builtin_views().into_iter().chain(kept).collect()
     }
 
-    /// Wire the board's text boxes to the window.
+    /// What accepting lands in `project`, once the person said.
+    pub fn merge_way_of(&self, project: &str) -> Option<MergeWay> {
+        self.remembered.merge_way(project).and_then(MergeWay::parse)
+    }
+
+    pub fn board_rows(&self) -> Vec<Row> {
+        board::rows(&self.model, &self.board.view, &self.saved_views())
+    }
+
+    /// The thing picked in the list.
+    pub fn picked_need(&self) -> Option<Need> {
+        board::selected(&self.board_rows(), &self.board.view)
+    }
+
+    /// The ticket picked (a request for permission's own, when it has one).
+    pub fn picked(&self) -> Option<Ticket> {
+        self.picked_need().and_then(|n| board::ticket_of(&self.model, n)).cloned()
+    }
+
+    /// Wire the work screens' text boxes to the window.
     pub fn board_subscriptions(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<Subscription> {
         let search = self.board.search.clone();
-        let send_back = self.board.send_back.clone();
-        let resume = self.board.resume.clone();
+        let reply = self.board.reply.clone();
+        let naming = self.board.naming.clone();
+        let slice = self.board.slice_search.clone();
         vec![
-            cx.subscribe_in(&search, window, |this, input, event: &InputEvent, _, cx| {
+            cx.subscribe_in(&slice, window, |_, _, event: &InputEvent, _, cx| {
                 if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
+            cx.subscribe_in(&search, window, |this, input, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
                     let text = input.read(cx).value().to_string();
                     if text != this.board.view.query {
                         this.board.view.query = text;
                         this.board_changed(cx);
                     }
                 }
+                InputEvent::PressEnter { .. } => {
+                    window.blur(cx);
+                    cx.notify();
+                }
+                _ => {}
             }),
-            cx.subscribe_in(&send_back, window, |this, _, event: &InputEvent, window, cx| {
+            cx.subscribe_in(&reply, window, |this, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::PressEnter { secondary: true, .. }) {
-                    this.board_send_back(window, cx);
+                    this.board_send_reply(window, cx);
                 }
             }),
-            cx.subscribe_in(&resume, window, |this, _, event: &InputEvent, window, cx| {
+            cx.subscribe_in(&naming, window, |this, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
-                    this.board_resume(window, cx);
+                    this.board_save_view(window, cx);
                 }
             }),
         ]
     }
 
-    /// The list or the pick changed: the detail starts at its top, and what the
-    /// ticket changed is asked of git once.
-    fn board_changed(&mut self, cx: &mut Context<Self>) {
-        self.board.detail_scroll.set_offset(point(px(0.), px(0.)));
+    /// The list or the pick changed: the peek starts at its top, what the
+    /// rows show of branches is asked of git once, the pick stays in sight.
+    pub fn board_changed(&mut self, cx: &mut Context<Self>) {
+        self.board.peek_scroll.set_offset(point(px(0.), px(0.)));
         if let Some(flow) = self.board.flow
-            && self.picked().is_none_or(|t| t.id != flow.ticket())
-            && !matches!(flow, Flow::Merge(_) | Flow::Push(_))
+            && let Some(id) = flow_ticket(flow)
+            && self.picked().is_none_or(|t| t.id != id)
+            && !matches!(flow, Flow::Way { .. })
         {
             self.board.flow = None;
         }
@@ -181,16 +229,16 @@ impl Shell {
     }
 
     fn scroll_to_pick(&self) {
-        let Some(pick) = board::selected(&self.model, &self.board.view).map(|t| t.id) else { return };
-        let rows = board::rows(&self.model, &self.board.view);
-        if let Some(at) = rows.iter().position(|r| matches!(r, Row::Ticket { id, .. } if *id == pick)) {
+        let rows = self.board_rows();
+        let Some(pick) = board::selected(&rows, &self.board.view) else { return };
+        if let Some(at) = rows.iter().position(|r| matches!(r, Row::Item { need, .. } if *need == pick)) {
             self.board.list_scroll.scroll_to_item(at);
         }
     }
 
-    /// Bring what the board derives up to date: the stat of the picked ticket's
-    /// branch (asked once per look of the ticket), the diff open, a ticket a
-    /// `T-n` link asked for.
+    /// Bring what the work screens derive up to date: the stats of the
+    /// branches listed (each asked once per look of its ticket), the diff
+    /// open, a ticket a `T-n` link asked for.
     pub fn board_sync(&mut self, cx: &mut Context<Self>) {
         if let Some(id) = self.board_ticket.take() {
             self.board_reveal(id);
@@ -198,9 +246,13 @@ impl Shell {
         if self.screen != Screen::Board {
             return;
         }
-        if let Some(t) = self.picked()
-            && let Some(source) = diffs::source(&self.model, &t)
-        {
+        let rows = self.board_rows();
+        let mut wanted: Vec<Ticket> = board::items(&rows).into_iter().filter_map(|n| board::ticket_of(&self.model, n)).filter(|t| t.branch.is_some()).take(60).cloned().collect();
+        if let Some(t) = self.picked() {
+            wanted.push(t);
+        }
+        for t in wanted {
+            let Some(source) = diffs::source(&self.model, &t) else { continue };
             let seen = diffs::fingerprint(&t);
             let have = self.board.stats.get(&t.id).is_some_and(|(s, _)| *s == seen);
             if !have && self.board.asked.get(&t.id) != Some(&seen) {
@@ -214,10 +266,11 @@ impl Shell {
         {
             self.board.diff = None;
         }
+        self.ensure_ticker(cx);
         cx.notify();
     }
 
-    fn fetch(&self, ticket: TicketId, source: Source, full: bool) {
+    pub fn fetch(&self, ticket: TicketId, source: Source, full: bool) {
         let (endpoint, tx) = (self.endpoint.clone(), self.board.fetched.clone());
         std::thread::spawn(move || {
             let text = diffs::run(&endpoint, &source, full);
@@ -232,16 +285,7 @@ impl Shell {
         }
         if f.full {
             if let Some(d) = self.board.diff.as_mut().filter(|d| d.ticket == f.ticket && d.branch == f.branch) {
-                match f.text {
-                    Ok(patch) => {
-                        let files = diffs::parse(&patch);
-                        d.folded = if diffs::total_lines(&files) > diffs::BIG { (1..files.len()).collect() } else { HashSet::new() };
-                        d.files = Some(files);
-                        d.patch = patch;
-                        d.rebuild();
-                    }
-                    Err(why) => d.error = Some(why),
-                }
+                d.loaded(f.text);
             }
         } else if let Ok(text) = f.text {
             let seen = diffs::fingerprint(t);
@@ -250,214 +294,508 @@ impl Shell {
         cx.notify();
     }
 
-    /// Make `id` the pick, searching for it when the list would not show it.
+    /// Make ticket `id` the pick, peeking, in the list that holds it: 나에게
+    /// when it waits for the person, else 모든 일 (searching for it when even
+    /// that would not show it).
     pub fn board_reveal(&mut self, id: TicketId) {
-        self.board.view.selected = Some(id);
-        if !board::order(&self.model, &self.board.view).contains(&id) {
-            let q = format!("t-{id}");
-            self.board.view.query = q.clone();
-            self.board.pending_search = Some(q);
+        let need = Need::Ticket(id);
+        let in_view = board::items(&self.board_rows()).contains(&need);
+        if !in_view {
+            let inbox = board::items(&board::inbox(&self.model, &Filter::default())).contains(&need);
+            self.board.view.menu = if inbox { Menu::Inbox } else { Menu::All };
+            self.board.view.query.clear();
+            self.board.pending_search = Some(String::new());
+            if !board::items(&self.board_rows()).contains(&need) {
+                self.board.view.done_open = true;
+                self.board.view.window = DoneWindow::All;
+            }
+            if !board::items(&self.board_rows()).contains(&need) {
+                let q = format!("t-{id}");
+                self.board.view.query = q.clone();
+                self.board.pending_search = Some(q);
+            }
         }
+        self.board.view.selected = Some(need);
+        self.board.view.peek = true;
+        self.board.view.page = None;
         self.board.flow = None;
         self.board.diff = None;
-        self.board.detail_scroll.set_offset(point(px(0.), px(0.)));
+        self.board.peek_scroll.set_offset(point(px(0.), px(0.)));
         self.scroll_to_pick();
     }
 
-    pub fn board_pick(&mut self, id: TicketId, cx: &mut Context<Self>) {
-        self.board.view.selected = Some(id);
+    /// Show a menu item: the work screen on it.
+    pub fn open_menu(&mut self, menu: Menu, cx: &mut Context<Self>) {
+        if self.board.view.menu != menu {
+            self.board.view.menu = menu;
+            self.board.view.selected = None;
+            self.board.view.page = None;
+            self.board.view.chosen.clear();
+            self.board.flow = None;
+            self.board.diff = None;
+        }
+        self.screen = Screen::Board;
+        self.board_changed(cx);
+    }
+
+    pub fn board_pick(&mut self, need: Need, cx: &mut Context<Self>) {
+        self.board.view.selected = Some(need);
         self.composer.flash = None;
         self.board_changed(cx);
     }
 
     pub fn board_step(&mut self, by: isize, cx: &mut Context<Self>) {
-        board::step(&self.model, &mut self.board.view, by);
+        let rows = self.board_rows();
+        board::step(&rows, &mut self.board.view, by);
         self.composer.flash = None;
         self.board_changed(cx);
     }
 
-    /// `/find words`, from the conversation: the board, narrowed.
+    /// ⇧↑↓: choose from where the range started to the pick.
+    fn board_range(&mut self, by: isize, cx: &mut Context<Self>) {
+        let rows = self.board_rows();
+        let list: Vec<TicketId> = board::items(&rows).into_iter().filter_map(|n| if let Need::Ticket(id) = n { Some(id) } else { None }).collect();
+        let Some(Need::Ticket(from)) = board::selected(&rows, &self.board.view) else { return };
+        let anchor = *self.board.view.anchor.get_or_insert(from);
+        board::step(&rows, &mut self.board.view, by);
+        let Some(Need::Ticket(to)) = board::selected(&rows, &self.board.view) else { return };
+        let (a, b) = (list.iter().position(|x| *x == anchor).unwrap_or(0), list.iter().position(|x| *x == to).unwrap_or(0));
+        self.board.view.chosen = list[a.min(b)..=a.max(b)].iter().copied().collect();
+        self.board_changed(cx);
+    }
+
+    /// `/find words`, from the conversation: 모든 일, narrowed.
     pub fn board_find(&mut self, words: &str, cx: &mut Context<Self>) {
+        self.board.view.menu = Menu::All;
         self.board.view.query = words.to_owned();
         self.board.pending_search = Some(words.to_owned());
         self.show(Screen::Board, cx);
         self.board_changed(cx);
     }
 
-    pub fn set_graph(&mut self, graph: bool, cx: &mut Context<Self>) {
-        self.board.view.graph = graph;
-        self.board_changed(cx);
-    }
-
-    fn say(&mut self, text: impl Into<String>) {
+    pub fn say(&mut self, text: impl Into<String>) {
         self.composer.flash = Some(text.into());
     }
 
-    fn board_accept(&mut self, cx: &mut Context<Self>) {
-        let Some(t) = self.picked().filter(|t| !t.status.is_closed()) else { return };
+    fn project_of(&self, t: &Ticket) -> String {
+        self.model.ticket_project_name(t).unwrap_or_else(|| t!("board.squad_folder").into())
+    }
+
+    // ── yes ──
+
+    /// A: yes to what is picked — or to everything chosen.
+    pub fn board_yes(&mut self, cx: &mut Context<Self>) {
+        if !self.board.view.chosen.is_empty() {
+            self.board.flow = Some(Flow::Bulk { yes: true });
+            cx.notify();
+            return;
+        }
+        let Some(need) = self.picked_need() else { return };
+        match need {
+            Need::Permission(id) => {
+                let before = board::items(&self.board_rows());
+                self.decide_on(id, Decision::Allow, cx);
+                self.advance_from(&before, need, cx);
+            }
+            Need::Ticket(id) => {
+                let Some(t) = self.model.tickets.iter().find(|t| t.id == id).cloned() else { return };
+                if board::needs_way(&t) {
+                    match self.merge_way_of(&self.project_of(&t)) {
+                        Some(way) => self.land(&t, Some(way), cx),
+                        None => {
+                            self.board.flow = Some(Flow::Way { ticket: id, remember: true });
+                            cx.notify();
+                        }
+                    }
+                } else if t.status == TicketStatus::Waiting {
+                    let note = self.done_note(&t);
+                    self.land_with(&t, None, &note, cx);
+                } else if matches!(t.status, TicketStatus::Review | TicketStatus::Proposed) {
+                    self.land(&t, None, cx);
+                }
+            }
+        }
+    }
+
+    /// ⇧A: how to land the pick, this once (for a request: always allow).
+    pub fn board_method(&mut self, cx: &mut Context<Self>) {
+        match self.picked_need() {
+            Some(Need::Permission(id)) => {
+                let before = board::items(&self.board_rows());
+                self.decide_on(id, Decision::Always, cx);
+                self.advance_from(&before, Need::Permission(id), cx);
+            }
+            Some(Need::Ticket(id)) => {
+                if self.model.tickets.iter().any(|t| t.id == id && board::needs_way(t)) {
+                    self.board.flow = Some(Flow::Method(id));
+                    cx.notify();
+                } else {
+                    self.board_yes(cx);
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// What a waiting ticket's "done" says: the lines ticked off.
+    fn done_note(&self, t: &Ticket) -> String {
+        let items = t.note.as_deref().map(board::checklist).unwrap_or_default();
+        let ticked = self.board.ticked.get(&t.id);
+        items.iter().enumerate().filter(|(i, _)| ticked.is_some_and(|s| s.contains(i))).map(|(_, l)| format!("✓ {l}")).collect::<Vec<_>>().join("\n")
+    }
+
+    /// The way chosen for the first A in a project: kept if asked, and used.
+    pub fn board_choose_way(&mut self, way: MergeWay, cx: &mut Context<Self>) {
+        let Some(flow) = self.board.flow.take() else { return };
+        let (id, remember) = match flow {
+            Flow::Way { ticket, remember } => (ticket, remember),
+            Flow::Method(ticket) => (ticket, false),
+            _ => return,
+        };
+        let Some(t) = self.model.tickets.iter().find(|t| t.id == id).cloned() else { return };
+        if remember {
+            self.remembered.set_merge_way(&self.project_of(&t), way.code());
+            self.remembered.save(&equipe_providers::credentials::equipe_home());
+        }
+        self.land(&t, Some(way), cx);
+    }
+
+    fn land(&mut self, t: &Ticket, way: Option<MergeWay>, cx: &mut Context<Self>) {
+        self.land_with(t, way, "", cx);
+    }
+
+    /// Hold back the commands that say yes to `t`, and move on.
+    fn land_with(&mut self, t: &Ticket, way: Option<MergeWay>, note: &str, cx: &mut Context<Self>) {
         if !self.can_act() {
             return;
         }
-        self.send_command(Command::Accept { squad: self.model.squad.clone(), ticket: t.id });
-        if board::asks_to_merge(&t) {
-            self.board.flow = Some(Flow::Merge(t.id));
-            self.say(t!("board.accepted_ask_merge", id = t.id));
-        } else if t.kind.in_home() {
-            self.say(t!("board.accepted_home", id = t.id));
-        } else {
-            self.say(t!("board.accepted", id = t.id));
+        let commands = board::yes_commands(&self.model.squad, t, way, note);
+        if commands.is_empty() {
+            return;
         }
-        board::next_review_after(&self.model, &mut self.board.view, t.id);
+        let project = self.project_of(t);
+        let text = match t.status {
+            TicketStatus::Waiting => t!("board.toast_resume", id = t.id),
+            TicketStatus::Proposed => t!("board.toast_proposal", id = t.id),
+            TicketStatus::Done => t!("board.toast_merge", id = t.id, project = project, way = way.unwrap_or(MergeWay::Merge).label()),
+            _ if Model::merges(t) => match way {
+                Some(MergeWay::Branch) | None => t!("board.toast_accept_branch", id = t.id),
+                Some(way) => t!("board.toast_accept_merge", id = t.id, project = project, way = way.label()),
+            },
+            _ => t!("board.toast_accept", id = t.id),
+        };
+        self.hold(t.id, text, commands, cx);
+    }
+
+    /// Act on a ticket in five seconds, unless taken back (U); out of the
+    /// list at once, and on to the next thing.
+    fn hold(&mut self, id: TicketId, text: String, commands: Vec<Command>, cx: &mut Context<Self>) {
+        let before = board::items(&self.board_rows());
+        self.model.act_on(id);
+        self.board.undo.push(id, text, commands, Instant::now());
+        self.board.flow = None;
+        self.board.ticked.remove(&id);
+        self.advance_from(&before, Need::Ticket(id), cx);
+        self.ensure_ticker(cx);
+    }
+
+    /// After acting on `done`: the next thing comes up.
+    fn advance_from(&mut self, before: &[Need], done: Need, cx: &mut Context<Self>) {
+        let after = board::items(&self.board_rows());
+        if self.board.view.selected.is_none_or(|s| s == done) || !after.contains(&self.board.view.selected.unwrap_or(done)) {
+            self.board.view.selected = board::advance(before, &after, done).or(after.first().copied());
+        }
+        if self.board.view.selected.is_none() {
+            self.board.view.page = None;
+        }
         self.board_changed(cx);
     }
 
-    /// The merge question for work accepted but not on main (M).
-    fn board_ask_merge(&mut self, cx: &mut Context<Self>) {
-        if let Some(t) = self.picked().filter(|t| t.not_on_main()) {
-            self.board.flow = Some(Flow::Push(t.id));
-            cx.notify();
+    /// U: take back the latest action held.
+    pub fn board_undo(&mut self, cx: &mut Context<Self>) {
+        if let Some(p) = self.board.undo.undo() {
+            self.model.unact(p.ticket);
+            self.board.view.selected = Some(Need::Ticket(p.ticket));
+            self.say(t!("board.undone", id = p.ticket));
+            self.board_changed(cx);
         }
     }
 
-    fn board_merge(&mut self, ticket: TicketId, push: bool, cx: &mut Context<Self>) {
-        self.board.flow = None;
-        self.send_command(Command::Merge { squad: self.model.squad.clone(), ticket, push });
-        self.say(t!("board.merging", ticket = ticket));
-        cx.notify();
-    }
-
-    fn board_decline_merge(&mut self, ticket: TicketId, cx: &mut Context<Self>) {
-        self.board.flow = None;
-        self.say(t!("board.stays_on_branch", ticket = ticket));
-        cx.notify();
-    }
-
-    fn board_open_flow(&mut self, flow: Flow, window: &mut Window, cx: &mut Context<Self>) {
-        self.board.flow = Some(flow);
-        match flow {
-            Flow::SendBack(_) => {
-                self.board.send_back.update(cx, |s, cx| {
-                    s.set_value(String::new(), window, cx);
-                    s.focus(window, cx);
-                });
+    /// Send what is due; step the live dots. True when the screen changed.
+    fn tick(&mut self, now: Instant) -> bool {
+        let due = self.board.undo.take_due(now);
+        let mut changed = !due.is_empty() || !self.board.undo.pending.is_empty();
+        for p in due {
+            for command in p.commands {
+                self.send_command(command);
             }
-            Flow::Resume(_) => {
-                self.board.resume.update(cx, |s, cx| {
-                    s.set_value(String::new(), window, cx);
-                    s.focus(window, cx);
-                });
-            }
-            _ => {}
         }
-        cx.notify();
-    }
-
-    fn board_close_flow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(flow) = self.board.flow.take() {
-            if let Flow::Merge(t) | Flow::Push(t) = flow {
-                self.say(t!("board.stays_on_branch", ticket = t));
-            }
-            window.blur(cx);
-            cx.notify();
+        if self.screen == Screen::Board && self.board.diff.is_none() && self.board_rows().iter().any(|r| matches!(r, Row::Item { need, .. } if board::ticket_of(&self.model, *need).is_some_and(|t| self.model.is_live(t)))) {
+            self.board.pulse_step = self.board.pulse_step.wrapping_add(1);
+            self.board.pulse = [1.0, 0.75, 0.45, 0.3, 0.45, 0.75][self.board.pulse_step as usize % 6];
+            changed = true;
         }
+        changed
     }
 
-    fn board_send_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Flow::SendBack(id)) = self.board.flow else { return };
-        let note = self.board.send_back.read(cx).value().trim().to_owned();
-        if note.is_empty() || !self.can_act() {
+    /// A ticker runs while something is held back or something on screen is live.
+    pub fn ensure_ticker(&mut self, cx: &mut Context<Self>) {
+        if self.board._ticker.is_some() {
             return;
         }
-        self.send_command(Command::Reopen { squad: self.model.squad.clone(), ticket: id, note });
-        self.board.flow = None;
-        self.board.diff = None;
-        self.say(t!("board.sent_back", id = id));
-        window.blur(cx);
-        cx.notify();
+        self.board._ticker = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(180)).await;
+                let keep = this.update(cx, |this, cx| {
+                    let changed = this.tick(Instant::now());
+                    if changed {
+                        cx.notify();
+                    }
+                    let live = this.model.tickets.iter().any(|t| this.model.is_live(t));
+                    let keep = !this.board.undo.pending.is_empty() || (this.screen == Screen::Board && live);
+                    if !keep {
+                        this.board._ticker = None;
+                    }
+                    keep
+                });
+                if !matches!(keep, Ok(true)) {
+                    break;
+                }
+            }
+        }));
     }
 
-    fn board_resume(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Flow::Resume(id)) = self.board.flow else { return };
+    // ── no ──
+
+    /// N: no to what is picked — decline, drop, or (asked once) cancel.
+    pub fn board_no(&mut self, cx: &mut Context<Self>) {
+        if !self.board.view.chosen.is_empty() {
+            self.board.flow = Some(Flow::Bulk { yes: false });
+            cx.notify();
+            return;
+        }
+        match self.picked_need() {
+            Some(Need::Permission(id)) => {
+                let before = board::items(&self.board_rows());
+                self.decide_on(id, Decision::Deny, cx);
+                self.advance_from(&before, Need::Permission(id), cx);
+            }
+            Some(Need::Ticket(id)) => {
+                let Some(t) = self.model.tickets.iter().find(|t| t.id == id).cloned() else { return };
+                match t.status {
+                    TicketStatus::Proposed => {
+                        let command = Command::Cancel { squad: self.model.squad.clone(), ticket: id };
+                        self.hold(id, t!("board.toast_drop", id = id), vec![command], cx);
+                    }
+                    TicketStatus::Done | TicketStatus::Cancelled => {}
+                    _ => {
+                        self.board.flow = Some(Flow::Cancel(id));
+                        cx.notify();
+                    }
+                }
+            }
+            None => {}
+        }
+    }
+
+    pub fn board_cancel(&mut self, id: TicketId, cx: &mut Context<Self>) {
         if !self.can_act() {
             return;
         }
-        let note = self.board.resume.read(cx).value().trim().to_owned();
-        self.send_command(Command::Resume { squad: self.model.squad.clone(), ticket: id, note });
-        self.board.flow = None;
-        self.say(t!("board.resumed", id = id));
-        window.blur(cx);
-        cx.notify();
+        let command = Command::Cancel { squad: self.model.squad.clone(), ticket: id };
+        self.hold(id, t!("board.toast_cancel", id = id), vec![command], cx);
     }
 
-    fn board_cancel(&mut self, cx: &mut Context<Self>) {
-        let Some(Flow::Cancel(id)) = self.board.flow else { return };
-        if !self.can_act() {
-            return;
+    /// The bulk action, said back and confirmed.
+    pub fn board_bulk(&mut self, yes: bool, cx: &mut Context<Self>) {
+        self.board.flow = None;
+        let chosen: Vec<TicketId> = std::mem::take(&mut self.board.view.chosen).into_iter().collect();
+        self.board.view.anchor = None;
+        for id in chosen {
+            let Some(t) = self.model.tickets.iter().find(|t| t.id == id).cloned() else { continue };
+            if yes {
+                let way = board::needs_way(&t).then(|| self.merge_way_of(&self.project_of(&t)).unwrap_or(MergeWay::Branch));
+                if matches!(t.status, TicketStatus::Review | TicketStatus::Proposed | TicketStatus::Waiting) || t.not_on_main() {
+                    self.land(&t, way, cx);
+                }
+            } else if !t.status.is_closed() {
+                let command = Command::Cancel { squad: self.model.squad.clone(), ticket: id };
+                self.hold(id, t!("board.toast_cancel", id = id), vec![command], cx);
+            }
         }
-        self.send_command(Command::Cancel { squad: self.model.squad.clone(), ticket: id });
-        self.board.flow = None;
-        self.say(t!("board.cancelled", id = id));
         cx.notify();
     }
 
-    /// Enter: talk to whoever has the ticket, if still on the squad.
-    pub fn board_talk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    // ── in words ──
+
+    /// R: the words box at the foot of the peek.
+    pub fn board_open_reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(t) = self.picked() else { return };
-        let Some(who) = board::who(&t).map(str::to_owned) else { return };
-        let target = self.model.members.iter().find(|m| m.presence != Presence::Closed && (m.name == who || m.role == who)).map(|m| m.session);
-        if let Some(session) = target {
+        if self.picked_need().is_some_and(|n| matches!(n, Need::Permission(_))) {
+            return;
+        }
+        self.board.view.peek = true;
+        self.board.flow = Some(Flow::Reply(t.id));
+        self.board.reply.update(cx, |s, cx| {
+            s.set_value(String::new(), window, cx);
+            s.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// ⌘⏎ in the words box: changes asked for, what was done, a reply to the PM.
+    pub fn board_send_reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Flow::Reply(id)) = self.board.flow else { return };
+        let Some(t) = self.model.tickets.iter().find(|t| t.id == id).cloned() else { return };
+        let mut note = self.board.reply.read(cx).value().trim().to_owned();
+        let comments = self.board.diff.as_ref().filter(|d| d.ticket == id).map(|d| d.comments_text()).unwrap_or_default();
+        if !comments.is_empty() {
+            note = if note.is_empty() { comments } else { format!("{note}\n\n{comments}") };
+        }
+        if !self.can_act() {
+            return;
+        }
+        let squad = self.model.squad.clone();
+        match t.status {
+            TicketStatus::Review | TicketStatus::Done => {
+                if note.is_empty() {
+                    return;
+                }
+                self.board.diff = None;
+                self.hold(id, t!("board.toast_send_back", id = id), vec![Command::Reopen { squad, ticket: id, note }], cx);
+            }
+            TicketStatus::Waiting => {
+                let done = self.done_note(&t);
+                let note = [done, note].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
+                self.hold(id, t!("board.toast_resume", id = id), vec![Command::Resume { squad, ticket: id, note }], cx);
+            }
+            _ => {
+                if note.is_empty() {
+                    return;
+                }
+                // A proposal's answer goes to the PM; work under way, to its member.
+                let to = if t.status == TicketStatus::Proposed { self.model.pm() } else { self.model.member_on(id).map(|m| m.session).or(self.model.pm()) };
+                if let Some(session) = to {
+                    self.send_command(Command::Submit { session, text: format!("T-{id}: {note}") });
+                    self.say(t!("board.replied", id = id));
+                }
+                self.board.flow = None;
+            }
+        }
+        window.blur(cx);
+        cx.notify();
+    }
+
+    /// C: talk to whoever has the pick, if still on the squad.
+    pub fn board_talk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let session = match self.picked_need() {
+            Some(Need::Permission(id)) => self.model.approvals.get(id).map(|a| a.session),
+            _ => {
+                let Some(t) = self.picked() else { return };
+                let Some(who) = board::who(&t).map(str::to_owned) else { return };
+                self.model.members.iter().find(|m| m.presence != Presence::Closed && (m.name == who || m.role == who)).map(|m| m.session)
+            }
+        };
+        if let Some(session) = session {
             self.select_member(session, window, cx);
         }
     }
 
-    fn board_open_diff(&mut self, cx: &mut Context<Self>) {
+    /// D: the pick's changes, file by file.
+    pub fn board_open_diff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(t) = self.picked() else { return };
         let Some(source) = diffs::source(&self.model, &t) else { return };
-        self.board.diff = Some(DiffUi {
-            ticket: t.id,
-            branch: source.branch.clone(),
-            files: None,
-            patch: String::new(),
-            error: None,
-            current: 0,
-            folded: HashSet::new(),
-            flat: Vec::new(),
-            scroll: UniformListScrollHandle::new(),
-        });
+        self.board.diff = Some(super::diffview::DiffUi::new(t.id, source.branch.clone(), window, cx));
         self.fetch(t.id, source, true);
         cx.notify();
     }
 
-    fn board_look_in(&self, path: &std::path::Path) {
-        if matches!(self.endpoint, Endpoint::Local { .. }) {
-            let _ = std::process::Command::new("open").arg(path).spawn();
+    /// ⌥V: keep what is listed as a view of its own.
+    pub fn board_save_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.board.naming.read(cx).value().trim().to_owned();
+        if name.is_empty() {
+            return;
         }
+        let (query, group) = board::effective(&self.board.view, &self.saved_views());
+        self.remembered.views.push(crate::target::KeptView { name: name.clone(), query, group: group.code().to_owned(), pinned: true });
+        self.remembered.save(&equipe_providers::credentials::equipe_home());
+        self.board.flow = None;
+        let at = self.saved_views().len() - 1;
+        self.board.view.query.clear();
+        self.board.pending_search = Some(String::new());
+        self.open_menu(Menu::View(at), cx);
+        self.say(t!("board.view_saved", name = name));
+        window.blur(cx);
     }
 
-    /// Esc: a question or note first, then the diff, then the search, then the conversation.
+    /// Take a saved view out (the built-in ones stay).
+    pub fn board_forget_view(&mut self, at: usize, cx: &mut Context<Self>) {
+        let builtin = board::builtin_views().len();
+        if at < builtin || at - builtin >= self.remembered.views.len() {
+            return;
+        }
+        self.remembered.views.remove(at - builtin);
+        self.remembered.save(&equipe_providers::credentials::equipe_home());
+        if self.board.view.menu == Menu::View(at) {
+            self.open_menu(Menu::All, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn board_toggle_word(&mut self, word: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let q = board::toggle_word(&self.board.view.query, word);
+        self.board.view.query = q.clone();
+        self.board.search.update(cx, |s, cx| s.set_value(q, window, cx));
+        self.board_changed(cx);
+    }
+
+    pub fn board_set_group(&mut self, group: GroupBy, cx: &mut Context<Self>) {
+        self.board.view.group = group;
+        self.board.popover = None;
+        if let Menu::View(_) = self.board.view.menu {
+            self.board.view.menu = Menu::All;
+        }
+        self.board_changed(cx);
+    }
+
+    /// Esc: a menu, a question or a note first, then the diff, the page, the
+    /// choice, the search, the peek.
     pub fn board_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.board.flow.is_some() {
-            self.board_close_flow(window, cx);
-        } else if self.board.diff.is_some() {
-            self.board.diff = None;
-            cx.notify();
+        if self.board.keys_open {
+            self.board.keys_open = false;
+        } else if self.board.popover.is_some() {
+            self.board.popover = None;
+        } else if self.board.flow.is_some() {
+            self.board.flow = None;
+            window.blur(cx);
+        } else if let Some(d) = self.board.diff.as_mut() {
+            if !d.escape() {
+                self.board.diff = None;
+            }
+        } else if self.board.view.page.is_some() {
+            self.board.view.page = None;
+        } else if !self.board.view.chosen.is_empty() {
+            self.board.view.chosen.clear();
+            self.board.view.anchor = None;
         } else if !self.board.view.query.is_empty() {
             self.board.view.query.clear();
             self.board.search.update(cx, |s, cx| s.set_value(String::new(), window, cx));
             window.blur(cx);
             self.board_changed(cx);
+        } else if self.board.view.peek {
+            self.board.view.peek = false;
         } else {
             window.blur(cx);
-            self.show(Screen::Chat, cx);
-            self.composer.focus(window, cx);
         }
+        cx.notify();
     }
 
-    /// A key on the board. True when it was taken.
-    pub fn on_board_key(&mut self, key: &str, plain: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    /// A key on a work screen. True when it was taken.
+    pub fn on_board_key(&mut self, key: &str, m: &Modifiers, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.screen != Screen::Board {
             return false;
         }
+        let plain = !(m.control || m.alt || m.platform || m.shift || m.function);
         if key == "escape" && plain {
             self.board_escape(window, cx);
             return true;
@@ -465,32 +803,25 @@ impl Shell {
         if self.board.typing(window, cx) {
             return false;
         }
-        if !plain {
-            return false;
+        // The diff has keys of its own.
+        if self.board.diff.is_some() && self.on_diff_key(key, m, window, cx) {
+            return true;
         }
-        let ticket = self.picked();
-        // The questions have the keys while they are open.
+        let shift_only = m.shift && !(m.control || m.alt || m.platform || m.function);
+        // Chosen keys of an open question.
         match (self.board.flow, key) {
-            (Some(Flow::Merge(_)), "y") => {
-                let id = self.board.flow.map(Flow::ticket).unwrap_or_default();
-                self.board.flow = Some(Flow::Push(id));
+            (Some(Flow::Way { .. } | Flow::Method(_)), "1" | "2" | "3") => {
+                let way = MergeWay::ALL[key.parse::<usize>().unwrap_or(1) - 1];
+                self.board_choose_way(way, cx);
+                return true;
+            }
+            (Some(Flow::Way { ticket, remember }), "space") => {
+                self.board.flow = Some(Flow::Way { ticket, remember: !remember });
                 cx.notify();
                 return true;
             }
-            (Some(Flow::Merge(id)), "n") => {
-                self.board_decline_merge(id, cx);
-                return true;
-            }
-            (Some(Flow::Push(id)), "y") => {
-                self.board_merge(id, true, cx);
-                return true;
-            }
-            (Some(Flow::Push(id)), "n") => {
-                self.board_merge(id, false, cx);
-                return true;
-            }
-            (Some(Flow::Cancel(_)), "y") => {
-                self.board_cancel(cx);
+            (Some(Flow::Cancel(id)), "y" | "enter") => {
+                self.board_cancel(id, cx);
                 return true;
             }
             (Some(Flow::Cancel(_)), "n") => {
@@ -498,80 +829,165 @@ impl Shell {
                 cx.notify();
                 return true;
             }
+            (Some(Flow::Bulk { yes }), "y" | "enter") => {
+                self.board_bulk(yes, cx);
+                return true;
+            }
+            (Some(Flow::Bulk { .. }), "n") => {
+                self.board.flow = None;
+                cx.notify();
+                return true;
+            }
             _ => {}
+        }
+        if m.platform && key == "a" && !m.shift {
+            let list: BTreeSet<TicketId> = board::items(&self.board_rows()).into_iter().filter_map(|n| if let Need::Ticket(id) = n { Some(id) } else { None }).collect();
+            self.board.view.chosen = list;
+            cx.notify();
+            return true;
+        }
+        if m.alt && key == "v" {
+            self.board.flow = Some(Flow::SaveView);
+            self.board.naming.update(cx, |s, cx| {
+                s.set_value(String::new(), window, cx);
+                s.focus(window, cx);
+            });
+            cx.notify();
+            return true;
+        }
+        if shift_only {
+            match key {
+                "a" => self.board_method(cx),
+                "up" | "k" => self.board_range(-1, cx),
+                "down" | "j" => self.board_range(1, cx),
+                "/" | "?" => {
+                    self.board.keys_open = !self.board.keys_open;
+                    cx.notify();
+                }
+                _ => return false,
+            }
+            return true;
+        }
+        if !plain {
+            return key == "?";
+        }
+        if std::mem::take(&mut self.board.chord) {
+            let menu = match key {
+                "i" => Some(Menu::Inbox),
+                "l" => Some(Menu::Working),
+                "b" => Some(Menu::All),
+                _ => None,
+            };
+            if let Some(menu) = menu {
+                self.open_menu(menu, cx);
+                return true;
+            }
+        }
+        // A waiting ticket's checklist: 1–9 tick its lines off.
+        if let (Some(d @ 1..=9), Some(t)) = (key.parse::<usize>().ok(), self.picked().filter(|t| t.status == TicketStatus::Waiting)) {
+            let set = self.board.ticked.entry(t.id).or_default();
+            if !set.remove(&(d - 1)) {
+                set.insert(d - 1);
+            }
+            cx.notify();
+            return true;
         }
         match key {
             "up" | "k" => self.board_step(-1, cx),
             "down" | "j" => self.board_step(1, cx),
-            "f" | "/" => {
+            "space" => {
+                self.board.view.peek = !self.board.view.peek;
+                cx.notify();
+            }
+            "enter" => {
+                if self.picked_need().is_some_and(|n| matches!(n, Need::Ticket(_))) {
+                    self.board.view.page = Some(Tab::Overview);
+                    self.board.view.peek = true;
+                    cx.notify();
+                }
+            }
+            "/" => {
                 self.board.search.update(cx, |s, cx| s.focus(window, cx));
                 cx.notify();
             }
-            "e" => {
-                self.board.view.expanded = !self.board.view.expanded;
-                self.board_changed(cx);
+            "?" => {
+                self.board.keys_open = !self.board.keys_open;
+                cx.notify();
             }
-            "g" => {
-                let graph = !self.board.view.graph;
-                self.set_graph(graph, cx);
+            "f" => {
+                self.board.popover = if self.board.popover == Some(Popover::Filter) { None } else { Some(Popover::Filter) };
+                cx.notify();
             }
-            "a" => self.board_accept(cx),
-            "m" => self.board_ask_merge(cx),
-            "r" => {
-                let Some(t) = ticket else { return false };
-                match t.status {
-                    TicketStatus::Waiting => self.board_open_flow(Flow::Resume(t.id), window, cx),
-                    TicketStatus::Review | TicketStatus::Done => self.board_open_flow(Flow::SendBack(t.id), window, cx),
-                    _ => return false,
+            "g" => self.board.chord = true,
+            "x" => {
+                if let Some(Need::Ticket(id)) = self.picked_need() {
+                    if !self.board.view.chosen.remove(&id) {
+                        self.board.view.chosen.insert(id);
+                    }
+                    self.board.view.anchor = Some(id);
+                    cx.notify();
                 }
             }
-            "d" => self.board_open_diff(cx),
-            "enter" => self.board_talk(window, cx),
+            "u" => self.board_undo(cx),
+            "a" | "y" => self.board_yes(cx),
+            "n" => self.board_no(cx),
+            "r" => self.board_open_reply(window, cx),
+            "c" => self.board_talk(window, cx),
+            "d" => self.board_open_diff(window, cx),
+            "m" => {
+                if let Some(t) = self.picked().filter(Ticket::not_on_main) {
+                    self.board.flow = Some(Flow::Method(t.id));
+                    cx.notify();
+                }
+            }
             _ => return false,
         }
         true
     }
 
-    /// Dev tool (`snapshot.rs`): write in the open question's text box.
+    /// Dev tool (`snapshot.rs`): write in the open words box.
     #[cfg(feature = "snapshot")]
     pub fn board_type(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         match self.board.flow {
-            Some(Flow::SendBack(_)) => self.board.send_back.update(cx, |s, cx| s.set_value(text.to_owned(), window, cx)),
-            Some(Flow::Resume(_)) => self.board.resume.update(cx, |s, cx| s.set_value(text.to_owned(), window, cx)),
-            _ => {}
+            Some(Flow::SaveView) => self.board.naming.update(cx, |s, cx| s.set_value(text.to_owned(), window, cx)),
+            _ => self.board.reply.update(cx, |s, cx| s.set_value(text.to_owned(), window, cx)),
         }
         cx.notify();
-    }
-
-    /// Dev tool: the t!("board.cancel_ellipsis") button.
-    #[cfg(feature = "snapshot")]
-    pub fn board_ask_cancel(&mut self, cx: &mut Context<Self>) {
-        if let Some(t) = self.picked() {
-            self.board.flow = Some(Flow::Cancel(t.id));
-            cx.notify();
-        }
     }
 
     /// Dev tool: the open question's main button.
     #[cfg(feature = "snapshot")]
     pub fn board_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.board.flow {
-            Some(Flow::SendBack(_)) => self.board_send_back(window, cx),
-            Some(Flow::Resume(_)) => self.board_resume(window, cx),
+            Some(Flow::Reply(_)) => self.board_send_reply(window, cx),
+            Some(Flow::SaveView) => self.board_save_view(window, cx),
             _ => {}
         }
     }
 
-    fn pending_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Called from the window's draw: what needs a window and was asked for without one.
+    pub fn board_prepare(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = self.board.pending_search.take() {
             self.board.search.update(cx, |s, cx| s.set_value(text, window, cx));
         }
+        let width = f32::from(window.viewport_size().width);
+        self.board.wide = width >= PEEK_BESIDE_FROM;
+        let peek = self.board.view.peek && self.board.wide && self.board.view.page.is_none();
+        self.board.list_width = width - super::sidebar::WIDTH - if peek { PEEK } else { 0. } - 16.;
+    }
+}
+
+fn flow_ticket(flow: Flow) -> Option<TicketId> {
+    match flow {
+        Flow::Reply(t) | Flow::Cancel(t) | Flow::Method(t) => Some(t),
+        Flow::Way { ticket, .. } => Some(ticket),
+        Flow::Bulk { .. } | Flow::SaveView => None,
     }
 }
 
 // ── drawing ──
 
-fn btn(p: Palette, id: impl Into<ElementId>, label: impl Into<SharedString>, key: Option<&'static str>, primary: bool, enabled: bool) -> Stateful<Div> {
+pub fn btn(p: Palette, id: impl Into<ElementId>, label: impl Into<SharedString>, key: Option<&'static str>, primary: bool, enabled: bool) -> Stateful<Div> {
     h_flex()
         .id(id)
         .h(px(28.))
@@ -586,697 +1002,805 @@ fn btn(p: Palette, id: impl Into<ElementId>, label: impl Into<SharedString>, key
         .when(primary, |b| b.bg(p.primary).text_color(p.on_primary).font_weight(FontWeight::SEMIBOLD))
         .when(!primary, |b| b.border_1().border_color(p.hair).when(enabled, |b| b.hover(move |s| s.bg(p.wash))))
         .child(label.into())
-        .when_some(key, |b, key| b.child(div().text_size(px(12.)).opacity(0.6).child(key)))
+        .when_some(key, |b, key| b.child(div().text_size(px(11.)).opacity(0.6).child(key)))
 }
 
-fn kicker(p: Palette, text: impl Into<SharedString>) -> Div {
-    div().text_size(px(11.)).text_color(p.muted).font_weight(FontWeight::MEDIUM).child(text.into())
+pub fn kbd(p: Palette, key: &'static str) -> Div {
+    div().px(px(5.)).h(px(18.)).flex().items_center().rounded(px(4.)).border_1().border_color(p.hair).text_size(px(11.)).text_color(p.muted).child(key)
 }
 
-fn hue_of(p: Palette, model: &Model, t: &Ticket) -> Option<Rgba> {
-    let path = model.ticket_project(t)?;
-    model.projects.iter().position(|q| *q == path).map(|ix| p.member(PROJECT_HUES[ix % PROJECT_HUES.len()]))
+pub fn hue_of(p: Palette, model: &Model, t: &Ticket) -> Option<Rgba> {
+    let name = model.ticket_project_name(t)?;
+    model.project_names().iter().position(|q| *q == name).map(|ix| p.member(PROJECT_HUES[ix % PROJECT_HUES.len()]))
 }
 
-fn member_color(p: Palette, model: &Model, who: &str) -> Rgba {
+pub fn member_color(p: Palette, model: &Model, who: &str) -> Rgba {
     model.members.iter().find(|m| m.name == who || m.role == who).map_or(p.text2, |m| p.member(look(&m.role, &m.name).1))
+}
+
+/// A project's dot.
+pub fn dot(color: Rgba, size: f32) -> Div {
+    div().size(px(size)).flex_none().rounded_full().bg(color)
+}
+
+pub fn menu_title(menu: Menu, views: &[SavedView]) -> String {
+    match menu {
+        Menu::Inbox => t!("board.menu_inbox").into(),
+        Menu::Working => t!("board.menu_working").into(),
+        Menu::All => t!("board.menu_all").into(),
+        Menu::View(at) => views.get(at).map_or_else(String::new, |v| v.name.clone()),
+    }
+}
+
+/// "작업 중 4 · 다음 완료 ~14:30 · 조용함 1" (without the count: "다음 완료 ~14:30 · 조용함 1").
+pub fn working_summary(model: &Model, count: bool) -> String {
+    let working: Vec<&Ticket> = model.tickets.iter().filter(|t| t.status == TicketStatus::InProgress && model.in_focus(t)).collect();
+    let mut parts = if count { vec![format!("{} {}", status_word(TicketStatus::InProgress), working.len())] } else { Vec::new() };
+    if let Some(eta) = working.iter().filter_map(|t| model.eta(t)).filter(|e| e.at > model.unix).min_by_key(|e| e.at) {
+        parts.push(t!("board.next_done", at = eta_text(eta.at, eta.guessed)));
+    }
+    let quiet = working.iter().filter(|t| model.quiet_for(t).is_some()).count();
+    if quiet > 0 {
+        parts.push(format!("{} {quiet}", t!("board.flag_quiet")));
+    }
+    parts.join(" · ")
+}
+
+fn eta_text(at: u64, guessed: bool) -> String {
+    if guessed { format!("~{}", local_hm(at)) } else { local_hm(at) }
 }
 
 pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
-    let ui = &shell.board;
-    let body = match &ui.diff {
-        Some(diff) => diff_view(shell, diff, cx).into_any_element(),
-        None => split_view(shell, cx).into_any_element(),
+    if let Some(diff) = &shell.board.diff {
+        return v_flex().flex_1().min_h_0().child(super::diffview::render(shell, diff, cx)).children(toast(shell, cx)).into_any_element();
+    }
+    let view = &shell.board.view;
+    let page = view.page.zip(shell.picked());
+    let body: AnyElement = match page {
+        Some((tab, t)) => super::peek::page(shell, &t, tab, cx).into_any_element(),
+        None => {
+            let rows = shell.board_rows();
+            let pick = board::selected(&rows, view);
+            let list = list(shell, &rows, pick, cx);
+            let peek = pick.filter(|_| view.peek).map(|need| super::peek::panel(shell, need, cx));
+            match (peek, shell.board.wide) {
+                (Some(peek), true) => h_flex().flex_1().min_h_0().items_start().child(list).child(div().w(px(PEEK)).h_full().flex_none().border_l_1().border_color(p.hair).child(peek)).into_any_element(),
+                (Some(peek), false) => div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(list)
+                    .child(div().absolute().top_0().right_0().bottom_0().w(px(PEEK)).bg(p.bg).border_l_1().border_color(p.hair).shadow_lg().child(peek))
+                    .into_any_element(),
+                (None, _) => list.into_any_element(),
+            }
+        }
     };
     v_flex()
         .id("board")
         .flex_1()
         .min_h_0()
-        .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
-            if let Some((y0, h0)) = this.board.drag {
-                if e.pressed_button != Some(MouseButton::Left) {
-                    this.board_end_drag();
-                } else {
-                    let max = (f32::from(window.viewport_size().height) - 40. - 52. - 44. - DETAIL_MIN).max(SPLIT_MIN);
-                    this.board.split = Some((h0 + f32::from(e.position.y) - y0).clamp(SPLIT_MIN, max));
-                }
-                cx.notify();
-            }
-        }))
-        .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
-            this.board_end_drag();
-            cx.notify();
-        }))
+        .relative()
         .child(toolbar(shell, cx))
-        // The merge questions are about a ticket that may no longer be the pick (the next review came up).
-        .children(shell.board.flow.filter(|f| matches!(f, Flow::Merge(_) | Flow::Push(_))).and_then(|flow| {
-            let t = shell.model.tickets.iter().find(|t| t.id == flow.ticket())?;
-            Some(div().px_5().pb_2().child(flow_card(shell, flow, t, shell.can_act(), cx)))
-        }))
-        .children(shell.composer.flash.clone().map(|text| div().px_5().pb_1().text_size(px(SMALL)).text_color(p.muted).child(text)))
+        .children(super::peek::save_view_bar(shell, cx))
         .child(body)
+        .children(bulk_bar(shell, cx))
+        .children(toast(shell, cx))
+        .children(shell.board.keys_open.then(|| keys_sheet(p, cx)))
+        .into_any_element()
 }
 
-impl Shell {
-    fn board_end_drag(&mut self) {
-        if self.board.drag.take().is_some()
-            && let Some(h) = self.board.split
-        {
-            self.remembered.board_split = Some(h);
-            self.remembered.save(&equipe_providers::credentials::equipe_home());
-        }
-    }
-
-    /// Called from the window's draw: what needs a window and was asked for without one.
-    pub fn board_prepare(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.pending_search(window, cx);
-    }
-}
-
+/// The bar over the list: what it is, the project slice, the search, the filters.
 fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
-    let model = &shell.model;
-    let review = model.tickets.iter().filter(|t| t.status == TicketStatus::Review).count();
-    let waiting = model.tickets.iter().filter(|t| t.status == TicketStatus::Waiting).count();
-    let summary = match (review, waiting) {
-        (0, 0) => String::new(),
-        (r, 0) => t!("board.summary_review", r = r),
-        (0, w) => t!("board.summary_waiting", w = w),
-        (r, w) => t!("board.summary_both", r = r, w = w),
+    let view = &shell.board.view;
+    let views = shell.saved_views();
+    let rows = shell.board_rows();
+    let count = board::items(&rows).len();
+    let title = menu_title(view.menu, &views);
+    let summary = match view.menu {
+        Menu::Working => Some(working_summary(&shell.model, false)),
+        _ => None,
     };
-    let graph = shell.board.view.graph;
-    let seg = |id: &'static str, label: &'static str, on: bool, graph_value: bool, cx: &mut Context<Shell>| {
-        div()
+    let grouping = matches!(view.menu, Menu::All | Menu::View(_));
+    let (_, group) = board::effective(view, &views);
+    let chips: Vec<String> = board::chips(&view.query);
+    let saved_chips: Vec<String> = match view.menu {
+        Menu::View(at) => views.get(at).map(|v| board::chips(&v.query)).unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    let chip = |word: String, removable: bool, cx: &mut Context<Shell>| {
+        let w = word.clone();
+        h_flex()
+            .id(SharedString::from(format!("chip-{word}")))
+            .h(px(22.))
+            .px_2()
+            .gap_1()
+            .items_center()
+            .rounded(px(11.))
+            .bg(p.wash)
+            .text_size(px(12.))
+            .text_color(p.text2)
+            .child(word)
+            .when(removable, |c| {
+                c.cursor_pointer().child(div().text_color(p.muted).child("×")).on_click(cx.listener(move |this, _, window, cx| this.board_toggle_word(&w, window, cx)))
+            })
+    };
+    v_flex()
+        .flex_none()
+        .border_b_1()
+        .border_color(p.hair)
+        .child(
+            h_flex()
+                .h(px(48.))
+                .px_4()
+                .gap_3()
+                .items_center()
+                .child(h_flex().gap_2().items_baseline().flex_none().child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(title)).child(div().text_size(px(SMALL)).text_color(p.muted).child(count.to_string())))
+                .child(super::header::slice_control(shell, "board", cx))
+                .child(
+                    h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .max_w(px(360.))
+                        .h(px(28.))
+                        .px_2()
+                        .gap_2()
+                        .items_center()
+                        .rounded(px(6.))
+                        .bg(p.code_bg)
+                        .border_1()
+                        .border_color(p.hair)
+                        .text_size(px(SMALL))
+                        .child(div().flex_1().min_w_0().child(Input::new(&shell.board.search).appearance(false).bordered(false)))
+                        .child(kbd(p, "/")),
+                )
+                .child(
+                    h_flex()
+                        .id("filter")
+                        .h(px(28.))
+                        .px_2()
+                        .gap_1()
+                        .items_center()
+                        .rounded(px(6.))
+                        .text_size(px(SMALL))
+                        .text_color(p.text2)
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(p.wash))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.board.popover = if this.board.popover == Some(Popover::Filter) { None } else { Some(Popover::Filter) };
+                            cx.notify();
+                        }))
+                        .child(t!("board.filter"))
+                        .child(kbd(p, "F")),
+                )
+                .child(div().flex_1())
+                .children(summary.map(|s| div().flex_none().text_size(px(SMALL)).text_color(p.muted).child(s)))
+                .when(grouping, |bar| {
+                    bar.child(
+                        h_flex()
+                            .id("group")
+                            .h(px(28.))
+                            .px_2()
+                            .gap_1()
+                            .items_center()
+                            .flex_none()
+                            .rounded(px(6.))
+                            .text_size(px(SMALL))
+                            .text_color(p.text2)
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(p.wash))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.board.popover = if this.board.popover == Some(Popover::Group) { None } else { Some(Popover::Group) };
+                                cx.notify();
+                            }))
+                            .child(div().text_color(p.muted).child(t!("board.group_by")))
+                            .child(group.label())
+                            .child(div().text_color(p.muted).child("▾")),
+                    )
+                })
+                .children(popover(shell, cx)),
+        )
+        .when(!chips.is_empty() || !saved_chips.is_empty(), |bar| {
+            let mut row = h_flex().px_4().pb_2().gap_1().flex_wrap();
+            for word in saved_chips {
+                row = row.child(chip(word, false, cx));
+            }
+            for word in chips {
+                row = row.child(chip(word, true, cx));
+            }
+            bar.child(row)
+        })
+}
+
+/// A small menu over the bar: projects, filter words, grouping.
+fn popover(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let p = shell.palette;
+    let which = shell.board.popover?;
+    let item = |id: SharedString, label: String, on: bool| {
+        h_flex()
             .id(id)
             .h(px(28.))
             .px_3()
-            .flex()
+            .gap_2()
             .items_center()
             .rounded(px(6.))
             .text_size(px(SMALL))
             .cursor_pointer()
-            .when(on, |d| d.bg(p.wash).font_weight(FontWeight::SEMIBOLD))
-            .when(!on, |d| d.text_color(p.text2).hover(move |s| s.bg(p.wash)))
-            .on_click(cx.listener(move |this, _, _, cx| this.set_graph(graph_value, cx)))
+            .hover(move |s| s.bg(p.wash))
+            .child(div().w(px(12.)).text_color(p.accent).child(if on { "✓" } else { "" }))
             .child(label)
     };
-    h_flex()
-        .h(px(44.))
-        .flex_none()
-        .px_5()
-        .gap_3()
-        .items_center()
-        .child(h_flex().gap_1().child(seg("by-state", t!("board.by_state"), !graph, false, cx)).child(seg("by-tree", t!("board.by_tree"), graph, true, cx)))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .max_w(px(380.))
-                .px_3()
-                .py(px(3.))
+    let body: Vec<AnyElement> = match which {
+        Popover::Projects => return None,
+        Popover::Group => GroupBy::ALL
+            .into_iter()
+            .map(|g| {
+                let on = board::effective(&shell.board.view, &shell.saved_views()).1 == g;
+                item(SharedString::from(format!("group-{}", g.code())), g.label().to_owned(), on).on_click(cx.listener(move |this, _, _, cx| this.board_set_group(g, cx))).into_any_element()
+            })
+            .collect(),
+        Popover::Filter => {
+            let mut words: Vec<String> = shell.model.project_names().into_iter().map(|n| format!("project:{n}")).collect();
+            let mut members: Vec<String> = shell.model.members.iter().filter(|m| !Model::is_pm(m)).map(|m| format!("member:{}", m.name)).collect();
+            members.dedup();
+            words.extend(members);
+            words.extend(["status:review", "status:waiting", "status:in_progress", "status:todo", "status:proposed", "status:done"].map(String::from));
+            words.extend(board::FILTER_WORDS.map(String::from));
+            words.extend(["kind:task", "kind:action"].map(String::from));
+            let have = board::chips(&shell.board.view.query);
+            words
+                .into_iter()
+                .map(|w| {
+                    let on = have.contains(&w);
+                    let word = w.clone();
+                    item(SharedString::from(format!("word-{w}")), w, on).on_click(cx.listener(move |this, _, window, cx| this.board_toggle_word(&word, window, cx))).into_any_element()
+                })
+                .collect()
+        }
+    };
+    let right = which == Popover::Group;
+    Some(
+        deferred(
+            v_flex()
+                .id("popover")
+                .absolute()
+                .top(px(44.))
+                .when(right, |d| d.right(px(16.)))
+                .when(!right, |d| d.left(px(420.)))
+                .w(px(240.))
+                .max_h(px(420.))
+                .overflow_y_scroll()
+                .p_1()
                 .rounded(px(8.))
-                .bg(p.code_bg)
+                .bg(p.raised)
                 .border_1()
                 .border_color(p.hair)
-                .text_size(px(SMALL))
-                .text_color(p.text)
-                .child(Input::new(&shell.board.search).appearance(false).bordered(false)),
+                .shadow_lg()
+                .occlude()
+                .children(body),
         )
-        .child(div().flex_1())
-        .child(div().text_size(px(SMALL)).text_color(if review + waiting > 0 { p.accent } else { p.muted }).child(summary))
+        .into_any_element(),
+    )
 }
 
-fn split_view(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+fn list(shell: &Shell, rows: &[Row], pick: Option<Need>, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
-    let rows = board::rows(&shell.model, &shell.board.view);
-    let need: f32 = rows.iter().map(|r| if matches!(r, Row::Ticket { .. }) { ROW } else { HEADING + 8. }).sum::<f32>() + 8.;
-    let height = shell.board.split.unwrap_or(need.clamp(SPLIT_MIN, 340.));
-    let dragging = shell.board.drag.is_some();
-    let empty = rows.is_empty();
-    let list = v_flex()
+    let empty = board::items(rows).is_empty() && !rows.iter().any(|r| matches!(r, Row::Done { .. }));
+    v_flex()
         .id("board-list")
-        .h(px(height))
-        .flex_none()
+        .flex_1()
+        .min_w_0()
+        .h_full()
         .overflow_y_scroll()
         .track_scroll(&shell.board.list_scroll)
-        .px_3()
-        .pb_2()
-        .children(rows.iter().enumerate().map(|(ix, row)| list_row(shell, ix, row, cx)))
-        .when(empty, |l| l.child(empty_note(shell)));
-    v_flex()
-        .flex_1()
-        .min_h_0()
-        .child(list)
-        .child(
-            div()
-                .id("board-split")
-                .h(px(9.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .cursor_row_resize()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                        this.board.drag = Some((f32::from(e.position.y), this.board.split.unwrap_or(height)));
-                        this.board.split.get_or_insert(height);
-                        cx.notify();
-                    }),
-                )
-                .child(div().w_full().h(px(if dragging { 2. } else { 1. })).bg(if dragging { p.accent } else { p.hair })),
-        )
-        .child(detail(shell, cx))
+        .px_2()
+        .pt_1()
+        .pb_6()
+        .children(rows.iter().enumerate().map(|(ix, row)| list_row(shell, ix, row, pick, cx)))
+        .when(empty, |l| l.child(empty_note(shell, p, cx)))
 }
 
-fn empty_note(shell: &Shell) -> Div {
-    let p = shell.palette;
-    let text = if let Some(q) = board::query(&shell.board.view) {
-        t!("board.empty_query", q = q)
-    } else if let Some(focus) = shell.model.focus.as_ref().filter(|_| !shell.model.tickets.is_empty()) {
-        t!("board.empty_focus", focus = focus)
+fn empty_note(shell: &Shell, p: Palette, cx: &mut Context<Shell>) -> AnyElement {
+    let view = &shell.board.view;
+    let (title, text, clear) = if !Filter::parse(&view.query).is_empty() {
+        (t!("board.empty_filtered_title").to_owned(), t!("board.empty_filtered").to_owned(), true)
     } else {
-        t!("board.empty").to_owned()
+        match view.menu {
+            Menu::Inbox => (t!("board.empty_inbox_title").to_owned(), working_summary(&shell.model, true), false),
+            Menu::Working => (t!("board.empty_working_title").to_owned(), t!("board.empty_working").to_owned(), false),
+            _ if shell.model.focus.is_some() && !shell.model.tickets.is_empty() => (t!("board.empty_focus_title").to_owned(), t!("board.empty_focus", focus = shell.model.focus.clone().unwrap_or_default()), false),
+            _ => (t!("board.empty_title").to_owned(), t!("board.empty").to_owned(), false),
+        }
     };
-    div().py_6().text_size(px(BODY)).text_color(p.muted).child(text)
+    v_flex()
+        .pt(px(96.))
+        .items_center()
+        .gap_2()
+        .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
+        .child(div().max_w(px(420.)).text_center().text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).child(text))
+        .when(clear, |c| {
+            c.child(btn(p, "clear-filter", t!("board.clear_filter"), Some("Esc"), false, true).on_click(cx.listener(|this, _, window, cx| {
+                this.board.view.query.clear();
+                this.board.search.update(cx, |s, cx| s.set_value(String::new(), window, cx));
+                this.board_changed(cx);
+            })))
+        })
+        .into_any_element()
 }
 
-fn list_row(shell: &Shell, ix: usize, row: &Row, cx: &mut Context<Shell>) -> AnyElement {
+fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
-    let model = &shell.model;
     match row {
         Row::Heading { label, count, tone } => {
             let color = match tone {
                 Tone::ForYou => p.accent,
-                Tone::Lane(Some(i)) => p.member(PROJECT_HUES[*i % PROJECT_HUES.len()]),
-                Tone::Lane(None) | Tone::Plain => p.muted,
+                _ => p.muted,
             };
             h_flex()
                 .h(px(HEADING))
-                .mt_2()
-                .px_2()
+                .mt(px(if ix == 0 { 4. } else { 10. }))
+                .px_3()
                 .gap_2()
-                .items_end()
-                .pb_1()
+                .items_center()
                 .text_size(px(12.))
+                .font_weight(FontWeight::SEMIBOLD)
                 .text_color(color)
-                .font_weight(if *tone == Tone::ForYou { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
+                .when_some(match tone {
+                    Tone::Project(Some(i)) => Some(p.member(PROJECT_HUES[*i % PROJECT_HUES.len()])),
+                    _ => None,
+                }, |h, c| h.child(dot(c, 7.)))
                 .child(label.clone())
-                .child(count.to_string())
+                .child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(count.to_string()))
                 .into_any_element()
         }
-        Row::More { more, .. } => div()
-            .id(("more", ix))
-            .h(px(28.))
-            .px_2()
-            .flex()
-            .items_center()
-            .text_size(px(SMALL))
-            .text_color(p.muted)
-            .cursor_pointer()
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.board.view.expanded = true;
-                this.board_changed(cx);
-            }))
-            .child(t!("board.more_rows", more = more))
-            .into_any_element(),
-        Row::Ticket { id, depth } => {
-            let Some(t) = model.tickets.iter().find(|t| t.id == *id) else { return div().into_any_element() };
-            let picked = board::selected(model, &shell.board.view).is_some_and(|s| s.id == *id);
-            let closed = t.status.is_closed();
-            let for_you = matches!(t.status, TicketStatus::Review | TicketStatus::Waiting);
-            let who = board::who(t).unwrap_or("").to_owned();
-            let id = *id;
+        Row::Done { count, total, open, window } => {
+            let (open, window) = (*open, *window);
             h_flex()
-                .id(("ticket", id as usize))
-                .h(px(ROW))
-                .px_2()
-                .gap_3()
+                .id("done-group")
+                .h(px(HEADING))
+                .mt(px(10.))
+                .px_3()
+                .gap_2()
                 .items_center()
                 .rounded(px(6.))
-                .text_size(px(14.))
+                .text_size(px(12.))
+                .text_color(p.muted)
                 .cursor_pointer()
-                .when(picked, |r| r.bg(p.wash))
-                .when(!picked, |r| r.hover(move |s| s.bg(p.wash)))
-                .on_click(cx.listener(move |this, _, _, cx| this.board_pick(id, cx)))
-                .child(div().w(px(2.)).h(px(22.)).flex_none().rounded(px(1.)).when(for_you, |d| d.bg(p.accent)))
-                .child(div().w(px(48.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{}", t.id)))
+                .hover(move |s| s.bg(p.wash))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.board.view.done_open = !open;
+                    this.board_changed(cx);
+                }))
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(status_word(TicketStatus::Done)))
+                .child("·")
                 .child(
                     div()
-                        .w(px(84.))
-                        .flex_none()
-                        .truncate()
-                        .text_size(px(12.))
-                        .text_color(hue_of(p, model, t).unwrap_or(p.muted))
-                        .child(model.ticket_project_name(t).unwrap_or_default()),
+                        .id("done-window")
+                        .px_1()
+                        .rounded(px(4.))
+                        .hover(move |s| s.bg(p.hair))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.board.view.window = window.next();
+                            this.board.view.done_open = true;
+                            this.board_changed(cx);
+                        }))
+                        .child(window.label()),
                 )
+                .child(count.to_string())
+                .when(window != DoneWindow::All && total > count, |r| r.child(div().opacity(0.7).child(t!("board.done_total", n = total))))
+                .child(if open { "▾" } else { "▸" })
+                .into_any_element()
+        }
+        Row::Item { need, depth } => item_row(shell, *need, *depth, pick == Some(*need), cx),
+    }
+}
+
+/// What a row says at its right, column by column.
+struct Meta {
+    flags: Vec<(String, Rgba)>,
+    activity: Option<(String, Rgba)>,
+    eta: Option<(String, Rgba)>,
+    who: Option<(&'static str, Rgba, String)>,
+    time: Option<String>,
+}
+
+fn verb_word(verb: Verb) -> &'static str {
+    match verb {
+        Verb::Thinking => t!("sidebar.thinking"),
+        Verb::Reading => t!("sidebar.reading"),
+        Verb::Editing => t!("sidebar.editing"),
+        Verb::Running => t!("sidebar.running"),
+        Verb::Searching => t!("sidebar.searching"),
+        Verb::Writing => t!("sidebar.writing"),
+        Verb::Working => t!("sidebar.working"),
+    }
+}
+
+/// The last part of a path or the start of a command: what a step was about.
+pub fn short_target(target: &str) -> String {
+    let first = target.lines().next().unwrap_or("").trim();
+    let leaf = if first.contains('/') && !first.contains(' ') { first.rsplit('/').next().unwrap_or(first) } else { first };
+    leaf.chars().take(28).collect()
+}
+
+/// What a member is doing now: `수정 중 checkout.tsx`.
+pub fn live_activity(model: &Model, t: &Ticket) -> Option<String> {
+    let m = model.member_on(t.id)?;
+    if m.presence != Presence::Working {
+        return None;
+    }
+    let target = m.target.as_deref().filter(|_| matches!(m.verb, Verb::Reading | Verb::Editing | Verb::Running | Verb::Searching)).map(short_target);
+    Some(match target {
+        Some(target) if !target.is_empty() => format!("{} {target}", verb_word(m.verb)),
+        _ => verb_word(m.verb).to_owned(),
+    })
+}
+
+fn meta(shell: &Shell, t: &Ticket) -> Meta {
+    let p = shell.palette;
+    let model = &shell.model;
+    let mut flags = Vec::new();
+    if let Some(dep) = model.blocked_by(t).filter(|_| matches!(t.status, TicketStatus::Todo | TicketStatus::Proposed)) {
+        flags.push((format!("⛓T-{dep}"), p.orange));
+    }
+    let unblocks = model.unblocks(t.id).len();
+    if unblocks > 0 && !t.status.is_closed() {
+        flags.push((format!("→{unblocks}"), p.muted));
+    }
+    if t.not_on_main() {
+        flags.push((t!("state.not_on_main").to_owned(), p.accent));
+    }
+    if let Some(quiet) = model.quiet_for(t) {
+        flags.push((format!("{} {}", t!("board.flag_quiet"), short_span(quiet)), p.amber));
+    }
+    if model.failed(t) {
+        flags.push((t!("board.flag_error").to_owned(), p.red));
+    }
+    let activity = match t.status {
+        TicketStatus::InProgress => live_activity(model, t).map(|a| (a, p.text2)),
+        TicketStatus::Waiting => board::first_need(t).map(|n| (n, p.accent)),
+        TicketStatus::Proposed => Some((t!("board.proposed_by", who = t.created_by), p.muted)),
+        TicketStatus::Review | TicketStatus::Done if t.kind.in_home() => Some((t!("board.kind_label", kind = t.kind.label()), p.muted)),
+        TicketStatus::Review | TicketStatus::Done => shell.board.stat(t).map(|s| (s.short(), p.muted)),
+        _ => None,
+    };
+    let eta = model.eta(t).map(|e| {
+        if e.at <= model.unix {
+            (t!("board.eta_passed", span = short_span(model.unix - e.at)), p.amber)
+        } else {
+            (eta_text(e.at, e.guessed), p.muted)
+        }
+    });
+    let who = board::who(t).map(|w| {
+        let member = model.members.iter().find(|m| m.name == w || m.role == w);
+        let (mark, hue) = member.map_or_else(|| look(w, w), |m| look(&m.role, &m.name));
+        (mark, p.member(hue), w.to_owned())
+    });
+    let time = model.in_state_for(t).map(short_span);
+    Meta { flags, activity, eta, who, time }
+}
+
+fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let model = &shell.model;
+    let group = SharedString::from(format!("row-{need:?}"));
+    let base = |id: SharedString, cx: &mut Context<Shell>| {
+        h_flex()
+            .id(id)
+            .group(group.clone())
+            .relative()
+            .h(px(ROW))
+            .flex_none()
+            .pr_3()
+            .gap_2()
+            .items_center()
+            .rounded(px(6.))
+            .text_size(px(13.))
+            .cursor_pointer()
+            .when(picked, |r| r.bg(p.wash))
+            .when(!picked, |r| r.hover(move |s| s.bg(p.wash)))
+            .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
+                if e.click_count() >= 2 {
+                    this.board.view.page = Some(Tab::Overview);
+                }
+                this.board_pick(need, cx);
+            }))
+    };
+    match need {
+        Need::Permission(id) => {
+            let Some(a) = model.approvals.get(id) else { return div().into_any_element() };
+            let card = super::approvals::Card::of(a);
+            let (mark, hue) = look(model.members.iter().find(|m| m.session == a.session).map_or("", |m| m.role.as_str()), &a.member);
+            base(SharedString::from(format!("ask-{id}")), cx)
+                .child(div().w(px(2.)).h(px(18.)).flex_none().rounded(px(1.)).bg(p.accent))
+                .child(div().w(px(16.)).flex_none())
+                .child(div().size(px(14.)).flex_none().flex().items_center().justify_center().text_size(px(12.)).text_color(p.accent).child("⚑"))
+                .child(div().w(px(44.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(a.ticket.map(|t| format!("T-{t}")).unwrap_or_default()))
+                .child(div().flex_none().text_color(p.text).child(t!("approvals.allow_question", what = card.noun)))
+                .child(div().flex_1().min_w_0().truncate().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(card.lines.first().cloned().unwrap_or_default()))
+                .child(div().w(px(18.)).flex_none().text_color(p.member(hue)).child(mark))
+                .into_any_element()
+        }
+        Need::Ticket(id) => {
+            let Some(t) = model.tickets.iter().find(|t| t.id == id) else { return div().into_any_element() };
+            let m = meta(shell, t);
+            let needs = model.section_of(t).is_some() && !t.status.is_closed() || t.not_on_main();
+            let chosen = shell.board.view.chosen.contains(&id);
+            let closed = t.status.is_closed();
+            let live = model.is_live(t);
+            let compact = shell.board.list_width < 720.;
+            let show_project = model.focus.is_none() && model.projects.len() > 1 || t.kind.in_home() && t.project.is_none() && model.focus.is_none();
+            let project = model.ticket_project_name(t);
+            let can = shell.can_act();
+            let quick = |id: &'static str, label: &'static str, cx: &mut Context<Shell>, act: fn(&mut Shell, &mut Window, &mut Context<Shell>)| {
+                div()
+                    .id(SharedString::from(format!("{id}-{need:?}")))
+                    .h(px(22.))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .rounded(px(5.))
+                    .bg(p.raised)
+                    .border_1()
+                    .border_color(p.hair)
+                    .text_size(px(11.))
+                    .text_color(p.text2)
+                    .hover(move |s| s.bg(p.wash))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.board.view.selected = Some(need);
+                        act(this, window, cx);
+                    }))
+                    .child(label)
+            };
+            let mut actions: Vec<AnyElement> = Vec::new();
+            if can && (matches!(t.status, TicketStatus::Review | TicketStatus::Waiting | TicketStatus::Proposed) || t.not_on_main()) {
+                actions.push(quick("q-a", "A", cx, |this, _, cx| this.board_yes(cx)).into_any_element());
+            }
+            if can && matches!(t.status, TicketStatus::Review | TicketStatus::Waiting | TicketStatus::Proposed | TicketStatus::Done) {
+                actions.push(quick("q-r", "R", cx, |this, w, cx| this.board_open_reply(w, cx)).into_any_element());
+            }
+            if t.branch.is_some() {
+                actions.push(quick("q-d", "D", cx, |this, w, cx| this.board_open_diff(w, cx)).into_any_element());
+            }
+            let has_actions = !actions.is_empty();
+            base(SharedString::from(format!("ticket-{id}")), cx)
+                .child(div().w(px(2.)).h(px(18.)).flex_none().rounded(px(1.)).when(needs, |d| d.bg(p.accent)))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("check-{id}")))
+                        .size(px(14.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(3.))
+                        .border_1()
+                        .border_color(if chosen { p.accent } else { p.hair })
+                        .when(chosen, |c| c.bg(p.accent).text_color(p.on_primary).text_size(px(10.)).child("✓"))
+                        .when(!chosen, |c| c.invisible().group_hover(group.clone(), |s| s.visible()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            if !this.board.view.chosen.remove(&id) {
+                                this.board.view.chosen.insert(id);
+                            }
+                            cx.notify();
+                        })),
+                )
+                .child(div().relative().size(px(14.)).flex_none().child(icons::status(p, t.status, 14.)).when(live, |d| {
+                    d.child(div().absolute().top(px(-2.)).right(px(-3.)).child(icons::live_dot(p, shell.board.pulse)))
+                }))
+                .child(div().w(px(44.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
+                .when(show_project && compact, |r| r.child(div().w(px(10.)).flex_none().flex().justify_center().child(dot(hue_of(p, model, t).unwrap_or(p.muted), 6.))))
+                .when(show_project && !compact, |r| {
+                    r.child(
+                        h_flex()
+                            .w(px(84.))
+                            .flex_none()
+                            .gap(px(6.))
+                            .items_center()
+                            .child(dot(hue_of(p, model, t).unwrap_or(p.muted), 6.))
+                            .child(div().min_w_0().truncate().text_size(px(12.)).text_color(p.muted).child(project.unwrap_or_else(|| t!("board.squad_folder").into()))),
+                    )
+                })
                 .child(
                     div()
                         .flex_1()
-                        .min_w_0()
+                        .min_w(px(120.))
                         .truncate()
-                        .pl(px(*depth as f32 * 16.))
+                        .pl(px(depth as f32 * 18.))
                         .text_color(if closed { p.muted } else { p.text })
-                        .when(picked, |d| d.font_weight(FontWeight::SEMIBOLD))
-                        .child(if *depth > 0 { format!("↳ {}", t.title) } else { t.title.clone() }),
+                        .child(if depth > 0 { format!("↳ {}", t.title) } else { t.title.clone() }),
                 )
-                .child(div().w(px(84.)).flex_none().truncate().text_size(px(13.)).text_color(if closed { p.muted } else { member_color(p, model, &who) }).child(who))
-                .child(div().w(px(110.)).flex_none().truncate().text_align(TextAlign::Right).text_size(px(12.)).text_color(if for_you { p.accent } else { p.muted }).child(board::state_text(t)))
-                .into_any_element()
-        }
-    }
-}
-
-fn detail(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
-    let p = shell.palette;
-    let model = &shell.model;
-    let column = v_flex().id("board-detail").flex_1().min_h_0().overflow_y_scroll().track_scroll(&shell.board.detail_scroll).px_5().pt_3().pb_6();
-    let Some(t) = board::selected(model, &shell.board.view) else {
-        return column.child(div().text_size(px(BODY)).text_color(p.muted).child(t!("board.pick_ticket")));
-    };
-    let can = shell.can_act();
-    let id = t.id;
-    let who = board::who(t).map(str::to_owned);
-    let kind = t.kind.label();
-    let status = match t.status {
-        TicketStatus::Review => t!("board.detail_review"),
-        TicketStatus::Waiting => t!("board.detail_waiting"),
-        TicketStatus::InProgress => t!("board.state_in_progress"),
-        TicketStatus::Todo => t!("board.todo"),
-        TicketStatus::Proposed => t!("board.state_proposed"),
-        TicketStatus::Done if t.not_on_main() => t!("board.detail_not_on_main"),
-        TicketStatus::Done => t!("board.done"),
-        TicketStatus::Cancelled => t!("board.state_cancelled"),
-    };
-    let project = model.ticket_project_name(t).filter(|_| model.projects.len() > 1 || t.kind.in_home());
-
-    // The buttons: the one call the person is here to make is the main one.
-    let mut buttons: Vec<AnyElement> = Vec::new();
-    let for_you = matches!(t.status, TicketStatus::Review | TicketStatus::Waiting);
-    let accept_label = match t.status {
-        TicketStatus::Proposed => t!("board.accept_proposal"),
-        TicketStatus::Review => t!("board.accept"),
-        _ => t!("board.mark_done"),
-    };
-    let mut primary = Some(());
-    let mut take_primary = || primary.take().is_some();
-    match t.status {
-        TicketStatus::Review => {
-            buttons.push(btn(p, "accept", accept_label, Some("A"), take_primary(), can).on_click(cx.listener(|this, _, _, cx| this.board_accept(cx))).into_any_element());
-            buttons.push(btn(p, "send-back", t!("board.request_changes"), Some("R"), false, can).on_click(cx.listener(move |this, _, w, cx| this.board_open_flow(Flow::SendBack(id), w, cx))).into_any_element());
-        }
-        TicketStatus::Waiting => {
-            buttons.push(btn(p, "resume", t!("board.resume_done"), Some("R"), take_primary(), can).on_click(cx.listener(move |this, _, w, cx| this.board_open_flow(Flow::Resume(id), w, cx))).into_any_element());
-            buttons.push(btn(p, "accept", t!("board.mark_done"), Some("A"), false, can).on_click(cx.listener(|this, _, _, cx| this.board_accept(cx))).into_any_element());
-        }
-        TicketStatus::Done => {
-            if t.not_on_main() {
-                buttons.push(btn(p, "merge", t!("board.merge_into_main"), Some("M"), take_primary(), can).on_click(cx.listener(|this, _, _, cx| this.board_ask_merge(cx))).into_any_element());
-            }
-            buttons.push(btn(p, "reopen", t!("board.reopen"), Some("R"), false, can).on_click(cx.listener(move |this, _, w, cx| this.board_open_flow(Flow::SendBack(id), w, cx))).into_any_element());
-        }
-        TicketStatus::Proposed | TicketStatus::Todo | TicketStatus::InProgress => {
-            buttons.push(btn(p, "accept", accept_label, Some("A"), take_primary() && t.status == TicketStatus::Proposed, can).on_click(cx.listener(|this, _, _, cx| this.board_accept(cx))).into_any_element());
-        }
-        TicketStatus::Cancelled => {}
-    }
-    if board::has_branch(t) {
-        buttons.push(btn(p, "diff", t!("board.view_changes"), Some("D"), false, true).on_click(cx.listener(|this, _, _, cx| this.board_open_diff(cx))).into_any_element());
-    }
-    if let Some(who) = &who {
-        let open = model.members.iter().any(|m| m.presence != Presence::Closed && (m.name == *who || m.role == *who));
-        buttons.push(btn(p, "talk", t!("board.talk_to", who = who), Some("⏎"), false, open).on_click(cx.listener(|this, _, w, cx| this.board_talk(w, cx))).into_any_element());
-    }
-    if !t.status.is_closed() {
-        buttons.push(btn(p, "cancel", t!("board.cancel_ellipsis"), None, false, can).on_click(cx.listener(move |this, _, _, cx| {
-            this.board.flow = Some(Flow::Cancel(id));
-            cx.notify();
-        })).into_any_element());
-    }
-
-    let after: Vec<AnyElement> = t.depends_on.iter().map(|d| named(shell, *d, cx)).collect();
-    let unblocks: Vec<AnyElement> = board::unblocks(model, t.id).into_iter().map(|d| named(shell, d, cx)).collect();
-
-    let checklist = if t.status == TicketStatus::Waiting { t.note.as_deref().map(board::checklist).unwrap_or_default() } else { Vec::new() };
-    let text = if t.status == TicketStatus::Waiting && !checklist.is_empty() {
-        None
-    } else {
-        t.note.as_deref().filter(|n| !n.trim().is_empty()).or(Some(t.body.as_str()).filter(|b| !b.trim().is_empty()))
-    };
-    let handle = cx.entity().downgrade();
-
-    let stat = shell.board.stats.get(&t.id).filter(|(seen, _)| *seen == diffs::fingerprint(t)).map(|(_, s)| s.clone());
-    let branch = t.branch.clone().filter(|_| !t.kind.in_home());
-    let worktree = t.worktree.clone();
-
-    column
-        .gap_3()
-        .child(
-            h_flex()
-                .gap_3()
-                .items_baseline()
-                .child(div().flex_none().font_family(MONO).text_size(px(13.)).text_color(p.muted).child(format!("T-{}", t.id)))
-                .child(div().min_w_0().text_size(px(18.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).child(t.title.clone())),
-        )
-        .child(
-            h_flex()
-                .flex_wrap()
-                .gap_x(px(6.))
-                .text_size(px(SMALL))
-                .text_color(p.muted)
-                .child(kind)
-                .children(who.clone().map(|w| h_flex().gap_1().child("·").child(div().text_color(member_color(p, model, &w)).child(w))))
-                .children(project.map(|pr| h_flex().gap_1().child("·").child(div().text_color(hue_of(p, model, t).unwrap_or(p.muted)).child(pr))))
-                .child(format!("· {status}")),
-        )
-        .child(h_flex().flex_wrap().gap_2().children(buttons))
-        .children(shell.board.flow.filter(|f| f.ticket() == t.id && !matches!(f, Flow::Merge(_) | Flow::Push(_))).map(|flow| flow_card(shell, flow, t, can, cx)))
-        .children(checklist.is_empty().not_then(|| {
-            v_flex()
-                .gap_1()
-                .child(kicker(p, t!("board.kicker_for_me")))
-                .children(checklist.iter().map(|item| h_flex().gap_2().items_start().text_size(px(BODY)).line_height(px(24.)).text_color(p.text2).child(div().flex_none().text_color(if for_you { p.accent } else { p.muted }).child("□")).child(div().flex_1().min_w_0().child(item.clone()))))
-        }))
-        .children(text.map(|text| div().child(super::chat::markdown(p, ("board-text", id as u64), text, 14., 22., p.text2, &handle))))
-        .children((!after.is_empty()).then(|| v_flex().child(kicker(p, t!("board.kicker_after"))).children(after)))
-        .children((!unblocks.is_empty()).then(|| v_flex().child(kicker(p, t!("board.kicker_unblocks"))).children(unblocks)))
-        .child(
-            v_flex()
-                .gap_1()
-                .text_size(px(SMALL))
-                .child(kicker(p, t!("board.kicker_where")))
-                .children(match (&stat, board::has_branch(t)) {
-                    (Some(s), _) if !s.summary.is_empty() => {
-                        let more = if s.files.len() > 4 { format!(" +{}", s.files.len() - 4) } else { String::new() };
-                        vec![
-                            h_flex().gap_3().child(div().w(px(56.)).text_color(p.muted).child(t!("board.where_changes"))).child(div().text_color(p.text2).child(s.summary.clone())).into_any_element(),
-                            h_flex()
-                                .gap_3()
-                                .child(div().w(px(56.)).flex_none())
-                                .child(div().min_w_0().truncate().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("{}{more}", s.files.iter().take(4).cloned().collect::<Vec<_>>().join(" · "))))
-                                .into_any_element(),
-                        ]
-                    }
-                    (None, true) => vec![h_flex().gap_3().child(div().w(px(56.)).text_color(p.muted).child(t!("board.where_changes"))).child(div().text_color(p.muted).child("…")).into_any_element()],
-                    _ => Vec::new(),
-                })
-                .children(branch.map(|b| h_flex().gap_3().child(div().w(px(56.)).text_color(p.muted).child(t!("board.where_branch"))).child(div().min_w_0().truncate().font_family(MONO).text_size(px(12.)).text_color(p.text2).child(b))))
-                .children(worktree.map(|w| {
-                    let local = matches!(shell.endpoint, Endpoint::Local { .. });
-                    let path = w.clone();
-                    h_flex()
-                        .id("look-in")
-                        .gap_3()
-                        .when(local, |d| d.cursor_pointer().on_click(cx.listener(move |this, _, _, _| this.board_look_in(&path))))
-                        .child(div().w(px(56.)).flex_none().text_color(p.muted).child(t!("board.where_worktree")))
-                        .child(div().min_w_0().truncate().font_family(MONO).text_size(px(12.)).text_color(p.text2).child(w.display().to_string()))
-                })),
-        )
-}
-
-fn named(shell: &Shell, dep: TicketId, cx: &mut Context<Shell>) -> AnyElement {
-    let p = shell.palette;
-    let model = &shell.model;
-        let found = model.tickets.iter().find(|x| x.id == dep);
-        let (mark, title, state) = match found {
-            Some(d) => (if matches!(d.status, TicketStatus::Done) { "✓" } else if d.status == TicketStatus::Cancelled { "×" } else { "" }, d.title.clone(), board::state_text(d)),
-            None => ("", String::new(), String::new()),
-        };
-        h_flex()
-            .id(("dep", dep as usize))
-            .gap_3()
-            .py(px(3.))
-            .text_size(px(SMALL))
-            .cursor_pointer()
-            .hover(move |s| s.text_color(p.text))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.board_reveal(dep);
-                this.board_changed(cx);
-            }))
-            .child(div().w(px(48.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{dep}")))
-            .child(div().flex_1().min_w_0().truncate().text_color(p.text2).child(format!("{mark} {title}").trim().to_owned()))
-            .child(div().flex_none().text_size(px(12.)).text_color(p.muted).child(state))
-            .into_any_element()
-    }
-
-/// `bool::then`, the other way round: for "show this when the list is not empty".
-trait NotThen {
-    fn not_then<T>(self, f: impl FnOnce() -> T) -> Option<T>;
-}
-impl NotThen for bool {
-    fn not_then<T>(self, f: impl FnOnce() -> T) -> Option<T> {
-        (!self).then(f)
-    }
-}
-
-fn flow_card(shell: &Shell, flow: Flow, t: &Ticket, can: bool, cx: &mut Context<Shell>) -> AnyElement {
-    let p = shell.palette;
-    let id = t.id;
-    let branch = t.branch.clone().unwrap_or_default();
-    let card = || v_flex().gap_2().p_3().rounded(px(8.)).bg(p.accent_bg).border_1().border_color(p.hair);
-    let ask = |text: String| div().text_size(px(BODY)).line_height(px(24.)).text_color(p.text).child(text);
-    match flow {
-        Flow::Merge(_) => card()
-            .child(ask(t!("board.ask_merge", id = id, branch = branch)))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(btn(p, "merge-yes", t!("board.merge"), Some("Y"), true, can).on_click(cx.listener(move |this, _, _, cx| {
-                        this.board.flow = Some(Flow::Push(id));
-                        cx.notify();
-                    })))
-                    .child(btn(p, "merge-no", t!("board.not_now"), Some("N"), false, true).on_click(cx.listener(move |this, _, _, cx| this.board_decline_merge(id, cx)))),
-            )
-            .into_any_element(),
-        Flow::Push(_) => card()
-            .child(ask(t!("board.ask_push", id = id)))
-            .child(
-                h_flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .child(btn(p, "push-yes", t!("board.merge_and_push"), Some("Y"), true, can).on_click(cx.listener(move |this, _, _, cx| this.board_merge(id, true, cx))))
-                    .child(btn(p, "push-no", t!("board.merge_only"), Some("N"), false, can).on_click(cx.listener(move |this, _, _, cx| this.board_merge(id, false, cx))))
-                    .child(btn(p, "push-skip", t!("board.dont_merge"), Some("Esc"), false, true).on_click(cx.listener(|this, _, w, cx| this.board_close_flow(w, cx)))),
-            )
-            .into_any_element(),
-        Flow::SendBack(_) => {
-            let empty = shell.board.send_back.read(cx).value().trim().is_empty();
-            card()
-                .child(ask(t!("board.ask_send_back", who = board::who(t).unwrap_or(t!("board.assignee")), id = id)))
-                .child(
-                    div()
-                        .w_full()
-                        .px_3()
-                        .py_2()
-                        .rounded(px(8.))
-                        .bg(p.code_bg)
-                        .border_1()
-                        .border_color(p.hair)
-                        .text_size(px(BODY))
-                        .text_color(p.text)
-                        .child(Textarea::new(&shell.board.send_back).appearance(false).bordered(false)),
-                )
+                .children(m.flags.into_iter().map(|(text, color)| div().flex_none().px(px(6.)).h(px(18.)).flex().items_center().rounded(px(4.)).bg(p.wash).text_size(px(11.)).text_color(color).child(text)))
                 .child(
                     h_flex()
+                        .flex_shrink(1.)
+                        .min_w_0()
                         .gap_2()
-                        .child(btn(p, "send-cancel", t!("board.cancel"), Some("Esc"), false, true).on_click(cx.listener(|this, _, w, cx| this.board_close_flow(w, cx))))
-                        .child(btn(p, "send-back-go", t!("board.send_back"), Some("⌘⏎"), true, can && !empty).on_click(cx.listener(|this, _, w, cx| this.board_send_back(w, cx)))),
+                        .items_center()
+                        .text_size(px(12.))
+                        .when(has_actions, |d| d.group_hover(group.clone(), |s| s.opacity(0.)))
+                        .child(div().when(!compact, |d| d.w(px(176.)).flex_none()).when(compact, |d| d.max_w(px(150.)).flex_shrink(1.).min_w_0()).truncate().text_align(TextAlign::Right).text_color(m.activity.as_ref().map_or(p.muted, |a| a.1)).child(m.activity.map(|a| a.0).unwrap_or_default()))
+                        .when(!compact || m.eta.is_some(), |d| d.child(div().w(px(56.)).flex_none().truncate().text_align(TextAlign::Right).text_color(m.eta.as_ref().map_or(p.muted, |e| e.1)).child(m.eta.map(|e| e.0).unwrap_or_default())))
+                        .child(div().w(px(16.)).flex_none().text_size(px(12.)).text_align(TextAlign::Center).text_color(m.who.as_ref().map_or(p.muted, |w| if closed { p.muted } else { w.1 })).child(m.who.as_ref().map(|w| w.0).unwrap_or("")))
+                        .child(div().w(px(30.)).flex_none().text_align(TextAlign::Right).text_color(p.muted).child(m.time.unwrap_or_default())),
                 )
+                .when(has_actions, |r| r.child(h_flex().absolute().right(px(12.)).gap_1().invisible().group_hover(group.clone(), |s| s.visible()).children(actions)))
                 .into_any_element()
         }
-        Flow::Resume(_) => card()
-            .child(ask(t!("board.ask_resume", id = id)))
+    }
+}
+
+/// The floating bar while several are chosen.
+fn bulk_bar(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let p = shell.palette;
+    let n = shell.board.view.chosen.len();
+    if n == 0 {
+        return None;
+    }
+    let confirm = match shell.board.flow {
+        Some(Flow::Bulk { yes }) => Some(yes),
+        _ => None,
+    };
+    let merging = shell.board.view.chosen.iter().filter(|id| shell.model.tickets.iter().any(|t| t.id == **id && board::needs_way(t))).count();
+    let beside = shell.board.view.peek && shell.board.wide && shell.board.view.page.is_none() && shell.picked_need().is_some();
+    let bar = h_flex()
+        .absolute()
+        .bottom(px(20.))
+        .left_0()
+        .right(px(if beside { PEEK } else { 0. }))
+        .justify_center()
+        .child(
+            h_flex()
+                .h(px(40.))
+                .px_3()
+                .gap_2()
+                .items_center()
+                .rounded(px(10.))
+                .bg(p.raised)
+                .border_1()
+                .border_color(p.hair)
+                .shadow_lg()
+                .text_size(px(SMALL))
+                .child(div().px_1().font_weight(FontWeight::SEMIBOLD).child(t!("board.chosen", n = n)))
+                .children(match confirm {
+                    Some(yes) => vec![
+                        div().text_color(p.text2).child(if yes { t!("board.bulk_yes_confirm", n = n, merging = merging) } else { t!("board.bulk_no_confirm", n = n) }).into_any_element(),
+                        btn(p, "bulk-go", t!("board.confirm"), Some("⏎"), true, shell.can_act()).on_click(cx.listener(move |this, _, _, cx| this.board_bulk(yes, cx))).into_any_element(),
+                        btn(p, "bulk-back", t!("board.keep"), Some("Esc"), false, true).on_click(cx.listener(|this, _, _, cx| {
+                            this.board.flow = None;
+                            cx.notify();
+                        })).into_any_element(),
+                    ],
+                    None => vec![
+                        btn(p, "bulk-yes", t!("board.bulk_accept"), Some("A"), true, shell.can_act()).on_click(cx.listener(|this, _, _, cx| this.board_yes(cx))).into_any_element(),
+                        btn(p, "bulk-no", t!("board.bulk_drop"), Some("N"), false, shell.can_act()).on_click(cx.listener(|this, _, _, cx| this.board_no(cx))).into_any_element(),
+                        btn(p, "bulk-clear", t!("board.clear_choice"), Some("Esc"), false, true).on_click(cx.listener(|this, _, _, cx| {
+                            this.board.view.chosen.clear();
+                            cx.notify();
+                        })).into_any_element(),
+                    ],
+                }),
+        );
+    Some(bar.into_any_element())
+}
+
+/// "T-42 수락 · web에 병합+push 예정  U 되돌리기 (5)".
+pub fn toast(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let p = shell.palette;
+    let pending = shell.board.undo.latest()?;
+    let left = Undo::seconds_left(pending, Instant::now());
+    let more = shell.board.undo.pending.len().saturating_sub(1);
+    let lift = if shell.board.view.chosen.is_empty() { 20. } else { 72. };
+    // Over the list, not the peek beside it.
+    let beside = shell.board.view.peek && shell.board.wide && shell.board.diff.is_none() && shell.board.view.page.is_none() && shell.picked_need().is_some();
+    Some(
+        h_flex()
+            .absolute()
+            .bottom(px(lift))
+            .left_0()
+            .right(px(if beside { PEEK } else { 0. }))
+            .justify_center()
             .child(
-                div()
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .rounded(px(8.))
-                    .bg(p.code_bg)
+                h_flex()
+                    .h(px(40.))
+                    .pl_4()
+                    .pr_2()
+                    .gap_3()
+                    .items_center()
+                    .rounded(px(10.))
+                    .bg(p.primary)
+                    .text_color(p.on_primary)
+                    .shadow_lg()
+                    .text_size(px(SMALL))
+                    .child(pending.text.clone())
+                    .when(more > 0, |d| d.child(div().opacity(0.6).child(format!("+{more}"))))
+                    .child(
+                        h_flex()
+                            .id("undo")
+                            .h(px(28.))
+                            .px_2()
+                            .gap_2()
+                            .items_center()
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .hover(|s| s.opacity(0.8))
+                            .on_click(cx.listener(|this, _, _, cx| this.board_undo(cx)))
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(format!("U {}", t!("board.undo"))))
+                            .child(div().opacity(0.6).child(format!("({left})"))),
+                    ),
+            )
+            .into_any_element(),
+    )
+}
+
+/// The keys, on ?.
+fn keys_sheet(p: Palette, cx: &mut Context<Shell>) -> AnyElement {
+    let rows: [(&str, &str); 18] = [
+        ("A", t!("board.key_yes")),
+        ("⇧A", t!("board.key_method")),
+        ("R", t!("board.key_reply")),
+        ("N", t!("board.key_no")),
+        ("D", t!("board.key_diff")),
+        ("C", t!("board.key_talk")),
+        ("M", t!("board.key_merge")),
+        ("U", t!("board.key_undo")),
+        ("J K ↑↓", t!("board.key_move")),
+        ("Space", t!("board.key_peek")),
+        ("⏎", t!("board.key_page")),
+        ("/", t!("board.key_search")),
+        ("F", t!("board.key_filter")),
+        ("X ⇧↑↓ ⌘A", t!("board.key_choose")),
+        ("⌥V", t!("board.key_save_view")),
+        ("G I · G L · G B", t!("board.key_go")),
+        ("⌘0–9", t!("board.key_projects")),
+        ("Esc", t!("board.key_back")),
+    ];
+    deferred(
+        div()
+            .id("keys-sheet")
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00000040))
+            .occlude()
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.board.keys_open = false;
+                cx.notify();
+            }))
+            .child(
+                v_flex()
+                    .w(px(440.))
+                    .p_5()
+                    .gap_1()
+                    .rounded(px(12.))
+                    .bg(p.raised)
                     .border_1()
                     .border_color(p.hair)
-                    .text_size(px(BODY))
-                    .text_color(p.text)
-                    .child(Input::new(&shell.board.resume).appearance(false).bordered(false)),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(btn(p, "resume-cancel", t!("board.cancel"), Some("Esc"), false, true).on_click(cx.listener(|this, _, w, cx| this.board_close_flow(w, cx))))
-                    .child(btn(p, "resume-go", t!("board.carry_on"), Some("⏎"), true, can).on_click(cx.listener(|this, _, w, cx| this.board_resume(w, cx)))),
-            )
-            .into_any_element(),
-        Flow::Cancel(_) => card()
-            .child(ask(t!("board.ask_cancel", id = id)))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(btn(p, "cancel-yes", t!("board.cancel_ticket"), Some("Y"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_cancel(cx))))
-                    .child(btn(p, "cancel-no", t!("board.keep"), Some("N"), false, true).on_click(cx.listener(|this, _, _, cx| {
-                        this.board.flow = None;
-                        cx.notify();
-                    }))),
-            )
-            .into_any_element(),
-    }
+                    .shadow_lg()
+                    .child(div().pb_2().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(t!("board.keys_title")))
+                    .children(rows.into_iter().map(|(k, what)| {
+                        h_flex().h(px(26.)).gap_3().items_center().text_size(px(SMALL)).child(div().w(px(120.)).font_family(MONO).text_size(px(12.)).text_color(p.text2).child(k)).child(div().text_color(p.text).child(what))
+                    })),
+            ),
+    )
+    .into_any_element()
 }
 
-// ── the diff ──
-
-fn diff_view(shell: &Shell, diff: &DiffUi, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
-    let p = shell.palette;
-    let model = &shell.model;
-    let t = model.tickets.iter().find(|t| t.id == diff.ticket);
-    let can = shell.can_act();
-    let id = diff.ticket;
-    let review = t.is_some_and(|t| t.status == TicketStatus::Review);
-    let patch = diff.patch.clone();
-    let stat = diff.files.as_ref().map(|f| {
-        let (a, r) = f.iter().fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
-        t!("board.diff_stat", n = f.len(), a = a, r = r)
-    });
-    let bar = h_flex()
-        .h(px(44.))
-        .flex_none()
-        .px_5()
-        .gap_3()
-        .items_center()
-        .border_t_1()
-        .border_b_1()
-        .border_color(p.hair)
-        .child(btn(p, "diff-back", t!("board.back_to_ticket"), Some("Esc"), false, true).on_click(cx.listener(|this, _, _, cx| {
-            this.board.diff = None;
-            cx.notify();
-        })))
-        .child(div().flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
-        .child(div().flex_1().min_w_0().truncate().text_size(px(SMALL)).text_color(p.text2).child(format!("{} · {}", diff.branch, stat.unwrap_or_default())))
-        .child(btn(p, "diff-copy", t!("board.copy_patch"), Some("⌘⇧C"), false, !patch.is_empty()).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(patch.clone()))))
-        .children(review.then(|| btn(p, "diff-accept", t!("board.accept"), Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| {
-            this.board.diff = None;
-            this.board_accept(cx);
-        }))))
-        .children(review.then(|| btn(p, "diff-ask", t!("board.request_changes"), Some("R"), false, can).on_click(cx.listener(move |this, _, w, cx| {
-            this.board.diff = None;
-            this.board_open_flow(Flow::SendBack(id), w, cx);
-        }))));
-    let body: AnyElement = match (&diff.files, &diff.error) {
-        (_, Some(why)) => div().p_6().text_size(px(BODY)).text_color(p.muted).child(t!("board.diff_failed", why = why)).into_any_element(),
-        (None, _) => div().p_6().text_size(px(BODY)).text_color(p.muted).child(t!("board.diff_loading")).into_any_element(),
-        (Some(files), _) if files.is_empty() => div().p_6().text_size(px(BODY)).text_color(p.muted).child(t!("board.diff_none")).into_any_element(),
-        (Some(files), _) => {
-            let list = v_flex()
-                .id("diff-files")
-                .w(px(260.))
-                .flex_none()
-                .h_full()
-                .overflow_y_scroll()
-                .border_r_1()
-                .border_color(p.hair)
-                .p_2()
-                .children(files.iter().enumerate().map(|(i, f)| {
-                    h_flex()
-                        .id(("diff-file", i))
-                        .gap_2()
-                        .px_2()
-                        .py(px(5.))
-                        .rounded(px(6.))
-                        .text_size(px(12.))
-                        .cursor_pointer()
-                        .when(diff.current == i, |d| d.bg(p.wash))
-                        .hover(move |s| s.bg(p.wash))
-                        .on_click(cx.listener(move |this, _, _, cx| this.diff_goto(i, cx)))
-                        .child(div().flex_1().min_w_0().truncate().font_family(MONO).text_color(p.text2).child(f.path.clone()))
-                        .child(div().flex_none().text_color(p.muted).child(format!("+{} −{}", f.added, f.removed)))
-                }));
-            let count = diff.flat.len();
-            let lines = uniform_list("diff-lines", count, cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
-                let p = this.palette;
-                let Some(d) = this.board.diff.as_ref() else { return Vec::new() };
-                let Some(files) = d.files.as_ref() else { return Vec::new() };
-                range.filter_map(|ix| d.flat.get(ix).copied().map(|(f, l)| diff_row(p, files, d, f, l, cx))).collect()
-            }))
-            .track_scroll(&diff.scroll)
-            .flex_1()
-            .min_w_0()
-            .h_full();
-            h_flex().flex_1().min_h_0().child(list).child(lines).into_any_element()
-        }
-    };
-    v_flex().flex_1().min_h_0().child(bar).child(body)
+/// For the sidebar's counts.
+pub fn count_working(model: &Model) -> usize {
+    model.tickets.iter().filter(|t| t.status == TicketStatus::InProgress && model.in_focus(t)).count()
 }
 
-const LINE: f32 = 20.;
-
-fn diff_row(p: Palette, files: &[diffs::File], d: &DiffUi, f: usize, l: usize, cx: &mut Context<Shell>) -> AnyElement {
-    let file = &files[f];
-    if l == usize::MAX {
-        let folded = d.folded.contains(&f);
-        return h_flex()
-            .id(("diff-head", f))
-            .w_full()
-            .h(px(LINE + 8.))
-            .px_4()
-            .gap_2()
-            .items_center()
-            .bg(p.raised)
-            .border_b_1()
-            .border_color(p.hair)
-            .font_family(MONO)
-            .text_size(px(12.))
-            .text_color(p.text)
-            .font_weight(FontWeight::SEMIBOLD)
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _, _, cx| this.diff_fold(f, cx)))
-            .child(if folded { "▸" } else { "▾" })
-            .child(file.path.clone())
-            .child(div().text_color(p.muted).font_weight(FontWeight::NORMAL).child(format!("+{} −{}", file.added, file.removed)))
-            .into_any_element();
-    }
-    let line = &file.lines[l];
-    let number = |n: Option<u32>| div().w(px(44.)).flex_none().text_align(TextAlign::Right).text_color(p.muted).child(n.map(|n| n.to_string()).unwrap_or_default());
-    let (glyph, bg, color) = match line.kind {
-        Kind::Add => ("+", Some(p.accent_bg), p.text),
-        Kind::Del => ("−", Some(p.wash), p.muted),
-        Kind::Hunk => ("", Some(p.wash), p.muted),
-        Kind::Context => (" ", None, p.text2),
-        Kind::Note => ("", None, p.muted),
-    };
-    h_flex()
-        .w_full()
-        .h(px(LINE))
-        .gap_2()
-        .px_2()
-        .items_center()
-        .font_family(MONO)
-        .text_size(px(12.))
-        .when_some(bg, |d, bg| d.bg(bg))
-        .child(number(line.old))
-        .child(number(line.new))
-        .child(div().w(px(10.)).flex_none().text_color(color).child(glyph))
-        .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_color(color).when(line.kind == Kind::Del, |d| d.line_through()).child(if line.kind == Kind::Hunk || line.kind == Kind::Note { line.text.clone() } else { line.text.replace('\t', "    ") }))
-        .into_any_element()
-}
-
-impl Shell {
-    fn diff_goto(&mut self, file: usize, cx: &mut Context<Self>) {
-        if let Some(d) = self.board.diff.as_mut() {
-            d.current = file;
-            d.folded.remove(&file);
-            d.rebuild();
-            if let Some(at) = d.flat.iter().position(|(f, l)| *f == file && *l == usize::MAX) {
-                d.scroll.scroll_to_item(at, ScrollStrategy::Top);
-            }
-        }
-        cx.notify();
-    }
-
-    fn diff_fold(&mut self, file: usize, cx: &mut Context<Self>) {
-        if let Some(d) = self.board.diff.as_mut() {
-            if !d.folded.remove(&file) {
-                d.folded.insert(file);
-            }
-            d.rebuild();
-        }
-        cx.notify();
-    }
+pub fn count_all(model: &Model) -> usize {
+    model.tickets.iter().filter(|t| !t.status.is_closed() && model.in_focus(t)).count()
 }

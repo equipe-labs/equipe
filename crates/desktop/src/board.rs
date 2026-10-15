@@ -1,72 +1,419 @@
-//! The board's rules, with no UI types: which tickets show in which order,
-//! under which heading, as a tree of what waits for what, narrowed by a
-//! search. The same rules as the terminal board (`tui/app.rs` `board_order`,
-//! `lanes`, `dependency_tree`), so both screens show the same board.
+//! The work screens' rules, with no UI types: what 나에게, 작업 중, 모든 일
+//! and a saved view list, in which order, under which heading; the filter
+//! words; moving through the list and on after an action; the actions held
+//! back for a moment so they can be taken back; how accepting lands work.
+//! The terminal board (`tui/app.rs`) follows the same order and words.
 
 use equipe_core::t;
-use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::time::{Duration, Instant};
 
-use equipe_core::protocol::{Ticket, TicketId, TicketKind, TicketStatus};
+use equipe_core::protocol::{Command, Ticket, TicketId, TicketKind, TicketStatus};
 
-use crate::state::Model;
+use crate::state::{Model, Need, Section, status_word};
 
-/// Todo and Proposed fold past this many (per section or lane) until shown whole.
-pub const SECTION_ROWS: usize = 10;
-/// How many finished tickets show without a search.
-pub const DONE_SHOWN: usize = 5;
+/// The menu item the work screen shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Menu {
+    /// What waits for the person: 나에게.
+    #[default]
+    Inbox,
+    /// Work in progress: 작업 중.
+    Working,
+    /// Every ticket: 모든 일.
+    All,
+    /// A saved view, by its place in the list of views.
+    View(usize),
+}
 
-/// What the person has done to the board's view.
+/// How 모든 일 (and a saved view) groups its tickets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GroupBy {
+    #[default]
+    Status,
+    Project,
+    Member,
+    /// A tree of what waits for what.
+    Deps,
+    None,
+}
+
+impl GroupBy {
+    pub const ALL: [GroupBy; 5] = [GroupBy::Status, GroupBy::Project, GroupBy::Member, GroupBy::Deps, GroupBy::None];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GroupBy::Status => t!("board.group_status"),
+            GroupBy::Project => t!("board.group_project"),
+            GroupBy::Member => t!("board.group_member"),
+            GroupBy::Deps => t!("board.group_deps"),
+            GroupBy::None => t!("board.group_none"),
+        }
+    }
+
+    pub fn code(self) -> &'static str {
+        match self {
+            GroupBy::Status => "status",
+            GroupBy::Project => "project",
+            GroupBy::Member => "member",
+            GroupBy::Deps => "deps",
+            GroupBy::None => "none",
+        }
+    }
+
+    pub fn parse(code: &str) -> Self {
+        GroupBy::ALL.into_iter().find(|g| g.code() == code).unwrap_or_default()
+    }
+}
+
+/// How far back the finished group reaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DoneWindow {
+    #[default]
+    Week,
+    Month,
+    All,
+}
+
+impl DoneWindow {
+    pub fn label(self) -> &'static str {
+        match self {
+            DoneWindow::Week => t!("board.window_week"),
+            DoneWindow::Month => t!("board.window_month"),
+            DoneWindow::All => t!("board.window_all"),
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            DoneWindow::Week => DoneWindow::Month,
+            DoneWindow::Month => DoneWindow::All,
+            DoneWindow::All => DoneWindow::Week,
+        }
+    }
+
+    fn seconds(self) -> Option<u64> {
+        match self {
+            DoneWindow::Week => Some(7 * 86_400),
+            DoneWindow::Month => Some(30 * 86_400),
+            DoneWindow::All => None,
+        }
+    }
+}
+
+/// A view the person keeps: a name, its filter words, its grouping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedView {
+    pub name: String,
+    pub query: String,
+    pub group: GroupBy,
+    pub pinned: bool,
+}
+
+/// The views every squad starts with: what is blocked, what finished lately.
+pub fn builtin_views() -> Vec<SavedView> {
+    vec![
+        SavedView { name: t!("board.view_blocked").into(), query: "is:blocked".into(), group: GroupBy::Deps, pinned: true },
+        SavedView { name: t!("board.view_recent_done").into(), query: "status:done".into(), group: GroupBy::None, pinned: true },
+    ]
+}
+
+/// What the person has done to the work screen's view.
 #[derive(Debug, Clone, Default)]
 pub struct View {
-    /// What waits for what, as a tree, instead of by state.
-    pub graph: bool,
-    /// Long sections shown whole.
-    pub expanded: bool,
-    /// What is typed in the search box.
+    pub menu: Menu,
+    pub group: GroupBy,
+    /// Typed in the search box: words, and filter words (`project:web`).
     pub query: String,
-    pub selected: Option<TicketId>,
+    pub selected: Option<Need>,
+    /// The picked item shows at the right.
+    pub peek: bool,
+    /// The picked ticket open as a page, on this tab.
+    pub page: Option<Tab>,
+    /// The finished group shown open, and how far back.
+    pub done_open: bool,
+    pub window: DoneWindow,
+    /// Tickets chosen for one action together.
+    pub chosen: BTreeSet<TicketId>,
+    /// Where a ⇧↑↓ range started.
+    pub anchor: Option<TicketId>,
+}
+
+/// A ticket page's tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tab {
+    #[default]
+    Overview,
+    Changes,
+    Activity,
 }
 
 /// How a heading is drawn.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     /// The person's call: accent.
     ForYou,
-    /// A project's lane: its colour (the project's position in the squad).
-    Lane(Option<usize>),
+    /// A project's: its dot (the project's position in the squad).
+    Project(Option<usize>),
     Plain,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
     Heading { label: String, count: usize, tone: Tone },
-    /// A ticket, and how deep under what it waits for (tree view only).
-    Ticket { id: TicketId, depth: usize },
-    /// What a folded section left out.
-    More { label: String, more: usize },
+    /// A thing listed, and how deep under what it waits for (the 의존 순서 grouping).
+    Item { need: Need, depth: usize },
+    /// The finished group's own line: `끝남 · 7일 12 ▸`.
+    Done { count: usize, total: usize, open: bool, window: DoneWindow },
 }
 
-/// The words the board is narrowed to, lowercased.
-pub fn query(view: &View) -> Option<String> {
-    let q = view.query.trim().to_lowercase();
-    (!q.is_empty()).then_some(q)
+// ── filter words ──
+
+/// The search box's words taken apart: filter words, and the rest to find.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Filter {
+    pub words: Vec<String>,
+    pub project: Vec<String>,
+    pub member: Vec<String>,
+    pub status: Vec<TicketStatus>,
+    pub kind: Vec<TicketKind>,
+    pub blocked: bool,
+    pub live: bool,
+    pub quiet: bool,
+    pub branch: bool,
+    pub not_on_main: bool,
 }
 
-fn in_focus(model: &Model, t: &Ticket) -> bool {
-    model.focus.is_none() || model.ticket_project_name(t) == model.focus
+/// The filter words offered (F), in order.
+pub const FILTER_WORDS: [&str; 6] = ["is:blocked", "is:live", "is:quiet", "has:branch", "not-on-main", "kind:code"];
+
+fn status_of(word: &str) -> Option<TicketStatus> {
+    Some(match word {
+        "review" | "검토" => TicketStatus::Review,
+        "waiting" | "내차례" | "내_차례" => TicketStatus::Waiting,
+        "proposed" | "제안" => TicketStatus::Proposed,
+        "todo" | "할일" | "할_일" => TicketStatus::Todo,
+        "progress" | "in_progress" | "working" | "작업중" | "작업_중" => TicketStatus::InProgress,
+        "done" | "끝남" => TicketStatus::Done,
+        "cancelled" | "취소" => TicketStatus::Cancelled,
+        _ => return None,
+    })
 }
 
-/// Whether open work goes in a lane per project: with no filter, and work in
-/// more than one of them (the squad's own folder counts as one).
-pub fn lanes(model: &Model) -> bool {
-    let home_work = model.tickets.iter().any(|t| !t.status.is_closed() && model.ticket_project(t).is_none());
-    model.focus.is_none() && model.projects.len() + usize::from(home_work) > 1
+impl Filter {
+    pub fn parse(text: &str) -> Self {
+        let mut f = Filter::default();
+        for word in text.split_whitespace() {
+            let lower = word.to_lowercase();
+            match lower.split_once(':') {
+                Some(("project", v)) if !v.is_empty() => f.project.push(v.to_owned()),
+                Some(("member", v)) if !v.is_empty() => f.member.push(v.to_owned()),
+                Some(("status", v)) if status_of(v).is_some() => f.status.extend(status_of(v)),
+                Some(("kind", "code")) => f.kind.push(TicketKind::Code),
+                Some(("kind", "task")) => f.kind.push(TicketKind::Task),
+                Some(("kind", "action")) => f.kind.push(TicketKind::Action),
+                Some(("is", "blocked")) => f.blocked = true,
+                Some(("is", "live")) => f.live = true,
+                Some(("is", "quiet")) => f.quiet = true,
+                Some(("has", "branch")) => f.branch = true,
+                _ if lower == "not-on-main" => f.not_on_main = true,
+                _ => f.words.push(lower),
+            }
+        }
+        f
+    }
+
+    /// Whether it narrows anything at all.
+    pub fn is_empty(&self) -> bool {
+        *self == Filter::default()
+    }
+
+    /// Whether it asks for finished work (then the finished group opens).
+    pub fn reaches_done(&self) -> bool {
+        !self.words.is_empty() || self.status.iter().any(|s| s.is_closed()) || self.not_on_main
+    }
+
+    pub fn matches(&self, model: &Model, t: &Ticket) -> bool {
+        let project = model.ticket_project_name(t).unwrap_or_default().to_lowercase();
+        let who = who(t).unwrap_or_default().to_lowercase();
+        let text = format!("{} {}", t.title.to_lowercase(), t.body.to_lowercase());
+        let id = format!("t-{}", t.id);
+        self.words.iter().all(|w| text.contains(w.as_str()) || *w == id)
+            && (self.project.is_empty() || self.project.contains(&project))
+            && (self.member.is_empty() || self.member.contains(&who))
+            && (self.status.is_empty() || self.status.contains(&t.status))
+            && (self.kind.is_empty() || self.kind.contains(&t.kind))
+            && (!self.blocked || (t.status == TicketStatus::Todo && model.blocked_by(t).is_some()))
+            && (!self.live || model.is_live(t))
+            && (!self.quiet || model.quiet_for(t).is_some())
+            && (!self.branch || t.branch.is_some())
+            && (!self.not_on_main || t.not_on_main())
+    }
+}
+
+/// The filter words in `query` (not the words to find), each a chip.
+pub fn chips(query: &str) -> Vec<String> {
+    query.split_whitespace().filter(|w| w.contains(':') || *w == "not-on-main").map(str::to_owned).collect()
+}
+
+/// `query` with one word added (if missing) or taken out.
+pub fn toggle_word(query: &str, word: &str) -> String {
+    let mut words: Vec<&str> = query.split_whitespace().collect();
+    match words.iter().position(|w| *w == word) {
+        Some(at) => {
+            words.remove(at);
+        }
+        None => words.push(word),
+    }
+    words.join(" ")
+}
+
+// ── the lists ──
+
+/// The query and grouping a menu item lists with.
+pub fn effective(view: &View, views: &[SavedView]) -> (String, GroupBy) {
+    match view.menu {
+        Menu::View(at) => views.get(at).map_or((view.query.clone(), view.group), |v| (format!("{} {}", v.query, view.query).trim().to_owned(), v.group)),
+        _ => (view.query.clone(), view.group),
+    }
+}
+
+/// The rows of the menu item on screen.
+pub fn rows(model: &Model, view: &View, views: &[SavedView]) -> Vec<Row> {
+    match view.menu {
+        Menu::Inbox => inbox(model, &Filter::parse(&view.query)),
+        Menu::Working => working(model, &Filter::parse(&view.query)),
+        Menu::All | Menu::View(_) => {
+            let (query, group) = effective(view, views);
+            all(model, view, &Filter::parse(&query), group)
+        }
+    }
+}
+
+/// 나에게: by section, in [`Model::needs_you`]'s order.
+pub fn inbox(model: &Model, filter: &Filter) -> Vec<Row> {
+    let mut out = Vec::new();
+    for section in Section::ALL {
+        let items: Vec<Need> = model
+            .needs_you()
+            .into_iter()
+            .filter(|(s, need)| {
+                *s == section
+                    && match need {
+                        Need::Ticket(id) => model.tickets.iter().find(|t| t.id == *id).is_some_and(|t| filter.matches(model, t)),
+                        Need::Permission(_) => filter.is_empty(),
+                    }
+            })
+            .map(|(_, need)| need)
+            .collect();
+        if !items.is_empty() {
+            out.push(Row::Heading { label: section.label().to_owned(), count: items.len(), tone: Tone::ForYou });
+            out.extend(items.into_iter().map(|need| Row::Item { need, depth: 0 }));
+        }
+    }
+    out
+}
+
+/// 작업 중: work in progress, the soonest done first.
+pub fn working(model: &Model, filter: &Filter) -> Vec<Row> {
+    let mut tickets: Vec<&Ticket> = model.tickets.iter().filter(|t| t.status == TicketStatus::InProgress && model.in_focus(t) && filter.matches(model, t)).collect();
+    tickets.sort_by_key(|t| (model.eta(t).map_or(u64::MAX, |e| e.at), t.id));
+    tickets.into_iter().map(|t| Row::Item { need: Need::Ticket(t.id), depth: 0 }).collect()
+}
+
+/// The order statuses are listed in, the person's calls first.
+const STATUS_ORDER: [TicketStatus; 6] = [TicketStatus::Review, TicketStatus::Waiting, TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed, TicketStatus::Done];
+
+fn status_rank(s: TicketStatus) -> usize {
+    STATUS_ORDER.iter().position(|x| *x == s).unwrap_or(STATUS_ORDER.len() - 1)
+}
+
+/// Finished tickets within the window, the latest first.
+fn finished<'a>(model: &'a Model, tickets: &[&'a Ticket], window: DoneWindow) -> Vec<&'a Ticket> {
+    let mut done: Vec<&Ticket> = tickets
+        .iter()
+        .copied()
+        .filter(|t| t.status.is_closed())
+        .filter(|t| window.seconds().is_none_or(|w| model.in_state_for(t).is_some_and(|s| s <= w)))
+        .collect();
+    done.sort_by_key(|t| (std::cmp::Reverse(model.since.get(&t.id).copied().unwrap_or(0)), std::cmp::Reverse(t.id)));
+    done
+}
+
+/// 모든 일 and the saved views: grouped as asked; finished work in one group
+/// that opens on a click, or by itself when the search reaches it.
+pub fn all(model: &Model, view: &View, filter: &Filter, group: GroupBy) -> Vec<Row> {
+    let here: Vec<&Ticket> = model.tickets.iter().filter(|t| model.in_focus(t) && filter.matches(model, t)).collect();
+    let open_done = view.done_open || filter.reaches_done();
+    let window = if filter.reaches_done() && !view.done_open { DoneWindow::All } else { view.window };
+    let mut out = Vec::new();
+    let item = |t: &Ticket, depth: usize| Row::Item { need: Need::Ticket(t.id), depth };
+    let by_status = |list: &mut Vec<&Ticket>| list.sort_by_key(|t| (status_rank(t.status), t.id));
+    let open: Vec<&Ticket> = here.iter().copied().filter(|t| !t.status.is_closed()).collect();
+    match group {
+        GroupBy::Status => {
+            for status in &STATUS_ORDER[..5] {
+                let list: Vec<&Ticket> = open.iter().copied().filter(|t| t.status == *status).collect();
+                if !list.is_empty() {
+                    let tone = if matches!(status, TicketStatus::Review | TicketStatus::Waiting) { Tone::ForYou } else { Tone::Plain };
+                    out.push(Row::Heading { label: status_word(*status).to_owned(), count: list.len(), tone });
+                    out.extend(list.into_iter().map(|t| item(t, 0)));
+                }
+            }
+        }
+        GroupBy::Project => {
+            let mut names: Vec<Option<String>> = model.project_names().into_iter().map(Some).collect();
+            names.push(None);
+            for name in names {
+                let mut list: Vec<&Ticket> = open.iter().copied().filter(|t| model.ticket_project_name(t) == name).collect();
+                if !list.is_empty() {
+                    by_status(&mut list);
+                    let at = name.as_ref().and_then(|n| model.project_names().iter().position(|x| x == n));
+                    out.push(Row::Heading { label: name.unwrap_or_else(|| t!("board.squad_folder").into()), count: list.len(), tone: Tone::Project(at) });
+                    out.extend(list.into_iter().map(|t| item(t, 0)));
+                }
+            }
+        }
+        GroupBy::Member => {
+            let mut whos: Vec<String> = open.iter().map(|t| who(t).unwrap_or_default().to_owned()).collect();
+            whos.sort();
+            whos.dedup();
+            for name in whos {
+                let mut list: Vec<&Ticket> = open.iter().copied().filter(|t| who(t).unwrap_or_default() == name).collect();
+                by_status(&mut list);
+                let label = if name.is_empty() { t!("board.nobody").to_owned() } else { name };
+                out.push(Row::Heading { label, count: list.len(), tone: Tone::Plain });
+                out.extend(list.into_iter().map(|t| item(t, 0)));
+            }
+        }
+        GroupBy::Deps => {
+            let tree = dependency_tree(model, &open);
+            if !tree.is_empty() {
+                out.push(Row::Heading { label: t!("board.group_deps").into(), count: tree.len(), tone: Tone::Plain });
+                out.extend(tree.into_iter().map(|(id, depth)| Row::Item { need: Need::Ticket(id), depth }));
+            }
+        }
+        GroupBy::None => {
+            let mut list = open.clone();
+            by_status(&mut list);
+            out.extend(list.into_iter().map(|t| item(t, 0)));
+        }
+    }
+    let done = finished(model, &here, window);
+    let total = here.iter().filter(|t| t.status.is_closed()).count();
+    if total > 0 {
+        out.push(Row::Done { count: done.len(), total, open: open_done, window });
+        if open_done {
+            out.extend(done.into_iter().map(|t| item(t, 0)));
+        }
+    }
+    out
 }
 
 /// Open work as a tree of what waits for what. A ticket waiting on nothing
 /// still open is a root; one waiting on several shows under the first.
-pub fn dependency_tree(model: &Model) -> Vec<(TicketId, usize)> {
-    let open: Vec<&Ticket> = model.tickets.iter().filter(|t| !t.status.is_closed() && in_focus(model, t)).collect();
+pub fn dependency_tree(model: &Model, open: &[&Ticket]) -> Vec<(TicketId, usize)> {
+    let _ = model;
     let is_open = |id: TicketId| open.iter().any(|t| t.id == id);
     let mut out: Vec<(TicketId, usize)> = Vec::new();
     let mut stack: Vec<(TicketId, usize)> = open.iter().filter(|t| !t.depends_on.iter().any(|d| is_open(*d))).map(|t| (t.id, 0)).collect();
@@ -81,7 +428,7 @@ pub fn dependency_tree(model: &Model) -> Vec<(TicketId, usize)> {
         stack.extend(next.into_iter().map(|c| (c, depth + 1)));
     }
     // Anything left in a loop of waiting: listed, not lost.
-    for t in &open {
+    for t in open {
         if !out.iter().any(|(id, _)| *id == t.id) {
             out.push((t.id, 0));
         }
@@ -89,181 +436,53 @@ pub fn dependency_tree(model: &Model) -> Vec<(TicketId, usize)> {
     out
 }
 
-fn matches(model: &Model, t: &Ticket, q: &str) -> bool {
-    in_focus(model, t) && (t.title.to_lowercase().contains(q) || t.body.to_lowercase().contains(q) || format!("t-{}", t.id) == q)
+/// The things listed, in order.
+pub fn items(rows: &[Row]) -> Vec<Need> {
+    rows.iter().filter_map(|r| if let Row::Item { need, .. } = r { Some(*need) } else { None }).collect()
 }
 
-/// Heading and tone for a ticket in the by-state list.
-fn heading(model: &Model, t: &Ticket, lanes: bool) -> (String, Tone) {
-    let project_index = |t: &Ticket| model.ticket_project(t).and_then(|p| model.projects.iter().position(|q| *q == p));
-    match t.status {
-        TicketStatus::Review => (t!("board.heading_review").into(), Tone::ForYou),
-        TicketStatus::Waiting => (t!("board.heading_waiting").into(), Tone::ForYou),
-        TicketStatus::InProgress | TicketStatus::Todo | TicketStatus::Proposed if lanes => {
-            (model.ticket_project_name(t).unwrap_or_else(|| t!("board.heading_squad_folder").into()), Tone::Lane(project_index(t)))
-        }
-        TicketStatus::InProgress => (t!("board.heading_in_progress").into(), Tone::Plain),
-        TicketStatus::Todo => (t!("board.todo").into(), Tone::Plain),
-        TicketStatus::Proposed => (t!("board.heading_proposed").into(), Tone::Plain),
-        TicketStatus::Done | TicketStatus::Cancelled => (t!("board.done").into(), Tone::Plain),
-    }
+/// The pick: the one chosen if it still shows, else the first listed.
+pub fn selected(rows: &[Row], view: &View) -> Option<Need> {
+    let list = items(rows);
+    view.selected.filter(|n| list.contains(n)).or_else(|| list.first().copied())
 }
 
-/// The tickets listed, in order: the person's reviews, what waits on them,
-/// open work (a lane per project when there are several), the latest few done.
-pub fn order(model: &Model, view: &View) -> Vec<TicketId> {
-    if let Some(q) = query(view) {
-        // What matches: open work first, then finished, the latest first.
-        let hit = |t: &&Ticket| matches(model, t, &q);
-        let mut open: Vec<TicketId> = model.tickets.iter().filter(hit).filter(|t| !t.status.is_closed()).map(|t| t.id).collect();
-        open.sort_unstable();
-        let mut closed: Vec<TicketId> = model.tickets.iter().filter(hit).filter(|t| t.status.is_closed()).map(|t| t.id).collect();
-        closed.sort_unstable_by(|a, b| b.cmp(a));
-        open.extend(closed);
-        return open;
-    }
-    if view.graph {
-        return dependency_tree(model).into_iter().map(|(id, _)| id).collect();
-    }
-    let fold = |mut ids: Vec<TicketId>, status: TicketStatus| {
-        if !view.expanded && matches!(status, TicketStatus::Todo | TicketStatus::Proposed) {
-            ids.truncate(SECTION_ROWS);
-        }
-        ids
-    };
-    let group = |statuses: &[TicketStatus]| -> Vec<TicketId> {
-        model.tickets.iter().filter(|t| statuses.contains(&t.status) && in_focus(model, t)).map(|t| t.id).collect()
-    };
-    let mut out = group(&[TicketStatus::Review]);
-    out.extend(group(&[TicketStatus::Waiting]));
-    let open = [TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed];
-    if lanes(model) {
-        // A ticket about a folder the squad no longer lists goes in the last lane, not nowhere.
-        let lane_of = |id: &TicketId| -> Option<PathBuf> {
-            model.tickets.iter().find(|t| t.id == *id).and_then(|t| model.ticket_project(t)).filter(|p| model.projects.contains(p))
-        };
-        for lane in model.projects.iter().map(Some).chain([None]) {
-            for status in open {
-                let in_lane: Vec<TicketId> = group(&[status]).into_iter().filter(|id| lane_of(id).as_ref() == lane).collect();
-                out.extend(fold(in_lane, status));
-            }
-        }
-    } else {
-        for status in open {
-            out.extend(fold(group(&[status]), status));
-        }
-    }
-    let mut done = group(&[TicketStatus::Done, TicketStatus::Cancelled]);
-    done.reverse();
-    done.truncate(DONE_SHOWN);
-    out.extend(done);
-    out
-}
-
-/// The list as rows: a heading per section, a ticket per row, and a line where
-/// a section was folded.
-pub fn rows(model: &Model, view: &View) -> Vec<Row> {
-    let ids = order(model, view);
-    let q = query(view);
-    let lanes = lanes(model);
-    let depth: std::collections::HashMap<TicketId, usize> = if view.graph && q.is_none() { dependency_tree(model).into_iter().collect() } else { Default::default() };
-    let label_of = |t: &Ticket| -> (String, Tone) {
-        if q.is_some() {
-            return (t!("board.heading_found").into(), Tone::Plain);
-        }
-        if view.graph {
-            return (t!("board.heading_graph").into(), Tone::Plain);
-        }
-        heading(model, t, lanes)
-    };
-    // Each section's whole size, so a folded one says what it left out.
-    let mut totals: std::collections::HashMap<String, usize> = Default::default();
-    if q.is_none() && !view.graph {
-        for t in model.tickets.iter().filter(|t| in_focus(model, t)) {
-            *totals.entry(label_of(t).0).or_default() += 1;
-        }
-    }
-    let shown = |label: &str| ids.iter().filter_map(|id| model.tickets.iter().find(|t| t.id == *id)).filter(|t| label_of(t).0 == label).count();
-    let folded = |label: &str| {
-        let more = totals.get(label).copied().unwrap_or(0).saturating_sub(shown(label));
-        (more > 0).then(|| Row::More { label: label.to_owned(), more })
-    };
-    let mut out = Vec::new();
-    let mut current: Option<String> = None;
-    for id in &ids {
-        let Some(t) = model.tickets.iter().find(|t| t.id == *id) else { continue };
-        let (label, tone) = label_of(t);
-        if current.as_ref() != Some(&label) {
-            out.extend(current.as_deref().and_then(folded));
-            let count = totals.get(&label).copied().unwrap_or_else(|| shown(&label));
-            out.push(Row::Heading { label: label.clone(), count, tone });
-            current = Some(label);
-        }
-        out.push(Row::Ticket { id: t.id, depth: depth.get(&t.id).copied().unwrap_or(0) });
-    }
-    out.extend(current.as_deref().and_then(folded));
-    out
-}
-
-/// The ticket picked: the one chosen if it still shows, else the first listed.
-pub fn selected<'a>(model: &'a Model, view: &View) -> Option<&'a Ticket> {
-    let order = order(model, view);
-    let id = view.selected.filter(|id| order.contains(id)).or_else(|| order.first().copied())?;
-    model.tickets.iter().find(|t| t.id == id)
-}
-
-/// Move the pick by `step` rows through what is listed.
-pub fn step(model: &Model, view: &mut View, step: isize) {
-    let order = order(model, view);
-    if order.is_empty() {
+/// Move the pick by `by` through what is listed, stopping at the ends.
+pub fn step(rows: &[Row], view: &mut View, by: isize) {
+    let list = items(rows);
+    if list.is_empty() {
         return;
     }
-    let at = selected(model, view).and_then(|t| order.iter().position(|id| *id == t.id)).unwrap_or(0) as isize;
-    view.selected = Some(order[(at + step).clamp(0, order.len() as isize - 1) as usize]);
+    let at = selected(rows, view).and_then(|n| list.iter().position(|x| *x == n)).unwrap_or(0) as isize;
+    view.selected = Some(list[(at + by).clamp(0, list.len() as isize - 1) as usize]);
 }
 
-/// After a review is accepted, the next one comes up (or the one before, when
-/// it was the last), so reviews go one after another.
-pub fn next_review_after(model: &Model, view: &mut View, done: TicketId) {
-    let list: Vec<TicketId> = order(model, view).into_iter().filter(|id| model.tickets.iter().any(|t| t.id == *id && t.status == TicketStatus::Review)).collect();
-    let at = list.iter().position(|&id| id == done);
-    let rest: Vec<TicketId> = list.into_iter().filter(|&id| id != done).collect();
-    let next = match at {
-        Some(at) => rest.get(at).or(rest.last()),
-        None => rest.first(),
-    };
-    if let Some(&next) = next {
-        view.selected = Some(next);
+/// After acting on `done`, what comes up: the next thing after it as the list
+/// was — the rest of its section, then the next section — or, at the end, the
+/// one before it. Only what still shows.
+pub fn advance(before: &[Need], after: &[Need], done: Need) -> Option<Need> {
+    let at = before.iter().position(|n| *n == done)?;
+    before[at + 1..].iter().chain(before[..at].iter().rev()).copied().find(|n| *n != done && after.contains(n))
+}
+
+/// The ticket a thing listed is about.
+pub fn ticket_of(model: &Model, need: Need) -> Option<&Ticket> {
+    match need {
+        Need::Ticket(id) => model.tickets.iter().find(|t| t.id == id),
+        Need::Permission(id) => {
+            let ticket = model.approvals.get(id)?.ticket?;
+            model.tickets.iter().find(|t| t.id == ticket)
+        }
     }
 }
 
-/// The short state column: what is waiting on whom.
-pub fn state_text(t: &Ticket) -> String {
-    match t.status {
-        TicketStatus::Review => t!("board.state_review").into(),
-        TicketStatus::Waiting => t!("board.state_waiting").into(),
-        TicketStatus::InProgress => t!("board.state_in_progress").into(),
-        TicketStatus::Todo if !t.depends_on.is_empty() => t!("board.state_after", tickets = t.depends_on.iter().map(|d| format!("T-{d}")).collect::<Vec<_>>().join(", ")),
-        TicketStatus::Todo => t!("board.todo").into(),
-        TicketStatus::Proposed => t!("board.state_proposed").into(),
-        TicketStatus::Done if t.not_on_main() => t!("board.state_not_on_main").into(),
-        TicketStatus::Done => t!("board.done").into(),
-        TicketStatus::Cancelled => t!("board.state_cancelled").into(),
-    }
-}
-
-/// Tickets open that wait for `id`.
-pub fn unblocks(model: &Model, id: TicketId) -> Vec<TicketId> {
-    model.tickets.iter().filter(|o| o.depends_on.contains(&id) && !o.status.is_closed()).map(|o| o.id).collect()
-}
-
-/// The person who does a ticket's work: whom Enter talks to.
+/// The person who does a ticket's work: whom C talks to.
 pub fn who(t: &Ticket) -> Option<&str> {
     t.assignee.as_deref().or(t.owner.as_deref())
 }
 
 /// The steps a waiting ticket's note lists for the person: its checklist
-/// lines (`- [ ] …`, `- …`, `1. …`), else the whole note's lines.
+/// lines (`- [ ] …`, `- …`, `1. …`), else nothing.
 pub fn checklist(note: &str) -> Vec<String> {
     let strip = |line: &str| -> Option<String> {
         let line = line.trim();
@@ -277,14 +496,117 @@ pub fn checklist(note: &str) -> Vec<String> {
     note.lines().filter_map(strip).collect()
 }
 
-/// Whether the ticket has a branch to look at.
-pub fn has_branch(t: &Ticket) -> bool {
-    t.branch.is_some()
+/// What a waiting ticket asks first, in a few words.
+pub fn first_need(t: &Ticket) -> Option<String> {
+    let note = t.note.as_deref()?;
+    equipe_core::board::waiting_needs(note).first().map(|s| (*s).to_owned()).or_else(|| checklist(note).into_iter().next())
 }
 
-/// Whether accepting a code ticket goes on to the merge question.
-pub fn asks_to_merge(t: &Ticket) -> bool {
-    t.kind == TicketKind::Code && t.branch.is_some()
+// ── what accepting does ──
+
+/// What accepting lands, per project: merge and push, merge only, or leave
+/// the work on its branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeWay {
+    Push,
+    Merge,
+    Branch,
+}
+
+impl MergeWay {
+    pub const ALL: [MergeWay; 3] = [MergeWay::Push, MergeWay::Merge, MergeWay::Branch];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MergeWay::Push => t!("board.way_push"),
+            MergeWay::Merge => t!("board.way_merge"),
+            MergeWay::Branch => t!("board.way_branch"),
+        }
+    }
+
+    pub fn code(self) -> &'static str {
+        match self {
+            MergeWay::Push => "push",
+            MergeWay::Merge => "merge",
+            MergeWay::Branch => "branch",
+        }
+    }
+
+    pub fn parse(code: &str) -> Option<Self> {
+        MergeWay::ALL.into_iter().find(|w| w.code() == code)
+    }
+}
+
+/// The commands A sends for a ticket that waits for the person: accept (and
+/// land its branch `way`), resume, take on a proposal, merge what is not on main.
+pub fn yes_commands(squad: &str, t: &Ticket, way: Option<MergeWay>, note: &str) -> Vec<Command> {
+    let squad = squad.to_owned();
+    let merge = |way: Option<MergeWay>| match way {
+        Some(MergeWay::Push) => Some(Command::Merge { squad: squad.clone(), ticket: t.id, push: true }),
+        Some(MergeWay::Merge) => Some(Command::Merge { squad: squad.clone(), ticket: t.id, push: false }),
+        Some(MergeWay::Branch) | None => None,
+    };
+    match t.status {
+        TicketStatus::Waiting => vec![Command::Resume { squad, ticket: t.id, note: note.to_owned() }],
+        TicketStatus::Done if t.not_on_main() => merge(way).into_iter().collect(),
+        TicketStatus::Review if Model::merges(t) => std::iter::once(Command::Accept { squad: squad.clone(), ticket: t.id }).chain(merge(way)).collect(),
+        TicketStatus::Done | TicketStatus::Cancelled => Vec::new(),
+        _ => vec![Command::Accept { squad, ticket: t.id }],
+    }
+}
+
+/// Whether A on this ticket lands code, so the project's way is asked for.
+pub fn needs_way(t: &Ticket) -> bool {
+    (t.status == TicketStatus::Review && Model::merges(t)) || t.not_on_main()
+}
+
+// ── taking an action back ──
+
+/// An action held back for a moment: sent when its time comes, unless taken back.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pending {
+    pub ticket: TicketId,
+    /// What the toast says: `T-42 수락 · web에 병합+push 예정`.
+    pub text: String,
+    pub commands: Vec<Command>,
+    pub due: Instant,
+}
+
+/// Actions held back, latest last.
+#[derive(Debug, Clone, Default)]
+pub struct Undo {
+    pub pending: Vec<Pending>,
+}
+
+impl Undo {
+    /// How long an action waits before it is sent.
+    pub const DELAY: Duration = Duration::from_secs(5);
+
+    pub fn push(&mut self, ticket: TicketId, text: String, commands: Vec<Command>, now: Instant) {
+        self.pending.push(Pending { ticket, text, commands, due: now + Self::DELAY });
+    }
+
+    /// The actions whose time has come, to send now.
+    pub fn take_due(&mut self, now: Instant) -> Vec<Pending> {
+        let (due, keep): (Vec<Pending>, Vec<Pending>) = std::mem::take(&mut self.pending).into_iter().partition(|p| p.due <= now);
+        self.pending = keep;
+        due
+    }
+
+    /// Take back the latest action.
+    pub fn undo(&mut self) -> Option<Pending> {
+        self.pending.pop()
+    }
+
+    pub fn latest(&self) -> Option<&Pending> {
+        self.pending.last()
+    }
+
+    /// Whole seconds left before `p` is sent, rounded up.
+    pub fn seconds_left(p: &Pending, now: Instant) -> u64 {
+        let left = p.due.saturating_duration_since(now);
+        left.as_millis().div_ceil(1000) as u64
+    }
 }
 
 #[cfg(test)]
@@ -293,7 +615,8 @@ mod tests {
     use crate::daemon::Update;
     use crate::state::Clock;
     use equipe_core::protocol::rpc::Hello;
-    use equipe_core::protocol::Snapshot;
+    use equipe_core::protocol::{Approval, Snapshot};
+    use std::path::PathBuf;
 
     fn ticket(id: u32, status: &str, project: &str, deps: &[u32]) -> Ticket {
         serde_json::from_value(serde_json::json!({
@@ -315,118 +638,176 @@ mod tests {
         m
     }
 
-    fn ids(model: &Model, view: &View) -> Vec<u32> {
-        order(model, view)
+    fn ids(rows: &[Row]) -> Vec<u32> {
+        items(rows).into_iter().filter_map(|n| if let Need::Ticket(id) = n { Some(id) } else { None }).collect()
+    }
+
+    fn headings(rows: &[Row]) -> Vec<String> {
+        rows.iter().filter_map(|r| if let Row::Heading { label, .. } = r { Some(label.clone()) } else { None }).collect()
     }
 
     #[test]
-    fn sections_run_review_waiting_progress_todo_proposed_then_the_latest_five_done() {
-        let mut tickets = vec![
-            ticket(1, "proposed", "/p", &[]),
-            ticket(2, "todo", "/p", &[]),
-            ticket(3, "in_progress", "/p", &[]),
-            ticket(4, "waiting", "/p", &[]),
-            ticket(5, "review", "/p", &[]),
-        ];
+    fn all_work_groups_by_status_with_the_finished_folded_in_one_line() {
+        let mut tickets = vec![ticket(1, "proposed", "/p", &[]), ticket(2, "todo", "/p", &[]), ticket(3, "in_progress", "/p", &[]), ticket(4, "waiting", "/p", &[]), ticket(5, "review", "/p", &[])];
         tickets.extend((10..18).map(|i| ticket(i, "done", "/p", &[])));
         let m = model(tickets, &["/p"]);
-        assert_eq!(ids(&m, &View::default()), vec![5, 4, 3, 2, 1, 17, 16, 15, 14, 13]);
+        let view = View { menu: Menu::All, ..Default::default() };
+        let rows = all(&m, &view, &Filter::default(), GroupBy::Status);
+        assert_eq!(ids(&rows), vec![5, 4, 3, 2, 1], "no cap of five: the finished stay folded");
+        assert_eq!(headings(&rows), vec!["검토", "내 차례", "작업 중", "할 일", "제안"]);
+        // Nothing finished within the week is known: the line says so and opens to the window.
+        assert_eq!(rows.last(), Some(&Row::Done { count: 0, total: 8, open: false, window: DoneWindow::Week }));
+        let open = View { done_open: true, window: DoneWindow::All, ..view };
+        assert_eq!(ids(&all(&m, &open, &Filter::default(), GroupBy::Status)).len(), 13);
     }
 
     #[test]
-    fn todo_and_proposed_fold_past_ten_until_shown_whole() {
-        let tickets: Vec<Ticket> = (1..=14).map(|i| ticket(i, "todo", "/p", &[])).collect();
-        let m = model(tickets, &["/p"]);
-        let mut view = View::default();
-        assert_eq!(ids(&m, &view).len(), 10);
-        let rows = rows(&m, &view);
-        assert_eq!(rows.last(), Some(&Row::More { label: "할 일".into(), more: 4 }));
-        view.expanded = true;
-        assert_eq!(ids(&m, &view).len(), 14);
+    fn the_finished_window_reaches_back_as_far_as_asked() {
+        let mut m = model(vec![ticket(1, "done", "/p", &[]), ticket(2, "done", "/p", &[]), ticket(3, "done", "/p", &[])], &["/p"]);
+        m.unix = 100 * 86_400;
+        m.since.insert(1, m.unix - 86_400);
+        m.since.insert(2, m.unix - 20 * 86_400);
+        let view = |window| View { menu: Menu::All, done_open: true, window, ..Default::default() };
+        assert_eq!(ids(&all(&m, &view(DoneWindow::Week), &Filter::default(), GroupBy::Status)), vec![1]);
+        assert_eq!(ids(&all(&m, &view(DoneWindow::Month), &Filter::default(), GroupBy::Status)), vec![1, 2]);
+        assert_eq!(ids(&all(&m, &view(DoneWindow::All), &Filter::default(), GroupBy::Status)), vec![1, 2, 3]);
     }
 
     #[test]
-    fn several_projects_without_a_filter_give_each_a_lane_and_a_filter_takes_them_away() {
-        let tickets = vec![ticket(1, "todo", "/a", &[]), ticket(2, "todo", "/b", &[]), ticket(3, "in_progress", "/a", &[]), ticket(4, "review", "/b", &[])];
-        let mut m = model(tickets, &["/a", "/b"]);
-        assert!(lanes(&m));
-        // Review first; then a's lane (in progress before todo), then b's.
-        assert_eq!(ids(&m, &View::default()), vec![4, 3, 1, 2]);
-        let labels: Vec<String> = rows(&m, &View::default()).into_iter().filter_map(|r| if let Row::Heading { label, .. } = r { Some(label) } else { None }).collect();
-        assert_eq!(labels, vec!["내 검토", "a", "b"]);
-        m.set_focus(Some("a".into()));
-        assert!(!lanes(&m));
-        assert_eq!(ids(&m, &View::default()), vec![3, 1]);
+    fn grouping_by_project_member_and_dependency_order() {
+        let tickets = vec![ticket(1, "todo", "/a", &[]), ticket(2, "todo", "/b", &[1]), ticket(3, "in_progress", "/a", &[]), ticket(4, "todo", "/b", &[2])];
+        let m = model(tickets, &["/a", "/b"]);
+        let view = View { menu: Menu::All, ..Default::default() };
+        let rows = all(&m, &view, &Filter::default(), GroupBy::Project);
+        assert_eq!(headings(&rows), vec!["a", "b"]);
+        assert_eq!(ids(&rows), vec![3, 1, 2, 4], "in progress before to do, within a project");
+        let rows = all(&m, &view, &Filter::default(), GroupBy::Deps);
+        assert!(rows.contains(&Row::Item { need: Need::Ticket(4), depth: 2 }));
+        assert_eq!(headings(&all(&m, &view, &Filter::default(), GroupBy::Member)), vec!["backend"]);
+        assert!(headings(&all(&m, &view, &Filter::default(), GroupBy::None)).is_empty());
     }
 
     #[test]
-    fn the_tree_puts_each_ticket_under_what_it_waits_for() {
-        let tickets = vec![ticket(1, "in_progress", "/p", &[]), ticket(2, "todo", "/p", &[1]), ticket(3, "todo", "/p", &[2]), ticket(4, "todo", "/p", &[]), ticket(5, "done", "/p", &[])];
-        let m = model(tickets, &["/p"]);
-        assert_eq!(dependency_tree(&m), vec![(1, 0), (2, 1), (3, 2), (4, 0)]);
-        let view = View { graph: true, ..Default::default() };
-        assert_eq!(ids(&m, &view), vec![1, 2, 3, 4]);
-        assert!(rows(&m, &view).contains(&Row::Ticket { id: 3, depth: 2 }));
-    }
-
-    #[test]
-    fn a_loop_of_waiting_is_listed_not_lost() {
-        let m = model(vec![ticket(1, "todo", "/p", &[2]), ticket(2, "todo", "/p", &[1])], &["/p"]);
-        assert_eq!(dependency_tree(&m).len(), 2);
-    }
-
-    #[test]
-    fn finding_reaches_title_body_number_and_finished_tickets() {
-        let mut a = ticket(1, "todo", "/p", &[]);
+    fn filter_words_narrow_and_finding_reaches_finished_work() {
+        let mut a = ticket(1, "todo", "/a", &[9]);
         a.title = "Login page".into();
-        let mut b = ticket(2, "done", "/p", &[]);
+        let mut b = ticket(2, "done", "/a", &[]);
         b.body = "fix the login redirect".into();
-        let c = ticket(3, "done", "/p", &[]);
-        let m = model(vec![a, b, c], &["/p"]);
-        let find = |q: &str| ids(&m, &View { query: q.into(), ..Default::default() });
-        assert_eq!(find("LOGIN"), vec![1, 2], "open first, then done");
+        let c = ticket(3, "todo", "/b", &[]);
+        let m = model(vec![a, b, c, ticket(9, "in_progress", "/a", &[])], &["/a", "/b"]);
+        let view = View { menu: Menu::All, ..Default::default() };
+        let find = |q: &str| ids(&all(&m, &view, &Filter::parse(q), GroupBy::Status));
+        assert_eq!(find("LOGIN"), vec![1, 2], "open first, then the finished, opened");
         assert_eq!(find("t-3"), vec![3]);
+        assert_eq!(find("is:blocked"), vec![1]);
+        assert_eq!(find("project:b"), vec![3]);
+        assert_eq!(find("status:todo project:a"), vec![1]);
         assert_eq!(find("nothing"), Vec::<u32>::new());
-        assert_eq!(find("  "), ids(&m, &View::default()), "blank is no search");
+        let f = Filter::parse("project:web is:quiet words here not-on-main");
+        assert_eq!((f.project, f.quiet, f.not_on_main, f.words.len()), (vec!["web".to_string()], true, true, 2));
+        assert_eq!(chips("project:web hello is:live"), vec!["project:web", "is:live"]);
+        assert_eq!(toggle_word("project:web", "is:live"), "project:web is:live");
+        assert_eq!(toggle_word("project:web is:live", "project:web"), "is:live");
+    }
+
+    #[test]
+    fn the_inbox_runs_permission_waiting_review_proposed_not_on_main() {
+        let mut merged_not = ticket(7, "done", "/p", &[]);
+        merged_not.branch = Some("b".into());
+        merged_not.merged = Some(false);
+        let mut m = model(vec![ticket(5, "review", "/p", &[]), ticket(6, "review", "/p", &[]), ticket(8, "todo", "/p", &[6]), ticket(3, "proposed", "/p", &[]), ticket(4, "waiting", "/p", &[]), merged_not], &["/p"]);
+        let ask: Approval = serde_json::from_value(serde_json::json!({"id": 1, "session": 2, "member": "m", "ticket": 9, "tool": "Bash", "action": "ls", "reason": null})).unwrap();
+        m.approvals.push(ask);
+        let rows = inbox(&m, &Filter::default());
+        assert_eq!(headings(&rows), vec!["허락 요청", "내 차례", "검토", "제안", "병합 안 됨"]);
+        assert_eq!(items(&rows)[0], Need::Permission(1));
+        // The review that unblocks something comes first.
+        assert_eq!(ids(&rows), vec![4, 6, 5, 3, 7]);
+        assert_eq!(m.needs_you_count(), 6);
+    }
+
+    #[test]
+    fn after_an_action_the_next_in_the_section_then_the_next_section_comes_up() {
+        let list = [Need::Ticket(1), Need::Ticket(2), Need::Ticket(3)];
+        assert_eq!(advance(&list, &[Need::Ticket(1), Need::Ticket(3)], Need::Ticket(2)), Some(Need::Ticket(3)));
+        assert_eq!(advance(&list, &[Need::Ticket(1), Need::Ticket(2)], Need::Ticket(3)), Some(Need::Ticket(2)), "the last: the one before");
+        assert_eq!(advance(&list, &[], Need::Ticket(1)), None);
+        // Acting hides it from the inbox until the daemon says it changed.
+        let mut m = model(vec![ticket(1, "review", "/p", &[]), ticket(2, "review", "/p", &[])], &["/p"]);
+        let before = items(&inbox(&m, &Filter::default()));
+        m.act_on(1);
+        let after = items(&inbox(&m, &Filter::default()));
+        assert_eq!(advance(&before, &after, Need::Ticket(1)), Some(Need::Ticket(2)));
+        m.unact(1);
+        assert_eq!(items(&inbox(&m, &Filter::default())).len(), 2, "taken back: it waits again");
     }
 
     #[test]
     fn the_pick_stays_while_it_shows_and_moves_with_the_arrows() {
         let m = model((1..=3).map(|i| ticket(i, "todo", "/p", &[])).collect(), &["/p"]);
-        let mut view = View::default();
-        assert_eq!(selected(&m, &view).map(|t| t.id), Some(1));
-        step(&m, &mut view, 1);
-        step(&m, &mut view, 1);
-        step(&m, &mut view, 1);
-        assert_eq!(selected(&m, &view).map(|t| t.id), Some(3), "stops at the end");
-        view.selected = Some(99);
-        assert_eq!(selected(&m, &view).map(|t| t.id), Some(1), "a ticket that went away falls back to the first");
+        let mut view = View { menu: Menu::All, ..Default::default() };
+        let rows = rows(&m, &view, &[]);
+        assert_eq!(selected(&rows, &view), Some(Need::Ticket(1)));
+        for _ in 0..3 {
+            step(&rows, &mut view, 1);
+        }
+        assert_eq!(selected(&rows, &view), Some(Need::Ticket(3)), "stops at the end");
+        view.selected = Some(Need::Ticket(99));
+        assert_eq!(selected(&rows, &view), Some(Need::Ticket(1)), "one that went away falls back to the first");
     }
 
     #[test]
-    fn accepting_a_review_brings_up_the_next_one_or_the_one_before() {
-        let m = model(vec![ticket(3, "review", "/p", &[]), ticket(4, "review", "/p", &[]), ticket(5, "review", "/p", &[])], &["/p"]);
-        let mut view = View::default();
-        next_review_after(&m, &mut view, 4);
-        assert_eq!(view.selected, Some(5));
-        next_review_after(&m, &mut view, 5);
-        assert_eq!(view.selected, Some(4));
+    fn yes_lands_work_the_projects_way() {
+        let mut review = ticket(1, "review", "/p", &[]);
+        review.branch = Some("b".into());
+        let accept = Command::Accept { squad: "s".into(), ticket: 1 };
+        assert_eq!(yes_commands("s", &review, Some(MergeWay::Push), ""), vec![accept.clone(), Command::Merge { squad: "s".into(), ticket: 1, push: true }]);
+        assert_eq!(yes_commands("s", &review, Some(MergeWay::Merge), ""), vec![accept.clone(), Command::Merge { squad: "s".into(), ticket: 1, push: false }]);
+        assert_eq!(yes_commands("s", &review, Some(MergeWay::Branch), ""), vec![accept]);
+        assert!(needs_way(&review));
+        let waiting = ticket(2, "waiting", "/p", &[]);
+        assert_eq!(yes_commands("s", &waiting, None, "did it"), vec![Command::Resume { squad: "s".into(), ticket: 2, note: "did it".into() }]);
+        assert!(!needs_way(&waiting));
+        let mut task = ticket(3, "review", "/p", &[]);
+        task.kind = TicketKind::Task;
+        task.branch = Some("b".into());
+        assert!(!needs_way(&task), "a task's work goes into the squad's folder unasked");
+        assert_eq!(MergeWay::parse("merge"), Some(MergeWay::Merge));
     }
 
     #[test]
-    fn the_state_column_says_what_it_waits_for() {
-        assert_eq!(state_text(&ticket(1, "todo", "/p", &[53, 22])), "after T-53, T-22");
-        assert_eq!(state_text(&ticket(1, "review", "/p", &[])), "내 검토 대기");
-        let mut t = ticket(1, "done", "/p", &[]);
-        t.branch = Some("b".into());
-        t.merged = Some(false);
-        assert_eq!(state_text(&t), "main에 없음");
+    fn an_action_waits_five_seconds_and_can_be_taken_back() {
+        let t0 = Instant::now();
+        let mut undo = Undo::default();
+        undo.push(1, "T-1".into(), vec![Command::Cancel { squad: "s".into(), ticket: 1 }], t0);
+        undo.push(2, "T-2".into(), vec![Command::Cancel { squad: "s".into(), ticket: 2 }], t0 + Duration::from_secs(2));
+        assert_eq!(Undo::seconds_left(undo.latest().unwrap(), t0 + Duration::from_secs(2)), 5);
+        assert_eq!(Undo::seconds_left(undo.latest().unwrap(), t0 + Duration::from_millis(2500)), 5, "rounded up");
+        assert!(undo.take_due(t0 + Duration::from_secs(4)).is_empty());
+        let due = undo.take_due(t0 + Duration::from_secs(5));
+        assert_eq!(due.iter().map(|p| p.ticket).collect::<Vec<_>>(), vec![1]);
+        assert_eq!(undo.undo().map(|p| p.ticket), Some(2), "U takes back the latest");
+        assert!(undo.take_due(t0 + Duration::from_secs(60)).is_empty(), "taken back: never sent");
     }
 
     #[test]
-    fn a_waiting_note_becomes_a_checklist() {
+    fn a_waiting_note_becomes_a_checklist_and_its_first_need() {
         let note = "Needs your part:\n- [ ] Create the API key\n- add it to .env.local\n2. restart\n\nthanks";
         assert_eq!(checklist(note), vec!["Create the API key", "add it to .env.local", "restart"]);
         assert!(checklist("nothing listed").is_empty());
+        let mut t = ticket(1, "waiting", "/p", &[]);
+        t.note = Some(note.into());
+        assert_eq!(first_need(&t).as_deref(), Some("Create the API key"));
+    }
+
+    #[test]
+    fn saved_views_list_with_their_words_and_grouping() {
+        let mut m = model(vec![ticket(1, "todo", "/p", &[2]), ticket(2, "in_progress", "/p", &[]), ticket(3, "todo", "/p", &[])], &["/p"]);
+        m.unix = 1000;
+        let views = builtin_views();
+        let view = View { menu: Menu::View(0), ..Default::default() };
+        assert_eq!(ids(&rows(&m, &view, &views)), vec![1], "막힌 일");
+        assert_eq!(effective(&view, &views).1, GroupBy::Deps);
+        assert_eq!(GroupBy::parse("member"), GroupBy::Member);
     }
 }
