@@ -1736,12 +1736,33 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         motion::hover_fill(tip(b, p, label, Some("⌘.")), "stop-fill", p.wash, false)
     };
 
+    // How wide each would be, to leave out the least needed when the bar is narrow.
+    let mut wants: Vec<(Slot, f32)> = vec![(Slot::Fixed, CONTROL)];
+    if mic.is_some() {
+        wants.push((Slot::Fixed, CONTROL));
+    }
+    let to_text = match &project {
+        Some(project) => format!("{to_label} · {project}"),
+        None => to_label.clone(),
+    };
+    wants.push((Slot::Fixed, pill_width(&to_text)));
+    if member.is_some() {
+        wants.push((Slot::Mode, pill_width(model.mode.label())));
+    }
+    if let Some(used) = member.and_then(|m| m.context) {
+        wants.push((Slot::Ring, 8. + ICON_SM + 6. + text_width(&format!("{used}%")) + 8.));
+    }
+    if let Some(m) = member.and_then(|m| m.model.clone()) {
+        wants.push((Slot::Model, pill_width(&short_model(&m))));
+    }
+    if member.is_some() {
+        wants.push((Slot::Effort, pill_width(t!("composer.effort_short"))));
+    }
+
     let mut right: Vec<AnyElement> = Vec::new();
-    right.extend(ring.map(IntoElement::into_any_element));
-    right.extend(model_pill.map(IntoElement::into_any_element));
-    right.extend(effort_pill.map(IntoElement::into_any_element));
     if working && has_words && steerable {
         right.push(quiet("memo", t!("composer.memo").into(), t!("composer.aria_memo").into(), t!("composer.tip_memo"), "⇥", |this, window, cx| this.send_as(true, window, cx), cx).into_any_element());
+        wants.push((Slot::Fixed, 24. + text_width(t!("composer.memo"))));
     }
     if working && has_any {
         // Words for a member at work: Send steers (or leaves a memo); Stop stays in reach.
@@ -1754,17 +1775,76 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         let can = has_any && !composer.strip.busy();
         right.push(send_button("send", Icon::ArrowUp, t!("composer.tip_send"), Some("⏎"), can, |this, window, cx| this.send(window, cx), cx).into_any_element());
     }
+    wants.extend(std::iter::repeat_n((Slot::Fixed, CONTROL), right.len() - usize::from(working && has_words && steerable)));
 
-    h_flex()
-        .px(px(INSET))
-        .pt_1()
-        .pb(px(INSET - 2.))
-        .gap_1()
-        .items_center()
-        .child(plus)
-        .children(mic)
-        .child(h_flex().flex_1().min_w_0().overflow_hidden().gap_1().items_center().child(to).children(mode_pill))
-        .child(h_flex().flex_none().gap_1().items_center().children(right))
+    let plus = plus.into_any_element();
+    let mic = mic.map(IntoElement::into_any_element);
+    let to = to.into_any_element();
+    let mode_pill = mode_pill.map(IntoElement::into_any_element);
+    let ring = ring.map(IntoElement::into_any_element);
+    let model_pill = model_pill.map(IntoElement::into_any_element);
+    let effort_pill = effort_pill.map(IntoElement::into_any_element);
+    // The row is one control tall whatever it holds, so it can measure itself
+    // first and leave out what doesn't fit — never a control cut in half.
+    div().px(px(INSET)).pt_1().pb(px(INSET - 2.)).child(container_query(move |size, _, _| {
+        let shown = fit(f32::from(size.width), &wants);
+        let keep = |slot: Slot| shown.contains(&slot);
+        h_flex()
+            .size_full()
+            .gap_1()
+            .items_center()
+            .child(plus)
+            .children(mic)
+            .child(h_flex().flex_1().min_w_0().overflow_hidden().gap_1().items_center().child(to).children(mode_pill.filter(|_| keep(Slot::Mode))))
+            .child(
+                h_flex()
+                    .flex_none()
+                    .gap_1()
+                    .items_center()
+                    .children(ring.filter(|_| keep(Slot::Ring)))
+                    .children(model_pill.filter(|_| keep(Slot::Model)))
+                    .children(effort_pill.filter(|_| keep(Slot::Effort)))
+                    .children(right),
+            )
+    }).h(px(CONTROL)))
+}
+
+/// The bar's controls that can be left out when it is narrow, least needed first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Slot {
+    /// Always shown: "+", dictation, who to, Send/Stop.
+    Fixed,
+    Mode,
+    Effort,
+    Ring,
+    Model,
+}
+
+/// The optional controls that fit in `width`, dropping the mode first, then
+/// the effort, the context ring, the model. Controls are `gap_1` (4) apart.
+fn fit(width: f32, wants: &[(Slot, f32)]) -> Vec<Slot> {
+    let mut shown: Vec<Slot> = wants.iter().map(|(s, _)| *s).filter(|s| *s != Slot::Fixed).collect();
+    let need = |shown: &[Slot]| {
+        let items: Vec<f32> = wants.iter().filter(|(s, _)| *s == Slot::Fixed || shown.contains(s)).map(|(_, w)| *w).collect();
+        items.iter().sum::<f32>() + 4. * items.len().saturating_sub(1) as f32
+    };
+    for drop in [Slot::Mode, Slot::Effort, Slot::Ring, Slot::Model] {
+        if need(&shown) <= width {
+            break;
+        }
+        shown.retain(|s| *s != drop);
+    }
+    shown
+}
+
+/// About how wide `text` is at 12–13 points: Hangul and CJK wider than Latin.
+fn text_width(text: &str) -> f32 {
+    text.chars().map(|c| if c.is_ascii() { 7. } else { 13. }).sum()
+}
+
+/// A picker's width: padding, words, chevron.
+fn pill_width(label: &str) -> f32 {
+    8. + text_width(label) + 4. + ICON_SM + 6.
 }
 
 /// How full the context is, as a ring: 14 points, the used part bright.
@@ -2190,7 +2270,7 @@ pub fn drop_overlay(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoE
                             .border_1()
                             .border_color(p.hair)
                             .shadow_lg()
-                            .child(div().text_size(px(26.)).text_color(p.accent).child("＋"))
+                            .child(div().size(px(44.)).flex().items_center().justify_center().rounded_full().bg(p.accent_bg).child(icon(Icon::Paperclip, 22., p.accent)))
                             .child(div().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).text_center().child(title))
                             .children(refused)
                             .when(preview.refused.len() > 3, |d| d.child(div().text_size(px(SMALL)).text_color(p.muted).child(t!("composer.drop_more_refused", n = preview.refused.len() - 3))))
@@ -2371,6 +2451,18 @@ mod tests {
         for kind in [MenuKind::Model, MenuKind::Effort, MenuKind::Context] {
             assert_eq!(kind.align(), Align::End, "{kind:?}");
         }
+    }
+
+    #[test]
+    fn a_narrow_bar_leaves_out_whole_controls_least_needed_first() {
+        use super::{Slot, fit};
+        let wants = [(Slot::Fixed, 28.), (Slot::Fixed, 70.), (Slot::Mode, 60.), (Slot::Ring, 50.), (Slot::Model, 80.), (Slot::Effort, 50.), (Slot::Fixed, 28.)];
+        // 366 points of controls and six 4-point gaps.
+        assert_eq!(fit(400., &wants), [Slot::Mode, Slot::Ring, Slot::Model, Slot::Effort]);
+        assert_eq!(fit(380., &wants), [Slot::Ring, Slot::Model, Slot::Effort], "the mode goes first");
+        assert_eq!(fit(300., &wants), [Slot::Ring, Slot::Model], "then the effort");
+        assert_eq!(fit(240., &wants), [Slot::Model], "then the ring");
+        assert_eq!(fit(100., &wants), [], "the fixed controls always stay");
     }
 
     #[test]
