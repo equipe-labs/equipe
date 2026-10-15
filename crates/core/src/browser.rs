@@ -181,7 +181,7 @@ pub type SharedHost = std::sync::Arc<std::sync::Mutex<Host>>;
 
 /// equipe's one Chrome for every member: one profile the person signs in to
 /// once, Google included, and a lane per member — an MCP endpoint that sees
-/// only that member's windows. See `assets/browser-host.cjs`.
+/// only that member's tabs. See `assets/browser-host.cjs`.
 pub struct Host {
     child: std::process::Child,
     stdin: std::process::ChildStdin,
@@ -197,10 +197,46 @@ pub fn host_profile(home: &Path) -> PathBuf {
     home.join("browser").join("chrome")
 }
 
+/// What the browser host says, besides pictures (`assets/browser-host.cjs`).
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HostEvent {
+    Ready,
+    /// A lane's tabs (`lane` `""`: the person's own).
+    Tabs {
+        lane: String,
+        #[serde(default)]
+        member: Option<String>,
+        #[serde(default)]
+        color: Option<String>,
+        #[serde(default)]
+        shown: bool,
+        pages: Vec<equipe_protocol::BrowserPage>,
+        /// The tab its member's tools last worked in.
+        #[serde(default)]
+        agent: Option<u64>,
+    },
+    /// Who has a lane in hand: `"person"`, or the member again.
+    Control { lane: String, by: Option<String> },
+    Dialog {
+        page: u64,
+        lane: String,
+        kind: String,
+        message: String,
+        #[serde(default)]
+        default: Option<String>,
+    },
+    DialogClosed { page: u64 },
+    /// The host is gone (its Chrome closed, or it failed).
+    #[serde(skip)]
+    Exited,
+}
+
 impl Host {
     /// Start the host: its Chrome comes up with the shared profile, taking up
-    /// the sign-ins members' own browsers kept.
-    pub fn start(npx: &Path, home: &Path) -> std::io::Result<SharedHost> {
+    /// the sign-ins members' own browsers kept. What it says comes on
+    /// `events`; its pictures go to `hub`.
+    pub fn start(npx: &Path, home: &Path, hub: &std::sync::Arc<Hub>, events: tokio::sync::mpsc::UnboundedSender<HostEvent>) -> std::io::Result<SharedHost> {
         use std::os::unix::process::CommandExt as _;
         let state = ensure_state(home);
         let script = home.join("browser").join("browser-host.cjs");
@@ -217,11 +253,17 @@ impl Host {
             .arg(&profile)
             .arg(&state)
             .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
             .stderr(log)
             .process_group(0)
             .spawn()?;
         let stdin = child.stdin.take().expect("stdin is piped");
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let hub = hub.clone();
+        std::thread::Builder::new().name("equipe-browser-host".into()).spawn(move || {
+            read_host(stdout, &hub, &events);
+            let _ = events.send(HostEvent::Exited);
+        })?;
         Ok(std::sync::Arc::new(std::sync::Mutex::new(Host { child, stdin, lanes: Default::default() })))
     }
 
@@ -235,15 +277,214 @@ impl Host {
         let _ = self.stdin.flush();
     }
 
-    /// Open a window in the host's Chrome for the person, at `url`.
+    /// Open a tab in the host's Chrome for the person, at `url`, on screen.
     pub fn person(&mut self, url: &str) {
         self.send(&json!({ "op": "person", "url": url }));
+    }
+
+    /// Any other request (`assets/browser-host.cjs` lists them).
+    pub fn op(&mut self, request: &Value) {
+        self.send(request);
+    }
+}
+
+/// The host's standard output, until it ends: messages and frames.
+fn read_host(mut out: impl std::io::Read, hub: &Hub, events: &tokio::sync::mpsc::UnboundedSender<HostEvent>) {
+    use equipe_protocol::stream;
+    let mut decoder = stream::Decoder::default();
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        let n = match out.read(&mut buf) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => n,
+        };
+        decoder.push(&buf[..n]);
+        loop {
+            match decoder.message() {
+                Ok(Some((stream::JSON, payload))) => {
+                    if let Ok(event) = serde_json::from_slice::<HostEvent>(&payload)
+                        && events.send(event).is_err()
+                    {
+                        return;
+                    }
+                }
+                Ok(Some((stream::FRAME, payload))) => {
+                    if let Some((header, jpeg)) = stream::parse_frame(&payload) {
+                        hub.put(header, jpeg.to_vec());
+                    }
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                // Out of step with the host: nothing after this can be read.
+                Err(_) => return,
+            }
+        }
     }
 }
 
 impl Drop for Host {
     fn drop(&mut self) {
         let _ = std::process::Command::new("kill").args(["-TERM", &format!("-{}", self.child.id())]).status();
+    }
+}
+
+/// A picture of a watched page, as the host sent it.
+#[derive(Debug)]
+pub struct Frame {
+    pub header: equipe_protocol::stream::FrameHeader,
+    pub jpeg: Vec<u8>,
+}
+
+/// What a watcher wants of a page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Want {
+    pub page: u64,
+    pub fps: u32,
+    pub max_w: u32,
+    pub max_h: u32,
+    pub quality: u8,
+}
+
+/// The pictures of the shared Chrome's pages, for whoever watches them: the
+/// browser panels' streams and the terminal's watch. The host draws a page
+/// only while someone watches it — at the most any watcher asks — and each
+/// page keeps only its newest frame.
+pub struct Hub {
+    inner: std::sync::Mutex<HubInner>,
+    /// Bumped with every frame: watchers wake on it and look at their page.
+    tick: tokio::sync::watch::Sender<u64>,
+}
+
+#[derive(Default)]
+struct HubInner {
+    host: Option<SharedHost>,
+    frames: std::collections::HashMap<u64, std::sync::Arc<Frame>>,
+    watchers: std::collections::HashMap<u64, Want>,
+    /// What the host was asked to draw, by page.
+    asked: std::collections::HashMap<u64, Want>,
+    next: u64,
+    /// Browser panels connected now.
+    panels: usize,
+}
+
+/// What the host should be drawing: for each watched page, the most any
+/// watcher of it wants.
+fn wanted(watchers: impl IntoIterator<Item = Want>) -> std::collections::HashMap<u64, Want> {
+    let mut out: std::collections::HashMap<u64, Want> = std::collections::HashMap::new();
+    for w in watchers {
+        out.entry(w.page)
+            .and_modify(|a| {
+                a.fps = a.fps.max(w.fps);
+                a.max_w = a.max_w.max(w.max_w);
+                a.max_h = a.max_h.max(w.max_h);
+                a.quality = a.quality.max(w.quality);
+            })
+            .or_insert(w);
+    }
+    out
+}
+
+impl Hub {
+    pub fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self { inner: Default::default(), tick: tokio::sync::watch::Sender::new(0) })
+    }
+
+    /// The host frames come from now (`None`: gone). What was watched is asked
+    /// of the new one.
+    pub fn set_host(&self, host: Option<SharedHost>) {
+        let mut inner = self.inner.lock().expect("hub");
+        inner.host = host;
+        inner.frames.clear();
+        inner.asked.clear();
+        Self::apply(&mut inner);
+    }
+
+    /// A request for the host; `false` when there is none.
+    pub fn op(&self, request: &Value) -> bool {
+        let host = self.inner.lock().expect("hub").host.clone();
+        match host {
+            Some(host) => host.lock().map(|mut h| h.op(request)).is_ok(),
+            None => false,
+        }
+    }
+
+    /// A new watcher's id.
+    pub fn watcher(&self) -> u64 {
+        let mut inner = self.inner.lock().expect("hub");
+        inner.next += 1;
+        inner.next
+    }
+
+    /// `watcher` watches `want.page` from now (instead of anything before).
+    pub fn watch(&self, watcher: u64, want: Want) {
+        let mut inner = self.inner.lock().expect("hub");
+        inner.watchers.insert(watcher, want);
+        Self::apply(&mut inner);
+    }
+
+    pub fn unwatch(&self, watcher: u64) {
+        let mut inner = self.inner.lock().expect("hub");
+        if inner.watchers.remove(&watcher).is_some() {
+            Self::apply(&mut inner);
+        }
+    }
+
+    /// Tell the host what changed in what it should draw.
+    fn apply(inner: &mut HubInner) {
+        let now = wanted(inner.watchers.values().copied());
+        let mut requests = Vec::new();
+        for (page, want) in &now {
+            if inner.asked.get(page) != Some(want) {
+                requests.push(json!({ "op": "watch", "page": page, "maxW": want.max_w, "maxH": want.max_h, "quality": want.quality, "fps": want.fps }));
+            }
+        }
+        for page in inner.asked.keys().filter(|p| !now.contains_key(p)) {
+            requests.push(json!({ "op": "unwatch", "page": page }));
+        }
+        inner.frames.retain(|page, _| now.contains_key(page));
+        inner.asked = now;
+        if let Some(host) = &inner.host
+            && let Ok(mut host) = host.lock()
+        {
+            for request in &requests {
+                host.op(request);
+            }
+        }
+    }
+
+    fn put(&self, header: equipe_protocol::stream::FrameHeader, jpeg: Vec<u8>) {
+        let page = header.page;
+        {
+            let mut inner = self.inner.lock().expect("hub");
+            // Only pages still watched keep a picture.
+            if !inner.asked.contains_key(&page) {
+                return;
+            }
+            inner.frames.insert(page, std::sync::Arc::new(Frame { header, jpeg }));
+        }
+        self.tick.send_modify(|n| *n += 1);
+    }
+
+    /// The newest frame of `page`.
+    pub fn latest(&self, page: u64) -> Option<std::sync::Arc<Frame>> {
+        self.inner.lock().expect("hub").frames.get(&page).cloned()
+    }
+
+    /// Wakes with every frame.
+    pub fn frames(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.tick.subscribe()
+    }
+
+    /// A browser panel connected (`true`) or left.
+    pub fn panel(&self, connected: bool) {
+        let mut inner = self.inner.lock().expect("hub");
+        inner.panels = if connected { inner.panels + 1 } else { inner.panels.saturating_sub(1) };
+    }
+
+    /// Whether a screen with a browser panel is attached: then a member's
+    /// browser the person is asked into shows there, not on the Mac's screen.
+    pub fn has_panel(&self) -> bool {
+        self.inner.lock().expect("hub").panels > 0
     }
 }
 
@@ -565,6 +806,45 @@ mod tests {
         set_at_once(&home, 10).unwrap();
         assert_eq!(at_once(&home), 10);
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    fn header(page: u64, seq: u64) -> equipe_protocol::stream::FrameHeader {
+        equipe_protocol::stream::FrameHeader { page, seq, w: 2, h: 1, css_w: 2., css_h: 1., sx: 0., sy: 0., top: 0. }
+    }
+
+    #[test]
+    fn a_page_is_drawn_at_the_most_any_watcher_wants() {
+        let want = |page, fps, max_w, quality| Want { page, fps, max_w, max_h: max_w, quality };
+        let all = wanted([want(1, 5, 800, 50), want(1, 30, 600, 70), want(2, 2, 1280, 60)]);
+        assert_eq!(all[&1], Want { page: 1, fps: 30, max_w: 800, max_h: 800, quality: 70 });
+        assert_eq!(all[&2], want(2, 2, 1280, 60));
+        assert!(wanted([]).is_empty());
+    }
+
+    #[test]
+    fn each_watched_page_keeps_only_its_newest_frame_and_unwatched_pages_none() {
+        let hub = Hub::new();
+        let woke = hub.frames();
+        hub.put(header(1, 1), vec![1]);
+        assert!(hub.latest(1).is_none(), "nobody watches page 1 yet");
+        let a = hub.watcher();
+        let b = hub.watcher();
+        hub.watch(a, Want { page: 1, fps: 30, max_w: 800, max_h: 800, quality: 70 });
+        hub.watch(b, Want { page: 1, fps: 5, max_w: 800, max_h: 800, quality: 50 });
+        hub.put(header(1, 2), vec![2]);
+        hub.put(header(1, 3), vec![3]);
+        assert!(woke.has_changed().unwrap(), "watchers wake on a frame");
+        assert_eq!(hub.latest(1).map(|f| (f.header.seq, f.jpeg.clone())), Some((3, vec![3])));
+        hub.unwatch(a);
+        assert!(hub.latest(1).is_some(), "still watched by the other");
+        hub.unwatch(b);
+        assert!(hub.latest(1).is_none(), "nobody watches it: its frame goes");
+        assert!(!hub.has_panel());
+        hub.panel(true);
+        assert!(hub.has_panel());
+        hub.panel(false);
+        hub.panel(false);
+        assert!(!hub.has_panel());
     }
 
     #[test]

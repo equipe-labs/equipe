@@ -90,10 +90,13 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
                 break;
             }
         }
+        writer
     });
 
     let mut lines = BufReader::new(reader).lines();
     let mut forwarder: Option<tokio::task::JoinHandle<()>> = None;
+    // Set when the connection becomes a browser panel's stream.
+    let mut stream: Option<(std::sync::Arc<crate::browser::Hub>, u8)> = None;
     while let Ok(Some(line)) = lines.next_line().await {
         let Ok(message) = Message::from_line(&line) else {
             continue;
@@ -167,6 +170,15 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
                 let url: String = message.params_as().unwrap_or_default();
                 let _ = out_tx.send(Message::response(id, core.person_window(url).await));
             }
+            (Some(rpc::BROWSER_STREAM), Some(id)) => {
+                let hello = message.params_as::<equipe_protocol::stream::StreamHello>().unwrap_or_default();
+                let Some(hub) = core.browser_hub().await else {
+                    break;
+                };
+                let _ = out_tx.send(Message::response(id, true));
+                stream = Some((hub, hello.quality.unwrap_or(70).clamp(10, 95)));
+                break;
+            }
             (Some(rpc::SHUTDOWN), Some(id)) => {
                 let (ack_tx, ack_rx) = oneshot::channel();
                 let _ = stop.send(ack_tx);
@@ -185,7 +197,98 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
         forwarder.abort();
     }
     drop(out_tx);
-    let _ = writer_task.await;
+    let writer = writer_task.await;
+    if let (Some((hub, quality)), Ok(writer)) = (stream, writer) {
+        serve_stream(lines.into_inner(), writer, hub, quality).await;
+    }
+}
+
+/// A browser panel's stream (`equipe_protocol::stream`): frames of the page it
+/// watches, as fast as it draws them and no faster than it asks; its input,
+/// straight to the page.
+async fn serve_stream<R>(mut reader: R, mut writer: OwnedWriteHalf, hub: std::sync::Arc<crate::browser::Hub>, quality: u8)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    use equipe_protocol::stream::{self, Pacer, StreamIn};
+    use tokio::io::AsyncReadExt as _;
+
+    hub.panel(true);
+    let watcher = hub.watcher();
+    let mut frames = hub.frames();
+    let (in_tx, mut incoming) = mpsc::unbounded_channel::<StreamIn>();
+    let read = tokio::spawn(async move {
+        let mut decoder = stream::Decoder::default();
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = match reader.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => n,
+            };
+            decoder.push(&buf[..n]);
+            loop {
+                match decoder.message() {
+                    Ok(Some((stream::JSON, payload))) => {
+                        if let Ok(message) = serde_json::from_slice::<StreamIn>(&payload)
+                            && in_tx.send(message).is_err()
+                        {
+                            return;
+                        }
+                    }
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(_) => return,
+                }
+            }
+        }
+    });
+    let mut pacer = Pacer::new(30);
+    let mut watching: Option<u64> = None;
+    let mut wake: Option<tokio::time::Instant> = None;
+    loop {
+        let nap = async {
+            match wake {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            message = incoming.recv() => match message {
+                None => break,
+                Some(StreamIn::Watch { page, fps, max_w, max_h }) => {
+                    watching = Some(page);
+                    pacer.watch(fps);
+                    hub.watch(watcher, crate::browser::Want { page, fps: fps.clamp(1, 60), max_w: max_w.clamp(64, 4096), max_h: max_h.clamp(64, 4096), quality });
+                }
+                Some(StreamIn::Unwatch) => {
+                    watching = None;
+                    hub.unwatch(watcher);
+                }
+                Some(StreamIn::Credit { n }) => pacer.credit(n),
+                Some(StreamIn::Input { page, ev }) => {
+                    hub.op(&serde_json::json!({ "op": "input", "page": page, "ev": ev }));
+                }
+            },
+            changed = frames.changed() => if changed.is_err() { break },
+            () = nap => {}
+        }
+        wake = None;
+        let Some(page) = watching else { continue };
+        let Some(frame) = hub.latest(page) else { continue };
+        match pacer.take(page, frame.header.seq, std::time::Instant::now()) {
+            Ok(true) => {
+                let message = stream::encode(stream::FRAME, &stream::frame_payload(&frame.header, &frame.jpeg));
+                if writer.write_all(&message).await.is_err() {
+                    break;
+                }
+            }
+            Ok(false) => {}
+            Err(wait) => wake = Some(tokio::time::Instant::now() + wait),
+        }
+    }
+    hub.unwatch(watcher);
+    hub.panel(false);
+    read.abort();
 }
 
 fn squads(home: &Path) -> rpc::Squads {

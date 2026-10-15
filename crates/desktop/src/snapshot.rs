@@ -7,7 +7,7 @@
 //! `memo:<text>` (send it as a memo, as Tab does) · `type:<text>` (type, don't send) · `key:<y|a|n|o>` (answer a request) · `esc` (stop the member) · `up`/`down`
 //! (history) · `project:<name|all>` · `select:<member>` · `board` · `chat` ·
 //! `bkey:<key>` (a board key) · `pick:<n>` (a ticket) · `find:<words>` · `note:<text>` (in the open question's box) · `submit` (its main button) · `folds` · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
-//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<image file>` · `paste` (⌘V with what the clipboard holds) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
+//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `browser` (the browser panel, ⌘⇧B) · `bpick:<n>` (its nth tab) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `bopen:<url>` (a tab of the person's own) · `attach:<image file>` · `paste` (⌘V with what the clipboard holds) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 
 use std::time::Duration;
@@ -89,6 +89,48 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     eprintln!("paste: images taken = {taken}");
                 }),
                 "retry" => shell.update(cx, |shell, cx| shell.retry(cx)),
+                "browser" => shell.update(cx, |shell, cx| shell.toggle_browser(window, cx)),
+                "bopen" => {
+                    let panel = shell.read(cx).browser.clone();
+                    panel.update(cx, |b, cx| b.open_tab(&arg, cx));
+                }
+                "bpick" => {
+                    let panel = shell.read(cx).browser.clone();
+                    panel.update(cx, |b, cx| b.pick(arg.parse().unwrap_or(1), window, cx));
+                }
+                "bclick" => {
+                    // A real press and release, where `fx,fy` (fractions) fall on the page's picture.
+                    let panel = shell.read(cx).browser.clone();
+                    let (fx, fy) = arg.split_once(',').map(|(x, y)| (x.parse().unwrap_or(0.5), y.parse().unwrap_or(0.5))).unwrap_or((0.5f32, 0.5f32));
+                    match panel.read(cx).picture() {
+                        Some(r) => {
+                            let at = point(r.origin.x + r.size.width * fx, r.origin.y + r.size.height * fy);
+                            let down = MouseDownEvent { button: MouseButton::Left, position: at, modifiers: Modifiers::default(), click_count: 1, first_mouse: false };
+                            window.dispatch_event(PlatformInput::MouseDown(down), cx);
+                            let up = MouseUpEvent { button: MouseButton::Left, position: at, modifiers: Modifiers::default(), click_count: 1 };
+                            window.dispatch_event(PlatformInput::MouseUp(up), cx);
+                        }
+                        None => eprintln!("bclick: no picture yet"),
+                    }
+                }
+                "bkeys" => {
+                    // Typed key by key, as a keyboard would: `~` is Enter.
+                    for c in arg.chars() {
+                        let key = match c {
+                            '~' => "enter".to_owned(),
+                            ' ' => "space".to_owned(),
+                            c => c.to_string(),
+                        };
+                        if let Ok(stroke) = Keystroke::parse(&key) {
+                            window.dispatch_keystroke(stroke, cx);
+                        }
+                    }
+                }
+                "bime" => {
+                    let panel = shell.read(cx).browser.clone();
+                    let steps: Vec<&str> = arg.split('|').collect();
+                    panel.update(cx, |b, cx| b.compose(&steps, window, cx));
+                }
                 other => eprintln!("script: no step {other}"),
             });
             // Let the window draw what the step did.

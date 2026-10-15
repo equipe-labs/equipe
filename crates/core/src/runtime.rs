@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use equipe_protocol::rpc::{ToolCall, ToolResult};
 use equipe_protocol::{
-    Access, Approval, Command, Decision, Engine, Entry, Event, Member, MemberRef, Mode, SessionId, SessionInfo,
+    Access, Approval, BrowserNavAction, Command, Decision, Engine, Entry, Event, Member, MemberRef, Mode, SessionId, SessionInfo,
     Estimate, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
 };
 use equipe_providers::claude_code::{self, Activity};
@@ -133,6 +133,7 @@ enum Request {
     DesktopGate(Box<desktop_gate::Check>, oneshot::Sender<ToolResult>),
     Busy(oneshot::Sender<equipe_protocol::rpc::Busy>),
     PersonWindow(String, oneshot::Sender<bool>),
+    BrowserHub(oneshot::Sender<std::sync::Arc<browser::Hub>>),
     Desktop(DesktopRequest),
     Shutdown(oneshot::Sender<()>),
 }
@@ -211,6 +212,13 @@ impl Handle {
         rx.await.unwrap_or(false)
     }
 
+    /// The shared Chrome's pictures and input, for a browser panel's stream.
+    pub async fn browser_hub(&self) -> Option<std::sync::Arc<browser::Hub>> {
+        let (tx, rx) = oneshot::channel();
+        self.requests.send(Request::BrowserHub(tx)).ok()?;
+        rx.await.ok()
+    }
+
     /// Who is mid-turn, and how many requests wait for the person.
     pub async fn busy(&self) -> equipe_protocol::rpc::Busy {
         let (tx, rx) = oneshot::channel();
@@ -232,6 +240,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let (req_tx, req_rx) = mpsc::unbounded_channel();
     let (evt_tx, evt_rx) = mpsc::unbounded_channel();
     let (internal_tx, internal_rx) = mpsc::unbounded_channel();
+    let (host_tx, host_rx) = mpsc::unbounded_channel();
     let mut config = config;
     let mac = std::mem::replace(&mut config.mac, Box::new(desktop::ThisMac));
     let mut runtime = Runtime {
@@ -249,8 +258,15 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         builds_trimmed: None,
         browsers: HashMap::new(),
         host: None,
+        hub: browser::Hub::new(),
+        host_events: host_tx,
+        tabs: HashMap::new(),
+        asked_in: HashMap::new(),
+        held: HashMap::new(),
         watching: HashMap::new(),
         framing: std::collections::HashSet::new(),
+        frame_watchers: HashMap::new(),
+        frame_sent: HashMap::new(),
         last_url: HashMap::new(),
         show_url: HashMap::new(),
         plan: None,
@@ -261,7 +277,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         runtime.prune();
         memos = runtime.resume_work();
     }
-    tokio::spawn(run(runtime, req_rx, internal_rx));
+    tokio::spawn(run(runtime, req_rx, internal_rx, host_rx));
     let handle = Handle { requests: req_tx };
     // Memos for a turn the restart ended go in first, as if just sent.
     for (session, text) in memos {
@@ -490,10 +506,24 @@ struct Runtime {
     browsers: HashMap<(String, String), browser::Running>,
     /// The one Chrome members' browsers are lanes of, once started.
     host: Option<browser::SharedHost>,
+    /// Its pages' pictures, for browser panels; and where it speaks to us.
+    hub: std::sync::Arc<browser::Hub>,
+    host_events: UnboundedSender<browser::HostEvent>,
+    /// Each lane's tabs as last told, for a screen that attaches later.
+    tabs: HashMap<String, Event>,
+    /// Lanes whose member asked the person in (`show_my_browser` with a browser
+    /// panel attached): handing back tells the member the person is done.
+    asked_in: HashMap<String, String>,
+    /// Lanes in the person's hands, and what their member asked them for.
+    held: HashMap<String, Option<String>>,
     /// The member each squad's screen watches the browser of, and the
     /// pictures under way, one at a time each.
     watching: HashMap<String, SessionId>,
     framing: std::collections::HashSet<SessionId>,
+    /// For each squad watching a lane, its watcher in the hub; and the frame
+    /// each watched conversation was sent last.
+    frame_watchers: HashMap<String, u64>,
+    frame_sent: HashMap<SessionId, (u64, u64)>,
     /// Where each member's browser was last taken, by squad and name — and a
     /// page asked for when it next comes on screen.
     last_url: HashMap<(String, String), String>,
@@ -504,7 +534,7 @@ struct Runtime {
     desktop: desktop::Desktop,
 }
 
-async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut internal: UnboundedReceiver<Internal>) {
+async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut internal: UnboundedReceiver<Internal>, mut host: UnboundedReceiver<browser::HostEvent>) {
     let mut daily = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
     let mut minute = tokio::time::interval(Duration::from_secs(60));
     // A screen held by a member that stopped using it goes to the next in line.
@@ -520,12 +550,27 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                 }
                 Some(Request::Subscribe(squad, reply)) => {
                     let (tx, rx) = mpsc::unbounded_channel();
+                    // The shared Chrome's tabs as they stand, then what changes.
+                    for tabs in rt.tabs.values() {
+                        if tabs.for_everyone() || tabs.squad() == Some(squad.as_str()) {
+                            let _ = tx.send(tabs.clone());
+                        }
+                    }
+                    // And the members' browsers in the person's hands.
+                    for (lane, why) in &rt.held {
+                        if lane.split_once('/').is_some_and(|(q, _)| q == squad) {
+                            let _ = tx.send(Event::BrowserControl { squad: Some(squad.clone()), lane: lane.clone(), by: Some("person".into()), why: why.clone() });
+                        }
+                    }
                     rt.subscribers.push((Some(squad.clone()), tx));
                     let _ = reply.send((rt.snapshot(&squad), rx));
                 }
                 Some(Request::Tool(call, reply)) => rt.tool(call, reply).await,
                 Some(Request::PersonWindow(url, reply)) => {
                     let _ = reply.send(rt.person_window(&url));
+                }
+                Some(Request::BrowserHub(reply)) => {
+                    let _ = reply.send(rt.hub.clone());
                 }
                 Some(Request::DesktopGate(check, reply)) => rt.gate_desktop(*check, reply),
                 Some(Request::Busy(reply)) => {
@@ -559,6 +604,7 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                     }
                 }
             },
+            Some(said) = host.recv() => rt.on_host(said).await,
             _ = daily.tick(), if rt.config.persist => rt.prune(),
             _ = desktop_tick.tick() => {
                 if rt.desktop.expire() {
@@ -722,6 +768,36 @@ impl Runtime {
                     self.watching.remove(&squad);
                 }
             },
+            Command::BrowserNav { page, action, url } => {
+                let action = match action {
+                    BrowserNavAction::Back => "back",
+                    BrowserNavAction::Forward => "forward",
+                    BrowserNavAction::Reload => "reload",
+                    BrowserNavAction::Stop => "stop",
+                    BrowserNavAction::Go => "go",
+                };
+                self.hub.op(&json!({ "op": "nav", "page": page, "action": action, "url": url }));
+            }
+            Command::BrowserNewTab { url } => {
+                // The person's own tab: the shared Chrome starts for it if it must.
+                if let Some(npx) = self.config.npx.clone()
+                    && self.browser_host(&npx).is_some()
+                {
+                    self.hub.op(&json!({ "op": "newtab", "url": url }));
+                }
+            }
+            Command::BrowserCloseTab { page } => {
+                self.hub.op(&json!({ "op": "closetab", "page": page }));
+            }
+            Command::BrowserControl { lane, take } => {
+                self.hub.op(&json!({ "op": "control", "lane": lane, "by": take.then_some("person") }));
+            }
+            Command::BrowserDialog { page, accept, text } => {
+                self.hub.op(&json!({ "op": "dialog", "page": page, "accept": accept, "text": text }));
+            }
+            Command::BrowserPopOut { page, bounds } => {
+                self.hub.op(&json!({ "op": "popout", "page": page, "bounds": bounds }));
+            }
             Command::Suggestions { squad, on } => {
                 if let Some(journal) = self.journal(&squad) {
                     let _ = journal.set_suggestions(on);
@@ -2645,6 +2721,18 @@ for one project goes to it as tickets for its owners, with that project — and 
         if call.name == board::SHOW_BROWSER {
             let url = call.arguments["url"].as_str().map(str::to_owned);
             let why = call.arguments["why"].as_str().unwrap_or_default().to_owned();
+            if self.ask_in_panel(&call.squad, &call.member, url.as_deref(), &why) {
+                if let Some(id) = self.member_id(&call.squad, &call.member) {
+                    self.publish(Event::Notice { session: id, text: format!("🖥 {}'s browser opens in the person's browser panel: {why}", call.member) });
+                }
+                let _ = reply.send(ToolResult {
+                    text: "Your browser is open in the person's browser panel, at that page, in their hands. Tell them what \
+to do there and end your turn: you'll be told when they hand it back."
+                        .into(),
+                    is_error: false,
+                });
+                return;
+            }
             if let Some(url) = url {
                 self.show_url.insert((call.squad.clone(), call.member.clone()), url);
             }
@@ -3029,7 +3117,8 @@ there, end your turn, and carry on when they say they're done."
         if !alive {
             // Its lanes went with it.
             self.browsers.retain(|_, b| !b.is_lane());
-            self.host = browser::Host::start(npx, &self.config.home).ok();
+            self.host = browser::Host::start(npx, &self.config.home, &self.hub, self.host_events.clone()).ok();
+            self.hub.set_host(self.host.clone());
         }
         self.host.clone()
     }
@@ -3047,13 +3136,47 @@ there, end your turn, and carry on when they say they're done."
     }
 
     /// A picture of each watched member's browser, one under way at a time.
+    /// A lane of the shared Chrome is watched as a browser panel watches it —
+    /// its member's tab, a frame now and then; a Chrome of its own is asked
+    /// for a screenshot.
     fn take_frames(&mut self) {
         let watched: Vec<(String, SessionId)> = self.watching.iter().map(|(s, id)| (s.clone(), *id)).collect();
+        let mut watching_lanes = Vec::new();
         for (squad, id) in watched {
             if self.framing.contains(&id) {
                 continue;
             }
             let Some(key) = self.browser_key(id) else { continue };
+            if self.browsers.get(&key).is_some_and(|b| b.is_lane()) {
+                let watcher = match self.frame_watchers.get(&squad) {
+                    Some(w) => *w,
+                    None => {
+                        let w = self.hub.watcher();
+                        self.frame_watchers.insert(squad.clone(), w);
+                        w
+                    }
+                };
+                watching_lanes.push(watcher);
+                let lane = format!("{}/{}", key.0, key.1);
+                let (page, url) = match self.tabs.get(&lane) {
+                    Some(Event::BrowserTabs { pages, agent_page, .. }) => {
+                        let page = agent_page.and_then(|a| pages.iter().find(|p| p.id == a)).or(pages.last());
+                        (page.map(|p| p.id), page.map(|p| p.url.clone()))
+                    }
+                    _ => (None, None),
+                };
+                let Some(page) = page else { continue };
+                self.hub.watch(watcher, browser::Want { page, fps: 2, max_w: 1280, max_h: 1280, quality: 60 });
+                if let Some(frame) = self.hub.latest(page)
+                    && self.frame_sent.get(&id) != Some(&(page, frame.header.seq))
+                {
+                    use base64::Engine as _;
+                    self.frame_sent.insert(id, (page, frame.header.seq));
+                    let image = base64::engine::general_purpose::STANDARD.encode(&frame.jpeg);
+                    self.publish(Event::BrowserFrame { session: id, image, url });
+                }
+                continue;
+            }
             let Some(port) = self.browsers.get(&key).map(|b| b.port) else { continue };
             let name = key.1;
             self.framing.insert(id);
@@ -3066,6 +3189,108 @@ there, end your turn, and carry on when they say they're done."
                 let _ = internal.send(Internal::Frame(id, frame));
             });
         }
+        // Squads that stopped watching a lane stop its frames.
+        let idle: Vec<String> = self.frame_watchers.iter().filter(|(_, w)| !watching_lanes.contains(w)).map(|(s, _)| s.clone()).collect();
+        for squad in idle {
+            if let Some(watcher) = self.frame_watchers.remove(&squad) {
+                self.hub.unwatch(watcher);
+            }
+        }
+        let watching = &self.watching;
+        self.frame_sent.retain(|id, _| watching.values().any(|w| w == id));
+    }
+
+    // ── the shared Chrome, for browser panels ──
+
+    /// What the browser host said.
+    async fn on_host(&mut self, said: browser::HostEvent) {
+        use browser::HostEvent;
+        match said {
+            HostEvent::Ready => {}
+            HostEvent::Tabs { lane, member, color, pages, agent, .. } => {
+                let (squad, session) = self.lane_session(&lane);
+                let event = Event::BrowserTabs { squad, lane: lane.clone(), session, member, color, pages, agent_page: agent };
+                self.tabs.insert(lane, event.clone());
+                self.publish(event);
+            }
+            HostEvent::Control { lane, by } => {
+                let (squad, session) = self.lane_session(&lane);
+                let asked = if by.is_none() { self.asked_in.remove(&lane) } else { None };
+                match &by {
+                    Some(_) => {
+                        let why = self.asked_in.get(&lane).cloned();
+                        self.held.insert(lane.clone(), why);
+                    }
+                    None => {
+                        self.held.remove(&lane);
+                    }
+                }
+                self.publish(Event::BrowserControl { squad, lane: lane.clone(), by: by.clone(), why: None });
+                let Some(session) = session else { return };
+                let working = self.sessions.get(&session).is_some_and(Session::is_working);
+                match (by.is_some(), asked.is_some()) {
+                    // Only a turn under way needs telling: between turns nothing waits on it.
+                    (true, _) if working => {
+                        self.publish(Event::Notice { session, text: "🖐 The person took this browser in hand; its browser tools wait for them.".into() });
+                    }
+                    // Done with what it asked of them: it carries on.
+                    (false, true) => self.submit(session, "The person finished in the browser.".into()).await,
+                    (false, false) if working => {
+                        self.publish(Event::Notice { session, text: "🖐 The person gave the browser back.".into() });
+                    }
+                    _ => {}
+                }
+            }
+            HostEvent::Dialog { page, lane, kind, message, default } => {
+                let (squad, _) = self.lane_session(&lane);
+                self.publish(Event::BrowserDialog { squad, lane, page, kind, message, default });
+            }
+            HostEvent::DialogClosed { page } => self.publish(Event::BrowserDialogClosed { page }),
+            HostEvent::Exited => {
+                // Its tabs went with it.
+                for (lane, tabs) in std::mem::take(&mut self.tabs) {
+                    if let Event::BrowserTabs { squad, session, member, color, .. } = tabs {
+                        self.publish(Event::BrowserTabs { squad, lane, session, member, color, pages: Vec::new(), agent_page: None });
+                    }
+                }
+                self.asked_in.clear();
+                self.held.clear();
+            }
+        }
+    }
+
+    /// A lane's squad and the conversation it is the browser of: `squad/key`;
+    /// `""` is the person's own.
+    fn lane_session(&self, lane: &str) -> (Option<String>, Option<SessionId>) {
+        let Some((squad, key)) = lane.split_once('/') else {
+            return (None, None);
+        };
+        let session = self.sessions.keys().copied().find(|id| self.browser_key(*id).is_some_and(|(q, k)| q == squad && k == key));
+        (Some(squad.to_owned()), session)
+    }
+
+    /// A member asks the person into its browser. With a browser panel
+    /// attached, the panel shows it, in their hands, at `url` — rather than a
+    /// window over whatever they are doing. `false`: show the window as before.
+    fn ask_in_panel(&mut self, squad: &str, member: &str, url: Option<&str>, why: &str) -> bool {
+        if !self.hub.has_panel() {
+            return false;
+        }
+        let Some(id) = self.member_id(squad, member) else { return false };
+        let Some((_, key)) = self.browser_key(id) else { return false };
+        if self.open_browser(squad, &key, false).is_none() || !self.browsers.get(&(squad.to_owned(), key.clone())).is_some_and(|b| b.is_lane()) {
+            return false;
+        }
+        let lane = format!("{squad}/{key}");
+        if let Some(url) = url {
+            self.hub.op(&json!({ "op": "goto", "lane": lane, "url": url }));
+        }
+        self.hub.op(&json!({ "op": "control", "lane": lane, "by": "person" }));
+        self.asked_in.insert(lane.clone(), why.to_owned());
+        self.held.insert(lane.clone(), Some(why.to_owned()));
+        let (squad, _) = self.lane_session(&lane);
+        self.publish(Event::BrowserControl { squad, lane, by: Some("person".into()), why: Some(why.to_owned()) });
+        true
     }
 
     fn set_mode(&mut self, squad: &str, member: Option<String>, mode: Option<Mode>) {

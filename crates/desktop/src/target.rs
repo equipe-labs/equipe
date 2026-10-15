@@ -149,6 +149,8 @@ pub struct Remembered {
     pub recent: Vec<SshHost>,
     /// How tall the board's list was left, in px (the divider the person dragged).
     pub board_split: Option<f32>,
+    /// How wide the browser panel was left, in px.
+    pub browser_width: Option<f32>,
 }
 
 impl Remembered {
@@ -167,6 +169,8 @@ impl Remembered {
                 out.last = Endpoint::from_saved(rest);
             } else if let Some(rest) = line.strip_prefix("board-split ") {
                 out.board_split = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
+            } else if let Some(rest) = line.strip_prefix("browser-width ") {
+                out.browser_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
             } else if let Some(rest) = line.strip_prefix("recent ssh ")
                 && let Ok(host) = SshHost::parse(rest)
                 && !out.recent.contains(&host)
@@ -188,6 +192,9 @@ impl Remembered {
         }
         if let Some(split) = self.board_split {
             text.push_str(&format!("board-split {split:.0}\n"));
+        }
+        if let Some(width) = self.browser_width {
+            text.push_str(&format!("browser-width {width:.0}\n"));
         }
         text
     }
