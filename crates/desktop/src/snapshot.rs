@@ -326,6 +326,12 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     cx.notify();
                 }),
                 "tcreate" => shell.update(cx, |shell, cx| shell.create_from_sheet(window, cx)),
+                // The quick line (C), with words typed in it.
+                "quick" => shell.update(cx, |shell, cx| {
+                    shell.open_quick(window, cx);
+                    shell.board.tk.quick_input.update(cx, |s, cx| s.set_value(arg.clone(), window, cx));
+                    cx.notify();
+                }),
                 "tmenu" => shell.update(cx, |shell, cx| {
                     use crate::views::tickets::EditKind as K;
                     let (kind, rest) = arg.split_once(',').unwrap_or((arg.as_str(), ""));
