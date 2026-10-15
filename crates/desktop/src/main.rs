@@ -15,6 +15,8 @@ mod convo;
 mod daemon;
 mod failure;
 mod install;
+mod files;
+mod media;
 mod mem;
 mod notify;
 mod ssh;
@@ -243,7 +245,7 @@ impl Shell {
                 }
                 return;
             }
-            if !matches!(key, "escape" | "up" | "down" | "tab" | "enter") {
+            if !views::composer::takes(key) {
                 return;
             }
             let taken = this.update(cx, |shell, cx| shell.on_composer_key(key, &modifiers, window, cx)).unwrap_or(false);
@@ -759,6 +761,7 @@ impl Render for Shell {
             )
             // Over everything: the chooser, then a question from ssh above it.
             .children(views::composer::drop_overlay(self, cx))
+            .children(views::composer::lightbox(self, cx))
             .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
             .children(views::connect::question(self, cx))
     }
@@ -795,7 +798,22 @@ fn app_menu(cx: &mut App) {
         MenuItem::action(t!("main.menu_show_all"), ShowAll),
         MenuItem::separator(),
         MenuItem::action(t!("main.menu_quit"), Quit),
-    ])]);
+    ]), edit_menu()]);
+}
+
+/// The Edit menu: the text box's own actions, under the selectors macOS knows
+/// — which is also where it adds "받아쓰기 시작…" and "이모지 및 기호".
+fn edit_menu() -> Menu {
+    use gpui_kit::component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
+    Menu::new(t!("main.menu_edit")).items([
+        MenuItem::os_action(t!("main.menu_undo"), Undo, OsAction::Undo),
+        MenuItem::os_action(t!("main.menu_redo"), Redo, OsAction::Redo),
+        MenuItem::separator(),
+        MenuItem::os_action(t!("main.menu_cut"), Cut, OsAction::Cut),
+        MenuItem::os_action(t!("main.menu_copy"), Copy, OsAction::Copy),
+        MenuItem::os_action(t!("main.menu_paste"), Paste, OsAction::Paste),
+        MenuItem::os_action(t!("main.menu_select_all"), SelectAll, OsAction::SelectAll),
+    ])
 }
 
 fn main() {
@@ -829,6 +847,7 @@ fn main() {
             KeyBinding::new("ctrl-j", Enter { secondary: false, shift: true }, Some("Input")),
         ]);
         app_menu(cx);
+        views::composer::bind_keys(cx);
         let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),

@@ -156,7 +156,11 @@ cat > "$app/Contents/Info.plist" <<EOF
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>MIT License</string>$updates_plist
+	<string>MIT License</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>말로 메시지를 쓸 때 마이크를 씁니다. 소리는 이 Mac 밖으로 나가지 않습니다.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>말한 내용을 이 Mac에서 글로 바꿔 입력창에 넣습니다.</string>$updates_plist
 </dict>
 </plist>
 EOF
@@ -177,7 +181,20 @@ if [ -d "$framework" ]; then
   sign "$framework/Versions/B/Updater.app"
   sign "$framework"
 fi
-sign "$app"
+# The microphone, for dictating into the composer (Hardened Runtime asks for it).
+entitlements="$work/equipe.entitlements"
+cat > "$entitlements" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>
+EOF
+plutil -lint "$entitlements" >/dev/null
+sign --entitlements "$entitlements" "$app"
 codesign --verify --deep --strict "$app"
 
 # --- DMG -------------------------------------------------------------------------

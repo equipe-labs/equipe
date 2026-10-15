@@ -173,6 +173,20 @@ enum Command {
         #[arg(long)]
         no_start: bool,
     },
+    /// Keep a file a screen on another machine streams on standard input
+    /// (`ssh <host> equipe receive …`): prints where it was kept
+    #[command(hide = true)]
+    Receive {
+        /// The file's name where it came from (only a tidied stem and its extension are kept)
+        #[arg(long)]
+        name: String,
+        /// Exactly how many bytes follow
+        #[arg(long)]
+        size: u64,
+        /// image, video, pdf or file
+        #[arg(long, default_value = "file")]
+        kind: String,
+    },
     /// Update equipe to the latest release
     Update,
     /// The background daemon the team lives in
@@ -296,6 +310,23 @@ async fn main() -> ExitCode {
         Command::Update => update().await,
         Command::Attach { stdio: true, no_start } => attach::stdio(no_start).await,
         Command::Attach { stdio: false, .. } => return attach::usage(),
+        Command::Receive { name, size, kind } => {
+            use equipe_core::protocol::rpc::UploadKind as K;
+            let kind = match kind.as_str() {
+                "image" => K::Image,
+                "video" => K::Video,
+                "pdf" => K::Pdf,
+                _ => K::File,
+            };
+            let home = equipe_providers::credentials::equipe_home();
+            match equipe_core::gateway::receive_upload(&home, &name, Some(kind), size, std::io::stdin().lock()) {
+                Ok(path) => {
+                    println!("{}", path.display());
+                    Ok(())
+                }
+                Err(why) => Err(Failure::new(why)),
+            }
+        }
         Command::SendImage { host } => match clip::send_image(&host) {
             Ok(()) => {
                 println!("{}", ui::out().ok_line(&t!("main.image_sent", host = host)));
@@ -1078,7 +1109,7 @@ impl App {
                 // Work handed to a subagent shows as it starts and as it hands back.
                 Event::SubagentStarted { what, .. } => eprintln!("{}", e.dim(&format!("  ↳ {what}"))),
                 Event::SubagentEnded { .. } => eprintln!("{}", e.dim(&format!("  ↳ {}", t!("main.handed_back")))),
-                Event::SubagentStep { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::Estimated { .. } => {}
+                Event::SubagentStep { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::Estimated { .. } | Event::MemoWithdrawn { .. } => {}
                 Event::ToolResult { .. } | Event::Thinking { .. } => {}
                 Event::TurnEnded { outcome, usage, .. } => {
                     printer.end(outcome, usage);

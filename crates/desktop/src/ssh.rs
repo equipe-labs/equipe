@@ -146,6 +146,51 @@ impl Launcher {
         }
     }
 
+    /// Stream the file at `path` into `equipe receive` on `host`, over the
+    /// shared connection — a channel of its own, raw bytes, so a big file
+    /// never becomes one giant line on the daemon's. `name` must already be
+    /// tidy (letters, digits, `-`, `_`, one dot): it goes on the command line.
+    /// `sent` hears how many bytes have gone. Where the far side kept it.
+    pub async fn send_file(&self, host: &SshHost, path: &Path, name: &str, kind: &str, sent: impl Fn(u64)) -> Result<String, Failure> {
+        use tokio::io::AsyncReadExt as _;
+        let tidy = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.')) && !s.starts_with(['-', '.']);
+        if !tidy(name) || !kind.chars().all(|c| c.is_ascii_lowercase()) {
+            return Err(Failure::Other(format!("not a name to send: {name}")));
+        }
+        let mut file = tokio::fs::File::open(path).await.map_err(|e| Failure::Other(e.to_string()))?;
+        let size = file.metadata().await.map_err(|e| Failure::Other(e.to_string()))?.len();
+        let remote = format!("sh -c 'PATH=\"{PATH_PREFIX}:$PATH\"; export PATH; exec equipe receive --kind {kind} --size {size} --name {name}'");
+        let mut child = self.command(host, &remote).spawn().map_err(|e| Failure::Other(e.to_string()))?;
+        let mut stdin = child.stdin.take().ok_or_else(|| Failure::Other("no stdin".into()))?;
+        let mut stdout = child.stdout.take().ok_or_else(|| Failure::Other("no stdout".into()))?;
+        let mut process = Process::new(child);
+        let feed = async move {
+            let mut buffer = vec![0u8; 256 << 10];
+            let mut gone = 0u64;
+            loop {
+                let n = file.read(&mut buffer).await.map_err(|e| e.to_string())?;
+                if n == 0 {
+                    break;
+                }
+                stdin.write_all(&buffer[..n]).await.map_err(|e| e.to_string())?;
+                gone += n as u64;
+                sent(gone);
+            }
+            stdin.shutdown().await.map_err(|e| e.to_string())
+        };
+        let mut out = Vec::new();
+        let read = async { stdout.read_to_end(&mut out).await };
+        let (fed, _) = tokio::join!(feed, read);
+        match process.finish(false).await {
+            Failure::Closed if fed.is_ok() => {
+                let kept = String::from_utf8_lossy(&out).trim().to_owned();
+                if kept.starts_with('/') { Ok(kept) } else { Err(Failure::Other("the other machine didn't say where it kept the file".into())) }
+            }
+            Failure::Closed => Err(Failure::Other(fed.err().unwrap_or_default())),
+            failure => Err(failure),
+        }
+    }
+
     /// Close the shared connection to `host` (a dead one after the network
     /// changed or the Mac slept would otherwise be reused until it times out).
     pub async fn drop_shared_connection(&self, host: &SshHost) {
@@ -286,6 +331,38 @@ mod tests {
         assert_eq!(safe_name(Path::new("/x/../.. /ev il$.png")), "evil.png");
         assert_eq!(safe_name(Path::new("/x/preview-1.html")), "preview-1.html");
         assert_eq!(safe_name(Path::new("/")), "file");
+    }
+
+    /// A big file goes over a channel of its own into `equipe receive`: an
+    /// `ssh` stand-in runs the remote line here, and a stand-in `equipe`
+    /// keeps what arrives and says where.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_file_streams_into_equipe_receive_and_its_path_comes_back() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let home = std::env::temp_dir().join(format!("eq-send-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".local/bin")).unwrap();
+        let script = |path: &Path, body: &str| {
+            std::fs::write(path, body).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        // `ssh [options] -- host <line>`: run the line with this HOME.
+        let fake_ssh = home.join("ssh");
+        script(&fake_ssh, &format!("#!/bin/sh\nfor last; do :; done\nHOME='{}' exec /bin/sh -c \"$last\"\n", home.display()));
+        script(&home.join(".local/bin/equipe"), "#!/bin/sh\necho \"$*\" > \"$HOME/args\"\ncat > \"$HOME/got\"\necho /far/uploads/kept.mov\n");
+        let file = home.join("clip.mov");
+        std::fs::write(&file, vec![7u8; 600 << 10]).unwrap();
+        let launcher = Launcher { program: fake_ssh, control_dir: home.clone(), askpass: None, extra: vec![] };
+        let sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let seen = sent.clone();
+        let kept = launcher.send_file(&host(), &file, "clip.mov", "video", move |n| seen.store(n, std::sync::atomic::Ordering::Relaxed)).await;
+        assert_eq!(kept.ok().as_deref(), Some("/far/uploads/kept.mov"));
+        assert_eq!(std::fs::read(home.join("got")).unwrap().len(), 600 << 10, "every byte arrived");
+        assert_eq!(std::fs::read_to_string(home.join("args")).unwrap().trim(), format!("receive --kind video --size {} --name clip.mov", 600 << 10));
+        assert_eq!(sent.load(std::sync::atomic::Ordering::Relaxed), 600 << 10);
+        // A name that could say more to a shell is never sent.
+        assert!(launcher.send_file(&host(), &file, "a b;rm.mov", "video", |_| {}).await.is_err());
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// The remote login shell runs the line as `$SHELL -c '<line>'`. Run it

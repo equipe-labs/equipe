@@ -571,6 +571,21 @@ impl Model {
             }
             Event::ApprovalResolved { approval, .. } => self.approvals.resolve(approval),
             Event::LaneOpened { session, of, project } => self.open_lane(session, of, project),
+            // A memo taken back: it leaves the conversation's waiting ones.
+            Event::MemoWithdrawn { session, text } => {
+                if let Some(convo) = self.convos.get_mut(&session)
+                    && let Some(at) = convo.queued.iter().position(|q| *q == text)
+                {
+                    convo.queued.remove(at);
+                    if at < convo.queued_in.len() {
+                        convo.queued_in.remove(at);
+                    }
+                    self.revision += 1;
+                }
+                if let Some(member) = self.members.iter_mut().find(|m| m.session == session) {
+                    member.memos = member.memos.saturating_sub(1);
+                }
+            }
             Event::SessionClosed { session } if self.lanes.iter().any(|l| l.session == session) => self.fold_lane(session),
             Event::Error { session: None, message, .. } => self.flash = Some(message),
             Event::SessionStarted { session, member, model, squad, engine, .. } => {
@@ -1149,5 +1164,19 @@ mod tests {
     fn context_shows_as_a_percentage() {
         assert_eq!(percent((63, 100)), Some(63));
         assert_eq!(percent((5, 0)), None);
+    }
+
+    #[test]
+    fn a_memo_taken_back_leaves_the_conversation_and_the_count() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Working)]), T0);
+        for text in ["a", "b", "a"] {
+            model.apply(Update::Event(Event::MessageQueued { session: 1, text: text.into(), project: None }), T0);
+        }
+        assert_eq!(model.members[0].memos, 3);
+        assert!(model.apply(Update::Event(Event::MemoWithdrawn { session: 1, text: "a".into() }), T0));
+        assert_eq!(model.convo().unwrap().queued, ["b", "a"], "only the first with that text");
+        assert_eq!(model.convo().unwrap().queued_in.len(), 2);
+        assert_eq!(model.members[0].memos, 2);
     }
 }

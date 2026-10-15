@@ -418,6 +418,14 @@ pub enum Command {
     /// message after a member answers them ([`Event::Suggestion`]). On unless
     /// turned off; kept for the squad.
     Suggestions { squad: SquadName, on: bool },
+    /// Take back a memo left while the member works ([`Event::MessageQueued`])
+    /// before it is delivered: the first one with this text. Answered by
+    /// [`Event::MemoWithdrawn`]; nothing when it was delivered already.
+    Unqueue { session: SessionId, text: String },
+    /// How hard a member thinks from its next turn: Claude Code's `--effort`
+    /// (`low` · `medium` · `high` · `xhigh` · `max`), Codex's reasoning effort
+    /// (`minimal` · `low` · `medium` · `high`). `None`: the engine's default.
+    SetEffort { session: SessionId, effort: Option<String> },
 }
 
 /// A member, wherever it is: its squad and its name.
@@ -590,6 +598,8 @@ pub enum Event {
         #[serde(default)]
         project: Option<String>,
     },
+    /// A memo left while it works was taken back before it was delivered.
+    MemoWithdrawn { session: SessionId, text: String },
     /// A line from equipe for this session's conversation — e.g. the PM being
     /// told that the person spoke to a member directly.
     Notice { session: SessionId, text: String },
@@ -680,6 +690,7 @@ impl Event {
             Event::SessionStarted { session, .. }
             | Event::UserMessage { session, .. }
             | Event::MessageQueued { session, .. }
+            | Event::MemoWithdrawn { session, .. }
             | Event::Notice { session, .. }
             | Event::TextDelta { session, .. }
             | Event::ToolUse { session, .. }

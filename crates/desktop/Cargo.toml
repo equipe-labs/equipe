@@ -16,6 +16,7 @@ equipe-providers = { path = "../providers" }
 # Code blocks are highlighted with tree-sitter: the languages members write
 # most, and no more, as each grammar adds to the build.
 gpui-kit = { version = "=0.7.1", features = [
+    "speech",
     "tree-sitter-bash",
     "tree-sitter-css",
     "tree-sitter-diff",
@@ -38,8 +39,12 @@ gpui-pre-reqwest-client = "=0.3.8"
 latex-rust = { version = "2.1", default-features = false, features = ["std"] }
 mermaid-rs-renderer = { version = "0.3", default-features = false }
 libc = "0.2"
+# Drafts and recent attachments, kept on disk between launches.
+serde = { version = "1.0.229", features = ["derive"] }
+# Drafts and recent attachments on disk; a JSON reply pretty-printed.
+serde_json = "1"
 # The daemon link runs its own small runtime on a thread off the UI.
-tokio = { version = "1.53.2", features = ["rt", "macros", "sync", "time", "net", "io-util", "process"] }
+tokio = { version = "1.53.2", features = ["rt", "macros", "sync", "time", "net", "io-util", "process", "fs"] }
 
 # Attached screenshots: decoded, shrunk and thumbnailed off the UI thread.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff"] }
@@ -47,8 +52,6 @@ base64 = "0.23.1"
 # `equipe send-image` drops files in an inbox; the folder is watched, not polled.
 # (Renamed: this crate has a module of its own called `notify`.)
 fs-notify = { package = "notify", version = "8", default-features = false, features = ["macos_fsevent"] }
-# A JSON reply pretty-printed.
-serde_json = "1"
 # The text the code-block highlighter parses (the version gpui-component uses).
 ropey = "=2.0.0-beta.1"
 
@@ -59,6 +62,13 @@ mac-notification-sys = "0.6.15"
 objc2 = "0.6"
 # Sparkle's "install now" block, kept until the person asks for it.
 block2 = "0.6"
+# Attachments: a video's frames (AVFoundation), a PDF's first page and page
+# count (CoreGraphics) — read on this Mac, off the UI thread (src/media.rs).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSArray", "NSValue", "NSError", "NSDictionary"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFURL", "CFString", "CFCGTypes"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "CGPDFDocument", "CGPDFPage", "CGAffineTransform", "CGGeometry"] }
+objc2-core-media = { version = "0.3", default-features = false, features = ["std", "CMTime", "CMTimeRange"] }
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "AVAsset", "AVAssetImageGenerator", "AVAssetTrack", "AVMediaFormat", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media"] }
 
 [features]
 snapshot = ["gpui-kit/test-support"]

@@ -158,6 +158,27 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         let hello = Hello { version: "fake".into(), snapshot };
                         writer.write_all(Message::response(id, hello).to_line().as_bytes()).await.unwrap();
                     }
+                    // Kept as the daemon keeps them: under `uploads`, named by equipe.
+                    (Some(rpc::UPLOAD), Some(id)) => {
+                        use base64::Engine as _;
+                        use std::io::Write as _;
+                        let upload: rpc::Upload = message.params_as().unwrap();
+                        let kept = base64::engine::general_purpose::STANDARD
+                            .decode(upload.data.trim())
+                            .map_err(|e| e.to_string())
+                            .and_then(|bytes| {
+                                let (mut file, path) = gateway::create_upload(&equipe_home(), &upload.name, upload.kind)?;
+                                file.write_all(&bytes).map_err(|e| e.to_string())?;
+                                Ok(path)
+                            });
+                        let reply = match kept {
+                            Ok(path) => Message::response(id, rpc::Uploaded { path }),
+                            Err(why) => Message::failure(id, -32000, why),
+                        };
+                        if writer.write_all(reply.to_line().as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
                     (Some(rpc::COMMAND), None) => {
                         let command: Command = message.params_as().unwrap();
                         eprintln!("command: {command:?}");
@@ -210,6 +231,9 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             }
                             Command::SubmitLater { session, text } => {
                                 let _ = events.send(Event::MessageQueued { session, text, project: None });
+                            }
+                            Command::Unqueue { session, text } => {
+                                let _ = events.send(Event::MemoWithdrawn { session, text });
                             }
                             Command::Interrupt { session } => {
                                 if let Some(task) = turns.lock().await.remove(&session) {

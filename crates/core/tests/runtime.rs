@@ -320,6 +320,40 @@ async fn a_message_sent_mid_turn_waits_as_a_memo() {
 }
 
 #[tokio::test]
+async fn a_memo_taken_back_is_never_delivered() {
+    let claude = fake_claude(true, &format!("sleep 1\n{}", answering("ok")));
+    let (handle, mut events) = start(&claude);
+    handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
+    until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "first".into() });
+    handle.send(Command::SubmitLater { session: 1, text: "keep this".into() });
+    handle.send(Command::SubmitLater { session: 1, text: "never mind".into() });
+    handle.send(Command::Unqueue { session: 1, text: "never mind".into() });
+    // A memo nobody left: nothing happens.
+    handle.send(Command::Unqueue { session: 1, text: "not a memo".into() });
+
+    let first = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let withdrawn: Vec<_> = first.iter().filter_map(|e| if let Event::MemoWithdrawn { text, .. } = e { Some(text.as_str()) } else { None }).collect();
+    assert_eq!(withdrawn, ["never mind"]);
+    let second = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(matches!(&second[0], Event::UserMessage { text, .. } if text == "keep this"), "{second:#?}");
+}
+
+#[tokio::test]
+async fn the_effort_asked_for_reaches_claude_code() {
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let (handle, mut events) = start(&claude);
+    handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
+    until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+    handle.send(Command::SetEffort { session: 1, effort: Some(" XHigh ".into()) });
+    handle.send(Command::Submit { session: 1, text: "think".into() });
+    let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(turn.iter().any(|e| matches!(e, Event::Notice { text, .. } if text.contains("effort xhigh"))), "{turn:#?}");
+    let args = calls(&recorded).pop().expect("a turn ran");
+    assert!(args.windows(2).any(|w| w[0] == "--effort" && w[1] == "xhigh"), "{args:?}");
+}
+
+#[tokio::test]
 async fn said_while_it_works_it_reads_at_its_next_step_without_stopping() {
     // Claude Code reads a second message mid-turn, echoes it as it does, and carries on.
     let turn = r#"IFS= read -r more

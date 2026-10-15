@@ -116,7 +116,7 @@ pub struct Uploader(Asking);
 impl Uploader {
     /// Send `bytes` to the daemon and wait for where it kept them. Blocks:
     /// call it off the UI thread.
-    pub fn upload(&self, name: &str, bytes: &[u8]) -> Result<std::path::PathBuf, String> {
+    pub fn upload(&self, name: &str, bytes: &[u8], kind: Option<equipe_core::protocol::rpc::UploadKind>) -> Result<std::path::PathBuf, String> {
         let door = self
             .0
             .lock()
@@ -124,7 +124,7 @@ impl Uploader {
             .clone()
             .ok_or(t!("daemon.not_connected"))?;
         match door
-            .upload(name, bytes)
+            .upload(name, bytes, kind)
             .recv_timeout(Duration::from_secs(120))
         {
             Ok(answer) => answer,
@@ -599,8 +599,8 @@ mod tests {
         let uploader = spawned.link.uploader();
         let asked = tokio::task::spawn_blocking(move || {
             (
-                uploader.upload("a.png", b"hi"),
-                uploader.upload("a.txt", b"hi"),
+                uploader.upload("a.png", b"hi", None),
+                uploader.upload("a.txt", b"hi", None),
             )
         })
         .await
@@ -616,7 +616,7 @@ mod tests {
         let socket = socket();
         let spawned = spawn(target(&socket), FAST);
         let uploader = spawned.link.uploader();
-        let asked = tokio::task::spawn_blocking(move || uploader.upload("a.png", b"hi"))
+        let asked = tokio::task::spawn_blocking(move || uploader.upload("a.png", b"hi", None))
             .await
             .unwrap();
         assert!(asked.is_err());
