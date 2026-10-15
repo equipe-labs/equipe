@@ -261,8 +261,12 @@ mod tests {
         assert!(matches!(classify("Allow use of key id_ed25519?\nKey fingerprint SHA256:x.", "confirm"), Ask::Confirm { .. }));
     }
 
+    /// A name no other test of this run has: the clock's nanoseconds move only
+    /// every microsecond on macOS, so tests started together shared a folder.
     fn socket() -> PathBuf {
-        PathBuf::from(format!("/tmp/eqap-{}-{}.sock", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()))
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        PathBuf::from(format!("/tmp/eqap-{}-{n}.sock", std::process::id()))
     }
 
     /// The helper's whole round trip against the real server, answered like the window would.
