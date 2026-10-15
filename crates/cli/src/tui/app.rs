@@ -24,6 +24,9 @@ use equipe_core::t;
 use super::commands;
 use super::composer::Composer;
 
+mod decide;
+pub use decide::Picking;
+
 /// How long a turn goes on before equipe's guess at its end shows.
 const GUESS_SHOWN_AFTER: Duration = Duration::from_secs(60);
 
@@ -618,6 +621,10 @@ pub struct App {
     pub usage_open: bool,
     /// Requests for permission waiting for the person, oldest first.
     pub approvals: Vec<Approval>,
+    /// Members' questions waiting for the person, oldest first (`decide`).
+    pub questions: Vec<equipe_core::protocol::decide::QuestionSet>,
+    /// Where the person is in each set, by its id.
+    pub picking: HashMap<u64, Picking>,
     /// Lines a page key moves: half the conversation's height on screen.
     pub page: usize,
     /// How far the selected conversation and the board can scroll, as last drawn.
@@ -760,6 +767,8 @@ impl App {
             desktop: snapshot.desktop,
             usage_open: false,
             approvals: snapshot.approvals,
+            questions: snapshot.questions,
+            picking: HashMap::new(),
             page: 10,
             conversation_max: usize::MAX,
             board_max: usize::MAX,
@@ -1492,6 +1501,10 @@ impl App {
                 self.approvals.retain(|a| a.id != approval);
                 return Vec::new();
             }
+            event @ (Event::QuestionsAsked { .. } | Event::QuestionsClosed { .. }) => {
+                self.on_questions(event);
+                return Vec::new();
+            }
             Event::ModeChanged { member: None, mode: Some(mode), .. } => {
                 self.mode = mode;
                 return Vec::new();
@@ -2000,6 +2013,11 @@ impl App {
             if key.code == KeyCode::Esc {
                 return Vec::new();
             }
+        }
+        // A member's questions on screen: numbers pick, o for their own words,
+        // Enter on — while nothing else is typed.
+        if let Some(commands) = self.on_decide_key(key.code, ctrl, alt) {
+            return commands;
         }
         // Completion, while it offers something: ↑↓ pick, Tab takes, Enter takes
         // (and runs what is whole), Esc puts it away.

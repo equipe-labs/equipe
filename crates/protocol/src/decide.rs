@@ -128,6 +128,8 @@ pub struct Read {
     pub question: String,
     /// What was picked, or said; empty when skipped.
     pub answer: String,
+    /// Their words beside what they picked.
+    pub note: Option<String>,
     pub skipped: bool,
 }
 
@@ -145,8 +147,12 @@ pub fn read_answers(message: &str) -> Option<Vec<Read>> {
         let Some(rest) = line[digits..].strip_prefix(") ").filter(|_| digits > 0) else { continue };
         let Some((question, said)) = rest.split_once(" → ") else { continue };
         let skipped = said == SKIPPED;
-        let answer = if skipped { String::new() } else { said.strip_prefix(OWN).unwrap_or(said).to_owned() };
-        out.push(Read { question: question.to_owned(), answer, skipped });
+        let (answer, note) = match said.strip_suffix(')').and_then(|s| s.split_once(NOTE)) {
+            Some((picked, note)) => (picked.to_owned(), Some(note.to_owned())),
+            None if skipped => (String::new(), None),
+            None => (said.strip_prefix(OWN).unwrap_or(said).to_owned(), None),
+        };
+        out.push(Read { question: question.to_owned(), answer, note, skipped });
     }
     (!out.is_empty()).then_some(out)
 }
@@ -205,7 +211,7 @@ mod tests {
         let read = read_answers(&message).unwrap();
         assert_eq!(read.len(), 3);
         assert_eq!((read[0].question.as_str(), read[0].answer.as_str()), ("Which database should the API use?", "Postgres (Recommended)"));
-        assert_eq!(read[1].answer, "Auth, Payments (+ note: SSO later)");
+        assert_eq!((read[1].answer.as_str(), read[1].note.as_deref()), ("Auth, Payments", Some("SSO later")));
         assert!(read[2].skipped && read[2].answer.is_empty());
         // Only their own words; one question.
         let mut one = set();

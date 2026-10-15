@@ -470,7 +470,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 .w_full()
                 .max_w(px(COLUMN))
                 .px_4()
-                .child(v_flex().children(approvals::for_you(shell, cx)).children(approvals::approval(shell, cx)))
+                .child(v_flex().children(approvals::for_you(shell, cx)).children(approvals::approval(shell, cx)).children(super::decide::docked(shell, cx)))
                 .child(composer::render(shell, cx)),
         )
         .children(lightbox(shell, cx));
@@ -720,6 +720,11 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
     let key = rows.serial << 24 | ix as u64;
     let opened = |part: u32| rows.opened.contains(&(key, part));
     match &rows.blocks[ix] {
+        // The person's answers to a member's questions: one line that opens.
+        Block::User(text) if crate::decide::decided(text).is_some() => {
+            let decided = crate::decide::decided(text).unwrap_or(crate::decide::Decided::Closed);
+            super::decide::decided_row(p, rows.tones, rows.handle.clone(), key, &decided, rows.is_open(key, super::decide::PART_DECIDED, false), window, cx)
+        }
         Block::User(text) => user_row(rows, key, text, opened(PART_MORE), rows.project_of(ix), cx),
         Block::Reply { text, first, live, worked } => reply_row(rows, ix, key, text, *first, *live, worked.as_ref(), window, cx),
         Block::Steps(lines) => group(rows, key, lines, window, cx),
@@ -1579,9 +1584,19 @@ impl Shell {
             (None, Some(Block::Thought { .. })) => PART_THOUGHT,
             (None, Some(Block::News(_))) => PART_NEWS,
             (None, Some(Block::YourTurn { .. })) => yourturn::PART_SENT,
+            (None, Some(Block::User(text))) if crate::decide::decided(text).is_some() => super::decide::PART_DECIDED,
             _ => PART_GROUP,
         };
         self.chat_toggle(row, part, cx);
+    }
+
+    /// Open or close the conversation's latest decided row (the snapshot script's).
+    #[cfg(feature = "snapshot")]
+    pub fn chat_open_decided(&mut self, cx: &mut Context<Self>) {
+        let at = self.chat.blocks.iter().rposition(|b| matches!(b, Block::User(text) if crate::decide::decided(text).is_some()));
+        if let Some(ix) = at {
+            self.chat_turn(ix, None, cx);
+        }
     }
 
     /// Open `ticket` beside the conversation.

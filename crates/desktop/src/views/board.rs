@@ -466,6 +466,8 @@ impl Shell {
                     self.land(&t, None, cx);
                 }
             }
+            // Answered on its card, in the peek.
+            Need::Questions(_) => {}
         }
     }
 
@@ -485,7 +487,7 @@ impl Shell {
                     self.board_yes(cx);
                 }
             }
-            None => {}
+            Some(Need::Questions(_)) | None => {}
         }
     }
 
@@ -682,7 +684,8 @@ impl Shell {
                     }
                 }
             }
-            None => {}
+            // Closed on its card (✕), where what it closes is in sight.
+            Some(Need::Questions(_)) | None => {}
         }
     }
 
@@ -787,6 +790,10 @@ impl Shell {
     pub fn board_talk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let session = match self.picked_need() {
             Some(Need::Permission(id)) => self.model.approvals.get(id).map(|a| a.session),
+            Some(Need::Questions(id)) => {
+                let member = self.model.asked.get(id).map(|s| s.member.clone());
+                self.model.members.iter().find(|m| m.presence != Presence::Closed && Some(&m.name) == member.as_ref()).map(|m| m.session)
+            }
             _ => {
                 let Some(t) = self.picked() else { return };
                 let Some(who) = board::who(&t).map(str::to_owned) else { return };
@@ -1660,6 +1667,22 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 )
                 .child(div().w(px(flags_w)).flex_none())
                 .child(cell(detail_w).text_color(p.member(hue)).child(a.member.clone()))
+                .child(cell(eta_w))
+                .child(cell(34.))
+                .into_any_element()
+        }
+        Need::Questions(id) => {
+            let Some((title, ticket_id, name, color)) = super::decide::row_text(shell, id) else { return div().into_any_element() };
+            let ticket = ticket_id.and_then(|t| model.tickets.iter().find(|x| x.id == t));
+            base(SharedString::from(format!("decide-{id}")), cx)
+                .pl_2()
+                .child(div().w(px(14.)).flex_none())
+                .child(super::decide::mark(p))
+                .child(div().w(px(44.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(ticket_id.map(|t| format!("T-{t}")).unwrap_or_default()))
+                .when(show_project, |r| r.child(project_col(ticket)))
+                .child(div().flex_1().min_w(px(120.)).truncate().text_color(p.text).child(title))
+                .child(div().w(px(flags_w)).flex_none())
+                .child(cell(detail_w).text_color(color).child(name))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()

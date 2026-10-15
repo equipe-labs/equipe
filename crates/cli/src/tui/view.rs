@@ -26,6 +26,8 @@ use super::markdown;
 use crate::ui;
 use equipe_core::t;
 
+mod decide;
+
 /// How many columns `text` takes on screen — a Korean letter takes two.
 fn cols(text: &str) -> usize {
     unicode_width::UnicodeWidthStr::width(text)
@@ -365,7 +367,11 @@ struct Rows {
 
 fn rows(app: &App, theme: Theme, screen: Rect) -> Rows {
     let area = content(screen);
-    let asking = approval_lines(app, theme, area.width.saturating_sub(2) as usize);
+    let mut asking = approval_lines(app, theme, area.width.saturating_sub(2) as usize);
+    // No request for permission: a member's questions, where it would be.
+    if asking.is_empty() {
+        asking = decide::lines(app, theme, area.width.saturating_sub(2) as usize);
+    }
     let asking_height = if asking.is_empty() { 0 } else { asking.len() as u16 + 1 };
     let (composer_rows, _) = app.composer.layout(area.width.saturating_sub(2) as usize);
     let composer_height = composer_rows.len().clamp(1, 8) as u16;
@@ -1718,6 +1724,13 @@ fn transcript_lines(agent: &Agent, looks: &Looks, turns: &Turns, theme: Theme, w
         }
         match entry {
             Entry::Thread { .. } => {}
+            // The person's answers to a member's questions: one line.
+            Entry::User { text } if decide::decided_line(text, theme, width).is_some() => {
+                begin(Block::User, &mut lines, &mut last);
+                gap(&mut lines);
+                lines.extend(decide::decided_line(text, theme, width));
+                lines.push(Line::raw(""));
+            }
             Entry::User { text } => {
                 begin(Block::User, &mut lines, &mut last);
                 gap(&mut lines);

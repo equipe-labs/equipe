@@ -13,6 +13,7 @@ mod diffs;
 mod compose;
 mod activity;
 mod convo;
+mod decide;
 mod daemon;
 mod failure;
 mod install;
@@ -103,6 +104,8 @@ pub struct Shell {
     pub board: BoardUi,
     /// The answer boxes of the cards tickets waiting for the person ask on.
     pub turn: views::yourturn::TurnUi,
+    /// Members' questions: where the person is in each set, and its boxes.
+    pub decide: views::decide::DecideUi,
     pub settings: views::settings::SettingsUi,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
     pub browser: Entity<BrowserPanel>,
@@ -182,6 +185,7 @@ impl Shell {
             composer: Composer::new(window, cx),
             board: BoardUi::new(window, cx, fetched_tx),
             turn: Default::default(),
+            decide: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
             browser,
             board_ticket: None,
@@ -319,6 +323,16 @@ impl Shell {
                 cx.stop_propagation();
                 return;
             }
+            // A member's questions above an empty composer (or in the peek):
+            // 1–9, ↑↓, Space, ⏎, ⌘⏎, Tab, Esc — and its own box's typing.
+            match this.update(cx, |shell, cx| shell.on_decide_key(key, &modifiers, window, cx)).unwrap_or(views::decide::Took::Pass) {
+                views::decide::Took::Taken => {
+                    cx.stop_propagation();
+                    return;
+                }
+                views::decide::Took::Typing => return,
+                views::decide::Took::Pass => {}
+            }
             // The work screens' keys: A R N…, moving, the peek, search.
             if this.update(cx, |shell, cx| shell.on_board_key(key, &modifiers, window, cx)).unwrap_or(false) {
                 cx.stop_propagation();
@@ -351,6 +365,7 @@ impl Shell {
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.composer.follow(&self.model, window, cx);
         self.turn_sync(window, cx);
+        self.decide_sync(window, cx);
         self.chat_sync(cx);
         self.board_sync(cx);
         self.sync_browser(window, cx);

@@ -134,6 +134,8 @@ pub enum Side {
 pub enum Section {
     /// A member asks for permission.
     Permission,
+    /// A member puts a decision to the person: questions with options. 결정 필요.
+    Decide,
     /// A ticket put down until the person does their part: 내 차례.
     Waiting,
     /// Work handed in: 검토.
@@ -146,11 +148,14 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 5] = [Section::Permission, Section::Waiting, Section::Review, Section::Proposed, Section::NotOnMain];
+    pub const ALL: [Section; 6] = [Section::Permission, Section::Decide, Section::Waiting, Section::Review, Section::Proposed, Section::NotOnMain];
+    /// The sections that list tickets.
+    const TICKETS: [Section; 4] = [Section::Waiting, Section::Review, Section::Proposed, Section::NotOnMain];
 
     pub fn label(self) -> &'static str {
         match self {
             Section::Permission => t!("state.section_permission"),
+            Section::Decide => t!("state.section_decide"),
             Section::Waiting => t!("state.status_waiting"),
             Section::Review => t!("state.status_review"),
             Section::Proposed => t!("state.status_proposed"),
@@ -168,10 +173,13 @@ impl Section {
     }
 }
 
-/// One thing waiting for the person: a request for permission, or a ticket.
+/// One thing waiting for the person: a request for permission, a member's
+/// questions, or a ticket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Need {
     Permission(u64),
+    /// A set of questions (`crate::decide`), by its id.
+    Questions(u64),
     Ticket(TicketId),
 }
 
@@ -254,6 +262,8 @@ pub struct Model {
     pub mode: Mode,
     /// Open permission requests, oldest first.
     pub approvals: Queue,
+    /// Members' questions waiting for the person, oldest first.
+    pub asked: crate::decide::Asked,
     /// Things that need the person and have not been announced yet: the shell
     /// takes them and tells the person if the window is out of sight.
     alerts: Vec<Alert>,
@@ -309,6 +319,7 @@ impl Model {
             projects: Vec::new(),
             mode: Mode::default(),
             approvals: Queue::default(),
+            asked: Default::default(),
             alerts: Vec::new(),
             flash: None,
             convos: HashMap::new(),
@@ -541,6 +552,7 @@ impl Model {
             Update::Down(reason) => {
                 // Answers sent into a dead link never came back as resolved.
                 self.approvals.forget_answers();
+                self.asked.forget_sent();
                 let next = match &self.conn {
                     // Already down: only the reason may have moved on, and it
                     // is not shown while the banner is up.
@@ -588,6 +600,7 @@ impl Model {
         self.projects = snapshot.projects.clone();
         self.mode = snapshot.mode;
         self.approvals.load(snapshot.approvals.clone());
+        self.asked.load(snapshot.questions.clone());
         if let Some(note) = crate::notify::stale_daemon(&version, env!("CARGO_PKG_VERSION")) {
             self.flash = Some(note);
         }
@@ -685,6 +698,16 @@ impl Model {
                 }
             }
             Event::ApprovalResolved { approval, .. } => self.approvals.resolve(approval),
+            Event::QuestionsAsked { squad, questions } if squad == self.squad => {
+                if self.asked.get(questions.id).is_none() {
+                    let session = self.members.iter().find(|m| m.name == questions.member).map_or(questions.session, |m| m.session);
+                    self.alerts.push(Alert::Decision { session, member: questions.member.clone(), count: questions.questions.len() });
+                }
+                self.asked.push(questions);
+            }
+            Event::QuestionsClosed { squad, id, .. } if squad == self.squad => {
+                self.asked.close(id);
+            }
             Event::ModeChanged { squad, member, mode } if squad == self.squad => match member {
                 None => self.mode = mode.unwrap_or_default(),
                 Some(name) => {
@@ -889,7 +912,7 @@ impl Model {
     /// What the cards above the composer show, for change detection.
     fn card_hint(&self) -> CardHint {
         (
-            self.approvals.ids(),
+            self.approvals.ids().into_iter().chain(self.asked.ids()).collect(),
             self.for_you_here().iter().map(|t| (t.id, t.status, t.note.clone())).collect(),
             self.flash.clone(),
         )
@@ -928,7 +951,8 @@ impl Model {
     /// and leave once the person acted on them; requests always show.
     pub fn needs_you(&self) -> Vec<(Section, Need)> {
         let mut out: Vec<(Section, Need)> = self.approvals.open_items().map(|a| (Section::Permission, Need::Permission(a.id))).collect();
-        for section in &Section::ALL[1..] {
+        out.extend(self.asked.open().map(|s| (Section::Decide, Need::Questions(s.id))));
+        for section in &Section::TICKETS {
             let mut tickets: Vec<&Ticket> = self.tickets.iter().filter(|t| self.section_of(t) == Some(*section) && self.in_focus(t) && !self.is_acted(t)).collect();
             let since = |t: &Ticket| self.since.get(&t.id).copied().unwrap_or(0);
             match section {
@@ -1058,7 +1082,8 @@ impl Model {
             .find(|t| t.status == TicketStatus::Waiting && t.owner.as_deref() == Some(member.name.as_str()))
             .map(|t| t.id);
         let asking = self.approvals.first_for(member.session);
-        if member.presence != Presence::Closed && (asking.is_some() || waiting.is_some()) {
+        let deciding = self.asked.from(&member.name).is_some();
+        if member.presence != Presence::Closed && (asking.is_some() || waiting.is_some() || deciding) {
             return Status::NeedsYou(asking.and_then(|a| a.ticket).or(member.ticket).or(waiting));
         }
         match member.presence {
@@ -1623,6 +1648,33 @@ mod tests {
         model.tickets = vec![ticket(5, "review", None), unblocker, blocked, ticket(4, "proposed", None), ticket(3, "waiting", None), merged_not, ticket(2, "in_progress", None), ticket(1, "done", None)];
         model.approvals.push(approval(11, 2));
         model
+    }
+
+    #[test]
+    fn a_members_questions_wait_under_their_own_heading_mark_it_and_go_once_answered_anywhere() {
+        use equipe_core::protocol::decide::{Choice, Question, QuestionSet};
+        let mut model = needs_model();
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "backend", "backend", SessionState::Working)]), T0);
+        model.take_alerts();
+        let q = Question { question: "Which?".into(), header: String::new(), options: vec![Choice { label: "a".into(), description: String::new() }, Choice { label: "b".into(), description: String::new() }], multi_select: false };
+        let set = QuestionSet { id: 40, session: 2, member: "backend".into(), ticket: None, questions: vec![q.clone(), q], asked_at: 1 };
+        assert!(model.apply(Update::Event(Event::QuestionsAsked { squad: "acme".into(), questions: set.clone() }), T0), "the card shows: a redraw");
+        assert_eq!(model.take_alerts(), vec![Alert::Decision { session: 2, member: "backend".into(), count: 2 }]);
+        // Another squad's, or the same again: nothing.
+        model.apply(Update::Event(Event::QuestionsAsked { squad: "other".into(), questions: QuestionSet { id: 41, ..set.clone() } }), T0);
+        model.apply(Update::Event(Event::QuestionsAsked { squad: "acme".into(), questions: set.clone() }), T0);
+        assert!(model.take_alerts().is_empty());
+        let decide: Vec<Need> = model.needs_you().into_iter().filter(|(s, _)| *s == Section::Decide).map(|(_, n)| n).collect();
+        assert_eq!(decide, [Need::Questions(40)]);
+        assert_eq!(model.needs_you()[0].0, Section::Decide, "right after requests for permission, before tickets");
+        assert_eq!(model.status(&model.members[1]), Status::NeedsYou(None));
+        // Answered from here: hidden at once; answered anywhere: gone.
+        model.asked.sent(40);
+        assert!(!model.needs_you().iter().any(|(s, _)| *s == Section::Decide));
+        model.asked.forget_sent();
+        assert!(model.apply(Update::Event(Event::QuestionsClosed { squad: "acme".into(), id: 40, answers: None }), T0), "answered on another screen: it goes, live");
+        assert!(model.asked.ids().is_empty());
+        assert!(matches!(model.status(&model.members[1]), Status::Working { .. }));
     }
 
     #[test]
