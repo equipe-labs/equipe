@@ -28,6 +28,9 @@
 //! `FAKE_DECIDE_AFTER` ms (default 5000). Answered here, the answers go to the
 //! member as the person's message and it replies.
 //!
+//! `FAKE_BROWSER=1`: the shared Chrome's tabs and a picture stream for the
+//! browser panel (`fake_daemon/browser.rs`); `FAKE_BROWSER=empty`, no tabs.
+//!
 //! Pairing a phone: a code at once, and two phones paired already.
 //! `FAKE_PAIR=ask` has a phone ask 1.5 s after the code shows (`allow` pairs
 //! it); `relay` fails as an unreachable relay would; `silent` never answers,
@@ -446,6 +449,9 @@ fn on(mut info: SessionInfo, ticket: u32, project: &str, title: &str, working: b
     info
 }
 
+#[path = "fake_daemon/browser.rs"]
+mod browser;
+
 #[path = "fake_daemon/torture.rs"]
 mod torture;
 
@@ -582,8 +588,21 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         };
                         let hello = Hello { version: "fake".into(), snapshot };
                         writer.write_all(Message::response(id, hello).to_line().as_bytes()).await.unwrap();
+                        // `FAKE_BROWSER`: the shared Chrome's tabs as they stand, as the daemon tells them.
+                        for event in browser::replay() {
+                            if writer.write_all(Message::event(&event).to_line().as_bytes()).await.is_err() {
+                                return;
+                            }
+                        }
                     }
                     // Kept as the daemon keeps them: under `uploads`, named by equipe.
+                    // The browser panel's own line: pictures of the tab it watches.
+                    (Some(rpc::BROWSER_STREAM), Some(id)) if browser::enabled() => {
+                        if writer.write_all(Message::response(id, true).to_line().as_bytes()).await.is_err() {
+                            return;
+                        }
+                        return browser::serve_stream(lines.into_inner(), writer, events.clone()).await;
+                    }
                     (Some(rpc::UPLOAD), Some(id)) => {
                         use base64::Engine as _;
                         use std::io::Write as _;
@@ -710,6 +729,9 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 tokio::spawn(async move { pairing(&pair, &events).await });
                             }
                             other => {
+                                if browser::on_command(&other, &events) {
+                                    continue;
+                                }
                                 if let Some(ticket) = on_ticket_command(&other) {
                                     let _ = events.send(Event::TicketChanged { squad: "demo".into(), ticket });
                                 }

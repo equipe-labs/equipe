@@ -11,7 +11,7 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     Chosen,
     [
-        ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, FileText, Folder, Globe, Inbox, Info, Keyboard, Laptop, Lightbulb, Locate, Maximize2, MessageSquare, Mic, Minimize2, Paperclip, Pencil, Plus, RotateCcw, RotateCw, Search, Server, Settings, ShieldCheck, Smartphone, SquareSlash, SquareTerminal, Ticket, TriangleAlert, Users, X
+        ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, FileText, Folder, Globe, Hand, Inbox, Info, Keyboard, Laptop, Lightbulb, Locate, Lock, Maximize2, MessageSquare, Mic, Minimize2, Paperclip, Pencil, Plus, RotateCcw, RotateCw, Search, Server, Settings, ShieldCheck, Smartphone, SquareSlash, SquareTerminal, Ticket, TriangleAlert, Users, X
     ]
 );
 
@@ -82,11 +82,15 @@ pub enum Icon {
     Done,
     /// Something went wrong, and what to do.
     Warning,
+    /// A secure address.
+    Lock,
+    /// The person's hand on a member's browser.
+    Hand,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 47] = [
+    pub const ALL: [Icon; 49] = [
         Icon::ArrowLeft,
         Icon::ArrowRight,
         Icon::ArrowUp,
@@ -134,6 +138,8 @@ impl Icon {
         Icon::Phone,
         Icon::Done,
         Icon::Warning,
+        Icon::Lock,
+        Icon::Hand,
     ];
 
     pub fn path(self) -> &'static str {
@@ -185,6 +191,8 @@ impl Icon {
             Icon::Phone => "icons/smartphone.svg",
             Icon::Done => "icons/circle-check.svg",
             Icon::Warning => "icons/triangle-alert.svg",
+            Icon::Lock => "icons/lock.svg",
+            Icon::Hand => "icons/hand.svg",
         }
     }
 }

@@ -25,9 +25,13 @@
 //   {"op":"person","url":"https://…"}
 //   {"op":"watch","page":3,"maxW":1200,"maxH":900,"quality":70,"fps":30}  {"op":"unwatch","page":3}
 //   {"op":"input","page":3,"ev":{…}}   {"op":"nav","page":3,"action":"back|forward|reload|stop|go","url":"…"}
-//   {"op":"newtab","url":"…"}  {"op":"closetab","page":3}  {"op":"control","lane":"squad/name","by":"person"|null}
+//   {"op":"fit","page":3,"w":600,"h":800,"dpr":2}  (lay a page the person drives out at the panel's picture)
+//   {"op":"newtab","url":"…"}  {"op":"closetab","page":3}
+//   {"op":"control","lane":"squad/name","by":"person"|null,"why":"check"?,"ifUntouched":true?}
 //   {"op":"goto","lane":"squad/name","url":"…"}  {"op":"dialog","page":3,"accept":true,"text":"…"}
 //   {"op":"popout","page":3,"bounds":{"left":0,"top":0,"width":900,"height":800}}
+// Page ids start at $EQUIPE_FIRST_PAGE. A member's tab is told with what the
+// daemon reads to tell whether it waits for a person (`signals`), and its icon.
 // Its standard output is binary: messages of `u32be length | u8 kind | payload`
 // — kind 1 a JSON object (`tabs`, `control`, `dialog`, …), kind 2 a frame of a
 // watched page: `u16be header length | header JSON | JPEG`. Anything else that
@@ -61,6 +65,9 @@ const PLACEHOLDER = 'data:text/html;charset=utf-8,' + encodeURIComponent(
   + '<body style="font: 14px -apple-system, system-ui; display: grid; place-items: center; height: 90vh; color: #888">'
   + 'equipe — members’ tabs are behind this one</body>');
 const BUSY = 'The person is using this browser; wait or ask them.';
+const BUSY_CHECK = 'A page in this browser waits for a person (a "verify you are human" check, a sign-in or a code from their phone), '
+  + 'and the person was asked to do it. Don\'t try to get around it: stop using the browser and end your turn, saying you wait for them. '
+  + 'You\'ll be told when they hand the browser back.';
 // A person who stops touching a member's page hands it back after this long.
 const IDLE_CONTROL_MS = 120000;
 
@@ -128,16 +135,20 @@ const address = (text) => {
   });
 
   const owner = new Map(); // page -> lane id ("" for the person's own)
-  const lanes = new Map(); // lane id -> { events, member, color, shown, control, lastInput, agent }
+  const lanes = new Map(); // lane id -> { events, member, color, shown, control, reason, touched, refused, lastInput, agent }
   const ids = new Map(); // page -> page id
   const pages = new Map(); // page id -> page
   const cdps = new Map(); // page -> CDP session, for watching and input
   const dialogs = new Map(); // page id -> the dialog waiting for an answer
   const watches = new Map(); // page id -> { cdp, quality, maxW, maxH, fps, seq, lastAck }
-  let nextId = 1;
+  const fits = new Map(); // page id -> { w, h, dpr }: the panel's box, for a page the person drives
+  // Ids go on from where the daemon says (from the clock): a host started again
+  // never names a tab with an id a screen still holds for another.
+  let nextId = Math.max(1, Number(process.env.EQUIPE_FIRST_PAGE) || 1);
   let claim = null;
   let queue = Promise.resolve();
   let parking = null; // { page, cdp, windowId }
+  let personShown = null; // a page the person asked for on screen
 
   const idOf = (page) => {
     if (!ids.has(page)) {
@@ -157,22 +168,71 @@ const address = (text) => {
 
   const pending = new Map();
   const tabsOf = (lane) => context.pages().filter((p) => owner.get(p) === lane && !p.isClosed());
-  const describe = async (page) => ({
-    id: idOf(page),
-    url: page.url(),
-    title: await page.title().catch(() => ''),
-    loading: !!page.__equipeLoading,
-  });
+  // What the daemon reads off a member's page to tell whether it waits for a
+  // person (`human_check` in browser.rs): a CAPTCHA box in sight and whether
+  // it was answered, a password or one-time-code field, the start of the
+  // text — and the page's icon. Run in the page; reads, never touches.
+  const PROBE = () => {
+    const seen = (e) => {
+      const r = e.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return false;
+      const s = getComputedStyle(e);
+      return s.visibility !== 'hidden' && s.display !== 'none' && Number(s.opacity) > 0.05;
+    };
+    const big = (e) => { const r = e.getBoundingClientRect(); return r.width >= 60 && r.height >= 40; };
+    const all = (sel) => Array.from(document.querySelectorAll(sel));
+    const captcha = /challenges\.cloudflare\.com|hcaptcha\.com|\/recaptcha\/(api2|enterprise)\/|recaptcha\.net\/recaptcha/;
+    const widget = all('iframe').some((f) => captcha.test(f.src) && !/size=invisible/.test(f.src) && seen(f) && big(f))
+      || all('.cf-turnstile, .g-recaptcha, .h-captcha, #challenge-form, #cf-challenge-running, #turnstile-wrapper')
+        .some((e) => e.getAttribute('data-size') !== 'invisible' && seen(e) && big(e));
+    const solved = all('[name="cf-turnstile-response"], [name="g-recaptcha-response"], [name="h-captcha-response"]').some((e) => !!e.value);
+    const inputs = all('input').filter((i) => !i.disabled && seen(i));
+    const password = inputs.some((i) => i.type === 'password');
+    const otp = inputs.some((i) => i.autocomplete === 'one-time-code' || /(^|[^a-z])(otp|totp|mfa|2fa)([^a-z]|$)/i.test(`${i.name} ${i.id}`));
+    const code = inputs.some((i) => ['text', 'tel', 'number'].includes(i.type) && ((i.maxLength >= 4 && i.maxLength <= 8) || i.inputMode === 'numeric'));
+    const text = ((document.body && document.body.innerText) || '').slice(0, 600).toLowerCase();
+    const link = document.querySelector('link[rel~="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]');
+    return { widget, solved, password, otp, code, text, icon: (link && link.href) || null };
+  };
+  const probe = (page) => Promise.race([
+    page.evaluate(PROBE).catch(() => null),
+    new Promise((resolve) => setTimeout(() => resolve(null), 600)),
+  ]);
+  const describe = async (page) => {
+    const url = page.url();
+    const probed = /^https?:/.test(url) ? await probe(page) : null;
+    const origin = (() => { try { return new URL(url).origin; } catch { return null; } })();
+    const favicon = probed?.icon || (origin && /^https?:/.test(origin) ? `${origin}/favicon.ico` : null);
+    const out = { id: idOf(page), url, title: await page.title().catch(() => ''), loading: !!page.__equipeLoading, favicon, crashed: !!page.__equipeCrashed };
+    if (owner.get(page) !== PERSON && probed) {
+      const frames = page.frames().slice(1).map((f) => f.url()).filter((u) => u && u !== 'about:blank').slice(0, 24);
+      const { icon, ...signals } = probed;
+      out.signals = { ...signals, frames };
+      page.__equipeSig = signature(signals, frames);
+    }
+    return out;
+  };
+  // What, changing in place, may change whether a page waits for a person.
+  const signature = (s, frames) => [s.widget, s.solved, s.password, s.otp, s.code, frames.filter((f) => /captcha|challenge/.test(f)).join(' ')].join('|');
   // A title a page changes in place (a count of unread mail, a dialog's
-  // answer) is told too: looked at every moment or so.
+  // answer) is told too: looked at every moment or so — and a member's page
+  // that starts or stops waiting for a person (a CAPTCHA answered), every two.
   const titles = new Map();
+  let tick = 0;
   setInterval(async () => {
+    tick++;
     for (const page of context.pages()) {
       if (!owner.has(page)) continue;
       const title = await page.title().catch(() => null);
       if (title !== null && titles.get(page) !== title) {
         if (titles.has(page)) report(owner.get(page));
         titles.set(page, title);
+      }
+      if (tick % 2 === 0 && owner.get(page) !== PERSON && /^https?:/.test(page.url())) {
+        const s = await probe(page);
+        if (!s) continue;
+        const frames = page.frames().slice(1).map((f) => f.url()).filter((u) => u && u !== 'about:blank');
+        if (signature(s, frames) !== page.__equipeSig) report(owner.get(page));
       }
     }
   }, 1000);
@@ -186,11 +246,22 @@ const address = (text) => {
     }, 80));
   };
 
-  // Who a page works for, as the overlay asks it.
+  // Who a page works for, as the overlay asks it — quiet unless its window is
+  // on the person's screen: in the panel, the panel says who drives it.
+  const onScreen = (page) => {
+    const lane = lanes.get(owner.get(page));
+    return !!lane && (lane.shown || personShown === page);
+  };
   await context.exposeBinding('__equipeWho', ({ page }) => {
     const lane = lanes.get(owner.get(page));
-    return lane ? { member: lane.member, color: lane.color } : null;
+    return lane ? { member: lane.member, color: lane.color, quiet: !onScreen(page) } : null;
   });
+  const hush = (laneId) => {
+    for (const page of tabsOf(laneId)) {
+      const quiet = !onScreen(page);
+      page.evaluate((q) => window.__equipeQuiet && window.__equipeQuiet(q), quiet).catch(() => {});
+    }
+  };
   await context.addInitScript(`(async () => {
     if (window.top !== window || !window.__equipeWho) return;
     const who = await window.__equipeWho().catch(() => null);
@@ -232,7 +303,6 @@ const address = (text) => {
 
   /// What should be in front of the parking window now: the tab of a member
   /// whose browser is on screen, the person's own tab, or nothing (it goes down).
-  let personShown = null; // a page the person asked for on screen
   const restack = async () => {
     const park = await ensureParking();
     const shown = [...lanes.entries()].filter(([, l]) => l.shown).map(([id]) => id);
@@ -282,11 +352,15 @@ const address = (text) => {
     };
     page.bringToFront.original = bringToFront;
     page.on('framenavigated', (frame) => {
-      if (frame !== page.mainFrame()) return;
+      // A frame coming or going may be a CAPTCHA's: told too (in a moment, with the rest).
+      if (frame !== page.mainFrame()) return report(id);
       page.__equipeLoading = true;
       report(id);
     });
-    page.on('load', () => { page.__equipeLoading = false; report(id); });
+    page.on('framedetached', () => report(id));
+    page.on('load', () => { page.__equipeLoading = false; page.__equipeCrashed = false; report(id); });
+    // "Aw, Snap!": the screen says so, and offers to reload it.
+    page.on('crash', () => { page.__equipeCrashed = true; page.__equipeLoading = false; report(id); });
     page.on('domcontentloaded', () => report(id));
     page.on('dialog', (dialog) => {
       const pid = idOf(page);
@@ -299,6 +373,7 @@ const address = (text) => {
       ids.delete(page);
       pages.delete(pid);
       stopWatch(pid);
+      fits.delete(pid);
       cdps.get(page)?.then((c) => c.detach()).catch(() => {});
       cdps.delete(page);
       if (dialogs.delete(pid)) emit({ type: 'dialog_closed', page: pid });
@@ -360,7 +435,11 @@ const address = (text) => {
 
   const openLane = async ({ id, member, color, port, output, shown }) => {
     if (lanes.has(id)) return show({ id, shown });
-    const lane = { events: new EventEmitter(), member, color, shown: !!shown, control: null, lastInput: 0, agent: null };
+    // control: 'person' while the person has it — `reason` 'check' when equipe put
+    // it in their hands for a page that waits for a person, 'hand' when they took
+    // it; `touched`, they put a hand on it since; `refused`, its tools were
+    // turned away meanwhile.
+    const lane = { events: new EventEmitter(), member, color, shown: !!shown, control: null, reason: null, touched: false, refused: false, lastInput: 0, agent: null };
     lanes.set(id, lane);
     const config = await tools.resolveCLIConfigForMCP({ outputDir: output }, process.env);
     const toolset = tools.filteredTools(config);
@@ -376,7 +455,10 @@ const address = (text) => {
         // after each call, the tab it worked in is the one the screen follows.
         const call = backend.callTool.bind(backend);
         backend.callTool = async (name, args, signal) => {
-          if (lane.control === 'person') return { content: [{ type: 'text', text: `### Error\n${BUSY}` }], isError: true };
+          if (lane.control === 'person') {
+            lane.refused = true;
+            return { content: [{ type: 'text', text: `### Error\n${lane.reason === 'check' ? BUSY_CHECK : BUSY}` }], isError: true };
+          }
           const result = await call(name, args, signal);
           const page = backend._context?.currentTab?.()?.page;
           if (page && owner.get(page) === id) {
@@ -399,6 +481,7 @@ const address = (text) => {
     if (!lane || lane.shown === !!shown) return;
     lane.shown = !!shown;
     report(id);
+    hush(id);
     await restack();
   };
   const close = async ({ id }) => {
@@ -407,6 +490,7 @@ const address = (text) => {
   const person = async ({ url }) => {
     const page = await openTab(PERSON, url);
     personShown = page;
+    await applyFit(page);
     await restack();
   };
 
@@ -459,21 +543,76 @@ const address = (text) => {
   };
   const unwatch = ({ page }) => stopWatch(page);
 
+  // ── the size a page is laid out at ──
+
+  // A page the person drives — their own tab, or a member's in their hands —
+  // is laid out at the panel's picture, so it fills it, crisp at the screen's
+  // scale. A member's page its member drives keeps the member's size (the panel
+  // fits its picture), and so does a page out in a real window.
+  const drives = (page) => {
+    const id = owner.get(page);
+    return id === PERSON || lanes.get(id)?.control === 'person';
+  };
+  const applyFit = async (page) => {
+    if (!page || page.isClosed()) return;
+    const f = fits.get(idOf(page));
+    const cdp = await cdpOf(page);
+    if (f && drives(page) && personShown !== page) {
+      const key = `${f.w}x${f.h}@${f.dpr}`;
+      if (page.__equipeFit === key) return;
+      page.__equipeFit = key;
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width: f.w, height: f.h, deviceScaleFactor: f.dpr, mobile: false }).catch(() => {});
+    } else if (page.__equipeFit) {
+      page.__equipeFit = null;
+      await cdp.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
+    } else {
+      return;
+    }
+    // A page that doesn't change draws no new frame: its screencast starts
+    // again, which sends one at the new size at once.
+    const w = watches.get(idOf(page));
+    if (w) {
+      await w.cdp.send('Page.stopScreencast').catch(() => {});
+      await w.cdp.send('Page.startScreencast', { format: 'jpeg', quality: w.quality, maxWidth: w.maxW, maxHeight: w.maxH, everyNthFrame: 1, maxFramesInFlight: 1 }).catch(() => {});
+    }
+  };
+  const fit = async ({ page: pid, w, h, dpr }) => {
+    if (!(w >= 64 && h >= 64)) return;
+    fits.set(pid, { w: Math.round(w), h: Math.round(h), dpr: Math.min(4, Math.max(1, Number(dpr) || 2)) });
+    await applyFit(pages.get(pid));
+  };
+
   // ── the person's hand on a page ──
 
-  const setControl = async (laneId, by) => {
+  // `why` 'check': equipe puts it in the person's hands for a page waiting for
+  // a person; anything else, the person took it.
+  const setControl = async (laneId, by, why) => {
     const lane = lanes.get(laneId);
-    if (!lane || lane.control === by) return;
+    if (!lane) return;
+    if (by && why !== 'check') lane.touched = true;
+    if (lane.control === by) return;
     lane.control = by;
     lane.lastInput = Date.now();
+    const refused = lane.refused;
+    if (by) {
+      lane.reason = why === 'check' ? 'check' : 'hand';
+      if (why === 'check') lane.touched = false;
+    } else {
+      lane.reason = null;
+      lane.touched = false;
+    }
+    lane.refused = false;
     for (const page of tabsOf(laneId)) {
       const cdp = await cdpOf(page);
       await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+      await applyFit(page);
     }
-    emit({ type: 'control', lane: laneId, by });
+    emit({ type: 'control', lane: laneId, by, refused: !by && refused });
   };
   setInterval(() => {
     for (const [id, lane] of lanes) {
+      // Waiting for a person who hasn't come yet: not handed back for that.
+      if (lane.reason === 'check' && !lane.touched) continue;
       if (lane.control === 'person' && Date.now() - lane.lastInput > IDLE_CONTROL_MS) setControl(id, null);
     }
   }, 10000);
@@ -485,6 +624,7 @@ const address = (text) => {
     const lane = lanes.get(laneId);
     if (lane) {
       if (lane.control !== 'person') await setControl(laneId, 'person');
+      lane.touched = true;
       lane.lastInput = Date.now();
     }
     const cdp = await cdpOf(page);
@@ -531,7 +671,12 @@ const address = (text) => {
   };
   const newtab = async ({ url }) => { await openTab(PERSON, url ? address(url) : 'about:blank'); };
   const closetab = async ({ page }) => pages.get(page)?.close().catch(() => {});
-  const control = ({ lane, by }) => setControl(lane, by || null);
+  // `ifUntouched`: handed back only if the person never put a hand on it (a
+  // check that passed by itself).
+  const control = ({ lane, by, why, ifUntouched }) => {
+    if (!by && ifUntouched && lanes.get(lane)?.touched) return undefined;
+    return setControl(lane, by || null, why);
+  };
   const dialog = async ({ page, accept, text }) => {
     const d = dialogs.get(page);
     if (!d) return;
@@ -545,6 +690,8 @@ const address = (text) => {
     const page = pages.get(pid);
     if (!page) return;
     personShown = page;
+    await applyFit(page);
+    if (owner.get(page) !== PERSON) hush(owner.get(page));
     const { windowId } = await windowOf(page);
     await setState(windowId, 'normal');
     if (bounds) await parking?.cdp.send('Browser.setWindowBounds', { windowId, bounds }).catch(() => {});
@@ -579,14 +726,18 @@ const address = (text) => {
 
   await ensureParking();
 
-  const ops = { lane: openLane, show, close, person, watch, unwatch, input, nav, goto, newtab, closetab, control, dialog, popout };
-  // Input goes in order, each after the one before; the rest as they come.
+  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, input, nav, goto, newtab, closetab, control, dialog, popout };
+  // Input goes in order, each after the one before; so do watching and sizing
+  // (two screencasts of a page started at once would leave one running
+  // unseen); the rest as they come.
   let inputs = Promise.resolve();
+  let pictures = Promise.resolve();
   readline.createInterface({ input: process.stdin }).on('line', (line) => {
     let request;
     try { request = JSON.parse(line); } catch { return; }
     const run = () => Promise.resolve(ops[request.op]?.(request)).catch((err) => console.error(`equipe browser host: ${request.op}: ${err && err.message}`));
     if (request.op === 'input') inputs = inputs.then(run);
+    else if (['watch', 'unwatch', 'fit'].includes(request.op)) pictures = pictures.then(run);
     else run();
   });
   // The daemon gone, the browser goes with it.

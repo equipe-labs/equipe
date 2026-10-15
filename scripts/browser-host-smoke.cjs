@@ -36,13 +36,21 @@ const freePort = () => new Promise((resolve) => {
     res.setHeader('content-type', 'text/html; charset=utf-8');
     if (req.url === '/form') return res.end('<title>Form</title><input id=q autofocus style="font-size:30px">');
     if (req.url === '/dialog') return res.end('<title>Dialog</title><button id=b onclick="document.title = confirm(\'Sure?\') ? \'yes\' : \'no\'">go</button>');
+    // A stand-in for Cloudflare's wall (no real site is touched): its title, its
+    // words, a challenge box that passes when clicked, then the page.
+    if (req.url === '/wall') {
+      return res.end('<title>Just a moment...</title><h1>example.test</h1><p>Verify you are human by completing the action below.</p>'
+        + '<div id=challenge-form style="width:300px;height:65px;border:1px solid #ccc" onclick="location.href=\'/passed\'">I am human</div>'
+        + '<input type=hidden name="cf-turnstile-response" value="">');
+    }
+    if (req.url === '/signin') return res.end('<title>Sign in</title><link rel=icon href="/icon.png"><input name=user><input type=password name=pw>');
     res.end(`<title>Page ${req.url}</title><h1>${req.headers.host}${req.url}</h1>`);
   }).listen(0);
   await new Promise((r) => site.once('listening', r));
   const base = `http://127.0.0.1:${site.address().port}`;
   const other = `http://localhost:${site.address().port}`;
 
-  const host = spawn(process.execPath, [script, path.join(dir, 'chrome'), path.join(dir, 'state.json')], { stdio: ['pipe', 'pipe', 'inherit'] });
+  const host = spawn(process.execPath, [script, path.join(dir, 'chrome'), path.join(dir, 'state.json')], { stdio: ['pipe', 'pipe', 'inherit'], env: { ...process.env, EQUIPE_FIRST_PAGE: String((Math.floor(Date.now() / 1000) % 2 ** 32) * 2 ** 20 + 1) } });
   const messages = [];
   const frames = [];
   let buf = Buffer.alloc(0);
@@ -104,6 +112,9 @@ const freePort = () => new Promise((resolve) => {
   const tabs = await until('the lane reports its tab', () => { const t = lastTabs(lane); return t && t.pages.some((p) => p.url.endsWith('/form') && p.title === 'Form') && t.agent ? t : null; });
   const page = tabs?.agent;
   check(!!page, `the tab the member works in is reported (page ${page})`);
+  check(page >= 1_000_000_000, `page ids go on from where the daemon says, not from 1 (${page})`);
+  const reported = tabs?.pages.find((p) => p.id === page);
+  check(reported?.favicon === `${base}/favicon.ico` && reported?.signals && reported.signals.password === false, 'a member\'s tab comes with its icon and what is read off it');
 
   // Watched: a frame comes, with the page's size in CSS pixels.
   op({ op: 'watch', page, maxW: 800, maxH: 800, quality: 60, fps: 30 });
@@ -159,6 +170,46 @@ const freePort = () => new Promise((resolve) => {
   await until('the dialog answered', () => lastTabs(lane)?.pages.find((p) => p.id === page)?.title === 'yes');
   check(lastTabs(lane).pages.find((p) => p.id === page).title === 'yes', 'the screen\'s answer reaches the page');
   if (lastTabs(lane).pages.find((p) => p.id === page).title !== 'yes') { console.log(JSON.stringify(messages.filter((m) => m.type !== 'tabs').slice(-5)), JSON.stringify(lastTabs(lane))); console.log(JSON.stringify(await mcp('browser_evaluate', { function: '() => document.title' })).slice(0, 800)); }
+
+  // A page that waits for a person: what the daemon decides it from is told.
+  // (The dialog's click took the page; it goes back to the member first.)
+  op({ op: 'control', lane, by: null });
+  await until('given back after the dialog', () => [...messages].reverse().find((m) => m.type === 'control' && m.lane === lane)?.by === null);
+  messages.length = 0;
+  await mcp('browser_navigate', { url: `${base}/wall` });
+  const wall = await until('the wall\'s signals', () => lastTabs(lane)?.pages.find((p) => p.url.endsWith('/wall') && p.signals?.widget));
+  check(wall?.title === 'Just a moment...' && wall.signals.widget && !wall.signals.solved && /verify you are human/.test(wall.signals.text), 'a challenge page is told with its box in sight and its words');
+  // equipe puts it in the person's hands for it: the member's tools say why, and wait.
+  op({ op: 'control', lane, by: 'person', why: 'check' });
+  await until('held for the check', () => messages.find((m) => m.type === 'control' && m.lane === lane && m.by === 'person'));
+  const waiting = await mcp('browser_snapshot', {});
+  check(waiting.isError && /waits for a person/.test(waiting.content[0].text), 'a member\'s tool call is told a page waits for the person');
+  // Passed by itself (no hand on it): back to the member, which is told it was turned away.
+  messages.length = 0;
+  op({ op: 'control', lane, by: null, ifUntouched: true });
+  const back = await until('handed back untouched', () => messages.find((m) => m.type === 'control' && m.lane === lane && m.by === null));
+  check(back?.refused === true, 'handed back by itself, saying its tools were turned away');
+  // Touched, it stays the person's.
+  op({ op: 'control', lane, by: 'person', why: 'check' });
+  await until('held again', () => messages.find((m) => m.type === 'control' && m.lane === lane && m.by === 'person'));
+  op({ op: 'input', page, ev: { t: 'mouse', type: 'mouseMoved', x: 5, y: 5, button: 'none', buttons: 0, clickCount: 0 } });
+  await sleep(300);
+  messages.length = 0;
+  op({ op: 'control', lane, by: null, ifUntouched: true });
+  await sleep(800);
+  check(!messages.some((m) => m.type === 'control' && m.lane === lane), 'a page the person touched isn\'t handed back by itself');
+  // In their hands, laid out at the panel's picture; given back, at its own size again.
+  const own = frames.at(-1)?.header;
+  op({ op: 'fit', page, w: 500, h: 700, dpr: 2 });
+  const fitted = await until('a frame at the panel\'s size', () => frames.slice(-3).find((f) => f.header.page === page && f.header.cssW === 500 && f.header.cssH === 700));
+  if (!fitted) console.log(JSON.stringify(frames.slice(-3).map((f) => f.header)));
+  check(!!fitted, `a page the person drives fills the panel (${fitted?.header.cssW}×${fitted?.header.cssH} css, ${fitted?.header.w}×${fitted?.header.h} px)`);
+  op({ op: 'control', lane, by: null });
+  const unfitted = await until('its own size again', () => frames.slice(-3).find((f) => f.header.page === page && f.header.cssW === own?.cssW));
+  check(!!unfitted, 'given back, the member\'s page is at its own size again');
+  await mcp('browser_navigate', { url: `${base}/signin` });
+  const signin = await until('the sign-in page', () => lastTabs(lane)?.pages.find((p) => p.url.endsWith('/signin') && p.signals?.password));
+  check(signin?.favicon === `${base}/icon.png`, 'a page\'s own icon is told');
 
   // The person's own tab.
   op({ op: 'newtab', url: `${base}/mine` });

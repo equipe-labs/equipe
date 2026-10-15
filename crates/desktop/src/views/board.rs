@@ -466,6 +466,8 @@ impl Shell {
             }
             // Answered on its card, in the peek.
             Need::Questions(_) => {}
+            // A page waiting for the person: the panel, on it, in their hands.
+            Need::Browser(page) => self.reveal_browser(page, cx),
         }
     }
 
@@ -485,7 +487,7 @@ impl Shell {
                     self.board_yes(cx);
                 }
             }
-            Some(Need::Questions(_)) | None => {}
+            Some(Need::Questions(_) | Need::Browser(_)) | None => {}
         }
     }
 
@@ -683,7 +685,7 @@ impl Shell {
                 }
             }
             // Closed on its card (✕), where what it closes is in sight.
-            Some(Need::Questions(_)) | None => {}
+            Some(Need::Questions(_) | Need::Browser(_)) | None => {}
         }
     }
 
@@ -1682,6 +1684,21 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 )
                 .child(div().w(px(flags_w)).flex_none())
                 .child(cell(detail_w).text_color(p.member(hue)).child(a.member.clone()))
+                .child(cell(eta_w))
+                .child(cell(34.))
+                .into_any_element()
+        }
+        Need::Browser(page) => {
+            let Some((title, name, color)) = super::browser::need_row(shell, page) else { return div().into_any_element() };
+            base(SharedString::from(format!("browser-{page}")), cx)
+                .pl_2()
+                .child(div().w(px(14.)).flex_none())
+                .child(super::browser::need_mark(p))
+                .child(div().w(px(44.)).flex_none())
+                .when(show_project, |r| r.child(project_col(None)))
+                .child(div().flex_1().min_w(px(120.)).truncate().text_color(p.text).child(title))
+                .child(div().w(px(flags_w)).flex_none())
+                .child(cell(detail_w).text_color(color).child(name))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()

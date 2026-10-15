@@ -89,6 +89,7 @@
   "notice.allowed": "✓ 許可しました: {action}",
   "notice.always_allowed": "✓ スクワッドに {rule} を常に許可します · {action}",
   "notice.blocked": "✗ equipe がブロックしました: {action}",
+  "notice.browser_check": "🧍 {site} で人による確認が必要なため、ブラウザを人に渡しました。ブラウザツールは戻ってくるまで待ちます。",
   "notice.browser_given_back": "🖐 ブラウザを返しました。",
   "notice.browser_in_panel": "🖥 {name} のブラウザがブラウザパネルで開きます: {why}",
   "notice.browser_on_screen": "🖥 {name} のブラウザがこの Mac の画面に表示されます: {why}",

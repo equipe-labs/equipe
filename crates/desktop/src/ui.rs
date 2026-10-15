@@ -64,6 +64,12 @@ impl Button {
         self
     }
 
+    /// A tooltip saying more than the words do.
+    pub fn tip(mut self, text: impl Into<SharedString>, keys: Option<&'static str>) -> Self {
+        self.tip = Some((text.into(), keys));
+        self
+    }
+
     /// Dimmed, and deaf to clicks.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;

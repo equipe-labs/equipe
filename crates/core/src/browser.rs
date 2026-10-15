@@ -211,13 +211,19 @@ pub enum HostEvent {
         color: Option<String>,
         #[serde(default)]
         shown: bool,
-        pages: Vec<equipe_protocol::BrowserPage>,
+        pages: Vec<HostPage>,
         /// The tab its member's tools last worked in.
         #[serde(default)]
         agent: Option<u64>,
     },
-    /// Who has a lane in hand: `"person"`, or the member again.
-    Control { lane: String, by: Option<String> },
+    /// Who has a lane in hand: `"person"`, or the member again. `refused`:
+    /// its member's tools were turned away while the person had it.
+    Control {
+        lane: String,
+        by: Option<String>,
+        #[serde(default)]
+        refused: bool,
+    },
     Dialog {
         page: u64,
         lane: String,
@@ -230,6 +236,203 @@ pub enum HostEvent {
     /// The host is gone (its Chrome closed, or it failed).
     #[serde(skip)]
     Exited,
+}
+
+/// A tab as the host tells it: what a screen is told ([`HostPage::page`]),
+/// and what the host read off the page to tell whether it waits for a person.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+pub struct HostPage {
+    pub id: u64,
+    pub url: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub loading: bool,
+    #[serde(default)]
+    pub favicon: Option<String>,
+    #[serde(default)]
+    pub signals: Option<Signals>,
+    #[serde(default)]
+    pub crashed: bool,
+}
+
+/// What the host reads off a member's page (`PROBE` in `browser-host.cjs`).
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct Signals {
+    /// The address of each frame in it: Turnstile, reCAPTCHA and hCaptcha
+    /// live in frames of their own.
+    pub frames: Vec<String>,
+    /// A CAPTCHA box in sight — bigger than the badge an invisible one shows.
+    pub widget: bool,
+    /// A CAPTCHA on the page already answered (its response field filled).
+    pub solved: bool,
+    /// A password field in sight.
+    pub password: bool,
+    /// A one-time-code field in sight (`autocomplete="one-time-code"`, an `otp` field).
+    pub otp: bool,
+    /// A short code-sized field in sight (4–8 characters, or numeric).
+    pub code: bool,
+    /// The start of what the page says, lowercased.
+    pub text: String,
+}
+
+impl HostPage {
+    /// The tab as screens are told it: whether it waits for a person decided here.
+    pub fn page(self) -> equipe_protocol::BrowserPage {
+        let check = human_check(&self.url, &self.title, self.signals.as_ref());
+        let favicon = self.favicon.filter(|f| f.starts_with("https://") || f.starts_with("http://"));
+        equipe_protocol::BrowserPage { id: self.id, url: self.url, title: self.title, loading: self.loading, favicon, check, crashed: self.crashed }
+    }
+}
+
+/// Titles of a whole-page "checking your browser" wall — Cloudflare's, in the
+/// languages it speaks, and the like.
+const WALL_TITLES: &[&str] = &[
+    "just a moment",
+    "잠시만 기다리십시오",
+    "잠시만 기다려 주십시오",
+    "잠시만 기다려주세요",
+    "un instant",
+    "einen moment",
+    "un momento",
+    "しばらくお待ちください",
+    "请稍候",
+    "請稍候",
+    "attention required! | cloudflare",
+    "checking your browser",
+    "please wait while we verify",
+    "ddos-guard",
+];
+
+/// Words of a page asking whether a person is there.
+const HUMAN_WORDS: &[&str] = &[
+    "verify you are human",
+    "verifying you are human",
+    "are you a robot",
+    "i'm not a robot",
+    "i am human",
+    "not a robot",
+    "checking if the site connection is secure",
+    "needs to review the security of your connection",
+    "사람인지 확인",
+    "로봇이 아닙니다",
+    "연결이 안전한지 확인",
+    "人間であることを確認",
+    "ロボットではありません",
+    "确认您是真人",
+    "確認您是真人",
+    "vérifiez que vous êtes humain",
+    "bestätigen sie, dass sie ein mensch sind",
+    "verifica que eres humano",
+];
+
+/// Where a CAPTCHA's frame comes from (not an invisible one's badge).
+const CAPTCHA_FRAMES: &[&str] = &["challenges.cloudflare.com", "hcaptcha.com", "/recaptcha/api2/", "/recaptcha/enterprise/", "recaptcha.net/recaptcha"];
+
+/// Words of a code from the person's phone.
+const CODE_WORDS: &[&str] = &[
+    "two-factor",
+    "2-step",
+    "two-step",
+    "2fa",
+    "verification code",
+    "security code",
+    "authentication code",
+    "authenticator app",
+    "one-time code",
+    "enter the code",
+    "인증 코드",
+    "인증번호",
+    "2단계 인증",
+    "보안 코드",
+    "確認コード",
+    "認証コード",
+    "2 段階認証",
+    "验证码",
+    "驗證碼",
+    "code de vérification",
+    "bestätigungscode",
+    "código de verificación",
+];
+
+/// Words of a sign-in page, in its address or title.
+const SIGN_IN_WORDS: &[&str] =
+    &["login", "log-in", "log_in", "log in", "signin", "sign-in", "sign_in", "sign in", "/auth", "/sso", "sso.", "accounts.", "로그인", "ログイン", "登录", "登入", "anmelden", "connexion", "iniciar sesión", "se connecter"];
+
+/// Whether a page waits for a person, and for what: from its address, its
+/// title and what the host read off it. Only what a person must do counts —
+/// an invisible CAPTCHA's badge, or one already answered, is none.
+pub fn human_check(url: &str, title: &str, signals: Option<&Signals>) -> Option<equipe_protocol::HumanCheck> {
+    use equipe_protocol::HumanCheck;
+    let none = Signals::default();
+    let s = signals.unwrap_or(&none);
+    let url_l = url.to_lowercase();
+    let title_l = title.trim().trim_end_matches(['.', '…', ' ']).to_lowercase();
+    let says = |words: &[&str]| words.iter().any(|w| s.text.contains(w) || title_l.contains(w));
+    // A wall over the whole page: its title, or Cloudflare's challenge in the address.
+    let wall_title = title_l.chars().count() <= 40 && WALL_TITLES.iter().any(|w| title_l.starts_with(w));
+    if wall_title || url_l.contains("__cf_chl") || url_l.contains("cf_chl_") || url_l.contains("/cdn-cgi/challenge-platform") {
+        return Some(HumanCheck::Challenge);
+    }
+    // A CAPTCHA in sight, not yet answered.
+    let captcha_frame = s.frames.iter().any(|f| {
+        let f = f.to_lowercase();
+        CAPTCHA_FRAMES.iter().any(|c| f.contains(c)) && !f.contains("size=invisible")
+    });
+    if !s.solved && (s.widget || (captcha_frame && says(HUMAN_WORDS))) {
+        return Some(HumanCheck::Captcha);
+    }
+    if s.otp || (s.code && !s.password && says(CODE_WORDS)) {
+        return Some(HumanCheck::TwoFactor);
+    }
+    if s.password && SIGN_IN_WORDS.iter().any(|w| url_l.contains(w) || title_l.contains(w)) {
+        return Some(HumanCheck::SignIn);
+    }
+    None
+}
+
+/// What equipe does with a member's browser when its tabs change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckStep {
+    /// A page waits for a person: into their hands it goes, its member waits.
+    Pause { page: u64, url: String, check: equipe_protocol::HumanCheck },
+    /// Nothing waits any more: back to its member — unless the person put a
+    /// hand on it, then it stays theirs until they give it back.
+    Release,
+    Nothing,
+}
+
+/// The next step for a member's browser: `pausing`, equipe put it in the
+/// person's hands for a check already; `held`, it is in their hands for
+/// another reason (asked in, or taken); `let_go(page, url)`, the person handed
+/// that page back still waiting — leave it to the member.
+pub fn check_step(pages: &[equipe_protocol::BrowserPage], agent: Option<u64>, pausing: bool, held: bool, let_go: impl Fn(u64, &str) -> bool) -> CheckStep {
+    // The tab its member works in first.
+    let waiting = pages.iter().filter(|p| p.check.is_some() && !let_go(p.id, &p.url)).min_by_key(|p| Some(p.id) != agent);
+    match (waiting, pausing) {
+        (Some(page), false) if !held => CheckStep::Pause { page: page.id, url: page.url.clone(), check: page.check.unwrap_or(equipe_protocol::HumanCheck::Challenge) },
+        (None, true) => CheckStep::Release,
+        _ => CheckStep::Nothing,
+    }
+}
+
+/// The site an address is on, as a person names it: `dash.cloudflare.com`.
+pub fn site_of(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    host.strip_prefix("www.").unwrap_or(host)
+}
+
+/// The first page id a browser host started now gives: ids go on from the
+/// clock, so a host started again (or a daemon) never names a tab with an
+/// id a screen still holds for another — a screen showing one tab's address
+/// over another's picture. Room for 2²⁰ tabs a second, and below 2⁵³, where
+/// JavaScript's numbers stop being whole.
+pub fn first_page_id(now: std::time::SystemTime) -> u64 {
+    let secs = now.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    ((secs % (1 << 32)) << 20) + 1
 }
 
 impl Host {
@@ -252,6 +455,7 @@ impl Host {
             .arg(&script)
             .arg(&profile)
             .arg(&state)
+            .env("EQUIPE_FIRST_PAGE", first_page_id(std::time::SystemTime::now()).to_string())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(log)
@@ -845,6 +1049,140 @@ mod tests {
         hub.panel(false);
         hub.panel(false);
         assert!(!hub.has_panel());
+    }
+
+    #[test]
+    fn a_watcher_only_ever_gets_its_own_pages_frames() {
+        let hub = Hub::new();
+        let (a, b) = (hub.watcher(), hub.watcher());
+        let want = |page| Want { page, fps: 30, max_w: 800, max_h: 800, quality: 70 };
+        hub.watch(a, want(10));
+        hub.watch(b, want(20));
+        hub.put(header(20, 1), vec![20]);
+        assert!(hub.latest(10).is_none(), "page 20's picture is never page 10's");
+        hub.put(header(10, 1), vec![10]);
+        assert_eq!(hub.latest(10).unwrap().jpeg, vec![10]);
+        assert_eq!(hub.latest(20).unwrap().jpeg, vec![20]);
+        // A watcher moving to another page: the old page's picture goes with it.
+        hub.watch(a, want(30));
+        assert!(hub.latest(10).is_none());
+        hub.put(header(10, 2), vec![10]);
+        assert!(hub.latest(10).is_none() && hub.latest(30).is_none(), "a late frame of a page nobody watches is dropped");
+    }
+
+    #[test]
+    fn a_browser_started_again_never_reuses_a_page_id() {
+        let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_792_000_000);
+        let first = first_page_id(t);
+        let later = first_page_id(t + std::time::Duration::from_secs(1));
+        assert!(later >= first + (1 << 20), "a second later starts past a million tabs of the first");
+        assert!(later < 1 << 53, "whole in JavaScript");
+        assert!(first_page_id(std::time::UNIX_EPOCH + std::time::Duration::from_secs(u32::MAX as u64 * 3)) < 1 << 53);
+    }
+
+    fn signals(f: impl FnOnce(&mut Signals)) -> Signals {
+        let mut s = Signals::default();
+        f(&mut s);
+        s
+    }
+
+    #[test]
+    fn a_whole_page_check_is_known_by_its_title_or_its_address() {
+        use equipe_protocol::HumanCheck::Challenge;
+        for title in ["Just a moment...", "Just a moment…", "잠시만 기다리십시오…", "しばらくお待ちください...", "Attention Required! | Cloudflare", "请稍候…"] {
+            assert_eq!(human_check("https://dash.cloudflare.com/", title, None), Some(Challenge), "{title}");
+        }
+        assert_eq!(human_check("https://example.com/?__cf_chl_rt_tk=abc", "", None), Some(Challenge));
+        assert_eq!(human_check("https://example.com/cdn-cgi/challenge-platform/h/b/orchestrate", "example.com", None), Some(Challenge));
+        // A title that only starts the same is something else.
+        assert_eq!(human_check("https://blog.example.com/p/1", "Just a moment of silence: notes from a quiet week in the mountains", None), None);
+        assert_eq!(human_check("https://appstoreconnect.apple.com/apps", "App Store Connect", None), None);
+    }
+
+    #[test]
+    fn a_captcha_counts_while_it_is_in_sight_and_unanswered() {
+        use equipe_protocol::HumanCheck::Captcha;
+        let turnstile = signals(|s| {
+            s.frames = vec!["https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/g/turnstile/if/ov2/av0/rcv/abc".into()];
+            s.widget = true;
+        });
+        assert_eq!(human_check("https://dash.cloudflare.com/login", "Cloudflare", Some(&turnstile)), Some(Captcha));
+        let answered = Signals { solved: true, ..turnstile.clone() };
+        assert_eq!(human_check("https://dash.cloudflare.com/login", "Cloudflare", Some(&answered)), None, "answered: nothing to do");
+        // A frame alone counts when the page asks whether a person is there.
+        let asked = signals(|s| {
+            s.frames = vec!["https://www.google.com/recaptcha/api2/anchor?k=x&size=normal".into()];
+            s.text = "please verify you are human to continue".into();
+        });
+        assert_eq!(human_check("https://shop.example.com/", "Shop", Some(&asked)), Some(Captcha));
+        // An invisible reCAPTCHA's badge on an ordinary page is none.
+        let badge = signals(|s| s.frames = vec!["https://www.google.com/recaptcha/api2/anchor?k=x&size=invisible".into()]);
+        assert_eq!(human_check("https://shop.example.com/", "Shop", Some(&badge)), None);
+        let quiet = signals(|s| s.frames = vec!["https://newassets.hcaptcha.com/captcha/v1/abc/static/hcaptcha.html#frame=checkbox".into()]);
+        assert_eq!(human_check("https://shop.example.com/", "Shop", Some(&quiet)), None, "a frame in a page that asks nothing");
+    }
+
+    #[test]
+    fn a_sign_in_wall_and_a_code_from_the_phone_are_the_persons() {
+        use equipe_protocol::HumanCheck::{SignIn, TwoFactor};
+        let password = signals(|s| s.password = true);
+        assert_eq!(human_check("https://vercel.com/login", "Login – Vercel", Some(&password)), Some(SignIn));
+        assert_eq!(human_check("https://accounts.google.com/v3/signin/identifier", "Google 계정", Some(&password)), Some(SignIn));
+        assert_eq!(human_check("https://app.example.com/settings/security", "Change password", Some(&password)), None, "a password field elsewhere");
+        let otp = signals(|s| s.otp = true);
+        assert_eq!(human_check("https://github.com/sessions/two-factor/app", "Two-factor authentication", Some(&otp)), Some(TwoFactor));
+        let code = signals(|s| {
+            s.code = true;
+            s.text = "6자리 인증 코드를 입력하세요".into();
+        });
+        assert_eq!(human_check("https://nid.naver.com/", "네이버", Some(&code)), Some(TwoFactor));
+        assert_eq!(human_check("https://example.com/search", "Search", Some(&signals(|s| s.code = true))), None, "a short field alone");
+    }
+
+    #[test]
+    fn a_tab_is_told_with_what_it_waits_for_and_a_web_icon_only() {
+        let page = HostPage {
+            id: 7,
+            url: "https://dash.cloudflare.com/".into(),
+            title: "Just a moment...".into(),
+            loading: false,
+            favicon: Some("data:image/png;base64,AAAA".into()),
+            signals: None,
+            crashed: false,
+        }
+        .page();
+        assert_eq!(page.check, Some(equipe_protocol::HumanCheck::Challenge));
+        assert_eq!(page.favicon, None, "the screen fetches icons from the web only");
+        let raw = r#"{"type":"tabs","lane":"acme/backend","pages":[{"id":3,"url":"https://a.com/","title":"A","favicon":"https://a.com/favicon.ico","signals":{"password":true}}]}"#;
+        let HostEvent::Tabs { pages, .. } = serde_json::from_str::<HostEvent>(raw).unwrap() else { panic!() };
+        assert_eq!(pages[0].clone().page().favicon.as_deref(), Some("https://a.com/favicon.ico"));
+        assert!(pages[0].signals.as_ref().unwrap().password);
+    }
+
+    #[test]
+    fn a_page_waiting_for_a_person_pauses_its_member_until_it_passes() {
+        use equipe_protocol::{BrowserPage, HumanCheck};
+        let page = |id: u64, check: Option<HumanCheck>| BrowserPage { id, url: format!("https://site{id}.com/"), check, ..Default::default() };
+        let never = |_: u64, _: &str| false;
+        let quiet = [page(1, None), page(2, None)];
+        assert_eq!(check_step(&quiet, Some(1), false, false, never), CheckStep::Nothing);
+        // The member's own tab first, whatever else waits.
+        let both = [page(1, Some(HumanCheck::SignIn)), page(2, Some(HumanCheck::Challenge))];
+        assert_eq!(check_step(&both, Some(2), false, false, never), CheckStep::Pause { page: 2, url: "https://site2.com/".into(), check: HumanCheck::Challenge });
+        assert_eq!(check_step(&both, Some(2), true, true, never), CheckStep::Nothing, "paused already");
+        assert_eq!(check_step(&both, Some(2), false, true, never), CheckStep::Nothing, "in the person's hands for something else");
+        // Passed: back it goes.
+        assert_eq!(check_step(&quiet, Some(2), true, true, never), CheckStep::Release);
+        // Handed back still waiting: left to the member.
+        let handed = |id: u64, _: &str| id == 2;
+        assert_eq!(check_step(&[page(2, Some(HumanCheck::Challenge))], Some(2), false, false, handed), CheckStep::Nothing);
+    }
+
+    #[test]
+    fn a_site_is_named_by_its_host() {
+        assert_eq!(site_of("https://www.dash.cloudflare.com/login?x=1"), "dash.cloudflare.com");
+        assert_eq!(site_of("https://user@appstoreconnect.apple.com/apps"), "appstoreconnect.apple.com");
+        assert_eq!(site_of("about:blank"), "about:blank");
     }
 
     #[test]

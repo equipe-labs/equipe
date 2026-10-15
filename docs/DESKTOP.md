@@ -305,9 +305,43 @@ signed in once, so the person sees exactly what the members see.
 - JS dialogs show as a card over the page; what a picture can't do (passkeys,
   permission prompts, a `<select>`'s list, file choosers) goes through
   Chrome에서 열기.
+- **One tab's picture, always its own.** Frames name their page, and the panel
+  shows a frame only for the tab picked and only while that page is listed
+  (`browse::Picture`); picking another tab shows a skeleton until its first
+  frame. Page ids never repeat across host or daemon restarts (they start from
+  the clock, `EQUIPE_FIRST_PAGE`), and on every attach the panel forgets the
+  tabs it held — so an id from an old browser never names a new tab (the bug
+  where one member's tab showed another's Cloudflare wall).
+- **Size.** The panel sends its picture box (CSS px and scale) with `watch`,
+  once it has held still for 250 ms; a page the person drives (their own tab,
+  a member's in their hands) is laid out at it (`Emulation.setDeviceMetricsOverride`),
+  so it fills the box, crisp. A member's page its member drives keeps its own
+  size and is fitted, its shape kept, on a neutral ground.
+- **Who has it.** The control bar says who drives and what (`frontend ·
+  App Store Connect에서 작업 중`), with one button: 직접 하기 / 돌려주기. The
+  person driving shows as an accent outline and `내가 쓰는 중 · Esc로 돌려주기`;
+  a member at work as a faint outline in its colour (the bar's tooltip says so).
+  The in-page glow and label show only when the window is on the Mac's screen.
+- **Pages that wait for a person.** The host reads each member page's frames,
+  title and a few DOM facts (a CAPTCHA box in sight and whether it was answered,
+  a password or one-time-code field, the start of the text); the daemon decides
+  (`browser::human_check`: Cloudflare's "Just a moment…"/`cf_chl` walls,
+  Turnstile/reCAPTCHA/hCaptcha, sign-in walls, 2FA) and puts that browser in the
+  person's hands — its tools answer "a page waits for a person… end your turn".
+  The panel shows "사람 확인이 필요해요 — 직접 눌러 주세요" with 직접 하기, 나에게
+  lists it under 내 차례, and a notification opens the panel on it. Passed
+  with no hand on it, it goes back by itself; passed by the person, the banner
+  offers 돌려주기 (the member is told to carry on if its turn had ended).
+- Empty, connecting, line down (다시 시도), page crashed (새로고침), pictures
+  stopped (다시 시도) and a member's browser closed (내 탭으로 다시 열기) each say
+  so in place of the picture.
 
-Snapshot steps: `browser`, `bopen:<url>`, `bpick:<n>`, `bclick:<fx>,<fy>`,
-`bkeys:<text>`, `bime:ㅎ|하|한`. The host's ops have a smoke test:
+Snapshot steps: `browser`, `bopen:<url>`, `bpick:<n>`, `btake`, `bgive`,
+`breveal:<page>`, `bclick:<fx>,<fy>`, `bkeys:<text>`, `bime:ㅎ|하|한`. The fake
+daemon has a browser with `FAKE_BROWSER=1` (frontend on an App Store
+Connect–like page, backend paused at a "Just a moment…" wall that a click
+passes, a tab of the person's own; `FAKE_BROWSER=empty` for none). The host's
+ops have a smoke test, a stand-in Cloudflare wall included:
 `npx -y -p playwright@1.64.0 node scripts/browser-host-smoke.cjs`.
 
 ## Shipping the app

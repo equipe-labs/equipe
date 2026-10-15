@@ -89,6 +89,7 @@
   "notice.allowed": "✓ 你允许了：{action}",
   "notice.always_allowed": "✓ 你为小队始终允许 {rule} · {action}",
   "notice.blocked": "✗ equipe 已阻止：{action}",
+  "notice.browser_check": "🧍 {site} 需要真人确认，浏览器已交给你。浏览器工具会等到交还为止。",
   "notice.browser_given_back": "🖐 你交还了浏览器。",
   "notice.browser_in_panel": "🖥 {name} 的浏览器在浏览器面板中打开：{why}",
   "notice.browser_on_screen": "🖥 {name} 的浏览器出现在这台 Mac 的屏幕上：{why}",

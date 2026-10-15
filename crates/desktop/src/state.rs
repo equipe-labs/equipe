@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use equipe_core::protocol::rpc::Hello;
-use equipe_core::protocol::{Engine, Entry, Estimate, Event, Mode, OffMain, SessionId, SessionState, Ticket, TicketId, TicketKind, TicketStatus, TurnOutcome};
+use equipe_core::protocol::{Engine, Entry, Estimate, Event, HumanCheck, Mode, OffMain, SessionId, SessionState, Ticket, TicketId, TicketKind, TicketStatus, TurnOutcome};
 
 use crate::convo::Convo;
 use crate::daemon::Update;
@@ -181,6 +181,9 @@ pub enum Need {
     /// A set of questions (`crate::decide`), by its id.
     Questions(u64),
     Ticket(TicketId),
+    /// A member's browser page waiting for the person's own hand (a human
+    /// check, a sign-in), by its page id ([`BrowserWait`]).
+    Browser(u64),
 }
 
 /// What a status is called, everywhere: one word each.
@@ -306,6 +309,22 @@ pub struct Model {
     /// What the person answered tickets that waited for them with, here or on
     /// another screen (`crate::yourturn`), for the cards that asked.
     pub answers: HashMap<TicketId, crate::yourturn::Answered>,
+    /// Members' browser pages waiting for the person — a "verify you are
+    /// human" check, a sign-in, a code: in 나에게 until they pass or the
+    /// browser is handed back.
+    pub browser_waits: Vec<BrowserWait>,
+}
+
+/// A member's browser page that waits for the person. No member decides it,
+/// and none can do it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserWait {
+    pub page: u64,
+    pub lane: String,
+    pub session: Option<SessionId>,
+    pub member: String,
+    pub site: String,
+    pub check: HumanCheck,
 }
 
 impl Model {
@@ -339,6 +358,7 @@ impl Model {
             browsers_shown: false,
             desktop_stopped: false,
             answers: HashMap::new(),
+            browser_waits: Vec::new(),
         }
     }
 
@@ -593,6 +613,8 @@ impl Model {
     }
 
     fn load(&mut self, hello: Hello) {
+        // The daemon tells its browser's tabs again right after.
+        self.browser_waits.clear();
         let version = hello.version;
         let snapshot = hello.snapshot;
         self.squad = snapshot.squad;
@@ -931,6 +953,42 @@ impl Model {
         (self.needs_you_count(), self.members.iter().map(|m| self.status(m)).collect())
     }
 
+    /// One of the daemon's browser events (the panel's, told here too): a
+    /// member's page that starts waiting for the person goes into 나에게 and
+    /// is announced; one that passed, or a browser handed back, leaves.
+    pub fn on_browser(&mut self, event: &Event) -> bool {
+        let before = self.browser_waits.clone();
+        match event {
+            Event::BrowserTabs { squad, lane, session, member, pages, agent_page, .. } => {
+                if lane.is_empty() || squad.as_deref().is_some_and(|s| s != self.squad) {
+                    return false;
+                }
+                let waiting = pages.iter().filter(|p| p.check.is_some()).min_by_key(|p| Some(p.id) != *agent_page);
+                let kept = waiting.and_then(|p| self.browser_waits.iter().find(|w| w.lane == *lane && w.page == p.id).cloned());
+                self.browser_waits.retain(|w| w.lane != *lane);
+                if let Some(page) = waiting {
+                    let name = session
+                        .and_then(|s| self.members.iter().find(|m| m.session == s).or_else(|| self.lanes.iter().find(|l| l.session == s).and_then(|l| self.members.iter().find(|m| m.session == l.of))))
+                        .map(|m| m.name.clone())
+                        .or_else(|| member.as_deref().map(|m| m.split_once(" (").map_or(m, |(n, _)| n).to_owned()))
+                        .unwrap_or_else(|| lane.rsplit('/').next().unwrap_or(lane).to_owned());
+                    let site = crate::browse::site(&page.url).unwrap_or_default();
+                    let wait = BrowserWait { page: page.id, lane: lane.clone(), session: *session, member: name, site, check: page.check.unwrap_or(HumanCheck::Challenge) };
+                    if kept.is_none() {
+                        self.alerts.push(Alert::Browser { page: wait.page, session: wait.session, member: wait.member.clone(), site: wait.site.clone() });
+                    }
+                    self.browser_waits.push(wait);
+                }
+            }
+            // Handed back to its member: not the person's to do any more.
+            Event::BrowserControl { squad, lane, by: None, .. } if squad.as_deref().is_none_or(|s| s == self.squad) => {
+                self.browser_waits.retain(|w| w.lane != *lane);
+            }
+            _ => {}
+        }
+        before != self.browser_waits
+    }
+
     pub fn take_alerts(&mut self) -> Vec<Alert> {
         std::mem::take(&mut self.alerts)
     }
@@ -960,6 +1018,8 @@ impl Model {
     pub fn needs_you(&self) -> Vec<(Section, Need)> {
         let mut out: Vec<(Section, Need)> = self.approvals.open_items().map(|a| (Section::Permission, Need::Permission(a.id))).collect();
         out.extend(self.asked.open().map(|s| (Section::Decide, Need::Questions(s.id))));
+        // A page that waits for the person's own hand: their turn, first.
+        out.extend(self.browser_waits.iter().map(|w| (Section::Waiting, Need::Browser(w.page))));
         for section in &Section::TICKETS {
             let mut tickets: Vec<&Ticket> = self.tickets.iter().filter(|t| self.section_of(t) == Some(*section) && self.in_focus(t) && !self.is_acted(t)).collect();
             let since = |t: &Ticket| self.since.get(&t.id).copied().unwrap_or(0);
@@ -1189,6 +1249,43 @@ mod tests {
 
     const T0: Clock = Clock { hour: 14, minute: 2, second: 10 };
     const T1: Clock = Clock { hour: 14, minute: 3, second: 12 };
+
+    #[test]
+    fn a_members_page_waiting_for_the_person_is_theirs_to_do_until_it_passes() {
+        use equipe_core::protocol::{BrowserPage, HumanCheck};
+        let mut model = Model::new("acme");
+        let tabs = |check: Option<HumanCheck>| Event::BrowserTabs {
+            squad: Some("acme".into()),
+            lane: "acme/backend@squad".into(),
+            session: None,
+            member: Some("backend (the whole squad)".into()),
+            color: None,
+            pages: vec![BrowserPage { id: 9_000_001, url: "https://dash.cloudflare.com/login".into(), title: "Just a moment...".into(), check, ..Default::default() }],
+            agent_page: Some(9_000_001),
+        };
+        assert!(!model.on_browser(&tabs(None)));
+        assert!(model.on_browser(&tabs(Some(HumanCheck::Challenge))));
+        assert_eq!(model.browser_waits[0].site, "dash.cloudflare.com");
+        assert_eq!(model.browser_waits[0].member, "backend");
+        assert!(model.needs_you().contains(&(Section::Waiting, Need::Browser(9_000_001))), "in 나에게, as the person's turn");
+        assert!(matches!(&model.take_alerts()[..], [Alert::Browser { page: 9_000_001, .. }]), "announced once");
+        // Told again (a title changed): not announced again.
+        assert!(!model.on_browser(&tabs(Some(HumanCheck::Challenge))));
+        assert!(model.take_alerts().is_empty());
+        // Passed: it leaves.
+        assert!(model.on_browser(&tabs(None)));
+        assert!(model.needs_you().is_empty());
+        // Handed back while it still waits: not the person's any more.
+        model.on_browser(&tabs(Some(HumanCheck::Captcha)));
+        assert!(model.on_browser(&Event::BrowserControl { squad: Some("acme".into()), lane: "acme/backend@squad".into(), by: None, why: None, check: None }));
+        assert!(model.browser_waits.is_empty());
+        // Another squad's, or the person's own tabs: none.
+        let mut other = tabs(Some(HumanCheck::SignIn));
+        if let Event::BrowserTabs { squad, .. } = &mut other {
+            *squad = Some("side".into());
+        }
+        assert!(!model.on_browser(&other));
+    }
 
     fn session(id: SessionId, role: &str, name: &str, state: SessionState) -> SessionInfo {
         SessionInfo {
