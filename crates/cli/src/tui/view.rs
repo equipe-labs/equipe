@@ -323,7 +323,7 @@ fn layout_key(agent: &Agent, width: usize) -> LayoutKey {
     let entries = agent.shown();
     let last = entries.last().map_or(0, |entry| match entry.as_ref() {
         Entry::User { text } | Entry::Reply { text } | Entry::Note { text } => text.len(),
-        Entry::Tool { tool, target } => tool.len() + target.as_ref().map_or(0, String::len),
+        Entry::Tool { tool, target, .. } => tool.len() + target.as_ref().map_or(0, String::len),
         Entry::Error { message, .. } => message.len(),
         Entry::Landed { stat, .. } => stat.len(),
         Entry::Thread { .. } => 0,
@@ -1649,7 +1649,7 @@ fn transcript_lines(agent: &Agent, looks: &Looks, theme: Theme, width: usize) ->
             Entry::Thread { .. } => {}
             // Claude Code loading tool descriptions: its business, not the person's.
             Entry::Tool { tool, .. } if tool == "ToolSearch" => {}
-            Entry::Tool { tool, target } => {
+            Entry::Tool { tool, target, .. } => {
                 let (verb, target, edits) = match target {
                     // A member writing down what it learned, in its own memory.
                     Some(t) if is_memory(tool, t) => {

@@ -685,7 +685,7 @@ fn snapshot() -> Snapshot {
                 title: None,
                 tokens: 5300,
                 context: None,
-                recent: vec![Entry::Tool { tool: "Bash".into(), target: Some("cargo test".into()) }],
+                recent: vec![Entry::Tool { tool: "Bash".into(), target: Some("cargo test".into()), outcome: None }],
                 queued: vec![],
                 queued_project: None,
                 queued_in: vec![],

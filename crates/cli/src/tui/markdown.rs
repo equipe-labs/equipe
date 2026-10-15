@@ -5,7 +5,7 @@
 //! their indent and wide characters (Hangul, CJK) count as two columns.
 
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
@@ -63,6 +63,8 @@ struct Renderer {
     /// A heading was just drawn: the text under it follows without a gap.
     under_heading: bool,
     code_block: bool,
+    /// The open fence is a diff: its `+` and `-` lines in green and red.
+    diff_block: bool,
     table: Option<Table>,
 }
 
@@ -85,6 +87,7 @@ impl Renderer {
             heading: false,
             under_heading: false,
             code_block: false,
+            diff_block: false,
             table: None,
         }
     }
@@ -202,13 +205,18 @@ impl Renderer {
                 if let CodeBlockKind::Fenced(lang) = kind
                     && !lang.is_empty()
                 {
+                    let word = lang.split([' ', ',']).next().unwrap_or_default().to_ascii_lowercase();
+                    self.diff_block = matches!(word.as_str(), "diff" | "patch" | "udiff");
                     let mut line = self.quote_prefix();
                     line.push(Span::raw(" ".repeat(self.indent)));
                     line.push(Span::styled(format!("┌ {lang}"), self.styles.dim));
                     self.out.push(Line::from(line));
                 }
             }
-            Event::End(TagEnd::CodeBlock) => self.code_block = false,
+            Event::End(TagEnd::CodeBlock) => {
+                self.code_block = false;
+                self.diff_block = false;
+            }
             Event::Start(Tag::List(start)) => {
                 self.flush();
                 self.gap();
@@ -258,7 +266,7 @@ impl Renderer {
                     let mut line = self.quote_prefix();
                     line.push(Span::raw(" ".repeat(self.indent)));
                     line.push(Span::styled("│ ", self.styles.dim));
-                    line.push(Span::styled(row.to_owned(), self.styles.code));
+                    line.push(Span::styled(row.to_owned(), self.code_line_style(row)));
                     self.out.push(Line::from(line));
                 }
             }
@@ -283,6 +291,19 @@ impl Renderer {
             }
             Event::Html(html) | Event::InlineHtml(html) => self.runs.push((html.into_string(), self.styles.plain)),
             _ => {}
+        }
+    }
+
+    /// A code line's style: a diff's added lines green, removed red, hunks dim.
+    fn code_line_style(&self, row: &str) -> Style {
+        if !self.diff_block || row.starts_with("+++") || row.starts_with("---") {
+            return self.styles.code;
+        }
+        match row.chars().next() {
+            Some('+') => Style::new().fg(Color::Green),
+            Some('-') => Style::new().fg(Color::Red),
+            _ if row.starts_with("@@") => self.styles.dim,
+            _ => self.styles.code,
         }
     }
 
@@ -559,6 +580,16 @@ mod tests {
         let out = lines("https://example.com/a/very/long/path/that/never/ends", 20, &styles());
         assert!(out.iter().all(|l| l.width() <= 20));
         assert_eq!(text(&out).concat(), "https://example.com/a/very/long/path/that/never/ends");
+    }
+
+    #[test]
+    fn a_diff_fence_colours_what_came_and_went() {
+        let out = lines("```diff\n@@ -1 +1 @@\n-old\n+new\n same\n```", 40, &styles());
+        let colour = |row: usize| out[row].spans.last().and_then(|s| s.style.fg);
+        assert_eq!(text(&out)[0], "┌ diff");
+        assert_eq!((colour(2), colour(3), colour(4)), (Some(Color::Red), Some(Color::Green), Some(Color::Cyan)));
+        let plain = lines("```rust\n-1\n```", 40, &styles());
+        assert_eq!(plain[1].spans.last().and_then(|s| s.style.fg), Some(Color::Cyan), "only a diff is coloured so");
     }
 
     #[test]

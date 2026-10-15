@@ -2801,7 +2801,7 @@ pub fn transcript_markdown(agent: &Agent, squad: &str) -> String {
         match entry {
             Entry::User { text } => out.push_str(&format!("**{}:** {text}\n\n", t!("app.md_you"))),
             Entry::Reply { text } => out.push_str(&format!("{text}\n\n")),
-            Entry::Tool { tool, target } => {
+            Entry::Tool { tool, target, .. } => {
                 out.push_str(&format!("- {} {}\n", tool_verb(tool), target.as_deref().unwrap_or("")));
             }
             Entry::Note { text } => out.push_str(&format!("_{text}_\n\n")),

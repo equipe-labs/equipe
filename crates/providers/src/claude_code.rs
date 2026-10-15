@@ -270,6 +270,11 @@ pub enum Activity {
     Text(String),
     /// Claude Code is using a tool, e.g. `Edit` on a file.
     Tool { name: String, target: Option<String> },
+    /// A tool use came back (the `Tool` with this `name` and `target`).
+    ToolDone(ToolDone),
+    /// A fragment of the model's reasoning, as the engine shows it — not
+    /// part of the answer.
+    Thinking(String),
     /// The model Claude Code is running, reported at startup.
     Model(String),
     /// The plan's usage windows: five-hour and seven-day, each as the share
@@ -287,9 +292,38 @@ pub enum Activity {
     Steered(String),
 }
 
+/// How a tool use ended, as Claude Code answered it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolDone {
+    pub name: String,
+    pub target: Option<String>,
+    pub ok: bool,
+    /// A command's exit code, when it said one.
+    pub exit: Option<i32>,
+    pub ms: u64,
+    /// What it printed (or answered), whole.
+    pub output: String,
+    /// An edit's or a write's change, as a unified diff headed `diff --git`.
+    pub diff: Option<String>,
+}
+
+/// A tool use waiting for its answer.
+struct Pending {
+    name: String,
+    target: Option<String>,
+    since: std::time::Instant,
+    /// The change the call asks for, worked out from its input.
+    diff: Option<String>,
+}
+
+/// Past this many lines a diff carried with a tool's outcome is cut.
+const DIFF_LINES: usize = 400;
+
 /// Folds Claude Code's `stream-json` lines into one turn.
 #[derive(Default)]
 pub struct TurnCollector {
+    /// The member's own tool uses not answered yet, by id.
+    pending: std::collections::HashMap<String, Pending>,
     streamed: String,
     last_message: String,
     model: Option<String>,
@@ -379,12 +413,14 @@ impl TurnCollector {
             }
             // A subagent's words are its own: the member's answer is the member's.
             "stream_event" if parent(event).is_some() => Vec::new(),
-            "stream_event" => text_delta(event)
-                .map(|text| {
+            "stream_event" => match (text_delta(event), thinking_delta(event)) {
+                (Some(text), _) => {
                     self.streamed.push_str(text);
                     vec![Activity::Text(text.to_owned())]
-                })
-                .unwrap_or_default(),
+                }
+                (None, Some(thought)) => vec![Activity::Thinking(thought.to_owned())],
+                (None, None) => Vec::new(),
+            },
             "assistant" => {
                 if let Some(u) = event.get("message").and_then(|m| m.get("usage")) {
                     let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
@@ -409,6 +445,15 @@ impl TurnCollector {
                     self.last_message = text;
                 }
                 let mut out = tool_uses(event);
+                // Each call waits for its answer, timed from now.
+                let now = std::time::Instant::now();
+                for block in content_blocks(event).filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use")) {
+                    if let (Some(id), Some(name)) = (block.get("id").and_then(Value::as_str), block.get("name").and_then(Value::as_str)) {
+                        let input = block.get("input");
+                        let pending = Pending { name: name.to_owned(), target: tool_target(name, input), since: now, diff: input.and_then(|i| input_diff(name, i)) };
+                        self.pending.insert(id.to_owned(), pending);
+                    }
+                }
                 // Handing work to a subagent: followed until it hands back.
                 for block in content_blocks(event) {
                     if let (Some("tool_use"), Some(name), Some(id)) = (
@@ -435,15 +480,23 @@ impl TurnCollector {
                 };
                 if self.replayed > 1 && !text.is_empty() { vec![Activity::Steered(text)] } else { Vec::new() }
             }
-            // A subagent handing back — unless the answer is that it went off to
-            // work in the background.
-            "user" => content_blocks(event)
-                .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
-                .filter(|b| !result_text(b).starts_with(LAUNCHED_IN_BACKGROUND))
-                .filter_map(|b| b.get("tool_use_id").and_then(Value::as_str))
-                .filter(|id| self.subagents.remove(*id))
-                .map(|id| Activity::SubagentEnded { id: id.to_owned() })
-                .collect(),
+            // Tools answering: each call's outcome; and a subagent handing back —
+            // unless the answer is that it went off to work in the background.
+            "user" => {
+                let mut out = Vec::new();
+                let structured = event.get("tool_use_result");
+                for block in content_blocks(event).filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")) {
+                    let Some(id) = block.get("tool_use_id").and_then(Value::as_str) else { continue };
+                    let text = result_text(block);
+                    if let Some(pending) = self.pending.remove(id) {
+                        out.push(Activity::ToolDone(tool_done(pending, block, &text, structured)));
+                    }
+                    if !text.starts_with(LAUNCHED_IN_BACKGROUND) && self.subagents.remove(id) {
+                        out.push(Activity::SubagentEnded { id: id.to_owned() });
+                    }
+                }
+                out
+            }
             "result" => {
                 let mut result = result_from(event, &self.streamed, &self.last_message);
                 if let Ok(TurnResult { usage: Some(usage), .. }) = &mut result {
@@ -503,6 +556,15 @@ fn text_delta(event: &Value) -> Option<&str> {
     delta.get("text").and_then(Value::as_str).filter(|t| !t.is_empty())
 }
 
+/// The text of a `thinking_delta`: the model's reasoning as the engine shows it.
+fn thinking_delta(event: &Value) -> Option<&str> {
+    let delta = event.get("event")?.get("delta")?;
+    if delta.get("type").and_then(Value::as_str) != Some("thinking_delta") {
+        return None;
+    }
+    delta.get("thinking").and_then(Value::as_str).filter(|t| !t.is_empty())
+}
+
 /// `tool_use` blocks of an assistant message, with the thing each one acts on.
 fn tool_uses(event: &Value) -> Vec<Activity> {
     event
@@ -514,17 +576,101 @@ fn tool_uses(event: &Value) -> Vec<Activity> {
         .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
         .filter_map(|block| {
             let name = block.get("name").and_then(Value::as_str)?.to_owned();
-            let input = block.get("input");
-            let target = board_target(&name, input).or_else(|| {
-                // `element` and `text`: what a browser step clicks or types into, in words.
-                ["file_path", "path", "notebook_path", "pattern", "command", "url", "action", "element", "text", "description"]
-                    .iter()
-                    .find_map(|key| input?.get(*key).and_then(Value::as_str))
-                    .map(|t| t.lines().next().unwrap_or("").chars().take(120).collect())
-            });
+            let target = tool_target(&name, block.get("input"));
             Some(Activity::Tool { name, target })
         })
         .collect()
+}
+
+/// The thing a tool use acts on, in one line.
+fn tool_target(name: &str, input: Option<&Value>) -> Option<String> {
+    board_target(name, input).or_else(|| {
+        // `element` and `text`: what a browser step clicks or types into, in words.
+        ["file_path", "path", "notebook_path", "pattern", "command", "url", "action", "element", "text", "description"]
+            .iter()
+            .find_map(|key| input?.get(*key).and_then(Value::as_str))
+            .map(|t| t.lines().next().unwrap_or("").chars().take(120).collect())
+    })
+}
+
+/// A call's answer: whether it worked, a command's exit code, what it printed,
+/// and an edit's change — Claude Code's own patch when it sent one.
+fn tool_done(pending: Pending, block: &Value, text: &str, structured: Option<&Value>) -> ToolDone {
+    let failed = block.get("is_error").and_then(Value::as_bool) == Some(true);
+    let (exit, output) = exit_code(text);
+    let path = pending.target.clone().unwrap_or_default();
+    let patch = structured.and_then(|s| s.get("structuredPatch")).and_then(|p| structured_diff(&path, p));
+    let ok = !failed && exit.is_none_or(|code| code == 0);
+    ToolDone {
+        ok,
+        exit,
+        ms: u64::try_from(pending.since.elapsed().as_millis()).unwrap_or(u64::MAX),
+        // What a command printed, and why anything failed. A file read or an
+        // edit answers with the file, which the person doesn't need again.
+        output: if !ok || pending.name == "Bash" { output.to_owned() } else { String::new() },
+        diff: if failed { None } else { patch.or(pending.diff) },
+        name: pending.name,
+        target: pending.target,
+    }
+}
+
+/// `Exit code 2` heading a command's answer: the code, and the rest.
+fn exit_code(text: &str) -> (Option<i32>, &str) {
+    let first = text.lines().next().unwrap_or_default();
+    let line = first.trim().trim_start_matches("Error: ");
+    match line.strip_prefix("Exit code ").and_then(|n| n.trim().parse().ok()) {
+        Some(code) => (Some(code), text[first.len()..].trim_start_matches(['\r', '\n'])),
+        None => (None, text),
+    }
+}
+
+/// Claude Code's `structuredPatch` (hunks with their lines) as a unified diff.
+fn structured_diff(path: &str, patch: &Value) -> Option<String> {
+    let hunks = patch.as_array().filter(|h| !h.is_empty())?;
+    let mut out = format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n");
+    for hunk in hunks {
+        let n = |k: &str| hunk.get(k).and_then(Value::as_u64).unwrap_or(0);
+        out.push_str(&format!("@@ -{},{} +{},{} @@\n", n("oldStart"), n("oldLines"), n("newStart"), n("newLines")));
+        for line in hunk.get("lines").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    Some(cap_diff(out))
+}
+
+/// The change an edit or a write asks for, from its input: what is replaced
+/// and with what (line numbers count from the snippet, not the file).
+fn input_diff(name: &str, input: &Value) -> Option<String> {
+    let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+    let path = text(input, "file_path")?;
+    let pairs: Vec<(String, String)> = match name {
+        "Edit" => vec![(text(input, "old_string")?, text(input, "new_string")?)],
+        "MultiEdit" => input.get("edits")?.as_array()?.iter().filter_map(|e| Some((text(e, "old_string")?, text(e, "new_string")?))).collect(),
+        "Write" => vec![(String::new(), text(input, "content")?)],
+        _ => return None,
+    };
+    let mut out = format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n");
+    for (old, new) in &pairs {
+        let (old, new) = (with_newline(old), with_newline(new));
+        let diff = similar::TextDiff::from_lines(old.as_str(), new.as_str());
+        for hunk in diff.unified_diff().context_radius(3).iter_hunks() {
+            out.push_str(&hunk.to_string());
+        }
+    }
+    Some(cap_diff(out))
+}
+
+fn with_newline(text: &str) -> String {
+    if text.is_empty() || text.ends_with('\n') { text.to_owned() } else { format!("{text}\n") }
+}
+
+/// A diff no longer than [`DIFF_LINES`].
+fn cap_diff(diff: String) -> String {
+    match diff.match_indices('\n').nth(DIFF_LINES - 1) {
+        Some((at, _)) => diff[..=at].to_owned(),
+        None => diff,
+    }
 }
 
 /// What one of equipe's board tools acts on, as the person reads it: the
@@ -781,6 +927,64 @@ mod tests {
         (deltas, collector.finish("").map(|turn| turn.result))
     }
 
+    fn done_of(activities: Vec<Activity>) -> Vec<ToolDone> {
+        activities
+            .into_iter()
+            .filter_map(|a| match a {
+                Activity::ToolDone(d) => Some(d),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_tool_answer_says_how_it_ended_and_a_command_its_exit_code() {
+        let mut collector = TurnCollector::new();
+        collector.on_event(&json!({ "type": "assistant", "message": { "content": [
+            { "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "cargo test" } },
+            { "type": "tool_use", "id": "t2", "name": "Read", "input": { "file_path": "/r/a.rs" } },
+        ] } }));
+        let done = done_of(collector.on_event(&json!({ "type": "user", "message": { "content": [
+            { "type": "tool_result", "tool_use_id": "t2", "content": "1→fn main() {}" },
+            { "type": "tool_result", "tool_use_id": "t1", "is_error": true, "content": "Exit code 101\nerror: test failed\nfailures: 1" },
+        ] } })));
+        assert_eq!(done.len(), 2);
+        assert_eq!((done[0].name.as_str(), done[0].ok, done[0].output.as_str()), ("Read", true, ""), "a read's file isn't carried");
+        assert_eq!((done[1].name.as_str(), done[1].target.as_deref()), ("Bash", Some("cargo test")));
+        assert_eq!((done[1].ok, done[1].exit), (false, Some(101)));
+        assert_eq!(done[1].output, "error: test failed\nfailures: 1");
+        assert!(done_of(collector.on_event(&json!({ "type": "user", "message": { "content": [
+            { "type": "tool_result", "tool_use_id": "t1", "content": "again" }] } }))).is_empty(), "once");
+    }
+
+    #[test]
+    fn an_edit_comes_back_with_its_change() {
+        let mut collector = TurnCollector::new();
+        collector.on_event(&json!({ "type": "assistant", "message": { "content": [
+            { "type": "tool_use", "id": "e1", "name": "Edit", "input": { "file_path": "/r/a.rs", "old_string": "let a = 1;\nlet b = 2;", "new_string": "let a = 1;\nlet b = 3;\nlet c = 4;" } },
+            { "type": "tool_use", "id": "e2", "name": "Edit", "input": { "file_path": "/r/b.rs", "old_string": "x", "new_string": "y" } },
+        ] } }));
+        let done = done_of(collector.on_event(&json!({ "type": "user", "message": { "content": [
+            { "type": "tool_result", "tool_use_id": "e1", "content": "The file /r/a.rs has been updated." }] } })));
+        let diff = done[0].diff.as_deref().unwrap();
+        assert!(diff.starts_with("diff --git a//r/a.rs b//r/a.rs\n"), "{diff}");
+        assert!(diff.contains("-let b = 2;\n+let b = 3;\n+let c = 4;\n") && diff.contains(" let a = 1;\n"), "{diff}");
+        assert_eq!(done[0].output, "");
+        // Claude Code's own patch wins: it knows the file's line numbers.
+        let done = done_of(collector.on_event(&json!({ "type": "user",
+            "tool_use_result": { "structuredPatch": [{ "oldStart": 40, "oldLines": 1, "newStart": 40, "newLines": 1, "lines": ["-x", "+y"] }] },
+            "message": { "content": [{ "type": "tool_result", "tool_use_id": "e2", "content": "ok" }] } })));
+        assert_eq!(done[0].diff.as_deref(), Some("diff --git a//r/b.rs b//r/b.rs\n--- a//r/b.rs\n+++ b//r/b.rs\n@@ -40,1 +40,1 @@\n-x\n+y\n"));
+    }
+
+    #[test]
+    fn reasoning_streams_apart_from_the_answer() {
+        let mut collector = TurnCollector::new();
+        let thought = json!({ "type": "stream_event", "event": { "type": "content_block_delta", "delta": { "type": "thinking_delta", "thinking": "hm" } } });
+        assert_eq!(collector.on_event(&thought), vec![Activity::Thinking("hm".into())]);
+        assert_eq!(collector.on_event(&text_delta("ok")), vec![Activity::Text("ok".into())]);
+    }
+
     fn text_delta(text: &str) -> Value {
         json!({ "type": "stream_event", "event": { "type": "content_block_delta", "delta": { "type": "text_delta", "text": text } } })
     }
@@ -946,12 +1150,14 @@ mod tests {
         let ended = collector.on_event(&json!({ "type": "user", "message": { "content": [
             { "type": "tool_result", "tool_use_id": "toolu_1", "content": "12 passed" },
         ]}}));
+        let ended: Vec<Activity> = ended.into_iter().filter(|a| !matches!(a, Activity::ToolDone(_))).collect();
         assert_eq!(ended, vec![Activity::SubagentEnded { id: "toolu_1".into() }]);
 
         // One run in the background answers at once, and hands back later.
         let launched = collector.on_event(&json!({ "type": "user", "message": { "content": [
             { "type": "tool_result", "tool_use_id": "toolu_2", "content": [{ "type": "text", "text": "Async agent launched successfully. agentId: a1" }] },
         ]}}));
+        let launched: Vec<Activity> = launched.into_iter().filter(|a| !matches!(a, Activity::ToolDone(_))).collect();
         assert!(launched.is_empty(), "still at work: {launched:?}");
         let progress = collector.on_event(&json!({ "type": "system", "subtype": "task_progress", "tool_use_id": "toolu_2", "description": "Reading build.log" }));
         assert_eq!(progress, vec![Activity::SubagentStep { id: "toolu_2".into(), step: "Reading build.log".into() }]);

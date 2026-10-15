@@ -168,7 +168,7 @@ impl Scene {
             ],
             None,
         );
-        let frontend = session(FRONTEND, "frontend", PROJECTS[0], vec![Entry::Tool { tool: "Edit".into(), target: Some("src/pages/index.tsx".into()) }], Some(3));
+        let frontend = session(FRONTEND, "frontend", PROJECTS[0], vec![Entry::Tool { tool: "Edit".into(), target: Some("src/pages/index.tsx".into()), outcome: None }], Some(3));
         let backend = session(BACKEND, "backend", PROJECTS[1], vec![], None);
         let tickets = vec![
             ticket(1, "Set up the project", TicketStatus::Done, Some("backend"), Some("Repository, CI and a first deploy.")),
@@ -258,7 +258,7 @@ impl Scene {
                     s.tokens += text.len() as u64 / 4;
                 }
             }
-            Event::ToolUse { session, tool, target } => self.entry(*session, Entry::Tool { tool: tool.clone(), target: target.clone() }),
+            Event::ToolUse { session, tool, target } => self.entry(*session, Entry::Tool { tool: tool.clone(), target: target.clone(), outcome: None }),
             Event::Thread { session, project } => self.entry(*session, Entry::Thread { project: project.clone() }),
             Event::TurnEnded { session, .. } => self.state(*session, SessionState::Ready),
             _ => {}

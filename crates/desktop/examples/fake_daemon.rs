@@ -84,6 +84,9 @@ fn ticket_in(id: u32, status: &str, note: Option<&str>, project: &str) -> equipe
     serde_json::from_value(serde_json::json!({"id": id, "title": format!("티켓 {id}의 제목"), "body": "", "status": status, "owner": "backend", "assignee": "backend", "project": format!("/tmp/fake/{project}"), "depends_on": [], "branch": null, "created_by": "pm", "note": note})).unwrap()
 }
 
+#[path = "fake_daemon/torture.rs"]
+mod torture;
+
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
 /// Where a message goes, as the daemon decides: the project in focus, each
@@ -140,8 +143,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         let history = vec![
                             Entry::User { text: "어제 하던 일 이어서 해 줘".into() },
                             Entry::Reply { text: "네, **T-9**부터 이어서 하겠습니다.".into() },
-                            Entry::Tool { tool: "Read".into(), target: Some("/tmp/fake/site/a.rs".into()) },
-                            Entry::Tool { tool: "Edit".into(), target: Some("/tmp/fake/site/a.rs".into()) },
+                            Entry::Tool { tool: "Read".into(), target: Some("/tmp/fake/site/a.rs".into()), outcome: None },
+                            Entry::Tool { tool: "Edit".into(), target: Some("/tmp/fake/site/a.rs".into()), outcome: None },
                             Entry::Reply { text: "고쳤습니다.".into() },
                         ];
                         let snapshot = Snapshot {
@@ -195,8 +198,13 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     // Like the daemon: said to a member at work, it steers.
                                     let _ = events.send(Event::SteerQueued { session, text });
                                 } else {
+                                    // `torture <n>`: a part of the Markdown torture test (see `torture.rs`).
+                                    let part = text.strip_prefix("torture").and_then(|n| n.trim().parse::<usize>().ok());
                                     let _ = events.send(Event::UserMessage { session, text });
-                                    let task = tokio::spawn(turn(session, events.clone(), seconds));
+                                    let task = match part {
+                                        Some(part) => tokio::spawn(torture::turn(session, part, events.clone(), seconds)),
+                                        None => tokio::spawn(turn(session, events.clone(), seconds)),
+                                    };
                                     turns.lock().await.insert(session, task);
                                 }
                             }

@@ -25,6 +25,7 @@ mod target;
 mod theme;
 mod i18n;
 mod relaunch;
+mod render;
 #[cfg(target_os = "macos")]
 mod update;
 mod views;
@@ -54,6 +55,8 @@ actions!(
     equipe,
     [ToggleBoard, ChooseTarget, AllProjects, Project1, Project2, Project3, Project4, Project5, Project6, Project7, Project8, Project9, ToggleFolds]
 );
+// The conversation's: ⌘F, and Escape in its find bar.
+actions!(equipe, [FindInConversation, CloseFind]);
 // The app menu's.
 actions!(equipe, [CheckForUpdates, Hide, HideOthers, ShowAll, Quit]);
 
@@ -718,7 +721,11 @@ impl Render for Shell {
             }))
             .on_action(cx.listener(|this, _: &ChooseTarget, window, cx| this.open_chooser(window, cx)))
             .on_action(cx.listener(|this, _: &AllProjects, window, cx| this.focus_project(None, window, cx)))
-            .on_action(cx.listener(|this, _: &ToggleFolds, _, cx| this.toggle_folds(cx)));
+            .on_action(cx.listener(|this, _: &ToggleFolds, _, cx| this.toggle_folds(cx)))
+            .on_action(cx.listener(|this, _: &FindInConversation, window, cx| this.find_open(window, cx)))
+            .on_action(cx.listener(|this, _: &CloseFind, window, cx| {
+                this.chat_escape(window, cx);
+            }));
         let root = project_actions!(
             root, cx, Project1 => 1, Project2 => 2, Project3 => 3, Project4 => 4, Project5 => 5, Project6 => 6, Project7 => 7, Project8 => 8, Project9 => 9
         );
@@ -797,7 +804,9 @@ fn main() {
     if let Some(code) = askpass::helper() {
         std::process::exit(code);
     }
-    gpui_kit::application().run(|cx| {
+    // Images a reply points at on the web come through this client.
+    let http = std::sync::Arc::new(reqwest_client::ReqwestClient::user_agent("equipe-desktop").unwrap_or_else(|_| reqwest_client::ReqwestClient::new()));
+    gpui_kit::application().with_http_client(http).run(|cx| {
         gpui_kit::init(cx);
         cx.bind_keys([
             KeyBinding::new("cmd-b", ToggleBoard, None),
@@ -812,6 +821,8 @@ fn main() {
             KeyBinding::new("cmd-8", Project8, None),
             KeyBinding::new("cmd-9", Project9, None),
             KeyBinding::new("cmd-shift-o", ToggleFolds, None),
+            KeyBinding::new("cmd-f", FindInConversation, None),
+            KeyBinding::new("escape", CloseFind, Some("FindBar")),
             KeyBinding::new("cmd-shift-k", ChooseTarget, None),
             // ⌥⏎ and ⌃J break the line like ⇧⏎ (T-54 §8).
             KeyBinding::new("alt-enter", Enter { secondary: false, shift: true }, Some("Input")),
