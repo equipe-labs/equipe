@@ -13,7 +13,7 @@
             "type": "accept"
           }
         },
-        "seq": 14,
+        "seq": 17,
         "squad": "home",
         "ts": 1760000000000
       }
@@ -30,7 +30,7 @@
             "type": "accept"
           }
         },
-        "seq": 13,
+        "seq": 16,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -83,7 +83,103 @@
             "type": "accept"
           }
         },
+        "seq": 11,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "answer questions": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "answers": [
+              {
+                "picked": [
+                  0
+                ]
+              },
+              {
+                "other": "Apple은 다음 달에",
+                "picked": [
+                  0,
+                  1
+                ]
+              }
+            ],
+            "id": 5000001,
+            "squad": "acme",
+            "type": "answer_questions"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "answers": [
+              {
+                "picked": [
+                  0
+                ]
+              },
+              {
+                "other": "Apple은 다음 달에",
+                "picked": [
+                  0,
+                  1
+                ]
+              }
+            ],
+            "id": 5000001,
+            "squad": "acme",
+            "type": "answer_questions"
+          }
+        },
         "seq": 8,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "answer questions: one skipped": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "answers": [
+              {
+                "other": "세션 쿠키로"
+              },
+              {}
+            ],
+            "id": 5000001,
+            "squad": "acme",
+            "type": "answer_questions"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "answers": [
+              {
+                "other": "세션 쿠키로"
+              },
+              {}
+            ],
+            "id": 5000001,
+            "squad": "acme",
+            "type": "answer_questions"
+          }
+        },
+        "seq": 9,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -178,6 +274,34 @@
         "ts": 1760000000000
       }
     },
+    "dismiss questions": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 5000001,
+            "squad": "acme",
+            "type": "dismiss_questions"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 5000001,
+            "squad": "acme",
+            "type": "dismiss_questions"
+          }
+        },
+        "seq": 10,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "event: approval requested": {
       "receives": {
         "rpc": {
@@ -231,7 +355,7 @@
             "type": "error"
           }
         },
-        "seq": 17,
+        "seq": 20,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -248,7 +372,7 @@
             "type": "message_queued"
           }
         },
-        "seq": 11,
+        "seq": 14,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -264,7 +388,107 @@
             "type": "notice"
           }
         },
-        "seq": 16,
+        "seq": 19,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: questions answered": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "answers": [
+              {
+                "picked": [
+                  0
+                ]
+              },
+              {
+                "other": "Apple은 다음 달에",
+                "picked": [
+                  0,
+                  1
+                ]
+              }
+            ],
+            "id": 5000001,
+            "squad": "acme",
+            "type": "questions_closed"
+          }
+        },
+        "seq": 10,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: questions asked": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "questions": {
+              "asked_at": 1760000000,
+              "id": 5000001,
+              "member": "backend",
+              "questions": [
+                {
+                  "header": "토큰",
+                  "options": [
+                    {
+                      "description": "스크립트가 못 읽어 안전합니다",
+                      "label": "httpOnly 쿠키 (추천)"
+                    },
+                    {
+                      "description": "간단하지만 XSS에 노출됩니다",
+                      "label": "localStorage"
+                    }
+                  ],
+                  "question": "로그인 토큰은 어디에 둘까요?"
+                },
+                {
+                  "header": "범위",
+                  "multi_select": true,
+                  "options": [
+                    {
+                      "label": "이메일"
+                    },
+                    {
+                      "label": "Google"
+                    },
+                    {
+                      "label": "Apple"
+                    }
+                  ],
+                  "question": "어떤 로그인을 먼저 낼까요?"
+                }
+              ],
+              "session": 4242,
+              "ticket": 38
+            },
+            "squad": "acme",
+            "type": "questions_asked"
+          }
+        },
+        "seq": 9,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: questions closed": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "id": 5000001,
+            "squad": "acme",
+            "type": "questions_closed"
+          }
+        },
+        "seq": 11,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -280,7 +504,7 @@
             "type": "text_delta"
           }
         },
-        "seq": 12,
+        "seq": 15,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -311,7 +535,7 @@
             "type": "ticket_changed"
           }
         },
-        "seq": 9,
+        "seq": 12,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -359,7 +583,7 @@
             "type": "tool_use"
           }
         },
-        "seq": 13,
+        "seq": 16,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -379,7 +603,7 @@
             }
           }
         },
-        "seq": 14,
+        "seq": 17,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -396,7 +620,7 @@
             "usage": null
           }
         },
-        "seq": 15,
+        "seq": 18,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -412,7 +636,7 @@
             "type": "user_message"
           }
         },
-        "seq": 10,
+        "seq": 13,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -446,6 +670,47 @@
                 "projects": [
                   "/Users/you/projects/site",
                   "/Users/you/projects/api"
+                ],
+                "questions": [
+                  {
+                    "asked_at": 1760000000,
+                    "id": 5000001,
+                    "member": "backend",
+                    "questions": [
+                      {
+                        "header": "토큰",
+                        "options": [
+                          {
+                            "description": "스크립트가 못 읽어 안전합니다",
+                            "label": "httpOnly 쿠키 (추천)"
+                          },
+                          {
+                            "description": "간단하지만 XSS에 노출됩니다",
+                            "label": "localStorage"
+                          }
+                        ],
+                        "question": "로그인 토큰은 어디에 둘까요?"
+                      },
+                      {
+                        "header": "범위",
+                        "multi_select": true,
+                        "options": [
+                          {
+                            "label": "이메일"
+                          },
+                          {
+                            "label": "Google"
+                          },
+                          {
+                            "label": "Apple"
+                          }
+                        ],
+                        "question": "어떤 로그인을 먼저 낼까요?"
+                      }
+                    ],
+                    "session": 4242,
+                    "ticket": 38
+                  }
                 ],
                 "scale": 0,
                 "sessions": [
@@ -632,7 +897,7 @@
             "type": "interrupt"
           }
         },
-        "seq": 11,
+        "seq": 14,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -650,7 +915,7 @@
             "type": "merge"
           }
         },
-        "seq": 12,
+        "seq": 15,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -681,6 +946,67 @@
             },
             "squad": "acme",
             "type": "approval_requested"
+          }
+        },
+        "seq": 0,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "push: decision": {
+      "daemon_sends": {
+        "body": "acme · T-38",
+        "category": "decision",
+        "collapse": "questions-5000001",
+        "data": "<sealed daemon-to-device frame: data_opened>",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "title": "backend asks you to decide 2 things",
+        "type": "push"
+      },
+      "data_opened": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "questions": {
+              "asked_at": 1760000000,
+              "id": 5000001,
+              "member": "backend",
+              "questions": [
+                {
+                  "header": "토큰",
+                  "options": [
+                    {
+                      "label": "httpOnly 쿠키 (추천)"
+                    },
+                    {
+                      "label": "localStorage"
+                    }
+                  ],
+                  "question": "로그인 토큰은 어디에 둘까요?"
+                },
+                {
+                  "header": "범위",
+                  "multi_select": true,
+                  "options": [
+                    {
+                      "label": "이메일"
+                    },
+                    {
+                      "label": "Google"
+                    },
+                    {
+                      "label": "Apple"
+                    }
+                  ],
+                  "question": "어떤 로그인을 먼저 낼까요?"
+                }
+              ],
+              "session": 4242,
+              "ticket": 38
+            },
+            "squad": "acme",
+            "type": "questions_asked"
           }
         },
         "seq": 0,
@@ -793,7 +1119,7 @@
             "type": "reopen"
           }
         },
-        "seq": 9,
+        "seq": 12,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -855,7 +1181,7 @@
             "type": "submit"
           }
         },
-        "seq": 10,
+        "seq": 13,
         "squad": "acme",
         "ts": 1760000000000
       }

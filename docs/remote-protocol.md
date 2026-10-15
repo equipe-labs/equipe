@@ -74,8 +74,24 @@ Plaintext is UTF-8 JSON:
 A frame that doesn't open, is off by more than 5 minutes, repeats a `seq` or doesn't parse is
 dropped without an answer.
 
-A push's `data` carries an `approval_requested` event with `action` cut to 800 characters, or a
-`ticket_changed` event (to `review` or `waiting`) with the ticket's `body` left empty.
+A push's `data` carries an `approval_requested` event with `action` cut to 800 characters, a
+`ticket_changed` event (to `review` or `waiting`) with the ticket's `body` left empty, or a
+`questions_asked` event with each question cut to 200 characters, each option's `label` to 60
+and its `description` left out (the snapshot has them whole).
+
+### A member's questions
+
+A member puts a decision to the person as a `questions_asked` event: `questions` is
+`{ "id", "session", "member", "ticket"?, "asked_at", "questions": [{ "question", "header"?,
+"options": [{ "label", "description"? }], "multi_select"? }] }` — 1 to 4 questions, 2 to 4 options
+each, the recommended option first. The snapshot lists the ones still waiting in `questions`
+(absent when none). The phone answers with the command `answer_questions`
+`{ "squad", "id", "answers": [{ "picked"?: [<option index>…], "other"?: "<their words>" }, …] }`,
+one answer per question in order (`{}` skips one; one pick only unless `multi_select`), or
+closes them unanswered with `dismiss_questions` `{ "squad", "id" }`. Either way every screen gets
+`questions_closed` `{ "squad", "id", "answers"? }` — `answers` only when answered — and the
+member gets the answers as the person's next message, which shows in its conversation as a
+`user_message` starting `Answers to your question`.
 
 ### Conformance vectors
 
@@ -223,7 +239,7 @@ relay → device `{ "type": "recv", "data" }`.
 
 The daemon asks for a push when something needs the person and the device isn't connected:
 a request for permission (`approval`), work to review (`review`), a ticket waiting on them
-(`waiting`), a member's answer to them (`message`).
+(`waiting`), a decision to make (`decision`), a member's answer to them (`message`).
 
 `title`, `body` and `category` are plain strings of at most 200 characters. `title` and `body` are what the lock screen shows — who needs what, never the command or
 content ("frontend asks to run a command"). `data` is a sealed frame (daemon → device) the
@@ -239,7 +255,7 @@ its secrets. Without them configured, a push answers `push_result` `ok: false`.
 The daemon follows a device like one more screen, with less reach than the terminal:
 
 - **may:** `hello`, `squads`, and the commands `submit`, `interrupt`, `accept`, `reopen`,
-  `resume`, `cancel`, `decide`, `focus`, `refresh`.
+  `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `focus`, `refresh`.
 - **may not:** `start`, `close`, `merge`, `set_mode`, `scale`, `show_browser`.
 - `decide` with `always` counts as `allow`: from a phone a request is allowed once.
 

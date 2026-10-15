@@ -18,6 +18,10 @@ pub const PAIRING_MS: u64 = 5 * 60 * 1000;
 const CLOCK_SKEW_MS: u64 = 5 * 60 * 1000;
 /// Of a request's command, this much travels in a push.
 const PUSH_ACTION: usize = 800;
+/// Of a question, and of an option's label, this much travels in a push; an
+/// option's description stays for when the app opens the squad.
+const PUSH_QUESTION: usize = 200;
+const PUSH_LABEL: usize = 60;
 /// A demo daemon's standing slot is opened again this often, each time for
 /// the relay's longest (10 minutes).
 const STANDING_REFRESH_MS: u64 = 4 * 60 * 1000;
@@ -108,7 +112,8 @@ pub fn pairing_url(relay: &str, id: &str, public: &str, secret: &[u8], name: &st
 }
 
 /// The commands a phone may send, as it may send them: from a phone a request
-/// is allowed once, never always; starting, closing, merging and changing
+/// is allowed once, never always; a member's questions are the person's to
+/// answer or close from anywhere; starting, closing, merging and changing
 /// modes stay at the console.
 pub fn allowed(command: Command) -> Option<Command> {
     match command {
@@ -120,6 +125,8 @@ pub fn allowed(command: Command) -> Option<Command> {
         | Command::Resume { .. }
         | Command::Cancel { .. }
         | Command::Decide { .. }
+        | Command::AnswerQuestions { .. }
+        | Command::DismissQuestions { .. }
         | Command::Focus { .. }
         | Command::Refresh { .. }) => Some(c),
         _ => None,
@@ -137,6 +144,8 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::Cancel { squad, .. }
         | Command::SetMode { squad, .. }
         | Command::Decide { squad, .. }
+        | Command::AnswerQuestions { squad, .. }
+        | Command::DismissQuestions { squad, .. }
         | Command::Scale { squad, .. }
         | Command::Focus { squad, .. }
         | Command::ShowBrowser { squad, .. } => Some(squad),
@@ -526,6 +535,24 @@ impl Core {
                     Event::ApprovalRequested { squad: squad.to_owned(), approval: short },
                 )
             }
+            Event::QuestionsAsked { questions, .. } => {
+                let mut short = questions.clone();
+                for q in &mut short.questions {
+                    q.question = q.question.chars().take(PUSH_QUESTION).collect();
+                    for option in &mut q.options {
+                        option.label = option.label.chars().take(PUSH_LABEL).collect();
+                        option.description.clear();
+                    }
+                }
+                let ticket = questions.ticket.map(|t| format!(" · T-{t}")).unwrap_or_default();
+                (
+                    t!("remote.push_decision", member = questions.member, count = questions.questions.len()),
+                    format!("{squad}{ticket}"),
+                    "decision",
+                    format!("questions-{}", questions.id),
+                    Event::QuestionsAsked { squad: squad.to_owned(), questions: short },
+                )
+            }
             Event::TicketChanged { ticket, .. } => {
                 // A demo phone's board is its own.
                 let board = only.map_or_else(|| squad.to_owned(), |device| format!("{squad}/{device}"));
@@ -737,6 +764,15 @@ pub(crate) mod tests {
         let decide = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decide", "squad": "acme", "approval": 3, "decision": "always" } });
         let out = core.on_relay(&phone.send(&c, Some("acme"), decide, now), now);
         assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::Decide { squad: "acme".into(), approval: 3, decision: Decision::Allow } }]);
+        // A member's questions are the person's to answer, or close, from a phone too.
+        let answer = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "answer_questions", "squad": "acme", "id": 5, "answers": [{ "picked": [1] }, {}] } });
+        let out = core.on_relay(&phone.send(&c, Some("acme"), answer, now), now);
+        let answers = vec![equipe_core::protocol::decide::Answer { picked: vec![1], other: None }, Default::default()];
+        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::AnswerQuestions { squad: "acme".into(), id: 5, answers } }]);
+        let dismiss = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "dismiss_questions", "squad": "acme", "id": 5 } });
+        assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), dismiss, now), now)[..], [Action::Command { command: Command::DismissQuestions { .. }, .. }]));
+        let elsewhere = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "dismiss_questions", "squad": "zeta", "id": 5 } });
+        assert!(core.on_relay(&phone.send(&c, Some("acme"), elsewhere, now), now).is_empty(), "only the frame's squad");
         // Merging stays at the console; another squad than the frame's is refused.
         let merge = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "merge", "squad": "acme", "ticket": 1, "push": true } });
         assert!(core.on_relay(&phone.send(&c, Some("acme"), merge, now), now).is_empty());
@@ -784,6 +820,26 @@ pub(crate) mod tests {
         assert!(core.on_squad_event("acme", &Event::TicketChanged { squad: "acme".into(), ticket: t.clone() }).is_empty());
         t.status = TicketStatus::Done;
         assert!(core.on_squad_event("acme", &Event::TicketChanged { squad: "acme".into(), ticket: t }).is_empty());
+        // A decision to make: who asks and how many — the questions travel sealed, cut short.
+        use equipe_core::protocol::decide::{Choice, Question, QuestionSet};
+        let long = "왜".repeat(500);
+        let option = |label: &str| Choice { label: label.into(), description: "a long why".into() };
+        let set = QuestionSet {
+            id: 11,
+            session: 2,
+            member: "backend".into(),
+            ticket: Some(4),
+            questions: vec![Question { question: long.clone(), header: "DB".into(), options: vec![option("Postgres"), option("SQLite")], multi_select: false }; 2],
+            asked_at: 1,
+        };
+        let out = core.on_squad_event("acme", &Event::QuestionsAsked { squad: "acme".into(), questions: set });
+        let Action::Relay(push) = &out[0] else { panic!() };
+        assert_eq!((push["title"].as_str(), push["body"].as_str(), push["category"].as_str()), (Some("backend asks you to decide 2 things"), Some("acme · T-4"), Some("decision")));
+        assert!(!push.to_string().contains("Postgres"));
+        let opened = phone.open(&c, &out[0]);
+        let questions = &opened["rpc"]["params"]["questions"]["questions"];
+        assert_eq!(questions[0]["question"].as_str().unwrap().chars().count(), 200);
+        assert_eq!((questions[0]["options"][0]["label"].as_str(), questions[0]["options"][0].get("description")), (Some("Postgres"), None));
     }
 
     #[test]

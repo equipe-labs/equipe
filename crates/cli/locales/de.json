@@ -444,6 +444,8 @@
   "remote.push_asks_fetch": "{member} möchte eine Seite abrufen",
   "remote.push_asks_permission": "{member} bittet um Erlaubnis",
   "remote.push_asks_run": "{member} möchte einen Befehl ausführen",
+  "remote.push_decision.one": "{member} bittet dich um eine Entscheidung",
+  "remote.push_decision.other": "{member} bittet dich um {count} Entscheidungen",
   "remote.push_review": "{who} hat Arbeit zum Review abgegeben",
   "remote.push_waiting": "{who} braucht dich",
   "remote.relay_no_id": "Die Antwort des Relays hatte keine ID",

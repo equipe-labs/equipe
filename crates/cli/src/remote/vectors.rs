@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use equipe_core::protocol::decide::{Answer, Choice, Question, QuestionSet};
 use equipe_core::protocol::rpc::{Hello, Message};
 use equipe_core::protocol::{
     Access, Approval, Decision, Engine, Entry, Event, Member, Mode, SessionInfo, SessionState, Snapshot, Ticket, TicketKind, TicketStatus, TurnOutcome, Usage, WorkInfo,
@@ -627,6 +628,32 @@ fn approval() -> Approval {
     Approval { id: 17, session: 4242, member: "backend".into(), ticket: Some(38), tool: "Bash".into(), action: "git push origin main".into(), reason: Some("배포 브랜치에 올립니다".into()), preview: None }
 }
 
+/// The reference's two questions, from the member on T-38.
+fn questions() -> QuestionSet {
+    let choice = |label: &str, description: &str| Choice { label: label.into(), description: description.into() };
+    QuestionSet {
+        id: 5_000_001,
+        session: 4242,
+        member: "backend".into(),
+        ticket: Some(38),
+        questions: vec![
+            Question {
+                question: "로그인 토큰은 어디에 둘까요?".into(),
+                header: "토큰".into(),
+                options: vec![choice("httpOnly 쿠키 (추천)", "스크립트가 못 읽어 안전합니다"), choice("localStorage", "간단하지만 XSS에 노출됩니다")],
+                multi_select: false,
+            },
+            Question {
+                question: "어떤 로그인을 먼저 낼까요?".into(),
+                header: "범위".into(),
+                options: vec![choice("이메일", ""), choice("Google", ""), choice("Apple", "")],
+                multi_select: true,
+            },
+        ],
+        asked_at: NOW / 1000,
+    }
+}
+
 fn ticket(status: TicketStatus) -> Ticket {
     Ticket {
         id: 38,
@@ -703,6 +730,7 @@ fn snapshot() -> Snapshot {
         tickets: vec![ticket(TicketStatus::InProgress)],
         mode: Mode::Auto,
         approvals: vec![approval()],
+        questions: vec![questions()],
         scale: Some(0),
         plan: None,
         suggestions_off: false,
@@ -759,6 +787,16 @@ fn message_vectors() -> Value {
     ask(&mut core, &mut examples, "decide: deny", Some(SQUAD), decide("deny"));
     tell(&mut core, &mut examples, "event: approval resolved", Event::ApprovalResolved { squad: SQUAD.into(), approval: 17, decision: Decision::Allow });
 
+    // A member's questions: answered — a pick, several with a note, or skipped — or closed.
+    tell(&mut core, &mut examples, "event: questions asked", Event::QuestionsAsked { squad: SQUAD.into(), questions: questions() });
+    let answer = |answers: Value| json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "answer_questions", "squad": SQUAD, "id": 5_000_001, "answers": answers } });
+    ask(&mut core, &mut examples, "answer questions", Some(SQUAD), answer(json!([{ "picked": [0] }, { "picked": [0, 1], "other": "Apple은 다음 달에" }])));
+    ask(&mut core, &mut examples, "answer questions: one skipped", Some(SQUAD), answer(json!([{ "other": "세션 쿠키로" }, {}])));
+    ask(&mut core, &mut examples, "dismiss questions", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "dismiss_questions", "squad": SQUAD, "id": 5_000_001 } }));
+    let answered = vec![Answer { picked: vec![0], other: None }, Answer { picked: vec![0, 1], other: Some("Apple은 다음 달에".into()) }];
+    tell(&mut core, &mut examples, "event: questions answered", Event::QuestionsClosed { squad: SQUAD.into(), id: 5_000_001, answers: Some(answered) });
+    tell(&mut core, &mut examples, "event: questions closed", Event::QuestionsClosed { squad: SQUAD.into(), id: 5_000_001, answers: None });
+
     // Review.
     ask(&mut core, &mut examples, "accept", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "accept", "squad": SQUAD, "ticket": 38 } }));
     ask(&mut core, &mut examples, "reopen", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "reopen", "squad": SQUAD, "ticket": 38, "note": "에러 메시지를 한국어로" } }));
@@ -790,6 +828,7 @@ fn message_vectors() -> Value {
         ("push: approval", Event::ApprovalRequested { squad: SQUAD.into(), approval: approval() }),
         ("push: review", Event::TicketChanged { squad: SQUAD.into(), ticket: ticket(TicketStatus::Review) }),
         ("push: waiting", Event::TicketChanged { squad: SQUAD.into(), ticket: ticket(TicketStatus::Waiting) }),
+        ("push: decision", Event::QuestionsAsked { squad: SQUAD.into(), questions: questions() }),
     ] {
         let out = relay_frames(&core.on_squad_event(SQUAD, &event));
         let mut push = out[0].clone();

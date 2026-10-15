@@ -56,6 +56,8 @@ macro_rules! say {
     };
 }
 
+mod decide;
+
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
 
@@ -67,6 +69,8 @@ const CLOSED_TICKETS_SHOWN: usize = 20;
 
 /// The MCP server equipe gives members; its tools are `mcp__equipe__*`.
 const MCP_SERVER: &str = "equipe";
+/// Claude Code's own question tool, which members don't use (`ask_decision` instead).
+const ENGINE_QUESTION_TOOL: &str = "AskUserQuestion";
 /// The tool name a member's own question shows under, among approvals.
 const CONFIRM: &str = "Confirm";
 
@@ -286,6 +290,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         last_url: HashMap::new(),
         show_url: HashMap::new(),
         plan: None,
+        questions: HashMap::new(),
     };
     let mut memos = Vec::new();
     if runtime.config.persist {
@@ -551,6 +556,8 @@ struct Runtime {
     plan: Option<equipe_protocol::PlanUsage>,
     /// The Mac's screen, one member at a time, across squads.
     desktop: desktop::Desktop,
+    /// Members' questions waiting for the person, by squad (`decide`).
+    questions: HashMap<String, Vec<equipe_protocol::decide::QuestionSet>>,
 }
 
 async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut internal: UnboundedReceiver<Internal>, mut host: UnboundedReceiver<browser::HostEvent>) {
@@ -887,6 +894,8 @@ impl Runtime {
                     self.answer(approval, decision, "");
                 }
             }
+            Command::AnswerQuestions { squad, id, answers } => self.answer_questions(&squad, id, answers).await,
+            Command::DismissQuestions { squad, id } => self.dismiss_questions(&squad, id).await,
             Command::Disallow { squad, rule } => {
                 let taken = self.journals.get(&squad).and_then(|j| j.disallow(&rule).ok()).unwrap_or(false);
                 if taken {
@@ -1823,8 +1832,13 @@ for one project goes to it as tickets for its owners, with that project — and 
                 if member_rules {
                     allowed.extend(squad_rules);
                 }
-                let blocked: Vec<String> =
+                let mut blocked: Vec<String> =
                     if member_rules { permissions::BLOCKED.iter().map(|r| (*r).to_owned()).collect() } else { Vec::new() };
+                // Claude Code's own question tool asks a terminal nobody watches:
+                // a member with equipe's tools puts decisions with `ask_decision`.
+                if member_rules && mcp_config.is_some() {
+                    blocked.push(ENGINE_QUESTION_TOOL.to_owned());
+                }
                 // The person's browser sign-ins and equipe's logins: no fenced command reads them.
                 // Nor other squads' homes.
                 let (steer_tx, steer_rx) = mpsc::unbounded_channel::<String>();
@@ -2216,8 +2230,12 @@ for one project goes to it as tickets for its owners, with that project — and 
             return self.error(Some(id), say!(self, "error.no_session", id = id), None);
         };
         let squad = session.squad.clone();
+        let leaving = session.name().filter(|_| session.lane.is_none()).map(str::to_owned);
         if session.work.is_some() {
             self.end_work(id, WorkEnd::Left);
+        }
+        if let (Some(squad), Some(name)) = (&squad, leaving) {
+            self.drop_questions(squad, |set| set.member == name);
         }
         if let Some(sandbox) = self.sessions.get(&id).and_then(|s| s.sandbox.clone()) {
             self.land_plain_session(id, &sandbox);
@@ -2927,6 +2945,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             }
             None => self.close_ticket(squad, found, TicketStatus::Cancelled),
         }
+        self.drop_questions(squad, |set| set.ticket == Some(ticket));
         self.dispatch(squad).await;
     }
 
@@ -3727,6 +3746,7 @@ it back there once they have done it. End your turn now with a short line on wha
                     work.ticket
                 ))
             }
+            board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
             board::ESTIMATE => {
                 let minutes = |key: &str| args.get(key).and_then(Value::as_f64).map(|m| m.max(0.0));
                 let (done, live) = (minutes("done_in_minutes"), minutes("live_in_minutes"));
@@ -3849,6 +3869,7 @@ it back there once they have done it. End your turn now with a short line on wha
         let suggestions_off = self.journals.get(squad).is_some_and(Journal::suggestions_off);
         let allowed = self.journals.get(squad).and_then(|j| j.allowed().ok()).unwrap_or_default();
         let browsers_shown = self.journals.get(squad).is_some_and(Journal::browsers_all_shown);
+        let questions = self.question_sets(squad).clone();
         Snapshot {
             squad: squad.to_owned(),
             projects,
@@ -3856,6 +3877,7 @@ it back there once they have done it. End your turn now with a short line on wha
             tickets,
             mode,
             approvals,
+            questions,
             scale,
             suggestions_off,
             plan: self.plan,

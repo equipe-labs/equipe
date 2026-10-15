@@ -443,6 +443,7 @@
   "remote.push_asks_fetch": "{member} 請求擷取網頁",
   "remote.push_asks_permission": "{member} 請求權限",
   "remote.push_asks_run": "{member} 請求執行指令",
+  "remote.push_decision.other": "{member} 請你決定 {count} 件事",
   "remote.push_review": "{who} 提交了待審查的工作",
   "remote.push_waiting": "{who} 需要你",
   "remote.relay_no_id": "中繼伺服器的回應沒有 id",

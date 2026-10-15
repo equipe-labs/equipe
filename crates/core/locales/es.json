@@ -64,6 +64,8 @@
   "news.accepted_home": "Aceptaste T-{id}; su trabajo está en la carpeta del equipo · {title}.",
   "news.cancelled": "Cancelaste T-{id} · {title}.",
   "news.cannot_start": "✗ T-{id} no pudo empezar para {name}: {reason}",
+  "news.decision.one": "{name} te pide que decidas · {question}",
+  "news.decision.other": "{name} te pide que decidas {count} cosas · {question}",
   "news.desk_saved": "✎ {name} {what} en la carpeta del equipo · /home undo lo deshace",
   "news.handed_in": "{name} entregó T-{id} para tu revisión · {title}.",
   "news.helper_left": "{name} se fue con su trabajo hecho: su rol continúa",

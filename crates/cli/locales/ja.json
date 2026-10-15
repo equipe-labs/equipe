@@ -443,6 +443,7 @@
   "remote.push_asks_fetch": "{member}がページ取得の許可を求めています",
   "remote.push_asks_permission": "{member}が許可を求めています",
   "remote.push_asks_run": "{member}がコマンド実行の許可を求めています",
+  "remote.push_decision.other": "{member} が {count} 件の決定を求めています",
   "remote.push_review": "{who}がレビュー用に作業を提出しました",
   "remote.push_waiting": "{who}があなたの対応を待っています",
   "remote.relay_no_id": "リレーの応答にidがありません",

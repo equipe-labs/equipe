@@ -64,6 +64,8 @@
   "news.accepted_home": "你接受了 T-{id}；成果已在小队文件夹中 · {title}。",
   "news.cancelled": "你取消了 T-{id} · {title}。",
   "news.cannot_start": "✗ {name} 无法开始 T-{id}：{reason}",
+  "news.decision.one": "{name} 请你做个决定 · {question}",
+  "news.decision.other": "{name} 请你决定 {count} 件事 · {question}",
   "news.desk_saved": "✎ {name} 在小队文件夹中{what} · /home undo 可撤回",
   "news.handed_in": "{name} 提交了 T-{id} 等你审查 · {title}。",
   "news.helper_left": "{name} 完成工作后离开了：它的角色继续保留",

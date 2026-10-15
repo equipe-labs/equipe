@@ -444,6 +444,8 @@
   "remote.push_asks_fetch": "{member} pide abrir una página",
   "remote.push_asks_permission": "{member} pide permiso",
   "remote.push_asks_run": "{member} pide ejecutar un comando",
+  "remote.push_decision.one": "{member} te pide que decidas",
+  "remote.push_decision.other": "{member} te pide que decidas {count} cosas",
   "remote.push_review": "{who} entregó trabajo para revisar",
   "remote.push_waiting": "{who} te necesita",
   "remote.relay_no_id": "La respuesta del relay no tenía id",

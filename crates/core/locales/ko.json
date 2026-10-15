@@ -64,6 +64,8 @@
   "news.accepted_home": "T-{id}을(를) 수락했습니다. 결과는 스쿼드 폴더에 있습니다 · {title}.",
   "news.cancelled": "T-{id}을(를) 취소했습니다 · {title}.",
   "news.cannot_start": "✗ T-{id}을(를) {name}이(가) 시작하지 못했습니다: {reason}",
+  "news.decision.one": "{name}이(가) 결정을 부탁합니다 · {question}",
+  "news.decision.other": "{name}이(가) {count}가지 결정을 부탁합니다 · {question}",
   "news.desk_saved": "✎ {name}이(가) 스쿼드 폴더에서 {what} · /home undo로 되돌릴 수 있습니다",
   "news.handed_in": "{name}이(가) T-{id}을(를) 검토해 달라고 넘겼습니다 · {title}.",
   "news.helper_left": "{name}이(가) 일을 마치고 나갔습니다. 역할은 그대로 이어집니다",
