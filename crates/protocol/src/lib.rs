@@ -225,6 +225,10 @@ pub struct Ticket {
     /// or merge — `Some(false)`: accepted, but not on main yet. `None`: unknown.
     #[serde(default)]
     pub merged: Option<bool>,
+    /// Why its accepted work isn't on main, when equipe knows: the person left
+    /// it on its branch, or merging it failed. `None` otherwise (and once merged).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub off_main: Option<OffMain>,
     /// `you`, or the member who wrote it.
     pub created_by: String,
     /// The latest word on it: a hand-in summary, why it was reopened.
@@ -240,6 +244,25 @@ impl Ticket {
     pub fn not_on_main(&self) -> bool {
         self.kind == TicketKind::Code && self.status == TicketStatus::Done && self.branch.is_some() && self.merged == Some(false)
     }
+
+    /// Accepted, not on main, and still the person's call — not left on its
+    /// branch by their choice. What the inbox lists.
+    pub fn waits_to_merge(&self) -> bool {
+        self.not_on_main() && self.off_main != Some(OffMain::Kept)
+    }
+}
+
+/// Why a done ticket's work isn't on the main branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "why", rename_all = "snake_case")]
+pub enum OffMain {
+    /// The person chose to leave it on its branch: no longer asked about.
+    Kept,
+    /// Merging it met a conflict with main; nothing was merged.
+    Conflict { detail: String },
+    /// Merging it failed otherwise (main checked out with changes, the merge
+    /// refused); nothing was merged.
+    Failed { detail: String },
 }
 
 /// How much a member may do on its own while it works a ticket — and, at its
@@ -386,6 +409,9 @@ pub enum Command {
     /// and pushes main to `origin` when `push`. Never without their word: a
     /// merge is the person's gate. A conflict merges nothing.
     Merge { squad: SquadName, ticket: TicketId, push: bool },
+    /// The person leaves a done ticket's work on its branch, unmerged: it stops
+    /// asking to be merged. A later `Merge` still lands it.
+    KeepOnBranch { squad: SquadName, ticket: TicketId },
     /// The person sends a ticket back with what to change.
     Reopen { squad: SquadName, ticket: TicketId, note: String },
     /// The person did what a `waiting` ticket needed: it goes back to its
@@ -1153,6 +1179,7 @@ mod tests {
             branch: None,
             worktree: None,
             merged: None,
+            off_main: None,
             kind: TicketKind::Code,
             created_by: "pm".into(),
             note: None,
@@ -1184,6 +1211,23 @@ mod tests {
         let cmd = Command::Accept { squad: "acme".into(), ticket: 3 };
         assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "accept", "squad": "acme", "ticket": 3 }));
         assert_eq!(serde_json::to_value(TicketStatus::InProgress).unwrap(), json!("in_progress"));
+    }
+
+    #[test]
+    fn why_work_is_off_main_travels_only_when_known_and_kept_work_stops_asking() {
+        let cmd = Command::KeepOnBranch { squad: "acme".into(), ticket: 3 };
+        assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "keep_on_branch", "squad": "acme", "ticket": 3 }));
+        let done = Ticket { status: TicketStatus::Done, branch: Some("equipe/x".into()), merged: Some(false), ..ticket(3) };
+        // Unknown: left out of the wire, and an older daemon's ticket reads as unknown.
+        let wire = serde_json::to_value(&done).unwrap();
+        assert!(wire.get("off_main").is_none(), "{wire}");
+        assert_eq!(serde_json::from_value::<Ticket>(wire).unwrap().off_main, None);
+        let failed = Ticket { off_main: Some(OffMain::Conflict { detail: "a.rs".into() }), ..done.clone() };
+        assert_eq!(serde_json::to_value(&failed).unwrap()["off_main"], json!({ "why": "conflict", "detail": "a.rs" }));
+        assert!(done.waits_to_merge() && failed.waits_to_merge());
+        let kept = Ticket { off_main: Some(OffMain::Kept), ..done };
+        assert_eq!(serde_json::to_value(&kept).unwrap()["off_main"], json!({ "why": "kept" }));
+        assert!(kept.not_on_main() && !kept.waits_to_merge(), "still off main, no longer asking");
     }
 
     #[test]

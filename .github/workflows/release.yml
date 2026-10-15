@@ -16,9 +16,16 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+# A newer tag's build cancels an older one still building, so the newest
+# version reaches people sooner. Only the building jobs take part: a run
+# already publishing finishes, and an older run whose build was cancelled
+# skips its publish (it needs the build).
 jobs:
   build:
     name: build (${{ matrix.target }})
+    concurrency:
+      group: release-build-${{ matrix.target }}
+      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
@@ -85,6 +92,9 @@ jobs:
   # other they made the release wait about fifteen minutes.
   desktop-bin:
     name: desktop (${{ matrix.arch }})
+    concurrency:
+      group: release-desktop-bin-${{ matrix.arch }}
+      cancel-in-progress: true
     runs-on: macos-14
     strategy:
       matrix:
@@ -112,6 +122,9 @@ jobs:
 
   desktop:
     name: desktop (equipe.dmg)
+    concurrency:
+      group: release-desktop-dmg
+      cancel-in-progress: true
     needs: desktop-bin
     runs-on: macos-14
     env:

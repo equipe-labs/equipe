@@ -76,7 +76,7 @@ pub fn mark(model: &Model, t: &Ticket) -> Mark {
     if model.is_live(t) {
         return Mark::Spinner;
     }
-    if matches!(t.status, TicketStatus::Review | TicketStatus::Waiting) || t.not_on_main() {
+    if matches!(t.status, TicketStatus::Review | TicketStatus::Waiting) || t.waits_to_merge() {
         return Mark::Waits;
     }
     if model.news.contains(&t.id) {
@@ -435,9 +435,9 @@ fn ticket_row(shell: &Shell, t: &Ticket, on: bool, cx: &mut Context<Shell>) -> A
     let model = &shell.model;
     let id = t.id;
     let group = SharedString::from(format!("tk-{id}"));
-    let tip = format!("T-{id} · {}", if t.not_on_main() { t!("state.not_on_main") } else { crate::state::status_word(t.status) });
+    let tip = format!("T-{id} · {}", crate::state::state_word(t));
     let time = model.in_state_for(t).map(short_span);
-    let yes = (matches!(t.status, TicketStatus::Review | TicketStatus::Waiting | TicketStatus::Proposed) || t.not_on_main()) && shell.can_act();
+    let yes = (matches!(t.status, TicketStatus::Review | TicketStatus::Waiting | TicketStatus::Proposed) || t.waits_to_merge()) && shell.can_act();
     row_shell(p, ("ticket", id as usize), on)
         .group(group.clone())
         .tip_at(p, tip, None, gpui_kit::base::Placement::Right)

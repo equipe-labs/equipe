@@ -8,7 +8,7 @@ use equipe_core::t;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use equipe_core::protocol::{Command, Ticket, TicketId, TicketKind, TicketStatus};
+use equipe_core::protocol::{Command, OffMain, Ticket, TicketId, TicketKind, TicketStatus};
 
 use crate::state::{Model, Need, Section, status_word};
 
@@ -160,7 +160,9 @@ pub enum Tone {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
-    Heading { label: String, count: usize, tone: Tone },
+    /// A section's name and size — and, for one whose name alone doesn't say
+    /// what it means, a line under it that does.
+    Heading { label: String, count: usize, tone: Tone, hint: Option<String> },
     /// A thing listed, and how deep under what it waits for (the 의존 순서 grouping).
     Item { need: Need, depth: usize },
     /// The finished group's own line: `끝남 · 7일 12 ▸`.
@@ -307,7 +309,7 @@ pub fn inbox(model: &Model, filter: &Filter) -> Vec<Row> {
             .map(|(_, need)| need)
             .collect();
         if !items.is_empty() {
-            out.push(Row::Heading { label: section.label().to_owned(), count: items.len(), tone: Tone::ForYou });
+            out.push(Row::Heading { label: section.label().to_owned(), count: items.len(), tone: Tone::ForYou, hint: section.hint().map(str::to_owned) });
             out.extend(items.into_iter().map(|need| Row::Item { need, depth: 0 }));
         }
     }
@@ -356,7 +358,7 @@ pub fn all(model: &Model, view: &View, filter: &Filter, group: GroupBy) -> Vec<R
                 let list: Vec<&Ticket> = open.iter().copied().filter(|t| t.status == *status).collect();
                 if !list.is_empty() {
                     let tone = if matches!(status, TicketStatus::Review | TicketStatus::Waiting) { Tone::ForYou } else { Tone::Plain };
-                    out.push(Row::Heading { label: status_word(*status).to_owned(), count: list.len(), tone });
+                    out.push(Row::Heading { label: status_word(*status).to_owned(), count: list.len(), tone, hint: None });
                     out.extend(list.into_iter().map(|t| item(t, 0)));
                 }
             }
@@ -369,7 +371,7 @@ pub fn all(model: &Model, view: &View, filter: &Filter, group: GroupBy) -> Vec<R
                 if !list.is_empty() {
                     by_status(&mut list);
                     let at = name.as_ref().and_then(|n| model.project_names().iter().position(|x| x == n));
-                    out.push(Row::Heading { label: name.unwrap_or_else(|| t!("board.squad_folder").into()), count: list.len(), tone: Tone::Project(at) });
+                    out.push(Row::Heading { label: name.unwrap_or_else(|| t!("board.squad_folder").into()), count: list.len(), tone: Tone::Project(at), hint: None });
                     out.extend(list.into_iter().map(|t| item(t, 0)));
                 }
             }
@@ -382,14 +384,14 @@ pub fn all(model: &Model, view: &View, filter: &Filter, group: GroupBy) -> Vec<R
                 let mut list: Vec<&Ticket> = open.iter().copied().filter(|t| who(t).unwrap_or_default() == name).collect();
                 by_status(&mut list);
                 let label = if name.is_empty() { t!("board.nobody").to_owned() } else { name };
-                out.push(Row::Heading { label, count: list.len(), tone: Tone::Plain });
+                out.push(Row::Heading { label, count: list.len(), tone: Tone::Plain, hint: None });
                 out.extend(list.into_iter().map(|t| item(t, 0)));
             }
         }
         GroupBy::Deps => {
             let tree = dependency_tree(model, &open);
             if !tree.is_empty() {
-                out.push(Row::Heading { label: t!("board.group_deps").into(), count: tree.len(), tone: Tone::Plain });
+                out.push(Row::Heading { label: t!("board.group_deps").into(), count: tree.len(), tone: Tone::Plain, hint: None });
                 out.extend(tree.into_iter().map(|(id, depth)| Row::Item { need: Need::Ticket(id), depth }));
             }
         }
@@ -572,7 +574,8 @@ impl MergeWay {
 }
 
 /// The commands A sends for a ticket that waits for the person: accept (and
-/// land its branch `way`), resume, take on a proposal, merge what is not on main.
+/// land its branch `way`), resume, take on a proposal, merge what is not on
+/// main — or, the way being "leave on branch", keep it there and stop asking.
 pub fn yes_commands(squad: &str, t: &Ticket, way: Option<MergeWay>, note: &str) -> Vec<Command> {
     let squad = squad.to_owned();
     let merge = |way: Option<MergeWay>| match way {
@@ -582,6 +585,7 @@ pub fn yes_commands(squad: &str, t: &Ticket, way: Option<MergeWay>, note: &str) 
     };
     match t.status {
         TicketStatus::Waiting => vec![Command::Resume { squad, ticket: t.id, note: note.to_owned() }],
+        TicketStatus::Done if t.waits_to_merge() && way == Some(MergeWay::Branch) => vec![Command::KeepOnBranch { squad, ticket: t.id }],
         TicketStatus::Done if t.not_on_main() => merge(way).into_iter().collect(),
         TicketStatus::Review if Model::merges(t) => std::iter::once(Command::Accept { squad: squad.clone(), ticket: t.id }).chain(merge(way)).collect(),
         TicketStatus::Done | TicketStatus::Cancelled => Vec::new(),
@@ -592,6 +596,23 @@ pub fn yes_commands(squad: &str, t: &Ticket, way: Option<MergeWay>, note: &str) 
 /// Whether A on this ticket lands code, so the project's way is asked for.
 pub fn needs_way(t: &Ticket) -> bool {
     (t.status == TicketStatus::Review && Model::merges(t)) || t.not_on_main()
+}
+
+/// Why accepted work isn't in main, in the person's words: what equipe
+/// recorded (kept by choice, a conflict, a failed merge), else what the
+/// project's way (`way`, this app's setting) says. `None` when it is on main.
+pub fn off_main_why(t: &Ticket, way: Option<MergeWay>) -> Option<String> {
+    if !t.not_on_main() {
+        return None;
+    }
+    Some(match (&t.off_main, way) {
+        (Some(OffMain::Kept), _) => t!("peek.why_kept").to_owned(),
+        (Some(OffMain::Conflict { detail }), _) => t!("peek.why_conflict", detail = detail),
+        (Some(OffMain::Failed { detail }), _) => t!("peek.why_failed", detail = detail),
+        (None, Some(MergeWay::Branch)) => t!("peek.why_way_branch").to_owned(),
+        (None, None) => t!("peek.why_way_ask").to_owned(),
+        (None, Some(_)) => t!("peek.why_accepted_only").to_owned(),
+    })
 }
 
 // ── taking an action back ──
@@ -753,7 +774,10 @@ mod tests {
         let ask: Approval = serde_json::from_value(serde_json::json!({"id": 1, "session": 2, "member": "m", "ticket": 9, "tool": "Bash", "action": "ls", "reason": null})).unwrap();
         m.approvals.push(ask);
         let rows = inbox(&m, &Filter::default());
-        assert_eq!(headings(&rows), vec!["허락 요청", "내 차례", "검토", "제안", "병합 안 됨"]);
+        assert_eq!(headings(&rows), vec!["허락 요청", "내 차례", "검토", "제안", "수락했지만 아직 main에 안 합쳐짐"]);
+        let hints: Vec<Option<String>> = rows.iter().filter_map(|r| if let Row::Heading { hint, .. } = r { Some(hint.clone()) } else { None }).collect();
+        assert_eq!(hints.iter().filter(|h| h.is_some()).count(), 1, "only the not-merged heading explains itself");
+        assert_eq!(hints.last().cloned().flatten().as_deref(), Some("수락한 작업이 멤버 브랜치에만 있어요. 합치면 main에 들어가요."));
         assert_eq!(items(&rows)[0], Need::Permission(1));
         // The review that unblocks something comes first.
         assert_eq!(ids(&rows), vec![4, 6, 5, 3, 7]);
@@ -807,6 +831,38 @@ mod tests {
         task.branch = Some("b".into());
         assert!(!needs_way(&task), "a task's work goes into the squad's folder unasked");
         assert_eq!(MergeWay::parse("merge"), Some(MergeWay::Merge));
+    }
+
+    #[test]
+    fn work_not_in_main_merges_the_projects_way_or_stays_on_its_branch_for_good() {
+        let mut done = ticket(4, "done", "/p", &[]);
+        done.branch = Some("equipe/t-4".into());
+        done.merged = Some(false);
+        assert_eq!(yes_commands("s", &done, Some(MergeWay::Push), ""), vec![Command::Merge { squad: "s".into(), ticket: 4, push: true }]);
+        assert_eq!(yes_commands("s", &done, Some(MergeWay::Merge), ""), vec![Command::Merge { squad: "s".into(), ticket: 4, push: false }]);
+        assert_eq!(yes_commands("s", &done, Some(MergeWay::Branch), ""), vec![Command::KeepOnBranch { squad: "s".into(), ticket: 4 }], "kept: it stops asking");
+        assert!(yes_commands("s", &done, None, "").is_empty(), "no way yet: ask first");
+        let kept = Ticket { off_main: Some(OffMain::Kept), ..done.clone() };
+        assert!(yes_commands("s", &kept, Some(MergeWay::Branch), "").is_empty(), "kept already");
+        assert_eq!(yes_commands("s", &kept, Some(MergeWay::Merge), "").len(), 1, "and it can still be merged");
+    }
+
+    #[test]
+    fn why_work_isnt_in_main_says_what_is_known() {
+        let mut done = ticket(4, "done", "/p", &[]);
+        done.branch = Some("equipe/t-4".into());
+        done.merged = Some(false);
+        assert_eq!(off_main_why(&done, None).as_deref(), Some(t!("peek.why_way_ask")));
+        assert_eq!(off_main_why(&done, Some(MergeWay::Branch)).as_deref(), Some(t!("peek.why_way_branch")));
+        assert_eq!(off_main_why(&done, Some(MergeWay::Push)).as_deref(), Some(t!("peek.why_accepted_only")));
+        let clash = Ticket { off_main: Some(OffMain::Conflict { detail: "README.md".into() }), ..done.clone() };
+        let why = off_main_why(&clash, Some(MergeWay::Merge)).unwrap();
+        assert!(why.contains("충돌") && why.contains("README.md"), "{why}");
+        let failed = Ticket { off_main: Some(OffMain::Failed { detail: "main is checked out".into() }), ..done.clone() };
+        assert!(off_main_why(&failed, None).unwrap().contains("main is checked out"));
+        let kept = Ticket { off_main: Some(OffMain::Kept), ..done.clone() };
+        assert_eq!(off_main_why(&kept, Some(MergeWay::Push)).as_deref(), Some(t!("peek.why_kept")));
+        assert_eq!(off_main_why(&Ticket { merged: Some(true), ..done }, None), None, "on main: nothing to explain");
     }
 
     #[test]

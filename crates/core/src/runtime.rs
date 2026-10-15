@@ -21,7 +21,7 @@ use equipe_protocol::rpc::{ToolCall, ToolResult};
 use equipe_protocol::transcript::scope;
 use equipe_protocol::{
     Access, Approval, BrowserNavAction, Command, Decision, Engine, Entry, Event, Member, MemberRef, Mode, SessionId, SessionInfo,
-    Estimate, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
+    Estimate, OffMain, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
 };
 use equipe_providers::claude_code::{self, Activity};
 use equipe_providers::credentials::equipe_home;
@@ -638,6 +638,7 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                 rt.close_idle_browsers();
                 rt.let_helpers_go().await;
                 rt.tidy_check();
+                rt.settle_all_merged();
             }
         }
     }
@@ -779,6 +780,7 @@ impl Runtime {
             Command::Close { session } => self.close(session).await,
             Command::Accept { squad, ticket } => self.accept(&squad, ticket).await,
             Command::Merge { squad, ticket, push } => self.merge(&squad, ticket, push),
+            Command::KeepOnBranch { squad, ticket } => self.keep_on_branch(&squad, ticket),
             Command::Reopen { squad, ticket, note } => self.reopen(&squad, ticket, note).await,
             Command::Resume { squad, ticket, note } => self.resume(&squad, ticket, note).await,
             Command::Cancel { squad, ticket } => self.cancel(&squad, ticket).await,
@@ -2515,6 +2517,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             WorkEnd::Accepted => {
                 ticket.status = TicketStatus::Done;
                 ticket.merged = merged_state(&ticket);
+                ticket.off_main = None;
                 let (line, news) = if ticket.kind.in_home() {
                     (format!("You accepted T-{}; its work is in the squad's folder", ticket.id), "news.accepted_home")
                 } else {
@@ -2682,6 +2685,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         ticket.worktree = None;
         if status == TicketStatus::Done {
             ticket.merged = merged_state(&ticket);
+            ticket.off_main = None;
         }
         let verb = if status == TicketStatus::Done { "accepted" } else { "cancelled" };
         if let Some(journal) = self.journal(squad) {
@@ -2745,6 +2749,17 @@ for one project goes to it as tickets for its owners, with that project — and 
         let main = match worktree::merge_into_main(&repo, &branch, &message) {
             Ok(main) => main,
             Err(err) => {
+                // Why it stays off main, for the screens to say.
+                found.off_main = Some(if err.contains(" conflicts with ") {
+                    OffMain::Conflict { detail: err.clone() }
+                } else {
+                    OffMain::Failed { detail: err.clone() }
+                });
+                if let Some(journal) = self.journal(squad) {
+                    let _ = journal.save_ticket(&found);
+                    let _ = journal.ticket_event(ticket, "equipe", "not merged", &err);
+                }
+                self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: found });
                 let message = say!(self, "error.not_merged", id = ticket, err = err);
                 return self.squad_error(squad, message);
             }
@@ -2765,22 +2780,66 @@ for one project goes to it as tickets for its owners, with that project — and 
         }
         let shown = self.said(news, &[("id", ticket.to_string()), ("title", found.title.clone()), ("branch", main.clone())]);
         found.merged = Some(true);
+        found.off_main = None;
         if let Some(journal) = self.journal(squad) {
             let _ = journal.save_ticket(&found);
             let _ = journal.ticket_event(ticket, "you", "merged", &main);
         }
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: found });
         // Work it was built on came along with it.
-        for mut other in self.tickets(squad).into_iter().filter(|t| t.merged == Some(false)) {
-            if other.status == TicketStatus::Done && merged_state(&other) == Some(true) {
-                other.merged = Some(true);
-                if let Some(journal) = self.journal(squad) {
-                    let _ = journal.save_ticket(&other);
-                }
-                self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: other });
-            }
-        }
+        self.settle_merged(squad);
         self.brief_pm(squad, format!("{line}."), Some(shown));
+    }
+
+    /// Done tickets said not to be on main whose branch has nothing left to
+    /// bring there (it got in another way, or it changes nothing: `+0 −0`)
+    /// are merged: nothing to ask the person. Their worktree went when they
+    /// were accepted; their branch stays, as after any merge.
+    fn settle_merged(&mut self, squad: &str) {
+        for mut t in self.tickets(squad).into_iter().filter(Ticket::not_on_main) {
+            if merged_state(&t) != Some(true) {
+                continue;
+            }
+            t.merged = Some(true);
+            t.off_main = None;
+            if let Some(journal) = self.journal(squad) {
+                let _ = journal.save_ticket(&t);
+                let _ = journal.ticket_event(t.id, "equipe", "merged", "nothing left to merge: its work is in main");
+            }
+            self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: t });
+        }
+    }
+
+    /// Every squad open, settled: work that reached main outside equipe stops
+    /// asking to be merged.
+    fn settle_all_merged(&mut self) {
+        let squads: Vec<String> = self.journals.keys().cloned().collect();
+        for squad in squads {
+            self.settle_merged(&squad);
+        }
+    }
+
+    /// The person leaves a done ticket's work on its branch: it stops asking
+    /// to be merged, and a merge later still lands it.
+    fn keep_on_branch(&mut self, squad: &str, ticket: TicketId) {
+        let Some(mut found) = self.find_ticket(squad, ticket) else {
+            return;
+        };
+        if found.status != TicketStatus::Done {
+            let message = say!(self, "error.not_accepted", id = ticket);
+            return self.squad_error(squad, message);
+        }
+        if !found.not_on_main() {
+            let message = say!(self, "error.no_branch", id = ticket);
+            return self.squad_error(squad, message);
+        }
+        found.off_main = Some(OffMain::Kept);
+        let branch = found.branch.clone().unwrap_or_default();
+        if let Some(journal) = self.journal(squad) {
+            let _ = journal.save_ticket(&found);
+            let _ = journal.ticket_event(ticket, "you", "kept on branch", &branch);
+        }
+        self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: found });
     }
 
     /// The person sends work back: the ticket goes to its member again, on the
@@ -3544,6 +3603,7 @@ there, end your turn, and carry on when they say they're done."
                     branch: None,
                     worktree: None,
                     merged: None,
+                    off_main: None,
                     created_by: member.clone(),
                     note: None,
                     asks: vec![],

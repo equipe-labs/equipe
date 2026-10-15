@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use equipe_core::protocol::rpc::Hello;
-use equipe_core::protocol::{Engine, Entry, Estimate, Event, Mode, SessionId, SessionState, Ticket, TicketId, TicketKind, TicketStatus, TurnOutcome};
+use equipe_core::protocol::{Engine, Entry, Estimate, Event, Mode, OffMain, SessionId, SessionState, Ticket, TicketId, TicketKind, TicketStatus, TurnOutcome};
 
 use crate::convo::Convo;
 use crate::daemon::Update;
@@ -140,7 +140,8 @@ pub enum Section {
     Review,
     /// Suggested work to take on or drop: 제안.
     Proposed,
-    /// Accepted, but not on main yet: 병합 안 됨.
+    /// Accepted, but not on main yet — and not left on its branch by the
+    /// person's choice: 수락했지만 아직 main에 안 합쳐짐.
     NotOnMain,
 }
 
@@ -154,6 +155,15 @@ impl Section {
             Section::Review => t!("state.status_review"),
             Section::Proposed => t!("state.status_proposed"),
             Section::NotOnMain => t!("state.not_on_main"),
+        }
+    }
+
+    /// The line under a section's heading that says what it means, where its
+    /// name alone doesn't.
+    pub fn hint(self) -> Option<&'static str> {
+        match self {
+            Section::NotOnMain => Some(t!("state.not_on_main_hint")),
+            _ => None,
         }
     }
 }
@@ -179,11 +189,21 @@ pub fn status_word(status: TicketStatus) -> &'static str {
 }
 
 /// How a ticket looked when the person acted on it: hidden from what waits
-/// for them until it looks different.
-pub type Look = (TicketStatus, Option<bool>);
+/// for them until it looks different — a merge that failed, say.
+pub type Look = (TicketStatus, Option<bool>, Option<OffMain>);
 
 pub fn look_of(t: &Ticket) -> Look {
-    (t.status, t.merged)
+    (t.status, t.merged, t.off_main.clone())
+}
+
+/// What a ticket's state is called where one ticket is shown: its status's
+/// word — or, for accepted work not in main, that and where it is.
+pub fn state_word(t: &Ticket) -> &'static str {
+    match t.off_main {
+        _ if !t.not_on_main() => status_word(t.status),
+        Some(OffMain::Kept) => t!("state.accepted_kept"),
+        _ => t!("state.accepted_not_on_main"),
+    }
 }
 
 /// A member at work on a ticket is quiet past this many seconds without a word.
@@ -932,7 +952,7 @@ impl Model {
             TicketStatus::Waiting => Some(Section::Waiting),
             TicketStatus::Review => Some(Section::Review),
             TicketStatus::Proposed => Some(Section::Proposed),
-            TicketStatus::Done if t.not_on_main() => Some(Section::NotOnMain),
+            TicketStatus::Done if t.waits_to_merge() => Some(Section::NotOnMain),
             _ => None,
         }
     }
@@ -1616,6 +1636,44 @@ mod tests {
     }
 
     #[test]
+    fn accepted_work_asks_to_be_merged_only_while_there_is_something_to_merge_and_the_person_hasnt_kept_it() {
+        let mut model = needs_model();
+        assert_eq!(state_word(model.tickets.iter().find(|t| t.id == 9).unwrap()), "수락함 · main에 안 합쳐짐");
+        let not_on_main = |m: &Model| m.needs_you().into_iter().filter(|(s, _)| *s == Section::NotOnMain).map(|(_, n)| n).collect::<Vec<_>>();
+        assert_eq!(not_on_main(&model), [Need::Ticket(9)]);
+        let nine = model.tickets.iter().find(|t| t.id == 9).unwrap().clone();
+        // Merging it was tried and failed: back in the inbox, its reason with it.
+        model.act_on(9);
+        assert!(not_on_main(&model).is_empty());
+        let clash = Ticket { off_main: Some(OffMain::Conflict { detail: "a.rs".into() }), ..nine.clone() };
+        model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: clash }), T0);
+        assert_eq!(not_on_main(&model), [Need::Ticket(9)]);
+        // Kept on its branch by the person: out of the inbox, still not on main.
+        let kept = Ticket { off_main: Some(OffMain::Kept), ..nine.clone() };
+        model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: kept.clone() }), T0);
+        assert!(not_on_main(&model).is_empty() && kept.not_on_main());
+        assert_eq!(model.section_of(&kept), None);
+        assert_eq!(state_word(&kept), "수락함 · 브랜치에 둠");
+        // Merged after all: back to its status's word.
+        assert_eq!(state_word(&Ticket { merged: Some(true), off_main: None, ..kept.clone() }), "끝남");
+        // +0 −0, or in main another way: the daemon finds nothing to merge and
+        // says it is merged — done, not waiting.
+        let mut empty = ticket(10, "done", None);
+        empty.branch = Some("equipe/t-10".into());
+        empty.merged = Some(false);
+        model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: empty.clone() }), T0);
+        assert_eq!(not_on_main(&model), [Need::Ticket(10)]);
+        model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: Ticket { merged: Some(true), ..empty } }), T0);
+        assert!(not_on_main(&model).is_empty());
+        // A task's work lands in the squad's folder: never asks.
+        let mut task = ticket(11, "done", None);
+        task.kind = equipe_core::protocol::TicketKind::Task;
+        task.branch = Some("b".into());
+        task.merged = Some(false);
+        assert_eq!(model.section_of(&task), None);
+    }
+
+    #[test]
     fn reviews_that_unblock_as_much_go_oldest_first() {
         let mut model = needs_model();
         model.since.insert(6, 500);
@@ -1677,7 +1735,8 @@ mod tests {
     fn every_status_has_one_word() {
         let words: Vec<&str> = [TicketStatus::Waiting, TicketStatus::Review, TicketStatus::Proposed, TicketStatus::Todo, TicketStatus::InProgress, TicketStatus::Done, TicketStatus::Cancelled].into_iter().map(status_word).collect();
         assert_eq!(words, ["내 차례", "검토", "제안", "할 일", "작업 중", "끝남", "취소"]);
-        assert_eq!(Section::NotOnMain.label(), "병합 안 됨");
+        assert_eq!(Section::NotOnMain.label(), "수락했지만 아직 main에 안 합쳐짐");
+        assert!(Section::NotOnMain.hint().is_some_and(|h| h.contains("main")) && Section::Review.hint().is_none());
         assert_eq!(Section::Permission.label(), "허락 요청");
     }
 

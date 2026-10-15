@@ -22,6 +22,7 @@ use crate::board::{self, DoneWindow, Filter, GroupBy, Menu, MergeWay, Row, Saved
 use crate::diffs::{self, Fetched, Source, Stat};
 use crate::state::{Conn, Model, Need, Presence, Verb, local_hm, short_span, status_word};
 use crate::theme::{MONO, PROJECT_HUES, Palette, SMALL, look};
+use crate::tips::TipExt as _;
 use crate::{Screen, Shell};
 
 /// A row of the list.
@@ -448,7 +449,9 @@ impl Shell {
             }
             Need::Ticket(id) => {
                 let Some(t) = self.model.tickets.iter().find(|t| t.id == id).cloned() else { return };
-                if board::needs_way(&t) {
+                if t.not_on_main() {
+                    self.board_merge(id, cx);
+                } else if board::needs_way(&t) {
                     match self.merge_way_of(&self.project_of(&t)) {
                         Some(way) => self.land(&t, Some(way), cx),
                         None => {
@@ -483,6 +486,27 @@ impl Shell {
                 }
             }
             None => {}
+        }
+    }
+
+    /// Merge accepted work into main the project's way — merge, or merge and
+    /// push; with no such way set (asking, or "leave on branch"), ask how.
+    pub fn board_merge(&mut self, id: TicketId, cx: &mut Context<Self>) {
+        let Some(t) = self.model.tickets.iter().find(|t| t.id == id && t.not_on_main()).cloned() else { return };
+        match self.merge_way_of(&self.project_of(&t)) {
+            Some(way @ (MergeWay::Merge | MergeWay::Push)) => self.land(&t, Some(way), cx),
+            _ => {
+                self.board.flow = Some(Flow::Method(id));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Leave accepted work on its branch for good: out of 나에게, and the
+    /// daemon remembers it was the person's choice.
+    pub fn board_keep(&mut self, id: TicketId, cx: &mut Context<Self>) {
+        if let Some(t) = self.model.tickets.iter().find(|t| t.id == id && t.waits_to_merge()).cloned() {
+            self.land(&t, Some(MergeWay::Branch), cx);
         }
     }
 
@@ -534,6 +558,7 @@ impl Shell {
         let text = match t.status {
             TicketStatus::Waiting => t!("board.toast_resume", id = t.id),
             TicketStatus::Proposed => t!("board.toast_proposal", id = t.id),
+            TicketStatus::Done if way == Some(MergeWay::Branch) => t!("board.toast_keep", id = t.id),
             TicketStatus::Done => t!("board.toast_merge", id = t.id, project = project, way = way.unwrap_or(MergeWay::Merge).label()),
             _ if Model::merges(t) => match way {
                 Some(MergeWay::Branch) | None => t!("board.toast_accept_branch", id = t.id),
@@ -677,7 +702,9 @@ impl Shell {
         for id in chosen {
             let Some(t) = self.model.tickets.iter().find(|t| t.id == id).cloned() else { continue };
             if yes {
-                let way = board::needs_way(&t).then(|| self.merge_way_of(&self.project_of(&t)).unwrap_or(MergeWay::Branch));
+                let set = self.merge_way_of(&self.project_of(&t));
+                // Work accepted already is merged in bulk, never kept unasked.
+                let way = if t.not_on_main() { set.filter(|w| *w != MergeWay::Branch) } else { board::needs_way(&t).then(|| set.unwrap_or(MergeWay::Branch)) };
                 if matches!(t.status, TicketStatus::Review | TicketStatus::Proposed | TicketStatus::Waiting) || t.not_on_main() {
                     self.land(&t, way, cx);
                 }
@@ -1005,9 +1032,8 @@ impl Shell {
             "c" => self.board_talk(window, cx),
             "d" => self.board_open_diff(window, cx),
             "m" => {
-                if let Some(t) = self.picked().filter(Ticket::not_on_main) {
-                    self.board.flow = Some(Flow::Method(t.id));
-                    cx.notify();
+                if let Some(id) = self.picked().filter(Ticket::not_on_main).map(|t| t.id) {
+                    self.board_merge(id, cx);
                 }
             }
             _ => return false,
@@ -1411,12 +1437,12 @@ fn empty_note(shell: &Shell, p: Palette, cx: &mut Context<Shell>) -> AnyElement 
 fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     match row {
-        Row::Heading { label, count, tone } => {
+        Row::Heading { label, count, tone, hint } => {
             let color = match tone {
                 Tone::ForYou => p.accent,
                 _ => p.muted,
             };
-            h_flex()
+            let heading = h_flex()
                 .h(px(HEADING))
                 .mt(px(if ix == 0 { 4. } else { 10. }))
                 .px_3()
@@ -1430,8 +1456,15 @@ fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, cx: &mut Co
                     _ => None,
                 }, |h, c| h.child(dot(c, 7.)))
                 .child(label.clone())
-                .child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(count.to_string()))
-                .into_any_element()
+                .child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(count.to_string()));
+            match hint {
+                // What the section means, in one quiet line under its name.
+                Some(hint) => v_flex()
+                    .child(heading)
+                    .child(div().px_3().pb_1().mt(px(-6.)).text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(hint.clone()))
+                    .into_any_element(),
+                None => heading.into_any_element(),
+            }
         }
         Row::Done { count, total, open, window } => {
             let (open, window) = (*open, *window);
@@ -1478,7 +1511,8 @@ fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, cx: &mut Co
 
 /// What a row says at its right, column by column.
 struct Meta {
-    flags: Vec<(String, Rgba)>,
+    /// Each chip: its words, its color, and what it means on the pointer.
+    flags: Vec<(String, Rgba, Option<String>)>,
     activity: Option<(String, Rgba)>,
     eta: Option<(String, Rgba)>,
     time: Option<String>,
@@ -1521,20 +1555,25 @@ fn meta(shell: &Shell, t: &Ticket) -> Meta {
     let model = &shell.model;
     let mut flags = Vec::new();
     if let Some(dep) = model.blocked_by(t).filter(|_| matches!(t.status, TicketStatus::Todo | TicketStatus::Proposed)) {
-        flags.push((format!("⛓T-{dep}"), p.orange));
+        flags.push((format!("⛓T-{dep}"), p.orange, None));
     }
     let unblocks = model.unblocks(t.id).len();
     if unblocks > 0 && !t.status.is_closed() {
-        flags.push((format!("→{unblocks}"), p.muted));
+        flags.push((format!("→{unblocks}"), p.muted, None));
     }
     if t.not_on_main() {
-        flags.push((t!("state.not_on_main").to_owned(), p.accent));
+        let branch = t.branch.clone().unwrap_or_default();
+        flags.push(if t.waits_to_merge() {
+            (t!("state.chip_not_on_main").to_owned(), p.accent, Some(t!("state.chip_not_on_main_tip", branch = branch)))
+        } else {
+            (t!("state.chip_kept").to_owned(), p.muted, Some(t!("state.chip_kept_tip", branch = branch)))
+        });
     }
     if let Some(quiet) = model.quiet_for(t) {
-        flags.push((format!("{} {}", t!("board.flag_quiet"), short_span(quiet)), p.amber));
+        flags.push((format!("{} {}", t!("board.flag_quiet"), short_span(quiet)), p.amber, None));
     }
     if model.failed(t) {
-        flags.push((t!("board.flag_error").to_owned(), p.red));
+        flags.push((t!("board.flag_error").to_owned(), p.red, None));
     }
     let activity = match t.status {
         TicketStatus::InProgress => live_activity(model, t).map(|a| (a, p.text2)),
@@ -1708,7 +1747,13 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                         .gap_1()
                         .justify_end()
                         .overflow_hidden()
-                        .children(m.flags.into_iter().map(|(text, color)| div().flex_none().px(px(6.)).h(px(18.)).flex().items_center().rounded(px(4.)).bg(p.wash).text_size(px(11.)).text_color(color).child(text))),
+                        .children(m.flags.into_iter().enumerate().map(|(i, (text, color, tip))| {
+                            let chip = div().id(("flag", i)).flex_none().px(px(6.)).h(px(18.)).flex().items_center().rounded(px(4.)).bg(p.wash).text_size(px(11.)).text_color(color).child(text);
+                            match tip {
+                                Some(tip) => chip.tip(p, tip, None).into_any_element(),
+                                None => chip.into_any_element(),
+                            }
+                        })),
                 )
                 .child(
                     h_flex()

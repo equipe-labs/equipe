@@ -139,9 +139,22 @@ pub fn main_branch(repo: &Path) -> Result<String> {
         .ok_or_else(|| "the repository has neither a main nor a master branch".to_owned())
 }
 
-/// Whether `branch` is in the main branch already.
+/// Whether `branch` has nothing left to bring to the main branch: it is in
+/// main already, or merging it would change nothing there (`+0 −0` — its
+/// changes landed another way, or it made none).
 pub fn is_merged(repo: &Path, branch: &str) -> Result<bool> {
-    Ok(is_ancestor(repo, branch, &main_branch(repo)?))
+    let main = main_branch(repo)?;
+    Ok(is_ancestor(repo, branch, &main) || adds_nothing(repo, branch, &main))
+}
+
+/// Whether merging `branch` into `into` leaves `into`'s files as they are.
+fn adds_nothing(repo: &Path, branch: &str, into: &str) -> bool {
+    let Ok(tree) = git(repo, &["rev-parse", &format!("refs/heads/{into}^{{tree}}")]) else {
+        return false;
+    };
+    // A conflict exits 1 and a failure otherwise: neither is "nothing".
+    git(repo, &["merge-tree", "--write-tree", "--no-messages", &format!("refs/heads/{into}"), branch])
+        .is_ok_and(|out| out.lines().next().is_some_and(|merged| merged.trim() == tree))
 }
 
 /// Merge `branch` into the main branch with a merge commit, never touching a
@@ -149,10 +162,10 @@ pub fn is_merged(repo: &Path, branch: &str) -> Result<bool> {
 /// one moves the branch. A checkout that has main checked out follows along
 /// (fast-forward), keeping its uncommitted changes — or refuses, and then
 /// nothing changes. Returns the main branch's name; `Ok` with nothing done when
-/// `branch` is in it already.
+/// `branch` is in it already, or would change nothing in it.
 pub fn merge_into_main(repo: &Path, branch: &str, message: &str) -> Result<String> {
     let main = main_branch(repo)?;
-    if is_ancestor(repo, branch, &main) {
+    if is_ancestor(repo, branch, &main) || adds_nothing(repo, branch, &main) {
         return Ok(main);
     }
     let tip = git(repo, &["rev-parse", &format!("refs/heads/{main}")])?;
@@ -443,6 +456,47 @@ mod tests {
         let again = resume(&repo, &home, "t5-again", &sandbox.branch, &sandbox.base).unwrap();
         assert_eq!(std::fs::read_to_string(again.path.join("A.md")).unwrap(), "a");
         assert_eq!(again.branch, "equipe/frontend-t5");
+    }
+
+    #[test]
+    fn a_branch_with_nothing_left_to_bring_counts_as_merged() {
+        let repo = repo();
+        let home = scratch("nothing-home");
+        let branch = |name: &str, file: &str, text: &str| {
+            let s = create(&repo, &home, name, "frontend").unwrap();
+            std::fs::write(s.path.join(file), text).unwrap();
+            s.commit_all(name).unwrap();
+            s.remove_worktree().unwrap();
+            s.branch
+        };
+        // Work of its own: not merged until it is.
+        let real = branch("t1", "A.md", "a\n");
+        assert_eq!(is_merged(&repo, &real), Ok(false));
+        // In main already: an ancestor.
+        merge_into_main(&repo, &real, "merge t1").unwrap();
+        assert_eq!(is_merged(&repo, &real), Ok(true));
+        // A branch that changed something and changed it back: +0 −0, not an ancestor.
+        let s = create(&repo, &home, "t2", "frontend").unwrap();
+        std::fs::write(s.path.join("B.md"), "b\n").unwrap();
+        s.commit_all("add b").unwrap();
+        std::fs::remove_file(s.path.join("B.md")).unwrap();
+        s.commit_all("drop b").unwrap();
+        s.remove_worktree().unwrap();
+        assert!(git(&repo, &["merge-base", "--is-ancestor", &s.branch, "main"]).is_err());
+        assert_eq!(is_merged(&repo, &s.branch), Ok(true), "merging it would change nothing");
+        // Its change landed on main another way (cherry-picked, squashed).
+        let picked = branch("t3", "C.md", "c\n");
+        git(&repo, &["cherry-pick", &picked]).unwrap();
+        assert_eq!(is_merged(&repo, &picked), Ok(true));
+        // …and merging one makes no commit.
+        let tip = git(&repo, &["rev-parse", "main"]).unwrap();
+        merge_into_main(&repo, &s.branch, "merge t2").unwrap();
+        assert_eq!(git(&repo, &["rev-parse", "main"]).unwrap(), tip);
+        // A conflict is not "nothing".
+        let theirs = branch("t4", "README.md", "theirs\n");
+        std::fs::write(repo.join("README.md"), "ours\n").unwrap();
+        git(&repo, &["commit", "-qam", "ours"]).unwrap();
+        assert_eq!(is_merged(&repo, &theirs), Ok(false));
     }
 
     #[test]

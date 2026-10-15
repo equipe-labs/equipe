@@ -2844,6 +2844,11 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 commands.push(Command::Merge { squad, ticket: t.id, push: way == MergeWay::Push });
                 self.flash = Some(t!("app.landing", id = t.id, way = way.label()));
             }
+            // Accepted already: kept there for good, and no longer asked about.
+            MergeWay::Branch if t.waits_to_merge() => {
+                commands.push(Command::KeepOnBranch { squad, ticket: t.id });
+                self.flash = Some(t!("app.kept_on_branch", id = t.id));
+            }
             MergeWay::Branch => self.flash = Some(t!("app.stays_on_branch", id = t.id)),
         }
         commands
@@ -3031,7 +3036,7 @@ pub fn section_of(t: &Ticket) -> Option<Section> {
         TicketStatus::Waiting => Some(Section::Waiting),
         TicketStatus::Review => Some(Section::Review),
         TicketStatus::Proposed => Some(Section::Proposed),
-        TicketStatus::Done if t.not_on_main() => Some(Section::NotOnMain),
+        TicketStatus::Done if t.waits_to_merge() => Some(Section::NotOnMain),
         _ => None,
     }
 }
@@ -3368,6 +3373,7 @@ mod tests {
             branch: None,
             worktree: None,
             merged: None,
+            off_main: None,
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: None,
@@ -4518,12 +4524,17 @@ mod tests {
         done.branch = Some("equipe/frontend-t3".into());
         done.merged = Some(false);
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: done.clone() });
-        // Ctrl-B opens the board on 나에게, where it waits under 병합 안 됨.
+        // Ctrl-B opens the board on 나에게, where it waits under 수락했지만 아직 main에 안 합쳐짐.
         app.on_key(ctrl('b'), Instant::now());
         assert_eq!((app.pane, app.board_menu), (Pane::Board, BoardMenu::Inbox));
         assert!(app.on_key(key(KeyCode::Char('m')), Instant::now()).is_empty());
         // 1 merge and push, 2 merge only, 3 leave it.
         assert_eq!(app.on_key(key(KeyCode::Char('2')), Instant::now()), vec![Command::Merge { squad: "acme".into(), ticket: 3, push: false }]);
+        // 3: left on its branch for good — the daemon is told, so it stops asking.
+        app.on_key(key(KeyCode::Char('m')), Instant::now());
+        assert_eq!(app.on_key(key(KeyCode::Char('3')), Instant::now()), vec![Command::KeepOnBranch { squad: "acme".into(), ticket: 3 }]);
+        let kept = Ticket { off_main: Some(equipe_core::protocol::OffMain::Kept), ..done.clone() };
+        assert_eq!(section_of(&kept), None, "out of 나에게");
         // Once on main there is nothing to merge.
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: Ticket { merged: Some(true), ..done } });
         app.on_key(key(KeyCode::Char('m')), Instant::now());
