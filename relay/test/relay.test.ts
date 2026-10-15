@@ -226,6 +226,44 @@ describe("devices", () => {
     expect(await daemonStorage(id, `device:${device}`)).toBeUndefined();
   });
 
+  it("unpair forgets the device, answers, closes and tells the daemon", async () => {
+    const { id, daemon, device, deviceToken } = await setup();
+    const phone = await open(devicePath(id, device), deviceToken);
+    phone.send({ type: "push_token", platform: "apns", token: "aa".repeat(32) });
+    await phone.flush();
+
+    phone.send({ type: "unpair" });
+    expect(await phone.next("unpaired")).toEqual({ type: "unpaired" });
+    expect((await phone.closed).code).toBe(1000);
+    expect(await daemon.next("device_unpaired")).toEqual({ type: "device_unpaired", device });
+    expect((await upgrade(devicePath(id, device), deviceToken)).status).toBe(401);
+    expect(await daemonStorage(id, `device:${device}`)).toBeUndefined();
+  });
+
+  it("tells a daemon that was away about an unpair, until it answers device_remove", async () => {
+    const { id, token, daemon, device, deviceToken } = await setup();
+    daemon.close();
+    await daemon.closed;
+    const phone = await open(devicePath(id, device), deviceToken);
+    phone.send({ type: "unpair" });
+    await phone.next("unpaired");
+
+    const back = await connectDaemon(id, token);
+    expect(await back.next("device_unpaired")).toEqual({ type: "device_unpaired", device });
+    back.close();
+    await back.closed;
+
+    const again = await connectDaemon(id, token);
+    expect(await again.next("device_unpaired")).toEqual({ type: "device_unpaired", device });
+    again.send({ type: "device_remove", device });
+    await again.flush();
+    again.close();
+    await again.closed;
+
+    const last = await connectDaemon(id, token);
+    await last.nothing("device_unpaired");
+  });
+
   it("device_add with a new token closes sockets using the old one", async () => {
     const { id, daemon, device, deviceToken } = await setup();
     const phone = await open(devicePath(id, device), deviceToken);

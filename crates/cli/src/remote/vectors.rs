@@ -492,6 +492,7 @@ fn pairing_vectors() -> Value {
             "url": format!("{base}/v1/daemons/{d}/devices/{}/connect", device_id()),
             "authorization": format!("Bearer {}", token()),
         },
+        "7_unpair": unpair_vector(),
         "ignored": [
             { "name": "sealed with another pairing secret", "frame": { "type": "pair_recv", "slot": slot, "data": wrong } },
             { "name": "for another slot", "frame": { "type": "pair_recv", "slot": "0".repeat(32), "data": request.sealed } },
@@ -506,6 +507,21 @@ fn d_public() -> String {
 // ─── frames.json: seq and ts ─────────────────────────────────────────────
 
 /// A paired phone, connected, with `SQUAD` among the squads.
+/// The phone erases itself ("Erase this phone"); the daemon forgets it and says so.
+fn unpair_vector() -> Value {
+    let told = json!({ "type": "device_unpaired", "device": device_id() });
+    let mut core = connected_core();
+    let sends = relay_frames(&core.on_relay(&told, NOW));
+    assert!(core.config.as_ref().unwrap().devices.is_empty());
+    json!({
+        "about": "Not sealed. The relay forgets the device token and push token, answers unpaired and closes the socket (1000). It tells the daemon now, or on each connection until the daemon answers device_remove.",
+        "device_sends": { "type": "unpair" },
+        "device_receives": { "type": "unpaired" },
+        "daemon_receives": told,
+        "daemon_sends": sends,
+    })
+}
+
 fn connected_core() -> Core {
     let mut core = Core::new(Some(config(vec![device()])));
     core.squads = vec![(SQUAD.into(), vec!["site".into(), "api".into()]), ("home".into(), vec![])];
@@ -861,6 +877,8 @@ fn the_daemon_passes_the_kept_vectors() {
     let pairing = read("pairing.json");
     let mut core = pairing_core();
     assert_eq!(core.on_relay(&pairing["3_daemon_receives"], NOW), vec![Action::Local(pairing["4_daemon_asks_the_person"].clone())]);
+    let unpair = &pairing["7_unpair"];
+    assert_eq!(Value::Array(relay_frames(&connected_core().on_relay(&unpair["daemon_receives"], NOW))), unpair["daemon_sends"]);
     let frames = read("frames.json");
     let mut core = connected_core();
     for step in frames["device_to_daemon"].as_array().unwrap() {

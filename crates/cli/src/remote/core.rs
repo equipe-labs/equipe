@@ -298,6 +298,20 @@ impl Core {
         Ok(vec![Action::Save, Action::Relay(json!({ "type": "device_remove", "device": device.id })), Action::Close { device: device.id }])
     }
 
+    /// The phone erased itself: forget it as `equipe devices remove` would. The relay
+    /// already has; `device_remove` tells it the daemon has too, known device or not,
+    /// so it stops telling.
+    fn on_unpaired(&mut self, device: &str) -> Vec<Action> {
+        if device.is_empty() {
+            return vec![];
+        }
+        self.following.retain(|(d, _)| d != device);
+        match self.device(device) {
+            Some(_) => self.remove_device(device).unwrap_or_default(),
+            None => vec![Action::Relay(json!({ "type": "device_remove", "device": device }))],
+        }
+    }
+
     /// Seal `rpc` for a device, about `squad`, as the next frame on its connection.
     fn frame_for(&mut self, device: &str, squad: Option<&str>, rpc: &Message) -> Option<Action> {
         let config = self.config.as_ref()?;
@@ -339,6 +353,7 @@ impl Core {
                     vec![Action::Close { device }]
                 }
             }
+            "device_unpaired" => self.on_unpaired(frame["device"].as_str().unwrap_or_default()),
             "push_result" if frame["ok"] != true => {
                 eprintln!("remote: push to {} failed: {}", frame["device"], frame["error"]);
                 vec![]
@@ -767,6 +782,20 @@ pub(crate) mod tests {
         assert!(out.iter().any(|a| matches!(a, Action::Relay(f) if f["type"] == "device_remove")));
         assert!(core.on_relay(&phone.send(&c, None, json!({ "jsonrpc": "2.0", "id": 1, "method": "squads" }), now), now).is_empty());
         assert!(core.remove_device("nobody").is_err());
+    }
+
+    #[test]
+    fn a_phone_that_unpaired_is_forgotten() {
+        let (mut core, mut phone, now) = core_with_phone();
+        let c = core.config.clone().unwrap();
+        let out = core.on_relay(&json!({ "type": "device_unpaired", "device": phone.id }), now);
+        assert!(out.contains(&Action::Save) && out.contains(&Action::Close { device: phone.id.clone() }));
+        assert!(out.iter().any(|a| matches!(a, Action::Relay(f) if f["type"] == "device_remove" && f["device"] == phone.id.as_str())));
+        assert!(core.config.as_ref().unwrap().devices.is_empty(), "gone from `equipe devices`");
+        assert!(core.on_relay(&phone.send(&c, None, json!({ "jsonrpc": "2.0", "id": 1, "method": "squads" }), now), now).is_empty());
+        // Told again on the next connection, after the daemon already forgot it: it says so once more.
+        let out = core.on_relay(&json!({ "type": "device_unpaired", "device": phone.id }), now);
+        assert_eq!(out, vec![Action::Relay(json!({ "type": "device_remove", "device": phone.id }))]);
     }
 
     /// A pairing request as the app sends it, for the code in `url`.

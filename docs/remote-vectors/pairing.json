@@ -114,6 +114,25 @@
     "authorization": "Bearer G380Xm36FP1GF9mIGUEH8TJtvb1WILu8OpW9Dj3Fpqs",
     "url": "wss://relay.equipe.im/v1/daemons/4e03a65cc601c4c9135d6c771cd878e9/devices/b9e7dbfc95945ac17102665e1cc82fa6/connect"
   },
+  "7_unpair": {
+    "about": "Not sealed. The relay forgets the device token and push token, answers unpaired and closes the socket (1000). It tells the daemon now, or on each connection until the daemon answers device_remove.",
+    "daemon_receives": {
+      "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+      "type": "device_unpaired"
+    },
+    "daemon_sends": [
+      {
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "type": "device_remove"
+      }
+    ],
+    "device_receives": {
+      "type": "unpaired"
+    },
+    "device_sends": {
+      "type": "unpair"
+    }
+  },
   "about": "One pairing, start to end, between the vectors' daemon and device (keys in seal.json). The daemon makes the device id and token at random; here they are fixed, and the test checks the daemon's real answer has exactly this shape.",
   "ignored": [
     {

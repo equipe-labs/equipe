@@ -12,6 +12,7 @@
 //   "token_hash"       hex SHA-256 of the daemon token (absent: unknown daemon)
 //   "device:<id>"      DeviceRecord
 //   "slot:<slot>"      Unix ms when the pairing slot expires
+//   "unpaired:<id>"    a device that unpaired itself, until the daemon says `device_remove`
 
 import { DurableObject } from "cloudflare:workers";
 import { tokenMatches } from "./encoding";
@@ -83,6 +84,10 @@ export class Daemon extends DurableObject<Env> {
     for (const device of this.connectedDevices()) {
       send(server, { type: "presence", device, online: true });
     }
+    // Phones that unpaired while the daemon was away, or before it confirmed.
+    for (const key of (await this.ctx.storage.list({ prefix: "unpaired:" })).keys()) {
+      send(server, { type: "device_unpaired", device: key.slice("unpaired:".length) });
+    }
     return upgraded(client);
   }
 
@@ -128,7 +133,7 @@ export class Daemon extends DurableObject<Env> {
         case "daemon":
           return await this.fromDaemon(ws, parseFrame<DaemonFrame>(message, DAEMON_FRAMES));
         case "device":
-          return await this.fromDevice(peer.device, parseFrame<DeviceFrame>(message, DEVICE_FRAMES));
+          return await this.fromDevice(ws, peer.device, parseFrame<DeviceFrame>(message, DEVICE_FRAMES));
         case "pair":
           return this.fromPair(peer.slot, parseFrame<PairFrame>(message, PAIR_FRAMES));
       }
@@ -187,7 +192,7 @@ export class Daemon extends DurableObject<Env> {
     }
   }
 
-  private async fromDevice(device: string, frame: DeviceFrame): Promise<void> {
+  private async fromDevice(ws: WebSocket, device: string, frame: DeviceFrame): Promise<void> {
     switch (frame.type) {
       case "send":
         return this.toDaemon({ type: "recv", device, data: frame.data });
@@ -198,6 +203,8 @@ export class Daemon extends DurableObject<Env> {
         await this.ctx.storage.put(`device:${device}`, record);
         return;
       }
+      case "unpair":
+        return this.unpair(ws, device);
     }
   }
 
@@ -251,7 +258,19 @@ export class Daemon extends DurableObject<Env> {
 
   private async removeDevice(device: string): Promise<void> {
     this.closeDevice(device, "device removed");
+    await this.ctx.storage.delete([`device:${device}`, `unpaired:${device}`]);
+  }
+
+  /**
+   * The phone erases itself: its token and push token go at once, and the daemon is told
+   * (`device_unpaired`) now and on each connection until it answers `device_remove`.
+   */
+  private async unpair(ws: WebSocket, device: string): Promise<void> {
     await this.ctx.storage.delete(`device:${device}`);
+    await this.ctx.storage.put(`unpaired:${device}`, Date.now());
+    send(ws, { type: "unpaired" });
+    for (const socket of this.ctx.getWebSockets(`device:${device}`)) close(socket, CLOSE_NORMAL, "device unpaired");
+    this.toDaemon({ type: "device_unpaired", device });
   }
 
   private closeDevice(device: string, reason: string): void {

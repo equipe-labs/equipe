@@ -25,7 +25,8 @@ export interface PushFrame {
 
 export type DeviceFrame =
   | { type: "send"; data: string }
-  | { type: "push_token"; platform: "apns" | "fcm"; token: string; sandbox?: boolean };
+  | { type: "push_token"; platform: "apns" | "fcm"; token: string; sandbox?: boolean }
+  | { type: "unpair" };
 
 export type PairFrame = { type: "send"; data: string };
 
@@ -83,6 +84,7 @@ export const DAEMON_FRAMES: Schemas = {
 export const DEVICE_FRAMES: Schemas = {
   send: { data: string },
   push_token: { platform, token: pushToken, sandbox: optional(boolean) },
+  unpair: {},
 };
 
 export const PAIR_FRAMES: Schemas = {
