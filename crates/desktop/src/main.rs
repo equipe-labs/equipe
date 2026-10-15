@@ -44,6 +44,7 @@ mod update;
 mod views;
 mod wire;
 mod yourturn;
+mod zoom;
 
 use std::time::Duration;
 
@@ -80,6 +81,8 @@ actions!(equipe, [ToggleSidebar, NewMessage, SearchAll]);
 actions!(equipe, [OpenSettings]);
 // "휴대폰 연결…": a phone paired with the daemon's machine, by QR code.
 actions!(equipe, [PairPhone]);
+// The View menu's: the window's size, as a browser zooms (⌘+, ⌘-, ⌘0).
+actions!(equipe, [ZoomIn, ZoomOut, ActualSize]);
 
 /// How long the daemon gets to answer before the window says it is connecting.
 const CONNECTING_AFTER: Duration = Duration::from_millis(400);
@@ -125,6 +128,8 @@ pub struct Shell {
     pub pairing: pair::Pairing,
     /// The paired phone whose "연결 끊기" was pressed once, asking to be sure.
     pub forgetting: Option<String>,
+    /// The window's size, shown for a moment after it changes (`zoom.rs`).
+    pub zoom_hud: Option<zoom::Hud>,
     _pair_tick: Option<Task<()>>,
     /// Something said on a thread of ours (a failed fetch) for the flash line.
     notices: tokio::sync::mpsc::UnboundedSender<String>,
@@ -198,6 +203,7 @@ impl Shell {
             ask,
             pairing: pair::Pairing::default(),
             forgetting: None,
+            zoom_hud: None,
             _pair_tick: None,
             notices,
             connecting_shown: false,
@@ -214,6 +220,8 @@ impl Shell {
             _prompts: None,
             _subscriptions: Vec::new(),
         };
+        // The size the window was left at.
+        zoom::apply(shell.remembered.zoom.0, window);
         if let Some(width) = shell.remembered.sidebar_width {
             shell.board.sidebar_width = width.clamp(views::sidebar::MIN_WIDTH, views::sidebar::MAX_WIDTH);
         }
@@ -423,7 +431,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// A project chip (or ⌘0–⌘9): the squad's focus, the PM's thread, the board's filter.
+    /// A project chip (or ⌃0–⌃9): the squad's focus, the PM's thread, the board's filter.
     pub fn focus_project(&mut self, project: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         if self.model.focus == project {
             return;
@@ -979,6 +987,7 @@ impl Render for Shell {
                 .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
                 .children(views::pair::sheet(self, cx))
                 .children(views::connect::question(self, cx))
+                .children(self.zoom_chip(window, cx))
                 .children(tips::layer(cx));
         }
         let sidebar = self.sidebar(window, cx);
@@ -994,6 +1003,7 @@ impl Render for Shell {
             .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
             .children(views::pair::sheet(self, cx))
             .children(views::connect::question(self, cx))
+            .children(self.zoom_chip(window, cx))
             .children(tips::layer(cx))
     }
 }
@@ -1034,7 +1044,70 @@ pub fn set_menus(cx: &mut App) {
         MenuItem::action(t!("main.menu_show_all"), ShowAll),
         MenuItem::separator(),
         MenuItem::action(t!("main.menu_quit"), Quit),
-    ]), edit_menu()]);
+    ]), edit_menu(), view_menu()]);
+}
+
+/// ⌘+ ⌘- ⌘0 and the View menu: the app's to answer, whatever has the focus
+/// — or nothing at all (a screen whose text box left the window).
+fn answer_zoom(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
+    let zoom = move |step: zoom::Step| {
+        let shell = shell.clone();
+        // Later: the window is in use while it dispatches the key.
+        move |cx: &mut App| {
+            let shell = shell.clone();
+            cx.defer(move |cx| {
+                let _ = handle.update(cx, |_, window, cx| shell.update(cx, |shell, cx| shell.zoom(step, window, cx)));
+            });
+        }
+    };
+    let (zoom_in, zoom_out, actual) = (zoom(zoom::Step::In), zoom(zoom::Step::Out), zoom(zoom::Step::Actual));
+    cx.on_action(move |_: &ZoomIn, cx| zoom_in(cx));
+    cx.on_action(move |_: &ZoomOut, cx| zoom_out(cx));
+    cx.on_action(move |_: &ActualSize, cx| actual(cx));
+}
+
+/// The View menu: the window's size, as a browser zooms.
+fn view_menu() -> Menu {
+    Menu::new(t!("main.menu_view")).items([
+        MenuItem::action(t!("main.menu_zoom_in"), ZoomIn),
+        MenuItem::action(t!("main.menu_zoom_out"), ZoomOut),
+        MenuItem::action(t!("main.menu_actual_size"), ActualSize),
+    ])
+}
+
+/// The window's keys. ⌘0 is actual size, as everywhere on the Mac, so the
+/// project slices are ⌃0–⌃9. ⌘+ comes first: the menu shows the first.
+fn window_bindings() -> Vec<KeyBinding> {
+    vec![
+        KeyBinding::new("cmd-b", ToggleBoard, None),
+        KeyBinding::new("cmd-shift-b", ToggleBrowser, None),
+        KeyBinding::new("cmd-\\", ToggleSidebar, None),
+        KeyBinding::new("cmd-n", NewMessage, None),
+        KeyBinding::new("cmd-k", SearchAll, None),
+        KeyBinding::new("cmd-,", OpenSettings, None),
+        KeyBinding::new("cmd-+", ZoomIn, None),
+        KeyBinding::new("cmd-=", ZoomIn, None),
+        KeyBinding::new("cmd-shift-=", ZoomIn, None),
+        KeyBinding::new("cmd--", ZoomOut, None),
+        KeyBinding::new("cmd-0", ActualSize, None),
+        KeyBinding::new("ctrl-0", AllProjects, None),
+        KeyBinding::new("ctrl-1", Project1, None),
+        KeyBinding::new("ctrl-2", Project2, None),
+        KeyBinding::new("ctrl-3", Project3, None),
+        KeyBinding::new("ctrl-4", Project4, None),
+        KeyBinding::new("ctrl-5", Project5, None),
+        KeyBinding::new("ctrl-6", Project6, None),
+        KeyBinding::new("ctrl-7", Project7, None),
+        KeyBinding::new("ctrl-8", Project8, None),
+        KeyBinding::new("ctrl-9", Project9, None),
+        KeyBinding::new("cmd-shift-o", ToggleFolds, None),
+        KeyBinding::new("cmd-f", FindInConversation, None),
+        KeyBinding::new("escape", CloseFind, Some("FindBar")),
+        KeyBinding::new("cmd-shift-k", ChooseTarget, None),
+        // ⌥⏎ and ⌃J break the line like ⇧⏎ (T-54 §8).
+        KeyBinding::new("alt-enter", Enter { secondary: false, shift: true }, Some("Input")),
+        KeyBinding::new("ctrl-j", Enter { secondary: false, shift: true }, Some("Input")),
+    ]
 }
 
 /// The Edit menu: the text box's own actions, under the selectors macOS knows
@@ -1067,31 +1140,7 @@ fn main() {
     gpui_kit::application().with_http_client(http).with_assets(icons::AppAssets).run(|cx| {
         gpui_kit::init(cx);
         tips::init(cx);
-        cx.bind_keys([
-            KeyBinding::new("cmd-b", ToggleBoard, None),
-            KeyBinding::new("cmd-shift-b", ToggleBrowser, None),
-            KeyBinding::new("cmd-\\", ToggleSidebar, None),
-            KeyBinding::new("cmd-n", NewMessage, None),
-            KeyBinding::new("cmd-k", SearchAll, None),
-            KeyBinding::new("cmd-,", OpenSettings, None),
-            KeyBinding::new("cmd-0", AllProjects, None),
-            KeyBinding::new("cmd-1", Project1, None),
-            KeyBinding::new("cmd-2", Project2, None),
-            KeyBinding::new("cmd-3", Project3, None),
-            KeyBinding::new("cmd-4", Project4, None),
-            KeyBinding::new("cmd-5", Project5, None),
-            KeyBinding::new("cmd-6", Project6, None),
-            KeyBinding::new("cmd-7", Project7, None),
-            KeyBinding::new("cmd-8", Project8, None),
-            KeyBinding::new("cmd-9", Project9, None),
-            KeyBinding::new("cmd-shift-o", ToggleFolds, None),
-            KeyBinding::new("cmd-f", FindInConversation, None),
-            KeyBinding::new("escape", CloseFind, Some("FindBar")),
-            KeyBinding::new("cmd-shift-k", ChooseTarget, None),
-            // ⌥⏎ and ⌃J break the line like ⇧⏎ (T-54 §8).
-            KeyBinding::new("alt-enter", Enter { secondary: false, shift: true }, Some("Input")),
-            KeyBinding::new("ctrl-j", Enter { secondary: false, shift: true }, Some("Input")),
-        ]);
+        cx.bind_keys(window_bindings());
         app_menu(cx);
         views::composer::bind_keys(cx);
         let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
@@ -1106,10 +1155,51 @@ fn main() {
             ..Default::default()
         };
         let (handle, shell) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Shell::new(window, cx))).expect("failed to open window");
+        answer_zoom(handle, shell.clone(), cx);
         cx.activate(true);
         #[cfg(feature = "snapshot")]
         snapshot::run(handle, shell, cx);
         #[cfg(not(feature = "snapshot"))]
         let _ = (handle, shell);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::window_bindings;
+    use gpui_kit::Keystroke;
+
+    /// What a keystroke is bound to in the window's table, by action name.
+    fn bound(keys: &str) -> Vec<&'static str> {
+        let typed = [Keystroke::parse(keys).unwrap()];
+        window_bindings().iter().filter(|b| b.match_keystrokes(&typed) == Some(false)).map(|b| b.action().name()).collect()
+    }
+
+    #[test]
+    fn zoom_has_the_macs_keys_and_the_slices_moved_to_control() {
+        assert_eq!(bound("cmd-0"), ["equipe::ActualSize"], "⌘0 is actual size, as everywhere on the Mac");
+        assert_eq!(bound("cmd-="), ["equipe::ZoomIn"]);
+        assert_eq!(bound("cmd--"), ["equipe::ZoomOut"]);
+        // ⌘+ on a US keyboard is ⌘⇧= typing "+": either binding takes it.
+        assert!(bound("cmd-shift-=->+").iter().all(|a| *a == "equipe::ZoomIn") && !bound("cmd-shift-=->+").is_empty());
+        assert_eq!(bound("ctrl-0"), ["equipe::AllProjects"]);
+        for n in 1..=9 {
+            assert_eq!(bound(&format!("ctrl-{n}")), [format!("equipe::Project{n}").as_str()]);
+            assert!(bound(&format!("cmd-{n}")).is_empty(), "⌘{n} is free again");
+        }
+    }
+
+    #[test]
+    fn no_key_is_bound_twice() {
+        let bindings = window_bindings();
+        let mut seen = std::collections::HashSet::new();
+        for b in &bindings {
+            let keys = b.keystrokes().iter().map(|k| k.unparse()).collect::<Vec<_>>().join(" ");
+            let context = b.predicate().map(|p| p.to_string()).unwrap_or_default();
+            assert!(seen.insert((keys.clone(), context)), "{keys} is bound twice");
+        }
+        // The menu shows the first binding of each: ⌘+, not ⌘=.
+        let first_zoom_in = bindings.iter().find(|b| b.action().name() == "equipe::ZoomIn").unwrap();
+        assert_eq!(first_zoom_in.keystrokes()[0].unparse(), "cmd-+");
+    }
 }

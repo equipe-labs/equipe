@@ -9,7 +9,7 @@
 //! `menu:<inbox|working|all|view0…>` (a sidebar item) · `cmenu:<attach|recent|to|model|effort|mode|context>` (a composer menu) · `bkey:<key>` (a work
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
-//! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in points) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `settings[:<category>]` (settings, at general · squad · team · permissions · projects · browser · keys · about) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
+//! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `settings[:<category>]` (settings, at general · squad · team · permissions · projects · browser · keys · about) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
 //! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
 //! `answer:<ticket>,<n>,<words>` / `aok:<ticket>,<n>` / `atick:<ticket>,<n>` / `asend:<ticket>` (a waiting ticket's card: type in box n, its quick OK, tick thing n off, send) ·
@@ -271,6 +271,13 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     panel.update(cx, |b, cx| b.compose(&steps, window, cx));
                 }
                 "sidebar" => shell.update(cx, |shell, cx| shell.toggle_sidebar(cx)),
+                // The window's size: `zoom:150`, or a step as the keys take it.
+                "zoom" => shell.update(cx, |shell, cx| match arg.as_str() {
+                    "in" => shell.zoom(crate::zoom::Step::In, window, cx),
+                    "out" => shell.zoom(crate::zoom::Step::Out, window, cx),
+                    "actual" => shell.zoom(crate::zoom::Step::Actual, window, cx),
+                    pct => shell.set_zoom(pct.trim_end_matches('%').parse().unwrap_or(crate::zoom::ACTUAL), window, cx),
+                }),
                 "popup" => shell.update(cx, |shell, cx| {
                     shell.board.popup = match arg.as_str() {
                         "account" => Some(crate::views::sidebar::Popup::Account),
@@ -300,16 +307,19 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 "hover" => {
                     let (x, y) = arg.split_once(',').map(|(x, y)| (x.trim().parse().unwrap_or(0.), y.trim().parse().unwrap_or(0.))).unwrap_or((0f32, 0f32));
                     let moved = MouseMoveEvent { position: point(px(x), px(y)), pressed_button: None, modifiers: Modifiers::default() };
-                    window.dispatch_event(PlatformInput::MouseMove(moved), cx);
+                    let moved = window.input_from_platform(PlatformInput::MouseMove(moved));
+                    window.dispatch_event(moved, cx);
                 }
                 // A click (press and release) at `x,y`.
                 "click" => {
                     let (x, y) = arg.split_once(',').map(|(x, y)| (x.trim().parse().unwrap_or(0.), y.trim().parse().unwrap_or(0.))).unwrap_or((0f32, 0f32));
                     let at = point(px(x), px(y));
                     let down = MouseDownEvent { button: MouseButton::Left, position: at, modifiers: Modifiers::default(), click_count: 1, first_mouse: false };
-                    window.dispatch_event(PlatformInput::MouseDown(down), cx);
+                    let down = window.input_from_platform(PlatformInput::MouseDown(down));
+                    window.dispatch_event(down, cx);
                     let up = MouseUpEvent { button: MouseButton::Left, position: at, modifiers: Modifiers::default(), click_count: 1 };
-                    window.dispatch_event(PlatformInput::MouseUp(up), cx);
+                    let up = window.input_from_platform(PlatformInput::MouseUp(up));
+                    window.dispatch_event(up, cx);
                 }
                 // 티켓: the layout, the sheet, a menu, the page, a choice, a drag by hand.
                 "layout" => shell.update(cx, |shell, cx| shell.set_layout(if arg == "board" { crate::tickets::Layout::Board } else { crate::tickets::Layout::List }, cx)),

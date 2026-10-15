@@ -2024,7 +2024,13 @@ impl PlatformInputHandler {
 
     pub fn bounds_for_range(&mut self, range_utf16: Range<usize>) -> Option<Bounds<Pixels>> {
         self.cx
-            .update(|window, cx| self.handler.bounds_for_range(range_utf16, window, cx))
+            .update(|window, cx| {
+                // equipe: the content zoom — the platform places the
+                // candidate window in its own points.
+                self.handler
+                    .bounds_for_range(range_utf16, window, cx)
+                    .map(|bounds| window.bounds_to_platform(bounds))
+            })
             .ok()
             .flatten()
     }
@@ -2079,6 +2085,8 @@ impl PlatformInputHandler {
         Self::compute_ime_candidate_bounds(marked_range, &selection, |range| {
             self.handler.bounds_for_range(range, window, cx)
         })
+        // equipe: the content zoom, as in `bounds_for_range`.
+        .map(|bounds| window.bounds_to_platform(bounds))
     }
 
     pub fn ime_candidate_bounds(&mut self) -> Option<Bounds<Pixels>> {
@@ -2092,7 +2100,11 @@ impl PlatformInputHandler {
     #[allow(unused)]
     pub fn character_index_for_point(&mut self, point: Point<Pixels>) -> Option<usize> {
         self.cx
-            .update(|window, cx| self.handler.character_index_for_point(point, window, cx))
+            .update(|window, cx| {
+                // equipe: the content zoom — the platform asks in its own points.
+                let point = window.point_from_platform(point);
+                self.handler.character_index_for_point(point, window, cx)
+            })
             .ok()
             .flatten()
     }
@@ -2110,7 +2122,12 @@ impl PlatformInputHandler {
     /// See [`InputHandler::element_bounds`].
     pub fn element_bounds(&mut self) -> Option<Bounds<Pixels>> {
         self.cx
-            .update(|window, cx| self.handler.element_bounds(window, cx))
+            .update(|window, cx| {
+                // equipe: the content zoom, as in `bounds_for_range`.
+                self.handler
+                    .element_bounds(window, cx)
+                    .map(|bounds| window.bounds_to_platform(bounds))
+            })
             .ok()
             .flatten()
     }

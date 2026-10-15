@@ -210,6 +210,53 @@ fn segmented<T: Copy + PartialEq + 'static>(shell: &Shell, id: &str, options: Ve
         .into_any_element()
 }
 
+/// The window's size: − and + either side of it, as the segmented control's
+/// pill, and "실제 크기" beside it when it isn't (⌘+ / ⌘- / ⌘0 do the same).
+fn zoom_stepper(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
+    use crate::zoom::{self, Step};
+    let p = shell.palette;
+    let now = shell.remembered.zoom.0;
+    let step = |id: &'static str, glyph: &'static str, how: Step, tip: &'static str, keys: &'static str, cx: &mut Context<Shell>| {
+        let enabled = zoom::step(now, how) != now;
+        let seg = h_flex()
+            .id(id)
+            .h_full()
+            .w(px(CONTROL))
+            .justify_center()
+            .items_center()
+            .rounded(px(R_SM))
+            .text_size(px(UI))
+            .text_color(p.text2)
+            .when(!enabled, |s| s.opacity(0.4))
+            .when(enabled, |s| {
+                s.cursor_pointer().on_click(cx.listener(move |this, _, window, cx| this.zoom(how, window, cx)))
+            })
+            .tip(p, tip, Some(keys))
+            .child(glyph);
+        motion::hover_fill(seg, SharedString::from(format!("{id}-fill")), p.wash, false).into_any_element()
+    };
+    let pill = h_flex()
+        .flex_none()
+        .h(px(CONTROL))
+        .p(px(2.))
+        .gap(px(2.))
+        .items_center()
+        .rounded(px(R_MD))
+        .bg(if p.is_dark() { p.wash } else { p.code_bg })
+        .child(step("zoom-out", "−", Step::Out, t!("main.menu_zoom_out"), "⌘-", cx))
+        .child(div().min_w(px(48.)).text_center().text_size(px(SMALL)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(zoom::label(now)))
+        .child(step("zoom-in", "+", Step::In, t!("main.menu_zoom_in"), "⌘+", cx));
+    h_flex()
+        .flex_none()
+        .gap_2()
+        .items_center()
+        .when(now != zoom::ACTUAL, |row| {
+            row.child(ui::button(p, "zoom-actual", Kind::Ghost, t!("main.menu_actual_size")).key("⌘0").on_click(cx.listener(|this, _, window, cx| this.zoom(Step::Actual, window, cx))))
+        })
+        .child(pill)
+        .into_any_element()
+}
+
 /// A pop-up button: what is chosen and ⌄; a click opens the list under it.
 fn picker(shell: &Shell, pop: Pop, label: String, min: f32, cx: &mut Context<Shell>) -> AnyElement {
     use gpui_kit::base::ElementExt as _;
@@ -314,6 +361,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     language.control = Some(picker(shell, Pop::Language, language_label(shell), 0., cx));
     let looks = Appearance::ALL.into_iter().map(|a| (a, appearance_word(a).to_owned())).collect();
     let appearance = Line::new(t!("settings.appearance"), t!("settings.appearance_desc")).words("appearance theme dark light").control(segmented(shell, "appearance", looks, shell.remembered.appearance, |this, a, window, cx| this.set_appearance(a, window, cx), cx));
+    let zoom = Line::new(t!("settings.zoom"), t!("settings.zoom_desc")).words("zoom size scale text font larger smaller bigger").control(zoom_stepper(shell, cx));
     let starts = Start::ALL.into_iter().map(|s| (s, start_word(s).to_owned())).collect();
     let start = Line::new(t!("settings.start"), t!("settings.start_desc")).words("launch").control(segmented(shell, "start", starts, shell.remembered.start, |this, s, _, _| this.set_start(s), cx));
     let follow = Line::new(t!("settings.follow_project"), t!("settings.follow_project_desc"))
@@ -335,7 +383,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             .control(ui::button(p, "open-notifications", Kind::Secondary, t!("settings.open_system_settings")).icon(Icon::External).on_click(|_, _, cx| cx.open_url("x-apple.systempreferences:com.apple.Notifications-Settings.extension"))),
     ];
     vec![
-        Section::new(t!("settings.section_look"), vec![language, appearance]).foot(format!("{} {}", t!("settings.language_note"), t!("settings.this_mac_foot"))),
+        Section::new(t!("settings.section_look"), vec![language, appearance, zoom]).foot(format!("{} {}", t!("settings.language_note"), t!("settings.this_mac_foot"))),
         Section::new(t!("settings.section_start"), vec![start]),
         Section::new(t!("settings.section_conversation"), vec![follow]),
         Section::new(t!("settings.section_notifications"), notifications).foot(t!("settings.notifications_foot")),

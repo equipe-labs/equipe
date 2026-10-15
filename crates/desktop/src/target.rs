@@ -184,6 +184,31 @@ pub struct Remembered {
     pub folded: std::collections::BTreeSet<String>,
     /// 티켓 as a board rather than rows, as last left.
     pub tickets_board: bool,
+    /// How large the window draws, in percent (⌘+ / ⌘-, settings ▸ 일반).
+    pub zoom: Zoom,
+}
+
+/// The window's size in percent (`zoom.rs`): actual size unless the person
+/// zoomed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Zoom(pub u16);
+
+impl Zoom {
+    /// The sizes, in percent, as browsers offer them.
+    pub const LEVELS: [u16; 10] = [67, 75, 80, 90, 100, 110, 125, 150, 175, 200];
+    /// Actual size.
+    pub const ACTUAL: Zoom = Zoom(100);
+
+    /// `pct` as one of the sizes: the nearest (a hand-edited file, an old size).
+    pub fn nearest(pct: u16) -> Self {
+        Zoom(Self::LEVELS.iter().copied().min_by_key(|&l| l.abs_diff(pct)).unwrap_or(Self::ACTUAL.0))
+    }
+}
+
+impl Default for Zoom {
+    fn default() -> Self {
+        Self::ACTUAL
+    }
 }
 
 /// Light or dark, as the person picked in settings; the Mac's by default
@@ -337,6 +362,8 @@ impl Remembered {
                 out.appearance = Appearance::parse(rest.trim()).unwrap_or_default();
             } else if let Some(rest) = line.strip_prefix("start ") {
                 out.start = Start::parse(rest.trim()).unwrap_or_default();
+            } else if let Some(rest) = line.strip_prefix("zoom ") {
+                out.zoom = rest.trim().parse::<u16>().map(Zoom::nearest).unwrap_or_default();
             } else if line.trim() == "conversation whole" {
                 out.whole_conversation = true;
             } else if let Some(name) = line.strip_prefix("fold\t") {
@@ -387,6 +414,9 @@ impl Remembered {
         }
         if self.start != Start::Pm {
             text.push_str(&format!("start {}\n", self.start.code()));
+        }
+        if self.zoom != Zoom::default() {
+            text.push_str(&format!("zoom {}\n", self.zoom.0));
         }
         if self.whole_conversation {
             text.push_str("conversation whole\n");
@@ -580,7 +610,8 @@ mod tests {
 
         assert!(!fresh.whole_conversation, "the conversation follows the project by default");
         assert!(!fresh.tickets_board, "티켓 opens as a list");
-        let mut prefs = Remembered { appearance: Appearance::Dark, start: Start::Inbox, whole_conversation: true, tickets_board: true, ..Remembered::default() };
+        assert_eq!(fresh.zoom, Zoom(100), "actual size");
+        let mut prefs = Remembered { appearance: Appearance::Dark, start: Start::Inbox, whole_conversation: true, tickets_board: true, zoom: Zoom(125), ..Remembered::default() };
         prefs.pings.set(Ping::Failed, false);
         prefs.pings.set(Ping::Sound, false);
         prefs.set_merge_way("app", "push");
@@ -590,6 +621,7 @@ mod tests {
         prefs.save(&dir);
         let loaded = Remembered::load(&dir);
         assert_eq!((loaded.appearance, loaded.start, loaded.whole_conversation), (Appearance::Dark, Start::Inbox, true));
+        assert_eq!(loaded.zoom, Zoom(125), "the window's size, from one launch to the next");
         assert_eq!(loaded.folded, prefs.folded, "the sidebar's folds, the shared folder's too");
         assert!(loaded.tickets_board, "the board, as last left");
         assert!(!loaded.pings.failed && !loaded.pings.sound && loaded.pings.approvals && loaded.pings.reviews && loaded.pings.waiting);
@@ -599,6 +631,10 @@ mod tests {
         assert_eq!(std::fs::read_to_string(Remembered::path(&dir)).unwrap(), "", "defaults take no lines");
         for (text, look) in [("appearance light\n", Appearance::Light), ("appearance sepia\n", Appearance::System)] {
             assert_eq!(Remembered::parse(text).appearance, look);
+        }
+        // A size by hand is taken to the nearest step; nonsense is actual size.
+        for (text, zoom) in [("zoom 150\n", 150), ("zoom 1000\n", 200), ("zoom 30\n", 67), ("zoom 112\n", 110), ("zoom big\n", 100)] {
+            assert_eq!(Remembered::parse(text).zoom, Zoom(zoom), "{text}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
