@@ -434,6 +434,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
+            updated_at: None,
             kind: TicketKind::Code,
         }
     }

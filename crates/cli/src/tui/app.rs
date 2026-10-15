@@ -71,14 +71,57 @@ pub enum Hit {
 
 /// A line of the side list: what can be opened on the right — the PM (the
 /// one conversation to talk to), a menu of the board (나에게, 작업 중, 모든 일),
-/// a ticket's work, someone on the team — and the headings between.
+/// a project (its line puts it in focus), a ticket's work, the rest of a
+/// project's live work, what finished lately, someone on the team — and the
+/// headings between.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
     Heading(Group, usize),
     Pm,
     Menu(BoardMenu),
+    /// A project by its place in the squad's; `None`: the squad's shared folder.
+    Project(Option<usize>),
     Ticket(TicketId),
+    /// "+N more": the board on that project.
+    More(Option<usize>),
+    /// "최근 끝남 N": the board, its finished last.
+    Done,
     Member(usize),
+}
+
+/// How a ticket is live work in the side list, as the desktop's sidebar: a
+/// member at it now, or the person's turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Live {
+    Working,
+    YourTurn,
+}
+
+/// At most this many live tickets under a project; the rest are "+N more".
+pub const SIDE_CAP: usize = 5;
+
+/// A project's live work in the side list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SideGroup {
+    /// Its place among the squad's projects; `None`: the shared folder.
+    pub at: Option<usize>,
+    pub rows: Vec<(TicketId, Live)>,
+    pub more: usize,
+    pub working: usize,
+    pub waiting: usize,
+}
+
+/// The start of the local day `unix` falls in, in unix seconds.
+pub fn local_midnight(unix: u64) -> u64 {
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let secs = unix as libc::time_t;
+    unsafe { libc::localtime_r(&secs, &mut tm) };
+    tm.tm_hour = 0;
+    tm.tm_min = 0;
+    tm.tm_sec = 0;
+    tm.tm_isdst = -1;
+    let midnight = unsafe { libc::mktime(&mut tm) };
+    if midnight < 0 || midnight as u64 > unix { unix - unix % 86_400 } else { midnight as u64 }
 }
 
 /// The side list's groups.
@@ -828,9 +871,18 @@ impl App {
     }
 
     /// The side list, in order: the PM, the board's menu (나에게, 작업 중,
-    /// 모든 일), then the rest of the team.
+    /// 모든 일), the live work by project (never what finished: one line for
+    /// that), then the rest of the team — drawn pinned at the foot.
     pub fn side(&self) -> Vec<Side> {
         let mut out = vec![Side::Pm, Side::Menu(BoardMenu::Inbox), Side::Menu(BoardMenu::Working), Side::Menu(BoardMenu::All)];
+        for g in self.side_groups() {
+            out.push(Side::Project(g.at));
+            out.extend(g.rows.iter().map(|(id, _)| Side::Ticket(*id)));
+            if g.more > 0 {
+                out.push(Side::More(g.at));
+            }
+        }
+        out.push(Side::Done);
         let pm = self.pm_index();
         let team: Vec<usize> = self.display_order().into_iter().filter(|&i| Some(i) != pm).collect();
         if !team.is_empty() {
@@ -838,6 +890,47 @@ impl App {
             out.extend(team.into_iter().map(Side::Member));
         }
         out
+    }
+
+    /// Whether a ticket is live work: its member mid-turn, or the person's
+    /// turn (it waits on them, or its member asks their permission).
+    pub fn live(&self, t: &Ticket) -> Option<Live> {
+        if t.status.is_closed() {
+            return None;
+        }
+        if t.status == TicketStatus::Waiting || self.approvals.iter().any(|a| a.ticket == Some(t.id)) {
+            return Some(Live::YourTurn);
+        }
+        let working = t.status == TicketStatus::InProgress && self.agents.iter().any(|a| a.ticket == Some(t.id) && a.state == AgentState::Working);
+        working.then_some(Live::Working)
+    }
+
+    /// The side list's projects, in the squad's order, each with its live
+    /// tickets — the person's turn first, the latest first — five at most;
+    /// then the shared folder, when something in it is live.
+    pub fn side_groups(&self) -> Vec<SideGroup> {
+        let mut out = Vec::new();
+        let places = (0..self.projects.len()).map(Some).chain([None]);
+        for at in places {
+            let project = at.map(|i| self.projects[i].clone());
+            let mut here: Vec<(TicketId, Live)> = self.tickets.iter().filter(|t| self.ticket_project(t) == project).filter_map(|t| self.live(t).map(|l| (t.id, l))).collect();
+            if at.is_none() && here.is_empty() {
+                continue;
+            }
+            here.sort_by_key(|(id, l)| (*l != Live::YourTurn, std::cmp::Reverse(*id)));
+            let waiting = here.iter().filter(|(_, l)| *l == Live::YourTurn).count();
+            let working = here.len() - waiting;
+            let more = here.len().saturating_sub(SIDE_CAP);
+            here.truncate(SIDE_CAP);
+            out.push(SideGroup { at, rows: here, more, working, waiting });
+        }
+        out
+    }
+
+    /// How many tickets were finished since `midnight` (unix seconds), by
+    /// when the daemon says each last changed.
+    pub fn done_since(&self, midnight: u64) -> usize {
+        self.tickets.iter().filter(|t| t.status == TicketStatus::Done && t.updated_at.is_some_and(|at| at >= midnight)).count()
     }
 
     /// How many things a menu line counts: what waits for the person, work in
@@ -904,15 +997,33 @@ impl App {
     /// Open a line of the side list on the right: the PM's conversation, a
     /// ticket's work (its member's, while it shows), someone's conversation.
     pub fn open(&mut self, side: Side) {
-        if let Side::Heading(..) = side {
-            return;
+        // A project's line: it comes into focus (the shared folder has none).
+        let name = |at: Option<usize>| at.and_then(|i| self.projects.get(i)).map(|p| board::project_name(p));
+        match side {
+            Side::Heading(..) => return,
+            Side::Project(at) => {
+                if let Some(name) = name(at) {
+                    let commands = self.focus_on(&name);
+                    self.outbox.extend(commands);
+                }
+                return;
+            }
+            Side::More(at) => {
+                if let Some(name) = name(at) {
+                    let commands = self.focus_on(&name);
+                    self.outbox.extend(commands);
+                }
+                return self.open(Side::Menu(BoardMenu::All));
+            }
+            Side::Done => return self.open(Side::Menu(BoardMenu::All)),
+            _ => {}
         }
         for agent in self.agents.iter_mut() {
             agent.showing = None;
         }
         self.opened = None;
         match side {
-            Side::Heading(..) => {}
+            Side::Heading(..) | Side::Project(_) | Side::More(_) | Side::Done => {}
             Side::Menu(menu) => {
                 self.board_menu = menu;
                 self.board_selected = None;
@@ -3378,6 +3489,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
+            updated_at: None,
         }
     }
 
@@ -4041,11 +4153,23 @@ mod tests {
         let pm = app.agents.iter().find(|a| a.is_pm()).unwrap().id;
         let frontend = app.agents.iter().find(|a| a.label() == "frontend").unwrap().id;
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(9, TicketStatus::Todo) });
-        // The PM, the board's menu as the desktop's, then the team.
+        // The PM, the board's menu as the desktop's, the live work by project
+        // (site's review is 나에게's, not live), what finished, then the team.
         let at = app.agents.iter().position(|a| a.id == frontend).unwrap();
         assert_eq!(
             app.side(),
-            [Side::Pm, Side::Menu(BoardMenu::Inbox), Side::Menu(BoardMenu::Working), Side::Menu(BoardMenu::All), Side::Heading(Group::Team, 1), Side::Member(at)]
+            [
+                Side::Pm,
+                Side::Menu(BoardMenu::Inbox),
+                Side::Menu(BoardMenu::Working),
+                Side::Menu(BoardMenu::All),
+                Side::Project(Some(0)),
+                Side::Project(Some(1)),
+                Side::Ticket(2),
+                Side::Done,
+                Side::Heading(Group::Team, 1),
+                Side::Member(at)
+            ]
         );
         assert_eq!(app.menu_count(BoardMenu::Inbox), 1, "the one review");
         assert_eq!(app.menu_count(BoardMenu::Working), 1);
@@ -4068,6 +4192,43 @@ mod tests {
         assert!(app.viewed().is_none());
         type_text(&mut app, "who takes this?");
         assert_eq!(enter(&mut app), vec![Command::Submit { session: pm, text: "About T-9: who takes this?".into() }]);
+    }
+
+    #[test]
+    fn the_side_list_shows_only_live_work_five_a_project_and_one_line_for_what_finished() {
+        let mut app = two_projects();
+        let frontend = app.agents.iter().position(|a| a.label() == "frontend").unwrap();
+        let in_app = |id, status| Ticket { project: Some("/code/app".into()), ..ticket(id, status) };
+        // Six waiting on the person in app, one done today, one done yesterday, one to do.
+        for id in 10..16 {
+            app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: in_app(id, TicketStatus::Waiting) });
+        }
+        let midnight = local_midnight(1_760_600_000);
+        let done = |id, at| Ticket { updated_at: Some(at), ..in_app(id, TicketStatus::Done) };
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: done(20, midnight + 60) });
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: done(21, midnight - 60) });
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: in_app(22, TicketStatus::Todo) });
+        let groups = app.side_groups();
+        assert_eq!(groups.len(), 2, "both projects, no shared folder: nothing live there");
+        assert!(groups[0].rows.is_empty(), "site's review is not live work");
+        assert_eq!(groups[1].rows.len(), SIDE_CAP);
+        assert_eq!((groups[1].more, groups[1].waiting, groups[1].working), (2, 6, 1));
+        assert!(groups[1].rows.iter().all(|(_, l)| *l == Live::YourTurn), "the person's turn before work under way");
+        assert!(!app.side().iter().any(|s| matches!(s, Side::Ticket(20..=22))), "nothing finished or to do under a project");
+        assert_eq!(app.side().iter().filter(|s| **s == Side::Done).count(), 1);
+        assert_eq!(app.done_since(midnight), 1, "only today's");
+        assert_eq!(app.done_since(midnight + 86_400), 0, "past the next midnight, none");
+        // "+2 more" puts the project in focus and opens the board.
+        app.open(Side::More(Some(1)));
+        assert_eq!((app.pane, app.board_menu, app.focus.clone()), (Pane::Board, BoardMenu::All, Some("/code/app".into())));
+        assert_eq!(app.outbox.last(), Some(&Command::Focus { squad: "acme".into(), project: Some("app".into()) }));
+        // A project's line focuses it; what finished opens the board.
+        app.open(Side::Project(Some(0)));
+        assert_eq!(app.focus, Some("/code/site".into()));
+        app.open(Side::Done);
+        assert_eq!((app.pane, app.board_menu), (Pane::Board, BoardMenu::All));
+        // The team is always listed, whatever is above it.
+        assert!(app.side().ends_with(&[Side::Heading(Group::Team, 1), Side::Member(frontend)]));
     }
 
     #[test]

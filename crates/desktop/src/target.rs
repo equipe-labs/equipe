@@ -179,6 +179,9 @@ pub struct Remembered {
     /// The PM's conversation shows whole whatever project is in focus — as it
     /// did before it followed the project (settings ▸ 일반).
     pub whole_conversation: bool,
+    /// The sidebar's projects folded to their header, by name (the squad's
+    /// shared folder: ""): `fold\t<name>` lines.
+    pub folded: std::collections::BTreeSet<String>,
 }
 
 /// Light or dark, as the person picked in settings; the Mac's by default
@@ -334,6 +337,8 @@ impl Remembered {
                 out.start = Start::parse(rest.trim()).unwrap_or_default();
             } else if line.trim() == "conversation whole" {
                 out.whole_conversation = true;
+            } else if let Some(name) = line.strip_prefix("fold\t") {
+                out.folded.insert(name.to_owned());
             } else if let Some(rest) = line.strip_prefix("quiet ") {
                 if let Some(ping) = Ping::ALL.into_iter().find(|p| p.code() == rest.trim()) {
                     out.pings.set(ping, false);
@@ -381,6 +386,9 @@ impl Remembered {
         }
         if self.whole_conversation {
             text.push_str("conversation whole\n");
+        }
+        for name in &self.folded {
+            text.push_str(&format!("fold\t{}\n", name.replace(['\t', '\n'], " ")));
         }
         for ping in Ping::ALL.into_iter().filter(|p| !self.pings.get(*p)) {
             text.push_str(&format!("quiet {}\n", ping.code()));
@@ -570,9 +578,11 @@ mod tests {
         prefs.set_merge_way("app", "push");
         prefs.set_merge_way("site", "merge");
         prefs.clear_merge_way("app");
+        prefs.folded.extend(["my site".to_owned(), String::new()]);
         prefs.save(&dir);
         let loaded = Remembered::load(&dir);
         assert_eq!((loaded.appearance, loaded.start, loaded.whole_conversation), (Appearance::Dark, Start::Inbox, true));
+        assert_eq!(loaded.folded, prefs.folded, "the sidebar's folds, the shared folder's too");
         assert!(!loaded.pings.failed && !loaded.pings.sound && loaded.pings.approvals && loaded.pings.reviews && loaded.pings.waiting);
         assert_eq!((loaded.merge_way("app"), loaded.merge_way("site")), (None, Some("merge")), "back to asking each time");
 

@@ -21,7 +21,7 @@ use equipe_core::board::project_name;
 use equipe_core::i18n::label;
 use equipe_core::protocol::{Entry, Estimate, SessionId, TicketId, TicketStatus};
 
-use super::app::{Agent, AgentState, App, BoardMenu, BoardRule, Divider, Hit, Pane, Section, Side, Spot, TextView, elapsed, needs_way, relative, section_of, status_word, tool_verb};
+use super::app::{Agent, AgentState, App, BoardMenu, BoardRule, Divider, Hit, Live, Pane, Section, Side, Spot, TextView, elapsed, needs_way, relative, section_of, status_word, tool_verb};
 use super::markdown;
 use crate::ui;
 use equipe_core::t;
@@ -636,11 +636,9 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
     let narrow = squad_pane.is_none();
     // The side list's lines: a click opens one.
     if let Some(squad) = squad_pane {
-        let lines = side_lines(app, theme, squad);
-        let top = side_top(app, &lines, squad.height as usize);
-        for (row, (_, side)) in lines.into_iter().skip(top).enumerate().take(squad.height as usize) {
+        for (row, _, side) in side_rows(app, theme, squad) {
             if let Some(side) = side {
-                hits.push((squad.x, squad.x + squad.width, squad.y + row as u16, Hit::Side(side)));
+                hits.push((squad.x, squad.x + squad.width, squad.y + row, Hit::Side(side)));
             }
         }
     }
@@ -1236,17 +1234,59 @@ fn doing(agent: &Agent) -> &'static str {
     }
 }
 
-/// The side list, a line each: the PM, then the tickets by where they stand,
-/// then the team — and what a click on each line opens.
-fn side_lines(app: &App, theme: Theme, area: Rect) -> Vec<(Line<'static>, Option<Side>)> {
+/// The side list, a line each: the PM and the board's menu, the live work by
+/// project, what finished today, then the team — and what a click on each
+/// line opens. The second half is where the team starts (pinned at the foot).
+fn side_lines(app: &App, theme: Theme, area: Rect) -> (Vec<(Line<'static>, Option<Side>)>, usize) {
     let mut lines: Vec<(Line<'static>, Option<Side>)> = vec![(Line::from(Span::styled(t!("view.side_squad"), theme.dim())), None), (Line::raw(""), None)];
     let name_width = app.agents.iter().map(|a| cols(&a.label())).max().unwrap_or(4).clamp(4, 12);
     let open = (app.pane == Pane::Conversation).then(|| app.side_open());
+    let groups = app.side_groups();
+    let mut team_at = None;
     for side in app.side() {
         match side {
             Side::Heading(group, count) => {
-                lines.push((Line::raw(""), None));
+                team_at = Some(lines.len());
                 lines.push((Line::from(Span::styled(format!("{} · {count}", group.label()), theme.dim())), None));
+            }
+            Side::Project(at) => {
+                let Some(g) = groups.iter().find(|g| g.at == at) else { continue };
+                if groups.first().is_some_and(|f| f.at == at) {
+                    lines.push((Line::raw(""), None));
+                }
+                let name = at.and_then(|i| app.projects.get(i)).map(|p| project_name(p)).unwrap_or_else(|| t!("view.side_shared_folder").to_owned());
+                let focused = at.is_some() && at.and_then(|i| app.projects.get(i)) == app.focus.as_ref();
+                let quiet = g.rows.is_empty();
+                let style = if focused { theme.bold() } else if quiet { theme.dim() } else { Style::new() };
+                let mut spans = vec![Span::styled(if focused { "› " } else { "  " }, theme.accent()), Span::styled(ui::fit(&name, (area.width as usize).saturating_sub(12)), style)];
+                if g.working > 0 {
+                    spans.push(Span::styled(format!(" {}", g.working), theme.dim()));
+                }
+                if g.waiting > 0 {
+                    spans.push(Span::styled(format!(" {}⚑", g.waiting), theme.accent()));
+                }
+                lines.push((Line::from(spans), Some(side)));
+            }
+            Side::Ticket(id) => {
+                let Some(t) = app.tickets.iter().find(|t| t.id == id) else { continue };
+                let on = open == Some(side);
+                let mark = match app.live(t) {
+                    Some(Live::YourTurn) => Span::styled("! ", theme.accent().add_modifier(Modifier::BOLD)),
+                    _ => Span::styled(format!("{} ", theme.spinner(Instant::now()).content), theme.dim()),
+                };
+                let room = (area.width as usize).saturating_sub(4 + 2 + 7);
+                let marker = if on { Span::styled("› ", theme.accent()) } else { Span::raw("  ") };
+                lines.push((Line::from(vec![marker, Span::raw("  "), mark, Span::styled(format!("T-{} ", t.id), theme.dim()), Span::styled(ui::fit(&t.title, room), if on { theme.bold() } else { Style::new() })]), Some(side)));
+            }
+            Side::More(at) => {
+                let Some(g) = groups.iter().find(|g| g.at == at) else { continue };
+                lines.push((Line::from(vec![Span::raw("      "), Span::styled(t!("view.side_more", n = g.more), theme.dim())]), Some(side)));
+            }
+            Side::Done => {
+                let today = app.done_since(super::app::local_midnight(now_unix()));
+                lines.push((Line::raw(""), None));
+                let text = if today > 0 { t!("view.side_recent_done_today", n = today) } else { t!("view.side_recent_done").to_owned() };
+                lines.push((Line::from(vec![Span::raw("  "), Span::styled("+ ", theme.dim()), Span::styled(text, if today > 0 { Style::new() } else { theme.dim() })]), Some(side)));
             }
             Side::Menu(menu) => {
                 // 나에게 · 작업 중 · 모든 일, each with its count, as the desktop's menu.
@@ -1288,23 +1328,50 @@ fn side_lines(app: &App, theme: Theme, area: Rect) -> Vec<(Line<'static>, Option
                     lines.push((Line::from(vec![Span::raw("    "), Span::styled(ui::fit(&text, room), theme.dim())]), Some(side)));
                 }
             }
-            Side::Ticket(_) => {}
         }
     }
-    lines
+    let team_at = team_at.unwrap_or(lines.len());
+    (lines, team_at)
+}
+
+/// The side list laid out in `area`: each line drawn, at its row. The team is
+/// pinned at the foot, always in sight (the menu above it at least); the rest
+/// scrolls to keep the open line in sight.
+fn side_rows(app: &App, theme: Theme, area: Rect) -> Vec<(u16, Line<'static>, Option<Side>)> {
+    let (mut lines, team_at) = side_lines(app, theme, area);
+    let team = lines.split_off(team_at);
+    let height = area.height as usize;
+    // The squad's name, the PM and the menu stay above the team; the team
+    // takes the rest it needs, and a blank line over it when there is room.
+    let reserve = 7.min(height);
+    let want = team.len() + usize::from(!team.is_empty());
+    let team_room = want.min(height - reserve);
+    let top_room = height - team_room;
+    let mut out = Vec::new();
+    let top = side_top(app, &lines, top_room);
+    for (row, (line, side)) in lines.into_iter().skip(top).take(top_room).enumerate() {
+        out.push((row as u16, line, side));
+    }
+    let gap = usize::from(team_room > team.len());
+    let skip = side_top(app, &team, team_room - gap);
+    for (row, (line, side)) in team.into_iter().skip(skip).take(team_room - gap).enumerate() {
+        out.push(((top_room + gap + row) as u16, line, side));
+    }
+    out
 }
 
 fn render_side(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
-    let lines = side_lines(app, theme, area);
-    let top = side_top(app, &lines, area.height as usize);
-    frame.render_widget(Paragraph::new(lines.into_iter().skip(top).map(|(line, _)| line).collect::<Vec<_>>()), area);
+    for (row, line, _) in side_rows(app, theme, area) {
+        frame.render_widget(Paragraph::new(line), Rect { y: area.y + row, height: 1, ..area });
+    }
 }
 
-/// Where the side list starts drawing: the open line kept in sight when the
-/// list is taller than the pane.
+/// Where a part of the side list starts drawing: the open line kept in sight
+/// when the part is taller than its room.
 fn side_top(app: &App, lines: &[(Line<'static>, Option<Side>)], height: usize) -> usize {
     let open = lines.iter().position(|(_, s)| app.pane == Pane::Conversation && *s == Some(app.side_open()));
-    open.map_or(0, |at| (at + 3).saturating_sub(height))
+    // Never past the end: what fits is drawn whole.
+    open.map_or(0, |at| (at + 3).saturating_sub(height)).min(lines.len().saturating_sub(height))
 }
 
 /// Someone in the side list — the PM at its head, the rest of the team at
@@ -2898,6 +2965,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
+            updated_at: None,
         }
     }
 
@@ -2912,6 +2980,34 @@ mod tests {
             reason: None,
             preview: None,
         }
+    }
+
+    #[test]
+    fn the_team_stays_in_sight_under_a_long_list_of_live_work() {
+        let (mut app, _) = working();
+        for (session, name) in [(7, "frontend"), (8, "backend"), (9, "qa")] {
+            app.on_event(Event::SessionStarted { session, project: "/repo".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Member { role: name.into(), name: name.into() }), squad: Some("acme".into()) });
+        }
+        for id in 1..=12 {
+            app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(id, TicketStatus::Waiting, &format!("wait {id}")) });
+        }
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(30, TicketStatus::Done, "shipped") });
+        let mut squad = Terminal::new(TestBackend::new(30, 16)).unwrap();
+        squad.draw(|f| render_side(f, f.area(), &app, Theme::plain())).unwrap();
+        let buffer = squad.backend().buffer();
+        let rows: Vec<String> = (0..16).map(|y| (0..30).map(|x| buffer[(x, y)].symbol()).collect::<String>()).collect();
+        let text = rows.join("\n");
+        assert!(rows[2].contains("pm"), "the PM first:\n{text}");
+        for name in ["frontend", "backend", "qa"] {
+            assert!(rows[10..].iter().any(|r| r.contains(name)), "{name} pinned at the foot:\n{text}");
+        }
+        assert!(!text.contains("shipped"), "nothing finished under a project:\n{text}");
+        // Tall enough, the rest shows above: five live, then how many more.
+        let mut tall = Terminal::new(TestBackend::new(30, 30)).unwrap();
+        tall.draw(|f| render_side(f, f.area(), &app, Theme::plain())).unwrap();
+        let text: String = (0..30).map(|y| (0..30).map(|x| tall.backend().buffer()[(x, y)].symbol()).collect::<String>() + "\n").collect();
+        assert!(text.contains("T-12") && !text.contains("T-7 ") && text.contains("+7"), "{text}");
+        assert!(text.contains("최근 끝남") || text.contains("Recently done"), "{text}");
     }
 
     #[test]
