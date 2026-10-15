@@ -9,7 +9,7 @@
 //! `menu:<inbox|working|all|view0…>` (a sidebar item) · `cmenu:<attach|recent|to|model|effort|mode|context>` (a composer menu) · `bkey:<key>` (a work
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
-//! (its main button) · `size:<w>x<h>` (the window) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:<settings|account>` · `open:<n>` (a ticket's sidebar row) · `folds` · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
+//! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in points) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:<settings|account>` · `open:<n>` (a ticket's sidebar row) · `folds` · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
 //! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `browser` (the browser panel, ⌘⇧B) · `bpick:<n>` (its nth tab) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
@@ -223,6 +223,22 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     cx.notify();
                 }),
                 "open" => shell.update(cx, |shell, cx| shell.open_ticket_row(arg.parse().unwrap_or(0), window, cx)),
+                // The pointer moved to `x,y` (points from the window's top left):
+                // hover fills and, after their delay, tooltips.
+                "hover" => {
+                    let (x, y) = arg.split_once(',').map(|(x, y)| (x.trim().parse().unwrap_or(0.), y.trim().parse().unwrap_or(0.))).unwrap_or((0f32, 0f32));
+                    let moved = MouseMoveEvent { position: point(px(x), px(y)), pressed_button: None, modifiers: Modifiers::default() };
+                    window.dispatch_event(PlatformInput::MouseMove(moved), cx);
+                }
+                // A click (press and release) at `x,y`.
+                "click" => {
+                    let (x, y) = arg.split_once(',').map(|(x, y)| (x.trim().parse().unwrap_or(0.), y.trim().parse().unwrap_or(0.))).unwrap_or((0f32, 0f32));
+                    let at = point(px(x), px(y));
+                    let down = MouseDownEvent { button: MouseButton::Left, position: at, modifiers: Modifiers::default(), click_count: 1, first_mouse: false };
+                    window.dispatch_event(PlatformInput::MouseDown(down), cx);
+                    let up = MouseUpEvent { button: MouseButton::Left, position: at, modifiers: Modifiers::default(), click_count: 1 };
+                    window.dispatch_event(PlatformInput::MouseUp(up), cx);
+                }
                 other => eprintln!("script: no step {other}"),
             });
             // Let the window draw what the step did.

@@ -1353,10 +1353,11 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         .child(
             motion::SmoothHeight::new(
                 "composer-text",
+                // The text box pads its text itself (GPUI Kit's medium input
+                // padding): take that off, so the text starts at INSET too.
                 div()
-                    .px(px(INSET))
-                    .pt(px(INSET))
-                    .pb_1()
+                    .px(px(INSET) - gpui_kit::component::Size::Medium.input_px())
+                    .pt(px(INSET) - gpui_kit::component::Size::Medium.input_py())
                     .child(
                         Textarea::new(&composer.state)
                             .appearance(false)
