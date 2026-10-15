@@ -9,8 +9,10 @@
 //! - `shutdown` (request): stop the daemon; sessions stay restorable
 //! - `version` (request): → [`Version`], the daemon's build and wire version
 //! - `squads` (request): → [`Squads`], the squads on the daemon's machine
-//! - `upload` (request): [`Upload`] → [`Uploaded`], an image saved on the
-//!   daemon's machine for a message to point at
+//! - `upload` (request): [`Upload`] → [`Uploaded`], an image (with a `kind`,
+//!   any file) saved on the daemon's machine for a message to point at. A big
+//!   file goes over its own SSH channel instead (`equipe receive`), never as
+//!   one giant line.
 //! - `attached` (notification, `equipe attach --stdio` → screen): [`Attached`],
 //!   the first line a screen reads through the bridge, before anything the
 //!   daemon says
@@ -120,13 +122,31 @@ pub struct SquadEntry {
     pub home: std::path::PathBuf,
 }
 
-/// An image to keep on the daemon's machine.
+/// A file to keep on the daemon's machine: an image unless `kind` says otherwise.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Upload {
-    /// The file's name where it came from; only its extension is kept.
+    /// The file's name where it came from; its extension and a tidied stem
+    /// are kept, never its folder.
     pub name: String,
     /// The bytes, base64 (standard alphabet, padded).
     pub data: String,
+    /// What it is. Absent (screens from before attachments): an image, and
+    /// only image extensions are taken.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<UploadKind>,
+}
+
+/// What an [`Upload`] carries, which decides the extensions it may have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UploadKind {
+    /// png, jpg, gif, webp — a member looks at it with Read.
+    Image,
+    /// A video, kept as it came; its frames travel as images.
+    Video,
+    Pdf,
+    /// Anything else: text, code, documents, audio.
+    File,
 }
 
 /// Where an [`Upload`] was saved: a message attaches it as `[image: <path>]`.
@@ -246,5 +266,15 @@ mod tests {
         assert_eq!(req.id, res.id);
         assert!(res.result_as::<Hello>().is_some());
         assert!(Message::from_line(&req.to_line()).unwrap().params_as::<HelloParams>().is_some());
+    }
+
+    #[test]
+    fn an_upload_without_a_kind_is_an_image_and_reads_as_before() {
+        let up: Upload = serde_json::from_str(r#"{"name":"a.png","data":"AA=="}"#).unwrap();
+        assert_eq!(up.kind, None);
+        let line = serde_json::to_string(&up).unwrap();
+        assert!(!line.contains("kind"), "an older daemon reads the same line: {line}");
+        let pdf = Upload { name: "spec.pdf".into(), data: "AA==".into(), kind: Some(UploadKind::Pdf) };
+        assert!(serde_json::to_string(&pdf).unwrap().contains(r#""kind":"pdf""#));
     }
 }

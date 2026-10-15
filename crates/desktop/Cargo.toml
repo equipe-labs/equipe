@@ -15,8 +15,11 @@ equipe-providers = { path = "../providers" }
 # depend on exactly one UI crate and upgrade it on our own schedule.
 gpui-kit = "=0.7.1"
 libc = "0.2"
+# Drafts and recent attachments, kept on disk between launches.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
 # The daemon link runs its own small runtime on a thread off the UI.
-tokio = { version = "1.53.2", features = ["rt", "macros", "sync", "time", "net", "io-util", "process"] }
+tokio = { version = "1.53.2", features = ["rt", "macros", "sync", "time", "net", "io-util", "process", "fs"] }
 
 # Attached screenshots: decoded, shrunk and thumbnailed off the UI thread.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff"] }
@@ -32,6 +35,13 @@ mac-notification-sys = "0.6.15"
 objc2 = "0.6"
 # Sparkle's "install now" block, kept until the person asks for it.
 block2 = "0.6"
+# Attachments: a video's frames (AVFoundation), a PDF's first page and page
+# count (CoreGraphics) — read on this Mac, off the UI thread (src/media.rs).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSArray", "NSValue", "NSError", "NSDictionary"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFURL", "CFString", "CFCGTypes"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "CGPDFDocument", "CGPDFPage", "CGAffineTransform", "CGGeometry"] }
+objc2-core-media = { version = "0.3", default-features = false, features = ["std", "CMTime", "CMTimeRange"] }
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "AVAsset", "AVAssetImageGenerator", "AVAssetTrack", "AVMediaFormat", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media"] }
 
 [features]
 snapshot = ["gpui-kit/test-support"]

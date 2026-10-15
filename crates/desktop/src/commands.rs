@@ -44,12 +44,62 @@ pub const COMMANDS: [Spec; 27] = [
 
 /// One completion: what the composer holds once it's taken, and how it is
 /// listed. A `text` without a trailing space is whole: Enter on it runs it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Choice {
     pub text: String,
     pub label: String,
     pub about: String,
+    /// The characters of `label` the typed letters matched, to highlight.
+    pub hits: Vec<usize>,
+    /// Where it comes from, as a small badge: `equipe`, `터미널`, a project.
+    pub badge: Option<String>,
+    /// The heading it is listed under (`멤버`, `파일`, `티켓`).
+    pub group: Option<&'static str>,
+    /// The part of `text` that becomes one atomic token in the box once taken
+    /// (a command's name), as a byte range.
+    pub token: Option<std::ops::Range<usize>>,
 }
+
+impl Choice {
+    pub fn new(text: String, label: String, about: String) -> Self {
+        Self { text, label, about, ..Self::default() }
+    }
+}
+
+/// Whether `query`'s letters appear in `candidate` in order (any case): a
+/// score — higher is better: a prefix, letters together, early — and which
+/// characters of `candidate` matched.
+pub fn fuzzy(query: &str, candidate: &str) -> Option<(i32, Vec<usize>)> {
+    if query.is_empty() {
+        return Some((0, Vec::new()));
+    }
+    let wanted: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
+    let have: Vec<char> = candidate.chars().flat_map(char::to_lowercase).collect();
+    let mut hits = Vec::with_capacity(wanted.len());
+    let mut at = 0;
+    for w in &wanted {
+        let found = (at..have.len()).find(|i| have[*i] == *w)?;
+        hits.push(found);
+        at = found + 1;
+    }
+    let mut score = 100 - hits[0] as i32 * 4 - have.len() as i32 / 4;
+    if hits[0] == 0 {
+        score += 60;
+    }
+    for pair in hits.windows(2) {
+        score += if pair[1] == pair[0] + 1 { 12 } else { -3 };
+    }
+    // Letters after a separator (`/`, `-`, `_`, `.`) count as the start of a word.
+    for &h in &hits {
+        if h > 0 && matches!(have[h - 1], '/' | '-' | '_' | '.' | ' ') {
+            score += 8;
+        }
+    }
+    Some((score, hits))
+}
+
+/// Commands that only the terminal console runs.
+const TERMINAL_ONLY: [&str; 9] = ["usage", "squad", "home", "memory", "add", "send-apps", "export", "mouse", "quit"];
 
 /// What completion draws on.
 #[derive(Default)]
@@ -88,22 +138,43 @@ pub fn complete(text: &str, ctx: &Context<'_>) -> Vec<Choice> {
         if name.contains(char::is_whitespace) {
             return Vec::new();
         }
-        ctx.members
+        let mut found: Vec<(i32, Choice)> = ctx
+            .members
             .iter()
-            .filter(|(m, _)| m.starts_with(&name.to_lowercase()))
-            .map(|(m, role)| Choice { text: format!("@{m} "), label: format!("@{m}"), about: (*role).to_owned() })
-            .collect()
+            .filter_map(|(m, role)| {
+                let (score, hits) = fuzzy(name, m)?;
+                Some((score, Choice { hits: hits.into_iter().map(|h| h + 1).collect(), group: Some(t!("commands.group_members")), ..Choice::new(format!("@{m} "), format!("@{m}"), (*role).to_owned()) }))
+            })
+            .collect();
+        found.sort_by_key(|(score, _)| -score);
+        found.into_iter().map(|(_, c)| c).collect()
     } else if let Some(command) = text.strip_prefix('/') {
         match command.split_once(' ') {
-            None => COMMANDS
-                .iter()
-                .filter(|c| c.name.starts_with(&command.to_lowercase()))
-                .map(|c| Choice {
-                    text: if c.args.is_empty() { format!("/{}", c.name) } else { format!("/{} ", c.name) },
-                    label: format!("/{} {}", c.name, c.args).trim_end().to_owned(),
-                    about: crate::i18n::catalog().get(c.about).to_owned(),
-                })
-                .collect(),
+            None => {
+                let mut found: Vec<(i32, Choice)> = COMMANDS
+                    .iter()
+                    .filter_map(|c| {
+                        let (score, hits) = fuzzy(command, c.name)?;
+                        let here = !TERMINAL_ONLY.contains(&c.name);
+                        let text = if c.args.is_empty() { format!("/{}", c.name) } else { format!("/{} ", c.name) };
+                        let choice = Choice {
+                            hits: hits.into_iter().map(|h| h + 1).collect(),
+                            badge: Some(if here { "equipe".into() } else { t!("commands.badge_terminal").into() }),
+                            token: (!c.args.is_empty()).then(|| 0..c.name.len() + 1),
+                            ..Choice::new(text, format!("/{} {}", c.name, c.args).trim_end().to_owned(), crate::i18n::catalog().get(c.about).to_owned())
+                        };
+                        // The ones that work here first, then the best match.
+                        Some((score + if here { 1000 } else { 0 }, choice))
+                    })
+                    .collect();
+                // With nothing typed yet, the list keeps its own order.
+                if !command.is_empty() {
+                    found.sort_by_key(|(score, _)| -score);
+                } else {
+                    found.sort_by_key(|(score, _)| -(score / 1000));
+                }
+                found.into_iter().map(|(_, c)| c).collect()
+            }
             Some((name, rest)) => arguments(name, rest, ctx),
         }
     } else {
@@ -121,7 +192,7 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
     let typed = words.last().copied().unwrap_or("");
     let before = &rest[..rest.len() - typed.len()];
     let lead = format!("/{name} {before}");
-    let word = |w: &str, about: &str, then: &str| Choice { text: format!("{lead}{w}{then}"), label: w.to_owned(), about: about.to_owned() };
+    let word = |w: &str, about: &str, then: &str| Choice::new(format!("{lead}{w}{then}"), w.to_owned(), about.to_owned());
     let tickets = |list: &[(TicketId, &str)], then: &str| -> Vec<Choice> {
         list.iter()
             .filter(|(id, title)| {
@@ -299,7 +370,7 @@ mod tests {
         assert_eq!(texts(&complete("/reo", &ctx())), ["/reopen "]);
         assert_eq!(texts(&complete("/resume ", &ctx())), ["/resume T-11 "], "the tickets waiting on the person");
         assert_eq!(complete("/", &ctx()).len(), COMMANDS.len());
-        assert_eq!(texts(&complete("/bo", &ctx())), ["/board"], "a command without arguments is whole");
+        assert_eq!(texts(&complete("/bo", &ctx())), ["/board", "/browser "], "a command without arguments is whole; the prefix first");
         assert!(complete("/board", &ctx()).is_empty(), "nothing left to complete");
         assert!(complete("hello", &ctx()).is_empty());
     }
@@ -334,6 +405,26 @@ mod tests {
         let typed = format!("/squad new shop {}/w", tmp.display());
         assert_eq!(complete(&typed, &ctx()).iter().map(|c| c.label.rsplit('/').nth(1).unwrap()).collect::<Vec<_>>(), ["wallet", "web"]);
         std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn letters_in_order_find_a_command_and_say_which_matched() {
+        assert_eq!(fuzzy("rpn", "reopen").map(|(_, hits)| hits), Some(vec![0, 3, 5]));
+        assert!(fuzzy("xyz", "reopen").is_none());
+        let (prefix, _) = fuzzy("re", "reopen").unwrap();
+        let (inside, _) = fuzzy("re", "merge").unwrap();
+        assert!(prefix > inside, "a prefix ranks first");
+        let rows = complete("/rpn", &ctx());
+        assert_eq!(texts(&rows), ["/reopen "]);
+        assert_eq!(rows[0].hits, vec![1, 4, 6], "positions in the label, after its slash");
+        assert_eq!(rows[0].token, Some(0..7), "`/reopen` becomes one token in the box");
+        assert_eq!(rows[0].badge.as_deref(), Some("equipe"));
+        let usage = complete("/usage", &ctx());
+        assert!(usage.is_empty() || usage[0].badge.as_deref() != Some("equipe"));
+        // The ones that work here come before the terminal's.
+        let all = complete("/", &ctx());
+        let first_terminal = all.iter().position(|c| c.badge.as_deref() != Some("equipe")).unwrap();
+        assert!(all[first_terminal..].iter().all(|c| c.badge.as_deref() != Some("equipe")));
     }
 
     #[test]

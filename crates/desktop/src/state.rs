@@ -571,6 +571,21 @@ impl Model {
             }
             Event::ApprovalResolved { approval, .. } => self.approvals.resolve(approval),
             Event::LaneOpened { session, of, project } => self.open_lane(session, of, project),
+            // A memo taken back: it leaves the conversation's waiting ones.
+            Event::MemoWithdrawn { session, text } => {
+                if let Some(convo) = self.convos.get_mut(&session)
+                    && let Some(at) = convo.queued.iter().position(|q| *q == text)
+                {
+                    convo.queued.remove(at);
+                    if at < convo.queued_in.len() {
+                        convo.queued_in.remove(at);
+                    }
+                    self.revision += 1;
+                }
+                if let Some(member) = self.members.iter_mut().find(|m| m.session == session) {
+                    member.memos = member.memos.saturating_sub(1);
+                }
+            }
             Event::SessionClosed { session } if self.lanes.iter().any(|l| l.session == session) => self.fold_lane(session),
             Event::Error { session: None, message, .. } => self.flash = Some(message),
             Event::SessionStarted { session, member, model, squad, engine, .. } => {

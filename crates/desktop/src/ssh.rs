@@ -146,6 +146,51 @@ impl Launcher {
         }
     }
 
+    /// Stream the file at `path` into `equipe receive` on `host`, over the
+    /// shared connection — a channel of its own, raw bytes, so a big file
+    /// never becomes one giant line on the daemon's. `name` must already be
+    /// tidy (letters, digits, `-`, `_`, one dot): it goes on the command line.
+    /// `sent` hears how many bytes have gone. Where the far side kept it.
+    pub async fn send_file(&self, host: &SshHost, path: &Path, name: &str, kind: &str, sent: impl Fn(u64)) -> Result<String, Failure> {
+        use tokio::io::AsyncReadExt as _;
+        let tidy = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.')) && !s.starts_with(['-', '.']);
+        if !tidy(name) || !kind.chars().all(|c| c.is_ascii_lowercase()) {
+            return Err(Failure::Other(format!("not a name to send: {name}")));
+        }
+        let mut file = tokio::fs::File::open(path).await.map_err(|e| Failure::Other(e.to_string()))?;
+        let size = file.metadata().await.map_err(|e| Failure::Other(e.to_string()))?.len();
+        let remote = format!("sh -c 'PATH=\"{PATH_PREFIX}:$PATH\"; export PATH; exec equipe receive --kind {kind} --size {size} --name {name}'");
+        let mut child = self.command(host, &remote).spawn().map_err(|e| Failure::Other(e.to_string()))?;
+        let mut stdin = child.stdin.take().ok_or_else(|| Failure::Other("no stdin".into()))?;
+        let mut stdout = child.stdout.take().ok_or_else(|| Failure::Other("no stdout".into()))?;
+        let mut process = Process::new(child);
+        let feed = async move {
+            let mut buffer = vec![0u8; 256 << 10];
+            let mut gone = 0u64;
+            loop {
+                let n = file.read(&mut buffer).await.map_err(|e| e.to_string())?;
+                if n == 0 {
+                    break;
+                }
+                stdin.write_all(&buffer[..n]).await.map_err(|e| e.to_string())?;
+                gone += n as u64;
+                sent(gone);
+            }
+            stdin.shutdown().await.map_err(|e| e.to_string())
+        };
+        let mut out = Vec::new();
+        let read = async { stdout.read_to_end(&mut out).await };
+        let (fed, _) = tokio::join!(feed, read);
+        match process.finish(false).await {
+            Failure::Closed if fed.is_ok() => {
+                let kept = String::from_utf8_lossy(&out).trim().to_owned();
+                if kept.starts_with('/') { Ok(kept) } else { Err(Failure::Other("the other machine didn't say where it kept the file".into())) }
+            }
+            Failure::Closed => Err(Failure::Other(fed.err().unwrap_or_default())),
+            failure => Err(failure),
+        }
+    }
+
     /// Close the shared connection to `host` (a dead one after the network
     /// changed or the Mac slept would otherwise be reused until it times out).
     pub async fn drop_shared_connection(&self, host: &SshHost) {

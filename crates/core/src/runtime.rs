@@ -377,6 +377,9 @@ struct Session {
     /// The turn running answers the person (not the board, not the team), so
     /// a guess at what they say next may follow it.
     answers_person: bool,
+    /// How hard it thinks (`--effort` for Claude Code, reasoning effort for
+    /// Codex); `None`: the engine's default.
+    effort: Option<String>,
 }
 
 impl Session {
@@ -752,6 +755,18 @@ impl Runtime {
                     self.publish(Event::Notice { session, text: format!("From its next turn: {model}. Its conversation carries on.") });
                 }
             }
+            Command::Unqueue { session, text } => self.unqueue(session, &text),
+            Command::SetEffort { session, effort } => {
+                let effort = effort.map(|e| e.trim().to_ascii_lowercase()).filter(|e| !e.is_empty());
+                if let Some(s) = self.sessions.get_mut(&session) {
+                    s.effort = effort.clone();
+                    let text = match &effort {
+                        Some(effort) => format!("From its next turn it thinks at effort {effort}."),
+                        None => "From its next turn it thinks at its engine's default effort.".to_owned(),
+                    };
+                    self.publish(Event::Notice { session, text });
+                }
+            }
             Command::Focus { squad, project } => match project {
                 Some(name) => {
                     self.focus.insert(squad, name);
@@ -1067,6 +1082,7 @@ impl Runtime {
                 steer: None,
                 steering: Vec::new(),
                 answers_person: false,
+                effort: None,
                 briefing: Vec::new(),
                 memory,
                 mode: None,
@@ -1144,6 +1160,27 @@ impl Runtime {
             self.save_waiting(id);
             self.publish(Event::MessageQueued { session: id, text, project });
         }
+    }
+
+    /// Take back a memo not delivered yet: the first one with `text`, in the
+    /// session it was left in (a lane's, when the member had one).
+    fn unqueue(&mut self, id: SessionId, text: &str) {
+        let held = |s: &Session| s.queued.iter().any(|q| q == text);
+        let id = match self.sessions.get(&id) {
+            Some(s) if held(s) => id,
+            _ => match self.sessions.iter().find(|(_, s)| s.lane.as_ref().is_some_and(|(of, _)| *of == id) && held(s)) {
+                Some((lane, _)) => *lane,
+                None => return,
+            },
+        };
+        let Some(session) = self.sessions.get_mut(&id) else { return };
+        let Some(at) = session.queued.iter().position(|q| q == text) else { return };
+        session.queued.remove(at);
+        if at < session.memo_threads.len() {
+            session.memo_threads.remove(at);
+        }
+        self.save_waiting(id);
+        self.publish(Event::MemoWithdrawn { session: id, text: text.to_owned() });
     }
 
     /// Send `text` to a member between turns: it starts one.
@@ -1351,6 +1388,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             steer: None,
             steering: Vec::new(),
             answers_person: false,
+            effort: None,
             briefing: Vec::new(),
             memory: m.memory.clone(),
             mode: m.mode,
@@ -1583,6 +1621,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                     return self.error(Some(id), "Codex isn't signed in.", Some("equipe login codex"));
                 };
                 let model = session.model.clone().unwrap_or_default();
+                let effort = session.effort.clone();
                 let version = self.config.client_version.clone();
                 // Codex gets no conversation of its own: equipe sends the recent
                 // part of it each turn, never more than fits.
@@ -1597,6 +1636,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         model: &model,
                         instructions: charter.as_deref(),
                         history: &history,
+                        effort: effort.as_deref(),
                     };
                     let result = responses::run_turn(&client, &cred, &version, request, |delta| {
                         streamed = true;
@@ -1610,6 +1650,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             Engine::Claude => {
                 let binary = self.config.claude_binary.clone();
                 let model = session.model.clone();
+                let effort = session.effort.clone();
                 let memory = session.memory.clone();
                 let mut allowed: Vec<String> = mcp_config.iter().map(|_| format!("mcp__{MCP_SERVER}")).collect();
                 if browses_freely {
@@ -1660,6 +1701,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         }),
                         prompt_tool: prompt_tool.as_deref(),
                         env: &env,
+                        effort: effort.as_deref(),
                     };
                     // A browser just started may still be loading.
                     if let Some(port) = browser {
@@ -3523,6 +3565,7 @@ it back there once they have done it. End your turn now with a short line on wha
                         threads,
                         lane: None,
                         answers_person: false,
+                        effort: None,
                     },
                 );
             }

@@ -7,37 +7,66 @@
 
 use equipe_core::t;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use equipe_core::board::parse_ticket_id;
 use equipe_core::protocol::{Command, Engine, Mode, SessionId, TicketId, TicketStatus};
+use serde::{Deserialize, Serialize};
 
+use crate::attach::Saved;
 use crate::commands::{self, Choice};
+use crate::files;
 use crate::state::{Model, Presence};
 
 // ── history ──
 
+/// What was sent, for ↑ to bring back: the words and what was attached.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Said {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Saved>,
+}
+
+impl Said {
+    #[cfg(test)]
+    pub fn text(text: &str) -> Self {
+        Self { text: text.to_owned(), attachments: Vec::new() }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.text.trim().is_empty() && self.attachments.is_empty()
+    }
+}
+
+/// How many sent lines ↑ can reach.
+const HISTORY: usize = 200;
+
 /// The lines the person sent, for ↑ to bring back (only from an empty box).
 #[derive(Debug, Default)]
 pub struct History {
-    lines: Vec<String>,
+    lines: Vec<Said>,
     /// Where ↑↓ stands while walking, as an index into `lines`.
     at: Option<usize>,
 }
 
 impl History {
     /// A line was sent: remember it (not twice in a row), stop walking.
-    pub fn push(&mut self, line: &str) {
-        let line = line.trim();
-        if !line.is_empty() && self.lines.last().map(String::as_str) != Some(line) {
-            self.lines.push(line.to_owned());
+    pub fn push(&mut self, said: Said) {
+        let said = Said { text: said.text.trim().to_owned(), ..said };
+        if !said.is_empty() && self.lines.last() != Some(&said) {
+            self.lines.push(said);
+            if self.lines.len() > HISTORY {
+                self.lines.remove(0);
+            }
         }
         self.at = None;
     }
 
     /// ↑. `current` is what the box holds: walking starts only from empty, and
     /// goes on while the box still shows a recalled line.
-    pub fn older(&mut self, current: &str) -> Option<&str> {
+    pub fn older(&mut self, current: &str) -> Option<&Said> {
         if self.lines.is_empty() || (self.at.is_none() && !current.is_empty()) {
             return None;
         }
@@ -49,16 +78,21 @@ impl History {
         Some(&self.lines[i])
     }
 
-    /// ↓: toward the newest line, then an empty box (`Some("")`).
-    pub fn newer(&mut self) -> Option<&str> {
+    /// ↓: toward the newest line, then an empty box.
+    pub fn newer(&mut self) -> Option<Said> {
         let i = self.at?;
         if i + 1 < self.lines.len() {
             self.at = Some(i + 1);
-            Some(&self.lines[i + 1])
+            Some(self.lines[i + 1].clone())
         } else {
             self.at = None;
-            Some("")
+            Some(Said::default())
         }
+    }
+
+    /// Whether ↑↓ is walking.
+    pub fn walking(&self) -> bool {
+        self.at.is_some()
     }
 
     /// The person typed: whatever is in the box is theirs now.
@@ -69,21 +103,102 @@ impl History {
 
 // ── drafts ──
 
-/// What was half written to each member, per project in focus.
-#[derive(Debug, Default)]
-pub struct Drafts(HashMap<(SessionId, Option<String>), String>);
+/// What was half written to one member: the words, where the caret was, and
+/// what was attached.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Draft {
+    #[serde(default)]
+    pub text: String,
+    /// The caret, as a byte offset into `text`.
+    #[serde(default)]
+    pub caret: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Saved>,
+}
+
+impl Draft {
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty() && self.attachments.is_empty()
+    }
+}
+
+/// How many files "최근 첨부" offers.
+pub const RECENT: usize = 10;
+
+/// What was half written to each member, per squad and project in focus,
+/// and the files attached lately — kept on disk, so a restart loses nothing.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Drafts {
+    #[serde(default)]
+    drafts: HashMap<String, Draft>,
+    /// Files attached lately, newest first.
+    #[serde(default)]
+    pub recent: Vec<PathBuf>,
+    #[serde(skip)]
+    path: Option<PathBuf>,
+}
 
 impl Drafts {
-    pub fn put(&mut self, member: SessionId, project: Option<String>, text: String) {
-        if text.is_empty() {
-            self.0.remove(&(member, project));
+    /// Where they are kept.
+    pub fn file(home: &Path) -> PathBuf {
+        home.join("desktop-composer.json")
+    }
+
+    /// The drafts kept at `path` (none when it can't be read).
+    pub fn load(path: PathBuf) -> Self {
+        let mut drafts: Self = std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+        drafts.path = Some(path);
+        drafts
+    }
+
+    /// The key a draft is kept under: by names, which outlive a daemon's
+    /// session numbers.
+    pub fn key(squad: &str, member: &str, project: Option<&str>) -> String {
+        format!("{squad}/{member}/{}", project.unwrap_or(""))
+    }
+
+    pub fn put(&mut self, key: String, draft: Draft) {
+        if draft.is_empty() {
+            self.drafts.remove(&key);
         } else {
-            self.0.insert((member, project), text);
+            self.drafts.insert(key, draft);
         }
     }
 
-    pub fn get(&self, member: SessionId, project: &Option<String>) -> String {
-        self.0.get(&(member, project.clone())).cloned().unwrap_or_default()
+    pub fn get(&self, key: &str) -> Draft {
+        self.drafts.get(key).cloned().unwrap_or_default()
+    }
+
+    /// A file was attached: it heads the recent ones.
+    pub fn used(&mut self, path: &Path) {
+        self.recent.retain(|p| p != path);
+        self.recent.insert(0, path.to_owned());
+        self.recent.truncate(RECENT);
+    }
+
+    /// What `save` would write, and where; `None` for drafts kept nowhere.
+    pub fn snapshot(&self) -> Option<(PathBuf, String)> {
+        Some((self.path.clone()?, serde_json::to_string_pretty(self).ok()?))
+    }
+
+    /// Write them down (blocking; small).
+    pub fn save(&self) {
+        if let Some((path, text)) = self.snapshot() {
+            write_private(&path, &text);
+        }
+    }
+}
+
+/// Write `text` at `path`, readable by its owner only, replacing what was there whole.
+pub fn write_private(path: &Path, text: &str) {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = path.with_extension("tmp");
+    let written = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes()));
+    if written.is_ok() {
+        let _ = std::fs::rename(&tmp, path);
     }
 }
 
@@ -130,9 +245,87 @@ impl EnterGuard {
 
 // ── completion ──
 
+/// How many rows `@` lists in each of its groups.
+const PER_GROUP: usize = 6;
+
+/// What `@` offers for the word being typed at the end of `text`: members
+/// (only as the message's first word — `@name …` goes to them), the
+/// projects' files, the tickets. Fuzzy, best first, each group headed.
+pub fn mentions(model: &Model, text: &str, indexes: &[files::Index]) -> Vec<Choice> {
+    let start = text.rfind(char::is_whitespace).map_or(0, |i| i + text[i..].chars().next().map_or(1, char::len_utf8));
+    let Some(query) = text[start..].strip_prefix('@') else {
+        return Vec::new();
+    };
+    let before = &text[..start];
+    let mut out = Vec::new();
+    if start == 0 {
+        let members = model.members.iter().filter(|m| m.presence != Presence::Closed);
+        let mut found: Vec<(i32, Choice)> = members
+            .filter_map(|m| {
+                let (score, hits) = commands::fuzzy(query, &m.name)?;
+                let choice = Choice { hits: hits.into_iter().map(|h| h + 1).collect(), group: Some(t!("commands.group_members")), ..Choice::new(format!("@{} ", m.name), format!("@{}", m.name), m.role.clone()) };
+                Some((score, choice))
+            })
+            .collect();
+        found.sort_by_key(|(score, _)| -score);
+        out.extend(found.into_iter().take(PER_GROUP).map(|(_, c)| c));
+    }
+    if !query.is_empty() {
+        let mut found: Vec<(i32, Choice)> = indexes
+            .iter()
+            .flat_map(|index| index.files.iter().map(move |f| (index, f)))
+            .filter_map(|(index, file)| {
+                let (score, hits) = commands::fuzzy(query, file)?;
+                // The file's own name counts more than its folders.
+                let name_at = file.rfind('/').map_or(0, |i| i + 1);
+                let in_name = hits.first().is_some_and(|h| *h >= file[..name_at].chars().count());
+                let ext = Path::new(file).extension().map(|e| e.to_string_lossy().to_ascii_uppercase());
+                let choice = Choice {
+                    hits,
+                    group: Some(t!("commands.group_files")),
+                    badge: ext,
+                    ..Choice::new(format!("{before}@{file} "), file.clone(), index.project.clone())
+                };
+                Some((score + if in_name { 40 } else { 0 } - file.len() as i32 / 8, choice))
+            })
+            .collect();
+        found.sort_by_key(|(score, _)| -score);
+        out.extend(found.into_iter().take(PER_GROUP).map(|(_, c)| c));
+    }
+    let mut tickets: Vec<(i32, Choice)> = model
+        .tickets
+        .iter()
+        .filter(|t| t.status != TicketStatus::Done)
+        .filter_map(|t| {
+            let label = format!("T-{} {}", t.id, t.title);
+            let (score, hits) = commands::fuzzy(query.trim_start_matches(['T', 't', '-']), &label).or_else(|| commands::fuzzy(query, &label))?;
+            Some((score, Choice { hits, group: Some(t!("commands.group_tickets")), ..Choice::new(format!("{before}T-{} ", t.id), label, String::new()) }))
+        })
+        .collect();
+    tickets.sort_by_key(|(score, _)| -score);
+    out.extend(tickets.into_iter().take(PER_GROUP).map(|(_, c)| c));
+    // Nothing more to offer once the word is the only choice, whole.
+    match out.as_slice() {
+        [only] if only.text.trim_end() == text.trim_end() => Vec::new(),
+        _ => out,
+    }
+}
+
 /// What completion offers for `text`, drawn from the squad as it stands.
+#[cfg(test)]
 pub fn choices(model: &Model, text: &str) -> Vec<Choice> {
-    if text.is_empty() || text.contains('\n') {
+    choices_with(model, text, &[])
+}
+
+/// The same, with the projects' files for `@`.
+pub fn choices_with(model: &Model, text: &str, indexes: &[files::Index]) -> Vec<Choice> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    if !text.starts_with('/') {
+        return mentions(model, text, indexes);
+    }
+    if text.contains('\n') {
         return Vec::new();
     }
     let tickets = |statuses: &[TicketStatus]| -> Vec<(TicketId, &str)> {
@@ -165,7 +358,7 @@ pub fn choices(model: &Model, text: &str) -> Vec<Choice> {
     commands::complete(text, &ctx)
 }
 
-fn engine_models(engine: Option<Engine>, current: Option<&str>) -> Vec<String> {
+pub fn engine_models(engine: Option<Engine>, current: Option<&str>) -> Vec<String> {
     let mut models: Vec<String> = match engine {
         Some(Engine::Claude) => ["opus", "sonnet", "haiku"].iter().map(|m| (*m).to_owned()).collect(),
         _ => Vec::new(),
@@ -225,7 +418,12 @@ pub fn plan(model: &Model, text: &str, later: bool) -> Plan {
     let Some(selected) = model.selected_member() else {
         return Plan { restore: Some(text.to_owned()), ..Plan::say(t!("compose.no_member_yet")) };
     };
-    let (target, text) = match text.strip_prefix('@') {
+    // `@src/main.rs …` names a file, not a member: it is said to the one in view.
+    let names_file = |mention: &str| {
+        let name = mention.split(char::is_whitespace).next().unwrap_or("");
+        model.open_member(name).is_none() && name.contains(['/', '.'])
+    };
+    let (target, text) = match text.strip_prefix('@').filter(|m| !names_file(m)) {
         // `@frontend fix the header` goes to frontend without leaving this view.
         Some(mention) => {
             let (name, rest) = mention.split_once(char::is_whitespace).unwrap_or((mention, ""));
@@ -676,29 +874,79 @@ mod tests {
     #[test]
     fn up_and_down_walk_the_history_only_from_an_empty_box() {
         let mut h = History::default();
+        let text = |s: Option<&Said>| s.map(|s| s.text.clone());
         assert_eq!(h.older(""), None, "nothing sent yet");
-        h.push("one");
-        h.push("two");
-        h.push("two");
+        h.push(Said::text("one"));
+        h.push(Said::text("two"));
+        h.push(Said::text("two"));
         assert_eq!(h.older("draft"), None, "a box with text is the person's");
-        assert_eq!(h.older(""), Some("two"));
-        assert_eq!(h.older("two"), Some("one"));
-        assert_eq!(h.older("one"), Some("one"), "stops at the oldest");
-        assert_eq!(h.newer(), Some("two"));
-        assert_eq!(h.newer(), Some(""));
+        assert_eq!(text(h.older("")), Some("two".into()));
+        assert_eq!(text(h.older("two")), Some("one".into()));
+        assert_eq!(text(h.older("one")), Some("one".into()), "stops at the oldest");
+        assert_eq!(h.newer().map(|s| s.text), Some("two".into()));
+        assert_eq!(h.newer(), Some(Said::default()));
         assert_eq!(h.newer(), None);
-            }
+    }
+
+    fn saved(path: &str) -> Saved {
+        use crate::attach::{Kind, Meta, Ready};
+        Saved { kind: Kind::Pdf, name: "spec.pdf".into(), size: 10, meta: Meta { pages: Some(2), ..Meta::default() }, ready: Ready { path: path.into(), tag: format!("[pdf: {path} · 2 pages]") }, thumb: Some(vec![1, 2, 3]), origin: None }
+    }
 
     #[test]
-    fn a_draft_is_kept_per_member_and_project() {
-        let mut d = Drafts::default();
-        d.put(1, None, "all".into());
-        d.put(1, Some("site".into()), "site draft".into());
-        assert_eq!(d.get(1, &None), "all");
-        assert_eq!(d.get(1, &Some("site".into())), "site draft");
-        assert_eq!(d.get(2, &None), "");
-        d.put(1, None, String::new());
-        assert_eq!(d.get(1, &None), "");
+    fn up_brings_back_what_was_attached_too() {
+        let mut h = History::default();
+        h.push(Said { text: String::new(), attachments: vec![saved("/u/a.pdf")] });
+        h.push(Said { text: "  ".into(), attachments: vec![] });
+        let back = h.older("").unwrap();
+        assert_eq!(back.attachments, vec![saved("/u/a.pdf")], "attachments alone were a message");
+    }
+
+    #[test]
+    fn a_draft_is_kept_per_member_and_project_and_survives_a_restart() {
+        let path = std::env::temp_dir().join(format!("equipe-drafts-{}/composer.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut d = Drafts::load(path.clone());
+        let (all, site) = (Drafts::key("acme", "pm", None), Drafts::key("acme", "pm", Some("site")));
+        d.put(all.clone(), Draft { text: "all".into(), caret: 1, attachments: vec![] });
+        d.put(site.clone(), Draft { text: "site draft".into(), caret: 4, attachments: vec![saved("/u/b.pdf")] });
+        assert_eq!(d.get(&all).text, "all");
+        assert_eq!(d.get(&Drafts::key("acme", "frontend", None)), Draft::default());
+        d.used(Path::new("/x/a.png"));
+        d.used(Path::new("/x/b.png"));
+        d.used(Path::new("/x/a.png"));
+        d.save();
+        let again = Drafts::load(path.clone());
+        assert_eq!(again.get(&site), Draft { text: "site draft".into(), caret: 4, attachments: vec![saved("/u/b.pdf")] });
+        assert_eq!(again.recent, vec![PathBuf::from("/x/a.png"), PathBuf::from("/x/b.png")]);
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        d.put(all.clone(), Draft::default());
+        assert_eq!(d.get(&all), Draft::default(), "an empty draft is forgotten");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn at_finds_members_first_files_and_tickets_anywhere() {
+        let mut model = team();
+        model.tickets = vec![serde_json::from_value(serde_json::json!({"id": 12, "title": "헤더 정리", "body": "", "status": "todo", "owner": "pm", "assignee": null, "project": "/code/site", "depends_on": [], "branch": null, "created_by": "pm", "note": null})).unwrap()];
+        let index = files::Index { project: "site".into(), files: vec!["src/main.rs".into(), "src/views/header.rs".into(), "README.md".into()] };
+        let rows = choices_with(&model, "@hea", std::slice::from_ref(&index));
+        let texts: Vec<&str> = rows.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, ["@src/views/header.rs "], "no member is called that; the file's name ranks");
+        assert_eq!(choices_with(&model, "@T-12", &[]).iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["T-12 "]);
+        assert_eq!(rows[0].group, Some("파일"));
+        let mid = choices_with(&model, "고쳐 줘 @main", std::slice::from_ref(&index));
+        assert_eq!(mid[0].text, "고쳐 줘 @src/main.rs ", "mid-sentence, the word is replaced");
+        assert!(mid.iter().all(|c| c.group != Some("멤버")), "a member only heads a message");
+        let members = choices_with(&model, "@", &[]);
+        assert_eq!(members.iter().filter(|c| c.group == Some("멤버")).count(), 3);
+    }
+
+    #[test]
+    fn a_file_mention_is_said_to_the_one_in_view() {
+        let model = team();
+        assert_eq!(plan(&model, "@src/main.rs 이거 봐 줘").commands, vec![submit(1, "@src/main.rs 이거 봐 줘")]);
     }
 
     #[test]

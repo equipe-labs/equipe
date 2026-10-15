@@ -170,12 +170,12 @@ fn a_screen_over_ssh_says_hello_gets_the_snapshot_and_follows_events() {
     assert_eq!(squads.squads[0].projects, vec![home.0.join("proj").canonicalize().unwrap()]);
 
     // An image goes up as base64 and comes back as a path on the daemon's machine.
-    bridge.send(&Message::request(9, rpc::UPLOAD, rpc::Upload { name: "../../shot.PNG".into(), data: "iVBORw0KGgo=".into() }));
+    bridge.send(&Message::request(9, rpc::UPLOAD, rpc::Upload { name: "../../shot.PNG".into(), data: "iVBORw0KGgo=".into(), kind: None }));
     let up = bridge.until(|m| m.id == Some(9)).result_as::<rpc::Uploaded>().expect("an upload path");
     assert_eq!(up.path.parent(), Some(home.equipe().join("uploads").as_path()), "named by equipe, not the screen");
     assert_eq!(up.path.extension().unwrap(), "png");
     assert_eq!(std::fs::read(&up.path).unwrap(), b"\x89PNG\r\n\x1a\n");
-    bridge.send(&Message::request(10, rpc::UPLOAD, rpc::Upload { name: "notes.sh".into(), data: "ZWNobw==".into() }));
+    bridge.send(&Message::request(10, rpc::UPLOAD, rpc::Upload { name: "notes.sh".into(), data: "ZWNobw==".into(), kind: None }));
     assert!(bridge.until(|m| m.id == Some(10)).error.is_some(), "only images");
 
     assert!(bridge.hang_up().success(), "the screen leaving ends the bridge cleanly");

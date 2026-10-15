@@ -64,13 +64,15 @@ impl Commands {
         let _ = self.out.send(Message::command(&command));
     }
 
-    /// Ask the daemon to keep an image (`upload`); the answer, its path on the
-    /// daemon's machine, comes on the returned channel — or it is dropped
-    /// unanswered when the connection ends.
+    /// Ask the daemon to keep a file (`upload`; `kind: None`, an image, as
+    /// before attachments); the answer, its path on the daemon's machine,
+    /// comes on the returned channel — or it is dropped unanswered when the
+    /// connection ends.
     pub fn upload(
         &self,
         name: &str,
         bytes: &[u8],
+        kind: Option<rpc::UploadKind>,
     ) -> std::sync::mpsc::Receiver<Result<PathBuf, String>> {
         use base64::Engine as _;
         let (tx, rx) = std::sync::mpsc::channel();
@@ -78,6 +80,7 @@ impl Commands {
         let params = rpc::Upload {
             name: name.to_owned(),
             data: base64::engine::general_purpose::STANDARD.encode(bytes),
+            kind,
         };
         self.pending.lock().unwrap().insert(id, tx);
         if self

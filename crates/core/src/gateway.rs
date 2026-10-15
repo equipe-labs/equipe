@@ -196,28 +196,55 @@ fn squads(home: &Path) -> rpc::Squads {
     rpc::Squads { squads, last: crate::squads::default_squad(home) }
 }
 
-/// Uploads bigger than this are refused (≈ 30 MB of picture).
+/// An `upload` line carries at most this much (≈ 30 MB of file); bigger
+/// files come over their own channel (`equipe receive`).
 const UPLOAD_MAX: usize = 40 << 20;
+/// What `equipe receive` takes at most.
+pub const RECEIVE_MAX: u64 = 2 << 30;
 /// Uploads older than this are swept when another arrives.
 const UPLOAD_KEEP: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
-const UPLOAD_KINDS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
+const IMAGE_KINDS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
 
-/// Keep an uploaded image under `<home>/uploads` (0600 in a 0700 folder), named
-/// by equipe — never by the screen — so it can't land anywhere else.
-fn save_upload(home: &Path, upload: &rpc::Upload) -> Result<PathBuf, String> {
-    use base64::Engine as _;
-    use std::io::Write as _;
+/// Where uploads are kept on this machine.
+pub fn uploads_dir(home: &Path) -> PathBuf {
+    home.join("uploads")
+}
+
+/// The stem and extension an upload is kept under: the extension lowercased,
+/// the stem reduced to letters, digits, `-` and `_` (no folders, no dots) —
+/// or why `kind` doesn't take that name.
+pub fn upload_name(name: &str, kind: Option<rpc::UploadKind>) -> Result<(String, String), String> {
+    use rpc::UploadKind as K;
+    let path = Path::new(name.rsplit(['/', '\\']).next().unwrap_or(name));
+    let ext: String = path.extension().and_then(|e| e.to_str()).unwrap_or("").chars().filter(char::is_ascii_alphanumeric).take(10).collect::<String>().to_ascii_lowercase();
+    match kind {
+        None | Some(K::Image) if !IMAGE_KINDS.contains(&ext.as_str()) => {
+            return Err(format!("only images can be uploaded ({})", IMAGE_KINDS.join(", ")));
+        }
+        Some(K::Pdf) if ext != "pdf" => return Err("a PDF has to end in .pdf".into()),
+        _ => {}
+    }
+    let mut stem = String::new();
+    for c in path.file_stem().and_then(|s| s.to_str()).unwrap_or("").chars() {
+        let c = if c.is_alphanumeric() || c == '_' { c } else { '-' };
+        if !(c == '-' && (stem.is_empty() || stem.ends_with('-'))) {
+            stem.push(c);
+        }
+        if stem.chars().count() >= 48 {
+            break;
+        }
+    }
+    let stem = stem.trim_end_matches('-').to_owned();
+    Ok((if stem.is_empty() { "upload".into() } else { stem }, ext))
+}
+
+/// A new file under `<home>/uploads` (0600 in a 0700 folder) for `name`,
+/// named by equipe — `<stamp>-<stem>.<ext>`, never a folder of the screen's
+/// choosing — and old uploads swept while there.
+pub fn create_upload(home: &Path, name: &str, kind: Option<rpc::UploadKind>) -> Result<(std::fs::File, PathBuf), String> {
     use std::os::unix::fs::OpenOptionsExt as _;
-
-    let kind = Path::new(&upload.name).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
-    if !UPLOAD_KINDS.contains(&kind.as_str()) {
-        return Err(format!("only images can be uploaded ({})", UPLOAD_KINDS.join(", ")));
-    }
-    if upload.data.len() > UPLOAD_MAX / 3 * 4 + 4 {
-        return Err("the image is too big".into());
-    }
-    let bytes = base64::engine::general_purpose::STANDARD.decode(upload.data.trim()).map_err(|_| "the image isn't base64".to_owned())?;
-    let dir = home.join("uploads");
+    let (stem, ext) = upload_name(name, kind)?;
+    let dir = uploads_dir(home);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     restrict(&dir, 0o700).map_err(|e| e.to_string())?;
     if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -229,18 +256,55 @@ fn save_upload(home: &Path, upload: &rpc::Upload) -> Result<PathBuf, String> {
         }
     }
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+    let dot = if ext.is_empty() { String::new() } else { format!(".{ext}") };
     for n in 0.. {
-        let path = dir.join(format!("upload-{stamp}-{n}.{kind}"));
+        let again = if n == 0 { String::new() } else { format!("-{n}") };
+        let path = dir.join(format!("{stamp}-{stem}{again}{dot}"));
         match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path) {
-            Ok(mut file) => {
-                file.write_all(&bytes).map_err(|e| e.to_string())?;
-                return Ok(path);
-            }
+            Ok(file) => return Ok((file, path)),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e.to_string()),
         }
     }
     unreachable!("some name is free")
+}
+
+/// Keep an `upload` line's file.
+fn save_upload(home: &Path, upload: &rpc::Upload) -> Result<PathBuf, String> {
+    use base64::Engine as _;
+    use std::io::Write as _;
+    upload_name(&upload.name, upload.kind)?;
+    if upload.data.len() > UPLOAD_MAX / 3 * 4 + 4 {
+        return Err("the file is too big to send this way".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(upload.data.trim()).map_err(|_| "the file isn't base64".to_owned())?;
+    let (mut file, path) = create_upload(home, &upload.name, upload.kind)?;
+    if let Err(e) = file.write_all(&bytes) {
+        let _ = std::fs::remove_file(&path);
+        return Err(e.to_string());
+    }
+    Ok(path)
+}
+
+/// Keep exactly `size` bytes read from `from` (`equipe receive`, a big file
+/// streamed over SSH). Anything short of `size` keeps nothing.
+pub fn receive_upload(home: &Path, name: &str, kind: Option<rpc::UploadKind>, size: u64, from: impl io::Read) -> Result<PathBuf, String> {
+    if size > RECEIVE_MAX {
+        return Err(format!("the file is bigger than {} GB", RECEIVE_MAX >> 30));
+    }
+    let (mut file, path) = create_upload(home, name, kind)?;
+    let copied = io::copy(&mut from.take(size), &mut file);
+    match copied {
+        Ok(n) if n == size => Ok(path),
+        Ok(n) => {
+            let _ = std::fs::remove_file(&path);
+            Err(format!("the file ended after {n} of {size} bytes"))
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&path);
+            Err(e.to_string())
+        }
+    }
 }
 
 /// Where a split [`Client`] sends its commands.
@@ -424,4 +488,57 @@ pub async fn version(socket: &Path) -> io::Result<Option<rpc::Version>> {
 /// Whether a daemon answers at `socket`.
 pub async fn is_running(socket: &Path) -> bool {
     UnixStream::connect(socket).await.is_ok()
+}
+
+#[cfg(test)]
+mod upload_tests {
+    use super::*;
+    use rpc::UploadKind as K;
+
+    fn home(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("equipe-uploads-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn names_keep_a_tidy_stem_and_the_extension_and_never_a_folder() {
+        assert_eq!(upload_name("../../Screen Shot 2026.PNG", None), Ok(("Screen-Shot-2026".into(), "png".into())));
+        assert_eq!(upload_name("/etc/기획서 v2.pdf", Some(K::Pdf)), Ok(("기획서-v2".into(), "pdf".into())));
+        assert_eq!(upload_name("..hidden.md", Some(K::File)), Ok(("hidden".into(), "md".into())));
+        assert_eq!(upload_name("Makefile", Some(K::File)), Ok(("Makefile".into(), String::new())));
+        assert_eq!(upload_name("!!!.txt", Some(K::File)), Ok(("upload".into(), "txt".into())));
+        assert!(upload_name("notes.sh", None).is_err(), "without a kind, only images");
+        assert!(upload_name("notes.sh", Some(K::Image)).is_err());
+        assert!(upload_name("x.docx", Some(K::Pdf)).is_err());
+        assert!(upload_name("clip.mov", Some(K::Video)).is_ok());
+    }
+
+    #[test]
+    fn a_line_upload_is_kept_private_under_its_name() {
+        use base64::Engine as _;
+        use std::os::unix::fs::PermissionsExt as _;
+        let home = home("line");
+        let data = base64::engine::general_purpose::STANDARD.encode("# 메모\n");
+        let path = save_upload(&home, &rpc::Upload { name: "회의 메모.md".into(), data, kind: Some(K::File) }).unwrap();
+        assert_eq!(path.parent(), Some(uploads_dir(&home).as_path()));
+        assert!(path.file_name().unwrap().to_str().unwrap().ends_with("-회의-메모.md"), "{path:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# 메모\n");
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        // The same name twice: two files.
+        let again = save_upload(&home, &rpc::Upload { name: "회의 메모.md".into(), data: "AA==".into(), kind: Some(K::File) }).unwrap();
+        assert_ne!(again, path);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_streamed_upload_keeps_exactly_its_size_or_nothing() {
+        let home = home("stream");
+        let path = receive_upload(&home, "clip.mov", Some(K::Video), 5, &b"12345678"[..]).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"12345");
+        assert!(receive_upload(&home, "short.mov", Some(K::Video), 10, &b"123"[..]).is_err());
+        let left: Vec<_> = std::fs::read_dir(uploads_dir(&home)).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left.len(), 1, "the short one leaves nothing behind: {left:?}");
+        std::fs::remove_dir_all(home).unwrap();
+    }
 }

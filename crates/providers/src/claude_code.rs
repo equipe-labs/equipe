@@ -152,6 +152,9 @@ pub fn turn_args(request: &TurnRequest<'_>) -> Vec<String> {
     if let Some(model) = request.model {
         args.extend(["--model".to_owned(), model.to_owned()]);
     }
+    if let Some(effort) = request.effort {
+        args.extend(["--effort".to_owned(), effort.to_owned()]);
+    }
     // Continue the conversation Claude Code already holds, rather than resending it.
     if let Some(id) = request.resume {
         args.extend(["--resume".to_owned(), id.to_owned()]);
@@ -254,6 +257,8 @@ pub struct TurnRequest<'a> {
     pub prompt_tool: Option<&'a str>,
     /// More environment for the turn's process, and so for its commands.
     pub env: &'a [(String, String)],
+    /// How hard the model thinks: `--effort low|medium|high|xhigh|max`; `None`, its default.
+    pub effort: Option<&'a str>,
 }
 
 /// One turn's outcome, with the id that continues the conversation.
@@ -1017,6 +1022,13 @@ mod tests {
     fn passes_the_model_through() {
         let args = turn_args(&TurnRequest { prompt: "x", model: Some("opus"), ..Default::default() });
         assert!(args.windows(2).any(|w| w[0] == "--model" && w[1] == "opus"));
+    }
+
+    #[test]
+    fn passes_the_effort_through_only_when_set() {
+        let args = turn_args(&TurnRequest { prompt: "x", effort: Some("xhigh"), ..Default::default() });
+        assert!(args.windows(2).any(|w| w[0] == "--effort" && w[1] == "xhigh"));
+        assert!(!turn_args(&TurnRequest { prompt: "x", ..Default::default() }).iter().any(|a| a == "--effort"));
     }
 
     #[test]

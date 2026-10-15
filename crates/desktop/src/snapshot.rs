@@ -83,7 +83,42 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 }),
                 "trust" => shell.update(cx, |shell, cx| shell.answer_prompt(crate::askpass::Answer::Yes, window, cx)),
                 "decline" => shell.update(cx, |shell, cx| shell.answer_prompt(crate::askpass::Answer::Cancel, window, cx)),
-                "attach" => shell.update(cx, |shell, cx| shell.attach_sources(vec![crate::attach::Source::File(arg.clone().into())], cx)),
+                "attach" => shell.update(cx, |shell, cx| shell.attach_sources(arg.split(',').map(|p| crate::attach::Source::File(p.into())).collect(), cx)),
+                "menu" => shell.update(cx, |shell, cx| {
+                    use crate::views::composer::MenuKind as K;
+                    let kind = match arg.as_str() {
+                        "model" => K::Model,
+                        "effort" => K::Effort,
+                        "mode" => K::Mode,
+                        "to" => K::To,
+                        "context" => K::Context,
+                        "recent" => K::Recent,
+                        _ => K::Attach,
+                    };
+                    shell.open_menu(kind, window, cx);
+                }),
+                "ckey" => shell.update(cx, |shell, cx| {
+                    let taken = shell.on_composer_key(&arg, &Modifiers::default(), window, cx);
+                    eprintln!("ckey {arg}: taken = {taken}");
+                }),
+                "light" => shell.update(cx, |shell, cx| {
+                    shell.composer.lightbox = shell.composer.strip.items().get(arg.parse::<usize>().unwrap_or(0)).map(|i| i.id);
+                    cx.notify();
+                }),
+                "drag" => shell.update(cx, |shell, cx| {
+                    let paths: Vec<std::path::PathBuf> = arg.split(',').map(Into::into).collect();
+                    shell.drag_moved(&ExternalPaths(paths.into()), cx);
+                    shell.composer.drag_shown = true;
+                    cx.notify();
+                }),
+                "theme" => shell.update(cx, |shell, cx| {
+                    shell.palette = crate::theme::Palette::new(if arg == "light" { WindowAppearance::Light } else { WindowAppearance::Dark });
+                    cx.notify();
+                }),
+                "undrag" => shell.update(cx, |shell, cx| {
+                    shell.composer.drag_shown = false;
+                    cx.notify();
+                }),
                 "paste" => shell.update(cx, |shell, cx| {
                     let taken = cx.read_from_clipboard().is_some_and(|item| shell.paste_item(&item, cx));
                     eprintln!("paste: images taken = {taken}");
