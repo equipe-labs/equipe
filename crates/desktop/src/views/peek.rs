@@ -35,6 +35,7 @@ pub fn panel(shell: &Shell, need: Need, cx: &mut Context<Shell>) -> AnyElement {
             .children(super::approvals::card(shell, id, false, cx))
             .into_any_element(),
         Need::Questions(id) => super::decide::peek(shell, id, cx),
+        Need::Browser(page) => super::browser::need_peek(shell, page, cx),
         Need::Ticket(id) => {
             let Some(t) = shell.model.tickets.iter().find(|t| t.id == id).cloned() else { return div().into_any_element() };
             v_flex()

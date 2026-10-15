@@ -131,6 +131,7 @@
   "notice.allowed": "✓ Du hast erlaubt: {action}",
   "notice.always_allowed": "✓ Du erlaubst {rule} immer für den Squad · {action}",
   "notice.blocked": "✗ equipe hat blockiert: {action}",
+  "notice.browser_check": "🧍 {site} braucht einen Menschen (eine Prüfung oder eine Anmeldung): Der Browser liegt bei dir, seine Browser-Werkzeuge warten, bis du ihn zurückgibst.",
   "notice.browser_given_back": "🖐 Du hast den Browser zurückgegeben.",
   "notice.browser_in_panel": "🖥 Der Browser von {name} öffnet sich in deinem Browser-Panel: {why}",
   "notice.browser_on_screen": "🖥 Der Browser von {name} erscheint auf dem Bildschirm dieses Mac: {why}",

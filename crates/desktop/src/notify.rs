@@ -23,6 +23,9 @@ pub enum Alert {
     Failed { session: SessionId, member: String },
     /// A member puts a decision to the person: `count` questions.
     Decision { session: SessionId, member: String, count: usize },
+    /// A member's browser page waits for the person's own hand (a "verify you
+    /// are human" check, a sign-in): `page`, on `site`.
+    Browser { page: u64, session: Option<SessionId>, member: String, site: String },
 }
 
 /// What the person wants to be told of (settings → 알림), kept with the
@@ -35,7 +38,7 @@ impl Pings {
         match alert {
             Alert::Approval { .. } => self.approvals,
             Alert::Review { .. } => self.reviews,
-            Alert::Waiting { .. } | Alert::Decision { .. } => self.waiting,
+            Alert::Waiting { .. } | Alert::Decision { .. } | Alert::Browser { .. } => self.waiting,
             Alert::Failed { .. } => self.failed,
         }
     }
@@ -49,6 +52,8 @@ pub enum Go {
     /// The ticket, on the board.
     Ticket(TicketId),
     Board,
+    /// The browser panel, on a page waiting for the person, in their hands.
+    Browser(u64),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +108,8 @@ pub fn toasts(alerts: &[Alert], squad: &str, titles: bool) -> Vec<Toast> {
             Alert::Failed { session, member } => Toast { title: t!("notify.failed_title", member = member), body: t!("notify.failed_body", squad = squad), go: Go::Member(*session) },
             // Who asks and how many — never the questions.
             Alert::Decision { session, member, count } => Toast { title: t!("notify.decision_title", member = member, count = count), body: squad.to_owned(), go: Go::Member(*session) },
+            // Who and where — the page itself stays in the panel.
+            Alert::Browser { page, member, site, .. } => Toast { title: t!("notify.browser_title", member = member), body: t!("notify.browser_body", site = site, squad = squad), go: Go::Browser(*page) },
         })
         .collect()
 }
@@ -190,6 +197,16 @@ mod tests {
         assert_eq!(t[0].title, "acme에서 4건이 당신을 기다립니다");
         assert_eq!(t[0].body, "승인 2 · 리뷰 1 · 사람 대기 1");
         assert_eq!(t[0].go, Go::Board);
+    }
+
+    #[test]
+    fn a_page_waiting_for_the_person_says_who_and_where_and_opens_the_panel_on_it() {
+        let t = toasts(&[Alert::Browser { page: 42, session: Some(3), member: "backend".into(), site: "dash.cloudflare.com".into() }], "acme", true);
+        assert_eq!(t[0].title, "backend: 사람 확인이 필요해요");
+        assert_eq!(t[0].body, "dash.cloudflare.com · 브라우저 패널에서 직접 눌러 주세요 · acme");
+        assert_eq!(t[0].go, Go::Browser(42));
+        let pings = Pings::default();
+        assert_eq!(pings.wants(&Alert::Browser { page: 1, session: None, member: String::new(), site: String::new() }), pings.waiting);
     }
 
     #[test]

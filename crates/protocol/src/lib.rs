@@ -721,8 +721,9 @@ pub enum BrowserNavAction {
 }
 
 /// One tab of the shared Chrome. `id` is the browser's own, stable while the
-/// tab is open: what [`crate::stream`] frames and commands name.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// tab is open and never given to another tab — not even by a browser started
+/// again: what [`crate::stream`] frames and commands name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BrowserPage {
     pub id: u64,
     pub url: String,
@@ -730,6 +731,31 @@ pub struct BrowserPage {
     pub title: String,
     #[serde(default)]
     pub loading: bool,
+    /// The page's icon, where the page says it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub favicon: Option<String>,
+    /// Something on the page only a person can do now: a "verify you are
+    /// human" check, a sign-in, a code from their phone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<HumanCheck>,
+    /// The tab's page crashed ("Aw, Snap!"): it shows nothing until reloaded.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub crashed: bool,
+}
+
+/// What a page waits for a person to do — no member can, and no member
+/// decides it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanCheck {
+    /// A whole-page "checking your browser" wall (Cloudflare's "Just a moment…").
+    Challenge,
+    /// A CAPTCHA on the page: Turnstile, reCAPTCHA, hCaptcha.
+    Captcha,
+    /// A sign-in wall: a password to type.
+    SignIn,
+    /// A code from the person's phone or authenticator.
+    TwoFactor,
 }
 
 /// A member, wherever it is: its squad and its name.
@@ -976,6 +1002,10 @@ pub enum Event {
         by: Option<String>,
         #[serde(default)]
         why: Option<String>,
+        /// The daemon put the browser in the person's hands itself: a page
+        /// waits for a person ([`HumanCheck`]). Its member waits meanwhile.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        check: Option<HumanCheck>,
     },
     /// A page asks: `kind` is `alert`, `confirm`, `prompt` or `beforeunload`.
     BrowserDialog {

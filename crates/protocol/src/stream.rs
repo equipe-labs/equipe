@@ -66,14 +66,32 @@ pub struct FrameHeader {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamIn {
     /// Show `page`, about `fps` times a second at most, no bigger than
-    /// `max_w`×`max_h` pixels. Replaces whatever was watched before.
-    Watch { page: u64, fps: u32, max_w: u32, max_h: u32 },
+    /// `max_w`×`max_h` pixels. Replaces whatever was watched before. `fit`:
+    /// the picture's box, for a page the person drives (their own tab, or a
+    /// member's in their hands) to be laid out at — so it fills the box.
+    Watch {
+        page: u64,
+        fps: u32,
+        max_w: u32,
+        max_h: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fit: Option<Fit>,
+    },
     /// Nothing to show (the panel closed or out of sight).
     Unwatch,
     /// `n` frames drawn: that many more may come.
     Credit { n: u32 },
     /// The person's hand on `page`.
     Input { page: u64, ev: InputEvent },
+}
+
+/// The box a page is laid out at: CSS pixels, and device pixels per CSS
+/// pixel (the screen's scale, for crisp text).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Fit {
+    pub w: u32,
+    pub h: u32,
+    pub dpr: f32,
 }
 
 /// Daemon → screen, besides frames.
@@ -346,8 +364,12 @@ mod tests {
         assert_eq!((v["t"].as_str(), v["type"].as_str(), v["vk"].as_u64()), (Some("key"), Some("rawKeyDown"), Some(65)));
         assert!(v.get("text").is_none());
         assert_eq!(v["commands"][0], "selectAll");
-        let watch = serde_json::to_value(StreamIn::Watch { page: 3, fps: 30, max_w: 1200, max_h: 900 }).unwrap();
+        let watch = serde_json::to_value(StreamIn::Watch { page: 3, fps: 30, max_w: 1200, max_h: 900, fit: None }).unwrap();
         assert_eq!(watch["type"], "watch");
+        assert!(watch.get("fit").is_none(), "an older daemon reads it as before");
+        let fitted = StreamIn::Watch { page: 3, fps: 30, max_w: 1200, max_h: 900, fit: Some(Fit { w: 600, h: 450, dpr: 2. }) };
+        let back: StreamIn = serde_json::from_value(serde_json::to_value(&fitted).unwrap()).unwrap();
+        assert_eq!(back, fitted);
     }
 
     #[test]

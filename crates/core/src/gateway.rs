@@ -298,9 +298,14 @@ where
         tokio::select! {
             message = incoming.recv() => match message {
                 None => break,
-                Some(StreamIn::Watch { page, fps, max_w, max_h }) => {
+                Some(StreamIn::Watch { page, fps, max_w, max_h, fit }) => {
                     watching = Some(page);
                     pacer.watch(fps);
+                    // The box it is shown in: a page the person drives is laid out at it.
+                    if let Some(fit) = fit.filter(|f| f.w >= 64 && f.h >= 64) {
+                        let dpr = if fit.dpr.is_finite() { fit.dpr.clamp(1., 4.) } else { 2. };
+                        hub.op(&serde_json::json!({ "op": "fit", "page": page, "w": fit.w.min(4096), "h": fit.h.min(4096), "dpr": dpr }));
+                    }
                     hub.watch(watcher, crate::browser::Want { page, fps: fps.clamp(1, 60), max_w: max_w.clamp(64, 4096), max_h: max_h.clamp(64, 4096), quality });
                 }
                 Some(StreamIn::Unwatch) => {

@@ -8,6 +8,7 @@
 mod askpass;
 mod attach;
 mod board;
+mod browse;
 mod commands;
 mod diffs;
 mod compose;
@@ -388,11 +389,12 @@ impl Shell {
             .model
             .members
             .iter()
-            .map(|m| (m.session, views::browser::Who { name: m.name.clone(), hue: theme::look(&m.role, &m.name).1 }))
+            .map(|m| (m.session, views::browser::Who { name: m.name.clone(), hue: theme::look(&m.role, &m.name).1, working: m.presence == state::Presence::Working }))
             .collect();
         for lane in &self.model.lanes {
             if let Some(member) = who.get(&lane.of).cloned() {
-                who.insert(lane.session, member);
+                let working = lane.presence == state::Presence::Working;
+                who.insert(lane.session, views::browser::Who { working, ..member });
             }
         }
         let (endpoint, squad, viewed, palette, chat) = (self.endpoint.clone(), self.model.squad.clone(), self.model.viewed(), self.palette, self.screen == Screen::Chat);
@@ -500,6 +502,8 @@ impl Shell {
                             // Told the squad first: these come right after the snapshot.
                             this.sync_browser(window, cx);
                             this.browser.update(cx, |b, cx| b.on_event(event, window, cx));
+                            // A page waiting for the person: 나에게, and a notification.
+                            changed |= this.model.on_browser(event);
                             continue;
                         }
                         // Pairing a phone: the sheet's and settings', never the model's.
@@ -537,7 +541,11 @@ impl Shell {
                                 changed = true;
                             }
                             // Back on the line: what a message attached that couldn't be had is asked again.
-                            daemon::Update::Attached(_) => this.chat.sent.borrow_mut().retry_gone(),
+                            daemon::Update::Attached(_) => {
+                                this.chat.sent.borrow_mut().retry_gone();
+                                // The daemon tells its browser's tabs afresh: none held from before.
+                                this.browser.update(cx, |b, cx| b.reattached(window, cx));
+                            }
                             _ => {}
                         }
                         let attached = matches!(update, daemon::Update::Attached(_));
@@ -749,6 +757,7 @@ impl Shell {
             notify::Go::Member(session) => self.select_member(session, window, cx),
             notify::Go::Ticket(ticket) => self.open_ticket(ticket, cx),
             notify::Go::Board => self.show(Screen::Board, cx),
+            notify::Go::Browser(page) => self.reveal_browser(page, cx),
         }
         window.activate_window();
         cx.activate(true);

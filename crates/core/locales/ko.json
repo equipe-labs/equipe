@@ -131,6 +131,7 @@
   "notice.allowed": "✓ 허용함: {action}",
   "notice.always_allowed": "✓ 스쿼드에 {rule}을(를) 항상 허용합니다 · {action}",
   "notice.blocked": "✗ equipe가 막았습니다: {action}",
+  "notice.browser_check": "🧍 {site}에서 사람 확인이 필요해 브라우저를 사람에게 넘겼습니다. 브라우저 도구는 돌려받을 때까지 기다립니다.",
   "notice.browser_given_back": "🖐 브라우저를 돌려줬습니다.",
   "notice.browser_in_panel": "🖥 {name}의 브라우저가 브라우저 패널에 열립니다: {why}",
   "notice.browser_on_screen": "🖥 {name}의 브라우저가 이 Mac 화면에 뜹니다: {why}",

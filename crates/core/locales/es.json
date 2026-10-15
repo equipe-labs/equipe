@@ -131,6 +131,7 @@
   "notice.allowed": "✓ Permitiste: {action}",
   "notice.always_allowed": "✓ Siempre permites {rule} al equipo · {action}",
   "notice.blocked": "✗ equipe lo bloqueó: {action}",
+  "notice.browser_check": "🧍 {site} necesita a una persona (una verificación humana o un inicio de sesión): el navegador está en tus manos y sus herramientas esperan a que lo devuelvas.",
   "notice.browser_given_back": "🖐 Devolviste el navegador.",
   "notice.browser_in_panel": "🖥 El navegador de {name} se abre en tu panel de navegador: {why}",
   "notice.browser_on_screen": "🖥 El navegador de {name} aparece en la pantalla de este Mac: {why}",

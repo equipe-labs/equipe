@@ -131,6 +131,7 @@
   "notice.allowed": "✓ 你允許了：{action}",
   "notice.always_allowed": "✓ 你為小隊始終允許 {rule} · {action}",
   "notice.blocked": "✗ equipe 已阻擋：{action}",
+  "notice.browser_check": "🧍 {site} 需要真人確認，瀏覽器已交給你。瀏覽器工具會等到交還為止。",
   "notice.browser_given_back": "🖐 你交還了瀏覽器。",
   "notice.browser_in_panel": "🖥 {name} 的瀏覽器在瀏覽器面板中開啟：{why}",
   "notice.browser_on_screen": "🖥 {name} 的瀏覽器出現在這台 Mac 的螢幕上：{why}",

@@ -284,6 +284,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         tabs: HashMap::new(),
         asked_in: HashMap::new(),
         held: HashMap::new(),
+        checking: HashMap::new(),
+        let_go: std::collections::HashSet::new(),
         watching: HashMap::new(),
         framing: std::collections::HashSet::new(),
         frame_watchers: HashMap::new(),
@@ -544,6 +546,13 @@ struct Runtime {
     asked_in: HashMap<String, String>,
     /// Lanes in the person's hands, and what their member asked them for.
     held: HashMap<String, Option<String>>,
+    /// Lanes put in the person's hands by equipe itself, for a page that
+    /// waits for a person ([`browser::human_check`]): the page, its address
+    /// then, and what it waits for.
+    checking: HashMap<String, (u64, String, equipe_protocol::HumanCheck)>,
+    /// Pages the person handed back still waiting: not taken from their
+    /// member again (lane, page, address).
+    let_go: std::collections::HashSet<(String, u64, String)>,
     /// The member each squad's screen watches the browser of, and the
     /// pictures under way, one at a time each.
     watching: HashMap<String, SessionId>,
@@ -589,7 +598,8 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                     // And the members' browsers in the person's hands.
                     for (lane, why) in &rt.held {
                         if lane.split_once('/').is_some_and(|(q, _)| q == squad) {
-                            let _ = tx.send(Event::BrowserControl { squad: Some(squad.clone()), lane: lane.clone(), by: Some("person".into()), why: why.clone() });
+                            let check = rt.checking.get(lane).map(|c| c.2);
+                            let _ = tx.send(Event::BrowserControl { squad: Some(squad.clone()), lane: lane.clone(), by: Some("person".into()), why: why.clone(), check });
                         }
                     }
                     rt.subscribers.push((Some(squad.clone()), tx));
@@ -3490,13 +3500,24 @@ there, end your turn, and carry on when they say they're done."
             HostEvent::Ready => {}
             HostEvent::Tabs { lane, member, color, pages, agent, .. } => {
                 let (squad, session) = self.lane_session(&lane);
+                let pages: Vec<equipe_protocol::BrowserPage> = pages.into_iter().map(browser::HostPage::page).collect();
+                self.watch_checks(&lane, session, &pages, agent);
                 let event = Event::BrowserTabs { squad, lane: lane.clone(), session, member, color, pages, agent_page: agent };
                 self.tabs.insert(lane, event.clone());
                 self.publish(event);
             }
-            HostEvent::Control { lane, by } => {
+            HostEvent::Control { lane, by, refused } => {
                 let (squad, session) = self.lane_session(&lane);
                 let asked = if by.is_none() { self.asked_in.remove(&lane) } else { None };
+                // Handed back from a page that waited for them: passed — or, still
+                // waiting, left to the member, and not taken from it again.
+                let checked = if by.is_none() { self.checking.remove(&lane) } else { None };
+                if let Some((page, url, _)) = &checked
+                    && self.waits_for_person(&lane, *page)
+                {
+                    self.let_go.insert((lane.clone(), *page, url.clone()));
+                }
+                let check = self.checking.get(&lane).map(|c| c.2);
                 match &by {
                     Some(_) => {
                         let why = self.asked_in.get(&lane).cloned();
@@ -3506,10 +3527,23 @@ there, end your turn, and carry on when they say they're done."
                         self.held.remove(&lane);
                     }
                 }
-                self.publish(Event::BrowserControl { squad, lane: lane.clone(), by: by.clone(), why: None });
+                self.publish(Event::BrowserControl { squad, lane: lane.clone(), by: by.clone(), why: None, check });
                 let Some(session) = session else { return };
                 let working = self.sessions.get(&session).is_some_and(Session::is_working);
+                // Its tools were turned away at a page that waited for the person,
+                // and its turn ended: it carries on now.
+                if checked.is_some() && asked.is_none() {
+                    if refused && !working {
+                        self.submit(session, "The person handled the page that needed them in your browser (a human check or a sign-in) and handed it back. Carry on where you were.".into()).await;
+                    } else if working {
+                        let text = say!(self, "notice.browser_given_back");
+                        self.publish(Event::Notice { session, text });
+                    }
+                    return;
+                }
                 match (by.is_some(), asked.is_some()) {
+                    // Put in their hands for a page that waits for them: told when it was.
+                    (true, _) if check.is_some() => {}
                     // Only a turn under way needs telling: between turns nothing waits on it.
                     (true, _) if working => {
                         let text = say!(self, "notice.browser_taken");
@@ -3538,8 +3572,41 @@ there, end your turn, and carry on when they say they're done."
                 }
                 self.asked_in.clear();
                 self.held.clear();
+                self.checking.clear();
+                self.let_go.clear();
             }
         }
+    }
+
+    /// A member's page waits for a person — a "verify you are human" check, a
+    /// sign-in, a code from their phone: its browser goes into the person's
+    /// hands (its tools wait, and say why), and the person is told. Passed
+    /// before they put a hand on it, it goes back to its member by itself.
+    fn watch_checks(&mut self, lane: &str, session: Option<SessionId>, pages: &[equipe_protocol::BrowserPage], agent: Option<u64>) {
+        if lane.is_empty() {
+            return;
+        }
+        let let_go = |page: u64, url: &str| self.let_go.contains(&(lane.to_owned(), page, url.to_owned()));
+        match browser::check_step(pages, agent, self.checking.contains_key(lane), self.held.contains_key(lane), let_go) {
+            browser::CheckStep::Pause { page, url, check } => {
+                self.hub.op(&json!({ "op": "control", "lane": lane, "by": "person", "why": "check" }));
+                if let Some(session) = session {
+                    let site = browser::site_of(&url).to_owned();
+                    let text = say!(self, "notice.browser_check", site = site);
+                    self.publish(Event::Notice { session, text });
+                }
+                self.checking.insert(lane.to_owned(), (page, url, check));
+            }
+            browser::CheckStep::Release => {
+                self.hub.op(&json!({ "op": "control", "lane": lane, "by": null, "ifUntouched": true }));
+            }
+            browser::CheckStep::Nothing => {}
+        }
+    }
+
+    /// Whether `page` of `lane` waits for a person, as last told.
+    fn waits_for_person(&self, lane: &str, page: u64) -> bool {
+        matches!(self.tabs.get(lane), Some(Event::BrowserTabs { pages, .. }) if pages.iter().any(|p| p.id == page && p.check.is_some()))
     }
 
     /// A lane's squad and the conversation it is the browser of: `squad/key`;
@@ -3572,7 +3639,7 @@ there, end your turn, and carry on when they say they're done."
         self.asked_in.insert(lane.clone(), why.to_owned());
         self.held.insert(lane.clone(), Some(why.to_owned()));
         let (squad, _) = self.lane_session(&lane);
-        self.publish(Event::BrowserControl { squad, lane, by: Some("person".into()), why: Some(why.to_owned()) });
+        self.publish(Event::BrowserControl { squad, lane, by: Some("person".into()), why: Some(why.to_owned()), check: None });
         true
     }
 

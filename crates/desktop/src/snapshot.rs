@@ -14,7 +14,7 @@
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
 //! `answer:<ticket>,<n>,<words>` / `aok:<ticket>,<n>` / `atick:<ticket>,<n>` / `asend:<ticket>` (a waiting ticket's card: type in box n, its quick OK, tick thing n off, send) ·
 //! `dkey:<key>` (a member's questions' card: `1`–`9`, `up`, `down`, `space`, `enter`, `cmd-enter`, `tab`, `left`, `escape`) · `dtype:<words>` (in its box for the person's own words) · `decided` (open the latest decided row) · `dpick:<id>` (a set in 나에게, peeking) ·
-//! `browser` (the browser panel, ⌘⇧B) · `bpick:<n>` (its nth tab) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
+//! `browser` (the browser panel, ⌘⇧B) · `bpick:<n>` (its nth tab) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 
 use std::time::Duration;
@@ -231,6 +231,13 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     let panel = shell.read(cx).browser.clone();
                     panel.update(cx, |b, cx| b.pick(arg.parse().unwrap_or(1), window, cx));
                 }
+                // The control bar's button: 직접 하기 (`btake`) or 돌려주기 (`bgive`).
+                "btake" | "bgive" => {
+                    let panel = shell.read(cx).browser.clone();
+                    panel.update(cx, |b, cx| b.hand(verb == "btake", window, cx));
+                }
+                // A member's page waiting for the person, opened as 나에게 or a notification would.
+                "breveal" => shell.update(cx, |shell, cx| shell.reveal_browser(arg.parse().unwrap_or(0), cx)),
                 "bclick" => {
                     // A real press and release, where `fx,fy` (fractions) fall on the page's picture.
                     let panel = shell.read(cx).browser.clone();

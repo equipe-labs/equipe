@@ -8,9 +8,19 @@
 // reaches; built without HTML strings or inline <style>, which strict pages
 // (Trusted Types, CSP) refuse. Plain JavaScript: it runs in pages, and equipe
 // writes it into both its browser scripts.
-function driving({ member, color }) {
+// `quiet`: the glow and the label stay hidden — the page is only seen as a
+// picture in equipe's browser panel, which says who drives it itself. The
+// browser host turns it on and off (`__equipeQuiet`) as the window comes on
+// screen and goes.
+function driving({ member, color, quiet }) {
   if (window.top !== window || window.__equipeDriving) return;
   window.__equipeDriving = true;
+  let hush = !!quiet;
+  let shown = [];
+  Object.defineProperty(window, '__equipeQuiet', {
+    value: (q) => { hush = !!q; for (const e of shown) e.style.display = hush ? 'none' : ''; },
+    configurable: false,
+  });
   const mount = () => {
     if (!document.documentElement) return;
     const host = document.createElement('equipe-driving');
@@ -37,8 +47,10 @@ function driving({ member, color }) {
       e.className = cls;
       return root.appendChild(e);
     };
-    el('glow');
+    const glow = el('glow');
     const label = el('label');
+    shown = [glow, label];
+    window.__equipeQuiet(hush);
     const dot = document.createElement('span');
     dot.className = 'dot';
     const who = document.createElement('span');
