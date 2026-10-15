@@ -12,7 +12,7 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::links::{self, chip_label, file_mark, looks_like_path};
+use super::links::{self, looks_like_path};
 use super::raster::{self, Kind};
 use super::view::Look;
 use super::{Open, ShellRef, base_dir, hash_of, open_file, tones, with_shell};
@@ -44,48 +44,73 @@ impl MarkdownPlugin for FileChips {
         looks_like_path(&code.value).then(|| MarkdownNode::new("file-chip", code.value.clone()).text(code.value.clone()).markdown(format!("`{}`", code.value)))
     }
 
-    fn render_inline(&self, node: &MarkdownNode, context: &InlineRenderContext, _: &mut Window, _: &mut App) -> Option<InlineElement> {
+    fn render_inline(&self, node: &MarkdownNode, context: &InlineRenderContext, _: &mut Window, cx: &mut App) -> Option<InlineElement> {
         let text = node.data::<String>()?.clone();
-        let (path, line) = links::path_and_line(&text);
-        let path = PathBuf::from(path);
         let id = ("file-chip", hash_of((&text, node.source_range().map(|r| r.start))));
         let size = context.font_size() * 0.88;
-        Some(InlineElement::new(file_chip(self.p, id, &path, line, &text, size)))
+        let base = cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade()).map(|s| base_dir(s.read(cx))).unwrap_or_default();
+        let openable = exists(&links::resolve(links::path_and_line(&text).0, &base));
+        Some(InlineElement::new(file_chip(self.p, id, &text, openable, size)))
     }
 }
 
-/// A file as a chip: its mark and name; a click looks at it, ⌘-click opens
-/// it, ⌥-click shows it in Finder; the menu also copies its path.
-pub fn file_chip(p: Palette, id: (&'static str, u64), path: &std::path::Path, line: Option<u32>, written: &str, size: Pixels) -> impl IntoElement {
+/// Whether `path` is on this Mac, asked at most every few seconds: a reply
+/// draws its paths every frame.
+fn exists(path: &std::path::Path) -> bool {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+    thread_local! {
+        static SEEN: RefCell<HashMap<PathBuf, (bool, Instant)>> = RefCell::new(HashMap::new());
+    }
+    SEEN.with(|seen| {
+        let mut seen = seen.borrow_mut();
+        if let Some((there, at)) = seen.get(path)
+            && at.elapsed() < Duration::from_secs(5)
+        {
+            return *there;
+        }
+        let there = path.exists();
+        if seen.len() > 512 {
+            seen.clear();
+        }
+        seen.insert(path.to_owned(), (there, Instant::now()));
+        there
+    })
+}
+
+/// A path in a reply, as written, like any inline code: a quiet fill, no
+/// mark. One on this Mac (`openable`) underlines under the pointer — a click
+/// looks at it, ⌘-click opens it, ⌥-click shows it in Finder — and its menu
+/// also copies its path.
+pub fn file_chip(p: Palette, id: (&'static str, u64), written: &str, openable: bool, size: Pixels) -> impl IntoElement + use<> {
+    let label = written.to_owned();
     let written = written.to_owned();
     let resolve = move |cx: &mut App| -> PathBuf {
         let base = cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade()).map(|s| base_dir(s.read(cx))).unwrap_or_default();
         links::resolve(links::path_and_line(&written).0, &base)
     };
     let (click, locate) = (resolve.clone(), resolve);
-    h_flex()
+    let accent = p.accent;
+    div()
         .id(id)
-        .gap(px(4.))
-        .px(px(5.))
-        .rounded(px(5.))
+        .px(px(4.))
+        .rounded(px(4.))
         .bg(p.code_bg)
-        .border_1()
-        .border_color(p.hair)
         .text_size(size)
         .font_family(MONO)
-        .text_color(p.text2)
-        .cursor_pointer()
-        .hover(move |s| s.bg(p.wash).text_color(p.text))
-        .child(div().text_color(p.muted).child(file_mark(path)))
-        .child(chip_label(path, line))
-        .on_click(move |event, _, cx| {
-            let how = match event.modifiers() {
-                m if m.platform => Open::Edit,
-                m if m.alt => Open::Reveal,
-                _ => Open::Look,
-            };
-            let path = click(cx);
-            open_file(&path, how, cx);
+        .text_color(p.accent)
+        .child(label)
+        .when(openable, |chip| {
+            chip.cursor_pointer().hover(move |s| s.underline().text_decoration_color(accent)).on_click(move |event, _, cx| {
+                let how = match event.modifiers() {
+                    m if m.platform => Open::Edit,
+                    m if m.alt => Open::Reveal,
+                    _ => Open::Look,
+                };
+                let path = click(cx);
+                open_file(&path, how, cx);
+            })
         })
         .context_menu(move |menu, _, _| {
             let item = |label: &'static str, how: Option<Open>| {

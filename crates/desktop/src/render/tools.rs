@@ -1,13 +1,7 @@
-//! A tool step's outcome as the conversation shows it: an edit's change cut
-//! to a card, a command's output to its last lines, a duration in a word. No
-//! UI types here.
+//! A tool step's outcome as the conversation shows it: an edit's change as
+//! a card, a duration in a word. No UI types here.
 
 use crate::diffs::{self, Kind, Line};
-
-/// Lines of a command's output shown before it is opened.
-pub const OUTPUT_PREVIEW: usize = 4;
-/// Lines of an edit's change shown on its card before it is opened.
-pub const DIFF_PREVIEW: usize = 8;
 
 /// An edit's change, ready for its card: the file, how many lines came and
 /// went, and the lines to show.
@@ -18,19 +12,6 @@ pub struct DiffCard {
     pub removed: usize,
     /// The change's lines, hunk headers between hunks (not before the first).
     pub lines: Vec<Line>,
-}
-
-impl DiffCard {
-    /// The lines shown closed: the first hunk's start.
-    pub fn preview(&self) -> &[Line] {
-        let first_hunk_end = self.lines.iter().position(|l| l.kind == Kind::Hunk).unwrap_or(self.lines.len());
-        &self.lines[..first_hunk_end.min(DIFF_PREVIEW)]
-    }
-
-    /// How many lines opening the card adds.
-    pub fn hidden(&self) -> usize {
-        self.lines.len() - self.preview().len()
-    }
 }
 
 /// The card for a unified diff of one file (the first, if it has more).
@@ -63,14 +44,6 @@ fn trim_context(lines: Vec<Line>, keep: usize) -> Vec<Line> {
         .collect()
 }
 
-/// A command's output closed: its last lines, and how many come before them
-/// (counting those the daemon already left out).
-pub fn output_preview(output: &str, skipped: u32) -> (Vec<&str>, usize) {
-    let lines: Vec<&str> = output.lines().collect();
-    let from = lines.len().saturating_sub(OUTPUT_PREVIEW);
-    (lines[from..].to_vec(), from + skipped as usize)
-}
-
 /// `0.4s`, `12s`, `1m 05s`.
 pub fn duration(ms: u64) -> String {
     if ms < 1000 {
@@ -88,23 +61,16 @@ mod tests {
     const DIFF: &str = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,9 +1,9 @@\n one\n two\n three\n four\n-five\n+FIVE\n+five and a half\n six\n seven\n eight\n@@ -40,2 +41,2 @@\n-x\n+y\n";
 
     #[test]
-    fn a_card_counts_the_change_and_shows_the_first_hunk() {
+    fn a_card_counts_the_change_and_keeps_context_near_it() {
         let card = diff_card(DIFF).unwrap();
         assert_eq!((card.path.as_str(), card.added, card.removed), ("src/a.rs", 3, 2));
-        let text = |lines: &[Line]| lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>();
-        // Two lines of context around the change, not the far ones.
-        assert_eq!(text(card.preview()), ["three", "four", "five", "FIVE", "five and a half", "six", "seven", "eight"]);
-        assert_eq!(card.hidden(), 3, "the second hunk: its header and two lines");
-        assert_eq!(card.preview()[2].kind, Kind::Del);
+        let text: Vec<String> = card.lines.iter().map(|l| l.text.clone()).collect();
+        // Two lines of context around the change, not the far ones; the second hunk after its header.
+        assert_eq!(text[..8], ["three", "four", "five", "FIVE", "five and a half", "six", "seven", "eight"]);
+        assert_eq!(card.lines[8].kind, Kind::Hunk);
+        assert_eq!(card.lines.len(), 11);
+        assert_eq!(card.lines[2].kind, Kind::Del);
         assert!(diff_card("not a diff").is_none());
-    }
-
-    #[test]
-    fn output_shows_its_end() {
-        let (lines, before) = output_preview("a\nb\nc\nd\ne\nf", 10);
-        assert_eq!(lines, ["c", "d", "e", "f"]);
-        assert_eq!(before, 12);
-        assert_eq!(output_preview("only", 0), (vec!["only"], 0));
     }
 
     #[test]

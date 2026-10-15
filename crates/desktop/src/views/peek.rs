@@ -55,6 +55,13 @@ pub fn panel(shell: &Shell, need: Need, cx: &mut Context<Shell>) -> AnyElement {
     }
 }
 
+/// A ticket beside the conversation (a `T-n` in a row was clicked): what the
+/// peek shows of it, to read; answering it is the board's (its ⤢).
+pub fn side(shell: &Shell, id: TicketId, cx: &mut Context<Shell>) -> AnyElement {
+    let Some(t) = shell.model.tickets.iter().find(|t| t.id == id).cloned() else { return div().into_any_element() };
+    v_flex().id(("side-peek", id as u64)).size_full().overflow_y_scroll().p_4().gap_4().child(head(shell, &t, false, cx)).children(body(shell, &t, false, cx)).into_any_element()
+}
+
 /// The ticket as a page: its head, the tabs, and the tab's content.
 pub fn page(shell: &Shell, t: &Ticket, tab: Tab, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
