@@ -643,6 +643,7 @@ fn ticket(status: TicketStatus) -> Ticket {
         merged: None,
         created_by: "pm".into(),
         note: None,
+        asks: vec![],
     }
 }
 

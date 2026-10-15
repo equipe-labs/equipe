@@ -112,7 +112,8 @@
   "app.suggest_off": "No more guesses at your next message · /suggest on brings them back",
   "app.suggest_on": "After a member answers you, your likely next message waits greyed in the composer — → takes it, typing ignores it",
   "app.ticket_ready": "T-{id} to review · on the board a accepts, r asks for changes · /accept T-{id}",
-  "app.ticket_waits": "T-{id} your turn: {needs} · a on the board carries on · /resume T-{id}",
+  "app.ticket_waits.one": "T-{id} your turn — {name} asks you {count} thing · /resume T-{id}",
+  "app.ticket_waits.other": "T-{id} your turn — {name} asks you {count} things · /resume T-{id}",
   "app.unknown_command": "Unknown command /{name} — /help lists them.",
   "app.waiting_for_review": "review",
   "app.waiting_on_you": "your turn",
@@ -776,5 +777,7 @@
   "view.working": "working",
   "view.working_in": "in {place}",
   "view.write_goes_to_pm": "What you write goes to the PM, about T-{id}.",
-  "view.writes": "writes {files}"
+  "view.writes": "writes {files}",
+  "view.your_turn_answer": "Answer with /resume T-{id} and your answers, or a on the board",
+  "view.your_turn_heading": "Your turn · T-{id} · {title}"
 }

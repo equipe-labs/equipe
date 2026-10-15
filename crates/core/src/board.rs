@@ -236,7 +236,9 @@ have done it. Your changes so far are kept. Then end your turn.",
                     "needs": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Each thing the person has to do, one per item, concrete enough to do without asking — in the person's language.",
+                        "description": "Each thing the person has to do or answer, one per item — never several joined into one. \
+Each a complete sentence that stands on its own, concrete enough to do without asking; a file or folder named by its path in \
+backticks (`outputs/T-12/shots/`). In the person's language.",
                     },
                     "why": { "type": "string", "description": "What it is for, in one line — in the person's language." },
                 },
@@ -359,19 +361,12 @@ once they have done what it needed. Work in progress and done work are the perso
 
 /// What a `waiting` ticket's note says: the person's checklist, and why.
 pub fn waiting_note(needs: &[String], why: Option<&str>) -> String {
-    let mut out = String::from("Waiting on you:");
-    for need in needs {
-        out.push_str(&format!("\n- [ ] {need}"));
-    }
-    if let Some(why) = why {
-        out.push_str(&format!("\n({why})"));
-    }
-    out
+    crate::protocol::asks::waiting_note(needs, why)
 }
 
 /// What a `waiting` ticket's note asks of the person, item by item.
-pub fn waiting_needs(note: &str) -> Vec<&str> {
-    note.lines().filter_map(|l| l.trim().strip_prefix("- [ ] ")).map(str::trim).collect()
+pub fn waiting_needs(note: &str) -> Vec<String> {
+    crate::protocol::asks::waiting_needs(note)
 }
 
 /// A list of strings, blanks dropped; a single string counts as one item.
@@ -437,6 +432,7 @@ mod tests {
             merged: None,
             created_by: "pm".into(),
             note: None,
+            asks: vec![],
             kind: TicketKind::Code,
         }
     }

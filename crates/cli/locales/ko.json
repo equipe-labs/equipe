@@ -112,7 +112,7 @@
   "app.suggest_off": "다음 메시지를 더 추측하지 않아요 · /suggest on으로 다시 켜요",
   "app.suggest_on": "멤버가 답하면 다음에 보낼 법한 메시지가 입력창에 흐리게 떠요 — →로 받고, 그냥 입력하면 무시돼요",
   "app.ticket_ready": "T-{id} 검토 · 보드에서 a 수락, r 변경 요청 · /accept T-{id}",
-  "app.ticket_waits": "T-{id} 내 차례: {needs} · 보드에서 a로 이어서 · /resume T-{id}",
+  "app.ticket_waits.other": "T-{id} 내 차례 — {name}이(가) {count}가지를 묻습니다 · /resume T-{id}",
   "app.unknown_command": "모르는 명령 /{name} — /help에서 목록을 봐요.",
   "app.waiting_for_review": "검토",
   "app.waiting_on_you": "내 차례",
@@ -774,5 +774,7 @@
   "view.working": "작업 중",
   "view.working_in": "{place}에서",
   "view.write_goes_to_pm": "여기에 쓰는 글은 T-{id}에 관해 PM에게 가요.",
-  "view.writes": "쓰기: {files}"
+  "view.writes": "쓰기: {files}",
+  "view.your_turn_answer": "답하기: /resume T-{id} 뒤에 답을 적거나, 보드에서 a",
+  "view.your_turn_heading": "내 차례 · T-{id} · {title}"
 }

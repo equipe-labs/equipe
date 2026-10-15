@@ -112,7 +112,7 @@
   "app.suggest_off": "次のメッセージの予測をやめます · /suggest on で再開",
   "app.suggest_on": "メンバーが返答すると、次に送りそうなメッセージが入力欄にグレーで表示されます — → で採用、入力すれば無視されます",
   "app.ticket_ready": "T-{id}をレビュー · ボードで a 承認、r 修正依頼 · /accept T-{id}",
-  "app.ticket_waits": "T-{id}はあなたの番: {needs} · ボードで a で続行 · /resume T-{id}",
+  "app.ticket_waits.other": "T-{id}はあなたの番 — {name} から {count} 件の確認 · /resume T-{id}",
   "app.unknown_command": "不明なコマンド /{name} — /help で一覧を表示します。",
   "app.waiting_for_review": "レビュー",
   "app.waiting_on_you": "あなたの番",
@@ -774,5 +774,7 @@
   "view.working": "作業中",
   "view.working_in": "{place}で",
   "view.write_goes_to_pm": "ここに書いた内容はT-{id}についてPMに送られます。",
-  "view.writes": "書き込み {files}"
+  "view.writes": "書き込み {files}",
+  "view.your_turn_answer": "回答: /resume T-{id} に続けて答えを書くか、ボードで a",
+  "view.your_turn_heading": "あなたの番 · T-{id} · {title}"
 }

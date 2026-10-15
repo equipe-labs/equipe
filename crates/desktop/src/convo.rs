@@ -531,6 +531,11 @@ pub enum Block {
     Steps(Vec<ToolLine>),
     /// equipe's news, one after another.
     News(Vec<News>),
+    /// A ticket put down for the person: the card they answer it on
+    /// (`crate::yourturn`). `news` is the line it came as; `live`, whether it
+    /// is the ticket's latest in this conversation (an earlier one is past);
+    /// `look`, what the card shows now, so a change draws it again.
+    YourTurn { ticket: u32, news: String, live: bool, look: u64 },
     Note(String),
     /// A turn's end with no reply to end it.
     Worked(Worked),
@@ -557,6 +562,7 @@ impl Block {
             Block::User(t) | Block::Memo(t) | Block::Steering(t) => Some(crate::sent::parts(t).text),
             Block::Reply { text: t, .. } | Block::Note(t) => Some(t.clone()),
             Block::News(lines) => Some(lines.iter().map(|n| n.text.clone()).collect::<Vec<_>>().join("\n")),
+            Block::YourTurn { news, .. } => Some(news.clone()),
             Block::Worked(_) => None,
             Block::Steps(lines) => Some(lines.iter().map(|l| format!("{} {}", verb_word(&l.verb), l.targets.join(" "))).collect::<Vec<_>>().join("\n")),
             Block::Error { message, .. } => Some(message.clone()),
@@ -673,6 +679,12 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
                     _ => blocks.push(Block::Worked(worked)),
                 },
                 (None, None) => match crate::activity::news_of(text) {
+                    // A ticket waiting for the person: their card, not a line.
+                    Some(news) if news.kind == crate::activity::NewsKind::Waiting && ticket_ref(&news.text).is_some() => {
+                        let (at, len) = ticket_ref(&news.text).unwrap_or_default();
+                        let ticket = news.text[at + 2..at + len].parse().unwrap_or_default();
+                        blocks.push(Block::YourTurn { ticket, news: news.text, live: false, look: 0 });
+                    }
                     Some(news) => match blocks.last_mut() {
                         Some(Block::News(run)) => run.push(news),
                         _ => blocks.push(Block::News(vec![news])),
@@ -886,6 +898,25 @@ mod tests {
         assert_eq!(run.iter().map(|n| n.kind).collect::<Vec<_>>(), [crate::activity::NewsKind::HandedIn, crate::activity::NewsKind::Accepted]);
         assert_eq!(blocks[1], Block::Note("plain".into()));
         assert!(matches!(&blocks[2], Block::News(run) if run.len() == 1));
+    }
+
+    #[test]
+    fn a_ticket_waiting_for_the_person_is_a_card_not_a_news_line() {
+        let mut c = convo(true);
+        feed(
+            &mut c,
+            &[
+                Event::Notice { session: 1, text: "You accepted T-58 · 헤더.".into() },
+                Event::Notice { session: 1, text: "T-117 waits for you — ios needs something only you can do · 앱스토어 제출.".into() },
+                Event::Notice { session: 1, text: "You accepted T-59 · 푸터.".into() },
+            ],
+        );
+        let blocks = c.blocks();
+        assert!(matches!(&blocks[0], Block::News(run) if run.len() == 1), "{blocks:?}");
+        let Block::YourTurn { ticket, news, live, .. } = &blocks[1] else { panic!("{blocks:?}") };
+        assert_eq!((*ticket, *live), (117, false));
+        assert!(news.contains("T-117") && news.contains("앱스토어 제출"), "{news}");
+        assert!(matches!(&blocks[2], Block::News(_)), "the news after it starts a run of its own");
     }
 
     #[test]

@@ -457,7 +457,7 @@ impl Shell {
                         }
                     }
                 } else if t.status == TicketStatus::Waiting {
-                    let note = self.done_note(&t);
+                    let note = self.done_note(&t, cx);
                     self.land_with(&t, None, &note, cx);
                 } else if matches!(t.status, TicketStatus::Review | TicketStatus::Proposed) {
                     self.land(&t, None, cx);
@@ -487,7 +487,11 @@ impl Shell {
     }
 
     /// What a waiting ticket's "done" says: the lines ticked off.
-    fn done_note(&self, t: &Ticket) -> String {
+    fn done_note(&self, t: &Ticket, cx: &App) -> String {
+        // Its card's answers, numbered as asked, and the things ticked off.
+        if !t.asks().is_empty() {
+            return self.turn_message(t, cx);
+        }
         let items = t.note.as_deref().map(board::checklist).unwrap_or_default();
         let ticked = self.board.ticked.get(&t.id);
         items.iter().enumerate().filter(|(i, _)| ticked.is_some_and(|s| s.contains(i))).map(|(_, l)| format!("✓ {l}")).collect::<Vec<_>>().join("\n")
@@ -523,6 +527,10 @@ impl Shell {
             return;
         }
         let project = self.project_of(t);
+        // Its card in the conversation says it is answered (until taken back).
+        if t.status == TicketStatus::Waiting {
+            self.model.answer_sent(t.id, note.to_owned());
+        }
         let text = match t.status {
             TicketStatus::Waiting => t!("board.toast_resume", id = t.id),
             TicketStatus::Proposed => t!("board.toast_proposal", id = t.id),
@@ -564,6 +572,10 @@ impl Shell {
     pub fn board_undo(&mut self, cx: &mut Context<Self>) {
         if let Some(p) = self.board.undo.undo() {
             self.model.unact(p.ticket);
+            if self.model.answers.get(&p.ticket).is_some_and(|a| a.here && !a.settled) {
+                self.model.answers.remove(&p.ticket);
+                self.model.revision += 1;
+            }
             self.board.view.selected = Some(Need::Ticket(p.ticket));
             self.say(t!("board.undone", id = p.ticket));
             self.board_changed(cx);
@@ -685,6 +697,13 @@ impl Shell {
         if self.picked_need().is_some_and(|n| matches!(n, Need::Permission(_))) {
             return;
         }
+        // A wait's card has its own boxes: R goes to the first.
+        if t.status == TicketStatus::Waiting && !t.asks().is_empty() {
+            let id = t.id;
+            self.board.view.peek = true;
+            self.turn_focus(id, window, cx);
+            return;
+        }
         self.board.view.peek = true;
         self.board.flow = Some(Flow::Reply(t.id));
         self.board.reply.update(cx, |s, cx| {
@@ -716,7 +735,7 @@ impl Shell {
                 self.hold(id, t!("board.toast_send_back", id = id), vec![Command::Reopen { squad, ticket: id, note }], cx);
             }
             TicketStatus::Waiting => {
-                let done = self.done_note(&t);
+                let done = self.done_note(&t, cx);
                 let note = [done, note].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
                 self.hold(id, t!("board.toast_resume", id = id), vec![Command::Resume { squad, ticket: id, note }], cx);
             }

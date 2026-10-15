@@ -112,7 +112,8 @@
   "app.suggest_off": "No más sugerencias de tu próximo mensaje · /suggest on las reactiva",
   "app.suggest_on": "Cuando un miembro te responda, tu probable próximo mensaje espera en gris en el cuadro de texto — → lo toma, escribir lo ignora",
   "app.ticket_ready": "T-{id} por revisar · en el tablero a acepta, r pide cambios · /accept T-{id}",
-  "app.ticket_waits": "T-{id} tu turno: {needs} · a en el tablero continúa · /resume T-{id}",
+  "app.ticket_waits.one": "T-{id} tu turno — {name} te pide {count} cosa · /resume T-{id}",
+  "app.ticket_waits.other": "T-{id} tu turno — {name} te pide {count} cosas · /resume T-{id}",
   "app.unknown_command": "Comando desconocido /{name} — /help los lista.",
   "app.waiting_for_review": "revisión",
   "app.waiting_on_you": "tu turno",
@@ -776,5 +777,7 @@
   "view.working": "trabajando",
   "view.working_in": "en {place}",
   "view.write_goes_to_pm": "Lo que escribas va al PM, sobre T-{id}.",
-  "view.writes": "escribe {files}"
+  "view.writes": "escribe {files}",
+  "view.your_turn_answer": "Responder: /resume T-{id} con tus respuestas, o a en el tablero",
+  "view.your_turn_heading": "Tu turno · T-{id} · {title}"
 }

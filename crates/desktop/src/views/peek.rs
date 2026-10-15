@@ -15,6 +15,7 @@ use gpui_kit::*;
 use super::board::{Flow, btn, dot, hue_of, kbd, live_activity, member_color};
 use super::icons;
 use crate::board::{self as rules, MergeWay, Tab};
+use super::yourturn::Place;
 use crate::convo::Block;
 use crate::state::{Need, local_hm, short_span, status_word};
 use crate::theme::{MONO, Palette, SMALL, look};
@@ -47,7 +48,7 @@ pub fn panel(shell: &Shell, need: Need, cx: &mut Context<Shell>) -> AnyElement {
                         .p_4()
                         .gap_4()
                         .child(head(shell, &t, false, cx))
-                        .children(body(shell, &t, false, cx)),
+                        .children(body(shell, &t, false, Place::Peek, cx)),
                 )
                 .child(foot(shell, &t, cx))
                 .into_any_element()
@@ -59,7 +60,7 @@ pub fn panel(shell: &Shell, need: Need, cx: &mut Context<Shell>) -> AnyElement {
 /// peek shows of it, to read; answering it is the board's (its ⤢).
 pub fn side(shell: &Shell, id: TicketId, cx: &mut Context<Shell>) -> AnyElement {
     let Some(t) = shell.model.tickets.iter().find(|t| t.id == id).cloned() else { return div().into_any_element() };
-    v_flex().id(("side-peek", id as u64)).size_full().overflow_y_scroll().p_4().gap_4().child(head(shell, &t, false, cx)).children(body(shell, &t, false, cx)).into_any_element()
+    v_flex().id(("side-peek", id as u64)).size_full().overflow_y_scroll().p_4().gap_4().child(head(shell, &t, false, cx)).children(body(shell, &t, false, Place::Side, cx)).into_any_element()
 }
 
 /// The ticket as a page: its head, the tabs, and the tab's content.
@@ -86,7 +87,7 @@ pub fn page(shell: &Shell, t: &Ticket, tab: Tab, cx: &mut Context<Shell>) -> imp
             .child(label)
     };
     let content: Vec<AnyElement> = match tab {
-        Tab::Overview => body(shell, t, true, cx),
+        Tab::Overview => body(shell, t, true, Place::Peek, cx),
         Tab::Changes => changes(shell, t, true, cx).into_iter().collect(),
         Tab::Activity => vec![activity(shell, t.id, 40)],
     };
@@ -171,8 +172,9 @@ fn head(shell: &Shell, t: &Ticket, wide: bool, cx: &mut Context<Shell>) -> AnyEl
         .into_any_element()
 }
 
-/// The body, by what the ticket asks.
-fn body(shell: &Shell, t: &Ticket, wide: bool, cx: &mut Context<Shell>) -> Vec<AnyElement> {
+/// The body, by what the ticket asks. A wait's asks are the card they are
+/// answered on (beside the conversation, to read: its card is in it).
+fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Shell>) -> Vec<AnyElement> {
     let p = shell.palette;
     let model = &shell.model;
     let handle = cx.entity().downgrade();
@@ -180,40 +182,16 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, cx: &mut Context<Shell>) -> Vec<A
     let md = |key: &'static str, text: &str| super::chat::markdown(p, (key, t.id as u64), text, 14., 22., p.text2, &handle).into_any_element();
     match t.status {
         TicketStatus::Waiting => {
-            let items = t.note.as_deref().map(rules::checklist).unwrap_or_default();
-            let ticked = shell.board.ticked.get(&t.id).cloned().unwrap_or_default();
-            if !items.is_empty() {
-                out.push(
-                    v_flex()
-                        .gap_1()
-                        .child(kicker(p, t!("peek.your_part")))
-                        .children(items.iter().enumerate().map(|(i, item)| {
-                            let on = ticked.contains(&i);
-                            let id = t.id;
-                            h_flex()
-                                .id(("todo", i))
-                                .min_h(px(30.))
-                                .px_2()
-                                .gap_3()
-                                .items_center()
-                                .rounded(px(6.))
-                                .cursor_pointer()
-                                .hover(move |s| s.bg(p.wash))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    let set = this.board.ticked.entry(id).or_default();
-                                    if !set.remove(&i) {
-                                        set.insert(i);
-                                    }
-                                    cx.notify();
-                                }))
-                                .child(div().size(px(15.)).flex_none().flex().items_center().justify_center().rounded(px(4.)).border_1().border_color(if on { p.accent } else { p.muted }).when(on, |d| d.bg(p.accent).text_color(p.on_primary).text_size(px(10.)).child("✓")))
-                                .child(div().flex_1().min_w_0().text_size(px(14.)).text_color(if on { p.muted } else { p.text }).when(on, |d| d.line_through()).child(item.clone()))
-                                .children((i < 9).then(|| kbd(p, ["1", "2", "3", "4", "5", "6", "7", "8", "9"][i])))
-                        }))
-                        .into_any_element(),
-                );
-            } else if let Some(note) = t.note.as_deref().filter(|n| !n.trim().is_empty()) {
-                out.push(md("peek-note", note));
+            match super::yourturn::Card::of(shell, t.id, cx).filter(|c| !c.asks.is_empty()) {
+                Some(card) => {
+                    let draw = super::yourturn::Draw { p, tones: crate::render::tones(&p), handle: handle.clone(), key: crate::render::hash_of(("peek-turn", t.id, place == Place::Side)), open: false, place, window: None };
+                    out.push(v_flex().gap_2().child(kicker(p, t!("peek.your_part"))).child(super::yourturn::card(&card, draw, cx)).into_any_element());
+                }
+                None => {
+                    if let Some(note) = t.note.as_deref().filter(|n| !n.trim().is_empty()) {
+                        out.push(md("peek-note", note));
+                    }
+                }
             }
             if !t.body.trim().is_empty() {
                 out.push(v_flex().gap_1().child(kicker(p, t!("peek.the_work"))).child(md("peek-body", &t.body)).into_any_element());
@@ -420,6 +398,8 @@ fn foot(shell: &Shell, t: &Ticket, cx: &mut Context<Shell>) -> AnyElement {
             add(btn(p, "p-yes", label, Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_yes(cx))));
             add(btn(p, "p-reply", t!("peek.request_changes"), Some("R"), false, can).on_click(cx.listener(|this, _, w, cx| this.board_open_reply(w, cx))));
         }
+        // A wait is answered on its card, above: A sends it, R goes to its first box.
+        TicketStatus::Waiting if !t.asks().is_empty() => {}
         TicketStatus::Waiting => {
             add(btn(p, "p-yes", t!("peek.did_it"), Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_yes(cx))));
             add(btn(p, "p-reply", t!("peek.memo_and_go"), Some("R"), false, can).on_click(cx.listener(|this, _, w, cx| this.board_open_reply(w, cx))));

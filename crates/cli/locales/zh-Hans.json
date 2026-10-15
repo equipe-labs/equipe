@@ -112,7 +112,7 @@
   "app.suggest_off": "不再猜测你的下一条消息 · /suggest on 可恢复",
   "app.suggest_on": "成员回复后，你可能要发的下一条消息会以灰色显示在输入框中 — 按 → 采用，直接输入则忽略",
   "app.ticket_ready": "T-{id} 待审查 · 在看板上 a 接受，r 请求修改 · /accept T-{id}",
-  "app.ticket_waits": "T-{id} 轮到你：{needs} · 在看板上按 a 继续 · /resume T-{id}",
+  "app.ticket_waits.other": "T-{id} 轮到你 — {name} 有 {count} 件事要问你 · /resume T-{id}",
   "app.unknown_command": "未知命令 /{name} — /help 查看列表。",
   "app.waiting_for_review": "待审查",
   "app.waiting_on_you": "轮到你",
@@ -774,5 +774,7 @@
   "view.working": "工作中",
   "view.working_in": "在 {place}",
   "view.write_goes_to_pm": "你写的内容会发给 PM，关于 T-{id}。",
-  "view.writes": "写入 {files}"
+  "view.writes": "写入 {files}",
+  "view.your_turn_answer": "回答：在 /resume T-{id} 后写下答案，或在看板上按 a",
+  "view.your_turn_heading": "轮到你 · T-{id} · {title}"
 }

@@ -12,6 +12,7 @@
 //! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in points) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `settings[:<category>]` (settings, at general · squad · team · permissions · projects · browser · keys · about) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
 //! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
+//! `answer:<ticket>,<n>,<words>` / `aok:<ticket>,<n>` / `atick:<ticket>,<n>` / `asend:<ticket>` (a waiting ticket's card: type in box n, its quick OK, tick thing n off, send) ·
 //! `browser` (the browser panel, ⌘⇧B) · `bpick:<n>` (its nth tab) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 
@@ -190,6 +191,21 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     shell.chat_turn(ix.parse().unwrap_or(0), call, cx);
                 }),
                 "side" => shell.update(cx, |shell, cx| shell.side_open(arg.parse().unwrap_or(0), cx)),
+                // A waiting ticket's card: `answer:117,1,words` types in its first box,
+                // `aok:117,3` presses the quick OK, `atick:55,1` ticks a thing off,
+                // `asend:117` sends it.
+                "answer" | "aok" | "atick" | "asend" => shell.update(cx, |shell, cx| {
+                    let mut parts = arg.splitn(3, ',');
+                    let ticket: u32 = parts.next().and_then(|t| t.parse().ok()).unwrap_or(0);
+                    let n: usize = parts.next().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).saturating_sub(1);
+                    let words = parts.next().unwrap_or_default().to_owned();
+                    match verb.as_str() {
+                        "answer" => shell.turn_say(ticket, n, &words, window, cx),
+                        "aok" => shell.turn_say(ticket, n, equipe_core::t!("turn.ok"), window, cx),
+                        "atick" => shell.turn_tick(ticket, n, cx),
+                        _ => shell.turn_send(ticket, window, cx),
+                    }
+                }),
                 "browser" => shell.update(cx, |shell, cx| shell.toggle_browser(window, cx)),
                 "bopen" => {
                     let panel = shell.read(cx).browser.clone();
