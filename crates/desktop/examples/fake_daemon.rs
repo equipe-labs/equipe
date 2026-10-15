@@ -13,7 +13,8 @@
 //! cargo run -p equipe-desktop --example fake_daemon &
 //! cargo run -p equipe-desktop
 //! ```
-//! `FAKE_SECONDS` (default 4) is how long a reply streams.
+//! `FAKE_SECONDS` (default 4) is how long a reply streams; `FAKE_SAID` adds a
+//! last message of the person's to the PM's history (attachment tags and all).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -286,6 +287,10 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             Entry::Tool { tool: "Edit".into(), target: Some("/tmp/fake/site/a.rs".into()), outcome: None },
                             Entry::Reply { text: "고쳤습니다.".into() },
                         ];
+                        // `FAKE_SAID`: one more message of the person's, last — as one with
+                        // attachment tags comes back after a restart.
+                        let mut history = history;
+                        history.extend(std::env::var("FAKE_SAID").ok().filter(|s| !s.is_empty()).map(|text| Entry::User { text }));
                         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
                         let frontend = on(info(2, "frontend", vec![]), 47, "web", "상품 상세 페이지 이미지 갤러리", true, ("Edit", "src/gallery.tsx"), Some(Estimate { done_at: Some(now + 25 * 60), ..Default::default() }));
                         let backend = on(info(3, "backend", vec![]), 70, "api", "주문 API 페이지네이션", true, ("Bash", "cargo test -p api"), Some(Estimate { done_at: Some(now + 50 * 60), guessed: true, ..Default::default() }));
@@ -323,6 +328,17 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             });
                         let reply = match kept {
                             Ok(path) => Message::response(id, rpc::Uploaded { path }),
+                            Err(why) => Message::failure(id, -32000, why),
+                        };
+                        if writer.write_all(reply.to_line().as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                    // Read back as the daemon does: from its uploads only.
+                    (Some(rpc::READ_UPLOAD), Some(id)) => {
+                        let ask: rpc::ReadUpload = message.params_as().unwrap();
+                        let reply = match gateway::read_upload(&equipe_home(), &ask) {
+                            Ok(read) => Message::response(id, read),
                             Err(why) => Message::failure(id, -32000, why),
                         };
                         if writer.write_all(reply.to_line().as_bytes()).await.is_err() {

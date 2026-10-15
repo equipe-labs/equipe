@@ -254,6 +254,45 @@ async fn a_stale_socket_file_does_not_block_a_new_daemon() {
 }
 
 #[tokio::test]
+async fn a_screen_that_said_hello_reads_back_an_upload_and_nothing_else() {
+    use equipe_core::protocol::rpc::{self, Message, ReadUpload, UploadRead};
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+    let (home, _project) = squad();
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    let (_, shot) = gateway::create_upload(&home, "paste.png", None).unwrap();
+    std::fs::write(&shot, b"picture").unwrap();
+
+    let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+    let mut ask = async |id: u64, method: &str, params: serde_json::Value| -> Message {
+        writer.write_all(Message::request(id, method, params).to_line().as_bytes()).await.unwrap();
+        loop {
+            let message = Message::from_line(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            if message.id == Some(id) {
+                return message;
+            }
+        }
+    };
+    let read = |path: &std::path::Path| serde_json::to_value(ReadUpload { path: path.to_owned(), size_only: false }).unwrap();
+
+    let before = ask(1, rpc::READ_UPLOAD, read(&shot)).await;
+    assert!(before.error.is_some(), "not before hello: {before:?}");
+    let hello = ask(2, rpc::HELLO, serde_json::json!({ "version": "test", "squad": "acme" })).await;
+    assert!(hello.result.is_some());
+    let got = ask(3, rpc::READ_UPLOAD, read(&shot)).await.result_as::<UploadRead>().unwrap();
+    assert_eq!(got.size, 7);
+    use base64::Engine as _;
+    assert_eq!(base64::engine::general_purpose::STANDARD.decode(got.data.unwrap()).unwrap(), b"picture");
+    let outside = ask(4, rpc::READ_UPLOAD, read(&home.join("squads.json"))).await;
+    assert!(outside.error.is_some() && outside.result.is_none(), "{outside:?}");
+    let climbing = ask(5, rpc::READ_UPLOAD, read(&gateway::uploads_dir(&home).join("../squads.json"))).await;
+    assert!(climbing.error.is_some());
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+#[tokio::test]
 async fn the_socket_is_private() {
     use std::os::unix::fs::PermissionsExt;
     let home = scratch("home");

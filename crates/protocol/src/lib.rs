@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod rpc;
 pub mod stream;
+pub mod tags;
 pub mod transcript;
 
 pub use transcript::Transcript;

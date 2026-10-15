@@ -32,6 +32,7 @@ mod i18n;
 mod icons;
 mod motion;
 mod relaunch;
+mod sent;
 mod render;
 mod settings;
 #[cfg(target_os = "macos")]
@@ -413,6 +414,9 @@ impl Shell {
     fn attach(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
         self.model = Model::new(target.prefer.as_deref().unwrap_or(""));
         self.connecting_shown = false;
+        // Another machine: its files aren't the ones known.
+        self.chat.sent.borrow_mut().clear();
+        self.chat.gallery = None;
         // Questions still open were for the connection being left.
         self.ask.queue.clear();
         let backoff = if target.endpoint.is_remote() { Backoff::remote() } else { Backoff::default() };
@@ -466,6 +470,8 @@ impl Shell {
                                 this.composer.flash = Some(t!("main.remote_daemon_started").into());
                                 changed = true;
                             }
+                            // Back on the line: what a message attached that couldn't be had is asked again.
+                            daemon::Update::Attached(_) => this.chat.sent.borrow_mut().retry_gone(),
                             _ => {}
                         }
                         changed |= this.model.apply(update, now);
@@ -923,6 +929,7 @@ impl Render for Shell {
             // Over everything: the chooser, then a question from ssh above it.
             .children(views::composer::drop_overlay(self, cx))
             .children(views::composer::lightbox(self, cx))
+            .children(views::attached::gallery(self, cx))
             .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
             .children(views::connect::question(self, cx))
             .children(tips::layer(cx))
