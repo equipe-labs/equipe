@@ -143,6 +143,16 @@ impl Endpoint {
 /// What the app remembers about where it connected: the last target, and the
 /// hosts typed by hand to pick again. A small text file next to the app's other
 /// state (`<home>/desktop-target`): `last <target>` and `recent ssh <spec>` lines.
+/// A view of the work screens the person kept (⌥V): its name, filter words,
+/// grouping (by its code) and whether the sidebar shows it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KeptView {
+    pub name: String,
+    pub query: String,
+    pub group: String,
+    pub pinned: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Remembered {
     pub last: Option<Endpoint>,
@@ -151,6 +161,14 @@ pub struct Remembered {
     pub board_split: Option<f32>,
     /// How wide the browser panel was left, in px.
     pub browser_width: Option<f32>,
+    /// What accepting lands, per project (by name), once the person said.
+    pub merge_ways: Vec<(String, String)>,
+    /// The views the person saved (⌥V), in their order.
+    pub views: Vec<KeptView>,
+    /// How wide the sidebar was left (px).
+    pub sidebar_width: Option<f32>,
+    /// The language picked in settings (`ko`, `en`, …); `None`: the Mac's.
+    pub lang: Option<String>,
 }
 
 impl Remembered {
@@ -167,6 +185,21 @@ impl Remembered {
         for line in text.lines() {
             if let Some(rest) = line.strip_prefix("last ") {
                 out.last = Endpoint::from_saved(rest);
+            } else if let Some(rest) = line.strip_prefix("merge ") {
+                if let Some((project, way)) = rest.rsplit_once(' ')
+                {
+                    out.merge_ways.retain(|(p, _)| p != project);
+                    out.merge_ways.push((project.to_owned(), way.to_owned()));
+                }
+            } else if let Some(rest) = line.strip_prefix("view ") {
+                let mut parts = rest.splitn(4, '\t');
+                if let (Some(pinned), Some(group), Some(name), Some(query)) = (parts.next(), parts.next(), parts.next(), parts.next()) {
+                    out.views.push(KeptView { name: name.to_owned(), query: query.to_owned(), group: group.to_owned(), pinned: pinned == "1" });
+                }
+            } else if let Some(rest) = line.strip_prefix("sidebar-width ") {
+                out.sidebar_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
+            } else if let Some(rest) = line.strip_prefix("lang ") {
+                out.lang = Some(rest.trim().to_owned()).filter(|l| !l.is_empty());
             } else if let Some(rest) = line.strip_prefix("board-split ") {
                 out.board_split = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("browser-width ") {
@@ -196,7 +229,30 @@ impl Remembered {
         if let Some(width) = self.browser_width {
             text.push_str(&format!("browser-width {width:.0}\n"));
         }
+        if let Some(width) = self.sidebar_width {
+            text.push_str(&format!("sidebar-width {width:.0}\n"));
+        }
+        if let Some(lang) = &self.lang {
+            text.push_str(&format!("lang {lang}\n"));
+        }
+        for (project, way) in &self.merge_ways {
+            text.push_str(&format!("merge {project} {way}\n"));
+        }
+        for view in &self.views {
+            let clean = |s: &str| s.replace(['\t', '\n'], " ");
+            text.push_str(&format!("view {}\t{}\t{}\t{}\n", u8::from(view.pinned), clean(&view.group), clean(&view.name), clean(&view.query)));
+        }
         text
+    }
+
+    /// What accepting lands in `project`, if the person said.
+    pub fn merge_way(&self, project: &str) -> Option<&str> {
+        self.merge_ways.iter().find(|(p, _)| p == project).map(|(_, w)| w.as_str())
+    }
+
+    pub fn set_merge_way(&mut self, project: &str, way: &str) {
+        self.merge_ways.retain(|(p, _)| p != project);
+        self.merge_ways.push((project.to_owned(), way.to_owned()));
     }
 
     /// Remember that `endpoint` is the one in use now.
@@ -319,9 +375,20 @@ mod tests {
         remembered.use_endpoint(&Endpoint::Ssh(host("b:2222")));
         remembered.use_endpoint(&Endpoint::Ssh(host("me@a")));
         remembered.board_split = Some(212.4);
+        remembered.sidebar_width = Some(301.6);
+        remembered.lang = Some("ko".into());
+        remembered.set_merge_way("my site", "merge");
+        remembered.set_merge_way("app", "push");
+        remembered.set_merge_way("app", "branch");
+        remembered.views.push(KeptView { name: "막힌\t것".into(), query: "is:blocked project:app".into(), group: "deps".into(), pinned: true });
         remembered.save(&dir);
 
         let loaded = Remembered::load(&dir);
+        assert_eq!((loaded.sidebar_width, loaded.lang.as_deref()), (Some(302.), Some("ko")));
+        assert_eq!(loaded.merge_way("my site"), Some("merge"), "a project's way is kept, spaces and all");
+        assert_eq!(loaded.merge_way("app"), Some("branch"), "the last word wins");
+        assert_eq!(loaded.merge_way("web"), None);
+        assert_eq!(loaded.views, vec![KeptView { name: "막힌 것".into(), query: "is:blocked project:app".into(), group: "deps".into(), pinned: true }]);
         assert_eq!(loaded.board_split, Some(212.0), "the board's divider is kept, to the pixel");
         assert_eq!(loaded.last, Some(Endpoint::Ssh(host("me@a"))));
         assert_eq!(loaded.recent, vec![host("me@a"), host("b:2222")]);

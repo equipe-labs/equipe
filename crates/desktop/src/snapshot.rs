@@ -6,8 +6,11 @@
 //! `wait:<ms>` · `shot:<png>` · `say:<text>` (type it in the box and send) ·
 //! `memo:<text>` (send it as a memo, as Tab does) · `type:<text>` (type, don't send) · `key:<y|a|n|o>` (answer a request) · `esc` (stop the member) · `up`/`down`
 //! (history) · `project:<name|all>` · `select:<member>` · `board` · `chat` ·
-//! `bkey:<key>` (a board key) · `pick:<n>` (a ticket) · `find:<words>` · `note:<text>` (in the open question's box) · `submit` (its main button) · `folds` · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
-//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<file>[,<file>…]` · `menu:<attach|recent|to|model|effort|mode|context>` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) · `theme:<light|dark>` ·
+//! `menu:<inbox|working|all|view0…>` (a sidebar item) · `cmenu:<attach|recent|to|model|effort|mode|context>` (a composer menu) · `bkey:<key>` (a work
+//! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
+//! ticket) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
+//! (its main button) · `size:<w>x<h>` (the window) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:<settings|account>` · `open:<n>` (a ticket's sidebar row) · `folds` · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
+//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `browser` (the browser panel, ⌘⇧B) · `bpick:<n>` (its nth tab) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 
@@ -52,7 +55,7 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     }
                 }),
                 "key" => shell.update(cx, |shell, cx| {
-                    shell.on_approval_key(&arg, true, cx);
+                    shell.on_approval_key(&arg, false, cx);
                 }),
                 "esc" => shell.update(cx, |shell, cx| shell.interrupt(cx)),
                 "up" | "down" => shell.update(cx, |shell, cx| {
@@ -66,12 +69,37 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     }
                 }),
                 "bkey" => shell.update(cx, |shell, cx| {
-                    shell.on_board_key(&arg, true, window, cx);
+                    let mut modifiers = Modifiers::default();
+                    let mut key = arg.as_str();
+                    while let Some((m, rest)) = key.split_once('-').filter(|(_, rest)| !rest.is_empty()) {
+                        match m {
+                            "shift" => modifiers.shift = true,
+                            "cmd" => modifiers.platform = true,
+                            "alt" => modifiers.alt = true,
+                            "ctrl" => modifiers.control = true,
+                            _ => break,
+                        }
+                        key = rest;
+                    }
+                    shell.on_board_key(key, &modifiers, window, cx);
                 }),
-                "pick" => shell.update(cx, |shell, cx| shell.board_pick(arg.parse().unwrap_or(0), cx)),
+                "menu" => shell.update(cx, |shell, cx| {
+                    let menu = match arg.as_str() {
+                        "inbox" => crate::board::Menu::Inbox,
+                        "working" => crate::board::Menu::Working,
+                        "all" => crate::board::Menu::All,
+                        view => crate::board::Menu::View(view.trim_start_matches("view").parse().unwrap_or(0)),
+                    };
+                    shell.open_side_menu(menu, cx);
+                }),
+                "size" => {
+                    if let Some((w, h)) = arg.split_once('x').and_then(|(w, h)| Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?))) {
+                        window.resize(size(px(w), px(h)));
+                    }
+                }
+                "pick" => shell.update(cx, |shell, cx| shell.board_pick(crate::state::Need::Ticket(arg.parse().unwrap_or(0)), cx)),
                 "find" => shell.update(cx, |shell, cx| shell.board_find(&arg, cx)),
                 "note" => shell.update(cx, |shell, cx| shell.board_type(&arg, window, cx)),
-                "cancel" => shell.update(cx, |shell, cx| shell.board_ask_cancel(cx)),
                 "submit" => shell.update(cx, |shell, cx| shell.board_submit(window, cx)),
                 "board" => shell.update(cx, |shell, cx| shell.show(crate::Screen::Board, cx)),
                 "chat" => shell.update(cx, |shell, cx| shell.show(crate::Screen::Chat, cx)),
@@ -85,7 +113,7 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 "trust" => shell.update(cx, |shell, cx| shell.answer_prompt(crate::askpass::Answer::Yes, window, cx)),
                 "decline" => shell.update(cx, |shell, cx| shell.answer_prompt(crate::askpass::Answer::Cancel, window, cx)),
                 "attach" => shell.update(cx, |shell, cx| shell.attach_sources(arg.split(',').map(|p| crate::attach::Source::File(p.into())).collect(), cx)),
-                "menu" => shell.update(cx, |shell, cx| {
+                "cmenu" => shell.update(cx, |shell, cx| {
                     use crate::views::composer::MenuKind as K;
                     let kind = match arg.as_str() {
                         "model" => K::Model,
@@ -113,10 +141,6 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     shell.composer.drag_shown = true;
                     cx.notify();
                 }),
-                "size" => {
-                    let (w, h) = arg.split_once('x').and_then(|(w, h)| Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?))).unwrap_or((1200., 760.));
-                    window.resize(size(px(w), px(h)));
-                }
                 "pastelong" => shell.update(cx, |shell, cx| {
                     let lines = arg.parse::<usize>().unwrap_or(60);
                     let text: String = (1..=lines).map(|n| format!("{n}번째 줄: 로그 내용이 여기에 있습니다\n")).collect();
@@ -189,6 +213,16 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     let steps: Vec<&str> = arg.split('|').collect();
                     panel.update(cx, |b, cx| b.compose(&steps, window, cx));
                 }
+                "sidebar" => shell.update(cx, |shell, cx| shell.toggle_sidebar(cx)),
+                "popup" => shell.update(cx, |shell, cx| {
+                    shell.board.popup = match arg.as_str() {
+                        "settings" => Some(crate::views::sidebar::Popup::Settings),
+                        "account" => Some(crate::views::sidebar::Popup::Account),
+                        _ => None,
+                    };
+                    cx.notify();
+                }),
+                "open" => shell.update(cx, |shell, cx| shell.open_ticket_row(arg.parse().unwrap_or(0), window, cx)),
                 other => eprintln!("script: no step {other}"),
             });
             // Let the window draw what the step did.

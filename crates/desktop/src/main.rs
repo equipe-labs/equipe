@@ -63,6 +63,8 @@ actions!(
 actions!(equipe, [FindInConversation, CloseFind]);
 // The app menu's.
 actions!(equipe, [CheckForUpdates, Hide, HideOthers, ShowAll, Quit]);
+// The sidebar's: hide or show it (⌘\), a new message (⌘N), search (⌘K).
+actions!(equipe, [ToggleSidebar, NewMessage, SearchAll]);
 
 /// How long the daemon gets to answer before the window says it is connecting.
 const CONNECTING_AFTER: Duration = Duration::from_millis(400);
@@ -70,7 +72,7 @@ const CONNECTING_AFTER: Duration = Duration::from_millis(400);
 /// reply draws at most this often (T-54 §3.3), and not at all once it stops.
 const COALESCE: Duration = Duration::from_millis(80);
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Chat,
     Board,
@@ -143,7 +145,7 @@ impl Shell {
             screen: Screen::Chat,
             chat: Chat::new(cx),
             composer: Composer::new(window, cx),
-            board: BoardUi::new(window, cx, remembered.board_split, fetched_tx),
+            board: BoardUi::new(window, cx, fetched_tx),
             browser,
             board_ticket: None,
             clicks,
@@ -167,6 +169,9 @@ impl Shell {
             _prompts: None,
             _subscriptions: Vec::new(),
         };
+        if let Some(width) = shell.remembered.sidebar_width {
+            shell.board.sidebar_width = width.clamp(views::sidebar::MIN_WIDTH, views::sidebar::MAX_WIDTH);
+        }
         shell._clicks = Some(cx.spawn_in(window, async move |this, cx| {
             while let Some(go) = clicked.recv().await {
                 if this.update_in(cx, |this, window, cx| this.go(go, window, cx)).is_err() {
@@ -256,15 +261,19 @@ impl Shell {
                 }
                 return;
             }
-            let plain = !(modifiers.control || modifiers.alt || modifiers.platform || modifiers.shift || modifiers.function);
-            // The board's keys: tickets, questions, search.
-            if this.update(cx, |shell, cx| shell.on_board_key(key, plain, window, cx)).unwrap_or(false) {
+            // A small menu open (the project slice): Esc puts it away.
+            if key == "escape" && this.update(cx, |shell, cx| shell.close_popover(cx)).unwrap_or(false) {
                 cx.stop_propagation();
                 return;
             }
-            // y / a / n / o answer a request for permission while nothing is typed.
-            if matches!(key, "y" | "a" | "n" | "o") {
-                if this.update(cx, |shell, cx| shell.on_approval_key(key, plain, cx)).unwrap_or(false) {
+            // The work screens' keys: A R N…, moving, the peek, search.
+            if this.update(cx, |shell, cx| shell.on_board_key(key, &modifiers, window, cx)).unwrap_or(false) {
+                cx.stop_propagation();
+                return;
+            }
+            // y / a / ⇧a / n / o answer a request for permission while nothing is typed.
+            if matches!(key, "y" | "a" | "n" | "o") && !(modifiers.control || modifiers.alt || modifiers.platform || modifiers.function) {
+                if this.update(cx, |shell, cx| shell.on_approval_key(key, modifiers.shift, cx)).unwrap_or(false) {
                     cx.stop_propagation();
                 }
                 return;
@@ -392,6 +401,7 @@ impl Shell {
                 }
                 let alive = this.update_in(cx, |this, window, cx| {
                     let now = Clock::now();
+                    this.model.unix = state::now_unix();
                     let mut changed = false;
                     for update in batch {
                         // The shared Chrome's tabs and hands: the browser panel's.
@@ -626,6 +636,15 @@ impl Shell {
         cx.activate(true);
     }
 
+    /// Put away a small menu open over the screen. True when one was.
+    pub fn close_popover(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.board.popover.take().is_some() {
+            cx.notify();
+            return true;
+        }
+        false
+    }
+
     pub fn show(&mut self, screen: Screen, cx: &mut Context<Self>) {
         if self.screen != screen {
             self.screen = screen;
@@ -643,7 +662,7 @@ impl Shell {
             return install_screen(p);
         }
         match &self.model.conn {
-            Conn::Down { reason, had_snapshot: false, .. } => views::connect::guide_screen(self, &reason.guide(&self.endpoint), cx),
+            Conn::Down { reason, had_snapshot: false, .. } => v_flex().flex_1().child(self.drag_strip(cx)).child(views::connect::guide_screen(self, &reason.guide(&self.endpoint), cx)).into_any_element(),
             Conn::Connecting => div()
                 .flex_1()
                 .flex()
@@ -661,18 +680,50 @@ impl Shell {
             conn => {
                 let screen = match self.screen {
                     Screen::Chat => views::chat::screen(self, cx).into_any_element(),
-                    Screen::Board => v_flex()
-                        .flex_1()
-                        .min_h_0()
-                        .child(views::header::render(self, cx))
-                        .child(views::board::render(self, cx))
-                        // A request still waits for its answer here; the buttons work.
-                        .children(views::approvals::approval(self, cx).map(|card| div().w_full().max_w(px(720.)).px_4().mx_auto().child(card)))
-                        .into_any_element(),
+                    // 나에게, 작업 중, 모든 일, a saved view: the menu item chosen.
+                    Screen::Board => views::board::render(self, cx).into_any_element(),
                 };
                 v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).child(screen).into_any_element()
             }
         }
+    }
+
+    /// A strip to drag the window by, over a screen with no header of its
+    /// own; with the sidebar away, its buttons beside the traffic lights.
+    fn drag_strip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        h_flex()
+            .h(px(views::sidebar::STRIP))
+            .flex_none()
+            .w_full()
+            .items_center()
+            .window_control_area(WindowControlArea::Drag)
+            .when(self.board.sidebar_hidden, |s| s.pl(px(views::sidebar::LIGHTS)).child(views::sidebar::strip_buttons(self, false, cx)))
+    }
+
+    /// The sidebar, sliding in or out for a moment after ⌘\.
+    fn sidebar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        const SLIDE: Duration = Duration::from_millis(180);
+        let hidden = self.board.sidebar_hidden;
+        let moving = self.board.sidebar_shown_at.filter(|at| at.elapsed() < SLIDE);
+        if hidden && moving.is_none() {
+            return None;
+        }
+        let side = views::sidebar::render(self, cx).into_any_element();
+        let Some(at) = moving else { return Some(side) };
+        let width = self.board.sidebar_width;
+        let id = ElementId::NamedInteger("sidebar-slide".into(), at.saturating_duration_since(self.started).as_nanos() as u64);
+        Some(
+            div()
+                .h_full()
+                .flex_none()
+                .overflow_hidden()
+                .child(side)
+                .with_animation(id, Animation::new(SLIDE).with_easing(ease_out_quint()), move |el, delta| {
+                    let shown = if hidden { 1. - delta } else { delta };
+                    el.w(px(width * shown))
+                })
+                .into_any_element(),
+        )
     }
 
     /// Shown over the last state when the daemon goes away after we had it.
@@ -787,6 +838,19 @@ impl Render for Shell {
             .bg(p.bg)
             .font_family(SANS)
             .text_color(p.text)
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
+            .on_action(cx.listener(|this, _: &NewMessage, window, cx| this.new_message(window, cx)))
+            .on_action(cx.listener(|this, _: &SearchAll, window, cx| this.search_everything(window, cx)))
+            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                if this.board.sidebar_drag.is_some() {
+                    if e.pressed_button == Some(MouseButton::Left) {
+                        this.sidebar_dragged(f32::from(e.position.x), cx);
+                    } else {
+                        this.sidebar_released(cx);
+                    }
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| this.sidebar_released(cx)))
             .on_action(cx.listener(|this, _: &ToggleBoard, _, cx| {
                 let next = if this.screen == Screen::Chat { Screen::Board } else { Screen::Chat };
                 this.show(next, cx);
@@ -813,35 +877,11 @@ impl Render for Shell {
         let root = project_actions!(
             root, cx, Project1 => 1, Project2 => 2, Project3 => 3, Project4 => 4, Project5 => 5, Project6 => 6, Project7 => 7, Project8 => 8, Project9 => 9
         );
-        root
-            .relative()
-            .child(
-                // The title bar: drags the window; the traffic lights sit at its left.
-                div()
-                    .h(px(40.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .window_control_area(WindowControlArea::Drag)
-                    .text_size(px(SMALL))
-                    .text_color(p.muted)
-                    .child(match (self.endpoint.is_remote(), self.model.squad.is_empty()) {
-                        (false, _) => self.model.squad.clone(),
-                        (true, true) => self.endpoint.label(),
-                        (true, false) => format!("{} · {}", self.model.squad, self.endpoint.label()),
-                    }),
-            )
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .border_t_1()
-                    .border_color(p.hair)
-                    .child(views::sidebar::render(self, cx))
-                    .child(div().flex_1().min_w_0().h_full().flex().flex_col().child(self.body(cx)))
-                    .children((self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone())),
-            )
+        // The sidebar runs to the window's top, the traffic lights over its
+        // strip; each screen's header is the title bar on the right.
+        let sidebar = self.sidebar(cx);
+        let browser = (self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
+        root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(div().flex_1().min_w_0().h_full().flex().flex_col().child(self.body(cx))).children(browser))
             // Over everything: the chooser, then a question from ssh above it.
             .children(views::composer::drop_overlay(self, cx))
             .children(views::composer::lightbox(self, cx))
@@ -905,13 +945,20 @@ fn main() {
     if let Some(code) = askpass::helper() {
         std::process::exit(code);
     }
+    // The language picked in the app's settings, before any word is shown.
+    if let Some(lang) = Remembered::load(&equipe_home()).lang.as_deref().and_then(equipe_core::i18n::Lang::parse) {
+        i18n::set(lang);
+    }
     // Images a reply points at on the web come through this client.
     let http = std::sync::Arc::new(reqwest_client::ReqwestClient::user_agent("equipe-desktop").unwrap_or_else(|_| reqwest_client::ReqwestClient::new()));
-    gpui_kit::application().with_http_client(http).run(|cx| {
+    gpui_kit::application().with_http_client(http).with_assets(gpui_kit::assets::Assets).run(|cx| {
         gpui_kit::init(cx);
         cx.bind_keys([
             KeyBinding::new("cmd-b", ToggleBoard, None),
             KeyBinding::new("cmd-shift-b", ToggleBrowser, None),
+            KeyBinding::new("cmd-\\", ToggleSidebar, None),
+            KeyBinding::new("cmd-n", NewMessage, None),
+            KeyBinding::new("cmd-k", SearchAll, None),
             KeyBinding::new("cmd-0", AllProjects, None),
             KeyBinding::new("cmd-1", Project1, None),
             KeyBinding::new("cmd-2", Project2, None),

@@ -20,7 +20,7 @@ use ratatui::widgets::Paragraph;
 use equipe_core::board::{self, project_name};
 use equipe_core::protocol::{Entry, Estimate, SessionId, TicketId, TicketStatus};
 
-use super::app::{Agent, AgentState, App, BoardRule, Divider, Group, Hit, Pane, Side, Spot, TextView, elapsed, relative, tool_verb};
+use super::app::{Agent, AgentState, App, BoardMenu, BoardRule, Divider, Hit, Pane, Section, Side, Spot, TextView, elapsed, needs_way, relative, section_of, status_word, tool_verb};
 use super::markdown;
 use crate::ui;
 use equipe_core::t;
@@ -1175,7 +1175,7 @@ fn member_style(app: &App, name: &str, theme: Theme) -> Style {
 /// Who it is right now, as a glyph: needs the person, working (turning, in its
 /// colour), or at rest — its own mark.
 fn glyph(app: &App, agent: &Agent, theme: Theme) -> Span<'static> {
-    if app.needs_you(agent) {
+    if app.asks_you(agent) {
         return Span::styled("✻", theme.accent().add_modifier(Modifier::BOLD));
     }
     let (mark, hue) = agent_look(agent);
@@ -1224,8 +1224,23 @@ fn side_lines(app: &App, theme: Theme, area: Rect) -> Vec<(Line<'static>, Option
         match side {
             Side::Heading(group, count) => {
                 lines.push((Line::raw(""), None));
-                let style = if group == Group::ForYou { theme.accent().add_modifier(Modifier::BOLD) } else { theme.dim() };
-                lines.push((Line::from(Span::styled(format!("{} · {count}", group.label()), style)), None));
+                lines.push((Line::from(Span::styled(format!("{} · {count}", group.label()), theme.dim())), None));
+            }
+            Side::Menu(menu) => {
+                // 나에게 · 작업 중 · 모든 일, each with its count, as the desktop's menu.
+                let on = app.pane == Pane::Board && app.board_menu == menu;
+                let count = app.menu_count(menu);
+                let marker = if on { Span::styled("› ", theme.accent()) } else { Span::raw("  ") };
+                let mark = match menu {
+                    BoardMenu::Inbox => "!",
+                    BoardMenu::Working => "*",
+                    BoardMenu::All => "o",
+                };
+                let accent = menu == BoardMenu::Inbox && count > 0;
+                let widest = [BoardMenu::Inbox, BoardMenu::Working, BoardMenu::All].iter().map(|m| cols(m.label())).max().unwrap_or(8);
+                let label = Span::styled(pad(menu.label(), widest + 2), if on { theme.bold() } else { Style::new() });
+                let count = Span::styled(if count > 0 { count.to_string() } else { String::new() }, if accent { theme.accent().add_modifier(Modifier::BOLD) } else { theme.dim() });
+                lines.push((Line::from(vec![marker, Span::styled(format!("{mark} "), if accent { theme.accent() } else { theme.dim() }), label, count]), Some(side)));
             }
             Side::Pm | Side::Member(_) => {
                 let i = match side {
@@ -1237,17 +1252,21 @@ fn side_lines(app: &App, theme: Theme, area: Rect) -> Vec<(Line<'static>, Option
                 };
                 let Some(agent) = app.agents.get(i) else { continue };
                 lines.push((member_line(app, agent, open == Some(side), name_width, area, theme), Some(side)));
+                // The ticket it is on, under it.
+                if let Some(t) = agent.ticket.and_then(|id| app.tickets.iter().find(|t| t.id == id)) {
+                    let room = (area.width as usize).saturating_sub(4 + 2 + 7);
+                    lines.push((
+                        Line::from(vec![Span::raw("    "), Span::styled(format!("{} ", status_mark(t.status)), theme.dim()), Span::styled(format!("T-{} ", t.id), theme.dim()), Span::styled(ui::fit(&t.title, room), theme.dim())]),
+                        Some(side),
+                    ));
+                }
                 // Its subagents, under it, while they work.
                 for text in subagent_rows(agent) {
                     let room = (area.width as usize).saturating_sub(6);
                     lines.push((Line::from(vec![Span::raw("    "), Span::styled(ui::fit(&text, room), theme.dim())]), Some(side)));
                 }
             }
-            Side::Ticket(id) => {
-                if let Some(ticket) = app.tickets.iter().find(|t| t.id == id) {
-                    lines.push((ticket_line(app, ticket, open == Some(side), area, theme), Some(side)));
-                }
-            }
+            Side::Ticket(_) => {}
         }
     }
     lines
@@ -1266,50 +1285,6 @@ fn side_top(app: &App, lines: &[(Line<'static>, Option<Side>)], height: usize) -
     open.map_or(0, |at| (at + 3).saturating_sub(height))
 }
 
-/// A ticket in the side list: who has it, its number in its project's colour,
-/// its title, and where it stands — or when it will be done.
-fn ticket_line(app: &App, ticket: &equipe_core::protocol::Ticket, open: bool, area: Rect, theme: Theme) -> Line<'static> {
-    let marker = if open { Span::styled("› ", theme.accent()) } else { Span::raw("  ") };
-    let who = ticket.assignee.clone().or_else(|| ticket.owner.clone()).unwrap_or_default();
-    let (mark, hue) = match app.agents.iter().find(|a| a.label() == who) {
-        Some(agent) => agent_look(agent),
-        None => look(&who, &who),
-    };
-    let on_it = app.agents.iter().find(|a| a.ticket == Some(ticket.id));
-    let mark = match on_it {
-        Some(agent) if agent.state == AgentState::Working => Span::styled(theme.spinner(Instant::now()).content, theme.member(hue).add_modifier(Modifier::BOLD)),
-        _ => Span::styled(mark, theme.member(hue)),
-    };
-    let (detail, detail_style) = match ticket.status {
-        TicketStatus::Review => (t!("view.review").to_owned(), theme.accent()),
-        TicketStatus::Waiting => (t!("view.needs_you").to_owned(), theme.accent()),
-        TicketStatus::Proposed => (t!("view.proposed").to_owned(), theme.dim()),
-        TicketStatus::InProgress => (on_it.and_then(|a| app.estimate_of(a)).and_then(|e| estimate_short(e, now_unix())).unwrap_or_default(), theme.dim()),
-        TicketStatus::Todo => (ticket.owner.clone().unwrap_or_default(), theme.dim()),
-        TicketStatus::Done => ("✓".to_owned(), theme.dim()),
-        TicketStatus::Cancelled => (t!("view.cancelled").to_owned(), theme.dim()),
-    };
-    let id = format!("T-{}", ticket.id);
-    let project = app.ticket_project(ticket);
-    let id_style = if app.projects.len() > 1 && project.is_some() { project_style(app, project.as_deref(), theme) } else { theme.accent() };
-    let width_of = |s: &str| unicode_width::UnicodeWidthStr::width(s);
-    let used = 2 + 2 + width_of(&id) + 1 + width_of(&detail) + 1;
-    let room = (area.width as usize).saturating_sub(used);
-    let title = ui::fit(&ticket.title, room);
-    let pad = room.saturating_sub(width_of(&title));
-    let title_style = if open { Style::new().add_modifier(Modifier::BOLD) } else if ticket.status == TicketStatus::Done { theme.dim() } else { Style::new() };
-    Line::from(vec![
-        marker,
-        mark,
-        Span::raw(" "),
-        Span::styled(id, id_style),
-        Span::raw(" "),
-        Span::styled(title, title_style),
-        Span::raw(" ".repeat(pad + 1)),
-        Span::styled(detail, detail_style),
-    ])
-}
-
 /// Someone in the side list — the PM at its head, the rest of the team at
 /// its foot: its mark, its name, and what it is doing.
 fn member_line(app: &App, agent: &Agent, open: bool, name_width: usize, area: Rect, theme: Theme) -> Line<'static> {
@@ -1319,8 +1294,8 @@ fn member_line(app: &App, agent: &Agent, open: bool, name_width: usize, area: Re
     let name = Span::styled(pad(&name, name_width), if open { style.add_modifier(Modifier::BOLD) } else { style });
     // What it is doing, the most pressing first: needs you, a memo waiting,
     // its ticket, its model.
-    let detail = if app.needs_you(agent) {
-        Span::styled(t!("view.needs_you"), theme.accent())
+    let detail = if app.asks_you(agent) {
+        Span::styled(t!("view.asks_permission"), theme.accent())
     } else {
         let text = match (agent.queued.len() + agent.steering.len(), agent.ticket) {
             (1, _) if agent.steering.is_empty() => t!("view.one_memo").to_owned(),
@@ -1353,7 +1328,7 @@ fn member_line(app: &App, agent: &Agent, open: bool, name_width: usize, area: Re
     };
     // With several projects, the one it works in, in its colour, first; a
     // member busy elsewhere fades while the board is filtered to one project.
-    let project = app.agent_project(agent).filter(|_| app.projects.len() > 1 && agent.queued.is_empty() && !app.needs_you(agent));
+    let project = app.agent_project(agent).filter(|_| app.projects.len() > 1 && agent.queued.is_empty() && !app.asks_you(agent));
     let elsewhere = app.focus.is_some() && project.is_some() && project != app.focus;
     let name = if elsewhere { Span::styled(name.content, theme.dim()) } else { name };
     let mut row = vec![marker, glyph(app, agent, theme), Span::raw(" "), name, Span::raw("  ")];
@@ -1781,14 +1756,10 @@ fn pane_title(spans: Vec<Span<'static>>, switch: Vec<Span<'static>>, area: Rect,
 fn switch_label(app: &App, pane: Pane, theme: Theme) -> Vec<Span<'static>> {
     match pane {
         Pane::Conversation => {
-            let review = app.to_review().len();
-            let waiting = app.tickets.iter().filter(|t| t.status == TicketStatus::Waiting).count();
+            let needs = app.needs_you_count();
             let mut spans = vec![Span::styled(t!("view.board"), theme.bold())];
-            if review > 0 {
-                spans.push(Span::styled(format!(" · {}", t!("view.to_review", n = review)), theme.accent()));
-            }
-            if waiting > 0 {
-                spans.push(Span::styled(format!(" · {}", t!("view.waiting_on_you", n = waiting)), theme.accent()));
+            if needs > 0 {
+                spans.push(Span::styled(format!(" · {} {needs}", t!("app.menu_inbox")), theme.accent()));
             }
             spans.push(Span::styled("  ctrl-b", theme.dim()));
             spans
@@ -2078,62 +2049,124 @@ fn render_scrollbar(frame: &mut Frame, area: Rect, top: usize, height: usize, to
     frame.render_widget(Paragraph::new(rows), column);
 }
 
-/// A ticket's kind, as a column before its title: `code`, `task` or `action`.
-fn kind_tag(t: &equipe_core::protocol::Ticket) -> String {
-    pad(t.kind.label(), 8)
+/// A ticket that waits on the person.
+fn for_you(t: &equipe_core::protocol::Ticket) -> bool {
+    section_of(t).is_some()
 }
 
-/// A ticket that waits on the person: to review, or for their part done.
-fn for_you(status: TicketStatus) -> bool {
-    matches!(status, TicketStatus::Review | TicketStatus::Waiting)
+/// A status as one ASCII mark, so it lines up in any terminal: proposed `.`,
+/// to do `o`, in progress `*`, 내 차례 `!`, 검토 `?`, done `+`, cancelled `x`.
+pub fn status_mark(status: TicketStatus) -> &'static str {
+    match status {
+        TicketStatus::Proposed => ".",
+        TicketStatus::Todo => "o",
+        TicketStatus::InProgress => "*",
+        TicketStatus::Waiting => "!",
+        TicketStatus::Review => "?",
+        TicketStatus::Done => "+",
+        TicketStatus::Cancelled => "x",
+    }
 }
 
-/// The board's list: a heading per group, one row per ticket — the person's
-/// reviews first. Returns the rows, and which ticket each row is.
+/// `+42 −7` from a branch's `git diff --stat`, when the board has it.
+fn diff_short(app: &App, t: &equipe_core::protocol::Ticket) -> Option<String> {
+    let (branch, stat) = app.diffs.get(&t.id)?;
+    if Some(branch) != t.branch.as_ref() {
+        return None;
+    }
+    let last = stat.lines().last()?;
+    let number = |word: &str| last.split(',').find(|p| p.contains(word)).and_then(|p| p.split_whitespace().next()).and_then(|n| n.parse::<usize>().ok()).unwrap_or(0);
+    Some(format!("+{} -{}", number("insertion"), number("deletion")))
+}
+
+/// What a row says after its title: what it waits for and unblocks, then
+/// what is happening — the member's step, what the person has to do, who
+/// proposed it, how big the change is — and when it is expected done.
+fn row_meta(app: &App, t: &equipe_core::protocol::Ticket, theme: Theme) -> (Vec<Span<'static>>, String, Style, String) {
+    let mut flags = Vec::new();
+    if let Some(dep) = app.blocked_by(t).filter(|_| matches!(t.status, TicketStatus::Todo | TicketStatus::Proposed)) {
+        flags.push(Span::styled(format!("{} ", t!("view.flag_blocked", id = dep)), theme.member(6)));
+    }
+    let unblocks = app.unblocks(t.id).len();
+    if unblocks > 0 && !t.status.is_closed() {
+        flags.push(Span::styled(format!("->{unblocks} "), theme.dim()));
+    }
+    if t.not_on_main() {
+        flags.push(Span::styled(format!("{} ", t!("app.not_on_main")), theme.accent()));
+    }
+    let on_it = app.agents.iter().find(|a| a.ticket == Some(t.id) && a.is_open());
+    let (activity, style) = match t.status {
+        TicketStatus::InProgress => match on_it {
+            Some(agent) if agent.state == AgentState::Working => (doing(agent).to_owned(), theme.member(0)),
+            Some(agent) if agent.state == AgentState::Failed => (t!("view.flag_error").to_owned(), theme.member(1)),
+            _ => (String::new(), theme.dim()),
+        },
+        TicketStatus::Waiting => (t.note.as_deref().and_then(|n| board::waiting_needs(n).first().map(|s| (*s).to_owned())).unwrap_or_default(), theme.accent()),
+        TicketStatus::Proposed => (t!("view.proposed_by", who = t.created_by), theme.dim()),
+        TicketStatus::Review | TicketStatus::Done if t.kind.in_home() => (t.kind.label().to_owned(), theme.dim()),
+        TicketStatus::Review | TicketStatus::Done => (diff_short(app, t).unwrap_or_default(), theme.dim()),
+        _ => (String::new(), theme.dim()),
+    };
+    let eta = on_it.and_then(|a| app.estimate_of(a)).and_then(|e| estimate_short(e, now_unix())).filter(|_| t.status == TicketStatus::InProgress).unwrap_or_default();
+    (flags, activity, style, eta)
+}
+
+/// The board's list, as the menu asks: 나에게 by section, 작업 중, or 모든 일
+/// by status with the finished folded into one line (e). One row a ticket:
+/// its mark, number, project, title, flags, what is happening, when done, who.
 fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Option<u32>)> {
     let order = app.board_order();
     let picked = app.selected_ticket().map(|t| t.id);
-    // With no filter and work in several projects, open work goes in a lane
-    // for each, below what waits for the person.
-    let lanes = app.lanes();
-    // As a tree (`g`): one list, each ticket under what it waits for.
-    let depth: HashMap<TicketId, usize> = if app.board_graph { app.dependency_tree().into_iter().collect() } else { HashMap::new() };
     let query = app.board_query();
     let heading = |t: &equipe_core::protocol::Ticket| -> String {
         if let Some(q) = &query {
             return t!("view.heading_found", query = q);
         }
-        if app.board_graph {
-            return t!("view.heading_by_dependency").into();
-        }
-        match t.status {
-            TicketStatus::Review => t!("view.heading_review").into(),
-            TicketStatus::Waiting => t!("view.heading_waiting").into(),
-            TicketStatus::InProgress | TicketStatus::Todo | TicketStatus::Proposed if lanes => {
-                app.ticket_project(t).as_deref().map_or_else(|| home_tag().to_owned(), project_name)
-            }
-            TicketStatus::InProgress => t!("view.heading_in_progress").into(),
-            TicketStatus::Todo => t!("view.heading_todo").into(),
-            TicketStatus::Proposed => t!("view.heading_proposed").into(),
-            TicketStatus::Done | TicketStatus::Cancelled => t!("view.heading_done").into(),
+        match app.board_menu {
+            BoardMenu::Inbox => section_of(t).map_or_else(String::new, |s| s.label().to_owned()),
+            BoardMenu::Working => status_word(TicketStatus::InProgress).to_owned(),
+            BoardMenu::All if t.status.is_closed() => status_word(TicketStatus::Done).to_owned(),
+            BoardMenu::All => status_word(t.status).to_owned(),
         }
     };
     let mut rows: Vec<(Line<'static>, Option<u32>)> = Vec::new();
+    // What waits for the person but is no ticket: requests for permission, first.
+    if app.board_menu == BoardMenu::Inbox && query.is_none() && !app.approvals.is_empty() {
+        rows.push((Line::from(Span::styled(format!("{}  {}", Section::Permission.label(), app.approvals.len()), theme.accent().add_modifier(Modifier::BOLD))), None));
+        for a in &app.approvals {
+            let ticket = a.ticket.map(|t| format!("T-{t}")).unwrap_or_default();
+            let first = a.action.lines().next().unwrap_or_default();
+            let room = width.saturating_sub(2 + 2 + 7 + cols(&a.member) + 3);
+            rows.push((
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled("! ", theme.accent()),
+                    Span::styled(format!("{ticket:<7}"), theme.dim()),
+                    Span::styled(format!("{}  ", a.member), theme.bold()),
+                    Span::styled(ui::fit(first, room), theme.dim()),
+                ]),
+                None,
+            ));
+        }
+        rows.push((Line::from(Span::styled(format!("    {}", t!("view.answer_in_conversation")), theme.dim())), None));
+    }
     let mut current: Option<String> = None;
     // Each section's whole size, so a folded one says what it left out.
     let mut totals: HashMap<String, usize> = HashMap::new();
-    if query.is_none() && !app.board_graph {
+    if query.is_none() && app.board_menu == BoardMenu::All {
         for t in app.tickets.iter().filter(|t| app.in_focus(t)) {
             *totals.entry(heading(t)).or_default() += 1;
         }
     }
     let shown = |label: &str| order.iter().filter_map(|id| app.tickets.iter().find(|t| t.id == *id)).filter(|t| heading(t) == label).count();
     let folded = |label: &str| -> Option<Line<'static>> {
+        if label == status_word(TicketStatus::Done) {
+            return None;
+        }
         let more = totals.get(label).copied().unwrap_or(0).saturating_sub(shown(label));
-        // Done work stays at its latest few; finding reaches the rest.
-        let how = if label == t!("view.heading_done") { t!("view.fold_done") } else { t!("view.fold_more") };
-        (more > 0).then(|| Line::from(Span::styled(format!("    … {}", t!("view.folded", n = more, how = how)), theme.dim())))
+        (more > 0).then(|| Line::from(Span::styled(format!("    … {}", t!("view.folded", n = more, how = t!("view.fold_more"))), theme.dim())))
     };
+    let tags = tag_width(app);
     for id in &order {
         let Some(t) = app.tickets.iter().find(|t| t.id == *id) else {
             continue;
@@ -2143,72 +2176,63 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
             if let Some(line) = current.as_deref().and_then(folded) {
                 rows.push((line, None));
             }
-            if current.is_some() {
+            if current.is_some() || !rows.is_empty() {
                 rows.push((Line::raw(""), None));
             }
             let count = totals.get(&label).copied().unwrap_or_else(|| shown(&label));
-            let style = if for_you(t.status) {
-                theme.accent().add_modifier(Modifier::BOLD)
-            } else if lanes && !t.status.is_closed() {
-                project_style(app, app.ticket_project(t).as_deref(), theme).add_modifier(Modifier::BOLD)
-            } else {
-                theme.dim()
-            };
+            let style = if for_you(t) && app.board_menu != BoardMenu::All || matches!(t.status, TicketStatus::Review | TicketStatus::Waiting) { theme.accent().add_modifier(Modifier::BOLD) } else { theme.dim() };
             rows.push((Line::from(Span::styled(format!("{label}  {count}"), style)), None));
             current = Some(label);
         }
         let selected = picked == Some(t.id);
         let who = t.assignee.as_ref().or(t.owner.as_ref()).cloned().unwrap_or_default();
-        let state = match t.status {
-            TicketStatus::Review => t!("view.waits_for_you").to_owned(),
-            TicketStatus::Waiting => t!("view.needs_you").to_owned(),
-            TicketStatus::InProgress => t!("view.working").to_owned(),
-            TicketStatus::Todo if !t.depends_on.is_empty() => {
-                t!("view.after_tickets", ids = t.depends_on.iter().map(|d| format!("T-{d}")).collect::<Vec<_>>().join(", "))
-            }
-            TicketStatus::Todo => t!("view.to_do").to_owned(),
-            TicketStatus::Proposed => t!("view.proposed").to_owned(),
-            TicketStatus::Done if t.not_on_main() => t!("view.not_on_main").to_owned(),
-            TicketStatus::Done => t!("view.done").to_owned(),
-            TicketStatus::Cancelled => t!("view.cancelled").to_owned(),
-        };
-        // Columns: marker, id, project, kind, title (what's left), owner, state.
-        // Fixed columns, so owners and states line up down the list.
-        let tags = tag_width(app);
-        let tag = vec![project_tag(app, t, theme, tags), Span::raw("  ")];
-        let tail_width = (12 + 14).min(width / 2);
-        let title_room = width.saturating_sub(2 + 6 + 2 + tail_width + tags + 2);
-        let kind = kind_tag(t);
-        // Under what it waits for, one step in per level.
-        let branch = match depth.get(&t.id) {
-            Some(&d) if d > 0 => format!("{}└ ", "  ".repeat(d - 1)),
-            _ => String::new(),
-        };
-        let title = format!("{branch}{}", ui::fit(&t.title, title_room.saturating_sub(cols(&kind) + cols(&branch))));
-        let gap = title_room.saturating_sub(cols(&kind) + cols(&title));
+        let (flags, activity, activity_style, eta) = row_meta(app, t, theme);
+        let flags_width: usize = flags.iter().map(Span::width).sum();
+        // Columns: marker, mark, id, project, title (what's left), flags, activity, when, who.
+        let activity_width = 18.min(width / 5);
+        let tail = flags_width + activity_width + 1 + 7 + 10;
+        let title_room = width.saturating_sub(2 + 2 + 7 + tags + 2 + tail).max(8);
+        let title = ui::fit(&t.title, title_room);
+        let gap = title_room.saturating_sub(cols(&title));
         let closed = t.status.is_closed();
         let title_style = match (selected, closed) {
             (true, _) => theme.bold(),
             (false, true) => theme.dim(),
             (false, false) => Style::new(),
         };
-        let state_style = if for_you(t.status) { theme.accent() } else { theme.dim() };
+        let mark_style = match t.status {
+            TicketStatus::Review | TicketStatus::Waiting => theme.accent(),
+            TicketStatus::InProgress => theme.member(0),
+            _ => theme.dim(),
+        };
+        let activity = ui::fit(&activity, activity_width);
         let mut spans = vec![
             if selected { Span::styled("› ", theme.accent()) } else { Span::raw("  ") },
-            Span::styled(format!("{:<6}", format!("T-{}", t.id)), if selected { theme.bold() } else { theme.dim() }),
-        ];
-        spans.extend(tag);
-        spans.extend([
-            Span::styled(kind, theme.dim()),
+            Span::styled(format!("{} ", status_mark(t.status)), mark_style),
+            Span::styled(format!("{:<7}", format!("T-{}", t.id)), if selected { theme.bold() } else { theme.dim() }),
+            project_tag(app, t, theme, tags),
+            Span::raw("  "),
             Span::styled(title, title_style),
-            Span::raw(" ".repeat(gap + 2)),
-            Span::styled(format!("{}  ", pad(&who, 10)), if closed { theme.dim() } else { member_style(app, &who, theme) }),
-            Span::styled(ui::fit(&state, tail_width.saturating_sub(12)), state_style),
+            Span::raw(" ".repeat(gap + 1)),
+        ];
+        spans.extend(flags);
+        spans.extend([
+            Span::styled(format!("{:>w$} ", activity, w = activity_width.saturating_sub(cols(&activity).saturating_sub(activity.chars().count()))), activity_style),
+            Span::styled(format!("{:>6} ", ui::fit(&eta, 6)), theme.dim()),
+            Span::styled(ui::fit(&who, 10), if closed { theme.dim() } else { member_style(app, &who, theme) }),
         ]);
         rows.push((Line::from(spans), Some(t.id)));
     }
     if let Some(line) = current.as_deref().and_then(folded) {
         rows.push((line, None));
+    }
+    // 모든 일: the finished, folded into one line until shown.
+    if app.board_menu == BoardMenu::All && query.is_none() && !app.board_expanded {
+        let done = app.tickets.iter().filter(|t| t.status.is_closed() && app.in_focus(t)).count();
+        if done > 0 {
+            rows.push((Line::raw(""), None));
+            rows.push((Line::from(vec![Span::styled(format!("{}  {done} >", status_word(TicketStatus::Done)), theme.dim()), Span::styled("  e", theme.bold()), Span::styled(format!(" {}", t!("view.fold_show")), theme.dim())]), None));
+        }
     }
     rows
 }
@@ -2240,31 +2264,13 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     if let Some(who) = t.assignee.as_ref().or(t.owner.as_ref()) {
         facts.push(who.clone());
     }
-    facts.push(
-        match t.status {
-            TicketStatus::Review => t!("view.detail_review"),
-            TicketStatus::Waiting => t!("view.detail_waiting"),
-            TicketStatus::InProgress => t!("view.in_progress"),
-            TicketStatus::Todo => t!("view.to_do"),
-            TicketStatus::Proposed => t!("view.proposed"),
-            TicketStatus::Done if t.not_on_main() => t!("view.detail_not_on_main"),
-            TicketStatus::Done => t!("view.done"),
-            TicketStatus::Cancelled => t!("view.cancelled"),
-        }
-        .to_owned(),
-    );
+    facts.push(if t.not_on_main() { t!("app.not_on_main") } else { status_word(t.status) }.to_owned());
     if let Some(project) = t.project.as_deref().filter(|_| app.projects.len() > 1) {
         facts.push(project_name(project));
     }
     lines.extend(wrapped(Vec::new(), &facts.join(" · "), theme.dim(), 0, width));
     // What it waits for, and what waits for it.
-    let mark = |s: TicketStatus| match s {
-        TicketStatus::Done => "✓",
-        TicketStatus::Cancelled => "×",
-        TicketStatus::InProgress => "●",
-        TicketStatus::Review | TicketStatus::Waiting => "⚑",
-        TicketStatus::Todo | TicketStatus::Proposed => "○",
-    };
+    let mark = status_mark;
     let named = |id: TicketId| -> String {
         match app.tickets.iter().find(|t| t.id == id) {
             Some(d) => format!("T-{id} {} {}", mark(d.status), ui::fit(&d.title, 28)),
@@ -2284,14 +2290,26 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     // them out of sight.
     let who = t.assignee.as_ref().or(t.owner.as_ref());
     let mut actions: Vec<(&str, String)> = Vec::new();
+    let way = app.merge_ways.get(&app.ticket_project(t).map(|p| project_name(&p)).unwrap_or_default()).copied();
     match t.status {
         TicketStatus::Review => {
-            actions.push(("a", t!("view.action_accept").into()));
+            let accept = match way.filter(|_| needs_way(t)) {
+                Some(way) => format!("{} · {}", t!("view.action_accept"), way.label()),
+                None => t!("view.action_accept").into(),
+            };
+            actions.push(("a", accept));
+            if needs_way(t) {
+                actions.push(("A", t!("view.action_how").into()));
+            }
             actions.push(("r", t!("view.action_ask_changes").into()));
         }
         TicketStatus::Waiting => {
+            actions.push(("a", t!("view.action_did_it").into()));
             actions.push(("r", t!("view.action_resume").into()));
-            actions.push(("a", t!("view.action_mark_done").into()));
+        }
+        TicketStatus::Proposed => {
+            actions.push(("a", t!("view.action_take").into()));
+            actions.push(("n", t!("view.action_drop").into()));
         }
         TicketStatus::Done => {
             if t.not_on_main() {
@@ -2299,17 +2317,20 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
             }
             actions.push(("r", t!("view.action_reopen").into()));
         }
-        TicketStatus::InProgress | TicketStatus::Todo | TicketStatus::Proposed => actions.push(("a", t!("view.action_mark_done").into())),
-        TicketStatus::Cancelled => {}
+        TicketStatus::InProgress | TicketStatus::Todo | TicketStatus::Cancelled => {}
+    }
+    if matches!(t.status, TicketStatus::Review | TicketStatus::Waiting | TicketStatus::InProgress | TicketStatus::Todo) {
+        actions.push(("n", t!("view.action_cancel").into()));
     }
     if t.branch.is_some() {
         actions.push(("d", t!("view.action_diff").into()));
     }
     if let Some(who) = who {
-        actions.push(("enter", t!("view.action_talk_to", name = who)));
+        actions.push(("c", t!("view.action_talk_to", name = who)));
     }
-    actions.push(("↑↓", t!("view.action_tickets").into()));
-    actions.push(("g", if app.board_graph { t!("view.action_by_state").into() } else { t!("view.action_by_dependency").into() }));
+    actions.push(("j k", t!("view.action_tickets").into()));
+    actions.push(("space", t!("view.action_fold").into()));
+    actions.push(("g i/l/b", t!("view.action_menus").into()));
     actions.push(("f", t!("view.action_find").into()));
     let mut keys = Vec::new();
     for (i, (k, what)) in actions.into_iter().enumerate() {
@@ -2317,7 +2338,7 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
             keys.push(Span::raw("   "));
         }
         // The call the person is here to make stands out.
-        let style = if i == 0 && for_you(t.status) { theme.accent().add_modifier(Modifier::BOLD) } else { theme.bold() };
+        let style = if i == 0 && for_you(t) { theme.accent().add_modifier(Modifier::BOLD) } else { theme.bold() };
         keys.push(Span::styled(k.to_owned(), style));
         keys.push(Span::styled(format!(" {what}"), theme.dim()));
     }
@@ -2384,10 +2405,17 @@ fn list_top(rows: &[(Line<'static>, Option<u32>)], picked: Option<u32>, height: 
 }
 
 fn render_board(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
-    let title = vec![Span::styled(t!("view.board"), theme.bold())];
+    let title = vec![Span::styled(app.board_menu.label(), theme.bold()), Span::styled(format!("  {}", app.menu_count(app.board_menu)), theme.dim())];
     let area = pane_title(title, switch_label(app, Pane::Board, theme), area, frame);
     let width = (area.width as usize).saturating_sub(1).min(PROSE_MAX + 20);
     let rows = board_list(app, theme, width);
+    // Space folds the ticket below away: the list takes the pane.
+    if !app.board_detail_open {
+        let top = list_top(&rows, app.selected_ticket().map(|t| t.id), area.height as usize);
+        let shown: Vec<Line> = rows.into_iter().skip(top).take(area.height as usize).map(|(line, _)| line).collect();
+        frame.render_widget(Paragraph::new(shown), area);
+        return;
+    }
     let (list, detail) = board_areas(area, rows.len(), app.board_split);
     let top = list_top(&rows, app.selected_ticket().map(|t| t.id), list.height as usize);
     let shown: Vec<Line> = rows.into_iter().skip(top).take(list.height as usize).map(|(line, _)| line).collect();
@@ -2496,9 +2524,9 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         lines.push(Line::from(vec![bar(), Span::styled("ctrl-b", theme.bold()), Span::styled(format!(" {}", t!("view.to_answer")), theme.dim())]));
         return lines;
     }
-    let mut keys = vec![bar(), Span::styled("y", theme.bold()), Span::styled(format!(" {}   ", t!("view.allow")), theme.dim())];
+    let mut keys = vec![bar(), Span::styled("y/a", theme.bold()), Span::styled(format!(" {}   ", t!("view.allow")), theme.dim())];
     if let Some(rule) = equipe_core::permissions::rule_for(&approval.tool, &approval.action) {
-        keys.push(Span::styled("a", theme.bold()));
+        keys.push(Span::styled("A", theme.bold()));
         keys.push(Span::styled(format!(" {}   ", t!("view.always_allow", what = always_label(&rule))), theme.dim()));
     }
     keys.extend([Span::styled("n", theme.bold()), Span::styled(format!(" {}", t!("view.decline")), theme.dim())]);
@@ -2625,16 +2653,10 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     };
     let mut facts: Vec<(String, Style)> = Vec::new();
     // Work waiting for the person comes first: it's what only they can do.
-    let review = app.to_review().len();
-    let waiting = app.tickets.iter().filter(|t| t.status == TicketStatus::Waiting).count();
-    match (review, waiting) {
-        (0, 0) => {}
-        (_, 0) => facts.push((format!("{} · ctrl-b", t!("view.to_review", n = review)), theme.accent())),
-        (0, _) => facts.push((format!("{} · ctrl-b", t!("view.waiting_on_you", n = waiting)), theme.accent())),
-        _ => facts.push((
-            format!("{} · {} · ctrl-b", t!("view.to_review", n = review), t!("view.waiting_on_you", n = waiting)),
-            theme.accent(),
-        )),
+    // One count, the same as the side list's and the desktop's: what waits for the person.
+    let needs = app.needs_you_count();
+    if needs > 0 {
+        facts.push((format!("{} {needs} · ctrl-b", t!("app.menu_inbox")), theme.accent()));
     }
     // A multi-line draft (often a paste) says how big it is before it's sent.
     let draft_lines = app.composer.line_count();
@@ -3026,8 +3048,8 @@ mod tests {
         let shot = screen(&app, 71, 34);
         assert!(shot.contains("All projects"), "{shot}");
         let site = shot.lines().find(|l| l.contains("site ") && l.contains("pm T-6")).unwrap_or_else(|| panic!("{shot}"));
-        assert!(site.contains("1 open"), "{site}");
-        assert!(shot.lines().any(|l| l.contains("app ") && l.contains("⚑1 for you")), "{shot}");
+        assert!(site.contains("1 in progress"), "{site}");
+        assert!(shot.lines().any(|l| l.contains("app ") && l.contains("⚑1 inbox")), "{shot}");
         let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 71, 34), &Layouts::default());
         assert!(laid.hits.iter().any(|h| h.3 == Hit::Project(Some(1))), "a line goes into its project");
         // With the side list, it is there instead.
@@ -3211,25 +3233,26 @@ mod tests {
         app.flash = None;
         let shot = screen(&app, 140, 34);
         let at = |text: &str| shot.find(text).unwrap_or_else(|| panic!("missing {text:?} in:\n{shot}"));
-        assert!(at("YOUR REVIEW  1") < at("IN PROGRESS  1"), "{shot}");
-        assert!(at("IN PROGRESS") < at("TO DO") && at("TO DO") < at("DONE"), "{shot}");
-        // One row a ticket, the review picked first; its columns line up.
+        assert!(at("Review  1") < at("In progress  1"), "{shot}");
+        assert!(at("In progress") < at("To do") && at("To do") < at("Done  1 >"), "the finished folded last:\n{shot}");
+        // One row a ticket — its mark, number, project, title — the review picked first; its columns line up.
         let row = |id: &str| shot.lines().find(|l| l.contains(id)).unwrap_or_else(|| panic!("no {id} in:\n{shot}")).to_owned();
-        assert!(row("T-3").contains("› T-3   repo  code    Pricing section"), "{shot}");
+        assert!(row("T-3").contains("› ? T-3    repo  Pricing section"), "{shot}");
+        assert!(row("T-2").contains("* T-2") && row("T-4").contains("o T-4"), "{shot}");
         let column = |id: &str| { let r = row(id); r[..r.find("frontend").unwrap()].chars().count() };
-        assert!(["T-2", "T-4", "T-1"].iter().all(|id| column(id) == column("T-3")), "owners in one column:\n{shot}");
+        assert!(["T-2", "T-4"].iter().all(|id| column(id) == column("T-3")), "owners in one column:\n{shot}");
         // Below, the picked ticket in full with the keys that act on it.
-        assert!(shot.contains("handed in — waits for your review"), "{shot}");
-        assert!(shot.contains("a accept   r ask for changes"), "{shot}");
+        assert!(shot.contains("code · frontend · Review"), "{shot}");
+        assert!(shot.contains("a accept   r ask for changes   n cancel"), "{shot}");
         // Right under the title, however long the hand-in below runs.
         let at = |text: &str| shot.lines().position(|l| l.contains(text)).unwrap();
-        assert_eq!(at("a accept"), at("waits for your review") + 1, "{shot}");
+        assert_eq!(at("a accept"), at("code · frontend · Review") + 1, "{shot}");
         assert!(shot.contains("← pm  ctrl-b"), "the way back is in sight:\n{shot}");
-        assert!(shot.lines().last().unwrap().contains("1 to review"), "{shot}");
+        assert!(shot.lines().last().unwrap().contains("Inbox 1 · ctrl-b"), "{shot}");
         // ↓ picks the next ticket, and the detail follows.
         app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Down), Instant::now());
         let shot = screen(&app, 140, 34);
-        assert!(shot.contains("› T-2") && shot.contains("in progress"), "{shot}");
+        assert!(shot.contains("› * T-2") && shot.contains("code · frontend · In progress"), "{shot}");
     }
 
     #[test]
@@ -3244,8 +3267,8 @@ mod tests {
         app.pane = Pane::Board;
         app.flash = None;
         let shot = screen(&app, 140, 30);
-        assert!(shot.lines().any(|l| l.contains("T-1") && l.contains("home  task    Competitor research")), "the squad home's work is tagged home:\n{shot}");
-        assert!(shot.contains("task · frontend · handed in"), "{shot}");
+        assert!(shot.lines().any(|l| l.contains("T-1") && l.contains("home  Competitor research") && l.contains("task")), "the squad home's work is tagged home, its kind where a diff would be:\n{shot}");
+        assert!(shot.contains("task · frontend · Review"), "{shot}");
         assert!(shot.contains("outputs/T-1 research/report.md"), "{shot}");
         assert!(!shot.contains("equipe/frontend-t1"), "no branch for the squad's folder:\n{shot}");
     }
@@ -3258,12 +3281,14 @@ mod tests {
         done.merged = Some(false);
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: done.clone() });
         app.pane = Pane::Board;
+        app.board_menu = BoardMenu::Inbox;
         app.flash = None;
         let shot = screen(&app, 100, 24);
-        assert!(shot.lines().any(|l| l.contains("T-1") && l.contains("not on main")), "{shot}");
-        assert!(shot.contains("accepted — not on main yet") && shot.contains("m merge into main"), "{shot}");
+        assert!(shot.contains("Not merged  1"), "its own section in the inbox:\n{shot}");
+        assert!(shot.lines().any(|l| l.contains("T-1") && l.contains("Not merged")), "{shot}");
+        assert!(shot.contains("code · frontend · Not merged") && shot.contains("m merge into main"), "{shot}");
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: Ticket { merged: Some(true), ..done } });
-        assert!(!screen(&app, 100, 24).contains("not on main"));
+        assert!(!screen(&app, 100, 24).contains("Not merged"));
     }
 
     #[test]
@@ -3280,7 +3305,7 @@ mod tests {
         asking.reason = Some("Release the package".into());
         app.on_event(Event::ApprovalRequested { squad: "acme".into(), approval: asking });
         let shot = screen(&app, 100, 26);
-        for expected in ["▎ frontend asks · T-3", "▎ run  npm publish", "▎ Release the package", "▎ y allow   a always allow npm publish   n decline", "▎ /mode frontend full stops frontend asking"] {
+        for expected in ["▎ frontend asks · T-3", "▎ run  npm publish", "▎ Release the package", "▎ y/a allow   A always allow npm publish   n decline", "▎ /mode frontend full stops frontend asking"] {
             assert!(shot.contains(expected), "missing {expected:?} in:\n{shot}");
         }
     }
@@ -3294,7 +3319,7 @@ mod tests {
         asking.preview = Some("/tmp/equipe-send-1-1.png".into());
         app.on_event(Event::ApprovalRequested { squad: "acme".into(), approval: asking });
         let shot = screen(&app, 100, 26);
-        for expected in ["▎ send  press return in Microsoft Teams", "내일 회의 3시로 옮겨요", "▎ screen  /tmp/equipe-send-1-1.png  o open", "▎ y allow   n decline"] {
+        for expected in ["▎ send  press return in Microsoft Teams", "내일 회의 3시로 옮겨요", "▎ screen  /tmp/equipe-send-1-1.png  o open", "▎ y/a allow   n decline"] {
             assert!(shot.contains(expected), "missing {expected:?} in:\n{shot}");
         }
         assert!(!shot.contains("always") && !shot.contains("/mode"), "no mode stops a send:\n{shot}");
@@ -3308,7 +3333,7 @@ mod tests {
         let shot = screen(&app, 100, 30);
         assert!(shot.contains("writes astro.config.mjs, tsconfig.json"), "{shot}");
         assert!(shot.contains("… 5 more lines"), "{shot}");
-        assert!(shot.contains("y allow"), "the keys always show:\n{shot}");
+        assert!(shot.contains("y/a allow"), "the keys always show:\n{shot}");
         assert!(!shot.contains("echo done"), "{shot}");
     }
 
@@ -3383,22 +3408,29 @@ mod tests {
         }
         app.flash = None;
         let shot = screen(&app, 100, 30);
-        assert!(shot.contains("Waiting for you · 4"), "{shot}");
-        assert!((1..=4).all(|id| shot.lines().any(|l| l.contains(&format!("T-{id} Piece {id}")) && l.contains("review"))), "{shot}");
-        // A click on one opens it.
+        // The side list counts it under 나에게, as the footer does.
+        assert!(shot.lines().any(|l| l.contains("! Inbox") && l.contains(" 4 ")), "{shot}");
+        assert!(shot.lines().last().unwrap().contains("Inbox 4 · ctrl-b"), "{shot}");
+        // A click on it opens the board there, in section order.
         let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 100, 30), &Layouts::default());
-        let row = shot.lines().position(|l| l.contains("Piece 2")).unwrap() as u16;
+        let row = shot.lines().position(|l| l.contains("! Inbox")).unwrap() as u16;
         let hit = laid.hits.iter().find(|h| h.2 == row).copied().unwrap();
-        assert_eq!(hit.3, Hit::Side(Side::Ticket(2)));
+        assert_eq!(hit.3, Hit::Side(Side::Menu(BoardMenu::Inbox)));
+        app.set_hits(laid.hits, laid.divider);
+        app.on_click(hit.0 + 1, hit.2);
+        assert_eq!((app.pane, app.board_menu), (Pane::Board, BoardMenu::Inbox));
+        let board = screen(&app, 100, 30);
+        assert!(board.contains("Review  4") && board.contains("› ? T-1"), "{board}");
+        app.pane = Pane::Conversation;
         // Without the side list — a narrow terminal — a card under the conversation.
         let narrow = screen(&app, 70, 30);
-        assert!(narrow.contains("▎ Waiting for your review · 4") && narrow.contains("+1 more on the board"), "{narrow}");
+        assert!(narrow.contains("▎ Review · 4") && narrow.contains("+1 more on the board"), "{narrow}");
         // Nothing waiting, no card.
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(1, TicketStatus::Done, "Piece 1") });
         for id in 2..=4 {
             app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(id, TicketStatus::Done, "x") });
         }
-        assert!(!screen(&app, 100, 30).contains("Waiting for you"));
+        assert!(!screen(&app, 70, 30).contains("▎ Review"));
     }
 
     #[test]
@@ -3410,19 +3442,19 @@ mod tests {
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t });
         app.flash = None;
         let shot = screen(&app, 120, 30);
-        assert!(shot.contains("Waiting for you · 2"), "{shot}");
-        assert!(shot.lines().any(|l| l.contains("T-2 Analytics") && l.contains("needs you")), "{shot}");
-        assert!(shot.contains("1 to review · 1 waiting on you"), "{shot}");
+        assert!(shot.lines().any(|l| l.contains("! Inbox") && l.contains(" 2 ")), "{shot}");
+        assert!(shot.contains("Inbox 2 · ctrl-b"), "{shot}");
         // Opened, what it needs.
         app.open(Side::Ticket(2));
         let shot = screen(&app, 120, 30);
         assert!(shot.contains("GitHub token") && shot.contains("PostHog secrets"), "{shot}");
         app.pane = Pane::Board;
+        app.board_menu = BoardMenu::Inbox;
         let shot = screen(&app, 120, 30);
-        assert!(shot.contains("WAITING ON YOU  1"), "{shot}");
+        assert!(shot.contains("Your turn  1"), "{shot}");
         let row = |text: &str| shot.lines().position(|l| l.contains(text)).unwrap();
-        assert!(row("YOUR REVIEW") < row("WAITING ON YOU"), "{shot}");
-        assert!(shot.lines().find(|l| l.contains("Analytics")).unwrap().contains("needs you"), "{shot}");
+        assert!(row("Your turn") < row("Review  1"), "내 차례 before 검토:\n{shot}");
+        assert!(shot.lines().find(|l| l.contains("Analytics")).unwrap().contains("GitHub token"), "what it needs, in its row:\n{shot}");
     }
 
     #[test]
@@ -3495,10 +3527,10 @@ mod tests {
         app.flash = None;
         let shot = screen(&app, 110, 30);
         assert!(shot.lines().next().unwrap().contains("site · app ⚑1 · all"), "{shot}");
-        assert!(shot.lines().any(|l| l.contains("T-3 Onboarding screens") && l.contains("review")), "the side list has it:\n{shot}");
+        assert!(shot.lines().any(|l| l.contains("! Inbox") && l.contains(" 1 ")), "the side list counts it:\n{shot}");
         app.pane = Pane::Board;
         let shot = screen(&app, 150, 30);
-        assert!(shot.contains("› T-3   app   code    Onboarding screens"), "{shot}");
+        assert!(shot.contains("› ? T-3    app   Onboarding screens"), "{shot}");
         // Its chip is a click away.
         let laid = extent(&app, Theme::plain(), Rect::new(0, 0, 150, 30), &Layouts::default());
         let chip = laid.hits.iter().find(|h| h.3 == Hit::Project(Some(1))).copied().unwrap();
@@ -3548,11 +3580,11 @@ mod tests {
         app.pane = Pane::Board;
         let shot = screen(&app, 120, 30);
         let row = |id: &str| shot.lines().find(|l| l.contains(id)).unwrap_or_else(|| panic!("no {id} in:\n{shot}")).to_owned();
-        assert!(row("T-1").contains("T-1   site  code    Hero"), "{shot}");
-        assert!(row("T-2").contains("T-2   app   code    Onboarding screens"), "{shot}");
-        assert!(row("T-3").contains("T-3   home  task    Competitor research"), "{shot}");
+        assert!(row("T-1").contains("T-1    site  Hero"), "{shot}");
+        assert!(row("T-2").contains("T-2    app   Onboarding screens"), "{shot}");
+        assert!(row("T-3").contains("T-3    home  Competitor research"), "{shot}");
         let at = |text: &str| shot.find(text).unwrap_or_else(|| panic!("missing {text:?} in:\n{shot}"));
-        assert!(at("YOUR REVIEW  1") < at("site  1") && at("site  1") < at("home  1"), "a lane for the squad home, last:\n{shot}");
+        assert!(at("Review  1") < at("In progress  1") && at("In progress  1") < at("To do  1"), "by status, no lane per project:\n{shot}");
     }
 
     #[test]
@@ -3568,7 +3600,7 @@ mod tests {
         assert!(app.flash.as_deref().unwrap().starts_with("Only site"), "{:?}", app.flash);
         app.flash = None;
         let shot = screen(&app, 120, 30);
-        assert!(!shot.contains("Waiting for your review"), "the app's review is filtered out:\n{shot}");
+        assert!(!shot.lines().any(|l| l.contains("! Inbox") && l.contains(" 1 ")), "the app's review is filtered out:\n{shot}");
         assert!(shot.lines().last().unwrap().contains("→ pm · site"), "new work goes to the site:\n{shot}");
         app.pane = Pane::Board;
         let shot = screen(&app, 120, 30);
@@ -3580,7 +3612,7 @@ mod tests {
         assert!(shot.contains("Hero") && shot.contains("Onboarding screens") && shot.contains("Competitor research"), "{shot}");
         app.pane = Pane::Conversation;
         let shot = screen(&app, 120, 30);
-        assert!(shot.contains("Waiting for you · 1"), "{shot}");
+        assert!(shot.lines().any(|l| l.contains("! Inbox") && l.contains(" 1 ")), "{shot}");
         assert!(!shot.lines().last().unwrap().contains("· site"), "{shot}");
     }
 
@@ -3626,11 +3658,11 @@ mod tests {
         app.focus = Some("/code/app".into());
         let shot = screen(&app, 120, 30);
         assert!(shot.lines().last().unwrap().contains("→ pm · app"), "{shot}");
-        // The board: a lane for each project.
+        // The board: by status, each row tagged with its project.
         app.focus = None;
         app.pane = Pane::Board;
         let shot = screen(&app, 120, 30);
-        assert!(shot.contains("YOUR REVIEW  1") && shot.contains("site  1"), "{shot}");
+        assert!(shot.contains("Review  1") && shot.lines().any(|l| l.contains("T-4") && l.contains("site")), "{shot}");
         // The help names the key.
         app.pane = Pane::Conversation;
         app.help_open = true;
@@ -3716,13 +3748,13 @@ mod tests {
         app.pane = Pane::Board;
         app.board_selected = Some(2);
         let shot = screen(&app, 120, 40);
-        assert!(shot.contains("after     T-1 ✓"), "{shot}");
+        assert!(shot.contains("after     T-1 + Socket"), "{shot}");
         assert!(shot.contains("unblocks  T-3"), "{shot}");
-        // The tree view, a key away.
-        app.board_graph = true;
+        // In the list, what it waits for and what it unblocks, as flags.
+        app.board_menu = BoardMenu::All;
         let shot = screen(&app, 120, 40);
-        assert!(shot.contains("BY WHAT WAITS FOR WHAT"), "{shot}");
-        assert!(shot.contains("└ Chat"), "{shot}");
+        assert!(shot.contains("blocked T-2"), "{shot}");
+        assert!(shot.contains("->1"), "{shot}");
     }
 
     #[test]
@@ -3737,8 +3769,8 @@ mod tests {
         app.pane = Pane::Board;
         app.board_split = Some(40);
         let shot = screen(&app, 120, 60);
-        assert!(shot.contains("TO DO  40") && shot.contains("… 30 more · e shows all · f finds"), "{shot}");
-        assert!(shot.contains("DONE  460") && shot.contains("… 455 more · f finds them"), "{shot}");
+        assert!(shot.contains("To do  40") && shot.contains("… 30 more · e shows all · f finds"), "{shot}");
+        assert!(shot.contains("Done  460 >  e show finished work"), "the finished in one line, no cap of five:\n{shot}");
         app.board_query = Some("old 123".into());
         let shot = screen(&app, 120, 60);
         assert!(shot.contains("FOUND") && shot.contains("Old 123"), "{shot}");
