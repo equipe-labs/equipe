@@ -90,9 +90,8 @@ pub struct BoardUi {
     pub sidebar_drag: Option<(f32, f32)>,
     /// When the sidebar last came or went, to slide it.
     pub sidebar_shown_at: Option<Instant>,
-    /// The sidebar's groups folded (by project name), and those showing their finished.
-    pub folded: std::collections::HashSet<String>,
-    pub done_shown: std::collections::HashSet<String>,
+    /// The sidebar's live rows as last drawn, to ease them in and out.
+    pub side_motion: std::cell::RefCell<super::sidebar::SideMotion>,
     /// A small menu out of the sidebar's foot.
     pub popup: Option<super::sidebar::Popup>,
     /// The language picked in settings for every screen; `None`: System.
@@ -162,8 +161,7 @@ impl BoardUi {
             sidebar_width: super::sidebar::WIDTH,
             sidebar_drag: None,
             sidebar_shown_at: None,
-            folded: Default::default(),
-            done_shown: Default::default(),
+            side_motion: Default::default(),
             popup: None,
             language: equipe_core::i18n::saved(&equipe_providers::credentials::equipe_home()),
             words: crate::i18n::lang(),
@@ -482,6 +480,8 @@ impl Shell {
                     self.land(&t, None, cx);
                 }
             }
+            // Answered on its card, in the peek.
+            Need::Questions(_) => {}
         }
     }
 
@@ -501,7 +501,7 @@ impl Shell {
                     self.board_yes(cx);
                 }
             }
-            None => {}
+            Some(Need::Questions(_)) | None => {}
         }
     }
 
@@ -702,7 +702,8 @@ impl Shell {
                     }
                 }
             }
-            None => {}
+            // Closed on its card (✕), where what it closes is in sight.
+            Some(Need::Questions(_)) | None => {}
         }
     }
 
@@ -807,6 +808,10 @@ impl Shell {
     pub fn board_talk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let session = match self.picked_need() {
             Some(Need::Permission(id)) => self.model.approvals.get(id).map(|a| a.session),
+            Some(Need::Questions(id)) => {
+                let member = self.model.asked.get(id).map(|s| s.member.clone());
+                self.model.members.iter().find(|m| m.presence != Presence::Closed && Some(&m.name) == member.as_ref()).map(|m| m.session)
+            }
             _ => {
                 let Some(t) = self.picked() else { return };
                 let Some(who) = board::who(&t).map(str::to_owned) else { return };
@@ -1378,13 +1383,30 @@ fn popover(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     };
     let body: Vec<AnyElement> = match which {
         Popover::Projects | Popover::Members => return None,
-        Popover::Group => GroupBy::ALL
-            .into_iter()
-            .map(|g| {
-                let on = board::effective(&shell.board.view, &shell.saved_views()).1 == g;
-                item(SharedString::from(format!("group-{}", g.code())), g.label().to_owned(), on).on_click(cx.listener(move |this, _, _, cx| this.board_set_group(g, cx))).into_any_element()
-            })
-            .collect(),
+        Popover::Group => {
+            let mut rows: Vec<AnyElement> = GroupBy::ALL
+                .into_iter()
+                .map(|g| {
+                    let on = board::effective(&shell.board.view, &shell.saved_views()).1 == g;
+                    item(SharedString::from(format!("group-{}", g.code())), g.label().to_owned(), on).on_click(cx.listener(move |this, _, _, cx| this.board_set_group(g, cx))).into_any_element()
+                })
+                .collect();
+            // The views kept, reachable from here now that the sidebar lists live work only.
+            rows.push(div().h(px(1.)).my_1().bg(p.hair).into_any_element());
+            rows.push(div().px_3().pt_1().pb(px(2.)).text_size(px(11.)).text_color(p.muted).child(t!("sidebar.views")).into_any_element());
+            for (at, v) in shell.saved_views().into_iter().enumerate() {
+                let on = shell.board.view.menu == Menu::View(at);
+                rows.push(
+                    item(SharedString::from(format!("view-{at}")), v.name, on)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.board.popover = None;
+                            this.open_side_menu(if this.board.view.menu == Menu::View(at) { Menu::All } else { Menu::View(at) }, cx);
+                        }))
+                        .into_any_element(),
+                );
+            }
+            rows
+        }
         Popover::Filter => {
             let mut words: Vec<String> = shell.model.project_names().into_iter().map(|n| format!("project:{n}")).collect();
             let mut members: Vec<String> = shell.model.members.iter().filter(|m| !Model::is_pm(m)).map(|m| format!("member:{}", m.name)).collect();
@@ -1712,6 +1734,22 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 )
                 .child(div().w(px(flags_w)).flex_none())
                 .child(cell(detail_w).text_color(p.member(hue)).child(a.member.clone()))
+                .child(cell(eta_w))
+                .child(cell(34.))
+                .into_any_element()
+        }
+        Need::Questions(id) => {
+            let Some((title, ticket_id, name, color)) = super::decide::row_text(shell, id) else { return div().into_any_element() };
+            let ticket = ticket_id.and_then(|t| model.tickets.iter().find(|x| x.id == t));
+            base(SharedString::from(format!("decide-{id}")), cx)
+                .pl_2()
+                .child(div().w(px(14.)).flex_none())
+                .child(super::decide::mark(p))
+                .child(div().w(px(44.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(ticket_id.map(|t| format!("T-{t}")).unwrap_or_default()))
+                .when(show_project, |r| r.child(project_col(ticket)))
+                .child(div().flex_1().min_w(px(120.)).truncate().text_color(p.text).child(title))
+                .child(div().w(px(flags_w)).flex_none())
+                .child(cell(detail_w).text_color(color).child(name))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()

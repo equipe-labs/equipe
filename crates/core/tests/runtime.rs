@@ -775,7 +775,9 @@ async fn work_not_on_main_says_why_can_be_kept_on_its_branch_and_settles_when_no
                     kind: equipe_core::protocol::TicketKind::Code,
                     created_by: "pm".into(),
                     note: None,
-                    asks: vec![], priority: Default::default(), rank: 0, updated: 0,
+                    asks: vec![],
+                    updated_at: None,
+                    priority: Default::default(), rank: 0,
                 })
                 .unwrap();
             let mut t = journal.ticket(made).unwrap().unwrap();
@@ -849,7 +851,9 @@ async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
                     kind: equipe_core::protocol::TicketKind::Code,
                     created_by: "pm".into(),
                     note: None,
-                    asks: vec![], priority: Default::default(), rank: 0, updated: 0,
+                    asks: vec![],
+                    updated_at: None,
+                    priority: Default::default(), rank: 0,
                 })
                 .unwrap();
             assert_eq!(made, id);
@@ -2778,7 +2782,7 @@ async fn the_person_writes_a_ticket_its_owner_takes_it_and_the_pm_hears_with_its
     let seen = until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
     let made = ticket_changed(&seen).into_iter().next().unwrap();
     assert_eq!((made.status, made.created_by.as_str(), made.priority, made.owner.as_deref()), (TicketStatus::Todo, "you", Priority::High, Some("qa")));
-    assert!(made.updated > 0);
+    assert!(made.updated_at.is_some());
     assert!(notice_to(&seen, 1).contains(&"You put T-1 on the board for qa · Test plan.".to_owned()), "{seen:#?}");
 
     // With no owner, the PM is asked to give it one — with its next message.

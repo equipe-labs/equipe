@@ -1000,7 +1000,9 @@ mod tests {
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: Some("Done: <form> & tests".into()),
-            asks: vec![], priority: Default::default(), rank: 0, updated: 0,
+            asks: vec![],
+            updated_at: None,
+            priority: Default::default(), rank: 0,
         }
     }
 

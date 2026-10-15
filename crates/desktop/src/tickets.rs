@@ -75,7 +75,7 @@ pub fn column_of(status: TicketStatus) -> TicketStatus {
 /// When a ticket last changed, as best known: the daemon's word, else when
 /// this window saw it move.
 pub fn changed_at(model: &Model, t: &Ticket) -> u64 {
-    if t.updated > 0 { t.updated } else { model.since.get(&t.id).copied().unwrap_or(0) }
+    t.updated_at.filter(|at| *at > 0).unwrap_or_else(|| model.since.get(&t.id).copied().unwrap_or(0))
 }
 
 /// Open tickets in board order: as the person placed them, else by number.
@@ -460,11 +460,11 @@ mod tests {
         let mut moved = ticket(3, "todo");
         moved.rank = 1;
         let mut old = ticket(8, "done");
-        old.updated = 100 * 86_400 - 30 * 86_400;
+        old.updated_at = Some(100 * 86_400 - 30 * 86_400);
         let mut fresh = ticket(9, "done");
-        fresh.updated = 100 * 86_400 - 3600;
+        fresh.updated_at = Some(100 * 86_400 - 3600);
         let mut cancelled = ticket(10, "cancelled");
-        cancelled.updated = 100 * 86_400 - 60;
+        cancelled.updated_at = Some(100 * 86_400 - 60);
         let m = model(vec![ticket(1, "proposed"), ticket(2, "todo"), moved, ticket(4, "in_progress"), ticket(5, "waiting"), ticket(6, "review"), old, fresh, cancelled]);
         let cols = columns(&m, &Filter::default(), false);
         let ids: Vec<Vec<u32>> = cols.iter().map(|c| c.cards.clone()).collect();
@@ -528,7 +528,7 @@ mod tests {
     #[test]
     fn several_chosen_take_one_edit_skipping_what_wouldnt_change_or_would_be_refused() {
         let mut done = ticket(3, "done");
-        done.updated = 1;
+        done.updated_at = Some(1);
         let mut urgent = ticket(2, "todo");
         urgent.priority = Priority::Urgent;
         let m = model(vec![ticket(1, "todo"), urgent, done]);

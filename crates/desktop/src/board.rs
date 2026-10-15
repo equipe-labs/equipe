@@ -308,7 +308,7 @@ pub fn inbox(model: &Model, filter: &Filter) -> Vec<Row> {
                 *s == section
                     && match need {
                         Need::Ticket(id) => model.tickets.iter().find(|t| t.id == *id).is_some_and(|t| filter.matches(model, t)),
-                        Need::Permission(_) => filter.is_empty(),
+                        Need::Permission(_) | Need::Questions(_) => filter.is_empty(),
                     }
             })
             .map(|(_, need)| need)
@@ -457,38 +457,117 @@ pub fn dependency_tree(model: &Model, open: &[&Ticket]) -> Vec<(TicketId, usize)
     out
 }
 
-/// The sidebar's groups: a project each (the squad's folder last), its open
-/// tickets — what waits for the person first, then work under way, to do,
-/// proposed; the latest first in each — and its finished ones apart.
-pub struct ProjectGroup<'a> {
-    /// `None`: the squad's own folder.
-    pub name: Option<String>,
-    pub at: Option<usize>,
-    pub open: Vec<&'a Ticket>,
-    pub done: Vec<&'a Ticket>,
+// ── the sidebar ──
+
+/// How a ticket shows in the sidebar, which lists only live work: a member
+/// at it now, or the person's turn. Everything else is in 나에게 (proposed,
+/// handed in) or 모든 일 (to do, blocked, not started, finished).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Live {
+    /// A member is in the middle of a turn on it: a spinner.
+    Working,
+    /// It waits on the person — 내 차례, or a member on it asks permission —
+    /// and they haven't answered yet: the orange dot.
+    YourTurn,
 }
 
-pub fn project_groups(model: &Model) -> Vec<ProjectGroup<'_>> {
-    let rank = |t: &Ticket| match t.status {
-        TicketStatus::Review | TicketStatus::Waiting => 0,
-        TicketStatus::InProgress => 1,
-        TicketStatus::Todo => 2,
-        _ => 3,
-    };
+/// At most this many live rows under a project; the rest behind "+N개 더".
+pub const SIDE_CAP: usize = 5;
+
+/// Whether a ticket is live work, and how.
+pub fn live(model: &Model, t: &Ticket) -> Option<Live> {
+    if t.status.is_closed() {
+        return None;
+    }
+    let asks = model.approvals.open_items().any(|a| a.ticket == Some(t.id));
+    let turn = t.status == TicketStatus::Waiting && !model.is_acted(t);
+    if turn || asks {
+        return Some(Live::YourTurn);
+    }
+    model.is_live(t).then_some(Live::Working)
+}
+
+/// A project in the sidebar: its live tickets (the person's turn first, then
+/// work under way, the latest first in each), capped at [`SIDE_CAP`], and
+/// how many of each there are in all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SideGroup {
+    /// `None`: the squad's shared folder.
+    pub name: Option<String>,
+    /// Its place among the squad's projects, for its colour.
+    pub at: Option<usize>,
+    pub rows: Vec<(TicketId, Live)>,
+    /// Live tickets past the cap.
+    pub more: usize,
+    pub working: usize,
+    pub waiting: usize,
+}
+
+impl SideGroup {
+    /// Nothing live in it: one muted line, no rows.
+    pub fn is_quiet(&self) -> bool {
+        self.working + self.waiting == 0
+    }
+
+    /// Its key among the folds: the project's name, the shared folder's "".
+    pub fn key(&self) -> String {
+        self.name.clone().unwrap_or_default()
+    }
+}
+
+/// The sidebar's groups: every project in the squad's order (a quiet one too,
+/// as one line to switch to), then the squad's shared folder when something
+/// in it is live. Finished work is never here: one line at the list's foot
+/// says how much finished today.
+pub fn side_groups(model: &Model) -> Vec<SideGroup> {
     let names = model.project_names();
+    let since = |t: &Ticket| model.since.get(&t.id).copied().unwrap_or(0);
     let mut out = Vec::new();
-    for (at, name) in names.iter().cloned().map(Some).enumerate().map(|(i, n)| (Some(i), n)).chain([(None, None)]) {
-        let here: Vec<&Ticket> = model.tickets.iter().filter(|t| model.ticket_project_name(t) == name).collect();
-        let latest = |t: &&Ticket| (std::cmp::Reverse(model.since.get(&t.id).copied().unwrap_or(0)), std::cmp::Reverse(t.id));
-        let mut open: Vec<&Ticket> = here.iter().copied().filter(|t| !t.status.is_closed()).collect();
-        open.sort_by_key(|t| (rank(t), latest(t)));
-        let mut done: Vec<&Ticket> = here.iter().copied().filter(|t| t.status.is_closed()).collect();
-        done.sort_by_key(latest);
-        if name.is_some() || !open.is_empty() || !done.is_empty() {
-            out.push(ProjectGroup { name, at, open, done });
+    for (at, name) in names.iter().cloned().enumerate().map(|(i, n)| (Some(i), Some(n))).chain([(None, None)]) {
+        let mut here: Vec<(&Ticket, Live)> = model.tickets.iter().filter(|t| model.ticket_project_name(t) == name).filter_map(|t| live(model, t).map(|l| (t, l))).collect();
+        if name.is_none() && here.is_empty() {
+            continue;
         }
+        here.sort_by_key(|(t, l)| (*l != Live::YourTurn, std::cmp::Reverse(since(t)), std::cmp::Reverse(t.id)));
+        let waiting = here.iter().filter(|(_, l)| *l == Live::YourTurn).count();
+        let working = here.len() - waiting;
+        let more = here.len().saturating_sub(SIDE_CAP);
+        let rows = here.into_iter().take(SIDE_CAP).map(|(t, l)| (t.id, l)).collect();
+        out.push(SideGroup { name, at, rows, more, working, waiting });
     }
     out
+}
+
+/// The built-in view of what finished lately, by its place in the views:
+/// where the sidebar's "최근 끝남" line goes.
+pub fn recent_done_view() -> usize {
+    builtin_views().iter().position(|v| v.query == "status:done").unwrap_or(0)
+}
+
+/// Where a click on a project's header in the sidebar lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadClick {
+    /// Its name: the project slice (the conversation and the board follow).
+    Name,
+    /// Its chevron: fold or unfold its rows.
+    Chevron,
+}
+
+/// What a click on a project's header does: `Some` slice to switch to (with
+/// `None` inside: every project), or a fold toggled in `folded` (by
+/// [`SideGroup::key`]). A click on the name of the project in focus goes back
+/// to every project; the shared folder has no slice, so its name folds it.
+pub fn head_click(click: HeadClick, project: Option<&str>, focus: Option<&str>, folded: &mut BTreeSet<String>) -> Option<Option<String>> {
+    match (click, project) {
+        (HeadClick::Name, Some(name)) => Some(if focus == Some(name) { None } else { Some(name.to_owned()) }),
+        (_, project) => {
+            let key = project.unwrap_or_default().to_owned();
+            if !folded.remove(&key) {
+                folded.insert(key);
+            }
+            None
+        }
+    }
 }
 
 /// The things listed, in order.
@@ -526,6 +605,10 @@ pub fn ticket_of(model: &Model, need: Need) -> Option<&Ticket> {
         Need::Ticket(id) => model.tickets.iter().find(|t| t.id == id),
         Need::Permission(id) => {
             let ticket = model.approvals.get(id)?.ticket?;
+            model.tickets.iter().find(|t| t.id == ticket)
+        }
+        Need::Questions(id) => {
+            let ticket = model.asked.get(id)?.ticket?;
             model.tickets.iter().find(|t| t.id == ticket)
         }
     }
@@ -917,19 +1000,129 @@ mod tests {
         assert_eq!(first_need(&t).as_deref(), Some("Create the API key"));
     }
 
+    /// A member on `ticket`, in the middle of a turn (`working`) or between turns.
+    fn on(m: &mut Model, session: u64, ticket: u32, working: bool) {
+        m.members.push(crate::state::Member {
+            session,
+            name: format!("m{session}"),
+            role: "frontend".into(),
+            presence: if working { crate::state::Presence::Working } else { crate::state::Presence::Ready },
+            verb: crate::state::Verb::Working,
+            ticket: Some(ticket),
+            memos: 0,
+            context: None,
+            model: None,
+            engine: None,
+            estimate: None,
+            target: None,
+            last_seen: 0,
+            failed: false,
+        });
+    }
+
+    fn rows_of(g: &SideGroup) -> Vec<(u32, Live)> {
+        g.rows.clone()
+    }
+
     #[test]
-    fn the_sidebar_groups_tickets_by_project_what_waits_first_the_finished_apart() {
-        let mut task = ticket(9, "todo", "/a", &[]);
+    fn the_sidebar_lists_only_live_work_the_persons_turn_first() {
+        let mut task = ticket(20, "in_progress", "/a", &[]);
         task.kind = TicketKind::Task;
         task.project = None;
-        let m = model(vec![ticket(1, "todo", "/a", &[]), ticket(2, "review", "/a", &[]), ticket(3, "in_progress", "/a", &[]), ticket(4, "done", "/a", &[]), ticket(5, "todo", "/b", &[]), task], &["/a", "/b"]);
-        let groups = project_groups(&m);
+        let tickets = vec![
+            ticket(1, "todo", "/a", &[]),
+            ticket(2, "review", "/a", &[]),
+            ticket(3, "in_progress", "/a", &[]),
+            ticket(4, "in_progress", "/a", &[]),
+            ticket(5, "proposed", "/a", &[]),
+            ticket(6, "done", "/a", &[]),
+            ticket(7, "waiting", "/a", &[]),
+            ticket(8, "cancelled", "/a", &[]),
+            ticket(9, "todo", "/b", &[]),
+            task,
+        ];
+        let mut m = model(tickets, &["/a", "/b"]);
+        on(&mut m, 2, 3, true);
+        on(&mut m, 3, 4, false);
+        let groups = side_groups(&m);
         let names: Vec<Option<String>> = groups.iter().map(|g| g.name.clone()).collect();
-        assert_eq!(names, [Some("a".to_string()), Some("b".to_string()), None], "the squad's folder last");
-        let open: Vec<u32> = groups[0].open.iter().map(|t| t.id).collect();
-        assert_eq!(open, [2, 3, 1]);
-        assert_eq!(groups[0].done.iter().map(|t| t.id).collect::<Vec<_>>(), [4]);
+        assert_eq!(names, [Some("a".to_string()), Some("b".to_string())], "the shared folder only while something in it is live");
+        assert_eq!(rows_of(&groups[0]), [(7, Live::YourTurn), (3, Live::Working)], "no review, proposal, to do, idle work or finished");
+        assert_eq!((groups[0].working, groups[0].waiting, groups[0].more), (1, 1, 0));
+        assert!(groups[1].is_quiet() && groups[1].rows.is_empty(), "a project with nothing live is one line");
         assert_eq!(groups[0].at, Some(0));
+        // The member on the shared folder's task gets to work: the folder shows, last.
+        on(&mut m, 4, 20, true);
+        let groups = side_groups(&m);
+        assert_eq!((groups[2].name.clone(), rows_of(&groups[2])), (None, vec![(20, Live::Working)]));
+        // A member asking permission on its ticket: the person's turn.
+        let ask: Approval = serde_json::from_value(serde_json::json!({"id": 1, "session": 3, "member": "m3", "ticket": 4, "tool": "Bash", "action": "ls", "reason": null})).unwrap();
+        m.approvals.push(ask);
+        assert_eq!(rows_of(&side_groups(&m)[0]), [(7, Live::YourTurn), (4, Live::YourTurn), (3, Live::Working)]);
+        // Answered here: it leaves until the daemon moves it.
+        m.act_on(7);
+        assert_eq!(rows_of(&side_groups(&m)[0]).first(), Some(&(4, Live::YourTurn)));
+        assert_eq!(live(&m, &m.tickets[5]), None, "done is never live");
+    }
+
+    #[test]
+    fn a_project_shows_five_live_rows_and_says_how_many_more() {
+        let mut tickets: Vec<Ticket> = (1..=7).map(|i| ticket(i, "in_progress", "/a", &[])).collect();
+        tickets.push(ticket(8, "waiting", "/a", &[]));
+        let mut m = model(tickets, &["/a"]);
+        for i in 1..=7 {
+            on(&mut m, u64::from(i) + 10, i, true);
+        }
+        m.since.insert(2, 500);
+        let g = &side_groups(&m)[0];
+        assert_eq!(g.rows.len(), SIDE_CAP);
+        assert_eq!((g.more, g.working, g.waiting), (3, 7, 1));
+        assert_eq!(g.rows[0], (8, Live::YourTurn), "the person's turn is never behind the cap");
+        assert_eq!(g.rows[1], (2, Live::Working), "then the latest to start");
+        assert_eq!(&g.rows[2..], [(7, Live::Working), (6, Live::Working), (5, Live::Working)]);
+    }
+
+    #[test]
+    fn what_finished_today_counts_from_local_midnight() {
+        let now = 1_760_600_000;
+        let midnight = crate::state::local_midnight(now);
+        assert!(midnight <= now && now - midnight < 86_400 + 3_600);
+        assert_eq!(crate::state::local_hm(midnight), "00:00");
+        assert_eq!(crate::state::local_midnight(midnight), midnight, "midnight is the day's own start");
+        assert!(crate::state::local_midnight(midnight - 1) < midnight, "a second before it is yesterday");
+        let mut m = model(vec![ticket(1, "done", "/a", &[]), ticket(2, "done", "/a", &[]), ticket(3, "cancelled", "/a", &[]), ticket(4, "done", "/a", &[]), ticket(5, "in_progress", "/a", &[])], &["/a"]);
+        m.since.insert(1, midnight - 60);
+        m.since.insert(2, midnight + 60);
+        m.since.insert(3, midnight + 60);
+        m.since.insert(5, midnight + 60);
+        m.unix = midnight + 3_600;
+        assert_eq!(m.done_today(), 1, "yesterday's, cancelled, unknown and open don't count");
+        // Past the next midnight, today's became yesterday's.
+        m.unix = midnight + 86_400 + 3_600;
+        assert_eq!(m.done_today(), 0);
+        // Finished before the window attached: the journal's time says when.
+        let mut early = ticket(9, "done", "/a", &[]);
+        early.updated_at = Some(midnight + 120);
+        let mut m = model(vec![early, ticket(10, "done", "/a", &[])], &["/a"]);
+        m.unix = midnight + 3_600;
+        assert_eq!(m.done_today(), 1);
+        assert_eq!(recent_done_view(), 1);
+        assert_eq!(builtin_views()[recent_done_view()].query, "status:done");
+    }
+
+    #[test]
+    fn a_headers_name_switches_the_project_its_chevron_folds() {
+        let mut folded = BTreeSet::new();
+        assert_eq!(head_click(HeadClick::Name, Some("web"), None, &mut folded), Some(Some("web".into())));
+        assert!(folded.is_empty(), "the name doesn't fold");
+        assert_eq!(head_click(HeadClick::Name, Some("web"), Some("web"), &mut folded), Some(None), "the one in focus: back to every project");
+        assert_eq!(head_click(HeadClick::Name, Some("api"), Some("web"), &mut folded), Some(Some("api".into())));
+        assert_eq!(head_click(HeadClick::Chevron, Some("web"), None, &mut folded), None, "the chevron doesn't switch");
+        assert!(folded.contains("web"));
+        head_click(HeadClick::Chevron, Some("web"), None, &mut folded);
+        assert!(folded.is_empty(), "and unfolds");
+        assert_eq!(head_click(HeadClick::Name, None, None, &mut folded), None, "the shared folder has no slice: it folds");
+        assert!(folded.contains(""));
     }
 
     #[test]

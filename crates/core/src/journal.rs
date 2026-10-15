@@ -420,6 +420,16 @@ impl Journal {
         Ok(())
     }
 
+    /// Members' questions waiting for the person (`ask_decision`), oldest
+    /// first: kept so a restart doesn't lose them.
+    pub fn questions(&self) -> Vec<equipe_protocol::decide::QuestionSet> {
+        self.meta("questions").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    pub fn set_questions(&self, sets: &[equipe_protocol::decide::QuestionSet]) -> Result<()> {
+        self.set_meta("questions", &serde_json::to_string(sets).unwrap_or_default())
+    }
+
     /// The PM's conversation threads: the project its desk conversation is
     /// about now (`None`: the whole squad), and each other thread's
     /// conversation id, put aside — keyed by project, `""` for the squad's.
@@ -624,8 +634,8 @@ impl Journal {
 
     fn query_tickets(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<Ticket>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree, merged, kind, off_main,
-                    priority, rank, updated_at
+            "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree, merged, kind, off_main, updated_at,
+                    priority, rank
              FROM tickets {filter} ORDER BY id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -645,10 +655,10 @@ impl Journal {
                 merged: r.get(12)?,
                 kind: TicketKind::parse(&r.get::<_, String>(13)?).unwrap_or_default(),
                 asks: Vec::new(),
-                priority: Priority::parse(&r.get::<_, String>(15)?).unwrap_or_default(),
-                rank: r.get(16)?,
-                updated: r.get::<_, i64>(17)?.max(0) as u64,
+                priority: Priority::parse(&r.get::<_, String>(16)?).unwrap_or_default(),
+                rank: r.get(17)?,
                 off_main: r.get::<_, Option<String>>(14)?.and_then(|o| serde_json::from_str(&o).ok()),
+                updated_at: r.get::<_, Option<i64>>(15)?.map(|at| at.max(0) as u64),
             };
             // A waiting ticket's asks are kept in its note; they travel as a list.
             t.asks = t.asks();
@@ -1134,7 +1144,9 @@ mod tests {
             off_main: None,
             created_by: "pm".into(),
             note: None,
-            asks: vec![], priority: Default::default(), rank: 0, updated: 0,
+            asks: vec![],
+            updated_at: None,
+            priority: Default::default(), rank: 0,
             kind: TicketKind::Code,
         }
     }
@@ -1176,7 +1188,7 @@ mod tests {
             j.create_ticket(&Ticket { priority: Priority::Urgent, ..ticket("Fire") }).unwrap();
             let mut t = j.ticket(1).unwrap().unwrap();
             assert_eq!((t.priority, t.rank), (Priority::Urgent, 0));
-            assert!(t.updated > 0, "when it last changed travels with it");
+            assert!(t.updated_at.is_some_and(|at| at > 0), "when it last changed travels with it");
             t.rank = -512;
             t.priority = Priority::Low;
             j.save_ticket(&t).unwrap();
@@ -1224,6 +1236,7 @@ mod tests {
         assert_eq!(tickets.len(), 2);
         assert_eq!((tickets[1].status, tickets[1].depends_on.clone()), (TicketStatus::InProgress, vec![1]));
         assert_eq!((tickets[0].merged, tickets[1].merged), (None, Some(false)));
+        assert!(tickets.iter().all(|t| t.updated_at.is_some_and(|at| at > 0)), "when each last changed travels with it");
         assert_eq!((tickets[0].off_main.clone(), tickets[1].off_main.clone()), (None, Some(equipe_protocol::OffMain::Conflict { detail: "a.rs".into() })));
         assert_eq!(j.ticket_work(2).unwrap().worktree, Some(PathBuf::from("/w/2")));
         assert_eq!(j.ticket_history(2).unwrap()[1], ("equipe".into(), "assigned".into(), "frontend".into()));

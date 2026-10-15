@@ -90,6 +90,8 @@
   "news.cancelled": "Cancelaste T-{id} · {title}.",
   "news.cannot_start": "✗ T-{id} no pudo empezar para {name}: {reason}",
   "news.commented": "Comentaste en T-{id}: {text}",
+  "news.decision.one": "{name} te pide que decidas · {question}",
+  "news.decision.other": "{name} te pide que decidas {count} cosas · {question}",
   "news.desk_saved": "✎ {name} {what} en la carpeta del equipo · /home undo lo deshace",
   "news.edited": "Cambiaste T-{id}: {what}",
   "news.handed_in": "{name} entregó T-{id} para tu revisión · {title}.",

@@ -90,6 +90,8 @@
   "news.cancelled": "Vous avez annulé T-{id} · {title}.",
   "news.cannot_start": "✗ T-{id} n'a pas pu démarrer pour {name} : {reason}",
   "news.commented": "Vous avez commenté T-{id} : {text}",
+  "news.decision.one": "{name} vous demande de décider · {question}",
+  "news.decision.other": "{name} vous demande de décider {count} choses · {question}",
   "news.desk_saved": "✎ {name} {what} dans le dossier de l'équipe · /home undo l'annule",
   "news.edited": "Vous avez modifié T-{id} : {what}",
   "news.handed_in": "{name} a rendu T-{id} pour votre revue · {title}.",

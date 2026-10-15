@@ -6,7 +6,9 @@
 //! table, CSV, math, a Mermaid diagram, images. `torture 6` is a PM's busy
 //! turn — long shell output, calls one after another, a failure, an edit,
 //! a comment, a subagent, news; `torture 7` holds a command running for a
-//! few seconds, to see a call under way.
+//! few seconds, to see a call under way; `torture 8` is a PM's long answer in
+//! Korean — paragraphs, a list, bold, ticket links — to read for wrapping and
+//! the measure.
 
 use std::time::Duration;
 
@@ -218,6 +220,7 @@ pub async fn turn(session: SessionId, part: usize, events: broadcast::Sender<Eve
         3 => stream(session, &long_block(), &events, seconds).await,
         5 => stream(session, PART5, &events, seconds).await,
         6 => activity(session, &events, seconds).await,
+        8 => stream(session, KOREAN, &events, seconds).await,
         7 => {
             send(tool(session, "Read", &format!("{SITE}/src/main.rs")));
             pause(100).await;
@@ -298,6 +301,24 @@ async fn activity(session: SessionId, events: &broadcast::Sender<Event>, seconds
 }
 
 const ACTIVITY: &str = "## 정리\n\n데몬은 하나만 떠 있고, PM 브리핑이 두 번 가던 문제는 `src/runtime.rs`에서 고쳤습니다. 로그는 `daemon.log`에 있고, 설정 이름은 `brief_pm` 그대로입니다.\n\n### 바뀐 점\n\n1. PM이 자기 일을 넘길 때는 브리핑을 보내지 않습니다\n2. 테스트 `runtime::brief::twice`가 이제 통과합니다 — 한 번 실패한 뒤 고쳐서 다시 돌렸고, 네 개 모두 통과했습니다\n\n---\n\n**T-47**에는 확대 문제를 고쳐 달라고 댓글을 남겼습니다.";
+
+/// A PM's long answer in Korean, as one came to the person: words that broke
+/// between syllables at the end of a line ("프로젝 / 트", "지 / 시하기").
+const KOREAN: &str = "좋은 질문이에요. 지금 구조에서는 사이드바에서 프로젝트를 누르면 PM이 그 프로젝트 이야기로 대화를 이어 가고, 다른 프로젝트 이야기는 접힌 줄로 따로 모입니다. 그래서 프로젝트마다 대화방을 따로 만들 필요는 없어요.
+
+## 하고 싶은 것
+
+말씀하신 건 **매번 지시하지 않아도 PM이 알아서 다음 일을 고르는 흐름**을 만들고 싶은데, 그게 지금 어디까지 되는지 궁금하신 거죠? 정리하면 이렇습니다.
+
+- 보드에 할 일이 쌓여 있으면 PM이 우선순위대로 하나씩 멤버에게 넘깁니다. 넘길 때마다 대화에 짧게 알려 드려요.
+- 멤버가 일을 끝내면 [T-119](ticket:119)처럼 **검토할 일**로 올라오고, 받은편지함에서 바로 수락하거나 변경을 요청할 수 있습니다.
+- 결정이 필요한 일만 여러분 차례로 남고, 나머지는 기다리지 않고 계속 진행됩니다.
+
+### 아직 안 되는 것
+
+다만 두 가지는 아직 손으로 하셔야 합니다. 첫째, 새 프로젝트의 방향을 정하는 일은 PM이 제안까지만 하고 확정은 여러분이 해 주셔야 하고, 둘째, 배포처럼 되돌리기 어려운 일은 항상 허락을 받고 진행합니다. Internationalization처럼 아주 긴 영어 단어나 https://example.com/very/long/path/that/keeps/going/without/any/spaces/at/all 같은 주소는 줄 끝에서 어쩔 수 없이 잘릴 수 있어요.
+
+원하시면 **T-120**으로 \"자동으로 다음 일 고르기\" 설정을 만들어서, 켜 두면 PM이 하루에 한 번 보드를 훑고 할 일을 정리하도록 해 둘게요. 어떻게 할까요?";
 
 /// A picture for the reply to show: a soft gradient with a frame.
 fn write_picture() {

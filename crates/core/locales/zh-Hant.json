@@ -90,6 +90,8 @@
   "news.cancelled": "你取消了 T-{id} · {title}。",
   "news.cannot_start": "✗ {name} 無法開始 T-{id}：{reason}",
   "news.commented": "你在 T-{id} 下留言：{text}",
+  "news.decision.one": "{name} 請你做個決定 · {question}",
+  "news.decision.other": "{name} 請你決定 {count} 件事 · {question}",
   "news.desk_saved": "✎ {name} 在小隊資料夾中{what} · /home undo 可復原",
   "news.edited": "你修改了 T-{id}：{what}",
   "news.handed_in": "{name} 提交了 T-{id} 等你審查 · {title}。",

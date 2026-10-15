@@ -15,7 +15,7 @@ use gpui_kit::*;
 use super::links::{self, Link};
 use super::{Open, ShellRef, base_dir, code, is_dark, open_file, plugins, prose, stream, with_shell};
 use crate::icons::{Icon, icon};
-use crate::theme::{MONO, Palette};
+use crate::theme::{HEADING_ABOVE, HEADING_BELOW, LINK_UNDERLINE, LINK_UNDERLINE_ALPHA, LIST_GAP, MONO, PARAGRAPH_GAP, Palette};
 
 /// How a text view's text looks: its size and line height, its colour, and
 /// whether it is still streaming in.
@@ -44,8 +44,14 @@ pub fn style(p: Palette, look: &Look) -> TextViewStyle {
     // table to scroll), so a wide table scrolls.
     let mut table_cell = StyleRefinement::default().text_color(to_hsla(p.text2)).border_color(to_hsla(p.hair));
     table_cell.text.white_space = Some(WhiteSpace::Nowrap);
+    // The body's spacing, in proportion for smaller text (a note's).
+    let em = |at_body: f32| rems(at_body * size / crate::theme::BODY / 16.);
+    let link_underline = UnderlineStyle { thickness: px(LINK_UNDERLINE), color: Some(to_hsla(p.accent).opacity(LINK_UNDERLINE_ALPHA)), wavy: false };
     TextViewStyle::default()
         .with_foreground(to_hsla(look.color))
+        .with_paragraph_gap(em(PARAGRAPH_GAP))
+        .with_list_item_gap(em(LIST_GAP))
+        .with_link_underline(link_underline)
         .with_muted_foreground(to_hsla(p.muted))
         .with_link(to_hsla(p.accent))
         .with_selection(to_hsla(p.accent_bg))
@@ -63,7 +69,8 @@ pub fn style(p: Palette, look: &Look) -> TextViewStyle {
                 2 => 1.,
                 _ => 0.,
             };
-            StyleRefinement::default().text_size(px(size + grow)).font_weight(FontWeight::SEMIBOLD)
+            // More room above than below: it belongs to what follows.
+            StyleRefinement::default().text_size(px(size + grow)).font_weight(FontWeight::SEMIBOLD).mt(px(HEADING_ABOVE)).pb(px(HEADING_BELOW))
         })
         .with_dark(is_dark(&p))
 }

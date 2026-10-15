@@ -640,9 +640,9 @@ impl Shell {
         let model = &self.model;
         self.board.tk.sent.retain(|id, (_, shown, at)| at.elapsed().as_secs() < 15 && model.tickets.iter().find(|t| t.id == *id) == Some(shown));
         if let Some(t) = self.picked().filter(|_| self.board.view.page.is_some())
-            && self.board.tk.history_asked != Some((t.id, t.updated))
+            && self.board.tk.history_asked != Some((t.id, t.updated_at.unwrap_or(0)))
         {
-            self.board.tk.history_asked = Some((t.id, t.updated));
+            self.board.tk.history_asked = Some((t.id, t.updated_at.unwrap_or(0)));
             self.send_command(Command::TicketHistory { squad: self.model.squad.clone(), ticket: t.id });
         }
         let _ = cx;

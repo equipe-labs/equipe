@@ -90,6 +90,8 @@
   "news.cancelled": "T-{id} をキャンセルしました · {title}。",
   "news.cannot_start": "✗ T-{id} を {name} が開始できませんでした: {reason}",
   "news.commented": "T-{id} にコメントしました: {text}",
+  "news.decision.one": "{name} があなたの決定を求めています · {question}",
+  "news.decision.other": "{name} が {count} 件の決定を求めています · {question}",
   "news.desk_saved": "✎ {name} がスクワッドのフォルダで {what} · /home undo で元に戻せます",
   "news.edited": "T-{id} を変更しました: {what}",
   "news.handed_in": "{name} が T-{id} をレビューに出しました · {title}。",

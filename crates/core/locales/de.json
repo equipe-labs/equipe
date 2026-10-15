@@ -90,6 +90,8 @@
   "news.cancelled": "Du hast T-{id} abgebrochen · {title}.",
   "news.cannot_start": "✗ T-{id} konnte für {name} nicht starten: {reason}",
   "news.commented": "Du hast T-{id} kommentiert: {text}",
+  "news.decision.one": "{name} bittet dich um eine Entscheidung · {question}",
+  "news.decision.other": "{name} bittet dich um {count} Entscheidungen · {question}",
   "news.desk_saved": "✎ {name} {what} im Ordner des Squads · /home undo nimmt es zurück",
   "news.edited": "Du hast T-{id} geändert: {what}",
   "news.handed_in": "{name} hat T-{id} zur Review abgegeben · {title}.",

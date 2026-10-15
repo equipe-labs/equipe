@@ -37,7 +37,7 @@ use crate::render::{self, Tones, hash_of, plugins, tools};
 use crate::state::{Model, Presence};
 use crate::icons::{Icon, icon};
 use crate::motion;
-use crate::theme::{BODY, CONTROL, ICON_SM, MONO, Palette, R_LG, R_MD, R_SM, SMALL, look};
+use crate::theme::{BODY, BODY_LINE, CONTROL, ICON_SM, MEASURE, META, META_LINE, MONO, Palette, R_LG, R_MD, R_SM, SMALL, SMALL_LINE, TAIL_ROOM, look};
 use crate::tips::tip;
 
 /// Where text starts inside the column: the cards' and the composer's inner
@@ -48,8 +48,7 @@ const TEXT_INSET: f32 = 13.;
 const ARRIVING: std::time::Duration = std::time::Duration::from_millis(400);
 use crate::{Screen, Shell};
 
-/// Reading width: about 48 Korean characters.
-const COLUMN: f32 = 720.;
+use crate::theme::COLUMN;
 /// Text views kept for rows scrolled out of sight, so coming back to them
 /// doesn't parse their Markdown again.
 const VIEWS_KEPT: usize = 96;
@@ -454,7 +453,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                     .child(div().flex_none().font_family(MONO).text_size(px(13.)).text_color(p.accent).child(format!("T-{}", t.id)))
                     .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(FontWeight::SEMIBOLD).child(t.title.clone())),
             )
-            .child(div().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(hint))
+            .child(div().text_size(px(META)).line_height(px(META_LINE)).text_color(p.muted).child(hint))
     });
     let main = v_flex()
         .flex_1()
@@ -470,7 +469,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 .w_full()
                 .max_w(px(COLUMN))
                 .px_4()
-                .child(v_flex().children(approvals::for_you(shell, cx)).children(approvals::approval(shell, cx)))
+                .child(v_flex().children(approvals::for_you(shell, cx)).children(approvals::approval(shell, cx)).children(super::decide::docked(shell, cx)))
                 .child(composer::render(shell, cx)),
         )
         .children(lightbox(shell, cx));
@@ -499,7 +498,7 @@ fn empty(p: Palette, title: &'static str, text: impl Into<SharedString>) -> impl
         .justify_center()
         .gap_3()
         .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
-        .child(div().text_size(px(BODY)).line_height(px(24.)).text_color(p.text2).text_center().child(text.into()))
+        .child(div().text_size(px(BODY)).line_height(px(BODY_LINE)).text_color(p.text2).text_center().child(text.into()))
 }
 
 #[derive(Clone)]
@@ -627,6 +626,10 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
             // It fades and slides up into place, bottom-centre over the composer.
             .with_jump_button_transition(motion::BASE)
             .with_row_style(StyleRefinement::default().pb(px(8.)).pl(px(TEXT_INSET)).pr(px(TEXT_INSET)))
+            // Room under the last line, so it never sits on the composer's
+            // edge; read back, the rows fade out there under the jump pill.
+            .with_list_style(StyleRefinement::default().pt(px(8.)).pb(px(TAIL_ROOM)))
+            .with_bottom_fade(p.bg)
             .with_jump_button_label(t!("chat.jump_to_bottom"))
             // A pill in the app's colours, with its words beside the arrow: on
             // its own the arrow sat white on white.
@@ -691,7 +694,7 @@ fn elsewhere_row(rows: &Rows, fold: u64, said: usize, open: bool, window: &mut W
         .gap(px(10.))
         .items_center()
         .cursor_pointer()
-        .text_size(px(12.))
+        .text_size(px(META))
         .text_color(p.muted)
         .hover(move |s| s.text_color(p.text2))
         .child(rule())
@@ -720,6 +723,11 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
     let key = rows.serial << 24 | ix as u64;
     let opened = |part: u32| rows.opened.contains(&(key, part));
     match &rows.blocks[ix] {
+        // The person's answers to a member's questions: one line that opens.
+        Block::User(text) if crate::decide::decided(text).is_some() => {
+            let decided = crate::decide::decided(text).unwrap_or(crate::decide::Decided::Closed);
+            super::decide::decided_row(p, rows.tones, rows.handle.clone(), key, &decided, rows.is_open(key, super::decide::PART_DECIDED, false), window, cx)
+        }
         Block::User(text) => user_row(rows, key, text, opened(PART_MORE), rows.project_of(ix), cx),
         Block::Reply { text, first, live, worked } => reply_row(rows, ix, key, text, *first, *live, worked.as_ref(), window, cx),
         Block::Steps(lines) => group(rows, key, lines, window, cx),
@@ -735,7 +743,7 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             .h(px(24.))
             .gap(px(6.))
             .items_center()
-            .text_size(px(12.))
+            .text_size(px(META))
             .text_color(p.muted)
             .child(icon(Icon::Clock, 12., p.muted))
             .child(format!("{} · {}", worked.took(), worked.at))
@@ -745,11 +753,11 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             let chapter = text.starts_with('─');
             let (markdown, full) = view::prepare(text, false, &|_| true);
             let state = rows.views.borrow_mut().get(view_key(key, 1), &markdown, cx);
-            let look = Look { size: SMALL, line: 20., color: p.muted, live: false };
+            let look = Look { size: SMALL, line: SMALL_LINE, color: p.muted, live: false };
             div()
                 .when(chapter, |d| d.mt_3())
                 .text_size(px(SMALL))
-                .line_height(px(20.))
+                .line_height(px(SMALL_LINE))
                 .text_color(p.muted)
                 .child(view::configure(TextView::new(&state), p, look, key, Arc::new(full)))
                 .into_any_element()
@@ -762,7 +770,7 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
                 .child(chevron(p.muted, progress));
             let body = (progress > 0.).then(|| {
                 let state = rows.views.borrow_mut().get(view_key(key, 3), text, cx);
-                let look = Look { size: SMALL, line: 20., color: p.muted, live: false };
+                let look = Look { size: SMALL, line: SMALL_LINE, color: p.muted, live: false };
                 motion::Reveal::new(
                     ("thought-body", key),
                     progress,
@@ -774,7 +782,7 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
                         .border_l_1()
                         .border_color(p.hair)
                         .text_size(px(SMALL))
-                        .line_height(px(20.))
+                        .line_height(px(SMALL_LINE))
                         .text_color(p.muted)
                         .child(view::configure(TextView::new(&state), p, look, key, Arc::default()))
                         .into_any_element(),
@@ -794,12 +802,12 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
         Block::Error { message, next } => v_flex()
             .gap_1()
             .text_size(px(BODY))
-            .line_height(px(24.))
+            .line_height(px(BODY_LINE))
             .child(
                 h_flex()
                     .gap_2()
                     .items_start()
-                    .child(div().h(px(24.)).flex().items_center().flex_none().child(icon(Icon::Alert, ICON_SM, rows.tones.danger)))
+                    .child(div().h(px(BODY_LINE)).flex().items_center().flex_none().child(icon(Icon::Alert, ICON_SM, rows.tones.danger)))
                     .child(div().min_w_0().font_weight(FontWeight::SEMIBOLD).child(SelectableText::new(("error", key), message.clone()))),
             )
             .children(next.clone().map(|next| {
@@ -833,7 +841,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
     let p = rows.p;
     let (markdown, full) = view::prepare(text, live, &|n| rows.opened.contains(&(key, n as u32)));
     let state = rows.views.borrow_mut().get(view_key(key, 0), &markdown, cx);
-    let look = Look { size: BODY, line: 24., color: p.text, live };
+    let look = Look { size: BODY, line: BODY_LINE, color: p.prose, live };
     let body = view::configure(TextView::new(&state), p, look, key, Arc::new(full));
     let group: SharedString = format!("reply-{key}").into();
     // After a group of calls or the news, a little air before the words.
@@ -865,7 +873,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
             .ml(px(-5.))
             .gap(px(2.))
             .items_center()
-            .text_size(px(12.))
+            .text_size(px(META))
             .text_color(p.muted)
             .when(!latest, |r| r.invisible().group_hover(group.clone(), |s| s.visible()))
             .children(items)
@@ -880,13 +888,14 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
                     .mb_1()
                     .gap(px(6.))
                     .items_center()
-                    .text_size(px(12.))
+                    .text_size(px(META))
                     .text_color(p.muted)
                     .child(div().size(px(6.)).rounded_full().bg(rows.who.color))
                     .child(rows.who.name.clone()),
             )
         })
-        .child(div().text_size(px(BODY)).line_height(px(24.)).text_color(p.text).child(body))
+        // The measure: a long line is hard to follow back to the next.
+        .child(div().max_w(px(MEASURE)).text_size(px(BODY)).line_height(px(BODY_LINE)).text_color(p.prose).child(body))
         .children(actions)
         .into_any_element()
 }
@@ -953,7 +962,7 @@ fn disclosure_head(rows: &Rows, id: (&'static str, u64), part: u32, key: u64, fi
         .gap(px(6.))
         .items_center()
         .text_size(px(SMALL))
-        .line_height(px(20.))
+        .line_height(px(SMALL_LINE))
         .text_color(p.muted)
         .cursor_pointer()
         .hover(move |s| if fill { s.bg(p.wash) } else { s.text_color(p.text2) })
@@ -1057,15 +1066,15 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
         .children(mark)
         .child(title)
         .children(one.and_then(diff_stat).map(|(a, r)| stat_chip(rows, a, r)))
-        .children(one.and_then(|l| l.exit.filter(|_| failed)).map(|code| div().flex_none().px_1().rounded(px(4.)).bg(t.danger_bg).text_size(px(12.)).text_color(t.danger).child(t!("chat.exit_code", code = code))))
-        .children(activity::total_ms(lines).map(|ms| div().flex_none().text_size(px(12.)).text_color(p.muted).child(tools::duration(ms))))
+        .children(one.and_then(|l| l.exit.filter(|_| failed)).map(|code| div().flex_none().px_1().rounded(px(4.)).bg(t.danger_bg).text_size(px(META)).text_color(t.danger).child(t!("chat.exit_code", code = code))))
+        .children(activity::total_ms(lines).map(|ms| div().flex_none().text_size(px(META)).text_color(p.muted).child(tools::duration(ms))))
         // A call under way counts its seconds, so a long one doesn't look stuck.
         .children(
             rows.step_since
                 .filter(|_| status == Status::Running)
                 .map(|since| since.elapsed())
                 .filter(|took| took.as_secs() >= 1)
-                .map(|took| div().flex_none().text_size(px(12.)).text_color(p.muted).child(crate::convo::elapsed(took))),
+                .map(|took| div().flex_none().text_size(px(META)).text_color(p.muted).child(crate::convo::elapsed(took))),
         )
         .when(openable, |h| h.child(chevron(p.muted, progress)));
     let head = if !openable { head.cursor_default() } else { head };
@@ -1121,8 +1130,8 @@ fn call_row(rows: &Rows, key: u64, at: u32, line: &ToolLine, rule: bool, window:
         .child(div().flex_none().text_color(if failed { t.danger } else { p.muted }).child(activity::phrase(&line.verb, running)))
         .child(linked(rows, ("call-object", key << 8 | at as u64), &line.text(), p.text2, true))
         .children(diff_stat(line).map(|(a, r)| stat_chip(rows, a, r)))
-        .children(line.exit.filter(|_| failed).map(|code| div().flex_none().px_1().rounded(px(4.)).bg(t.danger_bg).text_size(px(12.)).text_color(t.danger).child(t!("chat.exit_code", code = code))))
-        .children(line.ms.filter(|_| !running).map(|ms| div().flex_none().text_size(px(12.)).text_color(p.muted).child(tools::duration(ms))))
+        .children(line.exit.filter(|_| failed).map(|code| div().flex_none().px_1().rounded(px(4.)).bg(t.danger_bg).text_size(px(META)).text_color(t.danger).child(t!("chat.exit_code", code = code))))
+        .children(line.ms.filter(|_| !running).map(|ms| div().flex_none().text_size(px(META)).text_color(p.muted).child(tools::duration(ms))))
         .when(more, |h| h.child(chevron(p.muted, progress)));
     let body = (progress > 0.).then(|| motion::Reveal::new(("call-body", key << 8 | at as u64), progress, div().opacity(progress).px_3().pb_2().child(call_body(rows, key, at, line, failed, window, cx)).into_any_element()));
     v_flex().when(rule, |c| c.border_t_1().border_color(p.hair)).child(head).children(body).into_any_element()
@@ -1145,16 +1154,16 @@ fn call_body(rows: &Rows, key: u64, at: u32, line: &ToolLine, failed: bool, _win
                     .max_h(px(160.))
                     .overflow_y_scroll()
                     .font_family(MONO)
-                    .text_size(px(12.))
-                    .line_height(px(18.))
+                    .text_size(px(META))
+                    .line_height(px(META_LINE))
                     .text_color(p.text2)
                     .child(SelectableText::new(("call-command-text", id), format!("$ {full}")))
                     .into_any_element(),
             );
         } else {
             let state = rows.views.borrow_mut().get(hash_of(("call-text", id)), full, cx);
-            let look = Look { size: SMALL, line: 20., color: p.text2, live: false };
-            parts.push(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.text2).child(view::configure(TextView::new(&state), p, look, key, Arc::default())).into_any_element());
+            let look = Look { size: SMALL, line: SMALL_LINE, color: p.text2, live: false };
+            parts.push(div().text_size(px(SMALL)).line_height(px(SMALL_LINE)).text_color(p.text2).child(view::configure(TextView::new(&state), p, look, key, Arc::default())).into_any_element());
         }
     }
     if let Some((output, skipped)) = &line.output {
@@ -1165,8 +1174,8 @@ fn call_body(rows: &Rows, key: u64, at: u32, line: &ToolLine, failed: bool, _win
                 .px_3()
                 .py(px(6.))
                 .font_family(MONO)
-                .text_size(px(12.))
-                .line_height(px(18.))
+                .text_size(px(META))
+                .line_height(px(META_LINE))
                 .text_color(if failed { t.danger } else { p.text2 })
                 .when(*skipped > 0, |c| c.child(div().text_color(p.muted).child(t!("chat.output_before", count = *skipped))))
                 .child(div().id(("call-output", id)).max_h(px(220.)).overflow_y_scroll().child(SelectableText::new(("call-output-text", id), output.trim_end().to_owned())))
@@ -1189,7 +1198,7 @@ fn diff_lines(rows: &Rows, id: u64, card: tools::DiffCard, path: Option<&str>) -
         .rounded(px(R_SM))
         .bg(p.code_bg)
         .overflow_hidden()
-        .child(h_flex().px_2().py(px(4.)).gap_2().text_size(px(12.)).child(chip))
+        .child(h_flex().px_2().py(px(4.)).gap_2().text_size(px(META)).child(chip))
         .child(
             div().id(("diff-lines", id)).max_h(px(320.)).overflow_y_scroll().pb_1().children(card.lines.into_iter().map(move |l| {
                 let (sign, bg, color) = match l.kind {
@@ -1202,8 +1211,8 @@ fn diff_lines(rows: &Rows, id: u64, card: tools::DiffCard, path: Option<&str>) -
                 h_flex()
                     .px_2()
                     .font_family(MONO)
-                    .text_size(px(12.))
-                    .line_height(px(18.))
+                    .text_size(px(META))
+                    .line_height(px(META_LINE))
                     .when_some(bg, |row, bg| row.bg(bg))
                     .text_color(color)
                     .child(div().w(px(14.)).flex_none().text_color(match l.kind {
@@ -1291,12 +1300,12 @@ fn waiting(rows: &Rows, key: u64, id: &'static str, raw: &str, mark: Rgba, note:
                     .border_dashed()
                     .border_color(p.hair)
                     .text_size(px(BODY))
-                    .line_height(px(24.))
+                    .line_height(px(BODY_LINE))
                     .text_color(p.text2)
                     .child(SelectableText::new((id, key), parts.text.clone())),
             )
         })
-        .child(h_flex().gap_1p5().pr(px(2.)).items_center().text_size(px(12.)).text_color(p.muted).child(div().size(px(6.)).rounded_full().bg(mark)).child(note))
+        .child(h_flex().gap_1p5().pr(px(2.)).items_center().text_size(px(META)).text_color(p.muted).child(div().size(px(6.)).rounded_full().bg(mark)).child(note))
         .into_any_element()
 }
 
@@ -1310,7 +1319,7 @@ fn user_row(rows: &Rows, key: u64, raw: &str, open: bool, project: Option<(Strin
     let text = parts.text.as_str();
     let long = text.lines().count() > USER_LINES || text.chars().count() > USER_LINES * 36;
     let clamped = long && !open;
-    let look = Look { size: BODY, line: 24., color: p.text, live: false };
+    let look = Look { size: BODY, line: BODY_LINE, color: p.prose, live: false };
     let body = (!text.is_empty()).then(|| {
         let state = rows.views.borrow_mut().get(view_key(key, 2), &escape_markdown(text), cx);
         TextView::new(&state).style(view::style(p, &look)).selectable(true).when(clamped, |v| v.max_lines(USER_LINES))
@@ -1341,8 +1350,8 @@ fn user_row(rows: &Rows, key: u64, raw: &str, open: bool, project: Option<(Strin
             .rounded(px(crate::theme::R_LG))
             .bg(p.wash)
             .text_size(px(BODY))
-            .line_height(px(24.))
-            .text_color(p.text)
+            .line_height(px(BODY_LINE))
+            .text_color(p.prose)
             .child(body)
             .children(more)
     });
@@ -1466,7 +1475,7 @@ fn side_panel(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement
                 .gap_2()
                 .items_baseline()
                 .text_size(px(SMALL))
-                .child(div().flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
+                .child(div().flex_none().font_family(MONO).text_size(px(META)).text_color(p.muted).child(format!("T-{id}")))
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(FontWeight::SEMIBOLD).child(ticket.title.clone())),
         )
         .child(button("side-expand", Icon::Expand, t!("chat.side_expand")).on_click(cx.listener(move |this, _, _, cx| {
@@ -1524,7 +1533,7 @@ fn find_bar(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement +
         .border_color(p.hair)
         .text_size(px(SMALL))
         .child(div().flex_1().min_w_0().child(Input::new(&input).appearance(false).cleanable(false)))
-        .child(div().flex_none().pr_1().text_size(px(12.)).text_color(p.muted).child(count))
+        .child(div().flex_none().pr_1().text_size(px(META)).text_color(p.muted).child(count))
         .child(button("find-prev", Icon::ChevronUp, t!("chat.find_previous"), "⇧⏎").on_click(cx.listener(|this, _, _, cx| this.find_step(true, cx))))
         .child(button("find-next", Icon::ChevronDown, t!("chat.find_next"), "⏎").on_click(cx.listener(|this, _, _, cx| this.find_step(false, cx))))
         .child(button("find-close", Icon::X, t!("chat.find_close"), "Esc").on_click(cx.listener(|this, _, window, cx| this.find_close(window, cx))));
@@ -1579,9 +1588,19 @@ impl Shell {
             (None, Some(Block::Thought { .. })) => PART_THOUGHT,
             (None, Some(Block::News(_))) => PART_NEWS,
             (None, Some(Block::YourTurn { .. })) => yourturn::PART_SENT,
+            (None, Some(Block::User(text))) if crate::decide::decided(text).is_some() => super::decide::PART_DECIDED,
             _ => PART_GROUP,
         };
         self.chat_toggle(row, part, cx);
+    }
+
+    /// Open or close the conversation's latest decided row (the snapshot script's).
+    #[cfg(feature = "snapshot")]
+    pub fn chat_open_decided(&mut self, cx: &mut Context<Self>) {
+        let at = self.chat.blocks.iter().rposition(|b| matches!(b, Block::User(text) if crate::decide::decided(text).is_some()));
+        if let Some(ix) = at {
+            self.chat_turn(ix, None, cx);
+        }
     }
 
     /// Open `ticket` beside the conversation.

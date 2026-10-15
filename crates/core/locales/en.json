@@ -90,6 +90,8 @@
   "news.cancelled": "You cancelled T-{id} · {title}.",
   "news.cannot_start": "✗ T-{id} couldn't start for {name}: {reason}",
   "news.commented": "You commented on T-{id}: {text}",
+  "news.decision.one": "{name} asks you to decide · {question}",
+  "news.decision.other": "{name} asks you to decide {count} things · {question}",
   "news.desk_saved": "✎ {name} {what} in the squad's folder · /home undo takes it back",
   "news.edited": "You changed T-{id}: {what}",
   "news.handed_in": "{name} handed in T-{id} for your review · {title}.",

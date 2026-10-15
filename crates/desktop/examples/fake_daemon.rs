@@ -8,7 +8,8 @@
 //! thread; accept, merge, reopen, resume and cancel move tickets as the daemon
 //! would — and so do the person's own create, edit, move and comment (by
 //! `equipe_core::board`'s rules), each kept in the ticket's record.
-//! `FAKE_EMPTY=1` starts with nothing waiting for the person.
+//! `FAKE_EMPTY=1` starts with nothing waiting for the person;
+//! `FAKE_BUSY=1` adds four members at work in web and more finished today.
 //!
 //! ```text
 //! export EQUIPE_HOME=$(mktemp -d) EQUIPE_SQUAD=demo
@@ -23,6 +24,12 @@
 //! its news last in the PM's conversation; `FAKE_TURN=elsewhere` also answers
 //! it from "another screen" after `FAKE_TURN_AFTER` ms (default 5000).
 //!
+//! `FAKE_DECIDE=1` has the PM put a decision to the person — two questions,
+//! the second several-pick — and backend one more about T-70;
+//! `FAKE_DECIDE=elsewhere` answers the PM's from "another screen" after
+//! `FAKE_DECIDE_AFTER` ms (default 5000). Answered here, the answers go to the
+//! member as the person's message and it replies.
+//!
 //! Pairing a phone: a code at once, and two phones paired already.
 //! `FAKE_PAIR=ask` has a phone ask 1.5 s after the code shows (`allow` pairs
 //! it); `relay` fails as an unreachable relay would; `silent` never answers,
@@ -33,6 +40,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use equipe_core::gateway;
+use equipe_core::protocol::decide::{Answer, Choice, Question, QuestionSet};
 use equipe_core::protocol::rpc::{self, Hello, Message};
 use equipe_core::protocol::{Access, Approval, Command, Engine, Entry, Estimate, Event, Member, Priority, SessionId, SessionInfo, SessionState, Snapshot, Ticket, TicketEntry, TicketStatus, TurnOutcome, Usage, WorkInfo};
 use equipe_providers::credentials::equipe_home;
@@ -247,8 +255,121 @@ fn board() -> Vec<Ticket> {
     if your_turn().is_some() {
         out.push(turn_ticket());
     }
+    if busy() {
+        out.extend(BUSY.iter().map(|(id, _, who, title)| ticket(*id, "in_progress", "web", who, title, "", &[], None, None)));
+        out.extend([
+            ticket(84, "waiting", "web", "frontend", "도메인 DNS 레코드 확인", "", &[], None, Some("Waiting on you:\n- [ ] DNS에 CNAME 추가")),
+            ticket(85, "todo", "web", "frontend", "장바구니 수량 버튼 접근성", "", &[], None, None),
+            ticket(86, "todo", "web", "qa", "결제 회귀 테스트 목록", "", &[], None, None),
+            ticket(87, "done", "web", "qa", "로그인 오류 메시지 문구", "", &[], None, None),
+            ticket(88, "done", "app", "designer", "스플래시 화면 색 조정", "", &[], None, None),
+            ticket(89, "done", "api", "backend", "주문 상태 웹훅", "", &[], None, None),
+        ]);
+        // Three finished within the hour or two, the rest days ago.
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        for t in out.iter_mut() {
+            t.updated_at = Some(match t.id {
+                87 => now - 600,
+                88 => now - 3_600,
+                89 => now - 2 * 3_600,
+                _ if t.status.is_closed() => now - 2 * 86_400,
+                _ => now - 25 * 60,
+            });
+        }
+    }
     out
 }
+
+/// `FAKE_DECIDE`: the PM's two questions and backend's one wait for the person.
+fn deciding() -> Option<String> {
+    std::env::var("FAKE_DECIDE").ok().filter(|v| !v.is_empty() && v != "0")
+}
+
+/// The question sets still waiting.
+fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
+    static QUESTIONS: std::sync::OnceLock<std::sync::Mutex<Vec<QuestionSet>>> = std::sync::OnceLock::new();
+    QUESTIONS.get_or_init(|| {
+        let choice = |label: &str, description: &str| Choice { label: label.into(), description: description.into() };
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let sets = vec![
+            QuestionSet {
+                id: 9001,
+                session: 1,
+                member: "pm".into(),
+                ticket: None,
+                questions: vec![
+                    Question {
+                        question: "로그인은 어떤 방식으로 만들까요?".into(),
+                        header: "로그인".into(),
+                        options: vec![
+                            choice("이메일 매직 링크 (추천)", "비밀번호 없이 메일 링크로 로그인 — 가장 빨리 만들 수 있습니다"),
+                            choice("Google 로그인", "한 번에 가입되지만 Google 계정이 있어야 합니다"),
+                            choice("이메일 + 비밀번호", "익숙하지만 재설정 흐름까지 만들어야 합니다"),
+                        ],
+                        multi_select: false,
+                    },
+                    Question {
+                        question: "첫 릴리스에 어떤 화면을 넣을까요?".into(),
+                        header: "범위".into(),
+                        options: vec![
+                            choice("온보딩", "세 화면 — 시안이 T-60에 있습니다"),
+                            choice("주문 내역", "api의 페이지네이션(T-70) 다음에"),
+                            choice("설정", "알림·계정 관리"),
+                        ],
+                        multi_select: true,
+                    },
+                ],
+                asked_at: now.saturating_sub(90),
+            },
+            QuestionSet {
+                id: 9002,
+                session: 3,
+                member: "backend".into(),
+                ticket: Some(70),
+                questions: vec![Question {
+                    question: "주문 목록 페이지 크기는 얼마로 할까요?".into(),
+                    header: "페이지".into(),
+                    options: vec![choice("20개 (추천)", "앱 목록 화면 한 번에 맞습니다"), choice("50개", "요청은 줄지만 첫 화면이 느려집니다")],
+                    multi_select: false,
+                }],
+                asked_at: now.saturating_sub(30),
+            },
+        ];
+        std::sync::Mutex::new(if deciding().is_some() { sets } else { Vec::new() })
+    })
+}
+
+/// A set answered or closed: the screens are told, and the member gets the
+/// answers as the person's message and replies.
+fn close_questions(id: u64, answers: Option<Vec<Answer>>, events: &broadcast::Sender<Event>) -> Option<(SessionId, String)> {
+    let set = {
+        let mut all = questions().lock().unwrap();
+        let at = all.iter().position(|s| s.id == id)?;
+        all.remove(at)
+    };
+    let text = match &answers {
+        Some(answers) => equipe_core::protocol::decide::answer_message(&set, answers),
+        None => equipe_core::protocol::decide::dismissed_message(&set),
+    };
+    let _ = events.send(Event::QuestionsClosed { squad: "demo".into(), id, answers });
+    let _ = events.send(Event::UserMessage { session: set.session, text: text.clone() });
+    Some((set.session, text))
+}
+
+/// `FAKE_BUSY=1`: four more members, each at work on a web ticket, and more
+/// waiting and finished there — a project with more live work than the
+/// sidebar shows, a team taller than its block.
+fn busy() -> bool {
+    std::env::var("FAKE_BUSY").is_ok_and(|v| v == "1")
+}
+
+/// The busy squad's extra members: (ticket, session, name, title).
+const BUSY: [(u32, SessionId, &str, &str); 4] = [
+    (80, 5, "frontend-2", "검색 결과 무한 스크롤"),
+    (81, 6, "frontend-3", "상품 카드 스켈레톤 로딩과 이미지 지연 로딩, 접근성 라벨까지 한 번에 정리"),
+    (82, 7, "qa", "체크아웃 E2E 테스트"),
+    (83, 8, "data", "구매 전환 대시보드 이벤트"),
+];
 
 /// `FAKE_TURN`: T-117 waits for the person (`1`), and is answered elsewhere (`elsewhere`).
 fn your_turn() -> Option<String> {
@@ -288,7 +409,7 @@ fn tickets() -> &'static std::sync::Mutex<Vec<Ticket>> {
                 62 | 64 | 66 => Priority::Low,
                 _ => Priority::Normal,
             };
-            t.updated = now - u64::from(t.id % 9) * 3_400 - if t.status.is_closed() { u64::from(t.id % 5) * 86_400 } else { 0 };
+            t.updated_at = Some(now - u64::from(t.id % 9) * 3_400 - if t.status.is_closed() { u64::from(t.id % 5) * 86_400 } else { 0 });
         }
         std::sync::Mutex::new(all)
     })
@@ -328,7 +449,7 @@ fn record(id: u32, kind: &str, text: &str) {
 /// or why not (an error, as the daemon says it).
 fn on_board_command(command: &Command) -> Option<Vec<Event>> {
     let squad = || "demo".to_owned();
-    let changed = |t: &Ticket| Event::TicketChanged { squad: squad(), ticket: Ticket { updated: unix(), ..t.clone() } };
+    let changed = |t: &Ticket| Event::TicketChanged { squad: squad(), ticket: Ticket { updated_at: Some(unix()), ..t.clone() } };
     let refuse = |message: String| vec![Event::Error { session: None, message, next: None }];
     let mut all = tickets().lock().unwrap();
     match command {
@@ -586,6 +707,14 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 });
                             }
                         }
+                        if deciding().as_deref() == Some("elsewhere") {
+                            let events = events.clone();
+                            tokio::spawn(async move {
+                                let after = std::env::var("FAKE_DECIDE_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(5000);
+                                tokio::time::sleep(Duration::from_millis(after)).await;
+                                close_questions(9001, Some(vec![Answer { picked: vec![1], other: None }, Answer { picked: vec![0, 2], other: Some("설정은 알림만".into()) }]), &events);
+                            });
+                        }
                         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
                         let frontend = on(info(2, "frontend", vec![]), 47, "web", "상품 상세 페이지 이미지 갤러리", true, ("Edit", "src/gallery.tsx"), Some(Estimate { done_at: Some(now + 25 * 60), ..Default::default() }));
                         let backend = on(info(3, "backend", vec![]), 70, "api", "주문 API 페이지네이션", true, ("Bash", "cargo test -p api"), Some(Estimate { done_at: Some(now + 50 * 60), guessed: true, ..Default::default() }));
@@ -595,11 +724,21 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         designer.mode = Some(equipe_core::protocol::Mode::Ask);
                         let mut backend = backend;
                         backend.effort = Some("high".into());
+                        let mut sessions = vec![info(1, "pm", history), frontend, backend, designer];
+                        if busy() {
+                            for (ticket, session, name, title) in BUSY {
+                                let role = name.split('-').next().unwrap_or(name);
+                                let mut member = on(info(session, role, vec![]), ticket, "web", title, true, ("Edit", "src/search.tsx"), None);
+                                member.member = Some(Member { role: role.into(), name: name.into() });
+                                sessions.push(member);
+                            }
+                        }
                         let snapshot = Snapshot {
                             squad: params.squad,
                             projects: vec![repo("web"), repo("app"), repo("api")],
-                            sessions: vec![info(1, "pm", history), frontend, backend, designer],
+                            sessions,
                             approvals: asks().lock().unwrap().clone(),
+                            questions: questions().lock().unwrap().clone(),
                             tickets: tickets().lock().unwrap().clone(),
                             allowed: allowed().lock().unwrap().clone(),
                             browsers_shown: true,
@@ -708,6 +847,16 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             }
                             Command::Focus { project, .. } => {
                                 routes.lock().await.focus = project;
+                            }
+                            Command::AnswerQuestions { id, answers, .. } => {
+                                if let Some((session, _)) = close_questions(id, Some(answers), &events) {
+                                    turns.lock().await.insert(session, tokio::spawn(turn(session, events.clone(), seconds)));
+                                }
+                            }
+                            Command::DismissQuestions { id, .. } => {
+                                if let Some((session, _)) = close_questions(id, None, &events) {
+                                    turns.lock().await.insert(session, tokio::spawn(turn(session, events.clone(), seconds)));
+                                }
                             }
                             Command::Disallow { squad, rule } => {
                                 let rules = {

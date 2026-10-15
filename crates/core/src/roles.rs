@@ -266,7 +266,14 @@ accepts it.",
         format!(
             "{tools} As you start anything that takes more than a couple of minutes — a ticket, research, subagents' \
 work — call `estimate` with honest minutes until it is done, and again when that changes by much; when you push a \
-release, deploy or start anything else that ships, say too when it will be live (CI, build, review) and what."
+release, deploy or start anything else that ships, say too when it will be live (CI, build, review) and what. \
+When a decision is the person's to make and comes down to a few distinct options — an approach, a scope, a provider, \
+a trade-off — put it to them with `ask_decision`: one to four questions, each with two to four options, the one you \
+recommend first, its label ending in \"(Recommended)\" written in the person's language (\"(추천)\" in Korean). It \
+doesn't hold you up: end your turn, or go on with what doesn't depend on it; their answers come as their next \
+message. Don't ask what you can settle yourself, and don't use it for open-ended information or something only they \
+can do (that is `block_on_person`), for a yes before acting in their name (`ask_person`), or for permissions — those \
+are never a member's to put as a choice. Your engine's own question tool isn't seen by anyone."
         )
     } else {
         tools.to_owned()
@@ -496,6 +503,19 @@ mod tests {
         assert!(text.contains("pm (the PM) keeps the plan"), "{text}");
         assert!(text.contains("new ticket"), "{text}");
         assert!(text.contains("language they write in"), "{text}");
+    }
+
+    #[test]
+    fn the_pm_and_members_put_real_decisions_as_options_and_never_permissions() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "backend", role: "backend" }];
+        for (role_id, name) in [("pm", "pm"), ("backend", "backend")] {
+            let text = charter(role(role_id).unwrap(), name, &ctx(&team, &[], true));
+            for part in ["`ask_decision`", "two to four options", "\"(Recommended)\"", "person's language", "`block_on_person`", "for permissions"] {
+                assert!(text.contains(part), "{role_id}: {part}: {text}");
+            }
+        }
+        let text = charter(role("backend").unwrap(), "backend", &ctx(&team, &[], false));
+        assert!(!text.contains("ask_decision"), "no tools, no such advice");
     }
 
     #[test]
