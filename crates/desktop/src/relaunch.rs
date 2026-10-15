@@ -86,6 +86,19 @@ pub fn check_now(cx: &gpui_kit::App) {
     let _ = cx;
 }
 
+/// After a launch, and when the window comes back after a while: look for an
+/// update without a window, so a release shows its button in minutes, not hours.
+pub const LOOK_AGAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+pub fn check_quietly(cx: &gpui_kit::App, stale: std::time::Duration) {
+    #[cfg(target_os = "macos")]
+    if let Some(updater) = cx.try_global::<crate::update::Updates>().and_then(|u| u.0.clone()) {
+        updater.check_quietly(stale);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (cx, stale);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -129,6 +129,15 @@ pub struct Shell {
 
 impl Shell {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // Sparkle skips a first launch and then waits its whole hour: look now,
+        // and again whenever the window comes back after a while.
+        relaunch::check_quietly(cx, std::time::Duration::ZERO);
+        cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() {
+                relaunch::check_quietly(cx, relaunch::LOOK_AGAIN_AFTER);
+            }
+        })
+        .detach();
         cx.observe_window_appearance(window, |this, window, cx| {
             this.palette = Palette::new(this.remembered.appearance.resolve(window.appearance()));
             this.sync_browser(window, cx);

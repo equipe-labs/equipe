@@ -81,8 +81,38 @@ jobs:
 
   # The desktop app: scripts/desktop-dmg.sh, signed and notarized when the
   # secrets are there (docs/DESKTOP.md "Shipping the app"), else ad hoc.
+  # The app's binary for each chip, on two machines at once: one after the
+  # other they made the release wait about fifteen minutes.
+  desktop-bin:
+    name: desktop (${{ matrix.arch }})
+    runs-on: macos-14
+    strategy:
+      matrix:
+        arch: [aarch64, x86_64]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch }}-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-${{ matrix.arch }}
+
+      - name: Build
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+        run: cargo build --release --locked -p equipe-desktop --target ${{ matrix.arch }}-apple-darwin
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: equipe-desktop-${{ matrix.arch }}
+          path: target/${{ matrix.arch }}-apple-darwin/release/equipe-desktop
+
   desktop:
     name: desktop (equipe.dmg)
+    needs: desktop-bin
     runs-on: macos-14
     env:
       MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
@@ -102,13 +132,10 @@ jobs:
             exit 1
           fi
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v5
         with:
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: desktop
+          pattern: equipe-desktop-*
+          path: prebuilt
 
       - name: Developer ID certificate
         if: env.MACOS_CERTIFICATE != ''
@@ -138,7 +165,10 @@ jobs:
       - name: Build equipe.dmg
         env:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
-        run: scripts/desktop-dmg.sh
+          EQUIPE_DMG_PREBUILT: prebuilt/equipe-desktop-aarch64/equipe-desktop prebuilt/equipe-desktop-x86_64/equipe-desktop
+        run: |
+          chmod +x prebuilt/*/equipe-desktop
+          scripts/desktop-dmg.sh
 
       - name: Check the DMG
         run: |

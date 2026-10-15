@@ -127,6 +127,33 @@ impl Updater {
         }
     }
 
+    /// Look for an update without a window, if updates are automatic and the
+    /// last look is older than `stale` — Sparkle on its own skips the app's
+    /// first launch and then waits a whole interval, so a release could sit
+    /// unseen for an hour or more.
+    pub fn check_quietly(&self, stale: std::time::Duration) {
+        let updater = self.updater();
+        if updater.is_null() || !self.automatic() {
+            return;
+        }
+        // SAFETY: SPUUpdater's `canCheckForUpdates`, `lastUpdateCheckDate`
+        // (an NSDate or nil) and `checkForUpdatesInBackground`, on the main thread.
+        unsafe {
+            let can: Bool = msg_send![updater, canCheckForUpdates];
+            if !can.as_bool() {
+                return;
+            }
+            let last: *mut AnyObject = msg_send![updater, lastUpdateCheckDate];
+            if !last.is_null() {
+                let since: f64 = msg_send![last, timeIntervalSinceNow];
+                if -since < stale.as_secs_f64() {
+                    return;
+                }
+            }
+            let _: () = msg_send![updater, checkForUpdatesInBackground];
+        }
+    }
+
     /// Sparkle's own updater, under the controller.
     fn updater(&self) -> *mut AnyObject {
         // SAFETY: `-[SPUStandardUpdaterController updater]`, on the main thread.

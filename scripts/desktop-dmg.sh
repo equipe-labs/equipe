@@ -20,7 +20,9 @@
 # Secrets come only from the environment or the keychain, never the repository.
 #
 # Other knobs: EQUIPE_DMG_OUT (dist), EQUIPE_DMG_ARCHS ("aarch64 x86_64"; one
-# arch for a quicker local build), EQUIPE_APPCAST_URL / EQUIPE_DMG_URL (where
+# arch for a quicker local build), EQUIPE_DMG_PREBUILT (the per-arch
+# equipe-desktop binaries, built elsewhere — CI builds each arch on its own
+# machine at once — to package instead of building), EQUIPE_APPCAST_URL / EQUIPE_DMG_URL (where
 # the app looks for updates and where the appcast says this DMG is; default the
 # GitHub release of this version).
 set -euo pipefail
@@ -75,6 +77,11 @@ fi
 
 say "equipe desktop $version ($archs)"
 binaries=()
+# shellcheck disable=SC2206 # one path per word
+[ -n "${EQUIPE_DMG_PREBUILT:-}" ] && binaries=($EQUIPE_DMG_PREBUILT) && archs=""
+for path in "${binaries[@]}"; do
+  [ -f "$path" ] || die "no prebuilt $path"
+done
 for arch in $archs; do
   triple="$arch-apple-darwin"
   if ! "$rustup" target list --installed 2>/dev/null | grep -qx "$triple"; then
