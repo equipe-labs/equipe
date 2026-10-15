@@ -112,6 +112,10 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     shell.composer.drag_shown = true;
                     cx.notify();
                 }),
+                "size" => {
+                    let (w, h) = arg.split_once('x').and_then(|(w, h)| Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?))).unwrap_or((1200., 760.));
+                    window.resize(size(px(w), px(h)));
+                }
                 "pastelong" => shell.update(cx, |shell, cx| {
                     let lines = arg.parse::<usize>().unwrap_or(60);
                     let text: String = (1..=lines).map(|n| format!("{n}번째 줄: 로그 내용이 여기에 있습니다\n")).collect();
