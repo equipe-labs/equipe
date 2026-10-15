@@ -29,16 +29,18 @@ fn knows_where(ticket: &Ticket, single_project: bool) -> bool {
 
 /// Which free member picks up which ready ticket. A ticket is ready when it is
 /// `todo`, has an owner, knows where it works, and everything it depends on is
-/// finished. The most urgent ready ticket goes first, then the one higher on
-/// the board (the oldest, unless the person reordered it); a member takes one
-/// ticket at a time; an owner naming a member wins over one naming a role.
+/// finished. The ready ticket highest on the board goes first (the oldest,
+/// unless the person reordered it — an urgent one they wrote goes on top);
+/// priority decides only between equals; a member takes one ticket at a
+/// time; an owner naming a member wins over one naming a role.
 pub fn assignments(tickets: &[Ticket], members: &[Candidate<'_>], single_project: bool) -> Vec<(TicketId, String)> {
     let finished = |id: &TicketId| tickets.iter().any(|t| t.id == *id && t.status.is_closed());
     let mut busy: Vec<&str> = members.iter().filter(|m| !m.free).map(|m| m.name).collect();
     let mut out = Vec::new();
-    // The most pressing first, then as the person ordered the board.
+    // As the person ordered the board — each owner's queue is its tickets in
+    // that order — the more pressing first only between equals.
     let mut ready: Vec<&Ticket> = tickets.iter().filter(|t| t.status == TicketStatus::Todo).collect();
-    ready.sort_by_key(|t| (t.priority, t.order_key(), t.id));
+    ready.sort_by_key(|t| (t.order_key(), t.priority, t.id));
     for ticket in ready {
         let Some(owner) = ticket.owner.as_deref() else {
             continue;
@@ -350,6 +352,7 @@ It waits on the board as a proposal until the PM or the person accepts it."
                     "kind": KIND_SCHEMA.clone(),
                     "project": { "type": "string", "description": "The project's name: for code, the repository it changes (needed when the squad has several); for a task or action, what it is about, if anything." },
                     "depends_on": { "type": "array", "items": { "type": "integer" }, "description": "Ticket numbers that must be done first." },
+                    "proposal": { "type": "boolean", "description": "PM only: put it up as a proposal for the person to take on, rather than ready — when they asked you to shape it." },
                 },
                 "required": ["title", "body"],
             },
@@ -753,20 +756,18 @@ mod tests {
     }
 
     #[test]
-    fn urgent_work_goes_first_then_the_order_the_person_gave() {
-        let mut low = ticket(1, "frontend");
-        low.priority = equipe_protocol::Priority::Low;
+    fn the_persons_order_decides_what_goes_first_and_priority_only_between_equals() {
         let normal = ticket(2, "frontend");
         let mut urgent = ticket(3, "frontend");
         urgent.priority = equipe_protocol::Priority::Urgent;
         let mut moved_up = ticket(4, "frontend");
         moved_up.rank = 1; // put above T-2 (2 × 1024) by the person
-        let tickets = [low, normal, urgent, moved_up];
         let one = [free("frontend", "frontend")];
-        assert_eq!(assignments(&tickets, &one, true), [(3, "frontend".into())], "urgent first");
-        let two = [free("frontend", "frontend"), free("frontend-2", "frontend")];
-        assert_eq!(assignments(&tickets[..2], &two, true), [(2, "frontend".into()), (1, "frontend-2".into())], "low after normal, whatever the number");
-        assert_eq!(assignments(&[tickets[1].clone(), tickets[3].clone()], &one, true), [(4, "frontend".into())], "then by the person's order");
+        assert_eq!(assignments(&[normal.clone(), urgent.clone(), moved_up.clone()], &one, true), [(4, "frontend".into())], "the top of the queue");
+        assert_eq!(assignments(&[normal.clone(), urgent.clone()], &one, true), [(2, "frontend".into())], "urgent lower down waits its turn");
+        // Placed on the same spot, the more pressing goes first.
+        let tie = Ticket { rank: 2048, ..urgent };
+        assert_eq!(assignments(&[normal, tie], &one, true), [(3, "frontend".into())]);
     }
 
     #[test]

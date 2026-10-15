@@ -555,6 +555,10 @@ pub enum Command {
     /// a project the squad hasn't, work under way moved to another project.
     /// The PM and the members it concerns are told what changed.
     EditTicket { squad: SquadName, ticket: TicketId, changes: TicketEdit },
+    /// The same change to several tickets at once (the person chose them):
+    /// each checked as [`Command::EditTicket`] is, those that can't take it
+    /// left as they are, and the PM told once for all of them.
+    EditTickets { squad: SquadName, tickets: Vec<TicketId>, changes: TicketEdit },
     /// The person moves a ticket on the board: to `status` (each move means
     /// what its button would — to done accepts, to cancelled cancels, a
     /// proposal to todo takes it on; see `equipe_core::board::move_rule`), and
@@ -1412,6 +1416,7 @@ mod tests {
                 draft: TicketDraft { title: "Hero".into(), project: Some("/site".into()), assignee: Some("frontend".into()), priority: Priority::High, depends_on: vec![1], ..Default::default() },
             },
             Command::EditTicket { squad: "acme".into(), ticket: 3, changes: TicketEdit { assignee: Some(None), title: Some("x".into()), ..Default::default() } },
+            Command::EditTickets { squad: "acme".into(), tickets: vec![3, 4], changes: TicketEdit { priority: Some(Priority::Low), ..Default::default() } },
             Command::MoveTicket { squad: "acme".into(), ticket: 3, status: Some(TicketStatus::Done), before: None },
             Command::MoveTicket { squad: "acme".into(), ticket: 3, status: None, before: Some(2) },
             Command::CommentTicket { squad: "acme".into(), ticket: 3, text: "also the footer".into() },

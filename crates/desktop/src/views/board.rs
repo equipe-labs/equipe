@@ -389,6 +389,7 @@ impl Shell {
     pub fn open_side_menu(&mut self, menu: Menu, cx: &mut Context<Self>) {
         if self.board.view.menu != menu {
             self.board.view.menu = menu;
+            self.board.view.triage = false;
             self.board.view.selected = None;
             self.board.view.page = None;
             self.board.view.chosen.clear();
@@ -1069,11 +1070,6 @@ impl Shell {
             "r" => self.board_open_reply(window, cx),
             "t" => self.board_talk(window, cx),
             "d" => self.board_open_diff(window, cx),
-            "m" => {
-                if let Some(id) = self.picked().filter(Ticket::not_on_main).map(|t| t.id) {
-                    self.board_merge(id, cx);
-                }
-            }
             _ => return false,
         }
         true
@@ -1220,12 +1216,14 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .relative()
         .child(toolbar(shell, cx))
         .children(super::peek::save_view_bar(shell, cx))
+        .children(super::tickets::quick_bar(shell, cx))
         .child(body)
         .children(bulk_bar(shell, cx))
         .children(toast(shell, cx))
         .children(super::tickets::edit_menu(shell, cx))
         .children(super::tickets::views_menu(shell, cx))
         .children(super::tickets::sheet(shell, cx))
+        .children(super::tickets::confirm_card(shell, cx))
         .children(shell.board.keys_open.then(|| keys_sheet(p, cx)))
         .into_any_element()
 }
@@ -1464,13 +1462,16 @@ fn list(shell: &Shell, rows: &[Row], pick: Option<Need>, cx: &mut Context<Shell>
         .px_2()
         .pt_1()
         .pb_6()
+        .children(super::tickets::triage_banner(shell, cx))
         .children(rows.iter().enumerate().map(|(ix, row)| list_row(shell, ix, row, pick, cx)))
         .when(empty, |l| l.child(empty_note(shell, p, cx)))
 }
 
 fn empty_note(shell: &Shell, p: Palette, cx: &mut Context<Shell>) -> AnyElement {
     let view = &shell.board.view;
-    let (title, text, clear) = if !Filter::parse(&view.query).is_empty() {
+    let (title, text, clear) = if view.triage && matches!(view.menu, Menu::All | Menu::View(_)) {
+        (t!("tickets.triage_done_title").to_owned(), t!("tickets.triage_done").to_owned(), false)
+    } else if !Filter::parse(&view.query).is_empty() {
         (t!("board.empty_filtered_title").to_owned(), t!("board.empty_filtered").to_owned(), true)
     } else {
         match view.menu {
@@ -1619,7 +1620,7 @@ pub fn row_flags(shell: &Shell, t: &Ticket) -> Vec<(String, Rgba, Option<String>
     let model = &shell.model;
     let mut flags = Vec::new();
     if let Some(dep) = model.blocked_by(t).filter(|_| matches!(t.status, TicketStatus::Todo | TicketStatus::Proposed)) {
-        flags.push((format!("⛓T-{dep}"), p.orange, None));
+        flags.push((format!("⛔ T-{dep}"), p.orange, Some(t!("tickets.tip_blocked", id = dep))));
     }
     let unblocks = model.unblocks(t.id).len();
     if unblocks > 0 && !t.status.is_closed() {
@@ -1974,20 +1975,22 @@ pub fn toast(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
 
 /// The keys, on ?.
 fn keys_sheet(p: Palette, cx: &mut Context<Shell>) -> AnyElement {
-    let rows: [(&str, &str); 25] = [
+    let rows: [(&str, &str); 27] = [
         ("A", t!("board.key_yes")),
         ("⇧A", t!("board.key_method")),
         ("R", t!("board.key_reply")),
         ("N", t!("board.key_no")),
         ("D", t!("board.key_diff")),
         ("T", t!("board.key_talk")),
-        ("M", t!("board.key_merge")),
         ("U", t!("board.key_undo")),
         ("C", t!("tickets.key_new")),
         ("V", t!("tickets.key_layout")),
         ("P", t!("tickets.key_priority")),
         ("S", t!("tickets.key_status")),
-        ("O", t!("tickets.key_assignee")),
+        ("M", t!("tickets.key_assignee")),
+        ("⇧P", t!("tickets.key_project")),
+        ("B", t!("tickets.key_depends")),
+        ("⇧C", t!("tickets.key_sheet")),
         ("E", t!("tickets.key_title")),
         ("H L ←→", t!("tickets.key_columns")),
         ("J K ↑↓", t!("board.key_move")),

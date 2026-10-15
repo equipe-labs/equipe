@@ -11,7 +11,7 @@ use equipe_core::board::{self as rules, Move, Refusal};
 use equipe_core::protocol::{Command, Priority, Ticket, TicketDraft, TicketEdit, TicketId, TicketKind, TicketStatus};
 use equipe_core::t;
 
-use crate::board::{Filter, MergeWay, who};
+use crate::board::{Filter, who};
 use crate::state::{Model, status_word};
 
 /// How 티켓 lays its tickets out.
@@ -92,7 +92,8 @@ pub fn columns(model: &Model, filter: &Filter, all_done: bool) -> Vec<Column> {
         .into_iter()
         .map(|status| {
             if status == TicketStatus::Done {
-                let mut done: Vec<&Ticket> = here.iter().copied().filter(|t| t.status.is_closed()).collect();
+                let cancelled = filter.status.contains(&TicketStatus::Cancelled);
+                let mut done: Vec<&Ticket> = here.iter().copied().filter(|t| t.status == TicketStatus::Done || (cancelled && t.status == TicketStatus::Cancelled)).collect();
                 done.sort_by_key(|t| (std::cmp::Reverse(changed_at(model, t)), std::cmp::Reverse(t.id)));
                 let recent = |t: &&Ticket| {
                     let at = changed_at(model, t);
@@ -114,12 +115,24 @@ pub fn columns(model: &Model, filter: &Filter, all_done: bool) -> Vec<Column> {
 /// What a card dropped in a column (before a card, or last) does.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Drop {
-    /// Nothing changes: dropped where it was.
+    /// Nothing changes: dropped where it was, or where order means nothing.
     Stay,
     /// Send these; the ticket looks like `after` meanwhile.
     Send { commands: Vec<Command>, after: Box<Ticket>, what: Move },
-    /// Accepting lands code: the project's way must be asked first.
-    AskWay,
+    /// Cancelling: asked once before it is held.
+    ConfirmCancel,
+}
+
+/// Why the person can't put a ticket there by hand. The statuses after
+/// 할 일 belong to the members' work and to accepting (A), not to a drag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Why {
+    /// A rule of the board's own (`equipe_core::board::move_rule`).
+    Core(Refusal),
+    /// Done is accepting: A does it, with its question of how to land.
+    AcceptWithA,
+    /// Back from work under way or handed in: its buttons do it (R, A, N).
+    NotByHand,
 }
 
 /// The rank that puts `id` before `before` in the column of `status`, as this
@@ -133,57 +146,61 @@ pub fn local_rank(model: &Model, id: TicketId, status: TicketStatus, before: Opt
     })
 }
 
-/// Why a card can't go to `to`, in the person's words, or what dropping it
-/// there means.
-pub fn drop_rule(t: &Ticket, to: TicketStatus) -> Result<Move, Refusal> {
-    // The finished column takes cards as accepted work; one already there stays.
+/// What the person may do to a ticket's status by hand — a drag, or the
+/// status menu: take a proposal on, order what is ready (and the proposals),
+/// cancel anything open. Into 진행 중, 내 차례, 검토 or 끝남 it never goes by
+/// hand: members and accepting own those.
+pub fn person_rule(t: &Ticket, to: TicketStatus) -> Result<Move, Why> {
+    use TicketStatus::*;
     let from = column_of(t.status);
     if from == to {
         return Ok(Move::Reorder);
     }
-    rules::move_rule(t.status, to)
+    match (from, to) {
+        (_, Cancelled) if t.status.is_closed() => Err(Why::Core(Refusal::Closed)),
+        (_, Cancelled) => Ok(Move::Cancel),
+        (Proposed, Todo) => Ok(Move::TakeOn),
+        (_, InProgress) => Err(Why::Core(Refusal::StartsByItself)),
+        (_, Waiting) => Err(Why::Core(Refusal::WaitsByMember)),
+        (_, Review) => Err(Why::Core(Refusal::HandedInByMember)),
+        (Review, Done) => Err(Why::AcceptWithA),
+        (_, Done) => Err(Why::Core(Refusal::NotHandedIn)),
+        _ => Err(Why::NotByHand),
+    }
 }
 
 /// The words a refusal shows on the column the card is over.
-pub fn refusal_words(refusal: Refusal) -> &'static str {
-    match refusal {
-        Refusal::StartsByItself => t!("tickets.refuse_starts_by_itself"),
-        Refusal::HandedInByMember => t!("tickets.refuse_handed_in_by_member"),
-        Refusal::WaitsByMember => t!("tickets.refuse_waits_by_member"),
-        Refusal::NotHandedIn => t!("tickets.refuse_not_handed_in"),
-        Refusal::UnderWay => t!("tickets.refuse_under_way"),
-        Refusal::Closed => t!("tickets.refuse_closed"),
+pub fn why_words(why: Why) -> &'static str {
+    match why {
+        Why::Core(Refusal::StartsByItself) => t!("tickets.refuse_starts_by_itself"),
+        Why::Core(Refusal::HandedInByMember) => t!("tickets.refuse_handed_in_by_member"),
+        Why::Core(Refusal::WaitsByMember) => t!("tickets.refuse_waits_by_member"),
+        Why::Core(Refusal::NotHandedIn) => t!("tickets.refuse_not_handed_in"),
+        Why::Core(Refusal::UnderWay) => t!("tickets.refuse_under_way"),
+        Why::Core(Refusal::Closed) => t!("tickets.refuse_closed"),
+        Why::AcceptWithA => t!("tickets.refuse_accept_with_a"),
+        Why::NotByHand => t!("tickets.refuse_not_by_hand"),
     }
 }
 
-/// What dropping `t` in the column of `to`, before `before` (`None`: last),
-/// sends — with `way`, how accepting lands code in its project.
-pub fn drop_card(model: &Model, t: &Ticket, to: TicketStatus, before: Option<TicketId>, way: Option<MergeWay>) -> Result<Drop, Refusal> {
-    let what = drop_rule(t, to)?;
-    let squad = model.squad.clone();
+/// What dropping `t` in the column of `to`, before `before` (`None`: last), sends.
+pub fn drop_card(model: &Model, t: &Ticket, to: TicketStatus, before: Option<TicketId>) -> Result<Drop, Why> {
+    let what = person_rule(t, to)?;
+    if what == Move::Cancel {
+        return Ok(Drop::ConfirmCancel);
+    }
+    // Order means something where work waits to be picked up: 할 일, and the proposals.
+    let ordered = matches!(t.status, TicketStatus::Todo | TicketStatus::Proposed);
     let same_place = before == Some(t.id) || (what == Move::Reorder && next_in_column(model, t) == before && before.is_some());
-    if what == Move::Reorder && (same_place || t.status.is_closed()) {
+    if what == Move::Reorder && (same_place || !ordered) {
         return Ok(Drop::Stay);
     }
     let status = (what != Move::Reorder).then_some(to);
-    let mut commands = vec![Command::MoveTicket { squad: squad.clone(), ticket: t.id, status, before }];
+    let commands = vec![Command::MoveTicket { squad: model.squad.clone(), ticket: t.id, status, before }];
     let mut after = t.clone();
     after.rank = local_rank(model, t.id, to, before);
-    after.status = match what {
-        Move::Reorder => t.status,
-        Move::Accept => TicketStatus::Done,
-        Move::Resume | Move::SendBack | Move::TakeOn => TicketStatus::Todo,
-        Move::Restore(s) => s,
-        Move::BackToProposal => TicketStatus::Proposed,
-        Move::Cancel => TicketStatus::Cancelled,
-    };
-    if what == Move::Accept && Model::merges(t) {
-        match way {
-            None => return Ok(Drop::AskWay),
-            Some(MergeWay::Push) => commands.push(Command::Merge { squad, ticket: t.id, push: true }),
-            Some(MergeWay::Merge) => commands.push(Command::Merge { squad, ticket: t.id, push: false }),
-            Some(MergeWay::Branch) => {}
-        }
+    if what == Move::TakeOn {
+        after.status = TicketStatus::Todo;
     }
     Ok(Drop::Send { commands, after: Box::new(after), what })
 }
@@ -195,14 +212,11 @@ fn next_in_column(model: &Model, t: &Ticket) -> Option<TicketId> {
     column.get(at + 1).map(|x| x.id)
 }
 
-/// The toast a move says, held for a moment: `T-12 → 검토`.
+/// The toast a move says, held for a moment: `T-12 → 할 일`.
 pub fn move_words(t: &Ticket, what: Move, to: TicketStatus) -> String {
     match what {
         Move::Reorder => t!("tickets.toast_reordered", id = t.id),
-        Move::Accept => t!("board.toast_accept", id = t.id),
         Move::Cancel => t!("board.toast_cancel", id = t.id),
-        Move::SendBack => t!("board.toast_send_back", id = t.id),
-        Move::Resume => t!("board.toast_resume", id = t.id),
         Move::TakeOn => t!("board.toast_proposal", id = t.id),
         _ => t!("tickets.toast_moved", id = t.id, status = status_word(to)),
     }
@@ -330,10 +344,10 @@ pub fn owners(model: &Model) -> Vec<(String, String)> {
 }
 
 /// The statuses the status menu offers, each with why not when it can't be picked.
-pub fn status_choices(t: &Ticket) -> Vec<(TicketStatus, Option<Refusal>)> {
+pub fn status_choices(t: &Ticket) -> Vec<(TicketStatus, Option<Why>)> {
     [TicketStatus::Proposed, TicketStatus::Todo, TicketStatus::InProgress, TicketStatus::Waiting, TicketStatus::Review, TicketStatus::Done, TicketStatus::Cancelled]
         .into_iter()
-        .map(|s| (s, rules::move_rule(t.status, s).err()))
+        .map(|s| (s, if s == t.status { None } else { person_rule(t, s).err() }))
         .collect()
 }
 
@@ -388,6 +402,71 @@ impl Sheet {
     }
 }
 
+/// What a word of the quick line (C) set, shown as a chip beside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Token {
+    Owner(String),
+    Project(String),
+    Priority(Priority),
+    After(TicketId),
+}
+
+/// The quick line read: `@frontend #web !high after T-38 결제 오류 문구` — who,
+/// which project, how pressing, what it waits on; the other words are its
+/// title. A word naming nobody (or no project) stays in the title.
+pub fn parse_quick(text: &str, model: &Model) -> (Sheet, Vec<Token>) {
+    let owners = owners(model);
+    let mut sheet = Sheet::default();
+    let mut tokens = Vec::new();
+    let mut title: Vec<&str> = Vec::new();
+    let mut words = text.split_whitespace().peekable();
+    let ticket_id = |w: &str| equipe_core::board::parse_ticket_id(w.trim_end_matches(','));
+    while let Some(word) = words.next() {
+        if let Some(name) = word.strip_prefix('@').filter(|n| owners.iter().any(|(m, r)| m == n || r == n)) {
+            sheet.assignee = Some(name.to_owned());
+            tokens.push(Token::Owner(name.to_owned()));
+        } else if let Some(path) = word.strip_prefix('#').and_then(|n| model.projects.iter().find(|p| equipe_core::board::project_name(p) == n)) {
+            sheet.project = Some(path.clone());
+            tokens.push(Token::Project(equipe_core::board::project_name(path)));
+        } else if let Some(priority) = word.strip_prefix('!').and_then(priority_of) {
+            sheet.priority = priority;
+            tokens.push(Token::Priority(priority));
+        } else if let Some(id) = word.strip_prefix("after:").and_then(ticket_id) {
+            sheet.depends_on.push(id);
+            tokens.push(Token::After(id));
+        } else if (word == "after" || word == "선행") && words.peek().is_some_and(|w| ticket_id(w).is_some()) {
+            let id = words.next().and_then(ticket_id).unwrap_or_default();
+            sheet.depends_on.push(id);
+            tokens.push(Token::After(id));
+        } else {
+            title.push(word);
+        }
+    }
+    sheet.title = title.join(" ");
+    (sheet, tokens)
+}
+
+/// `!high`, `!긴급`, `!1` (urgent) … `!4` (low).
+fn priority_of(word: &str) -> Option<Priority> {
+    Priority::parse(word).or(match word {
+        "긴급" | "1" | "u" => Some(Priority::Urgent),
+        "높음" | "2" | "h" => Some(Priority::High),
+        "보통" | "3" | "n" => Some(Priority::Normal),
+        "낮음" | "4" | "l" => Some(Priority::Low),
+        _ => None,
+    })
+}
+
+/// What the PM is asked when the person hands it a quick line to shape (⇧⌘⏎).
+pub fn shape_request(line: &str) -> String {
+    format!(
+        "The person wrote a ticket in a line and wants you to shape it: “{}”. Write what to do and its acceptance criteria, \
+split it into several tickets if it is several pieces of work, keep what the line says (@owner, #project, !priority, after T-n), \
+and put it on the board as a proposal (create_ticket with proposal: true) for them to take on.",
+        line.trim()
+    )
+}
+
 /// Tickets the dependency search finds for `words`, open ones first, never
 /// `except` (the ticket being edited) or those already listed.
 pub fn find_tickets<'a>(model: &'a Model, words: &str, except: Option<TicketId>, have: &[TicketId]) -> Vec<&'a Ticket> {
@@ -401,6 +480,25 @@ pub fn find_tickets<'a>(model: &'a Model, words: &str, except: Option<TicketId>,
     found.sort_by_key(|t| (t.status.is_closed(), std::cmp::Reverse(t.id)));
     found.truncate(8);
     found
+}
+
+/// Whether `edit` takes work under way from the member on it — what the
+/// person is asked about first (its member stops; its worktree and branch stay).
+pub fn stops_work(pairs: &[(Ticket, Ticket)], edit: &TicketEdit) -> bool {
+    edit.assignee.is_some() && pairs.iter().any(|(was, now)| was.status == TicketStatus::InProgress && who(was) != now.owner.as_deref())
+}
+
+/// Where a ticket waiting to be picked up stands in its owner's queue: 1 is
+/// next. The board's order decides, priority only between equals — as the
+/// daemon picks (`equipe_core::board::assignments`).
+pub fn queue_place(model: &Model, t: &Ticket) -> Option<usize> {
+    if t.status != TicketStatus::Todo {
+        return None;
+    }
+    let owner = who(t)?;
+    let mut queue: Vec<&Ticket> = model.tickets.iter().filter(|x| x.status == TicketStatus::Todo && who(x) == Some(owner)).collect();
+    queue.sort_by_key(|x| (x.order_key(), x.priority, x.id));
+    queue.iter().position(|x| x.id == t.id).map(|at| at + 1)
 }
 
 // ── several at once ──
@@ -468,39 +566,45 @@ mod tests {
         let m = model(vec![ticket(1, "proposed"), ticket(2, "todo"), moved, ticket(4, "in_progress"), ticket(5, "waiting"), ticket(6, "review"), old, fresh, cancelled]);
         let cols = columns(&m, &Filter::default(), false);
         let ids: Vec<Vec<u32>> = cols.iter().map(|c| c.cards.clone()).collect();
-        assert_eq!(ids, vec![vec![1], vec![3, 2], vec![4], vec![5], vec![6], vec![10, 9]]);
+        assert_eq!(ids, vec![vec![1], vec![3, 2], vec![4], vec![5], vec![6], vec![9]], "cancelled work out of sight");
         assert_eq!(cols[5].hidden, 1, "older finished work behind more");
-        assert_eq!(columns(&m, &Filter::default(), true)[5].cards, vec![10, 9, 8]);
+        assert_eq!(columns(&m, &Filter::default(), true)[5].cards, vec![9, 8]);
+        assert_eq!(columns(&m, &Filter::parse("status:cancelled"), false)[5].cards, vec![10], "unless asked for");
         assert_eq!(columns(&m, &Filter::parse("title 2"), false)[1].cards, vec![2], "the filter narrows the board too");
     }
 
     #[test]
-    fn a_card_dropped_somewhere_means_what_that_column_would_and_some_drops_are_refused() {
+    fn by_hand_a_proposal_is_taken_on_ready_work_reordered_and_anything_cancelled_nothing_else() {
         let mut review = ticket(6, "review");
         review.branch = Some("equipe/x".into());
-        let m = model(vec![ticket(1, "proposed"), ticket(2, "todo"), ticket(3, "todo"), review.clone(), ticket(7, "in_progress")]);
+        let m = model(vec![ticket(1, "proposed"), ticket(2, "todo"), ticket(3, "todo"), review.clone(), ticket(7, "in_progress"), ticket(8, "done")]);
         let t = |id| m.tickets.iter().find(|t| t.id == id).unwrap().clone();
-        // A proposal to 할 일: taken on, sent as a move.
-        let Ok(Drop::Send { commands, after, what }) = drop_card(&m, &t(1), TicketStatus::Todo, Some(2), None) else { panic!() };
+        // A proposal to 할 일: taken on, sent as a move, shown there at once.
+        let Ok(Drop::Send { commands, after, what }) = drop_card(&m, &t(1), TicketStatus::Todo, Some(2)) else { panic!() };
         assert_eq!(what, Move::TakeOn);
         assert_eq!(commands, vec![Command::MoveTicket { squad: "acme".into(), ticket: 1, status: Some(TicketStatus::Todo), before: Some(2) }]);
         assert_eq!(after.status, TicketStatus::Todo);
-        assert!(after.order_key() < t(2).order_key(), "shown above T-2 at once");
-        // Within its column: only its place.
-        let Ok(Drop::Send { commands, after, .. }) = drop_card(&m, &t(3), TicketStatus::Todo, Some(2), None) else { panic!() };
+        assert!(after.order_key() < t(2).order_key(), "above T-2");
+        // Within 할 일: only its place.
+        let Ok(Drop::Send { commands, .. }) = drop_card(&m, &t(3), TicketStatus::Todo, Some(2)) else { panic!() };
         assert_eq!(commands, vec![Command::MoveTicket { squad: "acme".into(), ticket: 3, status: None, before: Some(2) }]);
-        assert_eq!(after.status, TicketStatus::Todo);
-        assert_eq!(drop_card(&m, &t(2), TicketStatus::Todo, Some(3), None), Ok(Drop::Stay), "where it was");
-        // Review to 끝남 accepts, landed the project's way — asked first when unknown.
-        assert_eq!(drop_card(&m, &review, TicketStatus::Done, None, None), Ok(Drop::AskWay));
-        let Ok(Drop::Send { commands, after, what }) = drop_card(&m, &review, TicketStatus::Done, None, Some(MergeWay::Push)) else { panic!() };
-        assert_eq!((what, after.status), (Move::Accept, TicketStatus::Done));
-        assert_eq!(commands[1], Command::Merge { squad: "acme".into(), ticket: 6, push: true });
-        // Not the person's to do by hand: said why.
-        assert_eq!(drop_card(&m, &t(2), TicketStatus::InProgress, None, None), Err(Refusal::StartsByItself));
-        assert_eq!(drop_card(&m, &t(7), TicketStatus::Review, None, None), Err(Refusal::HandedInByMember));
-        assert_eq!(drop_card(&m, &t(2), TicketStatus::Done, None, None), Err(Refusal::NotHandedIn));
-        assert!(!refusal_words(Refusal::StartsByItself).is_empty());
+        assert_eq!(drop_card(&m, &t(2), TicketStatus::Todo, Some(3)), Ok(Drop::Stay), "where it was");
+        assert_eq!(drop_card(&m, &t(7), TicketStatus::InProgress, None), Ok(Drop::Stay), "order means nothing under way");
+        // Cancelling anything open: asked first.
+        assert_eq!(drop_card(&m, &t(7), TicketStatus::Cancelled, None), Ok(Drop::ConfirmCancel));
+        assert_eq!(drop_card(&m, &t(8), TicketStatus::Cancelled, None), Err(Why::Core(Refusal::Closed)));
+        // Members' and accepting's statuses: never by hand, each said why.
+        assert_eq!(drop_card(&m, &review, TicketStatus::Done, None), Err(Why::AcceptWithA), "A accepts");
+        assert_eq!(drop_card(&m, &t(2), TicketStatus::InProgress, None), Err(Why::Core(Refusal::StartsByItself)));
+        assert_eq!(drop_card(&m, &t(7), TicketStatus::Review, None), Err(Why::Core(Refusal::HandedInByMember)));
+        assert_eq!(drop_card(&m, &t(2), TicketStatus::Waiting, None), Err(Why::Core(Refusal::WaitsByMember)));
+        assert_eq!(drop_card(&m, &review, TicketStatus::Todo, None), Err(Why::NotByHand), "sent back with R");
+        assert_eq!(drop_card(&m, &t(2), TicketStatus::Proposed, None), Err(Why::NotByHand));
+        assert!(!why_words(Why::AcceptWithA).is_empty());
+        // The status menu offers the same.
+        let choices = status_choices(&t(1));
+        assert!(choices.iter().any(|(s, why)| *s == TicketStatus::Todo && why.is_none()));
+        assert!(choices.iter().any(|(s, why)| *s == TicketStatus::Done && why.is_some()));
     }
 
     #[test]
@@ -540,6 +644,13 @@ mod tests {
         let (ok, refused) = bulk_edits(&m, &[1, 3], &give);
         assert_eq!((ok.len(), refused.len()), (1, 1), "finished work has no one to give it to");
         assert_eq!(edit_words(&[1, 2], &edit), "티켓 2개 우선순위 → 긴급");
+        // Taking work under way from its member is asked about first.
+        let mut working = ticket(5, "in_progress");
+        working.assignee = Some("backend".into());
+        let m = model(vec![working]);
+        let (ok, _) = bulk_edits(&m, &[5], &give);
+        assert!(stops_work(&ok, &give));
+        assert!(!stops_work(&ok, &edit), "its priority isn't");
     }
 
     #[test]
@@ -553,6 +664,32 @@ mod tests {
         assert!(Sheet::default().command("acme").is_err(), "a title first");
         // The checklist reads back as what to check in review.
         assert_eq!(crate::board::checklist(&compose_body("x", &["a".into()])), vec!["a"]);
+    }
+
+    #[test]
+    fn a_quick_line_reads_who_where_how_pressing_and_what_it_waits_on() {
+        let mut m = model(vec![ticket(38, "todo")]);
+        m.projects = vec!["/code/web".into(), "/code/app".into()];
+        let started = equipe_core::protocol::Event::SessionStarted {
+            session: 7,
+            project: "/code/web".into(),
+            engine: equipe_core::protocol::Engine::Claude,
+            model: None,
+            workspace: None,
+            member: Some(equipe_core::protocol::Member { role: "frontend".into(), name: "frontend".into() }),
+            squad: Some("acme".into()),
+        };
+        m.apply(Update::Event(started), Clock { hour: 9, minute: 0, second: 0 });
+        let (sheet, tokens) = parse_quick("@frontend #web !high after T-38 결제 오류 문구 정리", &m);
+        assert_eq!(sheet.title, "결제 오류 문구 정리");
+        assert_eq!((sheet.assignee.as_deref(), sheet.priority, sheet.depends_on.clone()), (Some("frontend"), Priority::High, vec![38]));
+        assert_eq!(sheet.project.as_deref(), Some(std::path::Path::new("/code/web")));
+        assert_eq!(tokens, vec![Token::Owner("frontend".into()), Token::Project("web".into()), Token::Priority(Priority::High), Token::After(38)]);
+        // Naming nobody, it is just a word of the title.
+        let (sheet, tokens) = parse_quick("@nobody fix #nowhere !긴급 after:38", &m);
+        assert_eq!((sheet.title.as_str(), sheet.priority), ("@nobody fix #nowhere", Priority::Urgent));
+        assert_eq!(tokens.len(), 2);
+        assert!(shape_request(" x ").contains("“x”"));
     }
 
     #[test]

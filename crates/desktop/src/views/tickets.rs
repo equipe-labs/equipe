@@ -14,7 +14,6 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
 
-use equipe_core::board::Refusal;
 use equipe_core::protocol::{Command, Priority, Ticket, TicketEdit, TicketEntry, TicketId, TicketKind, TicketStatus};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::*;
@@ -27,7 +26,7 @@ use crate::board::{self as rules, Menu, Tab};
 use crate::motion;
 use crate::state::{Need, short_span, status_word};
 use crate::theme::{GAP, MONO, Palette, R_MD, SMALL, look};
-use crate::tickets::{self, Column, Drop, Layout, Sheet};
+use crate::tickets::{self, Column, Drop, Layout, Sheet, Why};
 use crate::tips::TipExt as _;
 use crate::Shell;
 
@@ -67,7 +66,7 @@ pub struct DragOver {
     pub before: Option<TicketId>,
     /// The card the pointer is over that set `before`.
     pub by_card: Option<TicketId>,
-    pub refused: Option<Refusal>,
+    pub refused: Option<Why>,
 }
 
 /// What travels with a dragged card.
@@ -140,6 +139,11 @@ pub struct TicketsUi {
     pub errors_seen: u64,
     /// The views menu (⌥V).
     pub views_open: bool,
+    /// Work under way given to someone else: asked once before it is held.
+    pub confirm: Option<(Vec<TicketId>, TicketEdit)>,
+    /// The quick line (C): a ticket in one line, `@who #project !priority after T-n`.
+    pub quick: bool,
+    pub quick_input: Entity<InputState>,
     pub board_scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -166,6 +170,9 @@ impl TicketsUi {
             sent: HashMap::new(),
             errors_seen: 0,
             views_open: false,
+            confirm: None,
+            quick: false,
+            quick_input: cx.new(|cx| InputState::new(window, cx).placeholder(t!("tickets.quick_placeholder"))),
             board_scroll: ScrollHandle::new(),
             _subscriptions: Vec::new(),
         }
@@ -178,6 +185,7 @@ impl TicketsUi {
         self.sheet_criterion.update(cx, |s, cx| s.set_placeholder(t!("tickets.criterion_placeholder"), window, cx));
         self.dep_search.update(cx, |s, cx| s.set_placeholder(t!("tickets.depends_search"), window, cx));
         self.comment.update(cx, |s, cx| s.set_placeholder(t!("tickets.comment_placeholder"), window, cx));
+        self.quick_input.update(cx, |s, cx| s.set_placeholder(t!("tickets.quick_placeholder"), window, cx));
     }
 
     /// Whether one of 티켓's boxes has the keyboard.
@@ -189,6 +197,7 @@ impl TicketsUi {
             || self.title_input.read(cx).focus_handle(cx).is_focused(window)
             || self.body_input.read(cx).focus_handle(cx).is_focused(window)
             || self.comment.read(cx).focus_handle(cx).is_focused(window)
+            || self.quick_input.read(cx).focus_handle(cx).is_focused(window)
     }
 }
 
@@ -220,7 +229,15 @@ impl Shell {
         let tk = &self.board.tk;
         let (title, body, criterion, dep, title_input, body_input, comment) =
             (tk.sheet_title.clone(), tk.sheet_body.clone(), tk.sheet_criterion.clone(), tk.dep_search.clone(), tk.title_input.clone(), tk.body_input.clone(), tk.comment.clone());
+        let quick = tk.quick_input.clone();
         vec![
+            cx.subscribe_in(&quick, window, |this, _, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => cx.notify(),
+                // ⇧⌘⏎: the PM shapes it; ⏎ or ⌘⏎: on the board as typed.
+                InputEvent::PressEnter { secondary: true, shift: true } => this.shape_quick(window, cx),
+                InputEvent::PressEnter { .. } => this.create_quick(window, cx),
+                _ => {}
+            }),
             cx.subscribe_in(&title, window, |this, _, event: &InputEvent, window, cx| match event {
                 InputEvent::PressEnter { secondary: true, .. } => this.create_from_sheet(window, cx),
                 InputEvent::PressEnter { .. } => this.board.tk.sheet_body.update(cx, |s, cx| s.focus(window, cx)),
@@ -371,6 +388,17 @@ impl Shell {
 
     /// Change `ids` by `edit`: shown at once, sent in five seconds unless U.
     pub fn tickets_edit(&mut self, ids: Vec<TicketId>, edit: TicketEdit, cx: &mut Context<Self>) {
+        self.tickets_edit_as(ids, edit, false, cx);
+    }
+
+    /// The edit, once the person said yes to stopping work under way.
+    pub fn confirm_edit(&mut self, cx: &mut Context<Self>) {
+        if let Some((ids, edit)) = self.board.tk.confirm.take() {
+            self.tickets_edit_as(ids, edit, true, cx);
+        }
+    }
+
+    fn tickets_edit_as(&mut self, ids: Vec<TicketId>, edit: TicketEdit, confirmed: bool, cx: &mut Context<Self>) {
         if !self.can_act() {
             return;
         }
@@ -382,9 +410,19 @@ impl Shell {
             cx.notify();
             return;
         }
+        // Work under way going to someone else stops its member: asked first.
+        if !confirmed && tickets::stops_work(&ok, &edit) {
+            self.board.tk.confirm = Some((ok.iter().map(|(t, _)| t.id).collect(), edit));
+            cx.notify();
+            return;
+        }
         let squad = self.model.squad.clone();
-        let commands: Vec<Command> = ok.iter().map(|(t, _)| Command::EditTicket { squad: squad.clone(), ticket: t.id, changes: edit.clone() }).collect();
         let ids: Vec<TicketId> = ok.iter().map(|(t, _)| t.id).collect();
+        // Several at once go as one, so the PM hears of them once.
+        let commands = match ids.as_slice() {
+            [one] => vec![Command::EditTicket { squad, ticket: *one, changes: edit.clone() }],
+            many => vec![Command::EditTickets { squad, tickets: many.to_vec(), changes: edit.clone() }],
+        };
         let text = tickets::edit_words(&ids, &edit);
         self.hold_edit(ok, text, commands, cx);
     }
@@ -412,23 +450,21 @@ impl Shell {
             return;
         }
         let Some(t) = self.model.tickets.iter().find(|t| t.id == id).cloned() else { return };
-        let project = self.model.ticket_project_name(&t).unwrap_or_default();
-        let way = self.merge_way_of(&project);
-        match tickets::drop_card(&self.model, &t, to, before, way) {
+        match tickets::drop_card(&self.model, &t, to, before) {
             Ok(Drop::Stay) => {}
-            Ok(Drop::AskWay) => {
-                // The first acceptance in a project asks how it lands: in the peek.
+            Ok(Drop::ConfirmCancel) => {
+                // Cancelling is asked once, in the peek's foot.
                 self.board.view.selected = Some(Need::Ticket(id));
                 self.board.view.peek = true;
-                self.board.flow = Some(Flow::Way { ticket: id, remember: true });
+                self.board.flow = Some(Flow::Cancel(id));
                 cx.notify();
             }
             Ok(Drop::Send { commands, after, what }) => {
                 let text = tickets::move_words(&t, what, to);
                 self.hold_edit(vec![(t, *after)], text, commands, cx);
             }
-            Err(refusal) => {
-                self.say(tickets::refusal_words(refusal));
+            Err(why) => {
+                self.say(tickets::why_words(why));
                 cx.notify();
             }
         }
@@ -437,7 +473,7 @@ impl Shell {
     /// A card dragged over column `status`, before card `before` when the
     /// pointer is over one (`by_card`).
     pub fn card_over(&mut self, id: TicketId, status: TicketStatus, before: Option<Option<TicketId>>, by_card: Option<TicketId>, cx: &mut Context<Self>) {
-        let refused = self.model.tickets.iter().find(|t| t.id == id).and_then(|t| tickets::drop_rule(t, status).err());
+        let refused = self.model.tickets.iter().find(|t| t.id == id).and_then(|t| tickets::person_rule(t, status).err());
         let prev = self.board.tk.drag;
         let mut next = match prev {
             Some(d) if d.id == id && d.status == status => d,
@@ -460,6 +496,9 @@ impl Shell {
     /// that card's, so the cards it pushes down don't make it jump.
     #[allow(clippy::too_many_arguments)]
     pub fn card_hover(&mut self, dragged: TicketId, status: TicketStatus, card: TicketId, next: Option<TicketId>, bounds: Bounds<Pixels>, at: Point<Pixels>, cx: &mut Context<Self>) {
+        if self.in_cancel_zone(at) {
+            return;
+        }
         if bounds.contains(&at) {
             let before = if at.y < bounds.center().y { Some(card) } else { next };
             self.card_over(dragged, status, Some(before), Some(card), cx);
@@ -484,10 +523,19 @@ impl Shell {
         }
     }
 
+    /// Whether the pointer is over the place to drop a card to cancel it.
+    pub fn in_cancel_zone(&self, at: Point<Pixels>) -> bool {
+        self.board.tk.drag.is_some() && self.board.tk.anchors.borrow().get("cancel-zone").is_some_and(|b| b.contains(&at))
+    }
+
     /// A card let go over column `status`.
     pub fn card_dropped(&mut self, id: TicketId, status: TicketStatus, window: &mut Window, cx: &mut Context<Self>) {
-        let before = self.board.tk.drag.filter(|d| d.id == id && d.status == status).and_then(|d| d.before);
+        let hint = self.board.tk.drag.filter(|d| d.id == id);
+        // Over the cancel place, the column under it doesn't count.
+        let status = if hint.is_some_and(|d| d.status == TicketStatus::Cancelled) { TicketStatus::Cancelled } else { status };
+        let before = hint.filter(|d| d.status == status).and_then(|d| d.before);
         self.board.tk.drag = None;
+        self.board.tk.anchors.borrow_mut().remove("cancel-zone");
         self.board.view.selected = Some(Need::Ticket(id));
         self.tickets_move(id, status, before, window, cx);
         cx.notify();
@@ -557,6 +605,65 @@ impl Shell {
                 cx.notify();
             }
         }
+    }
+
+    /// C: the quick line, at the top of 티켓.
+    pub fn open_quick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_act() {
+            return;
+        }
+        self.board.tk.quick = true;
+        self.board.tk.menu = None;
+        self.board.tk.quick_input.update(cx, |s, cx| s.focus(window, cx));
+        cx.notify();
+    }
+
+    pub fn close_quick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.board.tk.quick = false;
+        self.board.tk.quick_input.update(cx, |s, cx| s.set_value(String::new(), window, cx));
+        window.blur(cx);
+        cx.notify();
+    }
+
+    /// ⌘⏎ on the quick line: the ticket as typed.
+    pub fn create_quick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let line = self.board.tk.quick_input.read(cx).value().to_string();
+        let (sheet, _) = tickets::parse_quick(&line, &self.model);
+        match sheet.command(&self.model.squad) {
+            Ok(command) => {
+                let highest = self.model.tickets.iter().map(|t| t.id).max().unwrap_or(0);
+                self.board.tk.awaiting = Some((sheet.title.trim().to_owned(), highest));
+                self.send_command(command);
+                self.say(t!("tickets.creating", title = sheet.title.trim()));
+                self.close_quick(window, cx);
+            }
+            Err(why) => {
+                self.say(why);
+                cx.notify();
+            }
+        }
+    }
+
+    /// ⇧⌘⏎ on the quick line: the PM shapes it — criteria, a split — and
+    /// brings it back as a proposal to take on.
+    pub fn shape_quick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let line = self.board.tk.quick_input.read(cx).value().trim().to_owned();
+        let Some(pm) = self.model.pm().filter(|_| !line.is_empty() && self.can_act()) else { return };
+        self.send_command(Command::Submit { session: pm, text: tickets::shape_request(&line) });
+        self.say(t!("tickets.shaping"));
+        self.close_quick(window, cx);
+    }
+
+    /// The quick line's words into the full sheet, for what one line can't say.
+    pub fn quick_to_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let line = self.board.tk.quick_input.read(cx).value().to_string();
+        let (sheet, _) = tickets::parse_quick(&line, &self.model);
+        self.close_quick(window, cx);
+        self.open_sheet(window, cx);
+        let title = sheet.title.clone();
+        self.board.tk.sheet = Some(Sheet { title: String::new(), ..sheet });
+        self.board.tk.sheet_title.update(cx, |s, cx| s.set_value(title, window, cx));
+        cx.notify();
     }
 
     // ── the page, edited in place ──
@@ -696,6 +803,18 @@ impl Shell {
     /// sheet's ⌘⏎, V, C, P S O E, and the board's arrows. True when taken.
     pub fn on_tickets_key(&mut self, key: &str, m: &Modifiers, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let plain = !(m.control || m.alt || m.platform || m.shift || m.function);
+        // Stopping work under way, asked: ⏎ or Y gives it to them, N or Esc keeps it.
+        if self.board.tk.confirm.is_some() {
+            match key {
+                "enter" | "y" => self.confirm_edit(cx),
+                "n" | "escape" => {
+                    self.board.tk.confirm = None;
+                    cx.notify();
+                }
+                _ => {}
+            }
+            return true;
+        }
         // A menu open: its rows by number.
         if let Some(menu) = self.board.tk.menu.clone()
             && plain
@@ -720,23 +839,47 @@ impl Shell {
         if !plain {
             return false;
         }
+        // ⇧C: the full sheet; ⇧P: the project of the pick (or the chosen).
+        if m.shift && !(m.control || m.alt || m.platform || m.function) {
+            match key {
+                "c" => {
+                    self.open_sheet(window, cx);
+                    return true;
+                }
+                "p" => {
+                    let targets = self.edit_targets();
+                    if targets.is_empty() {
+                        return false;
+                    }
+                    let key = SharedString::from(format!("{}-{}", kind_code(EditKind::Project), targets[0]));
+                    let key = if self.board.tk.anchors.borrow().contains_key(&key) { key } else { SharedString::from("toolbar-new") };
+                    self.open_edit_menu(EditKind::Project, targets, key, false, window, cx);
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+        if !plain {
+            return false;
+        }
         match key {
             "c" => {
-                self.open_sheet(window, cx);
+                self.open_quick(window, cx);
                 true
             }
             "v" if self.tickets_on() => {
                 self.set_layout(self.board.view.layout.other(), cx);
                 true
             }
-            "p" | "s" | "o" => {
+            "p" | "s" | "m" | "b" => {
                 let targets = self.edit_targets();
                 if targets.is_empty() {
-                    return true;
+                    return false;
                 }
                 let kind = match key {
                     "p" => EditKind::Priority,
                     "s" => EditKind::Status,
+                    "b" => EditKind::Depends,
                     _ => EditKind::Assignee,
                 };
                 // From the pick's own control when it shows, else the bar's.
@@ -746,11 +889,10 @@ impl Shell {
                 true
             }
             "e" => {
-                if let Some(Need::Ticket(id)) = self.picked_need() {
-                    self.board.view.page = Some(Tab::Overview);
-                    self.board.view.peek = true;
-                    self.edit_title(id, window, cx);
-                }
+                let Some(Need::Ticket(id)) = self.picked_need() else { return false };
+                self.board.view.page = Some(Tab::Overview);
+                self.board.view.peek = true;
+                self.edit_title(id, window, cx);
                 true
             }
             "h" | "left" if self.tickets_board() => {
@@ -773,10 +915,31 @@ impl Shell {
         }
     }
 
+    /// "분류 필요": the proposals alone, the first picked — or back to the list.
+    pub fn set_triage(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.board.view.triage = on;
+        self.board.view.selected = None;
+        self.board.view.chosen.clear();
+        self.board.flow = None;
+        if on {
+            self.board.view.layout = Layout::List;
+            self.board.view.peek = true;
+        }
+        self.board_changed(cx);
+    }
+
     /// Esc on 티켓: a menu, the sheet, an edit — true when one was closed.
     pub fn tickets_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.board.view.triage && self.board.flow.is_none() && self.board.tk.menu.is_none() {
+            self.set_triage(false, cx);
+            return true;
+        }
+        if self.board.tk.quick {
+            self.close_quick(window, cx);
+            return true;
+        }
         let tk = &mut self.board.tk;
-        if tk.menu.take().is_some() || std::mem::take(&mut tk.views_open) {
+        if tk.confirm.take().is_some() || tk.menu.take().is_some() || std::mem::take(&mut tk.views_open) {
             cx.notify();
             return true;
         }
@@ -914,9 +1077,11 @@ fn pill(p: Palette, id: SharedString, enabled: bool) -> Stateful<Div> {
 
 // ── the list's rows ──
 
-/// A ticket's row in 티켓's list: check · priority · T-n · status · title ·
-/// flags · project · owner · when it last changed. Priority, status and owner
-/// are menus under the pointer.
+/// A ticket's row in 티켓's list, by what it is and where it stands: status
+/// (pulsing while its member works) · T-n · title · what it waits on · project
+/// · who, and what they are doing now or where it is in their queue · its
+/// diff · priority · when it last changed. Status, owner and priority are
+/// menus under the pointer; a row waiting for the person is lit.
 pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let model = &shell.model;
@@ -925,7 +1090,8 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
     let group = SharedString::from(format!("trow-{id}"));
     let chosen = shell.board.view.chosen.contains(&id);
     let closed = t.status.is_closed();
-    let compact = shell.board.list_width < 680.;
+    let compact = shell.board.list_width < 760.;
+    let narrow = shell.board.list_width < 600.;
     let anchors = &shell.board.tk.anchors;
     let can = shell.can_act();
     let menu_open = |kind: EditKind| shell.board.tk.menu.as_ref().is_some_and(|m| m.kind == kind && m.targets == [id] && !m.for_sheet);
@@ -940,12 +1106,13 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
         let key = SharedString::from(format!("{}-{id}", kind_code(kind)));
         let on = menu_open(kind);
         anchored(
-            div()
+            h_flex()
                 .id(key.clone())
                 .w(px(w))
                 .h(px(24.))
                 .flex_none()
-                .flex()
+                .px(px(3.))
+                .gap(px(6.))
                 .items_center()
                 .justify_center()
                 .rounded(px(5.))
@@ -962,6 +1129,25 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
     let changed = tickets::changed_at(model, t);
     let when = (changed > 0).then(|| short_span(model.unix.saturating_sub(changed)));
     let live = model.is_live(t);
+    // Waiting for the person, and not acted on yet: lit, as in 나에게.
+    let yours = model.needs_you().iter().any(|(_, n)| *n == need);
+    // What its member is doing now, how long it has been at it — or its place in their queue.
+    let doing: Option<(String, Rgba)> = match t.status {
+        TicketStatus::InProgress => {
+            let span = model.in_state_for(t).map(short_span);
+            let activity = super::board::live_activity(model, t);
+            match (activity, span) {
+                (Some(a), Some(s)) => Some((format!("{a} · {s}"), p.text2)),
+                (Some(a), None) => Some((a, p.text2)),
+                (None, Some(s)) => Some((s, p.muted)),
+                (None, None) => None,
+            }
+        }
+        TicketStatus::Waiting => rules::first_need(t).map(|n| (n, p.accent)),
+        TicketStatus::Todo => tickets::queue_place(model, t).map(|n| (t!("tickets.next_in_queue", n = n), p.muted)),
+        _ => None,
+    };
+    let stat = shell.board.stat(t).filter(|s| !s.files.is_empty()).map(|s| (s.added, s.removed));
     let el = h_flex()
         .id(SharedString::from(format!("ticket-{id}")))
         .group(group.clone())
@@ -975,8 +1161,10 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
         .rounded(px(6.))
         .text_size(px(13.))
         .cursor_pointer()
+        .when(yours && !picked, |r| r.bg(p.accent_bg))
         .when(picked, |r| r.bg(p.wash))
         .when(!picked, |r| r.hover(move |s| s.bg(p.wash)))
+        .when(yours, |r| r.child(div().absolute().left_0().top(px(8.)).bottom(px(8.)).w(px(2.)).rounded(px(1.)).bg(p.accent)))
         .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
             if e.modifiers().platform {
                 if !this.board.view.chosen.remove(&id) {
@@ -1012,8 +1200,6 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
                     cx.notify();
                 })),
         )
-        .child(control(EditKind::Priority, 24., priority_icon(p, t.priority, 14.), cx).tip(p, t!("tickets.tip_priority", priority = tickets::priority_word(t.priority)), Some("P")))
-        .child(div().w(px(46.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
         .child(
             control(
                 EditKind::Status,
@@ -1023,6 +1209,7 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
             )
             .tip(p, t!("tickets.tip_status", status = crate::state::state_word(t)), Some("S")),
         )
+        .child(div().w(px(46.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
         .child(
             div()
                 .flex_1()
@@ -1030,10 +1217,11 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
                 .truncate()
                 .pl(px(depth as f32 * 18.))
                 .text_color(if closed { p.muted } else { p.text })
+                .when(yours, |d| d.font_weight(FontWeight::MEDIUM))
                 .child(if depth > 0 { format!("↳ {}", t.title) } else { t.title.clone() }),
         )
         .child(
-            h_flex().flex_none().max_w(px(if compact { 90. } else { 180. })).gap_1().justify_end().overflow_hidden().children(flags.into_iter().enumerate().map(|(i, (text, color, tip))| {
+            h_flex().flex_none().max_w(px(if compact { 90. } else { 160. })).gap_1().justify_end().overflow_hidden().children(flags.into_iter().enumerate().map(|(i, (text, color, tip))| {
                 let chip = div().id(("tflag", i)).flex_none().px(px(6.)).h(px(18.)).flex().items_center().rounded(px(4.)).bg(p.wash).text_size(px(11.)).text_color(color).child(text);
                 match tip {
                     Some(tip) => chip.tip(p, tip, None).into_any_element(),
@@ -1041,10 +1229,10 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
                 }
             })),
         )
-        .when(!compact, |r| {
+        .when(!narrow, |r| {
             r.child(
                 h_flex()
-                    .w(px(110.))
+                    .w(px(if compact { 74. } else { 96. }))
                     .flex_none()
                     .gap(px(6.))
                     .items_center()
@@ -1052,9 +1240,160 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
                     .child(div().min_w_0().truncate().text_size(px(12.)).text_color(p.muted).child(project.unwrap_or_else(|| t!("board.squad_folder").into()))),
             )
         })
-        .child(control(EditKind::Assignee, 26., avatar(p, model, who.as_deref(), 20.), cx).tip(p, who.clone().unwrap_or_else(|| t!("tickets.pm_decides").into()), Some("O")))
-        .child(div().w(px(36.)).flex_none().text_align(TextAlign::Right).text_size(px(12.)).text_color(p.muted).child(when.unwrap_or_default()));
+        .child(
+            control(
+                EditKind::Assignee,
+                if compact { 26. } else { 210. },
+                h_flex()
+                    .w_full()
+                    .gap(px(6.))
+                    .items_center()
+                    .child(avatar(p, model, who.as_deref(), 20.))
+                    .when(!compact, |h| {
+                        h.child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .child(div().truncate().text_size(px(12.)).line_height(px(15.)).text_color(if who.is_some() { p.text2 } else { p.muted }).child(who.clone().unwrap_or_else(|| t!("tickets.pm_decides").into())))
+                                .children(doing.clone().map(|(text, color)| div().truncate().text_size(px(11.)).line_height(px(14.)).text_color(color).child(text))),
+                        )
+                    })
+                    .into_any_element(),
+                cx,
+            )
+            .justify_start()
+            .tip(p, who.clone().unwrap_or_else(|| t!("tickets.pm_decides").into()), Some("M")),
+        )
+        .when(!narrow, |r| {
+            r.child(
+                h_flex()
+                    .w(px(64.))
+                    .flex_none()
+                    .gap_1()
+                    .justify_end()
+                    .text_size(px(11.5))
+                    .font_family(MONO)
+                    .children(stat.map(|(added, removed)| [div().text_color(p.accent).child(format!("+{added}")), div().text_color(p.muted).child(format!("−{removed}"))]).into_iter().flatten()),
+            )
+        })
+        .child(control(EditKind::Priority, 24., priority_icon(p, t.priority, 14.), cx).tip(p, t!("tickets.tip_priority", priority = tickets::priority_word(t.priority)), Some("P")))
+        .child(div().w(px(32.)).flex_none().text_align(TextAlign::Right).text_size(px(12.)).text_color(p.muted).child(when.unwrap_or_default()));
     el.into_any_element()
+}
+
+/// Above 티켓's list: the proposals waiting to be sorted, a click into triage —
+/// or, in triage, the way back.
+pub fn triage_banner(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let p = shell.palette;
+    if !shell.tickets_on() {
+        return None;
+    }
+    if shell.board.view.triage {
+        return Some(
+            h_flex()
+                .id("triage-back")
+                .h(px(32.))
+                .mt_1()
+                .px_3()
+                .gap_2()
+                .items_center()
+                .rounded(px(8.))
+                .text_size(px(SMALL))
+                .text_color(p.text2)
+                .cursor_pointer()
+                .hover(move |s| s.bg(p.wash))
+                .on_click(cx.listener(|this, _, _, cx| this.set_triage(false, cx)))
+                .child("←")
+                .child(t!("tickets.triage_back"))
+                .child(div().flex_1())
+                .child(kbd(p, "A"))
+                .child(div().text_color(p.muted).child(t!("tickets.triage_take")))
+                .child(kbd(p, "N"))
+                .child(div().text_color(p.muted).child(t!("tickets.triage_drop")))
+                .child(kbd(p, "Esc"))
+                .into_any_element(),
+        );
+    }
+    let (query, _) = rules::effective(&shell.board.view, &shell.saved_views());
+    let n = rules::proposals(&shell.model, &rules::Filter::parse(&query)).len();
+    (n > 0).then(|| {
+        h_flex()
+            .id("triage-banner")
+            .h(px(36.))
+            .mt_1()
+            .mb_1()
+            .px_3()
+            .gap_2()
+            .items_center()
+            .rounded(px(8.))
+            .bg(p.accent_bg)
+            .text_size(px(SMALL))
+            .cursor_pointer()
+            .hover(move |s| s.border_1().border_color(p.accent))
+            .on_click(cx.listener(|this, _, _, cx| this.set_triage(true, cx)))
+            .child(icons::status(p, TicketStatus::Proposed, 14.))
+            .child(div().font_weight(FontWeight::SEMIBOLD).text_color(p.accent).child(t!("tickets.triage_banner", n = n)))
+            .child(div().text_color(p.text2).child(t!("tickets.triage_banner_hint")))
+            .child(div().flex_1())
+            .child(div().text_color(p.accent).child("→"))
+            .into_any_element()
+    })
+}
+
+/// The quick line (C): one line, its words read as they are typed.
+pub fn quick_bar(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let p = shell.palette;
+    if !shell.board.tk.quick {
+        return None;
+    }
+    let line = shell.board.tk.quick_input.read(cx).value().to_string();
+    let (sheet, tokens) = tickets::parse_quick(&line, &shell.model);
+    let chip = |lead: AnyElement, text: String| h_flex().h(px(22.)).px(px(7.)).gap(px(5.)).items_center().rounded(px(6.)).bg(p.wash).text_size(px(12.)).text_color(p.text2).child(lead).child(text);
+    let chips: Vec<AnyElement> = tokens
+        .iter()
+        .map(|t| match t {
+            tickets::Token::Owner(name) => chip(avatar(p, &shell.model, Some(name), 14.), name.clone()).into_any_element(),
+            tickets::Token::Project(name) => {
+                let at = shell.model.project_names().iter().position(|x| x == name);
+                chip(dot(at.map_or(p.muted, |i| p.member(crate::theme::PROJECT_HUES[i % crate::theme::PROJECT_HUES.len()])), 7.).into_any_element(), name.clone()).into_any_element()
+            }
+            tickets::Token::Priority(pr) => chip(priority_icon(p, *pr, 12.), tickets::priority_word(*pr).to_owned()).into_any_element(),
+            tickets::Token::After(id) => chip(div().text_color(p.orange).child("⛔").into_any_element(), format!("T-{id}")).into_any_element(),
+        })
+        .collect();
+    let ready = !sheet.title.trim().is_empty() && shell.can_act();
+    Some(
+        v_flex()
+            .mx_3()
+            .mt_2()
+            .p_2()
+            .gap_2()
+            .rounded(px(10.))
+            .bg(p.raised)
+            .border_1()
+            .border_color(p.accent)
+            .shadow(motion::float_shadow(0.4))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(super::sidebar::icon(IconName::Plus, 15., p.accent))
+                    .child(div().flex_1().text_size(px(14.)).child(Input::new(&shell.board.tk.quick_input).appearance(false).bordered(false))),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .flex_wrap()
+                    .children(chips)
+                    .when(tokens.is_empty(), |h| h.child(div().text_size(px(12.)).text_color(p.muted).child(t!("tickets.quick_hint"))))
+                    .child(div().flex_1())
+                    .child(btn(p, "quick-more", t!("tickets.quick_more"), Some("⇧C"), false, true).on_click(cx.listener(|this, _, window, cx| this.quick_to_sheet(window, cx))))
+                    .child(btn(p, "quick-shape", t!("tickets.quick_shape"), Some("⇧⌘⏎"), false, ready && shell.model.pm().is_some()).on_click(cx.listener(|this, _, window, cx| this.shape_quick(window, cx))))
+                    .child(btn(p, "quick-create", t!("tickets.create"), Some("⌘⏎"), true, ready).on_click(cx.listener(|this, _, window, cx| this.create_quick(window, cx)))),
+            )
+            .into_any_element(),
+    )
 }
 
 // ── the board ──
@@ -1065,11 +1404,9 @@ pub fn board(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let cols = shell.board_columns();
     let dragging = shell.board.tk.drag.filter(|_| cx.has_active_drag());
     let pick = shell.picked_need();
-    h_flex()
+    let columns = h_flex()
         .id("ticket-board")
-        .flex_1()
-        .min_w_0()
-        .h_full()
+        .size_full()
         .items_start()
         .overflow_x_scroll()
         .track_scroll(&shell.board.tk.board_scroll)
@@ -1077,8 +1414,49 @@ pub fn board(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .pt_2()
         .gap(px(COLUMN_GAP))
         .children(cols.into_iter().map(|col| column(shell, col, dragging, pick, cx)))
-        .child(div().w(px(8.)).flex_none())
-        .bg(p.bg)
+        .child(div().w(px(8.)).flex_none());
+    div().flex_1().min_w_0().h_full().relative().bg(p.bg).child(columns).children(dragging.map(|d| cancel_zone(shell, d, cx))).into_any_element()
+}
+
+/// While a card is dragged: a place at the board's foot to drop it to cancel
+/// it (asked once, after).
+fn cancel_zone(shell: &Shell, drag: DragOver, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let over = drag.status == TicketStatus::Cancelled;
+    let refused = drag.refused.filter(|_| over);
+    let zone = h_flex()
+        .id("cancel-zone")
+        .w(px(380.))
+        .h(px(52.))
+        .gap_2()
+        .items_center()
+        .justify_center()
+        .rounded(px(12.))
+        .border_1()
+        .border_color(if over { p.danger() } else { p.hair })
+        .bg(if over { p.danger_bg() } else { p.popover() })
+        .shadow(motion::float_shadow(0.8))
+        // Its drop is its own, not the column's under it.
+        .occlude()
+        .text_size(px(SMALL))
+        .text_color(if over { p.danger() } else { p.text2 })
+        .on_drag_move::<CardDrag>(cx.listener(move |this, e: &DragMoveEvent<CardDrag>, _, cx| {
+            if e.bounds.contains(&e.event.position) {
+                let id = e.drag(cx).id;
+                this.card_over(id, TicketStatus::Cancelled, Some(None), None, cx);
+            }
+        }))
+        .on_drop(cx.listener(move |this, d: &CardDrag, window, cx| this.card_dropped(d.id, TicketStatus::Cancelled, window, cx)))
+        .child(icons::status(p, TicketStatus::Cancelled, 14.))
+        .child(refused.map_or_else(|| t!("tickets.drop_to_cancel").to_owned(), |why| tickets::why_words(why).to_owned()));
+    div()
+        .absolute()
+        .left_0()
+        .right_0()
+        .bottom(px(20.))
+        .flex()
+        .justify_center()
+        .child(anchored(zone, &shell.board.tk.anchors, "cancel-zone".into()))
         .into_any_element()
 }
 
@@ -1114,7 +1492,7 @@ fn column(shell: &Shell, col: Column, dragging: Option<DragOver>, pick: Option<N
         .when(ok_over.is_some(), |c| c.bg(p.accent_bg))
         .when(refused.is_some(), |c| c.bg(p.danger_bg()))
         .on_drag_move::<CardDrag>(cx.listener(move |this, e: &DragMoveEvent<CardDrag>, _, cx| {
-            if e.bounds.contains(&e.event.position) {
+            if e.bounds.contains(&e.event.position) && !this.in_cancel_zone(e.event.position) {
                 let id = e.drag(cx).id;
                 this.card_over(id, status, None, None, cx);
             }
@@ -1164,7 +1542,7 @@ fn column(shell: &Shell, col: Column, dragging: Option<DragOver>, pick: Option<N
                 .text_size(px(12.5))
                 .line_height(px(18.))
                 .text_color(p.tip_text())
-                .child(format!("⊘ {}", tickets::refusal_words(r)))
+                .child(format!("⊘ {}", tickets::why_words(r)))
         }))
         .child(
             v_flex()
@@ -1323,7 +1701,7 @@ fn card(shell: &Shell, id: TicketId, status: TicketStatus, next: Option<TicketId
                         .text_color(p.muted)
                         .when(t.status.is_closed() && status == TicketStatus::Done, |h| h.child(icons::status(p, t.status, 11.)))
                         .child(h_flex().gap(px(5.)).items_center().min_w_0().child(dot(hue_of(p, model, t).unwrap_or(p.muted), 6.)).child(div().truncate().child(project.unwrap_or_else(|| t!("board.squad_folder").into()))))
-                        .when_some(blocked, |h, dep| h.child(div().px(px(5.)).rounded(px(4.)).bg(p.wash).text_color(p.orange).child(format!("⛓ T-{dep}"))))
+                        .when_some(blocked, |h, dep| h.child(div().px(px(5.)).rounded(px(4.)).bg(p.wash).text_color(p.orange).child(format!("⛔ T-{dep}"))))
                         .when(unblocks > 0 && !t.status.is_closed(), |h| h.child(div().px(px(5.)).rounded(px(4.)).bg(p.wash).child(format!("→ {unblocks}"))))
                         .when(t.not_on_main(), |h| h.child(div().px(px(5.)).rounded(px(4.)).bg(p.wash).text_color(p.accent).child(t!("state.chip_not_on_main")))),
                 ),
@@ -1417,8 +1795,8 @@ pub fn edit_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                     (avatar(p, model, Some(name), 18.), name.clone(), role)
                 }
                 Choice::Status(s) => {
-                    let why = status_of.as_ref().and_then(|t| tickets::drop_rule(t, *s).err().filter(|_| t.status != *s));
-                    (icons::status(p, *s, 14.).into_any_element(), status_word(*s).to_owned(), why.map(|r| tickets::refusal_words(r).to_owned()))
+                    let why = status_of.as_ref().and_then(|t| tickets::person_rule(t, *s).err().filter(|_| t.status != *s));
+                    (icons::status(p, *s, 14.).into_any_element(), status_word(*s).to_owned(), why.map(|r| tickets::why_words(r).to_owned()))
                 }
                 Choice::Project(Some(path)) => {
                     let name = equipe_core::board::project_name(path);
@@ -1682,7 +2060,7 @@ pub fn views_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> 
 pub fn new_button(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     anchored(
-        btn(p, "toolbar-new", t!("tickets.new"), Some("C"), true, shell.can_act()).on_click(cx.listener(|this, _, window, cx| this.open_sheet(window, cx))),
+        btn(p, "toolbar-new", t!("tickets.new"), Some("C"), true, shell.can_act()).on_click(cx.listener(|this, _, window, cx| this.open_quick(window, cx))),
         &shell.board.tk.anchors,
         "toolbar-new".into(),
     )
@@ -2162,4 +2540,61 @@ pub fn timeline(shell: &Shell, t: &Ticket, cx: &mut Context<Shell>) -> AnyElemen
                 ),
         )
         .into_any_element()
+}
+
+/// "Stop T-47 and give it to backend?" — asked before work under way changes hands.
+pub fn confirm_card(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let p = shell.palette;
+    let (ids, edit) = shell.board.tk.confirm.clone()?;
+    let to = edit.assignee.clone().flatten().unwrap_or_default();
+    let working: Vec<&Ticket> = ids.iter().filter_map(|id| shell.model.tickets.iter().find(|t| t.id == *id)).filter(|t| t.status == TicketStatus::InProgress).collect();
+    let names: Vec<String> = working.iter().map(|t| format!("T-{}", t.id)).collect();
+    let from: Vec<String> = working.iter().filter_map(|t| rules::who(t).map(str::to_owned)).collect();
+    let card = v_flex()
+        .id("confirm-reassign")
+        .w(px(440.))
+        .p_5()
+        .gap_3()
+        .rounded(px(14.))
+        .bg(p.popover())
+        .border_1()
+        .border_color(p.hair)
+        .occlude()
+        .on_click(|_, _, cx| cx.stop_propagation())
+        .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(t!("tickets.confirm_title", ids = names.join(", "), to = to)))
+        .child(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.text2).child(t!("tickets.confirm_body", from = from.join(", "), to = to)))
+        .child(
+            h_flex()
+                .gap_2()
+                .child(div().flex_1())
+                .child(btn(p, "confirm-keep", t!("board.keep"), Some("Esc"), false, true).on_click(cx.listener(|this, _, _, cx| {
+                    this.board.tk.confirm = None;
+                    cx.notify();
+                })))
+                .child(btn(p, "confirm-give", t!("tickets.confirm_give"), Some("⏎"), true, shell.can_act()).on_click(cx.listener(|this, _, _, cx| this.confirm_edit(cx)))),
+        );
+    Some(
+        deferred(
+            div()
+                .id("confirm-scrim")
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .flex()
+                .justify_center()
+                .items_start()
+                .pt(px(120.))
+                .bg(rgba(0x0000005C))
+                .occlude()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.board.tk.confirm = None;
+                    cx.notify();
+                }))
+                .child(motion::dialog(card, "confirm-in")),
+        )
+        .with_priority(3)
+        .into_any_element(),
+    )
 }

@@ -975,6 +975,11 @@ async fn tools_refuse_what_does_not_make_sense() {
     assert!(!recast.is_error, "{recast:?}");
     let board = tool(&handle, "pm", "board", serde_json::json!({})).await;
     assert!(board.text.contains("T-2 [todo] Research — action, owner designer\n"), "{}", board.text);
+    // Shaping what the person wrote in a line, the PM puts it up for them to take on.
+    let shaped = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Shaped", "owner": "designer", "proposal": true })).await;
+    assert!(shaped.text.starts_with("Proposed T-3 — it waits for the person"), "{shaped:?}");
+    let board = tool(&handle, "pm", "board", serde_json::json!({})).await;
+    assert!(board.text.contains("T-3 [proposed] Shaped"), "{}", board.text);
 }
 
 #[tokio::test]
@@ -2837,6 +2842,12 @@ async fn the_persons_edits_are_checked_then_told_to_the_pm_and_the_members_conce
     handle.send(edit(1, TicketEdit { assignee: Some(None), ..Default::default() }));
     assert!(error_text(&until(&mut events, |e| matches!(e, Event::Error { .. })).await).contains("being worked on"));
 
+    // Several at once: each changed, the PM told once for all.
+    handle.send(Command::EditTickets { squad: "acme".into(), tickets: vec![1, 2], changes: TicketEdit { priority: Some(Priority::Low), ..Default::default() } });
+    let batch = until(&mut events, |e| matches!(e, Event::Notice { session: 1, text } if text.starts_with("You changed 2"))).await;
+    assert_eq!(notice_to(&batch, 1), ["You changed 2 tickets: priority 2"], "one line, not one a ticket: {batch:#?}");
+    assert_eq!(ticket_changed(&batch).iter().filter(|t| t.priority == Priority::Low).count(), 2);
+
     // Its record keeps what the person did.
     handle.send(Command::TicketHistory { squad: "acme".into(), ticket: 1 });
     let history = until(&mut events, |e| matches!(e, Event::TicketHistory { .. })).await;
@@ -2870,11 +2881,11 @@ async fn moving_a_ticket_means_what_its_button_would_and_the_board_order_decides
     let mut todo: Vec<Ticket> = handle.snapshot("acme").await.tickets;
     todo.sort_by_key(|t| (t.order_key(), t.id));
     assert_eq!(todo.iter().map(|t| t.id).collect::<Vec<_>>(), [3, 2, 1]);
-    // Urgent beats the order: T-1 goes first once someone can take it.
+    // The board's order decides what is picked up first — not priority.
     handle.send(Command::EditTicket { squad: "acme".into(), ticket: 1, changes: TicketEdit { priority: Some(Priority::Urgent), ..Default::default() } });
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.priority == Priority::Urgent)).await;
     add(&handle, &mut events, 2, member(&cwd, "qa")).await;
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 3, .. })).await;
 
     // Back to a proposal, then taken on again — not done.
     handle.send(to(2, Some(TicketStatus::Proposed), None));

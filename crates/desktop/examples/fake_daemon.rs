@@ -451,6 +451,11 @@ fn on_board_command(command: &Command) -> Option<Vec<Event>> {
     let squad = || "demo".to_owned();
     let changed = |t: &Ticket| Event::TicketChanged { squad: squad(), ticket: Ticket { updated_at: Some(unix()), ..t.clone() } };
     let refuse = |message: String| vec![Event::Error { session: None, message, next: None }];
+    // Several at once: each as one, then a single word.
+    if let Command::EditTickets { squad, tickets, changes } = command {
+        let each = tickets.iter().flat_map(|id| on_board_command(&Command::EditTicket { squad: squad.clone(), ticket: *id, changes: changes.clone() }).unwrap_or_default());
+        return Some(each.collect());
+    }
     let mut all = tickets().lock().unwrap();
     match command {
         Command::CreateTicket { draft, .. } => {

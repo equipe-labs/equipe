@@ -10,8 +10,19 @@ use equipe_protocol::{Priority, TicketDraft, TicketEdit};
 /// What a change was, said twice: in English for the models, in the person's
 /// language for their screen.
 struct Change {
+    /// Which field: `title`, `body`, `priority`, `kind`, `project`, `depends`, `owner`.
+    field: &'static str,
     en: String,
     shown: String,
+}
+
+/// A ticket the person changed, to be told about.
+struct Edited {
+    id: TicketId,
+    title: String,
+    said: Vec<Change>,
+    /// The members it concerns: who had it, who has it.
+    concerned: Vec<Option<String>>,
 }
 
 impl Runtime {
@@ -139,6 +150,14 @@ impl Runtime {
         if let Some(missing) = draft.depends_on.iter().find(|d| !tickets.iter().any(|t| t.id == **d)) {
             return Err(say!(self, "error.no_ticket", id = missing));
         }
+        // What is ready goes in the board's order; an urgent one goes on top of it.
+        let rank = if draft.priority == Priority::Urgent {
+            let mut ready: Vec<&Ticket> = tickets.iter().filter(|t| t.status == TicketStatus::Todo).collect();
+            board::board_order(&mut ready);
+            ready.first().map_or(0, |first| board::rank_before(&ready, Some(first.id)).unwrap_or(first.order_key() - 1))
+        } else {
+            0
+        };
         let ticket = Ticket {
             id: 0,
             title: title.clone(),
@@ -157,7 +176,7 @@ impl Runtime {
             note: None,
             asks: Vec::new(),
             priority: draft.priority,
-            rank: 0,
+            rank,
             updated_at: None,
         };
         let no_squad = say!(self, "error.no_squad", squad = squad);
@@ -193,18 +212,78 @@ impl Runtime {
             return;
         };
         match self.apply_edit(squad, found, changes) {
-            Ok(reassigned) => {
-                if reassigned {
-                    self.dispatch(squad).await;
-                }
+            Ok(Some(edited)) => {
+                let line = format!("The person changed T-{} ({}): {}. Plan with the board as it is now.", edited.id, edited.title, Self::en_of(&edited));
+                let shown = say!(self, "news.edited", id = edited.id, what = Self::shown_of(&edited));
+                self.tell_about(squad, &edited.concerned, line, shown);
+                self.dispatch(squad).await;
             }
+            Ok(None) => {}
             Err(message) => self.squad_error(squad, message),
         }
     }
 
-    /// Change `found` as asked, save, publish and tell. True when its work
-    /// went to someone else (the board then hands it out again).
-    fn apply_edit(&mut self, squad: &str, found: Ticket, changes: TicketEdit) -> Result<bool, String> {
+    /// The same change to several tickets: each made as it can be, and the
+    /// PM and the members told once — "6 tickets changed: owner 3, priority 3".
+    pub(super) async fn person_edits_many(&mut self, squad: &str, ids: Vec<TicketId>, changes: TicketEdit) {
+        if changes.is_empty() || ids.is_empty() {
+            return;
+        }
+        let mut done: Vec<Edited> = Vec::new();
+        let mut refused: Option<String> = None;
+        for id in ids {
+            let Some(found) = self.find_ticket(squad, id) else { continue };
+            match self.apply_edit(squad, found, changes.clone()) {
+                Ok(Some(edited)) => done.push(edited),
+                Ok(None) => {}
+                Err(message) => {
+                    refused.get_or_insert(message);
+                }
+            }
+        }
+        if let Some(message) = refused {
+            self.squad_error(squad, message);
+        }
+        match done.len() {
+            0 => return,
+            1 => {
+                let edited = &done[0];
+                let line = format!("The person changed T-{} ({}): {}. Plan with the board as it is now.", edited.id, edited.title, Self::en_of(edited));
+                let shown = say!(self, "news.edited", id = edited.id, what = Self::shown_of(edited));
+                let concerned = edited.concerned.clone();
+                self.tell_about(squad, &concerned, line, shown);
+            }
+            n => {
+                // What changed, counted by field, in the order they come.
+                let mut fields: Vec<(&'static str, usize)> = Vec::new();
+                for change in done.iter().flat_map(|e| e.said.iter()) {
+                    match fields.iter_mut().find(|(f, _)| *f == change.field) {
+                        Some((_, count)) => *count += 1,
+                        None => fields.push((change.field, 1)),
+                    }
+                }
+                let shown_what = fields.iter().map(|(f, count)| format!("{} {count}", self.said(&format!("field.{f}"), &[]))).collect::<Vec<_>>().join(" · ");
+                let en_each = done.iter().map(|e| format!("T-{} ({}): {}", e.id, e.title, Self::en_of(e))).collect::<Vec<_>>().join("; ");
+                let line = format!("The person changed {n} tickets at once — {en_each}. Plan with the board as it is now.");
+                let shown = say!(self, "news.edited_many", count = n, what = shown_what);
+                let concerned: Vec<Option<String>> = done.iter().flat_map(|e| e.concerned.iter().cloned()).collect();
+                self.tell_about(squad, &concerned, line, shown);
+            }
+        }
+        self.dispatch(squad).await;
+    }
+
+    fn en_of(edited: &Edited) -> String {
+        edited.said.iter().map(|c| c.en.as_str()).collect::<Vec<_>>().join("; ")
+    }
+
+    fn shown_of(edited: &Edited) -> String {
+        edited.said.iter().map(|c| c.shown.as_str()).collect::<Vec<_>>().join(" · ")
+    }
+
+    /// Change `found` as asked, save and publish it — its member stopping, when
+    /// its work went to someone else. What changed, to tell; `None`: nothing did.
+    fn apply_edit(&mut self, squad: &str, found: Ticket, changes: TicketEdit) -> Result<Option<Edited>, String> {
         let id = found.id;
         let mut t = found.clone();
         let mut said: Vec<Change> = Vec::new();
@@ -212,16 +291,16 @@ impl Runtime {
             if title.is_empty() {
                 return Err(say!(self, "error.ticket_title"));
             }
-            said.push(Change { en: format!("title → “{title}”"), shown: say!(self, "edit.title", title = title) });
+            said.push(Change { field: "title", en: format!("title → “{title}”"), shown: say!(self, "edit.title", title = title) });
             t.title = title;
         }
         if let Some(body) = changes.body.map(|s| s.trim().to_owned()).filter(|s| *s != t.body) {
-            said.push(Change { en: format!("description → {}", clip(&body, 400)), shown: say!(self, "edit.body") });
+            said.push(Change { field: "body", en: format!("description → {}", clip(&body, 400)), shown: say!(self, "edit.body") });
             t.body = body;
         }
         if let Some(priority) = changes.priority.filter(|p| *p != t.priority) {
             let (from, to) = (self.priority_word(t.priority), self.priority_word(priority));
-            said.push(Change { en: format!("priority {} → {}", t.priority.label(), priority.label()), shown: say!(self, "edit.priority", from = from, to = to) });
+            said.push(Change { field: "priority", en: format!("priority {} → {}", t.priority.label(), priority.label()), shown: say!(self, "edit.priority", from = from, to = to) });
             t.priority = priority;
         }
         let started = t.branch.is_some() || t.status == TicketStatus::InProgress;
@@ -230,7 +309,7 @@ impl Runtime {
                 return Err(say!(self, "error.kind_under_way", id = id));
             }
             let (from, to) = (crate::i18n::label::kind(self.config.lang, t.kind), crate::i18n::label::kind(self.config.lang, kind));
-            said.push(Change { en: format!("kind {} → {}", t.kind.label(), kind.label()), shown: say!(self, "edit.kind", from = from, to = to) });
+            said.push(Change { field: "kind", en: format!("kind {} → {}", t.kind.label(), kind.label()), shown: say!(self, "edit.kind", from = from, to = to) });
             t.kind = kind;
         }
         if let Some(project) = changes.project {
@@ -244,6 +323,7 @@ impl Runtime {
                 }
                 let name = |p: &Option<PathBuf>| p.as_deref().map_or_else(|| "—".to_owned(), board::project_name);
                 said.push(Change {
+                    field: "project",
                     en: format!("project {} → {}", name(&t.project), name(&project)),
                     shown: say!(self, "edit.project", from = name(&t.project), to = name(&project)),
                 });
@@ -257,7 +337,7 @@ impl Runtime {
         if let Some(deps) = changes.depends_on.filter(|d| *d != t.depends_on) {
             self.check_dependencies(squad, id, &deps)?;
             let list = |ids: &[TicketId]| if ids.is_empty() { "—".to_owned() } else { ids.iter().map(|d| format!("T-{d}")).collect::<Vec<_>>().join(", ") };
-            said.push(Change { en: format!("waits for {}", if deps.is_empty() { "nothing".into() } else { list(&deps) }), shown: say!(self, "edit.depends", list = list(&deps)) });
+            said.push(Change { field: "depends", en: format!("waits for {}", if deps.is_empty() { "nothing".into() } else { list(&deps) }), shown: say!(self, "edit.depends", list = list(&deps)) });
             t.depends_on = deps;
         }
         // Who does it. Work under way goes to them from its branch.
@@ -276,7 +356,7 @@ impl Runtime {
             }
             let nobody = say!(self, "edit.nobody");
             let (from, to) = (before.clone().unwrap_or_else(|| nobody.clone()), owner.clone().unwrap_or(nobody));
-            said.push(Change { en: format!("owner {} → {}", before.as_deref().unwrap_or("nobody"), owner.as_deref().unwrap_or("nobody (the PM gives it one)")), shown: say!(self, "edit.owner", from = from, to = to) });
+            said.push(Change { field: "owner", en: format!("owner {} → {}", before.as_deref().unwrap_or("nobody"), owner.as_deref().unwrap_or("nobody (the PM gives it one)")), shown: say!(self, "edit.owner", from = from, to = to) });
             match (t.status, self.worker_on(squad, id)) {
                 (TicketStatus::InProgress, Some(worker)) => match &owner {
                     Some(name) => reassign = Some((worker, name.clone())),
@@ -289,17 +369,16 @@ impl Runtime {
             }
         }
         if said.is_empty() {
-            return Ok(false);
+            return Ok(None);
         }
         let shown_what = said.iter().map(|c| c.shown.as_str()).collect::<Vec<_>>().join(" · ");
-        let en_what = said.iter().map(|c| c.en.as_str()).collect::<Vec<_>>().join("; ");
         if let Some(journal) = self.journal(squad) {
             journal.save_ticket(&t).map_err(|e| e.to_string())?;
+            // Its record says what the person changed, in their words.
             let _ = journal.ticket_event(id, "you", "edited", &shown_what);
         }
         let concerned = vec![found.assignee.clone(), found.owner.clone(), t.owner.clone()];
-        let line = format!("The person changed T-{id} ({}): {en_what}. Plan with the board as it is now.", t.title);
-        let shown = say!(self, "news.edited", id = id, what = shown_what);
+        let title = t.title.clone();
         match reassign {
             Some((worker, to)) => {
                 // Its member stops; the ticket goes back on the board for `to`.
@@ -308,8 +387,7 @@ impl Runtime {
             }
             None => self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: t }),
         }
-        self.tell_about(squad, &concerned, line, shown);
-        Ok(true)
+        Ok(Some(Edited { id, title, said, concerned }))
     }
 
     // ── move ──

@@ -799,6 +799,7 @@ impl Runtime {
             Command::Cancel { squad, ticket } => self.cancel(&squad, ticket).await,
             Command::CreateTicket { squad, draft } => self.person_creates(&squad, draft).await,
             Command::EditTicket { squad, ticket, changes } => self.person_edits(&squad, ticket, changes).await,
+            Command::EditTickets { squad, tickets, changes } => self.person_edits_many(&squad, tickets, changes).await,
             Command::MoveTicket { squad, ticket, status, before } => self.person_moves(&squad, ticket, status, before).await,
             Command::CommentTicket { squad, ticket, text } => self.person_comments(&squad, ticket, text).await,
             Command::TicketHistory { squad, ticket } => self.send_history(&squad, ticket),
@@ -3635,11 +3636,13 @@ there, end your turn, and carry on when they say they're done."
                     return Err(format!("There is no T-{missing} to depend on."));
                 }
                 let owner = board::arg_str(&args, "owner").map(str::to_owned);
+                let proposal = args.get("proposal").and_then(Value::as_bool).unwrap_or(false);
                 let ticket = Ticket {
                     id: 0,
                     title: title.to_owned(),
                     body: body.to_owned(),
-                    status: if is_pm { TicketStatus::Todo } else { TicketStatus::Proposed },
+                    // The PM's are ready, unless it puts one up for the person to take on.
+                    status: if is_pm && !proposal { TicketStatus::Todo } else { TicketStatus::Proposed },
                     kind,
                     owner: owner.clone(),
                     assignee: None,
@@ -3663,7 +3666,9 @@ there, end your turn, and carry on when they say they're done."
                 if kind.in_home() {
                     reply = format!("Created T-{new_id} ({}).", kind.label());
                 }
-                if !is_pm {
+                if is_pm && proposal {
+                    reply = format!("Proposed T-{new_id} — it waits for the person to take it on.");
+                } else if !is_pm {
                     reply = format!("Proposed T-{new_id} — it waits for the PM or the person to accept it.");
                     let line = format!("{member} proposed T-{new_id}: {title}");
                     let shown = say!(self, "news.proposed", name = member, id = new_id, title = title);

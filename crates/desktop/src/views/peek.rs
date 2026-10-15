@@ -477,7 +477,7 @@ fn foot(shell: &Shell, t: &Ticket, cx: &mut Context<Shell>) -> AnyElement {
                 Some(MergeWay::Merge) => t!("peek.merge_main"),
                 _ => t!("peek.merge_main_ask"),
             };
-            add(btn(p, "p-merge", label, Some("M"), true, can).on_click(cx.listener(move |this, _, _, cx| this.board_merge(id, cx))));
+            add(btn(p, "p-merge", label, Some("A"), true, can).on_click(cx.listener(move |this, _, _, cx| this.board_merge(id, cx))));
             if t.waits_to_merge() {
                 add(btn(p, "p-keep", t!("peek.keep_on_branch"), None, false, can).on_click(cx.listener(move |this, _, _, cx| this.board_keep(id, cx))));
             }

@@ -891,6 +891,7 @@ pub(crate) mod tests {
             Command::CreateTicket { squad: squad(), draft: TicketDraft { title: "x".into(), ..Default::default() } },
             Command::EditTicket { squad: squad(), ticket: 1, changes: TicketEdit { title: Some("y".into()), ..Default::default() } },
             Command::MoveTicket { squad: squad(), ticket: 1, status: Some(TicketStatus::Done), before: None },
+            Command::EditTickets { squad: squad(), tickets: vec![1, 2], changes: TicketEdit { title: Some("y".into()), ..Default::default() } },
             Command::CommentTicket { squad: squad(), ticket: 1, text: "z".into() },
             Command::TicketHistory { squad: squad(), ticket: 1 },
         ] {
