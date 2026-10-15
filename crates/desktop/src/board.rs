@@ -8,7 +8,7 @@ use equipe_core::t;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use equipe_core::protocol::{Command, OffMain, Ticket, TicketId, TicketKind, TicketStatus};
+use equipe_core::protocol::{Command, OffMain, Priority, Ticket, TicketId, TicketKind, TicketStatus};
 
 use crate::state::{Model, Need, Section, status_word};
 
@@ -33,19 +33,21 @@ pub enum GroupBy {
     Status,
     Project,
     Member,
+    Priority,
     /// A tree of what waits for what.
     Deps,
     None,
 }
 
 impl GroupBy {
-    pub const ALL: [GroupBy; 5] = [GroupBy::Status, GroupBy::Project, GroupBy::Member, GroupBy::Deps, GroupBy::None];
+    pub const ALL: [GroupBy; 6] = [GroupBy::Status, GroupBy::Project, GroupBy::Member, GroupBy::Priority, GroupBy::Deps, GroupBy::None];
 
     pub fn label(self) -> &'static str {
         match self {
             GroupBy::Status => t!("board.group_status"),
             GroupBy::Project => t!("board.group_project"),
             GroupBy::Member => t!("board.group_member"),
+            GroupBy::Priority => t!("tickets.group_priority"),
             GroupBy::Deps => t!("board.group_deps"),
             GroupBy::None => t!("board.group_none"),
         }
@@ -56,6 +58,7 @@ impl GroupBy {
             GroupBy::Status => "status",
             GroupBy::Project => "project",
             GroupBy::Member => "member",
+            GroupBy::Priority => "priority",
             GroupBy::Deps => "deps",
             GroupBy::None => "none",
         }
@@ -137,6 +140,10 @@ pub struct View {
     pub chosen: BTreeSet<TicketId>,
     /// Where a ⇧↑↓ range started.
     pub anchor: Option<TicketId>,
+    /// 티켓 as rows or as a board.
+    pub layout: crate::tickets::Layout,
+    /// 티켓's triage: only the proposals, to take on (A) or drop (N).
+    pub triage: bool,
 }
 
 /// A ticket page's tabs.
@@ -287,9 +294,29 @@ pub fn rows(model: &Model, view: &View, views: &[SavedView]) -> Vec<Row> {
         Menu::Working => working(model, &Filter::parse(&view.query)),
         Menu::All | Menu::View(_) => {
             let (query, group) = effective(view, views);
-            all(model, view, &Filter::parse(&query), group)
+            let filter = Filter::parse(&query);
+            if view.triage { triage(model, &filter) } else { all(model, view, &filter, group) }
         }
     }
+}
+
+/// Proposals waiting to be sorted: out of 티켓's list, behind its "분류 필요"
+/// banner, in board order.
+pub fn proposals<'a>(model: &'a Model, filter: &Filter) -> Vec<&'a Ticket> {
+    // One the person just took on or dropped is out at once, as in 나에게.
+    let acted = |t: &Ticket| model.acted.get(&t.id).is_some_and(|look| *look == crate::state::look_of(t));
+    crate::tickets::in_board_order(model.tickets.iter().filter(|t| t.status == TicketStatus::Proposed && model.in_focus(t) && filter.matches(model, t) && !acted(t)).collect())
+}
+
+/// 티켓's triage: the proposals alone, one after another.
+pub fn triage(model: &Model, filter: &Filter) -> Vec<Row> {
+    let list = proposals(model, filter);
+    if list.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![Row::Heading { label: t!("tickets.triage").to_owned(), count: list.len(), tone: Tone::ForYou, hint: Some(t!("tickets.triage_hint").to_owned()) }];
+    out.extend(list.into_iter().map(|t| Row::Item { need: Need::Ticket(t.id), depth: 0 }));
+    out
 }
 
 /// 나에게: by section, in [`Model::needs_you`]'s order.
@@ -323,8 +350,10 @@ pub fn working(model: &Model, filter: &Filter) -> Vec<Row> {
     tickets.into_iter().map(|t| Row::Item { need: Need::Ticket(t.id), depth: 0 }).collect()
 }
 
-/// The order statuses are listed in, the person's calls first.
-const STATUS_ORDER: [TicketStatus; 6] = [TicketStatus::Review, TicketStatus::Waiting, TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed, TicketStatus::Done];
+/// The order statuses are listed in, by what needs attention: the person's
+/// turn, then their review, work under way, work ready (proposals only when
+/// asked for: they wait in triage), and finished.
+const STATUS_ORDER: [TicketStatus; 6] = [TicketStatus::Waiting, TicketStatus::Review, TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed, TicketStatus::Done];
 
 fn status_rank(s: TicketStatus) -> usize {
     STATUS_ORDER.iter().position(|x| *x == s).unwrap_or(STATUS_ORDER.len() - 1)
@@ -335,27 +364,42 @@ fn finished<'a>(model: &'a Model, tickets: &[&'a Ticket], window: DoneWindow) ->
     let mut done: Vec<&Ticket> = tickets
         .iter()
         .copied()
-        .filter(|t| t.status.is_closed())
-        .filter(|t| window.seconds().is_none_or(|w| model.in_state_for(t).is_some_and(|s| s <= w)))
+        .filter(|t| t.status == TicketStatus::Done)
+        .filter(|t| {
+            let at = crate::tickets::changed_at(model, t);
+            window.seconds().is_none_or(|w| at > 0 && model.unix.saturating_sub(at) <= w)
+        })
         .collect();
-    done.sort_by_key(|t| (std::cmp::Reverse(model.since.get(&t.id).copied().unwrap_or(0)), std::cmp::Reverse(t.id)));
+    done.sort_by_key(|t| (std::cmp::Reverse(crate::tickets::changed_at(model, t)), std::cmp::Reverse(t.id)));
     done
 }
 
 /// 모든 일 and the saved views: grouped as asked; finished work in one group
 /// that opens on a click, or by itself when the search reaches it.
 pub fn all(model: &Model, view: &View, filter: &Filter, group: GroupBy) -> Vec<Row> {
-    let here: Vec<&Ticket> = model.tickets.iter().filter(|t| model.in_focus(t) && filter.matches(model, t)).collect();
+    // Proposals wait in triage and cancelled work stays out, unless the filter asks for them.
+    let asked = |s: TicketStatus| filter.status.contains(&s);
+    let here: Vec<&Ticket> = model
+        .tickets
+        .iter()
+        .filter(|t| model.in_focus(t) && filter.matches(model, t))
+        .filter(|t| match t.status {
+            TicketStatus::Proposed => asked(TicketStatus::Proposed),
+            TicketStatus::Cancelled => asked(TicketStatus::Cancelled),
+            _ => true,
+        })
+        .collect();
     let open_done = view.done_open || filter.reaches_done();
     let window = if filter.reaches_done() && !view.done_open { DoneWindow::All } else { view.window };
     let mut out = Vec::new();
     let item = |t: &Ticket, depth: usize| Row::Item { need: Need::Ticket(t.id), depth };
-    let by_status = |list: &mut Vec<&Ticket>| list.sort_by_key(|t| (status_rank(t.status), t.id));
+    // Within a status, as the person ordered the board.
+    let by_status = |list: &mut Vec<&Ticket>| list.sort_by_key(|t| (status_rank(t.status), t.order_key(), t.id));
     let open: Vec<&Ticket> = here.iter().copied().filter(|t| !t.status.is_closed()).collect();
     match group {
         GroupBy::Status => {
             for status in &STATUS_ORDER[..5] {
-                let list: Vec<&Ticket> = open.iter().copied().filter(|t| t.status == *status).collect();
+                let list = crate::tickets::in_board_order(open.iter().copied().filter(|t| t.status == *status).collect());
                 if !list.is_empty() {
                     let tone = if matches!(status, TicketStatus::Review | TicketStatus::Waiting) { Tone::ForYou } else { Tone::Plain };
                     out.push(Row::Heading { label: status_word(*status).to_owned(), count: list.len(), tone, hint: None });
@@ -388,6 +432,16 @@ pub fn all(model: &Model, view: &View, filter: &Filter, group: GroupBy) -> Vec<R
                 out.extend(list.into_iter().map(|t| item(t, 0)));
             }
         }
+        GroupBy::Priority => {
+            for priority in Priority::ALL {
+                let mut list: Vec<&Ticket> = open.iter().copied().filter(|t| t.priority == priority).collect();
+                if !list.is_empty() {
+                    by_status(&mut list);
+                    out.push(Row::Heading { label: crate::tickets::priority_word(priority).to_owned(), count: list.len(), tone: Tone::Plain, hint: None });
+                    out.extend(list.into_iter().map(|t| item(t, 0)));
+                }
+            }
+        }
         GroupBy::Deps => {
             let tree = dependency_tree(model, &open);
             if !tree.is_empty() {
@@ -402,12 +456,18 @@ pub fn all(model: &Model, view: &View, filter: &Filter, group: GroupBy) -> Vec<R
         }
     }
     let done = finished(model, &here, window);
-    let total = here.iter().filter(|t| t.status.is_closed()).count();
+    let total = here.iter().filter(|t| t.status == TicketStatus::Done).count();
     if total > 0 {
         out.push(Row::Done { count: done.len(), total, open: open_done, window });
         if open_done {
             out.extend(done.into_iter().map(|t| item(t, 0)));
         }
+    }
+    // Cancelled work, when the filter asks for it.
+    let cancelled: Vec<&Ticket> = here.iter().copied().filter(|t| t.status == TicketStatus::Cancelled).collect();
+    if !cancelled.is_empty() {
+        out.push(Row::Heading { label: status_word(TicketStatus::Cancelled).to_owned(), count: cancelled.len(), tone: Tone::Plain, hint: None });
+        out.extend(cancelled.into_iter().map(|t| item(t, 0)));
     }
     out
 }
@@ -708,6 +768,8 @@ pub struct Pending {
     pub text: String,
     pub commands: Vec<Command>,
     pub due: Instant,
+    /// Tickets as they were before an edit shown at once: put back if taken back.
+    pub restore: Vec<Ticket>,
 }
 
 /// Actions held back, latest last.
@@ -721,7 +783,13 @@ impl Undo {
     pub const DELAY: Duration = Duration::from_secs(5);
 
     pub fn push(&mut self, ticket: TicketId, text: String, commands: Vec<Command>, now: Instant) {
-        self.pending.push(Pending { ticket, text, commands, due: now + Self::DELAY });
+        self.pending.push(Pending { ticket, text, commands, due: now + Self::DELAY, restore: Vec::new() });
+    }
+
+    /// An edit already shown: `restore` is how the tickets were, put back if
+    /// it is taken back.
+    pub fn push_edit(&mut self, ticket: TicketId, text: String, commands: Vec<Command>, restore: Vec<Ticket>, now: Instant) {
+        self.pending.push(Pending { ticket, text, commands, due: now + Self::DELAY, restore });
     }
 
     /// The actions whose time has come, to send now.
@@ -791,12 +859,19 @@ mod tests {
         let m = model(tickets, &["/p"]);
         let view = View { menu: Menu::All, ..Default::default() };
         let rows = all(&m, &view, &Filter::default(), GroupBy::Status);
-        assert_eq!(ids(&rows), vec![5, 4, 3, 2, 1], "no cap of five: the finished stay folded");
-        assert_eq!(headings(&rows), vec!["검토", "내 차례", "작업 중", "할 일", "제안"]);
+        assert_eq!(ids(&rows), vec![4, 5, 3, 2], "by what needs attention; the proposal waits in triage");
+        assert_eq!(headings(&rows), vec!["내 차례", "검토", "작업 중", "할 일"]);
         // Nothing finished within the week is known: the line says so and opens to the window.
         assert_eq!(rows.last(), Some(&Row::Done { count: 0, total: 8, open: false, window: DoneWindow::Week }));
-        let open = View { done_open: true, window: DoneWindow::All, ..view };
-        assert_eq!(ids(&all(&m, &open, &Filter::default(), GroupBy::Status)).len(), 13);
+        let open = View { done_open: true, window: DoneWindow::All, ..view.clone() };
+        assert_eq!(ids(&all(&m, &open, &Filter::default(), GroupBy::Status)).len(), 12);
+        // Triage: the proposals alone, its heading saying what to do.
+        let triage_view = View { triage: true, ..view };
+        let sorted = super::rows(&m, &triage_view, &[]);
+        assert_eq!((ids(&sorted), headings(&sorted)), (vec![1], vec!["분류 필요".to_string()]));
+        assert_eq!(proposals(&m, &Filter::default()).len(), 1);
+        // Asked for by the filter, they show in the list too.
+        assert_eq!(ids(&all(&m, &View::default(), &Filter::parse("status:proposed"), GroupBy::Status)), vec![1]);
     }
 
     #[test]

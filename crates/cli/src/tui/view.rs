@@ -19,7 +19,7 @@ use ratatui::widgets::Paragraph;
 
 use equipe_core::board::project_name;
 use equipe_core::i18n::label;
-use equipe_core::protocol::{Entry, Estimate, SessionId, TicketId, TicketStatus};
+use equipe_core::protocol::{Entry, Estimate, Priority, SessionId, TicketId, TicketStatus};
 
 use super::app::{Agent, AgentState, App, BoardMenu, BoardRule, Divider, Hit, Live, Pane, Section, Side, Spot, TextView, elapsed, needs_way, relative, section_of, status_word, tool_verb};
 use super::markdown;
@@ -2217,6 +2217,17 @@ fn for_you(t: &equipe_core::protocol::Ticket) -> bool {
 
 /// A status as one ASCII mark, so it lines up in any terminal: proposed `.`,
 /// to do `o`, in progress `*`, 내 차례 `!`, 검토 `?`, done `+`, cancelled `x`.
+/// How pressing a ticket is, before its title: `!! ` urgent, `↑ ` high,
+/// `↓ ` low; normal says nothing.
+pub fn priority_mark(priority: Priority, theme: Theme) -> Span<'static> {
+    match priority {
+        Priority::Urgent => Span::styled("!! ", theme.accent().add_modifier(Modifier::BOLD)),
+        Priority::High => Span::styled("↑ ", theme.accent()),
+        Priority::Normal => Span::raw(""),
+        Priority::Low => Span::styled("↓ ", theme.dim()),
+    }
+}
+
 pub fn status_mark(status: TicketStatus) -> &'static str {
     match status {
         TicketStatus::Proposed => ".",
@@ -2358,7 +2369,9 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
         // Columns: marker, mark, id, project, title (what's left), flags, activity, when, who.
         let activity_width = 18.min(width / 5);
         let tail = flags_width + activity_width + 1 + 7 + 10;
-        let title_room = width.saturating_sub(2 + 2 + 7 + tags + 2 + tail).max(8);
+        // How pressing it is, before its title when it isn't normal.
+        let mark = priority_mark(t.priority, theme);
+        let title_room = width.saturating_sub(2 + 2 + 7 + tags + 2 + tail + cols(&mark.content)).max(8);
         let title = ui::fit(&t.title, title_room);
         let gap = title_room.saturating_sub(cols(&title));
         let closed = t.status.is_closed();
@@ -2379,6 +2392,7 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
             Span::styled(format!("{:<7}", format!("T-{}", t.id)), if selected { theme.bold() } else { theme.dim() }),
             project_tag(app, t, theme, tags),
             Span::raw("  "),
+            mark,
             Span::styled(title, title_style),
             Span::raw(" ".repeat(gap + 1)),
         ];
@@ -2979,6 +2993,7 @@ mod tests {
             note: None,
             asks: vec![],
             updated_at: None,
+            priority: Default::default(), rank: 0,
         }
     }
 

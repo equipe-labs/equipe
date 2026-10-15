@@ -29,13 +29,19 @@ fn knows_where(ticket: &Ticket, single_project: bool) -> bool {
 
 /// Which free member picks up which ready ticket. A ticket is ready when it is
 /// `todo`, has an owner, knows where it works, and everything it depends on is
-/// finished. The oldest ready ticket goes first; a member takes one ticket at a
+/// finished. The ready ticket highest on the board goes first (the oldest,
+/// unless the person reordered it — an urgent one they wrote goes on top);
+/// priority decides only between equals; a member takes one ticket at a
 /// time; an owner naming a member wins over one naming a role.
 pub fn assignments(tickets: &[Ticket], members: &[Candidate<'_>], single_project: bool) -> Vec<(TicketId, String)> {
     let finished = |id: &TicketId| tickets.iter().any(|t| t.id == *id && t.status.is_closed());
     let mut busy: Vec<&str> = members.iter().filter(|m| !m.free).map(|m| m.name).collect();
     let mut out = Vec::new();
-    for ticket in tickets.iter().filter(|t| t.status == TicketStatus::Todo) {
+    // As the person ordered the board — each owner's queue is its tickets in
+    // that order — the more pressing first only between equals.
+    let mut ready: Vec<&Ticket> = tickets.iter().filter(|t| t.status == TicketStatus::Todo).collect();
+    ready.sort_by_key(|t| (t.order_key(), t.priority, t.id));
+    for ticket in ready {
         let Some(owner) = ticket.owner.as_deref() else {
             continue;
         };
@@ -110,6 +116,9 @@ pub fn render(tickets: &[Ticket]) -> String {
     for t in open {
         out.push_str(&format!("T-{} [{}] {}", t.id, t.status.label(), t.title));
         let mut facts = vec![t.kind.label().to_owned()];
+        if !t.priority.is_normal() {
+            facts.push(format!("priority {}", t.priority.label()));
+        }
         if let Some(who) = t.assignee.as_ref().or(t.owner.as_ref()) {
             facts.push(format!("owner {who}"));
         }
@@ -132,6 +141,146 @@ pub fn render(tickets: &[Ticket]) -> String {
         }
     }
     out
+}
+
+// ── the person's own moves ──
+
+/// What moving a ticket on the board means. The person's command only — a
+/// member's word never moves a ticket this way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Move {
+    /// The same column: only its place changes.
+    Reorder,
+    /// A proposal taken on: ready to be picked up.
+    TakeOn,
+    /// Ready work back to a proposal.
+    BackToProposal,
+    /// Handed-in work accepted.
+    Accept,
+    Cancel,
+    /// What a wait needed is done: back to its member.
+    Resume,
+    /// Handed-in or accepted work sent back to its member.
+    SendBack,
+    /// Cancelled work back on the board, as this status.
+    Restore(TicketStatus),
+}
+
+/// Why a ticket can't be moved there by hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// Work starts when its owner picks it up: give it an owner instead.
+    StartsByItself,
+    /// Only the member doing it hands work in.
+    HandedInByMember,
+    /// Only a member puts work down for the person.
+    WaitsByMember,
+    /// Only handed-in work is accepted.
+    NotHandedIn,
+    /// Work under way stops by cancelling it or giving it to someone else.
+    UnderWay,
+    /// Finished: done work goes back by sending it back to work.
+    Closed,
+}
+
+impl Refusal {
+    /// What its words are called: `board.refuse_<code>` in a screen's words,
+    /// `error.refuse_<code>` in the daemon's.
+    pub fn code(self) -> &'static str {
+        match self {
+            Refusal::StartsByItself => "starts_by_itself",
+            Refusal::HandedInByMember => "handed_in_by_member",
+            Refusal::WaitsByMember => "waits_by_member",
+            Refusal::NotHandedIn => "not_handed_in",
+            Refusal::UnderWay => "under_way",
+            Refusal::Closed => "closed",
+        }
+    }
+}
+
+/// What moving a ticket from `from` to `to` does, or why it can't be done.
+pub fn move_rule(from: TicketStatus, to: TicketStatus) -> Result<Move, Refusal> {
+    use TicketStatus::*;
+    if from == to {
+        return Ok(Move::Reorder);
+    }
+    match (from, to) {
+        (Done, Cancelled) => Err(Refusal::Closed),
+        (_, Cancelled) => Ok(Move::Cancel),
+        (Review, Done) => Ok(Move::Accept),
+        (_, Done) => Err(Refusal::NotHandedIn),
+        (_, Review) => Err(Refusal::HandedInByMember),
+        (_, Waiting) => Err(Refusal::WaitsByMember),
+        (Waiting, Todo | InProgress) => Ok(Move::Resume),
+        (Review | Done, Todo | InProgress) => Ok(Move::SendBack),
+        (Cancelled, Todo | Proposed) => Ok(Move::Restore(to)),
+        (Proposed, Todo) => Ok(Move::TakeOn),
+        (Todo, Proposed) => Ok(Move::BackToProposal),
+        (_, InProgress) => Err(Refusal::StartsByItself),
+        (Done, _) => Err(Refusal::Closed),
+        _ => Err(Refusal::UnderWay),
+    }
+}
+
+/// Whether `ticket` waiting on `depends_on` would close a loop of waiting:
+/// the loop, from `ticket` back to it, when it would.
+pub fn dependency_loop(tickets: &[Ticket], ticket: TicketId, depends_on: &[TicketId]) -> Option<Vec<TicketId>> {
+    let deps_of = |id: TicketId| -> Vec<TicketId> {
+        if id == ticket { depends_on.to_vec() } else { tickets.iter().find(|t| t.id == id).map(|t| t.depends_on.clone()).unwrap_or_default() }
+    };
+    // Depth first from what it would wait on, the path kept, until it comes back.
+    let mut stack: Vec<Vec<TicketId>> = depends_on.iter().rev().map(|d| vec![ticket, *d]).collect();
+    let mut seen: Vec<TicketId> = Vec::new();
+    while let Some(path) = stack.pop() {
+        let last = path[path.len() - 1];
+        if last == ticket {
+            return Some(path);
+        }
+        if seen.contains(&last) {
+            continue;
+        }
+        seen.push(last);
+        for next in deps_of(last).into_iter().rev() {
+            let mut longer = path.clone();
+            longer.push(next);
+            stack.push(longer);
+        }
+    }
+    None
+}
+
+/// A column's tickets in board order: the person's order, else by number.
+pub fn board_order(tickets: &mut [&Ticket]) {
+    tickets.sort_by_key(|t| (t.order_key(), t.id));
+}
+
+/// The rank that puts a ticket before `before` in `column` (its tickets in
+/// board order, without the one moving; `None`: last), or `None` when its
+/// neighbours sit too close and the column must be [`spread`] first.
+pub fn rank_before(column: &[&Ticket], before: Option<TicketId>) -> Option<i64> {
+    use crate::protocol::RANK_STEP;
+    // 0 means "never placed" (by its number): a place is never 0.
+    let not_zero = |rank: i64, toward: i64| if rank == 0 { toward } else { rank };
+    match before.and_then(|b| column.iter().position(|t| t.id == b)) {
+        None => Some(column.last().map_or(RANK_STEP, |t| not_zero(t.order_key() + RANK_STEP, 1))),
+        Some(0) => Some(not_zero(column[0].order_key() - RANK_STEP, -1)),
+        Some(i) => {
+            let (lo, hi) = (column[i - 1].order_key(), column[i].order_key());
+            let mid = lo + (hi - lo) / 2;
+            match mid {
+                _ if hi - lo < 2 => None,
+                0 if hi > 1 => Some(1),
+                0 if lo < -1 => Some(-1),
+                0 => None,
+                mid => Some(mid),
+            }
+        }
+    }
+}
+
+/// A column spread out again, a step apart, in its order: `(ticket, rank)`.
+pub fn spread(column: &[&Ticket]) -> Vec<(TicketId, i64)> {
+    column.iter().enumerate().map(|(i, t)| (t.id, (i as i64 + 1) * crate::protocol::RANK_STEP)).collect()
 }
 
 // ── tools ──
@@ -203,6 +352,7 @@ It waits on the board as a proposal until the PM or the person accepts it."
                     "kind": KIND_SCHEMA.clone(),
                     "project": { "type": "string", "description": "The project's name: for code, the repository it changes (needed when the squad has several); for a task or action, what it is about, if anything." },
                     "depends_on": { "type": "array", "items": { "type": "integer" }, "description": "Ticket numbers that must be done first." },
+                    "proposal": { "type": "boolean", "description": "PM only: put it up as a proposal for the person to take on, rather than ready — when they asked you to shape it." },
                 },
                 "required": ["title", "body"],
             },
@@ -523,6 +673,7 @@ mod tests {
             note: None,
             asks: vec![],
             updated_at: None,
+            priority: Default::default(), rank: 0,
             kind: TicketKind::Code,
         }
     }
@@ -602,6 +753,75 @@ mod tests {
         assert_eq!(assignments(&tickets, &members, false), [(1, "data".into()), (2, "pm".into())]);
         assert_eq!(default_kind(None), TicketKind::Task);
         assert_eq!(default_kind(Some(Path::new("/site"))), TicketKind::Code);
+    }
+
+    #[test]
+    fn the_persons_order_decides_what_goes_first_and_priority_only_between_equals() {
+        let normal = ticket(2, "frontend");
+        let mut urgent = ticket(3, "frontend");
+        urgent.priority = equipe_protocol::Priority::Urgent;
+        let mut moved_up = ticket(4, "frontend");
+        moved_up.rank = 1; // put above T-2 (2 × 1024) by the person
+        let one = [free("frontend", "frontend")];
+        assert_eq!(assignments(&[normal.clone(), urgent.clone(), moved_up.clone()], &one, true), [(4, "frontend".into())], "the top of the queue");
+        assert_eq!(assignments(&[normal.clone(), urgent.clone()], &one, true), [(2, "frontend".into())], "urgent lower down waits its turn");
+        // Placed on the same spot, the more pressing goes first.
+        let tie = Ticket { rank: 2048, ..urgent };
+        assert_eq!(assignments(&[normal, tie], &one, true), [(3, "frontend".into())]);
+    }
+
+    #[test]
+    fn a_move_means_what_its_button_would_and_some_are_not_the_persons() {
+        use TicketStatus::*;
+        assert_eq!(move_rule(Todo, Todo), Ok(Move::Reorder));
+        assert_eq!(move_rule(Proposed, Todo), Ok(Move::TakeOn));
+        assert_eq!(move_rule(Todo, Proposed), Ok(Move::BackToProposal));
+        assert_eq!(move_rule(Review, Done), Ok(Move::Accept));
+        assert_eq!(move_rule(InProgress, Cancelled), Ok(Move::Cancel));
+        assert_eq!(move_rule(Waiting, Todo), Ok(Move::Resume));
+        assert_eq!(move_rule(Review, Todo), Ok(Move::SendBack));
+        assert_eq!(move_rule(Done, InProgress), Ok(Move::SendBack));
+        assert_eq!(move_rule(Cancelled, Todo), Ok(Move::Restore(Todo)));
+        // What only a member does, or only happens by itself.
+        assert_eq!(move_rule(Todo, InProgress), Err(Refusal::StartsByItself));
+        assert_eq!(move_rule(InProgress, Review), Err(Refusal::HandedInByMember));
+        assert_eq!(move_rule(InProgress, Waiting), Err(Refusal::WaitsByMember));
+        assert_eq!(move_rule(Todo, Done), Err(Refusal::NotHandedIn));
+        assert_eq!(move_rule(InProgress, Todo), Err(Refusal::UnderWay));
+        assert_eq!(move_rule(Done, Cancelled), Err(Refusal::Closed));
+        assert_eq!(move_rule(Done, Proposed), Err(Refusal::Closed));
+    }
+
+    #[test]
+    fn a_dependency_that_closes_a_loop_is_found_with_its_path() {
+        let mut a = ticket(1, "x");
+        a.depends_on = vec![2];
+        let mut b = ticket(2, "x");
+        b.depends_on = vec![3];
+        let c = ticket(3, "x");
+        let board = [a, b, c];
+        assert_eq!(dependency_loop(&board, 3, &[1]), Some(vec![3, 1, 2, 3]));
+        assert_eq!(dependency_loop(&board, 3, &[]), None);
+        assert_eq!(dependency_loop(&board, 1, &[3]), None, "waiting on what waits on nothing");
+        assert_eq!(dependency_loop(&board, 2, &[2]), Some(vec![2, 2]));
+    }
+
+    #[test]
+    fn a_place_in_a_column_falls_between_its_neighbours_or_spreads_them_out() {
+        let t = |id: TicketId, rank: i64| Ticket { rank, ..ticket(id, "x") };
+        let (a, b, c) = (t(1, 0), t(2, 0), t(3, 0)); // 1024, 2048, 3072 by number
+        let column = [&a, &b, &c];
+        assert_eq!(rank_before(&column, Some(1)), Some(-1), "first: above it — never 0, which means unplaced");
+        assert_eq!(rank_before(&[&t(1, 3000)], Some(1)), Some(3000 - 1024));
+        assert_eq!(rank_before(&[&t(1, -600), &t(2, 600)], Some(2)), Some(1));
+        assert_eq!(rank_before(&column, Some(3)), Some(2560), "between T-2 and T-3");
+        assert_eq!(rank_before(&column, None), Some(4096), "last");
+        let (x, y) = (t(5, 10), t(6, 11));
+        assert_eq!(rank_before(&[&x, &y], Some(6)), None, "no room");
+        assert_eq!(spread(&[&x, &y]), vec![(5, 1024), (6, 2048)]);
+        let mut column = vec![&c, &a, &x];
+        board_order(&mut column);
+        assert_eq!(column.iter().map(|t| t.id).collect::<Vec<_>>(), [5, 1, 3]);
     }
 
     #[test]

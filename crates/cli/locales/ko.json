@@ -802,5 +802,13 @@
   "view.write_goes_to_pm": "여기에 쓰는 글은 T-{id}에 관해 PM에게 가요.",
   "view.writes": "쓰기: {files}",
   "view.your_turn_answer": "답하기: /resume T-{id} 뒤에 답을 적거나, 보드에서 a",
-  "view.your_turn_heading": "내 차례 · T-{id} · {title}"
+  "view.your_turn_heading": "내 차례 · T-{id} · {title}",
+  "app.new_prompt": "새 티켓의 제목을 적고 Enter를 누르세요. 담당은 PM이 정합니다.",
+  "app.new_sent": "“{title}”을(를) 보드에 올립니다.",
+  "app.title_prompt": "T-{id}의 제목을 고치고 Enter를 누르세요.",
+  "app.title_usage": "/title T-n <새 제목>",
+  "commands.new": "내 티켓을 보드에 올리기 (보드에서 ⇧N)",
+  "commands.new_args": "<제목>",
+  "commands.title": "티켓 제목 고치기 (보드에서 ⇧E)",
+  "commands.title_args": "T-n <제목>"
 }

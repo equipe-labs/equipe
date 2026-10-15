@@ -1002,6 +1002,7 @@ mod tests {
             note: Some("Done: <form> & tests".into()),
             asks: vec![],
             updated_at: None,
+            priority: Default::default(), rank: 0,
         }
     }
 

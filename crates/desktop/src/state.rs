@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use equipe_core::protocol::rpc::Hello;
-use equipe_core::protocol::{Engine, Entry, Estimate, Event, Mode, OffMain, SessionId, SessionState, Ticket, TicketId, TicketKind, TicketStatus, TurnOutcome};
+use equipe_core::protocol::{Engine, Entry, Estimate, Event, Mode, OffMain, SessionId, SessionState, Ticket, TicketEntry, TicketId, TicketKind, TicketStatus, TurnOutcome};
 
 use crate::convo::Convo;
 use crate::daemon::Update;
@@ -306,6 +306,12 @@ pub struct Model {
     /// What the person answered tickets that waited for them with, here or on
     /// another screen (`crate::yourturn`), for the cards that asked.
     pub answers: HashMap<TicketId, crate::yourturn::Answered>,
+    /// Tickets' records, as the daemon last sent them (a ticket page asks).
+    pub histories: HashMap<TicketId, Vec<TicketEntry>>,
+    /// Bumped whenever a ticket or a record changes, so the screens draw again.
+    pub board_rev: u64,
+    /// Bumped on every error the daemon says about the squad (a refused edit).
+    pub squad_errors: u64,
 }
 
 impl Model {
@@ -339,6 +345,9 @@ impl Model {
             browsers_shown: false,
             desktop_stopped: false,
             answers: HashMap::new(),
+            histories: HashMap::new(),
+            board_rev: 0,
+            squad_errors: 0,
         }
     }
 
@@ -699,6 +708,12 @@ impl Model {
     fn on_member_event(&mut self, event: Event) {
         match event {
             Event::TicketChanged { ticket, .. } => self.on_ticket(&ticket),
+            Event::TicketHistory { squad, ticket, entries } if squad == self.squad => {
+                if self.histories.get(&ticket) != Some(&entries) {
+                    self.histories.insert(ticket, entries);
+                    self.board_rev += 1;
+                }
+            }
             Event::ApprovalRequested { squad, approval } => {
                 if squad == self.squad && !self.approvals.has(approval.id) {
                     self.alerts.push(Alert::Approval { approval: approval.clone(), squad });
@@ -746,7 +761,11 @@ impl Model {
                 }
             }
             Event::SessionClosed { session } if self.lanes.iter().any(|l| l.session == session) => self.fold_lane(session),
-            Event::Error { session: None, message, .. } => self.flash = Some(message),
+            Event::Error { session: None, message, .. } => {
+                self.flash = Some(message);
+                self.squad_errors += 1;
+                self.board_rev += 1;
+            }
             Event::SessionStarted { session, member, model, squad, engine, .. } => {
                 if squad.is_some_and(|s| s != self.squad) || self.members.iter().any(|m| m.session == session) {
                     return;
@@ -900,8 +919,15 @@ impl Model {
             self.revision += 1;
         }
         match self.tickets.iter_mut().find(|t| t.id == ticket.id) {
-            Some(slot) => *slot = ticket.clone(),
-            None => self.tickets.push(ticket.clone()),
+            Some(slot) if slot == ticket => {}
+            Some(slot) => {
+                *slot = ticket.clone();
+                self.board_rev += 1;
+            }
+            None => {
+                self.tickets.push(ticket.clone());
+                self.board_rev += 1;
+            }
         }
     }
 
@@ -927,8 +953,8 @@ impl Model {
     }
 
     /// What the sidebar derives from tickets and approvals, for change detection.
-    fn ticket_hint(&self) -> (usize, Vec<Status>) {
-        (self.needs_you_count(), self.members.iter().map(|m| self.status(m)).collect())
+    fn ticket_hint(&self) -> (usize, Vec<Status>, u64) {
+        (self.needs_you_count(), self.members.iter().map(|m| self.status(m)).collect(), self.board_rev)
     }
 
     pub fn take_alerts(&mut self) -> Vec<Alert> {

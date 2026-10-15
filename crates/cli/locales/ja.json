@@ -802,5 +802,13 @@
   "view.write_goes_to_pm": "ここに書いた内容はT-{id}についてPMに送られます。",
   "view.writes": "書き込み {files}",
   "view.your_turn_answer": "回答: /resume T-{id} に続けて答えを書くか、ボードで a",
-  "view.your_turn_heading": "あなたの番 · T-{id} · {title}"
+  "view.your_turn_heading": "あなたの番 · T-{id} · {title}",
+  "app.new_prompt": "新しいチケットのタイトルを入力して Enter。担当は PM が決めます。",
+  "app.new_sent": "「{title}」をボードに追加します。",
+  "app.title_prompt": "T-{id} のタイトルを直して Enter。",
+  "app.title_usage": "/title T-n <新しいタイトル>",
+  "commands.new": "自分のチケットをボードに追加（ボードで ⇧N）",
+  "commands.new_args": "<タイトル>",
+  "commands.title": "チケットのタイトルを変更（ボードで ⇧E）",
+  "commands.title_args": "T-n <タイトル>"
 }

@@ -311,6 +311,85 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     let up = MouseUpEvent { button: MouseButton::Left, position: at, modifiers: Modifiers::default(), click_count: 1 };
                     window.dispatch_event(PlatformInput::MouseUp(up), cx);
                 }
+                // 티켓: the layout, the sheet, a menu, the page, a choice, a drag by hand.
+                "layout" => shell.update(cx, |shell, cx| shell.set_layout(if arg == "board" { crate::tickets::Layout::Board } else { crate::tickets::Layout::List }, cx)),
+                "tsheet" => shell.update(cx, |shell, cx| shell.open_sheet(window, cx)),
+                "ttitle" | "tbody" | "tcrit" => shell.update(cx, |shell, cx| {
+                    match verb.as_str() {
+                        "ttitle" => shell.board.tk.sheet_title.update(cx, |s, cx| s.set_value(arg.clone(), window, cx)),
+                        "tbody" => shell.board.tk.sheet_body.update(cx, |s, cx| s.set_value(arg.replace("\\n", "\n"), window, cx)),
+                        _ => {
+                            shell.board.tk.sheet_criterion.update(cx, |s, cx| s.set_value(arg.clone(), window, cx));
+                            shell.add_criterion(window, cx);
+                        }
+                    }
+                    cx.notify();
+                }),
+                "tcreate" => shell.update(cx, |shell, cx| shell.create_from_sheet(window, cx)),
+                // The quick line (C), with words typed in it.
+                "quick" => shell.update(cx, |shell, cx| {
+                    shell.open_quick(window, cx);
+                    shell.board.tk.quick_input.update(cx, |s, cx| s.set_value(arg.clone(), window, cx));
+                    cx.notify();
+                }),
+                "tmenu" => shell.update(cx, |shell, cx| {
+                    use crate::views::tickets::EditKind as K;
+                    let (kind, rest) = arg.split_once(',').unwrap_or((arg.as_str(), ""));
+                    let kind = match kind {
+                        "prio" => K::Priority,
+                        "status" => K::Status,
+                        "who" => K::Assignee,
+                        "project" => K::Project,
+                        "kind" => K::Kind,
+                        _ => K::Depends,
+                    };
+                    let (targets, sheet) = match rest {
+                        "sheet" => (Vec::new(), true),
+                        "bulk" => (shell.board.view.chosen.iter().copied().collect(), false),
+                        id => (vec![id.parse().unwrap_or(0)], false),
+                    };
+                    let code = match kind {
+                        K::Priority => "prio",
+                        K::Status => "status",
+                        K::Assignee => "who",
+                        K::Project => "project",
+                        K::Kind => "kind",
+                        K::Depends => "deps",
+                    };
+                    let key = if sheet { format!("sheet-{code}") } else if rest == "bulk" { format!("bulk-{code}") } else if shell.board.view.page.is_some() { format!("page-{code}-{rest}") } else { format!("{code}-{rest}") };
+                    shell.open_edit_menu(kind, targets, key.into(), sheet, window, cx);
+                }),
+                "page" => shell.update(cx, |shell, cx| {
+                    let (id, tab) = arg.split_once(',').unwrap_or((arg.as_str(), "overview"));
+                    shell.board_pick(crate::state::Need::Ticket(id.parse().unwrap_or(0)), cx);
+                    shell.board.view.page = Some(match tab {
+                        "activity" => crate::board::Tab::Activity,
+                        "changes" => crate::board::Tab::Changes,
+                        _ => crate::board::Tab::Overview,
+                    });
+                    cx.notify();
+                }),
+                "tedit" => shell.update(cx, |shell, cx| shell.edit_title(arg.parse().unwrap_or(0), window, cx)),
+                "tbodyedit" => shell.update(cx, |shell, cx| shell.edit_body(arg.parse().unwrap_or(0), window, cx)),
+                "tcomment" => shell.update(cx, |shell, cx| {
+                    shell.board.tk.comment.update(cx, |s, cx| s.set_value(arg.clone(), window, cx));
+                    cx.notify();
+                }),
+                "choose" => shell.update(cx, |shell, cx| {
+                    shell.board.view.chosen = arg.split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    cx.notify();
+                }),
+                // A drag by hand: the button pressed at `x,y`, moved with it held, let go.
+                "mdown" | "mmove" | "mup" => {
+                    let (x, y) = arg.split_once(',').map(|(x, y)| (x.trim().parse().unwrap_or(0.), y.trim().parse().unwrap_or(0.))).unwrap_or((0f32, 0f32));
+                    let at = point(px(x), px(y));
+                    let input = match verb.as_str() {
+                        "mdown" => PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: at, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }),
+                        "mmove" => PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: Some(MouseButton::Left), modifiers: Modifiers::default() }),
+                        _ => PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: at, modifiers: Modifiers::default(), click_count: 1 }),
+                    };
+                    window.dispatch_event(input, cx);
+                }
                 other => eprintln!("script: no step {other}"),
             });
             // Let the window draw what the step did.

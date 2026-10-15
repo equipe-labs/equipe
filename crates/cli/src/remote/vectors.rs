@@ -673,6 +673,7 @@ fn ticket(status: TicketStatus) -> Ticket {
         note: None,
         asks: vec![],
         updated_at: None,
+        priority: Default::default(), rank: 0,
     }
 }
 

@@ -49,6 +49,7 @@ pub fn panel(shell: &Shell, need: Need, cx: &mut Context<Shell>) -> AnyElement {
                         .p_4()
                         .gap_4()
                         .child(head(shell, &t, false, cx))
+                        .child(div().px_1().py_1().rounded(px(8.)).border_1().border_color(p.hair).child(super::tickets::properties(shell, &t, true, cx)))
                         .children(body(shell, &t, false, Place::Peek, cx)),
                 )
                 .child(foot(shell, &t, cx))
@@ -88,41 +89,80 @@ pub fn page(shell: &Shell, t: &Ticket, tab: Tab, cx: &mut Context<Shell>) -> imp
             .child(label)
     };
     let content: Vec<AnyElement> = match tab {
-        Tab::Overview => body(shell, t, true, Place::Peek, cx),
+        Tab::Overview => std::iter::once(super::tickets::description(shell, t, cx)).chain(body(shell, t, true, Place::Peek, cx)).collect(),
         Tab::Changes => changes(shell, t, true, cx).into_iter().collect(),
-        Tab::Activity => vec![activity(shell, t.id, 40)],
+        Tab::Activity => vec![super::tickets::timeline(shell, t, cx), activity(shell, t.id, 40)],
     };
+    let news = shell.model.histories.get(&t.id).map_or(0, |h| h.iter().filter(|e| e.kind == "comment").count());
     v_flex()
         .flex_1()
         .min_h_0()
         .child(
-            v_flex()
+            h_flex()
                 .flex_none()
-                .px_6()
-                .pt_4()
-                .gap_3()
+                .h(px(44.))
+                .px_4()
+                .gap_2()
+                .items_center()
                 .border_b_1()
                 .border_color(p.hair)
+                .child(btn(p, "page-back", "←", Some("Esc"), false, true).on_click(cx.listener(|this, _, _, cx| {
+                    this.board.view.page = None;
+                    cx.notify();
+                })))
+                .child(div().text_size(px(12.)).text_color(p.muted).child(super::board::menu_title(shell.board.view.menu, &shell.saved_views())))
+                .child(div().text_size(px(12.)).text_color(p.muted).child("›"))
+                .child(div().font_family(MONO).text_size(px(12.)).text_color(p.text2).child(format!("T-{}", t.id)))
+                .child(div().flex_1()),
+        )
+        .child(
+            h_flex()
+                .flex_1()
+                .min_h_0()
+                .items_start()
                 .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(btn(p, "page-back", "←", Some("Esc"), false, true).on_click(cx.listener(|this, _, _, cx| {
-                            this.board.view.page = None;
-                            cx.notify();
-                        })))
-                        .child(div().flex_1()),
+                    v_flex()
+                        .id("page")
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .overflow_y_scroll()
+                        .child(
+                            v_flex()
+                                .w_full()
+                                .max_w(px(780.))
+                                .mx_auto()
+                                .px_8()
+                                .pt_6()
+                                .pb_8()
+                                .gap_4()
+                                .child(head(shell, t, true, cx))
+                                .child(
+                                    h_flex()
+                                        .gap_1()
+                                        .border_b_1()
+                                        .border_color(p.hair)
+                                        .child(tab_button("tab-overview", t!("peek.tab_overview"), Tab::Overview, cx))
+                                        .child(tab_button("tab-changes", t!("peek.tab_changes"), Tab::Changes, cx))
+                                        .child(tab_button("tab-activity", t!("peek.tab_activity"), Tab::Activity, cx).when(news > 0, |b| b.child(div().ml_1().text_size(px(11.)).text_color(p.muted).child(news.to_string())))),
+                                )
+                                .children(content),
+                        ),
                 )
-                .child(head(shell, t, true, cx))
                 .child(
-                    h_flex()
-                        .gap_1()
-                        .child(tab_button("tab-overview", t!("peek.tab_overview"), Tab::Overview, cx))
-                        .child(tab_button("tab-changes", t!("peek.tab_changes"), Tab::Changes, cx))
-                        .child(tab_button("tab-activity", t!("peek.tab_activity"), Tab::Activity, cx)),
+                    v_flex()
+                        .id("page-props")
+                        .w(px(288.))
+                        .flex_none()
+                        .h_full()
+                        .overflow_y_scroll()
+                        .px_4()
+                        .py_5()
+                        .border_l_1()
+                        .border_color(p.hair)
+                        .child(super::tickets::properties(shell, t, false, cx)),
                 ),
         )
-        .child(h_flex().flex_1().min_h_0().justify_center().child(v_flex().id("page").w_full().max_w(px(820.)).h_full().overflow_y_scroll().px_6().py_5().gap_5().children(content)))
         .child(foot(shell, t, cx))
 }
 
@@ -168,7 +208,7 @@ fn head(shell: &Shell, t: &Ticket, wide: bool, cx: &mut Context<Shell>) -> AnyEl
                 .child(div().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{}", t.id)))
                 .child(div().text_size(px(12.)).text_color(icons::color(p, t.status)).child(crate::state::state_word(t))),
         )
-        .child(div().text_size(px(if wide { 20. } else { 16. })).line_height(px(if wide { 28. } else { 24. })).font_weight(FontWeight::SEMIBOLD).child(t.title.clone()))
+        .child(super::tickets::title(shell, t, if wide { 22. } else { 16. }, cx))
         .child(h_flex().flex_wrap().gap_x_3().gap_y_1().text_size(px(12.)).text_color(p.muted).children(facts))
         .into_any_element()
 }
@@ -194,7 +234,7 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
                     }
                 }
             }
-            if !t.body.trim().is_empty() {
+            if !t.body.trim().is_empty() && !wide {
                 out.push(v_flex().gap_1().child(kicker(p, t!("peek.the_work"))).child(md("peek-body", &t.body)).into_any_element());
             }
         }
@@ -219,7 +259,8 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
             if let Some(note) = t.note.as_deref().filter(|n| !n.trim().is_empty()) {
                 out.push(v_flex().gap_1().child(kicker(p, t!("peek.hand_in"))).child(md("peek-note", note)).into_any_element());
             }
-            let checks = rules::checklist(&t.body);
+            // On the page the description above carries its checklist already.
+            let checks = if wide { Vec::new() } else { rules::checklist(&t.body) };
             if !checks.is_empty() {
                 out.push(
                     v_flex()
@@ -228,13 +269,13 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
                         .children(checks.into_iter().map(|c| h_flex().gap_2().items_start().text_size(px(13.)).line_height(px(20.)).text_color(p.text2).child(div().flex_none().text_color(p.muted).child("□")).child(div().flex_1().min_w_0().child(c))))
                         .into_any_element(),
                 );
-            } else if t.note.is_none() && !t.body.trim().is_empty() {
+            } else if t.note.is_none() && !t.body.trim().is_empty() && !wide {
                 out.push(md("peek-body", &t.body));
             }
             out.extend(changes(shell, t, wide, cx));
         }
         TicketStatus::Proposed => {
-            if !t.body.trim().is_empty() {
+            if !t.body.trim().is_empty() && !wide {
                 out.push(v_flex().gap_1().child(kicker(p, t!("peek.why"))).child(md("peek-body", &t.body)).into_any_element());
             }
             let facts = [
@@ -268,7 +309,7 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
             if let Some(note) = t.note.as_deref().filter(|n| !n.trim().is_empty() && t.status.is_closed()) {
                 out.push(md("peek-note", note));
             }
-            if !t.body.trim().is_empty() {
+            if !t.body.trim().is_empty() && !wide {
                 out.push(md("peek-body", &t.body));
             }
             if t.branch.is_some() {
@@ -276,7 +317,10 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
             }
         }
     }
-    out.extend(links(shell, t, cx));
+    // The page lists what it waits for in its properties.
+    if !wide {
+        out.extend(links(shell, t, cx));
+    }
     if !wide {
         out.push(activity(shell, t.id, 3));
     }
@@ -433,7 +477,7 @@ fn foot(shell: &Shell, t: &Ticket, cx: &mut Context<Shell>) -> AnyElement {
                 Some(MergeWay::Merge) => t!("peek.merge_main"),
                 _ => t!("peek.merge_main_ask"),
             };
-            add(btn(p, "p-merge", label, Some("M"), true, can).on_click(cx.listener(move |this, _, _, cx| this.board_merge(id, cx))));
+            add(btn(p, "p-merge", label, Some("A"), true, can).on_click(cx.listener(move |this, _, _, cx| this.board_merge(id, cx))));
             if t.waits_to_merge() {
                 add(btn(p, "p-keep", t!("peek.keep_on_branch"), None, false, can).on_click(cx.listener(move |this, _, _, cx| this.board_keep(id, cx))));
             }
@@ -441,7 +485,7 @@ fn foot(shell: &Shell, t: &Ticket, cx: &mut Context<Shell>) -> AnyElement {
         _ => {}
     }
     if rules::who(t).is_some() {
-        add(btn(p, "p-talk", t!("peek.talk"), Some("C"), false, true).on_click(cx.listener(|this, _, w, cx| this.board_talk(w, cx))));
+        add(btn(p, "p-talk", t!("peek.talk"), Some("T"), false, true).on_click(cx.listener(|this, _, w, cx| this.board_talk(w, cx))));
     }
     if matches!(t.status, TicketStatus::InProgress | TicketStatus::Todo | TicketStatus::Waiting | TicketStatus::Review) {
         add(btn(p, "p-cancel", t!("peek.cancel_ticket"), Some("N"), false, can).on_click(cx.listener(move |this, _, _, cx| {

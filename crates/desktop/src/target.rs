@@ -182,6 +182,8 @@ pub struct Remembered {
     /// The sidebar's projects folded to their header, by name (the squad's
     /// shared folder: ""): `fold\t<name>` lines.
     pub folded: std::collections::BTreeSet<String>,
+    /// 티켓 as a board rather than rows, as last left.
+    pub tickets_board: bool,
 }
 
 /// Light or dark, as the person picked in settings; the Mac's by default
@@ -339,6 +341,8 @@ impl Remembered {
                 out.whole_conversation = true;
             } else if let Some(name) = line.strip_prefix("fold\t") {
                 out.folded.insert(name.to_owned());
+            } else if line.trim() == "tickets board" {
+                out.tickets_board = true;
             } else if let Some(rest) = line.strip_prefix("quiet ") {
                 if let Some(ping) = Ping::ALL.into_iter().find(|p| p.code() == rest.trim()) {
                     out.pings.set(ping, false);
@@ -389,6 +393,9 @@ impl Remembered {
         }
         for name in &self.folded {
             text.push_str(&format!("fold\t{}\n", name.replace(['\t', '\n'], " ")));
+        }
+        if self.tickets_board {
+            text.push_str("tickets board\n");
         }
         for ping in Ping::ALL.into_iter().filter(|p| !self.pings.get(*p)) {
             text.push_str(&format!("quiet {}\n", ping.code()));
@@ -572,7 +579,8 @@ mod tests {
         assert_eq!((fresh.appearance, fresh.start, fresh.pings), (Appearance::System, Start::Pm, Pings::default()), "the system's look, the PM, every notice");
 
         assert!(!fresh.whole_conversation, "the conversation follows the project by default");
-        let mut prefs = Remembered { appearance: Appearance::Dark, start: Start::Inbox, whole_conversation: true, ..Remembered::default() };
+        assert!(!fresh.tickets_board, "티켓 opens as a list");
+        let mut prefs = Remembered { appearance: Appearance::Dark, start: Start::Inbox, whole_conversation: true, tickets_board: true, ..Remembered::default() };
         prefs.pings.set(Ping::Failed, false);
         prefs.pings.set(Ping::Sound, false);
         prefs.set_merge_way("app", "push");
@@ -583,6 +591,7 @@ mod tests {
         let loaded = Remembered::load(&dir);
         assert_eq!((loaded.appearance, loaded.start, loaded.whole_conversation), (Appearance::Dark, Start::Inbox, true));
         assert_eq!(loaded.folded, prefs.folded, "the sidebar's folds, the shared folder's too");
+        assert!(loaded.tickets_board, "the board, as last left");
         assert!(!loaded.pings.failed && !loaded.pings.sound && loaded.pings.approvals && loaded.pings.reviews && loaded.pings.waiting);
         assert_eq!((loaded.merge_way("app"), loaded.merge_way("site")), (None, Some("merge")), "back to asking each time");
 

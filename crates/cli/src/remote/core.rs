@@ -114,7 +114,8 @@ pub fn pairing_url(relay: &str, id: &str, public: &str, secret: &[u8], name: &st
 /// The commands a phone may send, as it may send them: from a phone a request
 /// is allowed once, never always; a member's questions are the person's to
 /// answer or close from anywhere; starting, closing, merging and changing
-/// modes stay at the console.
+/// modes stay at the console — and so does writing, editing and rearranging
+/// tickets (the phone answers what the board asks; it doesn't plan it yet).
 pub fn allowed(command: Command) -> Option<Command> {
     match command {
         Command::Decide { squad, approval, decision: Decision::Always } => Some(Command::Decide { squad, approval, decision: Decision::Allow }),
@@ -815,7 +816,7 @@ pub(crate) mod tests {
         let opened = phone.open(&c, &out[0]);
         assert_eq!((opened["seq"].as_u64(), opened["rpc"]["params"]["approval"]["action"].as_str()), (Some(0), Some("rm -rf build")));
         // A ticket handed in pushes once.
-        let mut t = Ticket { id: 4, title: "x".into(), body: String::new(), status: TicketStatus::Review, owner: Some("backend".into()), assignee: None, kind: equipe_core::protocol::TicketKind::Task, project: None, depends_on: vec![], branch: None, worktree: None, merged: None, off_main: None, created_by: "pm".into(), note: None, asks: vec![], updated_at: None };
+        let mut t = Ticket { id: 4, title: "x".into(), body: String::new(), status: TicketStatus::Review, owner: Some("backend".into()), assignee: None, kind: equipe_core::protocol::TicketKind::Task, project: None, depends_on: vec![], branch: None, worktree: None, merged: None, off_main: None, created_by: "pm".into(), note: None, asks: vec![], updated_at: None, priority: Default::default(), rank: 0 };
         assert_eq!(core.on_squad_event("acme", &Event::TicketChanged { squad: "acme".into(), ticket: t.clone() }).len(), 1);
         assert!(core.on_squad_event("acme", &Event::TicketChanged { squad: "acme".into(), ticket: t.clone() }).is_empty());
         t.status = TicketStatus::Done;
@@ -880,6 +881,23 @@ pub(crate) mod tests {
         for command in [Command::PairStart, Command::PairAnswer { approve: true }, Command::PairCancel, Command::Devices, Command::Unpair { device: "x".into() }] {
             assert_eq!(allowed(command.clone()), None, "{command:?} stays at the person's screens");
         }
+    }
+
+    #[test]
+    fn a_phone_answers_tickets_but_writes_and_rearranges_none() {
+        use equipe_core::protocol::{TicketDraft, TicketEdit};
+        let squad = || "acme".to_owned();
+        for command in [
+            Command::CreateTicket { squad: squad(), draft: TicketDraft { title: "x".into(), ..Default::default() } },
+            Command::EditTicket { squad: squad(), ticket: 1, changes: TicketEdit { title: Some("y".into()), ..Default::default() } },
+            Command::MoveTicket { squad: squad(), ticket: 1, status: Some(TicketStatus::Done), before: None },
+            Command::EditTickets { squad: squad(), tickets: vec![1, 2], changes: TicketEdit { title: Some("y".into()), ..Default::default() } },
+            Command::CommentTicket { squad: squad(), ticket: 1, text: "z".into() },
+            Command::TicketHistory { squad: squad(), ticket: 1 },
+        ] {
+            assert_eq!(allowed(command.clone()), None, "{command:?} stays at the person's screens for now");
+        }
+        assert!(allowed(Command::Accept { squad: squad(), ticket: 1 }).is_some());
     }
 
     #[test]

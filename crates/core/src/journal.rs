@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use equipe_protocol::{Access, Engine, Entry, Member, Mode, SessionId, Ticket, TicketId, TicketKind, TicketStatus};
+use equipe_protocol::{Access, Engine, Entry, Member, Mode, Priority, SessionId, Ticket, TicketEntry, TicketId, TicketKind, TicketStatus};
 use rusqlite::{Connection, OptionalExtension as _, params};
 
 pub use rusqlite::Error;
@@ -326,6 +326,10 @@ impl Journal {
         }
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN merged INTEGER", []);
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN off_main TEXT", []);
+        // The person's say on how soon and in which order: normal and by number
+        // for tickets from before.
+        let _ = conn.execute("ALTER TABLE tickets ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'", []);
+        let _ = conn.execute("ALTER TABLE tickets ADD COLUMN rank INTEGER NOT NULL DEFAULT 0", []);
         // Tickets from before kinds: `code` with a project, `task` without — once,
         // when the column arrives.
         if conn.execute("ALTER TABLE tickets ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'", []).is_ok() {
@@ -547,8 +551,8 @@ impl Journal {
         let at = now();
         self.conn.execute(
             "INSERT INTO tickets (id, title, body, status, owner, assignee, project, depends_on, branch, created_by,
-                                  note, created_at, updated_at, kind)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13)",
+                                  note, created_at, updated_at, kind, priority, rank)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15)",
             params![
                 id,
                 t.title,
@@ -563,6 +567,8 @@ impl Journal {
                 t.note,
                 at,
                 t.kind.label(),
+                t.priority.label(),
+                t.rank,
             ],
         )?;
         Ok(id as TicketId)
@@ -573,7 +579,7 @@ impl Journal {
         self.conn.execute(
             "UPDATE tickets SET title = ?1, body = ?2, status = ?3, owner = ?4, assignee = ?5, project = ?6,
                                 depends_on = ?7, branch = ?8, note = ?9, updated_at = ?10, merged = ?12, kind = ?13,
-                                off_main = ?14
+                                off_main = ?14, priority = ?15, rank = ?16
              WHERE id = ?11",
             params![
                 t.title,
@@ -590,6 +596,8 @@ impl Journal {
                 t.merged,
                 t.kind.label(),
                 t.off_main.as_ref().and_then(|o| serde_json::to_string(o).ok()),
+                t.priority.label(),
+                t.rank,
             ],
         )?;
         Ok(())
@@ -626,7 +634,8 @@ impl Journal {
 
     fn query_tickets(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<Ticket>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree, merged, kind, off_main, updated_at
+            "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree, merged, kind, off_main, updated_at,
+                    priority, rank
              FROM tickets {filter} ORDER BY id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -646,6 +655,8 @@ impl Journal {
                 merged: r.get(12)?,
                 kind: TicketKind::parse(&r.get::<_, String>(13)?).unwrap_or_default(),
                 asks: Vec::new(),
+                priority: Priority::parse(&r.get::<_, String>(16)?).unwrap_or_default(),
+                rank: r.get(17)?,
                 off_main: r.get::<_, Option<String>>(14)?.and_then(|o| serde_json::from_str(&o).ok()),
                 updated_at: r.get::<_, Option<i64>>(15)?.map(|at| at.max(0) as u64),
             };
@@ -720,8 +731,13 @@ impl Journal {
 
     /// A ticket's record, oldest first: `(by, kind, text)`.
     pub fn ticket_history(&self, id: TicketId) -> Result<Vec<(String, String, String)>> {
-        let mut stmt = self.conn.prepare("SELECT by, kind, text FROM ticket_events WHERE ticket = ?1 ORDER BY seq")?;
-        let rows = stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(self.ticket_entries(id)?.into_iter().map(|e| (e.by, e.kind, e.text)).collect())
+    }
+
+    /// A ticket's record, oldest first, each line with when.
+    pub fn ticket_entries(&self, id: TicketId) -> Result<Vec<TicketEntry>> {
+        let mut stmt = self.conn.prepare("SELECT at, by, kind, text FROM ticket_events WHERE ticket = ?1 ORDER BY seq")?;
+        let rows = stmt.query_map([id], |r| Ok(TicketEntry { at: r.get::<_, i64>(0)?.max(0) as u64, by: r.get(1)?, kind: r.get(2)?, text: r.get(3)? }))?;
         rows.collect()
     }
 
@@ -1130,6 +1146,7 @@ mod tests {
             note: None,
             asks: vec![],
             updated_at: None,
+            priority: Default::default(), rank: 0,
             kind: TicketKind::Code,
         }
     }
@@ -1160,6 +1177,40 @@ mod tests {
         let j = Journal::for_squad(&home, "acme").unwrap();
         let kinds: Vec<TicketKind> = j.tickets().unwrap().iter().map(|t| t.kind).collect();
         assert_eq!(kinds, [TicketKind::Task, TicketKind::Code, TicketKind::Task]);
+    }
+
+    #[test]
+    fn a_tickets_priority_and_place_are_kept_and_old_ones_are_normal_by_number() {
+        let home = temp_home();
+        let path = squad_dir(&home, "acme").join("squad.db");
+        {
+            let j = Journal::for_squad(&home, "acme").unwrap();
+            j.create_ticket(&Ticket { priority: Priority::Urgent, ..ticket("Fire") }).unwrap();
+            let mut t = j.ticket(1).unwrap().unwrap();
+            assert_eq!((t.priority, t.rank), (Priority::Urgent, 0));
+            assert!(t.updated_at.is_some_and(|at| at > 0), "when it last changed travels with it");
+            t.rank = -512;
+            t.priority = Priority::Low;
+            j.save_ticket(&t).unwrap();
+            let t = j.ticket(1).unwrap().unwrap();
+            assert_eq!((t.priority, t.rank), (Priority::Low, -512));
+            // As a journal from before priorities would have them.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "ALTER TABLE tickets DROP COLUMN priority;
+                 ALTER TABLE tickets DROP COLUMN rank;
+                 INSERT INTO tickets (id, title, body, status, created_by, created_at, updated_at, kind)
+                   VALUES (2, 'Old', '-', 'todo', 'pm', 1, 1, 'task');",
+            )
+            .unwrap();
+        }
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        let tickets = j.tickets().unwrap();
+        assert_eq!(tickets.iter().map(|t| (t.priority, t.order_key())).collect::<Vec<_>>(), [(Priority::Normal, 1024), (Priority::Normal, 2048)]);
+        j.ticket_event(2, "you", "edited", "priority").unwrap();
+        let entries = j.ticket_entries(2).unwrap();
+        assert_eq!((entries[0].by.as_str(), entries[0].kind.as_str()), ("you", "edited"));
+        assert!(entries[0].at > 0);
     }
 
     #[test]
