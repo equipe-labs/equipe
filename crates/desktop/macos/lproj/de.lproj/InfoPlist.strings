@@ -1,0 +1,5 @@
+/* equipe's name and why it asks for the microphone and speech recognition, in de. */
+"CFBundleDisplayName" = "equipe";
+"CFBundleName" = "equipe";
+"NSMicrophoneUsageDescription" = "equipe nutzt das Mikrofon, wenn du eine Nachricht diktierst. Der Ton verlässt diesen Mac nie.";
+"NSSpeechRecognitionUsageDescription" = "equipe macht auf diesem Mac aus dem Gesagten Text und setzt ihn ins Nachrichtenfeld.";

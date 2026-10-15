@@ -703,5 +703,25 @@ mod tests {
         assert!(found.is_empty(), "{}", found.join("\n"));
         assert_eq!(label::mode(Lang::En, equipe_protocol::Mode::Ask), equipe_protocol::Mode::Ask.label());
         assert_eq!(label::status(Lang::En, equipe_protocol::TicketStatus::InProgress), "in progress");
+        for mode in equipe_protocol::Mode::ALL {
+            assert_eq!(label::mode(Lang::En, mode), mode.label());
+            assert_eq!(label::mode_short(Lang::En, mode), mode.short());
+            assert_eq!(label::mode_summary(Lang::En, mode), mode.summary());
+        }
+        assert_eq!(label::kind(Lang::De, equipe_protocol::TicketKind::Task), "Aufgabe");
+    }
+
+    #[test]
+    fn who_has_the_screen_reads_as_before_in_english_and_counts_in_each_language() {
+        use equipe_protocol::{DesktopState, MemberRef};
+        let who = |squad: &str, member: &str| MemberRef { squad: squad.into(), member: member.into() };
+        let state = DesktopState { holder: Some(who("acme", "qa")), queue: vec![who("beta", "pm")], stopped: false };
+        assert_eq!(label::desktop(Lang::En, &state, Some("acme")), state.summary(Some("acme")));
+        assert_eq!(label::desktop(Lang::Ko, &state, Some("acme")).as_deref(), Some("qa이(가) 화면 사용 중 · 1명 대기"));
+        let two = DesktopState { queue: vec![who("a", "x"), who("b", "y")], ..DesktopState::default() };
+        assert_eq!(label::desktop(Lang::De, &two, None).as_deref(), Some("2 warten"));
+        assert_eq!(label::desktop(Lang::En, &DesktopState::default(), None), None);
+        let stopped = DesktopState { stopped: true, ..DesktopState::default() };
+        assert_eq!(label::desktop(Lang::En, &stopped, None), stopped.summary(None));
     }
 }

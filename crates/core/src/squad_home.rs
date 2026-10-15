@@ -284,6 +284,17 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_change_is_told_in_the_persons_language() {
+        use crate::i18n::Lang;
+        let files = |n: usize| (0..n).map(|i| (["saved", "updated", "removed"][i % 3], format!("notes/{i}.md"))).collect();
+        let change = |n| Change { id: "x".into(), by: "pm".into(), why: "w".into(), at: 0, files: files(n) };
+        assert_eq!(change(4).said(Lang::En), change(4).what(), "English says what it always said");
+        assert_eq!(change(4).said(Lang::Ko), "notes/0.md 저장, notes/1.md 수정, notes/2.md 삭제, 외 1개");
+        assert_eq!(change(5).said(Lang::Ja), "notes/0.md を保存、notes/1.md を更新、notes/2.md を削除、ほか 2 件");
+        assert_eq!(change(0).said(Lang::De), "nichts");
+    }
+
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     fn home() -> PathBuf {

@@ -1046,7 +1046,7 @@ impl Runtime {
         let mut codex_cred = None;
         match engine {
             Engine::Codex => {
-                let cred = match codex_credentials(&self.client, &self.config.store).await {
+                let cred = match codex_credentials(&self.client, &self.config.store, self.config.lang).await {
                     Ok(cred) => cred,
                     Err((message, next)) => return fail(self, message, Some(next)),
                 };
@@ -1206,7 +1206,7 @@ impl Runtime {
         if session.engine != Engine::Codex || session.codex.is_some() {
             return true;
         }
-        match codex_credentials(&self.client, &self.config.store).await {
+        match codex_credentials(&self.client, &self.config.store, self.config.lang).await {
             Ok(cred) => {
                 if let Some(session) = self.sessions.get_mut(&id) {
                     session.codex = Some(cred);
@@ -4423,15 +4423,16 @@ async fn first_ready_engine(preference: &[Engine], store: &CredentialStore, clau
 }
 
 /// The Codex login, refreshed if stale — or why there isn't one.
-async fn codex_credentials(client: &reqwest::Client, store: &CredentialStore) -> Result<Credentials, (String, &'static str)> {
+async fn codex_credentials(client: &reqwest::Client, store: &CredentialStore, lang: crate::i18n::Lang) -> Result<Credentials, (String, &'static str)> {
+    let words = crate::i18n::core(lang);
     let cred = store
         .load("openai")
-        .map_err(|err| (format!("couldn't read {}: {err}", store.path("openai").display()), "equipe login codex"))?
+        .map_err(|err| (words.fill("error.codex_unreadable", &[("path", store.path("openai").display().to_string()), ("err", err.to_string())]), "equipe login codex"))?
         .filter(|c| c.method == AuthMethod::OauthSubscription)
-        .ok_or(("Codex isn't signed in.".to_owned(), "equipe login codex"))?;
+        .ok_or((words.get("error.codex_signed_out").to_owned(), "equipe login codex"))?;
     codex::ensure_fresh(client, store, cred)
         .await
-        .map_err(|err| (format!("couldn't refresh the Codex login: {err}"), "equipe login codex"))
+        .map_err(|err| (words.fill("error.codex_not_refreshed", &[("err", err.to_string())]), "equipe login codex"))
 }
 
 /// The journal of `squad`, opened on first use.

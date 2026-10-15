@@ -1,0 +1,5 @@
+/* equipe's name and why it asks for the microphone and speech recognition, in ko. */
+"CFBundleDisplayName" = "equipe";
+"CFBundleName" = "equipe";
+"NSMicrophoneUsageDescription" = "말로 메시지를 쓸 때 마이크를 씁니다. 소리는 이 Mac 밖으로 나가지 않습니다.";
+"NSSpeechRecognitionUsageDescription" = "말한 내용을 이 Mac에서 글로 바꿔 입력창에 넣습니다.";
