@@ -23,6 +23,8 @@ ratatui = "0.30.2"
 ratatui-image = { version = "11.1.0", default-features = false, features = ["crossterm"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
+# The relay's WebSocket TLS: the crypto rustls uses, named once at start (`install_tls`).
+rustls = { version = "0.23.45", default-features = false, features = ["aws_lc_rs", "std"] }
 sha2 = "0.11.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -30,3 +32,8 @@ terminal_size = "0.4.4"
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "io-std", "io-util", "net", "sync", "time"] }
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 unicode-width = "0.2.2"
+
+[dev-dependencies]
+# As a workspace build has it (the desktop app brings ring): the TLS test
+# proves the relay connection works with both crypto providers built in.
+rustls = { version = "0.23.45", default-features = false, features = ["aws_lc_rs", "ring", "std"] }
