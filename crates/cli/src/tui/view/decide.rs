@@ -69,7 +69,7 @@ pub(super) fn lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>>
         Span::styled(format!(" {}   ", t!("view.decide_pick")), theme.dim()),
         Span::styled("enter", theme.bold()),
         Span::styled(format!(" {}   ", if last { t!("view.decide_send") } else { t!("view.decide_next") }), theme.dim()),
-        Span::styled("s", theme.bold()),
+        Span::styled("-", theme.bold()),
         Span::styled(format!(" {}", t!("view.decide_skip")), theme.dim()),
     ];
     if step > 0 {
@@ -190,7 +190,7 @@ mod tests {
         assert!(lines[at("1 ○ Magic link (Recommended)")].contains("— no passwords"), "{shot}");
         assert_eq!(at("2 ○ Google"), at("1 ○ Magic link") + 1, "{shot}");
         assert!(lines[at("o your own answer")].contains("▎"), "{shot}");
-        assert!(lines[at("1–2 pick")].contains("enter next") && lines[at("1–2 pick")].contains("s skip"), "{shot}");
+        assert!(lines[at("1–2 pick")].contains("enter next") && lines[at("1–2 pick")].contains("- skip"), "{shot}");
 
         // Picked, then on: the second, several-pick question, its own keys.
         press(&mut app, KeyCode::Char('1'));

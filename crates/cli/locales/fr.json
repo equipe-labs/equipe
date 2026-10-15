@@ -37,7 +37,7 @@
   "app.ctrl_c_again": "Appuyez de nouveau sur Ctrl-C pour quitter. L'escouade continue de travailler.",
   "app.decide_asked.one": "{name} vous demande de décider · les chiffres choisissent, entrée continue",
   "app.decide_asked.other": "{name} vous demande de décider {count} choses · les chiffres choisissent, entrée continue",
-  "app.decide_pick_first": "Choisissez d'abord un chiffre — o pour votre propre réponse, s pour passer",
+  "app.decide_pick_first": "Choisissez d'abord un chiffre — o pour votre propre réponse, - pour passer",
   "app.decide_sent": "Votre décision est partie à {name}",
   "app.desktop_usage": "{now} · /desktop stop reprend l'écran à tous les membres · /desktop resume",
   "app.doesnt_work_on": "{squad} ne travaille pas sur {name}",

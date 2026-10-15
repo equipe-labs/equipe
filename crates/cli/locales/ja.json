@@ -36,7 +36,7 @@
   "app.couldnt_open_settings": "スクワッドの設定を開けませんでした: {err}",
   "app.ctrl_c_again": "終了するにはもう一度 Ctrl-C を押してください。スクワッドは作業を続けます。",
   "app.decide_asked.other": "{name} が {count} 件の決定を求めています · 数字で選んで enter",
-  "app.decide_pick_first": "まず数字で選んでください — 自分で答えるなら o、スキップは s",
+  "app.decide_pick_first": "まず数字で選んでください — 自分で答えるなら o、スキップは -",
   "app.decide_sent": "{name} に決定を送りました",
   "app.desktop_usage": "{now} · /desktop stop で全メンバーから画面を取り戻します · /desktop resume",
   "app.doesnt_work_on": "{squad}は{name}で作業していません",

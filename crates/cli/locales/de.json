@@ -37,7 +37,7 @@
   "app.ctrl_c_again": "Nochmal Ctrl-C zum Verlassen. Der Squad arbeitet weiter.",
   "app.decide_asked.one": "{name} bittet dich um eine Entscheidung · Zahlen wählen, Enter weiter",
   "app.decide_asked.other": "{name} bittet dich um {count} Entscheidungen · Zahlen wählen, Enter weiter",
-  "app.decide_pick_first": "Erst eine Zahl wählen — o für eine eigene Antwort, s zum Überspringen",
+  "app.decide_pick_first": "Erst eine Zahl wählen — o für eine eigene Antwort, - zum Überspringen",
   "app.decide_sent": "Deine Entscheidung ist an {name} gegangen",
   "app.desktop_usage": "{now} · /desktop stop holt den Bildschirm von allen Mitgliedern zurück · /desktop resume",
   "app.doesnt_work_on": "{squad} arbeitet nicht an {name}",

@@ -36,7 +36,7 @@
   "app.couldnt_open_settings": "無法開啟小隊設定：{err}",
   "app.ctrl_c_again": "再按一次 Ctrl-C 離開。小隊會繼續工作。",
   "app.decide_asked.other": "{name} 請你決定 {count} 件事 · 用數字選擇，按 enter 繼續",
-  "app.decide_pick_first": "先用數字選擇 — 自行回答按 o，略過按 s",
+  "app.decide_pick_first": "先用數字選擇 — 自行回答按 o，略過按 -",
   "app.decide_sent": "已把你的決定傳給 {name}",
   "app.desktop_usage": "{now} · /desktop stop 從所有成員收回螢幕 · /desktop resume",
   "app.doesnt_work_on": "{squad} 沒有負責 {name}",

@@ -2,8 +2,8 @@
 //! conversation on screen shows (the member's own; in the PM's, everyone's),
 //! answered with single keys while nothing is typed — a number picks (or,
 //! where several may be picked, toggles), `o` puts the person's own words in
-//! the composer, Enter goes on (sending after the last), `s` skips one, ←
-//! goes back.
+//! the composer, Enter goes on (sending after the last), `-` skips one (a
+//! key few messages start with), ← goes back.
 
 use std::collections::BTreeSet;
 
@@ -151,7 +151,7 @@ impl App {
                 self.composer.insert_str(&kept);
                 Some(Vec::new())
             }
-            KeyCode::Char('s') => Some(self.decide_next(&set, true)),
+            KeyCode::Char('-') => Some(self.decide_next(&set, true)),
             KeyCode::Enter => Some(self.decide_next(&set, false)),
             KeyCode::Left if picking.step > 0 => {
                 picking.step -= 1;
@@ -161,7 +161,7 @@ impl App {
         }
     }
 
-    /// Enter (or `s`, skipping): the next question — or, after the last, the
+    /// Enter (or `-`, skipping): the next question — or, after the last, the
     /// answers to the member, the set out of sight at once.
     fn decide_next(&mut self, set: &QuestionSet, skip: bool) -> Vec<Command> {
         let Some(picking) = self.picking.get_mut(&set.id) else { return Vec::new() };
@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn s_skips_and_typing_wins_over_the_cards_keys() {
+    fn a_dash_skips_and_typing_wins_over_the_cards_keys() {
         let (mut app, id) = pm_app();
         app.on_event(Event::QuestionsAsked { squad: "acme".into(), questions: set("pm", id) });
         // Something typed: the keys are the composer's.
@@ -281,8 +281,8 @@ mod tests {
         assert_eq!(app.composer.text(), "h");
         assert!(app.picking_of(7).is_none_or(|p| p.picks[0].is_empty()));
         app.composer.clear();
-        assert!(press(&mut app, KeyCode::Char('s')).is_empty());
-        let sent = press(&mut app, KeyCode::Char('s'));
+        assert!(press(&mut app, KeyCode::Char('-')).is_empty());
+        let sent = press(&mut app, KeyCode::Char('-'));
         assert_eq!(sent, vec![Command::AnswerQuestions { squad: "acme".into(), id: 7, answers: vec![Answer::skipped(), Answer::skipped()] }]);
     }
 

@@ -36,7 +36,7 @@
   "app.couldnt_open_settings": "스쿼드 설정을 열지 못했어요: {err}",
   "app.ctrl_c_again": "나가려면 Ctrl-C를 한 번 더 누르세요. 스쿼드는 계속 일해요.",
   "app.decide_asked.other": "{name}이(가) {count}가지 결정을 부탁해요 · 숫자로 고르고 enter",
-  "app.decide_pick_first": "먼저 숫자로 고르세요 — 직접 답하려면 o, 건너뛰려면 s",
+  "app.decide_pick_first": "먼저 숫자로 고르세요 — 직접 답하려면 o, 건너뛰려면 -",
   "app.decide_sent": "{name}에게 결정을 보냈어요",
   "app.desktop_usage": "{now} · /desktop stop으로 모든 멤버에게서 화면을 되찾아요 · /desktop resume",
   "app.doesnt_work_on": "{squad} 스쿼드는 {name}에서 일하지 않아요",
