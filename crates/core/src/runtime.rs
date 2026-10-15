@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use equipe_protocol::rpc::{ToolCall, ToolResult};
+use equipe_protocol::transcript::scope;
 use equipe_protocol::{
     Access, Approval, BrowserNavAction, Command, Decision, Engine, Entry, Event, Member, MemberRef, Mode, SessionId, SessionInfo,
     Estimate, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
@@ -979,9 +980,43 @@ impl Runtime {
 
     /// Team news on the PM's screen: in its conversation — beside its own
     /// ticket's work, when it runs there.
+    /// It is about the project of the ticket it names (none named: the whole
+    /// squad); a turn under way about another goes on about its own after it.
     fn show_news(&mut self, pm: SessionId, text: String) {
         let at = self.sessions.iter().find(|(_, s)| s.lane.as_ref().is_some_and(|(of, _)| *of == pm)).map_or(pm, |(&lane, _)| lane);
+        let desk = self.sessions.get(&at).filter(|s| s.work.is_none()).map(|s| (scope::current(s.transcript.entries()).flatten(), s.is_working(), s.squad.clone()));
+        let Some((now, working, Some(squad))) = desk else {
+            return self.publish(Event::Notice { session: at, text });
+        };
+        let about = self.news_project(&squad, &text);
+        if about == now {
+            return self.publish(Event::Notice { session: at, text });
+        }
+        self.publish(Event::Thread { session: at, project: about });
         self.publish(Event::Notice { session: at, text });
+        if working {
+            self.publish(Event::Thread { session: at, project: now });
+        }
+    }
+
+    /// The project news is about: that of the first ticket it names (`T-12`).
+    fn news_project(&mut self, squad: &str, text: &str) -> Option<String> {
+        let id: TicketId = text.split("T-").skip(1).find_map(|rest| {
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse().ok()
+        })?;
+        let ticket = self.find_ticket(squad, id)?;
+        self.ticket_project(squad, &ticket)
+    }
+
+    /// The project a ticket is about, by name: its own, else the squad's
+    /// first for work in code; none for work in the squad's home.
+    fn ticket_project(&mut self, squad: &str, ticket: &Ticket) -> Option<String> {
+        match &ticket.project {
+            Some(project) => Some(board::project_name(project)),
+            None if ticket.kind.in_home() => None,
+            None => self.projects(squad).first().map(|p| board::project_name(p)),
+        }
     }
 
     /// When `id` is a member other than the PM, brief its PM with `line(name)`.
@@ -1302,6 +1337,21 @@ impl Runtime {
         if !self.ensure_codex(id).await {
             return;
         }
+        // The project the message is about: the one the person looks at — a
+        // memo's, the one it was left in. None: the whole squad.
+        let about = memo_thread.flatten().or_else(|| {
+            let squad = self.sessions.get(&id)?.squad.clone()?;
+            self.focus.get(&squad).cloned()
+        });
+        // In the PM's conversation the message, its reply and its steps are
+        // about that project: a marker says so where it changes.
+        if let Some(session) = self.sessions.get(&id)
+            && session.is_pm()
+            && session.work.is_none()
+            && scope::current(session.transcript.entries()).flatten() != about
+        {
+            self.publish(Event::Thread { session: id, project: about.clone() });
+        }
         self.publish(Event::UserMessage { session: id, text: text.clone() });
         // What the person writes in is what the squad writes for them.
         if let (Some(squad), Some(language)) = (self.sessions.get(&id).and_then(|s| s.squad.clone()), crate::language::detect(&text))
@@ -1311,12 +1361,6 @@ impl Runtime {
             let _ = journal.set_language(language);
         }
         self.tell_the_pm(id, |name| format!("The person told {name}: {text}"), Some(&text));
-        // The project the message is about: the one the person looks at — a
-        // memo's, the one it was left in. None: the whole squad.
-        let about = memo_thread.flatten().or_else(|| {
-            let squad = self.sessions.get(&id)?.squad.clone()?;
-            self.focus.get(&squad).cloned()
-        });
         // About the whole squad, the PM oversees every project: it is told
         // where each stands with every message.
         let overview = self
@@ -3708,7 +3752,7 @@ it back there once they have done it. End your turn now with a short line on wha
                     title: s.title.clone(),
                     tokens: s.tokens,
                     context: s.context,
-                    recent: entries[entries.len().saturating_sub(SNAPSHOT_LINES)..].to_vec(),
+                    recent: scope::from(entries, entries.len().saturating_sub(SNAPSHOT_LINES)),
                     queued: s.queued.clone(),
                     queued_project: s.memo_threads.first().cloned().flatten(),
                     queued_in: s.memo_threads.clone(),

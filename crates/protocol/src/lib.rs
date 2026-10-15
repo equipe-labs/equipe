@@ -787,8 +787,9 @@ pub enum Event {
     SubagentStep { session: SessionId, id: String, step: String },
     /// A subagent handed back what it found.
     SubagentEnded { session: SessionId, id: String },
-    /// The PM's conversation moved to its thread for `project` (`None`: the
-    /// whole squad's). Each thread is a conversation of its own.
+    /// What follows in the conversation is about `project` (`None`: the whole
+    /// squad) — a message of the person's sent looking at it, news of its
+    /// ticket, or a ticket's work. See [`transcript::scope`].
     Thread { session: SessionId, project: Option<String> },
     /// A guess at what the person will say next to the member who just
     /// answered them, for their empty composer. Not part of the conversation.
@@ -1007,8 +1008,9 @@ pub enum Entry {
     Note { text: String },
     Error { message: String, next: Option<String> },
     Landed { branch: String, stat: String },
-    /// What follows is the PM's conversation about `project` — or, with
-    /// `None`, about the whole squad. Screens show one thread at a time.
+    /// What follows is about `project` — or, with `None`, about the whole
+    /// squad (see [`transcript::scope`]). Never shown itself; a screen shows
+    /// one project's slice of the conversation.
     Thread { project: Option<String> },
 }
 
