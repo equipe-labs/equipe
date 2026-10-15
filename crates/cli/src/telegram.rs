@@ -1001,6 +1001,7 @@ mod tests {
             created_by: "pm".into(),
             note: Some("Done: <form> & tests".into()),
             asks: vec![],
+            updated_at: None,
         }
     }
 

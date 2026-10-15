@@ -776,6 +776,7 @@ async fn work_not_on_main_says_why_can_be_kept_on_its_branch_and_settles_when_no
                     created_by: "pm".into(),
                     note: None,
                     asks: vec![],
+                    updated_at: None,
                 })
                 .unwrap();
             let mut t = journal.ticket(made).unwrap().unwrap();
@@ -850,6 +851,7 @@ async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
                     created_by: "pm".into(),
                     note: None,
                     asks: vec![],
+                    updated_at: None,
                 })
                 .unwrap();
             assert_eq!(made, id);
