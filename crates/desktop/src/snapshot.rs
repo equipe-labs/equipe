@@ -7,7 +7,7 @@
 //! `memo:<text>` (send it as a memo, as Tab does) · `type:<text>` (type, don't send) · `key:<y|a|n|o>` (answer a request) · `esc` (stop the member) · `up`/`down`
 //! (history) · `project:<name|all>` · `select:<member>` · `board` · `chat` ·
 //! `bkey:<key>` (a board key) · `pick:<n>` (a ticket) · `find:<words>` · `note:<text>` (in the open question's box) · `submit` (its main button) · `folds` · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
-//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<image file>` · `paste` (⌘V with what the clipboard holds) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
+//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<file>[,<file>…]` · `menu:<attach|recent|to|model|effort|mode|context>` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) · `theme:<light|dark>` · `paste` (⌘V with what the clipboard holds) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 
 use std::time::Duration;
@@ -102,7 +102,8 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     eprintln!("ckey {arg}: taken = {taken}");
                 }),
                 "light" => shell.update(cx, |shell, cx| {
-                    shell.composer.lightbox = shell.composer.strip.items().get(arg.parse::<usize>().unwrap_or(0)).map(|i| i.id);
+                    let id = shell.composer.strip.items().get(arg.parse::<usize>().unwrap_or(0)).map(|i| i.id);
+                    shell.show_big(id, cx);
                     cx.notify();
                 }),
                 "drag" => shell.update(cx, |shell, cx| {
@@ -110,6 +111,12 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     shell.drag_moved(&ExternalPaths(paths.into()), cx);
                     shell.composer.drag_shown = true;
                     cx.notify();
+                }),
+                "pastelong" => shell.update(cx, |shell, cx| {
+                    let lines = arg.parse::<usize>().unwrap_or(60);
+                    let text: String = (1..=lines).map(|n| format!("{n}번째 줄: 로그 내용이 여기에 있습니다\n")).collect();
+                    let taken = shell.paste_item(&ClipboardItem::new_string(text), cx);
+                    eprintln!("pastelong: taken = {taken}");
                 }),
                 "theme" => shell.update(cx, |shell, cx| {
                     shell.palette = crate::theme::Palette::new(if arg == "light" { WindowAppearance::Light } else { WindowAppearance::Dark });

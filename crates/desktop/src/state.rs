@@ -1165,4 +1165,18 @@ mod tests {
         assert_eq!(percent((63, 100)), Some(63));
         assert_eq!(percent((5, 0)), None);
     }
+
+    #[test]
+    fn a_memo_taken_back_leaves_the_conversation_and_the_count() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Working)]), T0);
+        for text in ["a", "b", "a"] {
+            model.apply(Update::Event(Event::MessageQueued { session: 1, text: text.into(), project: None }), T0);
+        }
+        assert_eq!(model.members[0].memos, 3);
+        assert!(model.apply(Update::Event(Event::MemoWithdrawn { session: 1, text: "a".into() }), T0));
+        assert_eq!(model.convo().unwrap().queued, ["b", "a"], "only the first with that text");
+        assert_eq!(model.convo().unwrap().queued_in.len(), 2);
+        assert_eq!(model.members[0].memos, 2);
+    }
 }

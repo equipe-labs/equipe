@@ -333,6 +333,38 @@ mod tests {
         assert_eq!(safe_name(Path::new("/")), "file");
     }
 
+    /// A big file goes over a channel of its own into `equipe receive`: an
+    /// `ssh` stand-in runs the remote line here, and a stand-in `equipe`
+    /// keeps what arrives and says where.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_file_streams_into_equipe_receive_and_its_path_comes_back() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let home = std::env::temp_dir().join(format!("eq-send-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".local/bin")).unwrap();
+        let script = |path: &Path, body: &str| {
+            std::fs::write(path, body).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        // `ssh [options] -- host <line>`: run the line with this HOME.
+        let fake_ssh = home.join("ssh");
+        script(&fake_ssh, &format!("#!/bin/sh\nfor last; do :; done\nHOME='{}' exec /bin/sh -c \"$last\"\n", home.display()));
+        script(&home.join(".local/bin/equipe"), "#!/bin/sh\necho \"$*\" > \"$HOME/args\"\ncat > \"$HOME/got\"\necho /far/uploads/kept.mov\n");
+        let file = home.join("clip.mov");
+        std::fs::write(&file, vec![7u8; 600 << 10]).unwrap();
+        let launcher = Launcher { program: fake_ssh, control_dir: home.clone(), askpass: None, extra: vec![] };
+        let sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let seen = sent.clone();
+        let kept = launcher.send_file(&host(), &file, "clip.mov", "video", move |n| seen.store(n, std::sync::atomic::Ordering::Relaxed)).await;
+        assert_eq!(kept.ok().as_deref(), Some("/far/uploads/kept.mov"));
+        assert_eq!(std::fs::read(home.join("got")).unwrap().len(), 600 << 10, "every byte arrived");
+        assert_eq!(std::fs::read_to_string(home.join("args")).unwrap().trim(), format!("receive --kind video --size {} --name clip.mov", 600 << 10));
+        assert_eq!(sent.load(std::sync::atomic::Ordering::Relaxed), 600 << 10);
+        // A name that could say more to a shell is never sent.
+        assert!(launcher.send_file(&host(), &file, "a b;rm.mov", "video", |_| {}).await.is_err());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// The remote login shell runs the line as `$SHELL -c '<line>'`. Run it
     /// through every shell on this machine, with a stand-in `equipe` that only
     /// reports what it got, and a PATH that lacks it except via `~/.cargo/bin`.

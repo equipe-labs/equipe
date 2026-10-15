@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use equipe_core::protocol::{Command, Engine, Mode, SessionId};
 use gpui_kit::component::input::{InlineToken, InputEvent, Paste, Textarea, TextareaState};
+use gpui_kit::component::speech::{SpeechError, SpeechEvent, SpeechState, SystemRecognizer};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -186,9 +187,16 @@ pub struct Composer {
     indexing: Vec<String>,
     /// The attachment shown big over the window.
     pub lightbox: Option<u64>,
+    /// A PDF's first page drawn big for it, once drawn.
+    page: Option<(u64, std::sync::Arc<Image>)>,
     save_task: Option<Task<()>>,
     /// Writes the draft down as the app quits.
     _quit: Subscription,
+    /// Dictation: on-device speech recognition in the app's language.
+    pub speech: Entity<SpeechState>,
+    /// What is being said, while it is (shown dimmed under the box; Esc drops it).
+    dictating: Option<String>,
+    _speech: Subscription,
     /// Keeps the inbox folder watched for as long as the window lives.
     inbox_watch: Option<fs_notify::RecommendedWatcher>,
 }
@@ -196,6 +204,9 @@ pub struct Composer {
 impl Composer {
     pub fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
         let placeholder = t!("composer.placeholder").to_owned();
+        let locale = speech_locale(equipe_core::i18n::Lang::detect());
+        let speech = cx.new(|cx| SpeechState::new(cx).recognizer(SystemRecognizer::new().locale(locale)));
+        let heard = cx.subscribe_in(&speech, window, |shell: &mut Shell, _, event: &SpeechEvent, window, cx| shell.on_speech(event, window, cx));
         let state = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, MAX_LINES).submit_on_enter(true).placeholder(placeholder.clone()));
         Self {
             state,
@@ -220,12 +231,16 @@ impl Composer {
             indexes: Vec::new(),
             indexing: Vec::new(),
             lightbox: None,
+            page: None,
             save_task: None,
             _quit: cx.on_app_quit(|shell: &mut Shell, cx| {
                 shell.composer.stash(cx);
                 shell.composer.drafts.save();
                 async {}
             }),
+            speech,
+            dictating: None,
+            _speech: heard,
             inbox_watch: None,
         }
     }
@@ -321,6 +336,21 @@ impl Composer {
         self.chip = None;
         self.dismissed = None;
         self.flash = None;
+    }
+}
+
+/// The language dictation listens for: the app's.
+fn speech_locale(lang: equipe_core::i18n::Lang) -> &'static str {
+    use equipe_core::i18n::Lang as L;
+    match lang {
+        L::Ko => "ko-KR",
+        L::En => "en-US",
+        L::Ja => "ja-JP",
+        L::ZhHans => "zh-CN",
+        L::ZhHant => "zh-TW",
+        L::Es => "es-ES",
+        L::Fr => "fr-FR",
+        L::De => "de-DE",
     }
 }
 
@@ -496,6 +526,45 @@ impl Shell {
         }
         self.composer.stopping = Some(session);
         self.send_command(Command::Interrupt { session });
+        cx.notify();
+    }
+
+    // ── dictation ──
+
+    /// The mic button: start listening, or stop and keep what was said.
+    fn toggle_dictation(&mut self, cx: &mut Context<Self>) {
+        self.composer.speech.update(cx, |s, cx| s.toggle(cx));
+        cx.notify();
+    }
+
+    fn on_speech(&mut self, event: &SpeechEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            SpeechEvent::Started => self.composer.dictating = Some(String::new()),
+            SpeechEvent::Partial(text) => self.composer.dictating = Some(text.to_string()),
+            SpeechEvent::Final(text) => {
+                self.composer.dictating = None;
+                let said = text.trim();
+                if !said.is_empty() {
+                    let mut now = self.composer.text(cx);
+                    if !now.is_empty() && !now.ends_with([' ', '\n']) {
+                        now.push(' ');
+                    }
+                    now.push_str(said);
+                    self.composer.set_text(&now, window, cx);
+                    self.composer.focus(window, cx);
+                }
+            }
+            SpeechEvent::Cancelled => self.composer.dictating = None,
+            SpeechEvent::Error(error) => {
+                self.composer.dictating = None;
+                self.composer.flash = Some(match error {
+                    SpeechError::PermissionDenied => t!("composer.dictation_denied").to_owned(),
+                    SpeechError::NoInputDevice => t!("composer.dictation_no_mic").to_owned(),
+                    SpeechError::Unsupported => t!("composer.dictation_unsupported").to_owned(),
+                    other => t!("composer.dictation_failed", why = other),
+                });
+            }
+        }
         cx.notify();
     }
 
@@ -872,9 +941,16 @@ impl Shell {
         // The picture shown big has the arrows and Esc.
         if self.composer.lightbox.is_some() && plain && matches!(key, "left" | "right" | "escape" | "space") {
             match key {
-                "left" | "right" => self.step_lightbox(key == "right"),
+                "left" | "right" => self.step_lightbox(key == "right", cx),
                 _ => self.composer.lightbox = None,
             }
+            cx.notify();
+            return true;
+        }
+        // Dictating: Esc drops what is being said, the box as it was.
+        if key == "escape" && self.composer.dictating.is_some() {
+            self.composer.speech.update(cx, |s, cx| s.cancel(cx));
+            self.composer.dictating = None;
             cx.notify();
             return true;
         }
@@ -910,7 +986,10 @@ impl Shell {
                         self.unattach(id, cx);
                     }
                 }
-                "space" | "enter" if plain => self.composer.lightbox = self.composer.strip.items().get(at).map(|i| i.id),
+                "space" | "enter" if plain => {
+                    let id = self.composer.strip.items().get(at).map(|i| i.id);
+                    self.show_big(id, cx);
+                }
                 "escape" => self.composer.chip = None,
                 _ => {
                     self.composer.chip = None;
@@ -1028,12 +1107,43 @@ impl Shell {
         cx.notify();
     }
 
-    fn step_lightbox(&mut self, forward: bool) {
+    /// Show an attachment big (`None`: close). A PDF's first page is drawn
+    /// for it off the UI thread, from the file on this Mac.
+    pub(crate) fn show_big(&mut self, id: Option<u64>, cx: &mut Context<Self>) {
+        self.composer.lightbox = id;
+        cx.notify();
+        let Some(item) = id.and_then(|id| self.composer.strip.items().iter().find(|i| i.id == id)) else { return };
+        if item.kind != Kind::Pdf || self.composer.page.as_ref().is_some_and(|(at, _)| *at == item.id) {
+            return;
+        }
+        let local = !self.endpoint.is_remote();
+        let Some(path) = item.origin.clone().or_else(|| match &item.stage {
+            Stage::Ready(ready) if local => Some(PathBuf::from(&ready.path)),
+            _ => None,
+        }) else {
+            return;
+        };
+        let id = item.id;
+        let drawn = cx.background_spawn(async move { media::pdf(&path, 1600).ok().and_then(|(_, page)| page).and_then(|page| media::png(&page).ok()) });
+        cx.spawn(async move |this, cx| {
+            if let Some(png) = drawn.await {
+                this.update(cx, |this, cx| {
+                    this.composer.page = Some((id, std::sync::Arc::new(Image::from_bytes(ImageFormat::Png, png))));
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    fn step_lightbox(&mut self, forward: bool, cx: &mut Context<Self>) {
         let items = self.composer.strip.items();
         let Some(at) = self.composer.lightbox.and_then(|id| items.iter().position(|i| i.id == id)) else { return };
         let n = items.len();
         let next = if forward { (at + 1) % n } else { (at + n - 1) % n };
-        self.composer.lightbox = Some(items[next].id);
+        let id = items[next].id;
+        self.show_big(Some(id), cx);
     }
 
     /// The window is being dragged over: say what dropping would do.
@@ -1161,6 +1271,17 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                     .on_paste(move |item, _, cx| shell_entity.update(cx, |shell, cx| shell.paste_item(item, cx)).unwrap_or(false)),
             ),
         )
+        .children(composer.dictating.clone().map(|heard| {
+            h_flex()
+                .px_4()
+                .pb_1()
+                .gap_2()
+                .items_center()
+                .text_size(px(crate::theme::BODY))
+                .line_height(px(24.))
+                .child(div().size(px(8.)).flex_none().rounded_full().bg(danger(p)))
+                .child(div().min_w_0().text_color(p.muted).italic().child(if heard.is_empty() { t!("composer.dictation_listening").to_owned() } else { heard }))
+        }))
         .child(bar(shell, cx))
 }
 
@@ -1257,7 +1378,7 @@ fn menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use
         let on = ix == menu.pick && row.act.is_some();
         let base = h_flex().min_h(px(32.)).px_3().gap_3().items_center().rounded(px(8.)).when(on, |r| r.bg(p.wash));
         match &row.act {
-            None => base.py_1().child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.muted).child(row.label.clone())).into_any_element(),
+            None => base.py_1().pb_2().child(div().flex_1().min_w_0().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(row.label.clone())).into_any_element(),
             Some(_) => base
                 .id(("menu-row", ix))
                 .cursor_pointer()
@@ -1368,6 +1489,20 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
             .child(div().text_size(px(11.)).text_color(if used >= 80 { danger(p) } else { p.muted }).child(format!("{used}%")))
     });
 
+    let listening = composer.dictating.is_some();
+    let mic = composer.speech.read(cx).is_available(cx).then(|| {
+        button("mic", if listening { t!("composer.aria_mic_stop") } else { t!("composer.aria_mic") }, |this, _, cx| this.toggle_dictation(cx), cx)
+            .size(px(28.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .when(listening, |b| b.bg(danger_bg(p)))
+            .hover(move |s| s.bg(p.wash))
+            .child(mic_glyph(if listening { danger(p) } else { p.text2 }))
+    });
+
     let primary = |id: &'static str, label: String, aria: String, enabled: bool, run: fn(&mut Shell, &mut Window, &mut Context<Shell>), cx: &mut Context<Shell>| {
         button(id, aria, move |this, window, cx| if enabled { run(this, window, cx) }, cx)
             .h(px(28.))
@@ -1451,7 +1586,16 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                 .children(mode_pill),
         )
         .children(ring)
+        .children(mic)
         .child(h_flex().flex_none().gap_1p5().items_center().children(right))
+}
+
+/// A microphone, drawn: a capsule on a stand.
+fn mic_glyph(color: Rgba) -> impl IntoElement {
+    v_flex()
+        .items_center()
+        .child(div().w(px(7.)).h(px(11.)).rounded(px(4.)).border_2().border_color(color))
+        .child(div().mt(px(1.)).w(px(2.)).h(px(3.)).bg(color))
 }
 
 /// How full the context is, as a ring: 14 points, the used part bright.
@@ -1670,10 +1814,7 @@ fn chip(shell: &Shell, item: &attach::Item, n: usize, cx: &mut Context<Shell>) -
                     .border_color(if focused { p.accent } else { p.hair })
                     .when(focused, |d| d.border_2())
                     .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.composer.lightbox = Some(id);
-                        cx.notify();
-                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| this.show_big(Some(id), cx)))
                     .child(face)
                     .children(progress),
             )
@@ -1730,10 +1871,7 @@ fn chip(shell: &Shell, item: &attach::Item, n: usize, cx: &mut Context<Shell>) -
                 .border_color(if failed { danger(p) } else if focused { p.accent } else { p.hair })
                 .when(focused, |d| d.border_2())
                 .when(opens, |d| {
-                    d.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
-                        this.composer.lightbox = Some(id);
-                        cx.notify();
-                    }))
+                    d.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| this.show_big(Some(id), cx)))
                 })
                 .child(icon)
                 .child(
@@ -1919,6 +2057,7 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoEleme
     let shown: Option<ImageSource> = match (item.kind, local, &ready) {
         (Kind::Image, true, Some(r)) => Some(PathBuf::from(&r.path).into()),
         (Kind::Video, true, Some(_)) => sheet.map(Into::into),
+        (Kind::Pdf, _, _) => shell.composer.page.as_ref().filter(|(at, _)| *at == id).map(|(_, page)| page.clone().into()),
         _ => None,
     }
     .or_else(|| item.thumb.clone().map(Into::into));
@@ -1975,7 +2114,7 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoEleme
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .when(n > 1, |b| {
                         b.child(button("lightbox-prev", t!("composer.aria_previous"), |this, _, cx| {
-                            this.step_lightbox(false);
+                            this.step_lightbox(false, cx);
                             cx.notify();
                         }, cx).size(px(28.)).flex().items_center().justify_center().rounded_full().hover(|s| s.bg(rgba(0xFFFFFF1F))).text_color(rgb(0xFFFFFF)).text_size(px(18.)).child("‹"))
                     })
@@ -1986,7 +2125,7 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoEleme
                     }))
                     .when(n > 1, |b| {
                         b.child(button("lightbox-next", t!("composer.aria_next"), |this, _, cx| {
-                            this.step_lightbox(true);
+                            this.step_lightbox(true, cx);
                             cx.notify();
                         }, cx).size(px(28.)).flex().items_center().justify_center().rounded_full().hover(|s| s.bg(rgba(0xFFFFFF1F))).text_color(rgb(0xFFFFFF)).text_size(px(18.)).child("›"))
                     })

@@ -152,17 +152,16 @@ fn limit_label(bytes: u64) -> String {
 
 /// Before a drop or a paste: is this a file we take? Its kind and size, or why not.
 pub fn check(path: &Path) -> Result<(Kind, u64), String> {
-    let name = file_name(path);
-    let meta = std::fs::metadata(path).map_err(|_| t!("attach.unreadable_named", name = name))?;
+    let meta = std::fs::metadata(path).map_err(|_| t!("attach.unreadable_file").to_owned())?;
     if meta.is_dir() {
-        return Err(t!("attach.folder", name = name));
+        return Err(t!("attach.folder").to_owned());
     }
     let kind = Kind::of(path);
     if meta.len() > kind.limit() {
-        return Err(t!("attach.too_big_limit", name = name, limit = limit_label(kind.limit())));
+        return Err(t!("attach.too_big_limit", limit = limit_label(kind.limit())));
     }
     if meta.len() == 0 {
-        return Err(t!("attach.empty", name = name));
+        return Err(t!("attach.empty").to_owned());
     }
     Ok((kind, meta.len()))
 }
@@ -320,12 +319,12 @@ pub fn prepare(source: Source) -> Result<Prepared, String> {
             let file = |meta: Meta, thumb: Option<Vec<u8>>| Prepared { kind, name: name.clone(), size, thumb, meta, main: Payload::File { name: name.clone(), path: path.clone() }, frames: Vec::new(), sheet: None };
             match kind {
                 Kind::Image => {
-                    let bytes = std::fs::read(&path).map_err(|_| t!("attach.unreadable_named", name = name))?;
+                    let bytes = std::fs::read(&path).map_err(|_| t!("attach.unreadable_file").to_owned())?;
                     picture(name.clone(), bytes).or_else(|why| converted(&path, &name).ok_or(why))
                 }
                 Kind::Video => Ok(video(&path, name.clone(), size).unwrap_or_else(|_| file(Meta::default(), media::quick_look(&path, THUMB).as_ref().and_then(thumb_of)))),
                 Kind::Pdf => {
-                    let (pages, first) = media::pdf(&path, THUMB * 2).map_err(|_| t!("attach.pdf_unreadable", name = name))?;
+                    let (pages, first) = media::pdf(&path, THUMB * 2).map_err(|_| t!("attach.pdf_unreadable").to_owned())?;
                     Ok(file(Meta { pages: Some(pages), ..Meta::default() }, first.as_ref().and_then(thumb_of)))
                 }
                 Kind::Text => Ok(file(Meta { lines: count_lines(&path), ..Meta::default() }, None)),
@@ -420,7 +419,7 @@ impl Store {
                 match payload {
                     Payload::Bytes { name, bytes } => uploader.upload(name, bytes, kind.upload()).map(|p| p.to_string_lossy().into_owned()),
                     Payload::File { name, path } if size <= LINE_MAX => {
-                        let bytes = std::fs::read(path).map_err(|_| t!("attach.unreadable_named", name = name))?;
+                        let bytes = std::fs::read(path).map_err(|_| t!("attach.unreadable_file").to_owned())?;
                         uploader.upload(name, &bytes, kind.upload()).map(|p| p.to_string_lossy().into_owned())
                     }
                     Payload::File { name, path } => {
@@ -450,11 +449,11 @@ fn put_local(home: &Path, payload: &Payload, kind: Kind) -> Result<String, Strin
     let (mut file, path) = equipe_core::gateway::create_upload(home, payload.name(), kind.upload())?;
     match payload {
         Payload::Bytes { bytes, .. } => file.write_all(bytes).map_err(|e| e.to_string())?,
-        Payload::File { path: from, name } => {
+        Payload::File { path: from, .. } => {
             drop(file);
             let _ = std::fs::remove_file(&path);
             if !clone(from, &path) {
-                std::fs::copy(from, &path).map_err(|_| t!("attach.unreadable_named", name = name))?;
+                std::fs::copy(from, &path).map_err(|_| t!("attach.unreadable_file").to_owned())?;
             }
             use std::os::unix::fs::PermissionsExt as _;
             let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
