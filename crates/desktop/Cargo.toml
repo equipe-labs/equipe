@@ -13,7 +13,30 @@ equipe-core = { path = "../core" }
 equipe-providers = { path = "../providers" }
 # gpui-kit pins the matching GPUI snapshot (gpui-pre) and re-exports it, so we
 # depend on exactly one UI crate and upgrade it on our own schedule.
-gpui-kit = "=0.7.1"
+# Code blocks are highlighted with tree-sitter: the languages members write
+# most, and no more, as each grammar adds to the build.
+gpui-kit = { version = "=0.7.1", features = [
+    "tree-sitter-bash",
+    "tree-sitter-css",
+    "tree-sitter-diff",
+    "tree-sitter-go",
+    "tree-sitter-html",
+    "tree-sitter-javascript",
+    "tree-sitter-markdown",
+    "tree-sitter-python",
+    "tree-sitter-rust",
+    "tree-sitter-sql",
+    "tree-sitter-swift",
+    "tree-sitter-toml",
+    "tree-sitter-tsx",
+    "tree-sitter-typescript",
+    "tree-sitter-yaml",
+] }
+# Images a reply points at on the web: GPUI fetches them through this client.
+gpui-pre-reqwest-client = "=0.3.8"
+# Math and diagrams in replies: drawn to SVG, which GPUI rasterizes (resvg) at 2x.
+latex-rust = { version = "2.1", default-features = false, features = ["std"] }
+mermaid-rs-renderer = { version = "0.3", default-features = false }
 libc = "0.2"
 # The daemon link runs its own small runtime on a thread off the UI.
 tokio = { version = "1.53.2", features = ["rt", "macros", "sync", "time", "net", "io-util", "process"] }
@@ -24,6 +47,10 @@ base64 = "0.23.1"
 # `equipe send-image` drops files in an inbox; the folder is watched, not polled.
 # (Renamed: this crate has a module of its own called `notify`.)
 fs-notify = { package = "notify", version = "8", default-features = false, features = ["macos_fsevent"] }
+# A JSON reply pretty-printed.
+serde_json = "1"
+# The text the code-block highlighter parses (the version gpui-component uses).
+ropey = "=2.0.0-beta.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Notifications while the window is out of sight; a click comes back to us.
@@ -36,5 +63,3 @@ block2 = "0.6"
 [features]
 snapshot = ["gpui-kit/test-support"]
 
-[dev-dependencies]
-serde_json = "1"

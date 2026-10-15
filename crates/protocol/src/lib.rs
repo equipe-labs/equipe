@@ -601,6 +601,18 @@ pub enum Event {
         tool: String,
         target: Option<String>,
     },
+    /// A tool use came back: the latest [`Event::ToolUse`] with the same
+    /// `tool` and `target` still open ended so. A screen that doesn't know
+    /// this event shows the step as before.
+    ToolResult {
+        session: SessionId,
+        tool: String,
+        target: Option<String>,
+        outcome: ToolOutcome,
+    },
+    /// A fragment of the model's reasoning, as the engine shows it. Not part
+    /// of the conversation: a screen may show it while it comes.
+    Thinking { session: SessionId, text: String },
     /// The engine named its model (Claude Code does on its first turn), or the
     /// person changed it.
     ModelKnown { session: SessionId, model: String },
@@ -671,6 +683,8 @@ impl Event {
             | Event::Notice { session, .. }
             | Event::TextDelta { session, .. }
             | Event::ToolUse { session, .. }
+            | Event::ToolResult { session, .. }
+            | Event::Thinking { session, .. }
             | Event::ModelKnown { session, .. }
             | Event::Thread { session, .. }
             | Event::Suggestion { session, .. }
@@ -705,6 +719,66 @@ impl Event {
     }
 }
 
+/// How a tool use ended: whether it worked, a command's exit code, how long it
+/// took, the end of what it printed, and — for an edit — the change.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolOutcome {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<i32>,
+    /// Milliseconds from the call to its answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ms: Option<u64>,
+    /// The last lines it printed (see [`ToolOutcome::tail`]).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub output: String,
+    /// Lines of output left out before `output`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub skipped: u32,
+    /// An edit's or a write's change, as a unified diff headed `diff --git`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+impl ToolOutcome {
+    /// How many lines of output travel with an outcome: the end, where errors are.
+    pub const OUTPUT_LINES: usize = 200;
+    /// And at most this many bytes of them.
+    pub const OUTPUT_BYTES: usize = 16 * 1024;
+
+    /// `text`'s last lines within the limits, and how many lines came before them.
+    pub fn tail(text: &str) -> (String, u32) {
+        let text = text.trim_end_matches(['\n', '\r']);
+        if text.is_empty() {
+            return (String::new(), 0);
+        }
+        let lines: Vec<&str> = text.split('\n').collect();
+        let (mut kept, mut bytes) = (0, 0);
+        for line in lines.iter().rev() {
+            if kept == Self::OUTPUT_LINES || (kept > 0 && bytes + line.len() + 1 > Self::OUTPUT_BYTES) {
+                break;
+            }
+            bytes += line.len() + 1;
+            kept += 1;
+        }
+        let from = lines.len() - kept;
+        let mut tail = lines[from..].join("\n");
+        // One enormous line: its end.
+        if tail.len() > Self::OUTPUT_BYTES {
+            let mut at = tail.len() - Self::OUTPUT_BYTES;
+            while !tail.is_char_boundary(at) {
+                at += 1;
+            }
+            tail = format!("…{}", &tail[at..]);
+        }
+        (tail, from as u32)
+    }
+}
+
 /// One line of a session's conversation, as kept and as replayed to a screen
 /// that attaches later. Streaming fragments are joined into one `Reply`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -712,7 +786,13 @@ impl Event {
 pub enum Entry {
     User { text: String },
     Reply { text: String },
-    Tool { tool: String, target: Option<String> },
+    Tool {
+        tool: String,
+        target: Option<String>,
+        /// How it ended, once it has (and the screen was told).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<Box<ToolOutcome>>,
+    },
     /// A quiet line from equipe itself.
     Note { text: String },
     Error { message: String, next: Option<String> },

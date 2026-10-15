@@ -89,6 +89,17 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     eprintln!("paste: images taken = {taken}");
                 }),
                 "retry" => shell.update(cx, |shell, cx| shell.retry(cx)),
+                // The conversation's: light or dark whatever the system says,
+                // ⌘F with words, a row scrolled to.
+                "appearance" => shell.update(cx, |shell, cx| {
+                    shell.palette = crate::theme::Palette::new(if arg == "light" { WindowAppearance::Light } else { WindowAppearance::Dark });
+                    cx.notify();
+                }),
+                "seek" => shell.update(cx, |shell, cx| {
+                    shell.find_open(window, cx);
+                    shell.find_type(&arg, window, cx);
+                }),
+                "row" => shell.update(cx, |shell, cx| shell.chat.scroll_to(arg.parse().unwrap_or(0), cx)),
                 other => eprintln!("script: no step {other}"),
             });
             // Let the window draw what the step did.

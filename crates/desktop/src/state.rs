@@ -843,7 +843,7 @@ mod tests {
         let mut model = Model::new("acme");
         let mut busy = session(2, "frontend", "frontend", SessionState::Working);
         busy.work = Some(WorkInfo { ticket: 61, project: "/p".into(), workspace: None });
-        busy.recent = vec![Entry::Tool { tool: "Edit".into(), target: None }];
+        busy.recent = vec![Entry::Tool { tool: "Edit".into(), target: None, outcome: None }];
         assert!(model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), busy]), T0));
         assert_eq!(model.conn, Conn::Connected { last_event: None });
         assert_eq!(model.status(&model.members[1]), Status::Working { ticket: Some(61), verb: Verb::Editing });

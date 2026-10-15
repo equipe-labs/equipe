@@ -3,9 +3,14 @@
 //! watched live saw.
 
 use crate::{Entry, Event, TurnOutcome};
+#[cfg(test)]
+use crate::ToolOutcome;
 
 /// Keep at most this many lines in memory; older ones live in the journal.
 pub const IN_MEMORY_LINES: usize = 500;
+/// How far back a tool's answer looks for its call (parallel calls answer
+/// out of order, but not that far apart).
+const TOOL_LOOKBACK: usize = 64;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Transcript {
@@ -51,8 +56,21 @@ impl Transcript {
             }
             return Vec::new();
         }
-        // A memo waits outside the conversation until it is delivered.
-        if let Event::MessageQueued { .. } = event {
+        // A memo waits outside the conversation until it is delivered;
+        // reasoning is never in it.
+        if let Event::MessageQueued { .. } | Event::Thinking { .. } = event {
+            return Vec::new();
+        }
+        // A tool's answer goes onto its line, which was final already: the
+        // outcome lives in memory, for the screens, not in the journal.
+        if let Event::ToolResult { tool: name, target: on, outcome, .. } = event {
+            let open = self.entries.iter_mut().rev().take(TOOL_LOOKBACK).find_map(|entry| match entry {
+                Entry::Tool { tool, target, outcome: slot } if tool == name && target == on && slot.is_none() => Some(slot),
+                _ => None,
+            });
+            if let Some(slot) = open {
+                *slot = Some(Box::new(outcome.clone()));
+            }
             return Vec::new();
         }
 
@@ -81,7 +99,7 @@ closing the session lands the branch.",
                     None => format!("── T-{ticket} · {title}"),
                 },
             }),
-            Event::ToolUse { tool, target, .. } => Some(Entry::Tool { tool: tool.clone(), target: target.clone() }),
+            Event::ToolUse { tool, target, .. } => Some(Entry::Tool { tool: tool.clone(), target: target.clone(), outcome: None }),
             Event::TurnEnded { outcome: TurnOutcome::Interrupted, .. } => Some(Entry::Note { text: "Stopped.".into() }),
             Event::TurnEnded { outcome: TurnOutcome::Incomplete, .. } => {
                 Some(Entry::Note { text: "The engine ended early.".into() })
@@ -136,9 +154,52 @@ mod tests {
         let mut t = Transcript::default();
         t.apply(&delta("Let me look."));
         let done = t.apply(&Event::ToolUse { session: 1, tool: "Read".into(), target: Some("a.rs".into()) });
-        assert_eq!(done, vec![Entry::Reply { text: "Let me look.".into() }, Entry::Tool { tool: "Read".into(), target: Some("a.rs".into()) }]);
+        assert_eq!(done, vec![Entry::Reply { text: "Let me look.".into() }, Entry::Tool { tool: "Read".into(), target: Some("a.rs".into()), outcome: None }]);
         t.apply(&delta("Done."));
         assert_eq!(t.entries().len(), 3);
+    }
+
+    #[test]
+    fn a_tool_result_lands_on_its_call_without_splitting_the_reply() {
+        let mut t = Transcript::default();
+        let call = |target: &str| Event::ToolUse { session: 1, tool: "Bash".into(), target: Some(target.into()) };
+        let result = |target: &str, ok: bool| Event::ToolResult {
+            session: 1,
+            tool: "Bash".into(),
+            target: Some(target.into()),
+            outcome: ToolOutcome { ok, exit: (!ok).then_some(1), ..Default::default() },
+        };
+        t.apply(&call("ls"));
+        t.apply(&call("make"));
+        // Parallel calls may answer out of order.
+        assert!(t.apply(&result("make", false)).is_empty());
+        t.apply(&delta("So far"));
+        assert!(t.apply(&result("ls", true)).is_empty());
+        t.apply(&delta(" good."));
+        let outcome = |i: usize| match &t.entries()[i] {
+            Entry::Tool { outcome, .. } => outcome.as_ref().map(|o| (o.ok, o.exit)),
+            _ => panic!(),
+        };
+        assert_eq!(outcome(0), Some((true, None)));
+        assert_eq!(outcome(1), Some((false, Some(1))));
+        assert_eq!(t.entries()[2], Entry::Reply { text: "So far good.".into() }, "the reply goes on");
+        // An answer with no call is dropped.
+        t.apply(&result("rm", true));
+        assert_eq!(t.entries().len(), 3);
+    }
+
+    #[test]
+    fn output_keeps_its_end() {
+        let text: String = (0..300).map(|n| format!("line {n}\n")).collect();
+        let (tail, skipped) = ToolOutcome::tail(&text);
+        assert_eq!(skipped, 100);
+        assert_eq!(tail.lines().count(), ToolOutcome::OUTPUT_LINES);
+        assert!(tail.starts_with("line 100") && tail.ends_with("line 299"));
+        assert_eq!(ToolOutcome::tail("\n\n"), (String::new(), 0));
+        let wide = "가".repeat(10_000);
+        let (tail, skipped) = ToolOutcome::tail(&wide);
+        assert_eq!(skipped, 0);
+        assert!(tail.starts_with('…') && tail.len() <= ToolOutcome::OUTPUT_BYTES + 4);
     }
 
     #[test]

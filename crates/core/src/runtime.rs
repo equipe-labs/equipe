@@ -1671,6 +1671,12 @@ for one project goes to it as tickets for its owners, with that project — and 
                             emit(Event::TextDelta { session: id, text });
                         }
                         Activity::Tool { name, target } => emit(Event::ToolUse { session: id, tool: name, target }),
+                        Activity::ToolDone(done) => {
+                            let (output, skipped) = equipe_protocol::ToolOutcome::tail(&done.output);
+                            let outcome = equipe_protocol::ToolOutcome { ok: done.ok, exit: done.exit, ms: Some(done.ms), output, skipped, diff: done.diff };
+                            emit(Event::ToolResult { session: id, tool: done.name, target: done.target, outcome })
+                        }
+                        Activity::Thinking(text) => emit(Event::Thinking { session: id, text }),
                         Activity::Model(model) => emit(Event::ModelKnown { session: id, model }),
                         Activity::Output(tokens) => emit(Event::Output { session: id, tokens }),
                         Activity::SubagentStarted { id: sub, what } => emit(Event::SubagentStarted { session: id, id: sub, what }),
