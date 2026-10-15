@@ -481,9 +481,8 @@ impl Shell {
                             }
                             continue;
                         }
-                        match &update {
-                            daemon::Update::Down(_) => this.pairing.disconnected(),
-                            _ => {}
+                        if let daemon::Update::Down(_) = &update {
+                            this.pairing.disconnected();
                         }
                         match &update {
                             // The daemon's own list, asked on every attach: a squad
