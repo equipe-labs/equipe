@@ -272,7 +272,7 @@ pub struct Composer {
 impl Composer {
     pub fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
         let placeholder = t!("composer.placeholder").to_owned();
-        let locale = speech_locale(equipe_core::i18n::Lang::detect());
+        let locale = speech_locale(crate::i18n::lang());
         let speech = cx.new(|cx| SpeechState::new(cx).recognizer(SystemRecognizer::new().locale(locale)));
         let heard = cx.subscribe_in(&speech, window, |shell: &mut Shell, _, event: &SpeechEvent, window, cx| shell.on_speech(event, window, cx));
         let state = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, MAX_LINES).submit_on_enter(true).placeholder(placeholder.clone()));

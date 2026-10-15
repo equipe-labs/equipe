@@ -106,7 +106,7 @@ pub fn default_squad(home: &Path) -> Option<String> {
 
 /// What equipe remembers between runs, in `<home>/state.json`: the squad
 /// opened last, and the repositories the person said not to add.
-fn state(home: &Path) -> serde_json::Map<String, serde_json::Value> {
+pub(crate) fn state(home: &Path) -> serde_json::Map<String, serde_json::Value> {
     std::fs::read(home.join("state.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -117,7 +117,7 @@ fn state(home: &Path) -> serde_json::Map<String, serde_json::Value> {
         .unwrap_or_default()
 }
 
-fn save_state(home: &Path, state: serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+pub(crate) fn save_state(home: &Path, state: serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
     std::fs::create_dir_all(home).map_err(|err| err.to_string())?;
     let text = serde_json::to_string_pretty(&serde_json::Value::Object(state)).map_err(|err| err.to_string())?;
     // Whole or not at all: two screens may write it at once.

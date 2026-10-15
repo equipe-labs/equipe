@@ -10,8 +10,9 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-/// Every command, its `about` in the person's language.
-pub static COMMANDS: std::sync::LazyLock<[Spec; 27]> = std::sync::LazyLock::new(|| {
+/// Every command, its `about` in the language in use — asked afresh each
+/// time, since the person may switch language while the console runs.
+pub fn commands() -> [Spec; 28] {
     [
         Spec { name: "usage", args: "", about: t!("commands.usage") },
         Spec { name: "compact", args: "[member]", about: t!("commands.compact") },
@@ -38,10 +39,11 @@ pub static COMMANDS: std::sync::LazyLock<[Spec; 27]> = std::sync::LazyLock::new(
         Spec { name: "suggest", args: "[on|off]", about: t!("commands.suggest") },
         Spec { name: "export", args: "", about: t!("commands.export") },
         Spec { name: "mouse", args: "", about: t!("commands.mouse") },
+        Spec { name: "lang", args: "[code|auto]", about: t!("commands.lang") },
         Spec { name: "help", args: "", about: t!("commands.help") },
         Spec { name: "quit", args: "", about: t!("commands.quit") },
     ]
-});
+}
 
 /// One completion: what the composer holds once it's taken, and how it is
 /// listed. A `text` without a trailing space is whole: Enter on it runs it.
@@ -96,7 +98,7 @@ pub fn complete(text: &str, ctx: &Context<'_>) -> Vec<Choice> {
             .collect()
     } else if let Some(command) = text.strip_prefix('/') {
         match command.split_once(' ') {
-            None => COMMANDS
+            None => commands()
                 .iter()
                 .filter(|c| c.name.starts_with(&command.to_lowercase()))
                 .map(|c| Choice {
@@ -230,6 +232,17 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             .filter(|(w, _)| starts(w))
             .map(|(w, about)| word(w, about, ""))
             .collect(),
+        ("lang", 1) => {
+            let system = t!("lang.system", name = crate::lang::name(equipe_core::i18n::Lang::resolve_auto(equipe_core::i18n::Front::Terminal)));
+            let mut choices: Vec<Choice> = if starts("auto") { vec![word("auto", &system, "")] } else { Vec::new() };
+            choices.extend(
+                equipe_core::i18n::Lang::ALL
+                    .iter()
+                    .filter(|l| starts(&l.code().to_lowercase()))
+                    .map(|l| word(l.code(), l.native_name(), "")),
+            );
+            choices
+        }
         ("suggest", 1) => [("on", t!("commands.suggest_on")), ("off", t!("commands.suggest_off"))]
             .iter()
             .filter(|(w, _)| starts(w))
@@ -309,7 +322,7 @@ mod tests {
     fn a_slash_lists_the_commands_that_fit() {
         assert_eq!(texts(&complete("/reo", &ctx())), ["/reopen "]);
         assert_eq!(texts(&complete("/resume ", &ctx())), ["/resume T-11 "], "the tickets waiting on the person");
-        assert_eq!(complete("/", &ctx()).len(), COMMANDS.len());
+        assert_eq!(complete("/", &ctx()).len(), commands().len());
         assert_eq!(texts(&complete("/bo", &ctx())), ["/board"], "a command without arguments is whole");
         assert!(complete("/board", &ctx()).is_empty(), "nothing left to complete");
         assert!(complete("hello", &ctx()).is_empty());

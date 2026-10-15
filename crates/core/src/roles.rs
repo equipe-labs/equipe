@@ -173,6 +173,9 @@ pub struct Context<'a> {
     pub board_tools: bool,
     /// The language the person writes in, once known.
     pub language: Option<&'a str>,
+    /// The language the person's screen is in, by its English name: what to
+    /// write for them in until they have written.
+    pub screen_language: Option<&'a str>,
     /// Whether the member has a browser, signed in as the person.
     pub browser: bool,
     /// The squad's home, where the member sits between tickets.
@@ -339,7 +342,12 @@ that overlap, drop what no longer holds.",
             "The person writes in {language}: write everything meant for them in {language} — replies, ticket \
 titles and bodies, hand-in summaries, comments — whatever language this prompt is in."
         ),
-        None => "Write for the person in the language they write in.".to_owned(),
+        None => match ctx.screen_language {
+            Some(screen) => format!(
+                "Write for the person in the language they write in; until they have written, in {screen}, the language of their screen."
+            ),
+            None => "Write for the person in the language they write in.".to_owned(),
+        },
     };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
@@ -418,7 +426,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, board_tools, language: None, browser: false, home: None, memory: None, facts: 0, edits: false }
+        Context { team, projects, board_tools, language: None, screen_language: None, browser: false, home: None, memory: None, facts: 0, edits: false }
     }
 
     #[test]
@@ -429,6 +437,11 @@ mod tests {
         assert!(text.contains("hand-in summaries"), "{text}");
         let unknown = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
         assert!(unknown.contains("in the language they write in"), "{unknown}");
+        // Before they have written: the language their screen is in.
+        let screen = charter(role(PM).unwrap(), "pm", &Context { screen_language: Some("Japanese"), ..ctx(&team, &[], true) });
+        assert!(screen.contains("in the language they write in; until they have written, in Japanese"), "{screen}");
+        let both = charter(role(PM).unwrap(), "pm", &Context { language: Some("Korean"), screen_language: Some("Japanese"), ..ctx(&team, &[], true) });
+        assert!(both.contains("writes in Korean") && !both.contains("Japanese"), "what they write wins: {both}");
     }
 
     #[test]

@@ -10,6 +10,7 @@ mod clip;
 mod daemon;
 mod home;
 mod i18n;
+mod lang;
 mod onboard;
 mod remote;
 mod telegram;
@@ -189,6 +190,12 @@ enum Command {
     },
     /// Update equipe to the latest release
     Update,
+    /// Show the language equipe speaks to you, or pick one for every screen:
+    /// ko, en, ja, zh-Hans, zh-Hant, es, fr, de — or auto, the system's
+    Lang {
+        /// A language's code, or `auto`
+        lang: Option<String>,
+    },
     /// The background daemon the team lives in
     Daemon {
         #[command(subcommand)]
@@ -308,6 +315,15 @@ async fn main() -> ExitCode {
         Command::Try { prompt, engine, model, edit } => app.run_try(&prompt, engine, model.as_deref(), edit).await,
         Command::Daemon { action } => daemon_command(action).await,
         Command::Update => update().await,
+        Command::Lang { lang } => match lang::command(&equipe_providers::credentials::equipe_home(), lang.as_deref()) {
+            Ok(lines) => {
+                for line in lines {
+                    println!("{line}");
+                }
+                Ok(())
+            }
+            Err(why) => Err(Failure::new(why)),
+        },
         Command::Attach { stdio: true, no_start } => attach::stdio(no_start).await,
         Command::Attach { stdio: false, .. } => return attach::usage(),
         Command::Receive { name, size, kind } => {

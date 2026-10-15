@@ -102,6 +102,7 @@ fn config(claude: &Path, home: &Path, persist: bool) -> Config {
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,
+        lang: equipe_core::i18n::Lang::En,
     }
 }
 
@@ -434,6 +435,21 @@ async fn a_member_needs_a_squad_that_exists() {
     handle.send(Command::Start { session: 1, spec: member(&scratch("cwd"), "pm") });
     let failed = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
     assert!(matches!(failed.last(), Some(Event::Error { message, .. }) if message.contains("no squad called acme")));
+}
+
+#[tokio::test]
+async fn equipe_speaks_to_the_person_in_their_screens_language() {
+    let claude = fake_claude(true, &answering("ok"));
+    let (handle, mut events) = start(&claude);
+    handle.send(Command::Language { lang: "ko_KR.UTF-8".into() });
+    handle.send(Command::Start { session: 1, spec: member(&scratch("cwd"), "pm") });
+    let failed = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
+    assert!(matches!(failed.last(), Some(Event::Error { message, .. }) if message == "acme라는 스쿼드가 없습니다."), "{failed:#?}");
+    // A language equipe doesn't speak changes nothing.
+    handle.send(Command::Language { lang: "pt-BR".into() });
+    handle.send(Command::Start { session: 2, spec: member(&scratch("cwd"), "pm") });
+    let failed = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
+    assert!(matches!(failed.last(), Some(Event::Error { message, .. }) if message.contains("스쿼드가 없습니다")), "{failed:#?}");
 }
 
 #[tokio::test]

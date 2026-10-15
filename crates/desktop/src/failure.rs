@@ -257,8 +257,8 @@ impl Failure {
                 self,
             ),
             Self::Other(_) => guide(
-                t!("failure.other", name = name),
-                t!("failure.other", name = name),
+                t!("failure.other_error", name = name),
+                t!("failure.other_error", name = name),
                 t!("failure.other_text"),
                 &[],
                 if ssh_line.is_empty() { Vec::new() } else { vec![ssh_line] },

@@ -930,7 +930,7 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
     let area = pane_title(title, vec![Span::styled(t!("view.esc_closes"), theme.dim())], area, frame);
     let width = (area.width as usize).saturating_sub(1);
     let commands: Vec<(String, &str)> =
-        super::commands::COMMANDS.iter().map(|c| (format!("/{} {}", c.name, c.args).trim_end().to_owned(), c.about)).collect();
+        super::commands::commands().iter().map(|c| (format!("/{} {}", c.name, c.args).trim_end().to_owned(), c.about)).collect();
     // Keys and commands each line up in a column as wide as their longest.
     let rows = |pairs: &[(String, &str)], column: usize| -> Vec<Line<'static>> {
         let column = column.min(width / 2) + 3;

@@ -115,6 +115,28 @@ impl Change {
         }
         if parts.is_empty() { "nothing".to_owned() } else { parts.join(", ") }
     }
+
+    /// [`Change::what`] in `lang`, for the person.
+    pub fn said(&self, lang: crate::i18n::Lang) -> String {
+        let words = crate::i18n::core(lang);
+        let mut parts: Vec<String> = self
+            .files
+            .iter()
+            .take(3)
+            .map(|(verb, file)| {
+                let key = match *verb {
+                    "saved" => "change.saved",
+                    "removed" => "change.removed",
+                    _ => "change.updated",
+                };
+                words.fill(key, &[("file", file.clone())])
+            })
+            .collect();
+        if self.files.len() > 3 {
+            parts.push(words.fill("change.more", &[("count", (self.files.len() - 3).to_string())]));
+        }
+        if parts.is_empty() { words.get("change.nothing").to_owned() } else { parts.join(words.get("list.separator")) }
+    }
 }
 
 /// Save whatever changed in the home, by `by` for `why`. `None` when nothing had.

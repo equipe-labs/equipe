@@ -2289,6 +2289,33 @@ impl App {
         }
     }
 
+    /// `/lang`: what is in use, or a pick — for every screen, and at once here.
+    fn set_lang(&mut self, word: &str) -> Vec<Command> {
+        let home = equipe_providers::credentials::equipe_home();
+        if word.is_empty() {
+            self.flash = Some(format!("{} · /lang {}", crate::lang::now(&home), crate::lang::codes()));
+            return Vec::new();
+        }
+        let Some(choice) = crate::lang::parse_choice(word) else {
+            self.flash = Some(t!("lang.unknown", word = word, codes = crate::lang::codes()));
+            return Vec::new();
+        };
+        match crate::lang::choose(&home, choice) {
+            Ok(lang) => {
+                self.flash = Some(match choice {
+                    Some(_) => t!("lang.picked", name = crate::lang::name(lang)),
+                    None => t!("lang.picked_system", name = crate::lang::name(lang)),
+                });
+                // What equipe says in the conversations follows.
+                vec![Command::Language { lang: lang.code().to_owned() }]
+            }
+            Err(why) => {
+                self.flash = Some(why);
+                Vec::new()
+            }
+        }
+    }
+
     fn slash(&mut self, command: &str) -> Vec<Command> {
         let (name, rest) = command.split_once(' ').unwrap_or((command, ""));
         let rest = rest.trim();
@@ -2322,6 +2349,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             },
             "accept" | "merge" | "reopen" | "resume" | "cancel" => self.decide(name, rest),
             "mode" => self.set_mode(rest),
+            "lang" => self.set_lang(rest),
             "close" => match self.agents.get_mut(self.selected) {
                 Some(agent) if agent.is_open() => {
                     agent.state = AgentState::Closing;
