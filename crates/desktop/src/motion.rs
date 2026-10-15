@@ -302,6 +302,121 @@ impl Element for SmoothHeight {
     }
 }
 
+// ── opening and closing in place ──
+
+/// How far a disclosure keyed `id` is open (0–1), easing over `BASE` toward
+/// `open` from wherever it was; frames are asked for until it settles. The
+/// first time it is asked it is where it should be, so rows scrolled back
+/// into view don't play it again.
+pub fn openness(id: impl Into<ElementId>, open: bool, window: &mut Window, cx: &mut App) -> f32 {
+    let now = Instant::now();
+    let target = if open { 1. } else { 0. };
+    let state = window.use_keyed_state(id, cx, |_, _| Slide { from: target, to: target, since: now });
+    let reduce = cx.reduce_motion();
+    let (value, settled) = state.update(cx, |slide, _| {
+        if slide.to != target {
+            *slide = Slide { from: slide.value(now), to: target, since: now };
+        }
+        if reduce {
+            *slide = Slide { from: target, to: target, since: now };
+        }
+        (slide.value(now), slide.settled(now))
+    });
+    if !settled {
+        window.request_animation_frame();
+    }
+    value
+}
+
+/// An eased value over `BASE`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Slide {
+    from: f32,
+    to: f32,
+    since: Instant,
+}
+
+impl Slide {
+    pub fn value(&self, now: Instant) -> f32 {
+        let t = now.saturating_duration_since(self.since).as_secs_f32() / BASE.as_secs_f32();
+        self.from + (self.to - self.from) * ease_out(t)
+    }
+
+    pub fn settled(&self, now: Instant) -> bool {
+        self.from == self.to || now.saturating_duration_since(self.since) >= BASE
+    }
+}
+
+struct RevealState {
+    natural: Option<Pixels>,
+}
+
+/// What a disclosure shows, at `progress` (0–1) of its own height, clipped:
+/// it grows open and shrinks shut. The caller fades it with the same value.
+pub struct Reveal {
+    id: ElementId,
+    child: AnyElement,
+    progress: f32,
+}
+
+impl Reveal {
+    pub fn new(id: impl Into<ElementId>, progress: f32, child: AnyElement) -> Self {
+        Self { id: id.into(), child, progress: progress.clamp(0., 1.) }
+    }
+}
+
+impl IntoElement for Reveal {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for Reveal {
+    type RequestLayoutState = LayoutId;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(&mut self, global_id: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Self::RequestLayoutState) {
+        let natural = window.with_element_state(global_id.expect("Reveal has an id"), |state: Option<RevealState>, _| {
+            let state = state.unwrap_or(RevealState { natural: None });
+            (state.natural, state)
+        });
+        let child = self.child.request_layout(window, cx);
+        let mut style = Style { display: Display::Block, ..Style::default() };
+        style.overflow.y = Overflow::Hidden;
+        if self.progress < 1. {
+            style.size.height = px(f32::from(natural.unwrap_or(px(0.))) * self.progress).into();
+        }
+        (window.request_layout(style, [child], cx), child)
+    }
+
+    fn prepaint(&mut self, global_id: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, child: &mut Self::RequestLayoutState, window: &mut Window, cx: &mut App) -> Self::PrepaintState {
+        let natural = window.layout_bounds(*child).size.height;
+        let unknown = window.with_element_state(global_id.expect("Reveal has an id"), |state: Option<RevealState>, _| {
+            let unknown = state.as_ref().is_none_or(|s| s.natural.is_none());
+            (unknown, RevealState { natural: Some(natural) })
+        });
+        // Opening from nothing measured: the next frame knows how tall.
+        if unknown && self.progress > 0. && self.progress < 1. {
+            window.request_animation_frame();
+        }
+        window.with_content_mask(Some(ContentMask { bounds }), |window| self.child.prepaint(window, cx));
+    }
+
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _: &mut Self::RequestLayoutState, _: &mut Self::PrepaintState, window: &mut Window, cx: &mut App) {
+        window.with_content_mask(Some(ContentMask { bounds }), |window| self.child.paint(window, cx));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Ease, FAST, ease_out, slide, slide_inverse};

@@ -1,7 +1,8 @@
 //! The conversation with a member (T-54 §3.2–3.3): your messages, the member's
-//! replies as Markdown, tool steps gathered and folded — each with how it
-//! ended, a command's output and an edit's change — notes, errors and
-//! commits, in a virtual list that follows the end while you are there.
+//! replies as Markdown, tool calls gathered into quiet groups that open in
+//! place — each call with how it ended, a command's output and an edit's
+//! change — news, notes, errors and commits, in a virtual list that follows
+//! the end while you are there. A ticket named in a row opens beside it.
 //!
 //! Streaming draws on the daemon's tick only (see `main.rs`): each tick the
 //! blocks are rebuilt, the list told which rows differ, and the window drawn
@@ -28,14 +29,15 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::{approvals, attached, composer, header};
-use crate::convo::{Block, RunRow, Status, ToolLine, relative};
+use crate::activity;
+use crate::convo::{Block, Status, ToolLine, relative};
 use crate::diffs::Kind;
 use crate::render::view::{self, Look};
 use crate::render::{self, Tones, hash_of, plugins, tools};
 use crate::state::{Model, Presence};
 use crate::icons::{Icon, icon};
 use crate::motion;
-use crate::theme::{BODY, CONTROL, ICON_SM, MONO, Palette, R_MD, R_SM, SMALL, look};
+use crate::theme::{BODY, CONTROL, ICON_SM, MONO, Palette, R_LG, R_MD, R_SM, SMALL, look};
 use crate::tips::tip;
 
 /// Where text starts inside the column: the cards' and the composer's inner
@@ -59,11 +61,19 @@ const BUBBLE_X: f32 = 14.;
 const BUBBLE_Y: f32 = 10.;
 const BUBBLE_SHARE: f32 = 0.74;
 
-/// What a row has open, beside its code fences (numbered from 0).
+/// What a row has open (or, open by itself, closed), beside its code fences
+/// (numbered from 0).
 const PART_MORE: u32 = 1 << 20;
 const PART_THOUGHT: u32 = PART_MORE + 1;
-const PART_OUTPUT: u32 = 1 << 21;
-const PART_DIFF: u32 = 1 << 22;
+const PART_NEWS: u32 = PART_MORE + 2;
+const PART_GROUP: u32 = PART_MORE + 3;
+/// A call of an open group, by its number in it.
+const PART_ROW: u32 = 1 << 21;
+/// The side panel's width; the conversation keeps the rest.
+const SIDE: f32 = 420.;
+
+/// Whose conversation, and the ticket it shows the work of.
+type Shown = (SessionId, Option<u32>);
 
 pub struct Chat {
     scroller: Entity<MessageScrollerState>,
@@ -71,15 +81,21 @@ pub struct Chat {
     /// Whose conversation `blocks` are, and the ticket it shows the work of.
     shown: Option<(SessionId, Option<u32>)>,
     seen_revision: u64,
-    /// Tool runs shown whole rather than folded (⌘⇧O).
+    /// Every group of calls and run of news open (⌘⇧O).
     pub expanded: bool,
     shown_expanded: bool,
     /// Tells one conversation's rows from another's.
     serial: u64,
     /// Text views by what they show, kept across scrolling.
     views: Rc<RefCell<Views>>,
-    /// What the person opened in the rows: `(row, part)`.
+    /// What the person opened (or closed, of what opens by itself) in the
+    /// rows: `(row, part)`.
     opened: Rc<HashSet<(u64, u32)>>,
+    /// The same, of the conversations not on screen, by row number: each
+    /// shows as it was left while the app runs.
+    remembered: HashMap<Shown, HashSet<(usize, u32)>>,
+    /// Tickets opened beside the conversation, the one shown last.
+    pub side: Vec<u32>,
     /// An image looked at closer, over the conversation.
     pub lightbox: Option<ImageSource>,
     /// What your messages attached, as far as it is known (`crate::sent`).
@@ -152,6 +168,8 @@ impl Chat {
             serial: 0,
             views: Rc::default(),
             opened: Rc::default(),
+            remembered: HashMap::new(),
+            side: Vec::new(),
             lightbox: None,
             sent: Rc::default(),
             gallery: None,
@@ -174,9 +192,16 @@ impl Chat {
         self.shown_expanded = self.expanded;
         let n = self.blocks.len();
         if moved {
+            // What was open stays so for when the conversation comes back.
+            if let Some(old) = self.shown {
+                let serial = self.serial;
+                let kept: HashSet<(usize, u32)> = self.opened.iter().filter(|(row, _)| row >> 24 == serial).map(|(row, part)| ((row & 0xFF_FFFF) as usize, *part)).collect();
+                self.remembered.insert(old, kept);
+            }
             self.shown = key;
             self.serial += 1;
-            self.opened = Rc::default();
+            let serial = self.serial;
+            self.opened = Rc::new(key.and_then(|k| self.remembered.get(&k)).map(|kept| kept.iter().map(|(ix, part)| (serial << 24 | *ix as u64, *part)).collect()).unwrap_or_default());
             self.views.borrow_mut().map.clear();
             self.scroller.update(cx, |s, cx| s.reset(n, cx));
             if self.find.open {
@@ -356,8 +381,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             empty(p, title, text).into_any_element()
         }
         Some(member) => {
-            let (mark, hue) = look(&member.role, &member.name);
-            let look = Who { mark, name: member.name.clone(), color: p.member(hue) };
+            let (_, hue) = look(&member.role, &member.name);
+            let look = Who { name: member.name.clone(), color: p.member(hue) };
             conversation(shell, look, cx).into_any_element()
         }
     };
@@ -385,8 +410,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             )
             .child(div().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(hint))
     });
-    v_flex()
+    let main = v_flex()
         .flex_1()
+        .min_w_0()
         .min_h_0()
         .items_center()
         .relative()
@@ -401,7 +427,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 .child(v_flex().children(approvals::for_you(shell, cx)).children(approvals::approval(shell, cx)))
                 .child(composer::render(shell, cx)),
         )
-        .children(lightbox(shell, cx))
+        .children(lightbox(shell, cx));
+    h_flex().flex_1().min_h_0().items_stretch().child(main).children(side_panel(shell, cx))
 }
 
 /// What a blank conversation says. The PM's names the thread it is.
@@ -431,7 +458,6 @@ fn empty(p: Palette, title: &'static str, text: impl Into<SharedString>) -> impl
 
 #[derive(Clone)]
 struct Who {
-    mark: &'static str,
     name: String,
     color: Rgba,
 }
@@ -449,10 +475,40 @@ struct Rows {
     handle: Handle,
     /// The last reply, when the turn is over: it can be asked again.
     retry_at: Option<usize>,
+    /// The latest finished reply: its actions stay in sight.
+    latest_reply: Option<usize>,
+    /// Replies that end a turn: the actions go under them.
+    turn_ends: HashSet<usize>,
+    /// Since when the call under way has run.
+    step_since: Option<std::time::Instant>,
     base: std::path::PathBuf,
     arrived: Rc<HashMap<u64, std::time::Instant>>,
     /// What your messages attached, drawn with.
     attached: attached::Ctx,
+}
+
+impl Rows {
+    /// Whether `part` of row `key` is open: as it opens by itself
+    /// (`default`), unless the person turned it.
+    fn is_open(&self, key: u64, part: u32, default: bool) -> bool {
+        default != self.opened.contains(&(key, part))
+    }
+}
+
+/// The replies that end a turn: the last before the person speaks again, or
+/// before the end.
+fn turn_ends(blocks: &[Block]) -> HashSet<usize> {
+    let mut out = HashSet::new();
+    let mut last: Option<usize> = None;
+    for (ix, block) in blocks.iter().enumerate() {
+        match block {
+            Block::Reply { .. } => last = Some(ix),
+            Block::User(_) => out.extend(last.take()),
+            _ => {}
+        }
+    }
+    out.extend(last);
+    out
 }
 
 fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
@@ -461,6 +517,9 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     let working = blocks.iter().any(|b| matches!(b, Block::Reply { live: true, .. } | Block::Thinking(_)))
         || shell.model.selected_member().is_some_and(|m| m.presence == Presence::Working);
     let retry_at = (!working).then(|| blocks.iter().rposition(|b| matches!(b, Block::Reply { .. }))).flatten().filter(|&ix| blocks[..ix].iter().any(|b| matches!(b, Block::User(_))));
+    let latest_reply = blocks.iter().rposition(|b| matches!(b, Block::Reply { live: false, .. }));
+    let turn_ends = turn_ends(&blocks);
+    let replying = blocks.iter().any(|b| matches!(b, Block::Reply { live: true, .. }));
     let rows = Rc::new(Rows {
         p,
         tones: render::tones(&p),
@@ -472,11 +531,18 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         views: shell.chat.views.clone(),
         handle: cx.entity().downgrade(),
         retry_at,
+        latest_reply,
+        turn_ends,
+        step_since: shell.model.convo().and_then(|c| c.step_since()),
         base: render::base_dir(shell),
         arrived: shell.chat.arrived.clone(),
         attached: attached::Ctx::of(shell, cx.entity().downgrade(), COLUMN - 120.),
     });
-    div().flex_1().min_h_0().w_full().max_w(px(COLUMN)).px_4().child(
+    // While a reply streams: a small pulse over the composer, where the jump
+    // button would be (which has the place while you read back).
+    let following = shell.chat.scroller.read(cx).is_following_tail();
+    let pulse = (replying && following).then(|| pulse_pill(p));
+    div().flex_1().min_h_0().w_full().max_w(px(COLUMN)).px_4().relative().children(pulse).child(
         MessageScroller::new("conversation", shell.chat.scroller.clone(), move |ix, window, cx| row(&rows, ix, window, cx))
             // It fades and slides up into place, bottom-centre over the composer.
             .with_jump_button_transition(motion::BASE)
@@ -514,48 +580,20 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
     let opened = |part: u32| rows.opened.contains(&(key, part));
     match &rows.blocks[ix] {
         Block::User(text) => user_row(rows, key, text, opened(PART_MORE), cx),
-        Block::Reply { text, first, live } => {
-            let (markdown, full) = view::prepare(text, *live, &|n| opened(n as u32));
-            let state = rows.views.borrow_mut().get(view_key(key, 0), &markdown, cx);
-            let look = Look { size: BODY, line: 24., color: p.text, live: *live };
-            let body = view::configure(TextView::new(&state), p, look, key, Arc::new(full));
-            let group: SharedString = format!("reply-{key}").into();
-            let mut tools: Vec<AnyElement> = Vec::new();
-            if !live {
-                let raw = text.clone();
-                tools.push(tool_button(p, ("reply-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))).into_any_element());
-            }
-            if rows.retry_at == Some(ix) {
-                let handle = rows.handle.clone();
-                tools.push(
-                    tool_button(p, ("reply-retry", key), Icon::Retry, t!("chat.retry_reply"), move |window, cx| {
-                        handle.update(cx, |shell, cx| shell.retry_last(window, cx)).ok();
-                    })
-                    .into_any_element(),
-                );
-            }
-            v_flex()
-                .group(group.clone())
-                .relative()
-                .gap_1()
-                .when(*first, |col| {
-                    col.mt_3().child(
-                        h_flex()
-                            .gap_2()
-                            .text_size(px(SMALL))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rows.who.color)
-                            .child(rows.who.mark)
-                            .child(rows.who.name.clone()),
-                    )
-                })
-                .child(div().text_size(px(BODY)).line_height(px(24.)).text_color(p.text).child(body))
-                .when(!tools.is_empty(), |col| col.child(toolbar(p, group, *first, tools)))
-                .into_any_element()
-        }
-        Block::Steps(lines) => steps(rows, key, lines, window, cx),
+        Block::Reply { text, first, live, worked } => reply_row(rows, ix, key, text, *first, *live, worked.as_ref(), window, cx),
+        Block::Steps(lines) => group(rows, key, lines, window, cx),
+        Block::News(news) => news_rows(rows, key, news, window, cx),
+        Block::Worked(worked) => h_flex()
+            .h(px(24.))
+            .gap(px(6.))
+            .items_center()
+            .text_size(px(12.))
+            .text_color(p.muted)
+            .child(icon(Icon::Clock, 12., p.muted))
+            .child(format!("{} · {}", worked.took(), worked.at))
+            .into_any_element(),
         Block::Note(text) => {
-            // A ticket's heading (`── T-12 …`) or a turn's end (`─ worked …`, in any language).
+            // A ticket's heading (`── T-12 …`).
             let chapter = text.starts_with('─');
             let (markdown, full) = view::prepare(text, false, &|_| true);
             let state = rows.views.borrow_mut().get(view_key(key, 1), &markdown, cx);
@@ -569,40 +607,39 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
                 .into_any_element()
         }
         Block::Thought { secs, text, .. } => {
-            let open = opened(PART_THOUGHT);
-            let handle = rows.handle.clone();
-            let head = h_flex()
-                .id(("thought", key))
-                .gap_2()
-                .text_size(px(SMALL))
-                .text_color(p.muted)
-                .cursor_pointer()
-                .hover(move |s| s.text_color(p.text2))
-                .child(div().w(px(12.)).child(if open { "▾" } else { "▸" }))
-                .child(t!("chat.thought_for", secs = secs))
-                .on_click(move |_, _, cx| {
-                    handle.update(cx, |shell, cx| shell.chat_toggle(key, PART_THOUGHT, cx)).ok();
-                });
-            let body = open.then(|| {
+            let open = rows.is_open(key, PART_THOUGHT, false);
+            let progress = motion::openness(("thought-open", key), open, window, cx);
+            let head = disclosure_head(rows, ("thought", key), PART_THOUGHT, key, false, window, cx)
+                .child(div().child(t!("chat.thought_for", secs = secs)))
+                .child(chevron(p.muted, progress));
+            let body = (progress > 0.).then(|| {
                 let state = rows.views.borrow_mut().get(view_key(key, 3), text, cx);
                 let look = Look { size: SMALL, line: 20., color: p.muted, live: false };
-                div()
-                    .ml(px(5.))
-                    .pl(px(14.))
-                    .border_l_1()
-                    .border_color(p.hair)
-                    .text_size(px(SMALL))
-                    .line_height(px(20.))
-                    .text_color(p.muted)
-                    .child(view::configure(TextView::new(&state), p, look, key, Arc::default()))
+                motion::Reveal::new(
+                    ("thought-body", key),
+                    progress,
+                    div()
+                        .opacity(progress)
+                        .pt_1()
+                        .ml(px(2.))
+                        .pl(px(12.))
+                        .border_l_1()
+                        .border_color(p.hair)
+                        .text_size(px(SMALL))
+                        .line_height(px(20.))
+                        .text_color(p.muted)
+                        .child(view::configure(TextView::new(&state), p, look, key, Arc::default()))
+                        .into_any_element(),
+                )
             });
-            v_flex().gap_1().child(head).children(body).into_any_element()
+            v_flex().child(head).children(body).into_any_element()
         }
         Block::Thinking(latest) => h_flex()
+            .h(px(24.))
             .gap_2()
+            .items_center()
             .text_size(px(SMALL))
             .text_color(p.muted)
-            .child(div().w(px(12.)).flex_none().child("◇"))
             .child(ShimmerText::new(t!("chat.thinking")).id(("thinking", key)).highlight_color(Hsla::from(p.text)))
             .child(div().min_w_0().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().child(latest.clone()))
             .into_any_element(),
@@ -613,11 +650,12 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             .child(
                 h_flex()
                     .gap_2()
-                    .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).text_color(rows.tones.danger).child("✗"))
+                    .items_start()
+                    .child(div().h(px(24.)).flex().items_center().flex_none().child(icon(Icon::Alert, ICON_SM, rows.tones.danger)))
                     .child(div().min_w_0().font_weight(FontWeight::SEMIBOLD).child(SelectableText::new(("error", key), message.clone()))),
             )
             .children(next.clone().map(|next| {
-                h_flex().gap_2().pl_5().text_size(px(SMALL)).child(div().text_color(p.muted).child("→")).child(div().font_family(MONO).font_weight(FontWeight::SEMIBOLD).child(SelectableText::new(("error-next", key), next)))
+                h_flex().gap_2().pl(px(22.)).text_size(px(SMALL)).child(div().text_color(p.muted).child("→")).child(div().font_family(MONO).font_weight(FontWeight::SEMIBOLD).child(SelectableText::new(("error-next", key), next)))
             }))
             .into_any_element(),
         Block::Landed { branch, stat } => v_flex()
@@ -625,16 +663,438 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             .child(
                 h_flex()
                     .gap_2()
+                    .items_center()
                     .text_size(px(SMALL))
-                    .child(div().text_color(p.accent).child("✓"))
+                    .child(icon(Icon::Check, 13., rows.tones.added))
                     .child(t!("chat.committed"))
                     .child(div().font_family(MONO).font_weight(FontWeight::SEMIBOLD).child(SelectableText::new(("branch", key), branch.clone()))),
             )
-            .child(v_flex().pl_5().font_family(MONO).text_size(px(12.5)).line_height(px(20.)).text_color(p.muted).children(stat.lines().map(|l| div().child(l.trim().to_owned()))))
+            .child(v_flex().pl(px(21.)).font_family(MONO).text_size(px(12.5)).line_height(px(20.)).text_color(p.muted).children(stat.lines().map(|l| div().child(l.trim().to_owned()))))
             .into_any_element(),
         Block::Memo(text) => waiting(rows, key, "memo", text, p.muted, t!("chat.memo_note"), cx),
         Block::Steering(text) => waiting(rows, key, "steering", text, p.accent, t!("chat.steering_note"), cx),
     }
+}
+
+/// A reply: who speaks over the conversation's first, the text full width,
+/// and under a turn's last the actions — copy, ask again, how long it worked
+/// and when — in sight on the latest, on hover on the rest.
+#[allow(clippy::too_many_arguments)]
+fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bool, worked: Option<&crate::convo::Worked>, _window: &mut Window, cx: &mut App) -> AnyElement {
+    let p = rows.p;
+    let (markdown, full) = view::prepare(text, live, &|n| rows.opened.contains(&(key, n as u32)));
+    let state = rows.views.borrow_mut().get(view_key(key, 0), &markdown, cx);
+    let look = Look { size: BODY, line: 24., color: p.text, live };
+    let body = view::configure(TextView::new(&state), p, look, key, Arc::new(full));
+    let group: SharedString = format!("reply-{key}").into();
+    // After a group of calls or the news, a little air before the words.
+    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::Thought { .. } | Block::Worked(_));
+    let actions = (!live && rows.turn_ends.contains(&ix)).then(|| {
+        let raw = text.to_owned();
+        let mut items: Vec<AnyElement> = vec![action_button(p, ("reply-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))).into_any_element()];
+        if rows.retry_at == Some(ix) {
+            let handle = rows.handle.clone();
+            items.push(
+                action_button(p, ("reply-retry", key), Icon::Retry, t!("chat.retry_reply"), move |window, cx| {
+                    handle.update(cx, |shell, cx| shell.retry_last(window, cx)).ok();
+                })
+                .into_any_element(),
+            );
+        }
+        let when = worked.map(|w| {
+            let ago = w.unix.map(|at| crate::activity::ago(crate::state::now_unix().saturating_sub(at)));
+            let words = match ago {
+                Some(ago) => format!("{} · {ago}", w.took()),
+                None => format!("{} · {}", w.took(), w.at),
+            };
+            let line = h_flex().id(("reply-when", key)).pl_1().gap(px(5.)).items_center().child(icon(Icon::Clock, 12., p.muted)).child(words);
+            tip(line, p, w.at.clone(), None).into_any_element()
+        });
+        let latest = rows.latest_reply == Some(ix);
+        h_flex()
+            .mt(px(6.))
+            .ml(px(-5.))
+            .gap(px(2.))
+            .items_center()
+            .text_size(px(12.))
+            .text_color(p.muted)
+            .when(!latest, |r| r.invisible().group_hover(group.clone(), |s| s.visible()))
+            .children(items)
+            .children(when)
+    });
+    v_flex()
+        .group(group.clone())
+        .when(after_activity && !first, |col| col.pt(px(6.)))
+        .when(first, |col| {
+            col.mt_3().child(
+                h_flex()
+                    .mb_1()
+                    .gap(px(6.))
+                    .items_center()
+                    .text_size(px(12.))
+                    .text_color(p.muted)
+                    .child(div().size(px(6.)).rounded_full().bg(rows.who.color))
+                    .child(rows.who.name.clone()),
+            )
+        })
+        .child(div().text_size(px(BODY)).line_height(px(24.)).text_color(p.text).child(body))
+        .children(actions)
+        .into_any_element()
+}
+
+/// A small icon button under a reply, named in its tooltip.
+fn action_button(p: Palette, id: (&'static str, u64), glyph: Icon, label: &'static str, on_click: impl Fn(&mut Window, &mut App) + 'static) -> impl IntoElement {
+    let b = div()
+        .id(id)
+        .size(px(24.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(R_SM))
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.wash))
+        .child(icon(glyph, 13., p.muted))
+        .on_click(move |_, window, cx| on_click(window, cx));
+    tip(b, p, label, None)
+}
+
+/// A chevron that turns from › to ⌄ as `progress` goes from 0 to 1.
+fn chevron(color: Rgba, progress: f32) -> impl IntoElement {
+    icon(Icon::ChevronRight, 12., color).with_transformation(Transformation::rotate(radians(progress * std::f32::consts::FRAC_PI_2)))
+}
+
+/// A focus handle kept for `id` while the row is drawn: Tab and the arrows
+/// move through the conversation's disclosures.
+fn focus_of(id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> FocusHandle {
+    window.use_keyed_state(id, cx, |_, cx| cx.focus_handle().tab_stop(true)).read(cx).clone()
+}
+
+/// The line that opens and closes a disclosure: a click or Enter/Space
+/// toggles `part` of row `key`; Tab, ↓ and ↑ move on; Esc puts the side
+/// panel away. A 1px accent ring while it has the keys.
+fn disclosure_head(rows: &Rows, id: (&'static str, u64), part: u32, key: u64, fill: bool, window: &mut Window, cx: &mut App) -> Stateful<Div> {
+    let p = rows.p;
+    let focus = focus_of(id, window, cx);
+    let focused = focus.is_focused(window);
+    let (click, keys) = (rows.handle.clone(), rows.handle.clone());
+    let clicked = focus.clone();
+    h_flex()
+        .id(id)
+        .track_focus(&focus)
+        .relative()
+        .min_h(px(24.))
+        .gap(px(6.))
+        .items_center()
+        .text_size(px(SMALL))
+        .line_height(px(20.))
+        .text_color(p.muted)
+        .cursor_pointer()
+        .hover(move |s| if fill { s.bg(p.wash) } else { s.text_color(p.text2) })
+        .when(focused, |d| {
+            let out = if fill { 0. } else { -6. };
+            d.child(div().absolute().top(px(if fill { 0. } else { -1. })).bottom(px(if fill { 0. } else { -1. })).left(px(out)).right(px(out)).rounded(px(R_SM)).border_1().border_color(p.accent))
+        })
+        .on_click(move |_, window, cx| {
+            clicked.focus(window, cx);
+            click.update(cx, |shell, cx| shell.chat_toggle(key, part, cx)).ok();
+        })
+        .on_key_down(move |event: &KeyDownEvent, window, cx| on_disclosure_key(event, &keys, key, part, window, cx))
+}
+
+fn on_disclosure_key(event: &KeyDownEvent, handle: &Handle, key: u64, part: u32, window: &mut Window, cx: &mut App) {
+    let k = &event.keystroke;
+    match k.key.as_str() {
+        "enter" | "space" => {
+            handle.update(cx, |shell, cx| shell.chat_toggle(key, part, cx)).ok();
+        }
+        "tab" if k.modifiers.shift => window.focus_prev(cx),
+        "tab" | "down" => window.focus_next(cx),
+        "up" => window.focus_prev(cx),
+        "escape" => {
+            handle
+                .update(cx, |shell, cx| {
+                    if !shell.side_close(cx) {
+                        shell.composer.focus(window, cx);
+                    }
+                })
+                .ok();
+        }
+        _ => return,
+    }
+    cx.stop_propagation();
+}
+
+/// `text` on one line, cut with an ellipsis, each `T-n` in it a way to that
+/// ticket beside the conversation.
+fn linked(rows: &Rows, id: impl Into<ElementId>, text: &str, color: Rgba, grow: bool) -> AnyElement {
+    let p = rows.p;
+    let mut ranges = Vec::new();
+    let mut from = 0;
+    while let Some((at, len)) = crate::convo::ticket_ref(&text[from..]) {
+        ranges.push(from + at..from + at + len);
+        from += at + len;
+    }
+    let tickets: Vec<u32> = ranges.iter().filter_map(|r| text[r.start + 2..r.end].parse().ok()).collect();
+    let style = HighlightStyle { color: Some(p.text.into()), underline: Some(UnderlineStyle { thickness: px(1.), color: Some(p.hair.into()), wavy: false }), ..Default::default() };
+    let styled = StyledText::new(text.to_owned()).with_highlights(ranges.iter().map(|r| (r.clone(), style)));
+    let handle = rows.handle.clone();
+    div()
+        .min_w_0()
+        .when(grow, |d| d.flex_1())
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_ellipsis()
+        .text_color(color)
+        .child(InteractiveText::new(id, styled).on_click(ranges, move |n, _, cx| {
+            if let Some(&ticket) = tickets.get(n) {
+                cx.stop_propagation();
+                handle.update(cx, |shell, cx| shell.side_open(ticket, cx)).ok();
+            }
+        }))
+        .into_any_element()
+}
+
+/// A group of tool calls: one quiet line — the call under way, the one call,
+/// or what they did counted — opening to a card of the calls, each a line
+/// that opens to its command, output or change. A failed call is a group of
+/// its own, open, in red.
+fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mut App) -> AnyElement {
+    let p = rows.p;
+    let t = rows.tones;
+    let status = activity::status(lines);
+    let failed = status == Status::Failed;
+    let single = lines.len() == 1;
+    // One call: the group is the call, and opens to what it has.
+    let openable = !single || activity::has_more(&lines[0]);
+    let open = openable && (rows.expanded || rows.is_open(key, PART_GROUP, failed));
+    let progress = motion::openness(("group-open", key), open, window, cx);
+    let tone = if failed { t.danger } else { p.muted };
+    let mark: Option<AnyElement> = match status {
+        Status::Running if !cx.reduce_motion() => Some(Spinner::new().with_size(px(12.)).color(Hsla::from(p.muted)).into_any_element()),
+        Status::Running => Some(div().child("◌").into_any_element()),
+        Status::Failed => Some(icon(Icon::Alert, 13., t.danger).into_any_element()),
+        _ => None,
+    };
+    let title: AnyElement = match activity::title(lines) {
+        activity::Title::Call { phrase, object } => h_flex()
+            .min_w_0()
+            .gap(px(6.))
+            .child(div().flex_none().child(phrase))
+            .child(linked(rows, ("group-object", key), &object, if failed { t.danger } else { p.text2 }, false))
+            .into_any_element(),
+        activity::Title::Summary(summary) => div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(summary).into_any_element(),
+    };
+    let one = single.then(|| &lines[0]);
+    let head = disclosure_head(rows, ("group", key), PART_GROUP, key, false, window, cx)
+        .text_color(tone)
+        .children(mark)
+        .child(title)
+        .children(one.and_then(diff_stat).map(|(a, r)| stat_chip(rows, a, r)))
+        .children(one.and_then(|l| l.exit.filter(|_| failed)).map(|code| div().flex_none().px_1().rounded(px(4.)).bg(t.danger_bg).text_size(px(12.)).text_color(t.danger).child(t!("chat.exit_code", code = code))))
+        .children(activity::total_ms(lines).map(|ms| div().flex_none().text_size(px(12.)).text_color(p.muted).child(tools::duration(ms))))
+        // A call under way counts its seconds, so a long one doesn't look stuck.
+        .children(
+            rows.step_since
+                .filter(|_| status == Status::Running)
+                .map(|since| since.elapsed())
+                .filter(|took| took.as_secs() >= 1)
+                .map(|took| div().flex_none().text_size(px(12.)).text_color(p.muted).child(crate::convo::elapsed(took))),
+        )
+        .when(openable, |h| h.child(chevron(p.muted, progress)));
+    let head = if !openable { head.cursor_default() } else { head };
+    let body = (progress > 0.).then(|| {
+        let inner = match one {
+            Some(line) => call_body(rows, key, 0, line, failed, window, cx),
+            None => card(rows, key, lines, window, cx),
+        };
+        motion::Reveal::new(("group-body", key), progress, div().opacity(progress).pt_1().pb_1().child(inner).into_any_element())
+    });
+    v_flex().child(head).children(body).into_any_element()
+}
+
+/// `+12 −3`, an edit's change counted.
+fn diff_stat(line: &ToolLine) -> Option<(usize, usize)> {
+    let card = tools::diff_card(line.diff.as_deref()?)?;
+    Some((card.added, card.removed))
+}
+
+fn stat_chip(rows: &Rows, added: usize, removed: usize) -> impl IntoElement {
+    h_flex().flex_none().gap_1().font_family(MONO).text_size(px(11.5)).child(div().text_color(rows.tones.added).child(format!("+{added}"))).child(div().text_color(rows.tones.removed).child(format!("−{removed}")))
+}
+
+/// The calls of an open group, one line each, hairlines between.
+fn card(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mut App) -> AnyElement {
+    let p = rows.p;
+    v_flex()
+        .rounded(px(R_LG))
+        .border_1()
+        .border_color(p.hair)
+        .children(lines.iter().enumerate().map(|(at, line)| call_row(rows, key, at as u32, line, at > 0, window, cx)))
+        .into_any_element()
+}
+
+/// A call in an open group: its verb phrase, what it acted on, how long it
+/// took; opening it shows the rest.
+fn call_row(rows: &Rows, key: u64, at: u32, line: &ToolLine, rule: bool, window: &mut Window, cx: &mut App) -> AnyElement {
+    let p = rows.p;
+    let t = rows.tones;
+    let more = activity::has_more(line);
+    let failed = line.status == Status::Failed;
+    let running = line.status == Status::Running;
+    let part = PART_ROW + at;
+    let open = more && rows.is_open(key, part, failed);
+    let progress = motion::openness(("call-open", key << 8 | at as u64), open, window, cx);
+    let head = disclosure_head(rows, ("call", key << 8 | at as u64), part, key, true, window, cx)
+        .h(px(32.))
+        .px_3()
+        .gap_2()
+        .when(!more, |h| h.cursor_default())
+        .children(running.then(|| Spinner::new().with_size(px(11.)).color(Hsla::from(p.muted))))
+        .children(failed.then(|| icon(Icon::Alert, 12., t.danger)))
+        .child(div().flex_none().text_color(if failed { t.danger } else { p.muted }).child(activity::phrase(&line.verb, running)))
+        .child(linked(rows, ("call-object", key << 8 | at as u64), &line.text(), p.text2, true))
+        .children(diff_stat(line).map(|(a, r)| stat_chip(rows, a, r)))
+        .children(line.exit.filter(|_| failed).map(|code| div().flex_none().px_1().rounded(px(4.)).bg(t.danger_bg).text_size(px(12.)).text_color(t.danger).child(t!("chat.exit_code", code = code))))
+        .children(line.ms.filter(|_| !running).map(|ms| div().flex_none().text_size(px(12.)).text_color(p.muted).child(tools::duration(ms))))
+        .when(more, |h| h.child(chevron(p.muted, progress)));
+    let body = (progress > 0.).then(|| motion::Reveal::new(("call-body", key << 8 | at as u64), progress, div().opacity(progress).px_3().pb_2().child(call_body(rows, key, at, line, failed, window, cx)).into_any_element()));
+    v_flex().when(rule, |c| c.border_t_1().border_color(p.hair)).child(head).children(body).into_any_element()
+}
+
+/// What a call shows open: a command whole and what it printed (mono, in a
+/// box that scrolls past a height), an edit's change, a long comment or
+/// task as text.
+fn call_body(rows: &Rows, key: u64, at: u32, line: &ToolLine, failed: bool, _window: &mut Window, cx: &mut App) -> AnyElement {
+    let p = rows.p;
+    let t = rows.tones;
+    let id = key << 8 | at as u64;
+    let mut parts: Vec<AnyElement> = Vec::new();
+    let command = line.verb == "run";
+    if let Some(full) = line.full.as_ref().filter(|f| f.chars().count() > 80 || f.contains('\n')) {
+        if command || line.output.is_some() {
+            parts.push(
+                div()
+                    .id(("call-command", id))
+                    .max_h(px(160.))
+                    .overflow_y_scroll()
+                    .font_family(MONO)
+                    .text_size(px(12.))
+                    .line_height(px(18.))
+                    .text_color(p.text2)
+                    .child(SelectableText::new(("call-command-text", id), format!("$ {full}")))
+                    .into_any_element(),
+            );
+        } else {
+            let state = rows.views.borrow_mut().get(hash_of(("call-text", id)), full, cx);
+            let look = Look { size: SMALL, line: 20., color: p.text2, live: false };
+            parts.push(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.text2).child(view::configure(TextView::new(&state), p, look, key, Arc::default())).into_any_element());
+        }
+    }
+    if let Some((output, skipped)) = &line.output {
+        parts.push(
+            v_flex()
+                .rounded(px(R_SM))
+                .bg(if failed { t.danger_bg } else { p.code_bg })
+                .px_3()
+                .py(px(6.))
+                .font_family(MONO)
+                .text_size(px(12.))
+                .line_height(px(18.))
+                .text_color(if failed { t.danger } else { p.text2 })
+                .when(*skipped > 0, |c| c.child(div().text_color(p.muted).child(t!("chat.output_before", count = *skipped))))
+                .child(div().id(("call-output", id)).max_h(px(220.)).overflow_y_scroll().child(SelectableText::new(("call-output-text", id), output.trim_end().to_owned())))
+                .into_any_element(),
+        );
+    }
+    if let Some(card) = line.diff.as_deref().and_then(tools::diff_card) {
+        parts.push(diff_lines(rows, id, card, line.path.as_deref()));
+    }
+    v_flex().gap_2().pt_1().children(parts).into_any_element()
+}
+
+/// An edit's change: the file, then its lines, in a box that scrolls.
+fn diff_lines(rows: &Rows, id: u64, card: tools::DiffCard, path: Option<&str>) -> AnyElement {
+    let p = rows.p;
+    let t = rows.tones;
+    let full = path.map_or_else(|| card.path.clone(), str::to_owned);
+    let chip = plugins::file_chip(p, ("diff-file", id), &relative(&full, &rows.base), std::path::Path::new(&full).exists(), px(12.));
+    v_flex()
+        .rounded(px(R_SM))
+        .bg(p.code_bg)
+        .overflow_hidden()
+        .child(h_flex().px_2().py(px(4.)).gap_2().text_size(px(12.)).child(chip))
+        .child(
+            div().id(("diff-lines", id)).max_h(px(320.)).overflow_y_scroll().pb_1().children(card.lines.into_iter().map(move |l| {
+                let (sign, bg, color) = match l.kind {
+                    Kind::Add => ("+", Some(t.added_bg), p.text),
+                    Kind::Del => ("−", Some(t.removed_bg), p.text2),
+                    Kind::Hunk => ("", None, p.muted),
+                    Kind::Note => ("", None, p.muted),
+                    Kind::Context => (" ", None, p.muted),
+                };
+                h_flex()
+                    .px_2()
+                    .font_family(MONO)
+                    .text_size(px(12.))
+                    .line_height(px(18.))
+                    .when_some(bg, |row, bg| row.bg(bg))
+                    .text_color(color)
+                    .child(div().w(px(14.)).flex_none().text_color(match l.kind {
+                        Kind::Add => t.added,
+                        Kind::Del => t.removed,
+                        _ => p.muted,
+                    }).child(sign))
+                    .child(div().min_w_0().flex_1().overflow_hidden().whitespace_nowrap().child(if l.text.is_empty() { " ".to_owned() } else { l.text.replace('\t', "    ") }))
+            })),
+        )
+        .into_any_element()
+}
+
+/// equipe's news: a line each, its icon saying what it is; more than three
+/// in a row fold into one line that counts them.
+fn news_rows(rows: &Rows, key: u64, news: &[crate::activity::News], window: &mut Window, cx: &mut App) -> AnyElement {
+    let p = rows.p;
+    let line = |n: usize, item: &crate::activity::News| {
+        h_flex()
+            .h(px(24.))
+            .gap(px(8.))
+            .items_center()
+            .text_size(px(SMALL))
+            .child(news_icon(rows, item.kind))
+            .child(linked(rows, ("news", key << 8 | n as u64), &item.text, p.muted, false))
+            .into_any_element()
+    };
+    if news.len() <= crate::activity::NEWS_FOLDS_PAST {
+        return v_flex().children(news.iter().enumerate().map(|(n, item)| line(n, item))).into_any_element();
+    }
+    let open = rows.expanded || rows.is_open(key, PART_NEWS, false);
+    let progress = motion::openness(("news-open", key), open, window, cx);
+    let head = disclosure_head(rows, ("news-head", key), PART_NEWS, key, false, window, cx)
+        .gap(px(8.))
+        .child(icon(Icon::Inbox, 13., p.muted))
+        .child(t!("chat.news_count", count = news.len()))
+        .child(chevron(p.muted, progress));
+    let body = (progress > 0.).then(|| motion::Reveal::new(("news-body", key), progress, v_flex().opacity(progress).pl(px(21.)).children(news.iter().enumerate().map(|(n, item)| line(n, item))).into_any_element()));
+    v_flex().child(head).children(body).into_any_element()
+}
+
+fn news_icon(rows: &Rows, kind: crate::activity::NewsKind) -> impl IntoElement {
+    use crate::activity::NewsKind as K;
+    let (p, t) = (rows.p, rows.tones);
+    let (glyph, color) = match kind {
+        K::HandedIn => (Icon::Inbox, p.accent),
+        K::Accepted | K::Merged => (Icon::Check, t.added),
+        K::Proposed => (Icon::Lightbulb, t.warning),
+        K::Waiting => (Icon::Clock, t.warning),
+        K::Cancelled => (Icon::XCircle, p.muted),
+        K::Reopened | K::Resumed | K::SentBack => (Icon::Retry, p.muted),
+        K::Left => (Icon::Users, p.muted),
+        K::CannotStart => (Icon::Alert, t.danger),
+        K::DeskSaved => (Icon::Pencil, p.muted),
+        K::YouTold => (Icon::Message, p.muted),
+        K::Stale => (Icon::Info, p.muted),
+    };
+    icon(glyph, 13., color)
 }
 
 /// A memo or a steer waiting for the member: on the right as your message
@@ -754,23 +1214,6 @@ pub fn escape_markdown(text: &str) -> String {
     out
 }
 
-/// Small buttons over a row, shown while the pointer is on it.
-fn toolbar(p: Palette, group: SharedString, under_header: bool, items: Vec<AnyElement>) -> impl IntoElement {
-    h_flex()
-        .absolute()
-        .right(px(if under_header { 0. } else { 4. }))
-        .top(px(if under_header { 10. } else { 6. }))
-        .gap(px(2.))
-        .p(px(2.))
-        .rounded(px(R_MD))
-        .bg(p.popover())
-        .border_1()
-        .border_color(p.hair)
-        .invisible()
-        .group_hover(group, |s| s.visible())
-        .children(items)
-}
-
 /// An icon over a row (copy, ask again), named in its tooltip.
 fn tool_button(p: Palette, id: (&'static str, u64), glyph: Icon, label: &'static str, on_click: impl Fn(&mut Window, &mut App) + 'static) -> impl IntoElement {
     let b = div()
@@ -787,179 +1230,90 @@ fn tool_button(p: Palette, id: (&'static str, u64), glyph: Icon, label: &'static
     tip(b, p, label, None)
 }
 
-/// A run of tool steps: each with how it ended, how long it took, and — open
-/// beneath it — a command's output or an edit's change.
-fn steps(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mut App) -> AnyElement {
-    let p = rows.p;
-    let reduce = cx.reduce_motion();
-    let _ = window;
-    v_flex()
-        .font_family(MONO)
-        .text_size(px(12.5))
-        .line_height(px(20.))
-        .text_color(p.muted)
-        .children(crate::convo::run_rows(lines, rows.expanded).into_iter().enumerate().map(|(n, r)| match r {
-            RunRow::Line(line) => {
-                let at = lines.iter().position(|l| std::ptr::eq(l, line)).unwrap_or(n) as u32;
-                step(rows, key, at, line, reduce)
-            }
-            RunRow::Folded(hidden) => {
-                let handle = rows.handle.clone();
-                h_flex()
-                    .id(("unfold", key << 4 | n as u64))
-                    .gap_2()
-                    .cursor_pointer()
-                    .hover(move |s| s.text_color(p.text2))
-                    .on_click(move |_, _, cx| {
-                        handle.update(cx, |shell, cx| shell.toggle_folds(cx)).ok();
-                    })
-                    .child(div().w(px(14.)).flex_none().child("⋮"))
-                    .child(t!("chat.more_steps", hidden = hidden))
-                    .into_any_element()
-            }
-        }))
-        .into_any_element()
-}
-
-fn step(rows: &Rows, key: u64, at: u32, line: &ToolLine, reduce: bool) -> AnyElement {
-    let p = rows.p;
-    let t = rows.tones;
-    let mark: AnyElement = match line.status {
-        Status::Running if !reduce => Spinner::new().with_size(px(11.)).color(Hsla::from(p.muted)).into_any_element(),
-        Status::Running => div().child("◌").into_any_element(),
-        Status::Done => div().text_color(if line.edits { p.accent } else { t.added }).child("✓").into_any_element(),
-        Status::Failed => div().text_color(t.danger).child("✗").into_any_element(),
-        Status::Unknown => div().text_color(if line.edits { p.accent } else { p.muted }).child(if line.edits { "✎" } else { "·" }).into_any_element(),
+/// Three dots that pulse while a reply streams, over the composer.
+fn pulse_pill(p: Palette) -> impl IntoElement {
+    let dot = move |n: usize| {
+        div().size(px(5.)).rounded_full().bg(p.muted).with_animation(
+            ("pulse-dot", n),
+            Animation::new(std::time::Duration::from_millis(1200)).repeat(),
+            move |d, t| {
+                // Each dot a third of the way behind the one before.
+                let phase = (t - n as f32 / 3.).rem_euclid(1.);
+                let lift = (phase * std::f32::consts::TAU).sin().max(0.);
+                d.opacity(0.35 + 0.65 * lift)
+            },
+        )
     };
-    let failed = line.status == Status::Failed;
+    div().absolute().bottom(px(12.)).left_0().right_0().flex().justify_center().child(
+        h_flex()
+            .id("replying")
+            .h(px(24.))
+            .px_3()
+            .gap(px(4.))
+            .items_center()
+            .rounded_full()
+            .bg(p.popover())
+            .border_1()
+            .border_color(p.hair)
+            .shadow(motion::float_shadow(0.5))
+            .children((0..3).map(dot)),
+    )
+}
+
+/// The ticket opened beside the conversation: back, its number and title, to
+/// the board, close; then what the board's peek shows of it.
+fn side_panel(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
+    let id = *shell.chat.side.last()?;
+    let p = shell.palette;
+    let ticket = shell.model.tickets.iter().find(|t| t.id == id)?;
+    let button = |name: &'static str, glyph: Icon, label: &'static str| {
+        let b = div().id(name).size(px(26.)).flex().flex_none().items_center().justify_center().rounded(px(R_SM)).cursor_pointer().hover(move |s| s.bg(p.wash)).child(icon(glyph, ICON_SM, p.text2));
+        tip(b, p, label, None)
+    };
+    let back = (shell.chat.side.len() > 1).then(|| button("side-back", Icon::ArrowLeft, t!("chat.side_back")).on_click(cx.listener(|this, _, _, cx| this.side_back(cx))));
     let head = h_flex()
-        .gap_2()
-        .items_center()
-        .when(line.edits, |l| l.text_color(p.text2))
-        .child(div().w(px(14.)).flex_none().flex().justify_center().child(mark))
-        .child(div().w(px(52.)).flex_none().child(crate::convo::verb_word(&line.verb).to_owned()))
-        .child(div().min_w_0().flex_1().overflow_hidden().child(SelectableText::new(("step", key << 8 | at as u64), line.text())))
-        .children(line.exit.filter(|_| failed).map(|code| div().flex_none().px_1().rounded(px(4.)).bg(t.danger_bg).text_color(t.danger).child(t!("chat.exit_code", code = code))))
-        .children(line.ms.filter(|_| line.status != Status::Running).map(|ms| div().flex_none().text_color(p.muted).child(tools::duration(ms))));
-    let output = line.output.as_ref().map(|(text, skipped)| output_box(rows, key, at, text, *skipped, failed));
-    let diff = line.diff.as_deref().and_then(tools::diff_card).map(|card| diff_card(rows, key, at, card, line.path.as_deref()));
-    v_flex().child(head).children(output).children(diff).into_any_element()
-}
-
-/// A command's output: its last lines, the rest a click away.
-fn output_box(rows: &Rows, key: u64, at: u32, text: &str, skipped: u32, failed: bool) -> AnyElement {
-    let p = rows.p;
-    let t = rows.tones;
-    let part = PART_OUTPUT + at;
-    let open = rows.opened.contains(&(key, part));
-    let all: Vec<&str> = text.lines().collect();
-    let (shown, before) = if open { (all.clone(), skipped as usize) } else { tools::output_preview(text, skipped) };
-    let more = all.len() > shown.len() || open && all.len() > tools::OUTPUT_PREVIEW;
-    let handle = rows.handle.clone();
-    v_flex()
-        .ml(px(22.))
-        .mt_1()
-        .mb_1()
+        .h(px(44.))
+        .flex_none()
         .px_3()
-        .py(px(6.))
-        .rounded(px(6.))
-        .bg(if failed { t.danger_bg } else { p.code_bg })
-        .border_1()
-        .border_color(if failed { Rgba { a: 0.35, ..t.danger } } else { p.hair })
-        .text_size(px(12.))
-        .line_height(px(18.))
-        .text_color(if failed { t.danger } else { p.text2 })
-        .when(before > 0, |col| col.child(div().text_color(p.muted).child(t!("chat.output_before", count = before))))
-        .child(SelectableText::new(("output", key << 8 | at as u64), shown.join("\n")))
-        .when(more, |col| {
-            col.child(
-                div()
-                    .id(("output-more", key << 8 | at as u64))
-                    .pt_1()
-                    .text_color(p.accent)
-                    .cursor_pointer()
-                    .child(if open { t!("chat.output_less").to_owned() } else { t!("chat.output_more", count = all.len()) })
-                    .on_click(move |_, _, cx| {
-                        handle.update(cx, |shell, cx| shell.chat_toggle(key, part, cx)).ok();
-                    }),
-            )
-        })
-        .into_any_element()
-}
-
-/// An edit's change as a card: the file, what came and went, the first lines.
-fn diff_card(rows: &Rows, key: u64, at: u32, card: tools::DiffCard, path: Option<&str>) -> AnyElement {
-    let p = rows.p;
-    let t = rows.tones;
-    let part = PART_DIFF + at;
-    let open = rows.opened.contains(&(key, part));
-    let hidden = card.hidden();
-    let shown: Vec<crate::diffs::Line> = if open { card.lines.clone() } else { card.preview().to_vec() };
-    let full = path.map_or_else(|| card.path.clone(), str::to_owned);
-    // The chip names the file; beside it, the folder it is in.
-    let shown_path = std::path::Path::new(&relative(&full, &rows.base)).parent().map(|d| d.display().to_string()).filter(|d| !d.is_empty()).map(|d| format!("{d}/")).unwrap_or_default();
-    let chip = plugins::file_chip(p, ("diff-file", key << 8 | at as u64), std::path::Path::new(&full), None, &full, px(12.));
-    let handle = rows.handle.clone();
-    v_flex()
-        .ml(px(22.))
-        .mt_1()
-        .mb_1()
-        .rounded(px(6.))
-        .border_1()
+        .gap_1()
+        .items_center()
+        .border_b_1()
         .border_color(p.hair)
-        .overflow_hidden()
+        .children(back)
         .child(
             h_flex()
-                .px_2()
-                .py(px(4.))
+                .min_w_0()
+                .flex_1()
+                .px_1()
                 .gap_2()
-                .bg(p.code_bg)
-                .border_b_1()
-                .border_color(p.hair)
-                .child(chip)
-                .child(div().min_w_0().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(p.muted).child(shown_path))
-                .child(div().text_color(t.added).child(format!("+{}", card.added)))
-                .child(div().text_color(t.removed).child(format!("−{}", card.removed))),
+                .items_baseline()
+                .text_size(px(SMALL))
+                .child(div().flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
+                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(FontWeight::SEMIBOLD).child(ticket.title.clone())),
         )
-        .children(shown.into_iter().map(move |l| {
-            let (sign, bg, color) = match l.kind {
-                Kind::Add => ("+", Some(t.added_bg), p.text),
-                Kind::Del => ("−", Some(t.removed_bg), p.text2),
-                Kind::Hunk => ("", Some(p.code_bg), p.muted),
-                Kind::Note => ("", None, p.muted),
-                Kind::Context => (" ", None, p.muted),
-            };
-            h_flex()
-                .px_2()
-                .text_size(px(12.))
-                .line_height(px(18.))
-                .when_some(bg, |row, bg| row.bg(bg))
-                .text_color(color)
-                .child(div().w(px(14.)).flex_none().text_color(match l.kind {
-                    Kind::Add => t.added,
-                    Kind::Del => t.removed,
-                    _ => p.muted,
-                }).child(sign))
-                .child(div().min_w_0().flex_1().overflow_hidden().whitespace_nowrap().child(if l.text.is_empty() { " ".to_owned() } else { l.text.replace('\t', "    ") }))
+        .child(button("side-expand", Icon::Expand, t!("chat.side_expand")).on_click(cx.listener(move |this, _, _, cx| {
+            this.side_close(cx);
+            this.open_ticket(id, cx);
+        })))
+        .child(button("side-close", Icon::X, t!("chat.side_close")).on_click(cx.listener(|this, _, _, cx| {
+            this.side_close(cx);
+        })));
+    let panel = v_flex()
+        .id("side-panel")
+        .w(px(SIDE))
+        .flex_none()
+        .h_full()
+        .bg(p.bg)
+        .border_l_1()
+        .border_color(p.hair)
+        .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+            if event.keystroke.key == "escape" && this.side_close(cx) {
+                cx.stop_propagation();
+            }
         }))
-        .when(hidden > 0 || open, |col| {
-            col.child(
-                div()
-                    .id(("diff-more", key << 8 | at as u64))
-                    .px_2()
-                    .py(px(3.))
-                    .border_t_1()
-                    .border_color(p.hair)
-                    .text_size(px(12.))
-                    .text_color(p.accent)
-                    .cursor_pointer()
-                    .child(if open { t!("chat.diff_less").to_owned() } else { t!("chat.diff_more", count = hidden) })
-                    .on_click(move |_, _, cx| {
-                        handle.update(cx, |shell, cx| shell.chat_toggle(key, part, cx)).ok();
-                    }),
-            )
-        })
-        .into_any_element()
+        .child(head)
+        .child(div().flex_1().min_h_0().child(super::peek::side(shell, id, cx)));
+    Some(motion::fade(panel, "side-in", motion::BASE))
 }
 
 /// ⌘F's bar over the conversation: the words, how many, up, down, close.
@@ -1037,6 +1391,41 @@ pub fn markdown(p: Palette, id: (&'static str, u64), text: &str, size: f32, line
 }
 
 impl Shell {
+    /// Open or close the group of calls at row `ix`, or its call `call` (the
+    /// snapshot script's).
+    #[cfg_attr(not(feature = "snapshot"), allow(dead_code))]
+    pub fn chat_turn(&mut self, ix: usize, call: Option<u32>, cx: &mut Context<Self>) {
+        let row = self.chat.serial << 24 | ix as u64;
+        let part = match (call, self.chat.blocks.get(ix)) {
+            (Some(n), _) => PART_ROW + n,
+            (None, Some(Block::Thought { .. })) => PART_THOUGHT,
+            (None, Some(Block::News(_))) => PART_NEWS,
+            _ => PART_GROUP,
+        };
+        self.chat_toggle(row, part, cx);
+    }
+
+    /// Open `ticket` beside the conversation.
+    pub fn side_open(&mut self, ticket: u32, cx: &mut Context<Self>) {
+        self.chat.side.retain(|t| *t != ticket);
+        self.chat.side.push(ticket);
+        cx.notify();
+    }
+
+    /// Back to the ticket shown before.
+    pub fn side_back(&mut self, cx: &mut Context<Self>) {
+        self.chat.side.pop();
+        cx.notify();
+    }
+
+    /// Put the side panel away; whether it was there.
+    pub fn side_close(&mut self, cx: &mut Context<Self>) -> bool {
+        let was = !self.chat.side.is_empty();
+        self.chat.side.clear();
+        cx.notify();
+        was
+    }
+
     pub fn toggle_folds(&mut self, cx: &mut Context<Self>) {
         self.chat.expanded = !self.chat.expanded;
         self.chat.sync(&self.model, cx);
@@ -1124,10 +1513,13 @@ impl Shell {
         cx.notify();
     }
 
-    /// Escape: the lightbox goes, then the find bar.
+    /// Escape: the lightbox goes, then the find bar, then the side panel.
     pub fn chat_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.chat.gallery.take().is_some() || self.chat.lightbox.take().is_some() {
             cx.notify();
+            return true;
+        }
+        if !self.chat.find.open && self.side_close(cx) {
             return true;
         }
         if self.chat.find.open {
@@ -1166,7 +1558,7 @@ pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
 
 #[cfg(test)]
 mod tests {
-    use super::{Block, escape_markdown, find_hits, occurrences};
+    use super::{Block, escape_markdown, find_hits, occurrences, turn_ends};
 
     #[test]
     fn your_words_show_as_typed() {
@@ -1182,12 +1574,21 @@ mod tests {
     fn find_counts_every_match_by_row() {
         let blocks = vec![
             Block::User("Fix the header".into()),
-            Block::Reply { text: "The header and the HEADER.".into(), first: true, live: false },
+            Block::Reply { text: "The header and the HEADER.".into(), first: true, live: false, worked: None },
             Block::Thought { n: 0, secs: 2, text: "header".into() },
             Block::Note("footer".into()),
         ];
         assert_eq!(find_hits(&blocks, "header"), [(0, 0), (1, 0), (1, 1)]);
         assert_eq!(find_hits(&blocks, "  "), []);
         assert_eq!(occurrences("A header, a Header", "header"), [2..8, 12..18]);
+    }
+
+    #[test]
+    fn the_actions_go_under_the_reply_that_ends_a_turn() {
+        let reply = |t: &str| Block::Reply { text: t.into(), first: false, live: false, worked: None };
+        let blocks = vec![Block::User("go".into()), reply("looking"), Block::Steps(vec![]), reply("done"), Block::User("more".into()), reply("ok"), Block::Note("n".into())];
+        let mut ends: Vec<usize> = turn_ends(&blocks).into_iter().collect();
+        ends.sort();
+        assert_eq!(ends, [3, 5]);
     }
 }

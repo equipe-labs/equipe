@@ -11,7 +11,7 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     Chosen,
     [
-        ArrowLeft, ArrowRight, ArrowUp, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleCheck, Clock, Copy, Eraser, ExternalLink, Folder, Globe, Info, Keyboard, Laptop, Locate, Mic, Minimize2, Paperclip, Plus, RotateCcw, RotateCw, Search, Server, Settings, ShieldCheck, Smartphone, SquareSlash, TriangleAlert, Users, X
+        ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, FileText, Folder, Globe, Inbox, Info, Keyboard, Laptop, Lightbulb, Locate, Maximize2, MessageSquare, Mic, Minimize2, Paperclip, Pencil, Plus, RotateCcw, RotateCw, Search, Server, Settings, ShieldCheck, Smartphone, SquareSlash, SquareTerminal, Ticket, TriangleAlert, Users, X
     ]
 );
 
@@ -57,6 +57,25 @@ pub enum Icon {
     /// The team.
     Users,
     X,
+    /// Something went wrong.
+    Alert,
+    /// A subagent.
+    Bot,
+    /// Reasoning.
+    Brain,
+    /// Open larger.
+    Expand,
+    FileText,
+    /// Handed in.
+    Inbox,
+    /// Proposed.
+    Lightbulb,
+    Message,
+    Pencil,
+    Terminal,
+    Ticket,
+    /// Cancelled.
+    XCircle,
     /// A phone (the equipe app), paired or to pair.
     Phone,
     /// Done: a phone paired.
@@ -67,7 +86,7 @@ pub enum Icon {
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 35] = [
+    pub const ALL: [Icon; 47] = [
         Icon::ArrowLeft,
         Icon::ArrowRight,
         Icon::ArrowUp,
@@ -99,6 +118,18 @@ impl Icon {
         Icon::Shield,
         Icon::Slash,
         Icon::Users,
+        Icon::Alert,
+        Icon::Bot,
+        Icon::Brain,
+        Icon::Expand,
+        Icon::FileText,
+        Icon::Inbox,
+        Icon::Lightbulb,
+        Icon::Message,
+        Icon::Pencil,
+        Icon::Terminal,
+        Icon::Ticket,
+        Icon::XCircle,
         Icon::X,
         Icon::Phone,
         Icon::Done,
@@ -138,6 +169,18 @@ impl Icon {
             Icon::Shield => "icons/shield-check.svg",
             Icon::Users => "icons/users.svg",
             Icon::Slash => "icons/square-slash.svg",
+            Icon::Alert => "icons/circle-alert.svg",
+            Icon::Bot => "icons/bot.svg",
+            Icon::Brain => "icons/brain.svg",
+            Icon::Expand => "icons/maximize-2.svg",
+            Icon::FileText => "icons/file-text.svg",
+            Icon::Inbox => "icons/inbox.svg",
+            Icon::Lightbulb => "icons/lightbulb.svg",
+            Icon::Message => "icons/message-square.svg",
+            Icon::Pencil => "icons/pencil.svg",
+            Icon::Terminal => "icons/square-terminal.svg",
+            Icon::Ticket => "icons/ticket.svg",
+            Icon::XCircle => "icons/circle-x.svg",
             Icon::X => "icons/x.svg",
             Icon::Phone => "icons/smartphone.svg",
             Icon::Done => "icons/circle-check.svg",

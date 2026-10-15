@@ -3,7 +3,10 @@
 //! outcomes (output, exit codes, an edit's change), and replies that use
 //! everything a conversation draws: headings, lists, tasks, links and file
 //! paths, callouts, code in many languages, a long block, a diff, a wide
-//! table, CSV, math, a Mermaid diagram, images.
+//! table, CSV, math, a Mermaid diagram, images. `torture 6` is a PM's busy
+//! turn — long shell output, calls one after another, a failure, an edit,
+//! a comment, a subagent, news; `torture 7` holds a command running for a
+//! few seconds, to see a call under way.
 
 use std::time::Duration;
 
@@ -214,6 +217,17 @@ pub async fn turn(session: SessionId, part: usize, events: broadcast::Sender<Eve
         2 => stream(session, PART2, &events, seconds).await,
         3 => stream(session, &long_block(), &events, seconds).await,
         5 => stream(session, PART5, &events, seconds).await,
+        6 => activity(session, &events, seconds).await,
+        7 => {
+            send(tool(session, "Read", &format!("{SITE}/src/main.rs")));
+            pause(100).await;
+            send(done(session, "Read", &format!("{SITE}/src/main.rs"), ok(30)));
+            send(tool(session, "Bash", "cargo build --release -p equipe-desktop"));
+            pause(6000).await;
+            send(done(session, "Bash", "cargo build --release -p equipe-desktop", ToolOutcome { ok: true, exit: Some(0), ms: Some(6000), output: "   Compiling equipe-desktop v0.38.1
+    Finished `release` profile [optimized] target(s) in 6.02s".into(), ..Default::default() }));
+            stream(session, "빌드가 끝났습니다.", &events, seconds).await;
+        }
         _ => {
             write_picture();
             stream(session, PART4, &events, seconds).await;
@@ -222,6 +236,68 @@ pub async fn turn(session: SessionId, part: usize, events: broadcast::Sender<Eve
     let usage = Usage { input_tokens: Some(1200), output_tokens: Some(340), context_tokens: Some(420), context_window: Some(1000), ..Default::default() };
     send(Event::TurnEnded { session, outcome: TurnOutcome::Completed, usage: Some(usage) });
 }
+
+const PS: &str = "/usr/local/bin/equipe daemon --squad demo";
+
+/// A PM's busy turn, as the person saw it: a wall of shell output, reads, a
+/// search, a failing test, an edit, a comment on a ticket, a subagent, then
+/// news from the board and the reply.
+async fn activity(session: SessionId, events: &broadcast::Sender<Event>, seconds: f32) {
+    let send = |e: Event| {
+        let _ = events.send(e);
+    };
+    for thought in ["데몬이 두 번 떠 있는지 보고, ", "T-47 진행 상황을 확인하겠습니다."] {
+        send(Event::Thinking { session, text: thought.into() });
+        pause(500).await;
+    }
+    stream(session, "데몬 상태부터 확인해 보겠습니다.", events, seconds / 4.).await;
+    let ps = "ps -axo pid,lstart,command | grep -E 'equipe (daemon|agent)' | grep -v grep";
+    send(tool(session, "Bash", ps));
+    pause(150).await;
+    let mut lines: Vec<String> = (0..24).map(|n| format!("{} Wed Oct 15 22:{:02}:11 2026 {PS} --member m{n}", 4100 + n * 7, n)).collect();
+    lines.push("4321 Wed Oct 15 23:01:52 2026 claude -p --append-system-prompt You are the PM of squad demo. You plan work as tickets, hand it to members, review what they hand in…".into());
+    lines.push("4388 Wed Oct 15 23:02:03 2026 equipe agent --squad demo --member backend".into());
+    let (output, skipped) = ToolOutcome::tail(&lines.join("\n"));
+    send(done(session, "Bash", ps, ToolOutcome { ok: true, exit: Some(0), ms: Some(300), output, skipped, diff: None }));
+    for file in ["daemon.log", "src/runtime.rs"] {
+        send(tool(session, "Read", &format!("{SITE}/{file}")));
+        pause(80).await;
+        send(done(session, "Read", &format!("{SITE}/{file}"), ok(25)));
+    }
+    send(tool(session, "Grep", "fn brief_pm"));
+    pause(80).await;
+    send(done(session, "Grep", "fn brief_pm", ok(60)));
+    send(tool(session, "Bash", "cargo test -p equipe-core runtime::brief"));
+    pause(300).await;
+    let failure = "running 4 tests\ntest runtime::brief::once ... ok\ntest runtime::brief::twice ... FAILED\n\nfailures:\n---- runtime::brief::twice stdout ----\nthread 'runtime::brief::twice' panicked at crates/core/src/runtime.rs:2501:9:\nassertion `left == right` failed\n  left: 2\n right: 1\n\nerror: test failed, to rerun pass `-p equipe-core --lib`";
+    let (output, skipped) = ToolOutcome::tail(failure);
+    send(done(session, "Bash", "cargo test -p equipe-core runtime::brief", ToolOutcome { ok: false, exit: Some(101), ms: Some(8_200), output, skipped, diff: None }));
+    send(tool(session, "Edit", &format!("{SITE}/src/runtime.rs")));
+    pause(100).await;
+    let diff = format!("diff --git a/{SITE}/src/runtime.rs b/{SITE}/src/runtime.rs\n--- a\n+++ b\n@@ -2496,7 +2496,8 @@\n         let shown = self.said(news, &args);\n-        self.brief_pm(&squad, briefing, Some(shown));\n-        self.brief_pm(&squad, briefing, None);\n+        if self.pm_of(&squad) != Some(id) {{\n+            self.brief_pm(&squad, briefing, Some(shown));\n+        }}\n     }}\n");
+    send(done(session, "Edit", &format!("{SITE}/src/runtime.rs"), ToolOutcome { ok: true, ms: Some(70), diff: Some(diff), ..Default::default() }));
+    send(tool(session, "Bash", "cargo test -p equipe-core runtime::brief"));
+    pause(200).await;
+    send(done(session, "Bash", "cargo test -p equipe-core runtime::brief", ToolOutcome { ok: true, exit: Some(0), ms: Some(7_900), output: "running 4 tests\ntest result: ok. 4 passed; 0 failed".into(), ..Default::default() }));
+    let comment = "T-47 · PM: 갤러리 스와이프는 좋습니다. 확대했을 때 이미지가 화면 밖으로 밀리는 문제만 고쳐 주세요 — 모바일 Safari에서 재현됩니다. 고친 뒤 스크린샷 두 장(확대 전/후)을 붙여 주세요.";
+    send(tool(session, "mcp__equipe__comment", comment));
+    pause(80).await;
+    send(done(session, "mcp__equipe__comment", comment, ok(40)));
+    send(tool(session, "Task", "사이드바 접기: 토글 위치 고정"));
+    pause(200).await;
+    send(done(session, "Task", "사이드바 접기: 토글 위치 고정", ok(42_000)));
+    for news in [
+        "backend handed in T-71 for your review · 요청 수 제한 미들웨어.",
+        "You accepted T-58 · 앱 아이콘 후보 세 가지.",
+        "designer이(가) T-64을(를) 제안했습니다: 빈 화면 일러스트 세트",
+        "frontend이(가) T-42을(를) 검토해 달라고 넘겼습니다 · 체크아웃 페이지 결제 수단 선택.",
+    ] {
+        send(Event::Notice { session, text: news.into() });
+    }
+    stream(session, ACTIVITY, events, seconds).await;
+}
+
+const ACTIVITY: &str = "## 정리\n\n데몬은 하나만 떠 있고, PM 브리핑이 두 번 가던 문제는 `src/runtime.rs`에서 고쳤습니다. 로그는 `daemon.log`에 있고, 설정 이름은 `brief_pm` 그대로입니다.\n\n### 바뀐 점\n\n1. PM이 자기 일을 넘길 때는 브리핑을 보내지 않습니다\n2. 테스트 `runtime::brief::twice`가 이제 통과합니다 — 한 번 실패한 뒤 고쳐서 다시 돌렸고, 네 개 모두 통과했습니다\n\n---\n\n**T-47**에는 확대 문제를 고쳐 달라고 댓글을 남겼습니다.";
 
 /// A picture for the reply to show: a soft gradient with a frame.
 fn write_picture() {

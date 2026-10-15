@@ -14,6 +14,7 @@ use gpui_kit::*;
 
 use super::links::{self, Link};
 use super::{Open, ShellRef, base_dir, code, is_dark, open_file, plugins, prose, stream, with_shell};
+use crate::icons::{Icon, icon};
 use crate::theme::{MONO, Palette};
 
 /// How a text view's text looks: its size and line height, its colour, and
@@ -33,8 +34,8 @@ const COPIED_FOR: Duration = Duration::from_millis(1500);
 pub fn style(p: Palette, look: &Look) -> TextViewStyle {
     let to_hsla = |c: Rgba| -> Hsla { c.into() };
     let size = look.size;
-    // Room above the code for its header (language, copy).
-    let code_block = StyleRefinement::default().bg(to_hsla(p.code_bg)).border_1().border_color(to_hsla(p.hair)).rounded(px(8.)).pt(px(30.)).text_size(px(12.5)).line_height(px(19.));
+    // Borderless, a quiet fill; room above the code for its header (language, copy).
+    let code_block = StyleRefinement::default().bg(to_hsla(p.code_bg)).rounded(px(10.)).pt(px(30.)).text_size(px(12.5)).line_height(px(19.));
     let mut table = StyleRefinement::default().bg(to_hsla(p.code_bg)).border_color(to_hsla(p.hair)).text_color(to_hsla(p.text)).rounded(px(8.));
     // A wide table scrolls sideways instead of squeezing its columns.
     table.overflow.x = Some(Overflow::Scroll);
@@ -55,7 +56,15 @@ pub fn style(p: Palette, look: &Look) -> TextViewStyle {
         .with_table_head(table_head)
         .with_table_cell(table_cell)
         .with_inline_code(HighlightStyle { color: Some(to_hsla(p.accent)), background_color: Some(to_hsla(p.code_bg)), ..Default::default() })
-        .with_heading(move |level| StyleRefinement::default().text_size(px(if level <= 2 { size + 2. } else { size })).font_weight(FontWeight::SEMIBOLD))
+        // A conversation is not a document: headings are bold, barely larger.
+        .with_heading(move |level| {
+            let grow = match level {
+                1 => 2.,
+                2 => 1.,
+                _ => 0.,
+            };
+            StyleRefinement::default().text_size(px(size + grow)).font_weight(FontWeight::SEMIBOLD)
+        })
         .with_dark(is_dark(&p))
 }
 
@@ -95,13 +104,14 @@ pub fn configure(view: TextView, p: Palette, look: Look, scope: u64, full: Arc<H
                 .child(
                     div()
                         .id("copy")
-                        .px_2()
+                        .size(px(24.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .rounded(px(5.))
-                        .text_size(px(12.))
-                        .text_color(if is_copied { text } else { muted })
                         .cursor_pointer()
-                        .hover(move |s| s.bg(wash).text_color(text))
-                        .child(if is_copied { t!("render.copied") } else { t!("chat.copy") })
+                        .hover(move |s| s.bg(wash))
+                        .child(icon(if is_copied { Icon::Check } else { Icon::Copy }, 13., if is_copied { text } else { muted }))
                         .on_click(move |_, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(whole.clone()));
                             copied.update(cx, |at, cx| {

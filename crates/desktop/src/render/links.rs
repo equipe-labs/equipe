@@ -157,28 +157,6 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The file name a chip shows, with its line: `main.rs:42`.
-pub fn chip_label(path: &Path, line: Option<u32>) -> String {
-    let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-    match line {
-        Some(n) => format!("{name}:{n}"),
-        None => name,
-    }
-}
-
-/// What kind of file, for its chip's mark.
-pub fn file_mark(path: &Path) -> &'static str {
-    if path.as_os_str().to_string_lossy().ends_with('/') || path.extension().is_none() && path.is_dir() {
-        return "▸";
-    }
-    match path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase().as_str() {
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "heic" | "tiff" => "▣",
-        "md" | "txt" | "pdf" | "doc" | "docx" | "rtf" => "≡",
-        "json" | "toml" | "yaml" | "yml" | "lock" | "ini" | "env" | "plist" => "⚙",
-        _ => "‹›",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,6 +201,5 @@ mod tests {
         assert_eq!(path_and_line("a.rs:7"), ("a.rs", Some(7)));
         assert_eq!(path_and_line("a.rs:7:2"), ("a.rs", Some(7)));
         assert_eq!(path_and_line("C:x"), ("C:x", None));
-        assert_eq!(chip_label(Path::new("/a/b/main.rs"), Some(4)), "main.rs:4");
     }
 }

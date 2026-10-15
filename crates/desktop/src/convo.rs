@@ -12,10 +12,9 @@ use std::time::{Duration, Instant};
 use equipe_core::protocol::{Entry, Event, SessionInfo, TicketId, ToolOutcome, Transcript, TurnOutcome};
 use equipe_core::t;
 
+use crate::activity::News;
 use crate::state::Clock;
 
-/// A run of tool lines longer than this folds to its first and last lines.
-pub const RUN_FOLDS_AT: usize = 6;
 /// How many targets a merged tool line names before it counts the rest.
 pub const TARGETS_SHOWN: usize = 3;
 
@@ -54,6 +53,8 @@ pub struct Convo {
     thinking: Option<(Instant, String)>,
     /// Reasoning that ended, by the number its line in the transcript carries.
     thoughts: Vec<String>,
+    /// Since when the call under way has run: its line counts the seconds.
+    step_since: Option<Instant>,
 }
 
 /// The transcript line where reasoning ended: `THOUGHT` + its number + `:` +
@@ -61,7 +62,8 @@ pub struct Convo {
 pub const THOUGHT: char = '\u{E000}';
 
 /// The transcript line where a turn ended: `WORKED` + its seconds + `:` + the
-/// time of day — worded when drawn, so in the language in use then.
+/// time of day + `@` + the unix second — worded when drawn, so in the
+/// language in use then.
 pub const WORKED: char = '\u{E001}';
 
 impl Convo {
@@ -81,6 +83,7 @@ impl Convo {
             working_since: None,
             thinking: None,
             thoughts: Vec::new(),
+            step_since: None,
         }
     }
 
@@ -115,6 +118,11 @@ impl Convo {
             self.end_thinking(now);
         }
         self.transcript.apply(event);
+        match event {
+            Event::ToolUse { .. } => self.step_since = Some(now),
+            Event::ToolResult { .. } | Event::TextDelta { .. } | Event::TurnEnded { .. } => self.step_since = None,
+            _ => {}
+        }
         match event {
             Event::SessionStarted { project, .. } => {
                 self.base = project.clone();
@@ -179,6 +187,11 @@ impl Convo {
         self.transcript.push_local(Entry::Note { text: format!("{THOUGHT}{}:{secs}", self.thoughts.len() - 1) });
     }
 
+    /// Since when the latest call has run, while it does.
+    pub fn step_since(&self) -> Option<Instant> {
+        self.step_since.filter(|_| self.working_since.is_some())
+    }
+
     /// What the reasoning numbered `n` was.
     pub fn thought(&self, n: usize) -> Option<&str> {
         self.thoughts.get(n).map(String::as_str)
@@ -239,7 +252,7 @@ impl Convo {
         if let Some(since) = self.working_since.take() {
             let took = now.saturating_duration_since(since);
             if took >= Duration::from_secs(1) {
-                self.transcript.push_local(Entry::Note { text: format!("{WORKED}{}:{}", took.as_secs(), at.hm()) });
+                self.transcript.push_local(Entry::Note { text: format!("{WORKED}{}:{}@{}", took.as_secs(), at.hm(), crate::state::now_unix()) });
             }
         }
     }
@@ -344,11 +357,13 @@ pub struct ToolLine {
     pub diff: Option<String>,
     /// The file it acts on, whole, for its chip.
     pub path: Option<String>,
+    /// What it acted on, whole: a command's every line, a comment's words.
+    pub full: Option<String>,
 }
 
 impl ToolLine {
     pub fn new(verb: impl Into<String>, targets: Vec<String>, edits: bool) -> Self {
-        Self { verb: verb.into(), targets, edits, status: Status::Unknown, ms: None, exit: None, output: None, diff: None, path: None }
+        Self { verb: verb.into(), targets, edits, status: Status::Unknown, ms: None, exit: None, output: None, diff: None, path: None, full: None }
     }
 
     /// `read  a.rs, b.rs, c.rs, +2` — what the line says after its mark.
@@ -378,32 +393,20 @@ impl ToolLine {
     }
 }
 
-/// What a run of steps shows: all of it, or its start and end around a fold.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RunRow<'a> {
-    Line(&'a ToolLine),
-    Folded(usize),
-}
-
-pub fn run_rows(run: &[ToolLine], expanded: bool) -> Vec<RunRow<'_>> {
-    if expanded || run.len() <= RUN_FOLDS_AT {
-        return run.iter().map(RunRow::Line).collect();
-    }
-    let (head, tail) = (3, 2);
-    let mut rows: Vec<RunRow<'_>> = run[..head].iter().map(RunRow::Line).collect();
-    rows.push(RunRow::Folded(run.len() - head - tail));
-    rows.extend(run[run.len() - tail..].iter().map(RunRow::Line));
-    rows
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
     User(String),
-    /// A reply; `first` when it opens the member's turn (its name heads it);
-    /// `live` while it is still streaming.
-    Reply { text: String, first: bool, live: bool },
+    /// A reply; `first` when it is the conversation's first (its speaker
+    /// named over it); `live` while it is still streaming; `worked`, when it
+    /// ended its turn: how long the turn took, and when.
+    Reply { text: String, first: bool, live: bool, worked: Option<Worked> },
+    /// A group of tool calls one after another (a failed one alone).
     Steps(Vec<ToolLine>),
+    /// equipe's news, one after another.
+    News(Vec<News>),
     Note(String),
+    /// A turn's end with no reply to end it.
+    Worked(Worked),
     /// Reasoning that ended: how long it took, and what it was.
     Thought { n: usize, secs: u64, text: String },
     /// Reasoning going on now: its latest line.
@@ -423,6 +426,8 @@ impl Block {
             // Your words as shown: without the attachments' tags.
             Block::User(t) | Block::Memo(t) | Block::Steering(t) => Some(crate::sent::parts(t).text),
             Block::Reply { text: t, .. } | Block::Note(t) => Some(t.clone()),
+            Block::News(lines) => Some(lines.iter().map(|n| n.text.clone()).collect::<Vec<_>>().join("\n")),
+            Block::Worked(_) => None,
             Block::Steps(lines) => Some(lines.iter().map(|l| format!("{} {}", verb_word(&l.verb), l.targets.join(" "))).collect::<Vec<_>>().join("\n")),
             Block::Error { message, .. } => Some(message.clone()),
             Block::Landed { branch, stat } => Some(format!("{branch}\n{stat}")),
@@ -437,18 +442,41 @@ fn thought_of(text: &str) -> Option<(usize, u64)> {
     Some((n.parse().ok()?, secs.parse().ok()?))
 }
 
-/// The line a turn's end leaves, worded now: `─ worked 1m 05s · 14:02`.
-fn worked_of(text: &str) -> Option<String> {
-    let (secs, at) = text.strip_prefix(WORKED)?.split_once(':')?;
-    Some(t!("chat.worked", took = elapsed(Duration::from_secs(secs.parse().ok()?)), at = at))
+/// How long a turn worked, and when it ended: the time of day it was then,
+/// and (kept by this app since it learned to) the moment, for "5분 전".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Worked {
+    pub secs: u64,
+    pub at: String,
+    pub unix: Option<u64>,
 }
 
-/// Gather entries into blocks: tool use into runs (merging looking-around
-/// lines), everything else one to one.
+impl Worked {
+    /// `1분 05초 작업함`.
+    pub fn took(&self) -> String {
+        t!("chat.worked_for", took = elapsed(Duration::from_secs(self.secs)))
+    }
+}
+
+/// A turn's end, as its transcript line keeps it: `WORKED` secs `:` hh:mm,
+/// then `@` unix seconds.
+fn worked_of(text: &str) -> Option<Worked> {
+    let rest = text.strip_prefix(WORKED)?;
+    let (rest, unix) = match rest.rsplit_once('@') {
+        Some((rest, unix)) => (rest, unix.parse().ok()),
+        None => (rest, None),
+    };
+    let (secs, at) = rest.split_once(':')?;
+    Some(Worked { secs: secs.parse().ok()?, at: at.to_owned(), unix })
+}
+
+/// Gather entries into blocks: tool use into groups (merging looking-around
+/// lines, a failed call on its own), news into runs, a turn's end onto the
+/// reply that ended it; everything else one to one.
 pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
     let mut blocks: Vec<Block> = Vec::new();
     let mut run: Vec<ToolLine> = Vec::new();
-    let mut after_reply = false;
+    let mut replied = false;
     for entry in entries {
         let entry = entry.as_ref();
         match entry {
@@ -471,14 +499,16 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
                 let outcome = outcome.as_deref();
                 let merges = matches!(verb.as_str(), "read" | "search" | "fetch" | "recall" | "browse");
                 match run.last_mut() {
-                    Some(line) if merges && line.verb == verb => {
+                    Some(line) if merges && line.verb == verb && line.status != Status::Failed && outcome.is_none_or(|o| o.ok) => {
                         if !shown.is_empty() && !line.targets.contains(&shown) {
                             line.targets.push(shown);
                         }
                         line.absorb(outcome);
                     }
                     _ => {
-                        let mut line = ToolLine::new(verb, if shown.is_empty() { Vec::new() } else { vec![shown] }, edits);
+                        // One line on screen: a command's first, the rest when opened.
+                        let first = shown.lines().next().unwrap_or_default().to_owned();
+                        let mut line = ToolLine::new(verb, if shown.is_empty() { Vec::new() } else { vec![first.clone()] }, edits);
                         if let Some(o) = outcome {
                             line.status = if o.ok { Status::Done } else { Status::Failed };
                             line.ms = o.ms;
@@ -487,6 +517,9 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
                             line.diff = o.diff.clone();
                         }
                         line.path = target.clone().filter(|_| matches!(tool.as_str(), "Read" | "Edit" | "MultiEdit" | "Write" | "NotebookEdit"));
+                        if line.path.is_none() && !shown.is_empty() {
+                            line.full = Some(shown);
+                        }
                         run.push(line);
                     }
                 }
@@ -495,34 +528,35 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
             _ => {}
         }
         if !run.is_empty() {
-            blocks.push(Block::Steps(std::mem::take(&mut run)));
+            blocks.extend(crate::activity::groups(std::mem::take(&mut run)).into_iter().map(Block::Steps));
         }
         match entry {
-            Entry::User { text } => {
-                after_reply = false;
-                blocks.push(Block::User(text.clone()));
-            }
+            Entry::User { text } => blocks.push(Block::User(text.clone())),
             Entry::Reply { text } => {
-                blocks.push(Block::Reply { text: text.clone(), first: !after_reply, live: false });
-                after_reply = true;
+                blocks.push(Block::Reply { text: text.clone(), first: !replied, live: false, worked: None });
+                replied = true;
             }
             Entry::Note { text } => match (thought_of(text), worked_of(text)) {
                 (Some((n, secs)), _) => blocks.push(Block::Thought { n, secs, text: String::new() }),
-                (None, Some(worked)) => blocks.push(Block::Note(worked)),
-                (None, None) => blocks.push(Block::Note(equipe_core::i18n::note(crate::i18n::lang(), text).into_owned())),
+                (None, Some(worked)) => match blocks.last_mut() {
+                    Some(Block::Reply { worked: slot, .. }) => *slot = Some(worked),
+                    _ => blocks.push(Block::Worked(worked)),
+                },
+                (None, None) => match crate::activity::news_of(text) {
+                    Some(news) => match blocks.last_mut() {
+                        Some(Block::News(run)) => run.push(news),
+                        _ => blocks.push(Block::News(vec![news])),
+                    },
+                    None => blocks.push(Block::Note(equipe_core::i18n::note(crate::i18n::lang(), text).into_owned())),
+                },
             },
             Entry::Error { message, next } => blocks.push(Block::Error { message: message.clone(), next: next.clone() }),
             Entry::Landed { branch, stat } => blocks.push(Block::Landed { branch: branch.clone(), stat: stat.clone() }),
             Entry::Tool { .. } | Entry::Thread { .. } => {}
         }
-        // Steps (and reasoning) between two replies don't make the second a new turn.
-        let thought = matches!(entry, Entry::Note { text } if text.starts_with(THOUGHT));
-        if !matches!(entry, Entry::Reply { .. }) && !thought {
-            after_reply = false;
-        }
     }
     if !run.is_empty() {
-        blocks.push(Block::Steps(run));
+        blocks.extend(crate::activity::groups(run).into_iter().map(Block::Steps));
     }
     blocks
 }
@@ -642,14 +676,14 @@ mod tests {
     fn streaming_joins_one_reply_and_a_tool_use_closes_it() {
         let mut c = convo(true);
         feed(&mut c, &[Event::UserMessage { session: 1, text: "hi".into() }, Event::TextDelta { session: 1, text: "Hel".into() }, Event::TextDelta { session: 1, text: "lo".into() }]);
-        assert_eq!(c.blocks(), vec![Block::User("hi".into()), Block::Reply { text: "Hello".into(), first: true, live: true }]);
+        assert_eq!(c.blocks(), vec![Block::User("hi".into()), Block::Reply { text: "Hello".into(), first: true, live: true, worked: None }]);
         feed(&mut c, &[tool("Read", "/work/site/a.rs"), Event::TextDelta { session: 1, text: "Done.".into() }]);
         let blocks = c.blocks();
         assert_eq!(blocks.len(), 4);
         let mut read = ToolLine::new("read", vec!["a.rs".into()], false);
         read.path = Some("/work/site/a.rs".into());
         assert_eq!(blocks[2], Block::Steps(vec![read]));
-        assert_eq!(blocks[3], Block::Reply { text: "Done.".into(), first: false, live: true }, "steps between replies are one turn");
+        assert_eq!(blocks[3], Block::Reply { text: "Done.".into(), first: false, live: true, worked: None }, "only the conversation's first reply names who speaks");
     }
 
     #[test]
@@ -675,19 +709,53 @@ mod tests {
         feed(&mut c, &[Event::UserMessage { session: 1, text: "go".into() }, tool("Bash", "cargo test"), tool("Read", "/work/site/a.rs")]);
         let Block::Steps(lines) = &c.blocks()[1] else { panic!() };
         assert!(lines.iter().all(|l| l.status == Status::Running), "unanswered while it works");
+        assert_eq!(crate::activity::status(lines), Status::Running);
+        // The command fails: it stands apart from the reads after it, so it stays in sight.
         feed(&mut c, &[done("Bash", "cargo test", false, "error[E0308]", None), tool("Read", "/work/site/b.rs"), done("Read", "/work/site/a.rs", true, "", None)]);
-        let Block::Steps(lines) = &c.blocks()[1] else { panic!() };
-        assert_eq!((lines[0].status, lines[0].exit, lines[0].output.clone()), (Status::Failed, Some(2), Some(("error[E0308]".into(), 0))));
-        assert_eq!(lines[1].status, Status::Running, "one read of the two still out");
+        let blocks = c.blocks();
+        let Block::Steps(failed) = &blocks[1] else { panic!() };
+        assert_eq!((failed.len(), failed[0].status, failed[0].exit, failed[0].output.clone()), (1, Status::Failed, Some(2), Some(("error[E0308]".into(), 0))));
+        let Block::Steps(reads) = &blocks[2] else { panic!("{blocks:?}") };
+        assert_eq!(reads[0].status, Status::Running, "one read of the two still out");
         feed(&mut c, &[done("Read", "/work/site/b.rs", true, "", None), tool("Edit", "/work/site/a.rs"), done("Edit", "/work/site/a.rs", true, "", Some("diff --git a/a b/a\n"))]);
-        let Block::Steps(lines) = &c.blocks()[1] else { panic!() };
-        assert_eq!((lines[1].status, lines[1].ms), (Status::Done, Some(3000)), "a merged line adds its steps up");
-        assert_eq!(lines[2].diff.as_deref(), Some("diff --git a/a b/a\n"));
-        assert_eq!(lines[2].path.as_deref(), Some("/work/site/a.rs"));
+        let Block::Steps(lines) = &c.blocks()[2] else { panic!() };
+        assert_eq!((lines[0].status, lines[0].ms), (Status::Done, Some(3000)), "a merged line adds its steps up");
+        assert_eq!(lines[1].diff.as_deref(), Some("diff --git a/a b/a\n"));
+        assert_eq!(lines[1].path.as_deref(), Some("/work/site/a.rs"));
+        assert_eq!(crate::activity::status(lines), Status::Done);
         // Turn over: what never answered is just a step.
         feed(&mut c, &[tool("Bash", "ls"), Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }]);
-        let Block::Steps(lines) = &c.blocks()[1] else { panic!() };
-        assert_eq!(lines[3].status, Status::Unknown);
+        let Block::Steps(lines) = &c.blocks()[2] else { panic!() };
+        assert_eq!(lines[2].status, Status::Unknown);
+    }
+
+    #[test]
+    fn a_long_command_shows_its_first_line_and_keeps_the_rest() {
+        let mut c = convo(false);
+        feed(&mut c, &[tool("Bash", "cat <<EOF > a\nhello\nEOF")]);
+        let Block::Steps(lines) = &c.blocks()[0] else { panic!() };
+        assert_eq!(lines[0].targets, ["cat <<EOF > a"]);
+        assert_eq!(lines[0].full.as_deref(), Some("cat <<EOF > a\nhello\nEOF"));
+        assert!(crate::activity::has_more(&lines[0]));
+    }
+
+    #[test]
+    fn news_lines_gather_and_other_notes_stay_notes() {
+        let mut c = convo(true);
+        feed(
+            &mut c,
+            &[
+                Event::Notice { session: 1, text: "backend handed in T-118 for your review · 주문 API.".into() },
+                Event::Notice { session: 1, text: "You accepted T-58 · 헤더.".into() },
+                Event::Notice { session: 1, text: "plain".into() },
+                Event::Notice { session: 1, text: "pm이(가) T-9을(를) 제안했습니다: 로그인".into() },
+            ],
+        );
+        let blocks = c.blocks();
+        let Block::News(run) = &blocks[0] else { panic!("{blocks:?}") };
+        assert_eq!(run.iter().map(|n| n.kind).collect::<Vec<_>>(), [crate::activity::NewsKind::HandedIn, crate::activity::NewsKind::Accepted]);
+        assert_eq!(blocks[1], Block::Note("plain".into()));
+        assert!(matches!(&blocks[2], Block::News(run) if run.len() == 1));
     }
 
     #[test]
@@ -701,23 +769,13 @@ mod tests {
         c.on_event(&Event::TextDelta { session: 1, text: "Done".into() }, t0 + Duration::from_secs(4), T);
         let blocks = c.blocks();
         assert_eq!(blocks[1], Block::Thought { n: 0, secs: 4, text: "First, the header.\nThen the footer.".into() });
-        assert_eq!(blocks[2], Block::Reply { text: "Done".into(), first: true, live: true }, "a thought doesn't start a new turn's header twice");
+        assert_eq!(blocks[2], Block::Reply { text: "Done".into(), first: true, live: true, worked: None });
     }
 
     #[test]
     fn a_tool_line_counts_the_targets_past_three() {
         let line = ToolLine::new("read", (1..=5).map(|n| format!("f{n}")).collect(), false);
         assert_eq!(line.text(), "f1, f2, f3, +2");
-    }
-
-    #[test]
-    fn a_long_run_folds_to_three_then_two_and_unfolds() {
-        let run: Vec<ToolLine> = (0..10).map(|n| ToolLine::new("run", vec![format!("c{n}")], false)).collect();
-        let rows = run_rows(&run, false);
-        assert_eq!(rows.len(), 6);
-        assert_eq!(rows[3], RunRow::Folded(5));
-        assert_eq!(run_rows(&run, true).len(), 10);
-        assert_eq!(run_rows(&run[..6], false).len(), 6, "six still fits");
     }
 
     #[test]
@@ -769,7 +827,17 @@ mod tests {
         c.on_event(&Event::UserMessage { session: 1, text: "go".into() }, t0, T);
         c.on_event(&Event::TextDelta { session: 1, text: "ok".into() }, t0, T);
         c.on_event(&Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }, t0 + Duration::from_secs(65), T);
-        assert!(matches!(c.blocks().last(), Some(Block::Note(t)) if t == "─ 1분 05초 작업함 · 14:02"), "{:?}", c.blocks());
+        let Some(Block::Reply { worked: Some(worked), .. }) = c.blocks().last().cloned() else { panic!("{:?}", c.blocks()) };
+        assert_eq!((worked.took(), worked.at.as_str()), ("1분 05초 작업함".to_owned(), "14:02"), "on the reply that ended the turn");
+        assert!(worked.unix.is_some());
+        // A turn ending on a step: a line of its own.
+        let mut steps = convo(true);
+        steps.on_event(&Event::UserMessage { session: 1, text: "go".into() }, t0, T);
+        steps.on_event(&tool("Bash", "ls"), t0, T);
+        steps.on_event(&Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }, t0 + Duration::from_secs(5), T);
+        assert!(matches!(steps.blocks().last(), Some(Block::Worked(w)) if w.secs == 5));
+        // Lines kept before the moment was: still read.
+        assert_eq!(worked_of("\u{E001}65:14:02"), Some(Worked { secs: 65, at: "14:02".into(), unix: None }));
         // A turn under a second says nothing.
         let mut quick = convo(true);
         quick.on_event(&Event::UserMessage { session: 1, text: "go".into() }, t0, T);
@@ -873,7 +941,7 @@ mod tests {
         assert!(c.is_pm);
         assert_eq!(c.queued, ["m"]);
         c.on_event(&Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }, now + Duration::from_secs(3), T);
-        assert!(c.blocks().iter().any(|b| matches!(b, Block::Note(t) if t.starts_with("─ 3초 작업함"))), "{:?}", c.blocks());
+        assert!(c.blocks().iter().any(|b| matches!(b, Block::Reply { worked: Some(w), .. } if w.took() == "3초 작업함")), "{:?}", c.blocks());
     }
 
     #[test]

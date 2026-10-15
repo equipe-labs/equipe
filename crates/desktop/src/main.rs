@@ -11,6 +11,7 @@ mod board;
 mod commands;
 mod diffs;
 mod compose;
+mod activity;
 mod convo;
 mod daemon;
 mod failure;
