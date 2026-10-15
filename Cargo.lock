@@ -2162,7 +2162,7 @@ dependencies = [
 
 [[package]]
 name = "equipe"
-version = "0.41.0"
+version = "0.43.0"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -2194,7 +2194,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-core"
-version = "0.41.0"
+version = "0.43.0"
 dependencies = [
  "base64 0.23.1",
  "equipe-protocol",
@@ -2210,7 +2210,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-desktop"
-version = "0.41.0"
+version = "0.43.0"
 dependencies = [
  "base64 0.23.1",
  "block2 0.6.2",
@@ -2240,7 +2240,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-protocol"
-version = "0.41.0"
+version = "0.43.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2248,7 +2248,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-providers"
-version = "0.41.0"
+version = "0.43.0"
 dependencies = [
  "base64 0.23.1",
  "dirs 7.0.0",
@@ -2922,8 +2922,6 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cf698677b253118459f552fe15513858c669d79a25837a94e480db2ae330050"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -3069,8 +3067,6 @@ dependencies = [
 [[package]]
 name = "gpui-pre"
 version = "0.3.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7f0bc3ebba070f8981b3f8e905a12f47d27794a30d029e59cdb9edf7a4b3360"
 dependencies = [
  "accesskit",
  "anyhow",

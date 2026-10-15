@@ -1333,7 +1333,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let composer = &shell.composer;
     v_flex()
         .w_full()
-        .max_w(px(720.))
+        .max_w(px(crate::theme::COLUMN))
         .flex_none()
         .pb_3()
         // Lined up with the text in the card: its padding and border.
@@ -1387,7 +1387,7 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                             .appearance(false)
                             .bordered(false)
                             .text_size(px(crate::theme::BODY))
-                            .line_height(px(24.))
+                            .line_height(px(crate::theme::BODY_LINE))
                             .aria_label(composer.placeholder.clone())
                             .token(move |token, _, _| {
                                 div()
@@ -1411,7 +1411,7 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                 .gap_2()
                 .items_center()
                 .text_size(px(crate::theme::BODY))
-                .line_height(px(24.))
+                .line_height(px(crate::theme::BODY_LINE))
                 .child(div().size(px(8.)).flex_none().rounded_full().bg(p.danger()).with_animation("listening", Animation::new(Duration::from_millis(1200)).repeat().with_easing(pulsating_between(0.35, 1.)), |d, t| d.opacity(t)))
                 .child(div().min_w_0().text_color(p.muted).italic().child(if heard.is_empty() { t!("composer.dictation_listening").to_owned() } else { heard }))
         }))
@@ -1923,7 +1923,7 @@ fn hint_line(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement 
         (true, false) => t!("composer.hint_memo"),
         (false, _) => t!("composer.hint_stop"),
     };
-    Some(motion::fade(h_flex().h(px(24.)).px(px(INSET + 1.)).items_center().text_size(px(11.5)).text_color(p.muted).child(hint), "hint-in", motion::BASE))
+    Some(motion::fade(h_flex().h(px(24.)).px(px(INSET + 1.)).items_center().text_size(px(crate::theme::META)).text_color(p.muted).child(hint), "hint-in", motion::BASE))
 }
 
 /// Who the line goes to, as the bar shows it: always someone, never a guess.

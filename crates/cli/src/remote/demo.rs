@@ -121,6 +121,7 @@ fn ticket(id: TicketId, title: &str, status: TicketStatus, who: Option<&str>, no
         created_by: "pm".into(),
         note: note.map(str::to_owned),
         asks: vec![],
+        updated_at: None,
     }
 }
 

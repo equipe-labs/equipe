@@ -6,7 +6,8 @@
 //! Korean reply — Markdown with a list, a table, a code block and `T-12` —
 //! between tool steps. `interrupt` ends the turn at once; `focus` moves the PM's
 //! thread; accept, merge, reopen, resume and cancel move tickets as the daemon
-//! would. `FAKE_EMPTY=1` starts with nothing waiting for the person.
+//! would. `FAKE_EMPTY=1` starts with nothing waiting for the person;
+//! `FAKE_BUSY=1` adds four members at work in web and more finished today.
 //!
 //! ```text
 //! export EQUIPE_HOME=$(mktemp -d) EQUIPE_SQUAD=demo
@@ -252,6 +253,28 @@ fn board() -> Vec<Ticket> {
     if your_turn().is_some() {
         out.push(turn_ticket());
     }
+    if busy() {
+        out.extend(BUSY.iter().map(|(id, _, who, title)| ticket(*id, "in_progress", "web", who, title, "", &[], None, None)));
+        out.extend([
+            ticket(84, "waiting", "web", "frontend", "도메인 DNS 레코드 확인", "", &[], None, Some("Waiting on you:\n- [ ] DNS에 CNAME 추가")),
+            ticket(85, "todo", "web", "frontend", "장바구니 수량 버튼 접근성", "", &[], None, None),
+            ticket(86, "todo", "web", "qa", "결제 회귀 테스트 목록", "", &[], None, None),
+            ticket(87, "done", "web", "qa", "로그인 오류 메시지 문구", "", &[], None, None),
+            ticket(88, "done", "app", "designer", "스플래시 화면 색 조정", "", &[], None, None),
+            ticket(89, "done", "api", "backend", "주문 상태 웹훅", "", &[], None, None),
+        ]);
+        // Three finished within the hour or two, the rest days ago.
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        for t in out.iter_mut() {
+            t.updated_at = Some(match t.id {
+                87 => now - 600,
+                88 => now - 3_600,
+                89 => now - 2 * 3_600,
+                _ if t.status.is_closed() => now - 2 * 86_400,
+                _ => now - 25 * 60,
+            });
+        }
+    }
     out
 }
 
@@ -330,6 +353,21 @@ fn close_questions(id: u64, answers: Option<Vec<Answer>>, events: &broadcast::Se
     let _ = events.send(Event::UserMessage { session: set.session, text: text.clone() });
     Some((set.session, text))
 }
+
+/// `FAKE_BUSY=1`: four more members, each at work on a web ticket, and more
+/// waiting and finished there — a project with more live work than the
+/// sidebar shows, a team taller than its block.
+fn busy() -> bool {
+    std::env::var("FAKE_BUSY").is_ok_and(|v| v == "1")
+}
+
+/// The busy squad's extra members: (ticket, session, name, title).
+const BUSY: [(u32, SessionId, &str, &str); 4] = [
+    (80, 5, "frontend-2", "검색 결과 무한 스크롤"),
+    (81, 6, "frontend-3", "상품 카드 스켈레톤 로딩과 이미지 지연 로딩, 접근성 라벨까지 한 번에 정리"),
+    (82, 7, "qa", "체크아웃 E2E 테스트"),
+    (83, 8, "data", "구매 전환 대시보드 이벤트"),
+];
 
 /// `FAKE_TURN`: T-117 waits for the person (`1`), and is answered elsewhere (`elsewhere`).
 fn your_turn() -> Option<String> {
@@ -522,10 +560,19 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         designer.mode = Some(equipe_core::protocol::Mode::Ask);
                         let mut backend = backend;
                         backend.effort = Some("high".into());
+                        let mut sessions = vec![info(1, "pm", history), frontend, backend, designer];
+                        if busy() {
+                            for (ticket, session, name, title) in BUSY {
+                                let role = name.split('-').next().unwrap_or(name);
+                                let mut member = on(info(session, role, vec![]), ticket, "web", title, true, ("Edit", "src/search.tsx"), None);
+                                member.member = Some(Member { role: role.into(), name: name.into() });
+                                sessions.push(member);
+                            }
+                        }
                         let snapshot = Snapshot {
                             squad: params.squad,
                             projects: vec![repo("web"), repo("app"), repo("api")],
-                            sessions: vec![info(1, "pm", history), frontend, backend, designer],
+                            sessions,
                             approvals: asks().lock().unwrap().clone(),
                             questions: questions().lock().unwrap().clone(),
                             tickets: tickets().lock().unwrap().clone(),

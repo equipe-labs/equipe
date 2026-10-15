@@ -5,7 +5,7 @@
 //! `EQUIPE_SCRIPT="wait:1500;say:안녕;wait:800;shot:/tmp/a.png"` — steps split on `;`:
 //! `wait:<ms>` · `shot:<png>` · `say:<text>` (type it in the box and send) ·
 //! `memo:<text>` (send it as a memo, as Tab does) · `type:<text>` (type, don't send) · `key:<y|a|n|o>` (answer a request) · `esc` (stop the member) · `up`/`down`
-//! (history) · `project:<name|all>` · `select:<member>` · `board` · `chat` ·
+//! (history) · `project:<name|all>` · `shead:<project>` / `sfold:<project>` (a sidebar header's name, its chevron; empty: the shared folder) · `select:<member>` · `board` · `chat` ·
 //! `menu:<inbox|working|all|view0…>` (a sidebar item) · `cmenu:<attach|recent|to|model|effort|mode|context>` (a composer menu) · `bkey:<key>` (a work
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
@@ -65,6 +65,10 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     shell.on_composer_key(&verb, &Modifiers::default(), window, cx);
                 }),
                 "project" => shell.update(cx, |shell, cx| shell.focus_project((arg != "all").then(|| arg.clone()), window, cx)),
+                "shead" | "sfold" => shell.update(cx, |shell, cx| {
+                    let click = if verb == "shead" { crate::board::HeadClick::Name } else { crate::board::HeadClick::Chevron };
+                    shell.side_head_click(click, (!arg.is_empty()).then(|| arg.clone()), window, cx);
+                }),
                 "select" => shell.update(cx, |shell, cx| {
                     if let Some(m) = shell.model.members.iter().find(|m| m.name == arg) {
                         let session = m.session;

@@ -238,6 +238,11 @@ pub struct Ticket {
     /// ([`Ticket::asks`] reads an older daemon's note when this is empty).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub asks: Vec<String>,
+    /// When it last changed, in unix seconds, as the squad's journal says —
+    /// so a screen that just attached knows what finished today. `None` from
+    /// an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<u64>,
 }
 
 impl Ticket {
@@ -1210,6 +1215,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
+            updated_at: None,
         }
     }
 

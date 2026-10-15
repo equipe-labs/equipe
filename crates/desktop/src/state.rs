@@ -596,6 +596,14 @@ impl Model {
         let version = hello.version;
         let snapshot = hello.snapshot;
         self.squad = snapshot.squad;
+        // When each came to where it stands: what the journal says, unless it
+        // was seen here already in that state.
+        for t in &snapshot.tickets {
+            let seen = self.tickets.iter().find(|o| o.id == t.id).is_some_and(|o| o.status == t.status) && self.since.contains_key(&t.id);
+            if let (false, Some(at)) = (seen, t.updated_at) {
+                self.since.insert(t.id, at);
+            }
+        }
         self.tickets = snapshot.tickets.clone();
         self.projects = snapshot.projects.clone();
         self.mode = snapshot.mode;
@@ -981,7 +989,7 @@ impl Model {
         }
     }
 
-    fn is_acted(&self, t: &Ticket) -> bool {
+    pub fn is_acted(&self, t: &Ticket) -> bool {
         self.acted.get(&t.id).is_some_and(|look| *look == look_of(t))
     }
 
@@ -1051,6 +1059,17 @@ impl Model {
         }
         let estimate = self.member_on(t.id)?.estimate.as_ref()?;
         Some(Eta { at: estimate.done_at?, guessed: estimate.guessed })
+    }
+
+    /// How many tickets were finished since `midnight` (unix seconds, the
+    /// local day's start: [`local_midnight`]) — done, not cancelled.
+    pub fn done_since(&self, midnight: u64) -> usize {
+        self.tickets.iter().filter(|t| t.status == TicketStatus::Done && self.since.get(&t.id).is_some_and(|at| *at >= midnight)).count()
+    }
+
+    /// How many tickets were finished today, local time.
+    pub fn done_today(&self) -> usize {
+        self.done_since(local_midnight(self.unix))
     }
 
     /// How long a ticket has been where it is, in seconds, when known.
@@ -1126,6 +1145,21 @@ pub fn local_hm(unix: u64) -> String {
     let secs = unix as libc::time_t;
     unsafe { libc::localtime_r(&secs, &mut tm) };
     format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+}
+
+/// The start of the local day `unix` falls in (midnight, as the Mac's clock
+/// and time zone have it), in unix seconds.
+pub fn local_midnight(unix: u64) -> u64 {
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let secs = unix as libc::time_t;
+    unsafe { libc::localtime_r(&secs, &mut tm) };
+    tm.tm_hour = 0;
+    tm.tm_min = 0;
+    tm.tm_sec = 0;
+    // Daylight saving as that day has it.
+    tm.tm_isdst = -1;
+    let midnight = unsafe { libc::mktime(&mut tm) };
+    if midnight < 0 || midnight as u64 > unix { unix - unix % 86_400 } else { midnight as u64 }
 }
 
 /// Now, in unix seconds: for the shell to hand the model.

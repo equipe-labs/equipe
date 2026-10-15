@@ -672,6 +672,7 @@ fn ticket(status: TicketStatus) -> Ticket {
         created_by: "pm".into(),
         note: None,
         asks: vec![],
+        updated_at: None,
     }
 }
 

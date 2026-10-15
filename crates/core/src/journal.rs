@@ -626,7 +626,7 @@ impl Journal {
 
     fn query_tickets(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<Ticket>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree, merged, kind, off_main
+            "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree, merged, kind, off_main, updated_at
              FROM tickets {filter} ORDER BY id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -647,6 +647,7 @@ impl Journal {
                 kind: TicketKind::parse(&r.get::<_, String>(13)?).unwrap_or_default(),
                 asks: Vec::new(),
                 off_main: r.get::<_, Option<String>>(14)?.and_then(|o| serde_json::from_str(&o).ok()),
+                updated_at: r.get::<_, Option<i64>>(15)?.map(|at| at.max(0) as u64),
             };
             // A waiting ticket's asks are kept in its note; they travel as a list.
             t.asks = t.asks();
@@ -1128,6 +1129,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
+            updated_at: None,
             kind: TicketKind::Code,
         }
     }
@@ -1183,6 +1185,7 @@ mod tests {
         assert_eq!(tickets.len(), 2);
         assert_eq!((tickets[1].status, tickets[1].depends_on.clone()), (TicketStatus::InProgress, vec![1]));
         assert_eq!((tickets[0].merged, tickets[1].merged), (None, Some(false)));
+        assert!(tickets.iter().all(|t| t.updated_at.is_some_and(|at| at > 0)), "when each last changed travels with it");
         assert_eq!((tickets[0].off_main.clone(), tickets[1].off_main.clone()), (None, Some(equipe_protocol::OffMain::Conflict { detail: "a.rs".into() })));
         assert_eq!(j.ticket_work(2).unwrap().worktree, Some(PathBuf::from("/w/2")));
         assert_eq!(j.ticket_history(2).unwrap()[1], ("equipe".into(), "assigned".into(), "frontend".into()));
