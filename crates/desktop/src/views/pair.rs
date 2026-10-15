@@ -193,7 +193,7 @@ fn body(shell: &Shell, now: Instant, cx: &mut Context<Shell>) -> AnyElement {
             centered(p, ("pair-approving", turn), mark, t!("pair.approving", name = name), None, None, None)
         }
         Stage::Paired { name, .. } => {
-            let mark = motion::pop(div().child(badge(Icon::Done, p.on_primary, p.accent)), ("pair-done", turn as usize), false).into_any_element();
+            let mark = motion::pop(div().child(badge(Icon::Done, p.on_accent, p.accent)), ("pair-done", turn as usize), false).into_any_element();
             centered(p, ("pair-paired", turn), mark, t!("pair.paired_title", name = name), Some(t!("pair.paired_text").into()), None, None)
         }
         Stage::Ended { problem, message } => {
