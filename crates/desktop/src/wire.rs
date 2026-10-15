@@ -8,7 +8,6 @@
 
 use equipe_core::t;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -49,8 +48,9 @@ pub struct Greeting {
     pub hello: Hello,
 }
 
-/// Answers still awaited, by request id: the waiting thread's end of each.
-type Pending = Arc<Mutex<HashMap<u64, std::sync::mpsc::Sender<Result<PathBuf, String>>>>>;
+/// Answers still awaited, by request id: the waiting thread's end of each,
+/// given the answer's result (or its error's message).
+type Pending = Arc<Mutex<HashMap<u64, std::sync::mpsc::Sender<Result<serde_json::Value, String>>>>>;
 
 /// Where a split connection's commands go.
 #[derive(Clone)]
@@ -74,21 +74,27 @@ impl Commands {
         name: &str,
         bytes: &[u8],
         kind: Option<rpc::UploadKind>,
-    ) -> std::sync::mpsc::Receiver<Result<PathBuf, String>> {
+    ) -> std::sync::mpsc::Receiver<Result<serde_json::Value, String>> {
         use base64::Engine as _;
-        let (tx, rx) = std::sync::mpsc::channel();
-        let id = self.next.fetch_add(1, Ordering::Relaxed);
         let params = rpc::Upload {
             name: name.to_owned(),
             data: base64::engine::general_purpose::STANDARD.encode(bytes),
             kind,
         };
+        self.ask(rpc::UPLOAD, params)
+    }
+
+    /// Ask for a file an attachment tag points at (`read_upload`), back from
+    /// the daemon's uploads; answered as [`Commands::upload`] is.
+    pub fn read_upload(&self, path: &str, size_only: bool) -> std::sync::mpsc::Receiver<Result<serde_json::Value, String>> {
+        self.ask(rpc::READ_UPLOAD, rpc::ReadUpload { path: path.into(), size_only })
+    }
+
+    fn ask(&self, method: &str, params: impl serde::Serialize) -> std::sync::mpsc::Receiver<Result<serde_json::Value, String>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
         self.pending.lock().unwrap().insert(id, tx);
-        if self
-            .out
-            .send(Message::request(id, rpc::UPLOAD, params))
-            .is_err()
-        {
+        if self.out.send(Message::request(id, method, params)).is_err() {
             self.pending.lock().unwrap().remove(&id);
         }
         rx
@@ -209,15 +215,13 @@ where
             if message.method.is_none()
                 && let Some(id) = message.id
             {
-                // The answer to an `upload`.
+                // The answer to an `upload` or a `read_upload`.
                 if let Some(waiting) = answers.lock().unwrap().remove(&id) {
-                    let _ = waiting.send(
-                        match (&message.error, message.result_as::<rpc::Uploaded>()) {
-                            (Some(error), _) => Err(error.message.clone()),
-                            (None, Some(saved)) => Ok(saved.path),
-                            (None, None) => Err(t!("failure.answer_unreadable").into()),
-                        },
-                    );
+                    let _ = waiting.send(match (message.error, message.result) {
+                        (Some(error), _) => Err(error.message),
+                        (None, Some(result)) => Ok(result),
+                        (None, None) => Err(t!("failure.answer_unreadable").into()),
+                    });
                 }
             } else if message.method.as_deref() == Some(rpc::EVENT)
                 && let Some(event) = message.params_as::<Event>()

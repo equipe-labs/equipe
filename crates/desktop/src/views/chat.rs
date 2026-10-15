@@ -27,7 +27,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{approvals, composer, header};
+use super::{approvals, attached, composer, header};
 use crate::convo::{Block, RunRow, Status, ToolLine, relative};
 use crate::diffs::Kind;
 use crate::render::view::{self, Look};
@@ -52,7 +52,12 @@ const COLUMN: f32 = 720.;
 /// doesn't parse their Markdown again.
 const VIEWS_KEPT: usize = 96;
 /// A message of yours longer than this many lines shows its start.
-const USER_LINES: usize = 12;
+const USER_LINES: usize = 8;
+/// Your message's bubble: its padding across and down, and the share of the
+/// column it may take.
+const BUBBLE_X: f32 = 14.;
+const BUBBLE_Y: f32 = 10.;
+const BUBBLE_SHARE: f32 = 0.74;
 
 /// What a row has open, beside its code fences (numbered from 0).
 const PART_MORE: u32 = 1 << 20;
@@ -77,6 +82,10 @@ pub struct Chat {
     opened: Rc<HashSet<(u64, u32)>>,
     /// An image looked at closer, over the conversation.
     pub lightbox: Option<ImageSource>,
+    /// What your messages attached, as far as it is known (`crate::sent`).
+    pub sent: Rc<RefCell<crate::sent::Sent>>,
+    /// A message's pictures shown big, ←/→ through them.
+    pub gallery: Option<crate::sent::Gallery>,
     pub find: Find,
     /// Rows that came in while the conversation was on screen, and when: they
     /// rise into place (rows scrolled back into view don't).
@@ -144,6 +153,8 @@ impl Chat {
             views: Rc::default(),
             opened: Rc::default(),
             lightbox: None,
+            sent: Rc::default(),
+            gallery: None,
             find: Find::default(),
             arrived: Rc::default(),
         }
@@ -218,6 +229,19 @@ impl Chat {
         }
         self.opened = Rc::new(opened);
         self.remeasure_row(row, cx);
+    }
+
+    /// A file a row shows came (or is gone): every row naming it is measured again.
+    pub fn remeasure_mentioning(&self, path: &str, cx: &mut App) {
+        let rows: Vec<usize> = self.blocks.iter().enumerate().filter(|(_, b)| matches!(b, Block::User(t) | Block::Memo(t) | Block::Steering(t) if t.contains(path))).map(|(ix, _)| ix).collect();
+        if rows.is_empty() {
+            return;
+        }
+        self.scroller.update(cx, |s, cx| {
+            for ix in rows {
+                s.remeasure_items(ix..ix + 1, cx);
+            }
+        });
     }
 
     fn remeasure_row(&self, row: u64, cx: &mut App) {
@@ -427,6 +451,8 @@ struct Rows {
     retry_at: Option<usize>,
     base: std::path::PathBuf,
     arrived: Rc<HashMap<u64, std::time::Instant>>,
+    /// What your messages attached, drawn with.
+    attached: attached::Ctx,
 }
 
 fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
@@ -448,6 +474,7 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         retry_at,
         base: render::base_dir(shell),
         arrived: shell.chat.arrived.clone(),
+        attached: attached::Ctx::of(shell, cx.entity().downgrade(), COLUMN - 120.),
     });
     div().flex_1().min_h_0().w_full().max_w(px(COLUMN)).px_4().child(
         MessageScroller::new("conversation", shell.chat.scroller.clone(), move |ix, window, cx| row(&rows, ix, window, cx))
@@ -605,62 +632,100 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             )
             .child(v_flex().pl_5().font_family(MONO).text_size(px(12.5)).line_height(px(20.)).text_color(p.muted).children(stat.lines().map(|l| div().child(l.trim().to_owned()))))
             .into_any_element(),
-        Block::Memo(text) => v_flex()
-            .text_color(p.muted)
-            .child(h_flex().gap_3().text_size(px(BODY)).line_height(px(24.)).child(div().flex_none().child("›")).child(div().min_w_0().child(SelectableText::new(("memo", key), text.clone()))))
-            .child(div().pl_5().text_size(px(SMALL)).child(t!("chat.memo_note")))
-            .into_any_element(),
-        Block::Steering(text) => v_flex()
-            .text_color(p.muted)
-            .child(h_flex().gap_3().text_size(px(BODY)).line_height(px(24.)).child(div().flex_none().text_color(p.accent).child("›")).child(div().min_w_0().child(SelectableText::new(("steering", key), text.clone()))))
-            .child(div().pl_5().text_size(px(SMALL)).child(t!("chat.steering_note")))
-            .into_any_element(),
+        Block::Memo(text) => waiting(rows, key, "memo", text, p.muted, t!("chat.memo_note"), cx),
+        Block::Steering(text) => waiting(rows, key, "steering", text, p.accent, t!("chat.steering_note"), cx),
     }
 }
 
-/// Your message: selectable, its start only when it is long.
-fn user_row(rows: &Rows, key: u64, text: &str, open: bool, cx: &mut App) -> AnyElement {
+/// A memo or a steer waiting for the member: on the right as your message
+/// is, but quieter — a dashed outline, muted words — with what it is beneath.
+fn waiting(rows: &Rows, key: u64, id: &'static str, raw: &str, mark: Rgba, note: &'static str, cx: &mut App) -> AnyElement {
     let p = rows.p;
-    let long = text.lines().count() > USER_LINES || text.chars().count() > USER_LINES * 56;
-    let state = rows.views.borrow_mut().get(view_key(key, 2), &escape_markdown(text), cx);
-    let clamped = long && !open;
-    let look = Look { size: BODY, line: 24., color: p.text, live: false };
-    let body = TextView::new(&state).style(view::style(p, &look)).selectable(true).when(clamped, |v| v.max_lines(USER_LINES));
-    let group: SharedString = format!("user-{key}").into();
-    let raw = text.to_owned();
-    let copy = tool_button(p, ("user-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))).into_any_element();
-    let handle = rows.handle.clone();
+    let parts = crate::sent::parts(raw);
+    let files = attached::attachments(&rows.attached, key, &parts.tags, parts.more, true, cx);
     v_flex()
-        .group(group.clone())
-        .relative()
-        .gap_1()
-        // Its edge on the column's, its words where every row's start.
-        .mx(px(-TEXT_INSET))
-        .px(px(TEXT_INSET))
-        .py_3()
-        .mt_3()
-        .rounded(px(crate::theme::R_LG))
-        .bg(p.wash)
-        .text_size(px(BODY))
-        .line_height(px(24.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .child(h_flex().items_start().gap_3().child(div().flex_none().text_color(p.accent).child("›")).child(div().min_w_0().flex_1().child(body)))
-        .when(long, |col| {
-            col.child(
+        .w_full()
+        .mt_4()
+        .mb_1()
+        .gap_1p5()
+        .items_end()
+        .children(files)
+        .when(!parts.text.is_empty(), |c| {
+            c.child(
                 div()
-                    .id(("user-more", key))
-                    .pl(px(22.))
-                    .text_size(px(SMALL))
-                    .font_weight(FontWeight::NORMAL)
-                    .text_color(p.accent)
-                    .cursor_pointer()
-                    .child(if open { t!("chat.show_less") } else { t!("chat.show_more") })
-                    .on_click(move |_, _, cx| {
-                        handle.update(cx, |shell, cx| shell.chat_toggle(key, PART_MORE, cx)).ok();
-                    }),
+                    .max_w(gpui_kit::relative(BUBBLE_SHARE))
+                    .px(px(BUBBLE_X))
+                    .py(px(BUBBLE_Y))
+                    .rounded(px(crate::theme::R_LG))
+                    .border_1()
+                    .border_dashed()
+                    .border_color(p.hair)
+                    .text_size(px(BODY))
+                    .line_height(px(24.))
+                    .text_color(p.text2)
+                    .child(SelectableText::new((id, key), parts.text.clone())),
             )
         })
-        .child(toolbar(p, group, false, vec![copy]))
+        .child(h_flex().gap_1p5().pr(px(2.)).items_center().text_size(px(12.)).text_color(p.muted).child(div().size(px(6.)).rounded_full().bg(mark)).child(note))
+        .into_any_element()
+}
+
+/// Your message, as Claude's apps show it: a quiet bubble on the right, as
+/// wide as your words up to most of the column, no name over it; what it
+/// attached just above it, its start only when it is long ("더 보기"), and on
+/// hover a small row of actions beneath.
+fn user_row(rows: &Rows, key: u64, raw: &str, open: bool, cx: &mut App) -> AnyElement {
+    let p = rows.p;
+    let parts = crate::sent::parts(raw);
+    let text = parts.text.as_str();
+    let long = text.lines().count() > USER_LINES || text.chars().count() > USER_LINES * 36;
+    let clamped = long && !open;
+    let look = Look { size: BODY, line: 24., color: p.text, live: false };
+    let body = (!text.is_empty()).then(|| {
+        let state = rows.views.borrow_mut().get(view_key(key, 2), &escape_markdown(text), cx);
+        TextView::new(&state).style(view::style(p, &look)).selectable(true).when(clamped, |v| v.max_lines(USER_LINES))
+    });
+    let files = attached::attachments(&rows.attached, key, &parts.tags, parts.more, true, cx);
+    let group: SharedString = format!("user-{key}").into();
+    // What is copied is what is shown: the words (the tags only when there are none).
+    let copied = if text.is_empty() { raw.to_owned() } else { text.to_owned() };
+    let copy = tool_button(p, ("user-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(copied.clone())));
+    let handle = rows.handle.clone();
+    let more = long.then(|| {
+        div()
+            .id(("user-more", key))
+            .pt_1()
+            .text_size(px(SMALL))
+            .text_color(p.accent)
+            .cursor_pointer()
+            .child(if open { t!("chat.show_less") } else { t!("chat.show_more") })
+            .on_click(move |_, _, cx| {
+                handle.update(cx, |shell, cx| shell.chat_toggle(key, PART_MORE, cx)).ok();
+            })
+    });
+    let bubble = body.map(|body| {
+        v_flex()
+            .max_w(gpui_kit::relative(BUBBLE_SHARE))
+            .px(px(BUBBLE_X))
+            .py(px(BUBBLE_Y))
+            .rounded(px(crate::theme::R_LG))
+            .bg(p.wash)
+            .text_size(px(BODY))
+            .line_height(px(24.))
+            .text_color(p.text)
+            .child(body)
+            .children(more)
+    });
+    v_flex()
+        .group(group.clone())
+        .w_full()
+        .mt_4()
+        .gap_1p5()
+        .items_end()
+        .children(files)
+        .children(bubble)
+        // Beneath, on the right, shown on hover; its room is kept so nothing moves.
+        .child(h_flex().h(px(24.)).gap(px(2.)).invisible().group_hover(group, |s| s.visible()).child(copy))
         .into_any_element()
 }
 
@@ -1061,7 +1126,7 @@ impl Shell {
 
     /// Escape: the lightbox goes, then the find bar.
     pub fn chat_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if self.chat.lightbox.take().is_some() {
+        if self.chat.gallery.take().is_some() || self.chat.lightbox.take().is_some() {
             cx.notify();
             return true;
         }

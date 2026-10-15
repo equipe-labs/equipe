@@ -13,6 +13,9 @@
 //!   any file) saved on the daemon's machine for a message to point at. A big
 //!   file goes over its own SSH channel instead (`equipe receive`), never as
 //!   one giant line.
+//! - `read_upload` (request): [`ReadUpload`] → [`UploadRead`], a file a message
+//!   attached, read back from the daemon's `uploads` folder (and nowhere else)
+//!   so a screen on another machine can show it; only after `hello`
 //! - `browser_stream` (request): the connection becomes the browser panel's
 //!   picture stream ([`crate::stream`])
 //! - `attached` (notification, `equipe attach --stdio` → screen): [`Attached`],
@@ -33,6 +36,7 @@ pub const VERSION: &str = "version";
 pub const ATTACHED: &str = "attached";
 pub const SQUADS: &str = "squads";
 pub const UPLOAD: &str = "upload";
+pub const READ_UPLOAD: &str = "read_upload";
 
 /// The wire's version: bumped when a change would break a screen built
 /// against the one before (a method or a field it relies on removed or
@@ -166,6 +170,28 @@ pub struct Uploaded {
     pub path: std::path::PathBuf,
 }
 
+/// Ask for a file an attachment tag points at, back from the daemon's
+/// machine: only one in its `uploads` folder is given.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadUpload {
+    pub path: std::path::PathBuf,
+    /// Only how big it is, not its bytes (a PDF's or a document's chip).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub size_only: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// A file read back: its size, and its bytes (base64) unless only the size was asked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UploadRead {
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+}
+
 /// What `equipe attach --stdio` says first: which equipe answered on the
 /// other end, and which daemon it reached.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -287,5 +313,15 @@ mod tests {
         assert!(!line.contains("kind"), "an older daemon reads the same line: {line}");
         let pdf = Upload { name: "spec.pdf".into(), data: "AA==".into(), kind: Some(UploadKind::Pdf) };
         assert!(serde_json::to_string(&pdf).unwrap().contains(r#""kind":"pdf""#));
+    }
+
+    #[test]
+    fn reading_an_upload_back_is_a_request_of_its_own() {
+        let ask = Message::request(9, READ_UPLOAD, ReadUpload { path: "/h/uploads/1-a.png".into(), size_only: false });
+        let line = ask.to_line();
+        assert!(line.contains(r#""method":"read_upload""#) && !line.contains("size_only"), "{line}");
+        assert_eq!(Message::from_line(&line).unwrap().params_as::<ReadUpload>().unwrap().path, std::path::PathBuf::from("/h/uploads/1-a.png"));
+        let answer = Message::response(9, UploadRead { size: 3, data: None });
+        assert_eq!(answer.result_as::<UploadRead>(), Some(UploadRead { size: 3, data: None }));
     }
 }
