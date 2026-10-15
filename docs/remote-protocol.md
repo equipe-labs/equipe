@@ -256,7 +256,10 @@ The daemon follows a device like one more screen, with less reach than the termi
 
 - **may:** `hello`, `squads`, and the commands `submit`, `interrupt`, `accept`, `reopen`,
   `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `focus`, `refresh`.
-- **may not:** `start`, `close`, `merge`, `set_mode`, `scale`, `show_browser`.
+- **may not:** `start`, `close`, `merge`, `set_mode`, `scale`, `show_browser` — nor the person's
+  own hand on the board: `create_ticket`, `edit_ticket`, `edit_tickets`, `move_ticket`,
+  `comment_ticket`, `ticket_history` (the phone answers what the board asks; planning stays at a
+  screen for now).
 - `decide` with `always` counts as `allow`: from a phone a request is allowed once.
 
 The app asks for Face ID / fingerprint before it sends a `decide`.

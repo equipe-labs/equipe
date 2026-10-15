@@ -1,7 +1,7 @@
 //! The conversation's header, which is the window's title bar on the right:
 //! the conversation's name with ⌄ (the team, to switch), a small chip for the
 //! project slice — opening a list with what works and what waits in each,
-//! ⌘0–9 — and the context fill. The title bar's fixed buttons float over its
+//! ⌃0–9 — and the context fill. The title bar's fixed buttons float over its
 //! left with the sidebar away; its content slides beside them.
 
 use equipe_core::t;
@@ -219,8 +219,8 @@ fn list(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
             .when(counts.1 > 0, |r| r.child(div().text_size(px(12.)).text_color(p.accent).child(format!("⚑ {}", counts.1))))
             .children(key.map(|k| div().w(px(26.)).text_align(TextAlign::Right).text_size(px(11.)).text_color(p.muted).child(k)))
     };
-    let keys = ["⌘1", "⌘2", "⌘3", "⌘4", "⌘5", "⌘6", "⌘7", "⌘8", "⌘9"];
-    let mut rows: Vec<AnyElement> = vec![row("slice-all".into(), None, t!("header.all_projects").into(), project_counts(model, None), Some("⌘0"), model.focus.is_none(), None, cx).into_any_element()];
+    let keys = ["⌃1", "⌃2", "⌃3", "⌃4", "⌃5", "⌃6", "⌃7", "⌃8", "⌃9"];
+    let mut rows: Vec<AnyElement> = vec![row("slice-all".into(), None, t!("header.all_projects").into(), project_counts(model, None), Some("⌃0"), model.focus.is_none(), None, cx).into_any_element()];
     for (i, name) in names.iter().enumerate() {
         if !typed.is_empty() && !name.to_lowercase().contains(&typed) {
             continue;
@@ -250,7 +250,7 @@ fn list(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 c.child(h_flex().mx_1().mb_1().px_2().h(px(28.)).items_center().rounded(px(6.)).bg(p.code_bg).border_1().border_color(p.hair).text_size(px(SMALL)).child(Input::new(&shell.board.slice_search).appearance(false).bordered(false)))
             })
             .children(rows)
-            .child(h_flex().px_2().pt_1().gap_1().items_center().text_size(px(11.)).text_color(p.muted).child(kbd(p, "⌘0–9")).child(t!("header.slice_hint"))),
+            .child(h_flex().px_2().pt_1().gap_1().items_center().text_size(px(11.)).text_color(p.muted).child(kbd(p, "⌃0–9")).child(t!("header.slice_hint"))),
     )
     .into_any_element()
 }

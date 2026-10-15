@@ -7,7 +7,7 @@ exclude = ["vendor"]
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.44.0"
+version = "0.46.0"
 
 [profile.release]
 lto = "thin"
@@ -24,6 +24,8 @@ opt-level = 2
 # `equipe:` in the source; take them again on a gpui-kit upgrade):
 # - gpui-pre: Korean wraps at spaces, as CSS `word-break: keep-all` — it broke
 #   words between any two syllables (`LineWrapper::is_word_char`).
+# - gpui-pre: the content zoom (⌘+ / ⌘-) — `Window::set_content_zoom` scales
+#   the drawing and maps the viewport, input and IME positions (`zoom.rs`).
 # - gpui-base: a text view's link underline and the room between list items
 #   are the style's to set (`TextViewStyle`).
 [patch.crates-io]

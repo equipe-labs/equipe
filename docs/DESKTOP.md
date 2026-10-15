@@ -247,6 +247,38 @@ with projects, `equipe daemon run` (stopped while tickets are put into
 `EQUIPE_SCRIPT="board;pick:2;bkey:d;shot:/tmp/a.png"` (`bkey`, `pick`, `find`, `note`,
 `submit`, `cancel` drive the board).
 
+**티켓** (`views/tickets.rs`; rules in `tickets.rs`, the daemon's in
+`equipe_core::runtime`'s `tickets.rs` and `equipe_core::board`). Every ticket, the person's to
+shape — with their own commands only (`create_ticket`, `edit_ticket`, `edit_tickets`,
+`move_ticket`, `comment_ticket`, `ticket_history`); a member's word never moves one.
+
+- *List* (default) or *board* (V; kept as `tickets board` in `desktop-target`). The list runs by
+  attention: 내 차례 · 검토 · 진행 중 · 할 일 (the board's order) · 끝남 (the week, folded);
+  cancelled shows only when the filter asks. Proposals wait behind "분류 필요 N": a triage of
+  their own where A takes one on and N drops it. A row: status (live) · T-n · title · ⛔ what it
+  waits on · project · who and what they do now, or their place in their queue (다음 #1) ·
+  diff · priority · when it last changed; one waiting for the person is lit, as in 나에게 —
+  it is the same list of needs, the same peek, the same keys.
+- By hand a ticket goes from proposal to 할 일, moves within 할 일 (what a member picks next is
+  that order; priority only between equals), or is cancelled (asked once; on the board, drop it
+  on the place at its foot). 진행 중, 내 차례, 검토 and 끝남 are the members' and A's: a drop there
+  is refused, saying why. The daemon takes more (`board::move_rule`: review to done accepts,
+  done back sends back…), for screens that ask.
+- Edits show at once and are sent after the five seconds U can take them back in (a refusal
+  puts them back); several chosen go as one `edit_tickets`, so the PM hears once. Work under way
+  given to someone else is asked about first: its member stops, its branch stays.
+- Keys: C the quick line (`@who #project !priority after T-n title`; ⌘⏎ makes it, ⇧⌘⏎ has
+  the PM shape it into a proposal, ⇧C the full sheet), M owner, P priority, ⇧P project,
+  S status, B what it waits for, E the title, ⌥V the views, H/L across the board's columns.
+- The page (⏎) edits its title and Markdown description in place, its properties at the
+  right, and keeps its record (the journal's `ticket_events`) with the person's comments —
+  a comment reaches the member on it as the person talking, else its owner and the PM.
+
+The fake daemon does all of these as the daemon does; the snapshot script has `layout:`,
+`quick:`, `tsheet` `ttitle:` `tbody:` `tcrit:` `tcreate`, `tmenu:<prio|status|who|project|kind|deps>,<id|sheet|bulk>`,
+`page:<id>[,activity]`, `tedit:`, `tbodyedit:`, `tcomment:`, `choose:<ids>` and a drag by hand
+(`mdown:` `mmove:` `mup:`).
+
 The old spike (mock agents into SQLite) is kept as `examples/mock_agents.rs`
 (`cargo run --release -p equipe-desktop --example mock_agents`); the knobs below
 are for it.
@@ -343,6 +375,29 @@ Connect–like page, backend paused at a "Just a moment…" wall that a click
 passes, a tab of the person's own; `FAKE_BROWSER=empty` for none). The host's
 ops have a smoke test, a stand-in Cloudflare wall included:
 `npx -y -p playwright@1.64.0 node scripts/browser-host-smoke.cjs`.
+
+## Zoom (⌘+ ⌘- ⌘0)
+
+The window zooms as a browser (or Claude) does: 보기 ▸ 확대 (⌘+, also ⌘=),
+축소 (⌘-), 실제 크기 (⌘0), through 67 · 75 · 80 · 90 · 100 · 110 · 125 · 150 ·
+175 · 200 %. Settings ▸ 일반 ▸ 화면 크기 has the same as − / + and 실제 크기. The
+size is kept in `desktop-target` (`zoom 125`) and put back at launch; a small
+chip with the new size shows near the window's top for a moment (`zoom.rs`).
+
+Everything scales together because GPUI draws the window larger, not the app:
+`Window::set_content_zoom` (an `equipe:` patch in `vendor/gpui-pre`) multiplies
+the display's scale factor by the zoom and divides the viewport and every input
+position (and pixel scroll deltas) by it, so layout reflows, text and icons are
+rasterized at the effective scale (crisp, not stretched), hit-testing agrees
+with what is drawn, and the IME's candidate window is placed in the platform's
+points. The window's own geometry (`bounds`, `resize`) stays in screen points.
+AppKit's traffic lights don't zoom: they stay 14 pt in and move down to the
+zoomed title bar's centre line, and the strip's buttons start after them at
+every size (`views::sidebar::lights_at`, `lights_end`).
+
+⌘0 is actual size, as everywhere on the Mac, so the project slices are ⌃0–⌃9
+(⌃0: every project). Snapshot steps: `zoom:<pct|in|out|actual>`; `click:` and
+`hover:` take screen points and go through the zoom as the Mac's events do.
 
 ## Shipping the app
 

@@ -57,6 +57,7 @@ macro_rules! say {
 }
 
 mod decide;
+mod tickets;
 
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
@@ -496,7 +497,7 @@ struct Pending {
 }
 
 /// How a member puts a ticket down.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum WorkEnd {
     /// It called `submit_for_review`: the person reviews it next.
     HandedIn,
@@ -507,6 +508,9 @@ enum WorkEnd {
     /// It called `block_on_person`: the ticket waits for the person, its
     /// worktree kept, and the member is free for other work.
     Waiting,
+    /// The person gave the ticket to someone else (`to`, a member or a role):
+    /// it goes back on the board for them, its work so far on its branch.
+    Reassigned { to: String },
 }
 
 struct Runtime {
@@ -803,6 +807,12 @@ impl Runtime {
             Command::Reopen { squad, ticket, note } => self.reopen(&squad, ticket, note).await,
             Command::Resume { squad, ticket, note } => self.resume(&squad, ticket, note).await,
             Command::Cancel { squad, ticket } => self.cancel(&squad, ticket).await,
+            Command::CreateTicket { squad, draft } => self.person_creates(&squad, draft).await,
+            Command::EditTicket { squad, ticket, changes } => self.person_edits(&squad, ticket, changes).await,
+            Command::EditTickets { squad, tickets, changes } => self.person_edits_many(&squad, tickets, changes).await,
+            Command::MoveTicket { squad, ticket, status, before } => self.person_moves(&squad, ticket, status, before).await,
+            Command::CommentTicket { squad, ticket, text } => self.person_comments(&squad, ticket, text).await,
+            Command::TicketHistory { squad, ticket } => self.send_history(&squad, ticket),
             Command::SetMode { squad, member, mode } => self.set_mode(&squad, member, mode),
             Command::ShowBrowser { squad, member, show } => self.show_browser(&squad, member, show),
             Command::Desktop { open } => {
@@ -2568,6 +2578,16 @@ for one project goes to it as tickets for its owners, with that project — and 
                 });
                 ("equipe", "released", format!("{name} left T-{}; it is back on the board", ticket.id), "news.left")
             }
+            WorkEnd::Reassigned { to } => {
+                ticket.status = TicketStatus::Todo;
+                ticket.assignee = None;
+                ticket.owner = Some(to.clone());
+                ticket.note = Some(match &ticket.branch {
+                    Some(branch) => format!("The person gave this to {to}; {name} had started — the work so far is on {branch}."),
+                    None => format!("The person gave this to {to}; {name} had started."),
+                });
+                ("you", "reassigned", format!("The person gave T-{} to {to}; {name} stopped working on it", ticket.id), "news.reassigned")
+            }
         };
         let by = by.to_owned();
         if let Some(journal) = self.journal(&squad) {
@@ -2578,7 +2598,8 @@ for one project goes to it as tickets for its owners, with that project — and 
             let _ = journal.ticket_event(ticket.id, &by, event, summary.as_deref().unwrap_or(""));
         }
         let ticket_id = ticket.id;
-        let shown = self.said(news, &[("id", ticket.id.to_string()), ("name", name.clone()), ("title", ticket.title.clone())]);
+        let to = ticket.owner.clone().unwrap_or_default();
+        let shown = self.said(news, &[("id", ticket.id.to_string()), ("name", name.clone()), ("title", ticket.title.clone()), ("to", to)]);
         self.publish(Event::TicketChanged { squad: squad.clone(), ticket });
         self.publish(Event::WorkEnded { session: id, ticket: ticket_id });
         // Back at its desk: the thread it was in there.
@@ -2741,6 +2762,10 @@ for one project goes to it as tickets for its owners, with that project — and 
         let Some(found) = self.find_ticket(squad, ticket) else {
             return;
         };
+        // A proposal accepted is taken on: ready for its owner, not done.
+        if found.status == TicketStatus::Proposed {
+            return self.take_on(squad, found).await;
+        }
         if found.status.is_closed() {
             let message = say!(self, "error.already_closed", id = ticket, status = crate::i18n::label::status(self.config.lang, found.status));
             return self.squad_error(squad, message);
@@ -3678,11 +3703,13 @@ there, end your turn, and carry on when they say they're done."
                     return Err(format!("There is no T-{missing} to depend on."));
                 }
                 let owner = board::arg_str(&args, "owner").map(str::to_owned);
+                let proposal = args.get("proposal").and_then(Value::as_bool).unwrap_or(false);
                 let ticket = Ticket {
                     id: 0,
                     title: title.to_owned(),
                     body: body.to_owned(),
-                    status: if is_pm { TicketStatus::Todo } else { TicketStatus::Proposed },
+                    // The PM's are ready, unless it puts one up for the person to take on.
+                    status: if is_pm && !proposal { TicketStatus::Todo } else { TicketStatus::Proposed },
                     kind,
                     owner: owner.clone(),
                     assignee: None,
@@ -3696,6 +3723,7 @@ there, end your turn, and carry on when they say they're done."
                     note: None,
                     asks: vec![],
                     updated_at: None,
+                    priority: Default::default(), rank: 0,
                 };
                 let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
                 let new_id = journal.create_ticket(&ticket).map_err(|e| e.to_string())?;
@@ -3705,7 +3733,9 @@ there, end your turn, and carry on when they say they're done."
                 if kind.in_home() {
                     reply = format!("Created T-{new_id} ({}).", kind.label());
                 }
-                if !is_pm {
+                if is_pm && proposal {
+                    reply = format!("Proposed T-{new_id} — it waits for the person to take it on.");
+                } else if !is_pm {
                     reply = format!("Proposed T-{new_id} — it waits for the PM or the person to accept it.");
                     let line = format!("{member} proposed T-{new_id}: {title}");
                     let shown = say!(self, "news.proposed", name = member, id = new_id, title = title);

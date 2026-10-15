@@ -618,7 +618,9 @@ impl BrowserPanel {
     fn boxed(&self, window: &Window) -> Option<Boxed> {
         let b = (*self.viewport.borrow())?;
         let (w, h) = (f32::from(b.size.width).round() as u32, f32::from(b.size.height).round() as u32);
-        (w >= 64 && h >= 64).then(|| Boxed { w, h, scale: window.scale_factor() })
+        // The window zoomed (⌘+), the page is laid out at the zoomed box and drawn
+        // at the zoomed scale: larger, as a browser zooms, and still crisp.
+        (w >= 64 && h >= 64).then(|| Boxed { w, h, scale: window.scale_factor() * window.content_zoom() })
     }
 
     /// Tell the stream what to show now: the picked page while the panel is in
@@ -897,7 +899,8 @@ impl BrowserPanel {
         let Some((_, page)) = self.selected.clone() else { return };
         let b = window.bounds();
         let (x, y, w, h) = (f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height));
-        let width = self.width.max(720.);
+        // The panel's width in screen points, the window zoomed or not.
+        let width = (self.width * window.content_zoom()).max(720.);
         let bounds = ScreenBounds { left: (x + w - width).max(0.) as i32, top: y as i32, width: width as u32, height: h as u32 };
         self.command(Command::BrowserPopOut { page, bounds: Some(bounds) }, cx);
     }

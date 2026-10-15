@@ -122,6 +122,7 @@ fn ticket(id: TicketId, title: &str, status: TicketStatus, who: Option<&str>, no
         note: note.map(str::to_owned),
         asks: vec![],
         updated_at: None,
+        priority: Default::default(), rank: 0,
     }
 }
 

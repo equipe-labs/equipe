@@ -1212,6 +1212,12 @@ pub struct Window {
     modifiers: Modifiers,
     capslock: Capslock,
     scale_factor: f32,
+    // equipe: the content zoom (⌘+ / ⌘-, as a browser zooms a page): each
+    // logical pixel is drawn `content_zoom` platform points large. The scale
+    // factor above is the display's times this, the viewport and every input
+    // position are the platform's divided by it — so layout reflows, text and
+    // icons rasterize crisply at the effective scale, and hit-testing agrees.
+    content_zoom: f32,
     pub(crate) bounds_observers: SubscriberSet<(), AnyObserver>,
     appearance: WindowAppearance,
     pub(crate) appearance_observers: SubscriberSet<(), AnyObserver>,
@@ -1983,7 +1989,11 @@ impl Window {
             let mut cx = cx.to_async();
             Box::new(move |event| {
                 handle
-                    .update(&mut cx, |_, window, cx| window.dispatch_event(event, cx))
+                    // equipe: platform points to zoomed logical pixels.
+                    .update(&mut cx, |_, window, cx| {
+                        let event = window.input_from_platform(event);
+                        window.dispatch_event(event, cx)
+                    })
                     .log_err()
                     .unwrap_or(DispatchEventResult::default())
             })
@@ -2103,6 +2113,7 @@ impl Window {
             modifiers,
             capslock,
             scale_factor,
+            content_zoom: 1.0,
             bounds_observers: SubscriberSet::new(),
             appearance,
             appearance_observers: SubscriberSet::new(),
@@ -2729,16 +2740,143 @@ impl Window {
     /// the platform window, then notifies observers. Normally called automatically
     /// by the platform's resize callback, but exposed publicly for test infrastructure.
     pub fn bounds_changed(&mut self, cx: &mut App) {
-        self.scale_factor = self.platform_window.scale_factor();
-        self.viewport_size = self.platform_window.content_size();
+        self.sync_platform_geometry();
         self.display_id = self.platform_window.display().map(|display| display.id());
-        self.mouse_position = self.platform_window.mouse_position();
 
         self.refresh();
 
         self.bounds_observers
             .clone()
             .retain(&(), |callback| callback(self, cx));
+    }
+
+    // equipe: the content zoom.
+
+    /// How large each logical pixel is drawn, in platform points: 1.0 is
+    /// actual size, 1.5 draws everything half again as large (as a browser
+    /// zooms a page). See [`Self::set_content_zoom`].
+    pub fn content_zoom(&self) -> f32 {
+        self.content_zoom
+    }
+
+    /// Zoom the window's content: text, icons, spacing and images all draw
+    /// `zoom` times as large, rasterized at the effective scale (not a bitmap
+    /// stretched), and the layout reflows into the window's size divided by
+    /// `zoom`. Input positions are mapped back, so hit-testing follows.
+    ///
+    /// The window's own geometry — [`Self::bounds`], [`Self::window_bounds`],
+    /// [`Self::resize`], the traffic lights — stays in platform points.
+    pub fn set_content_zoom(&mut self, zoom: f32) {
+        let zoom = if zoom.is_finite() && zoom > 0.0 { zoom } else { 1.0 };
+        if zoom == self.content_zoom {
+            return;
+        }
+        self.content_zoom = zoom;
+        self.sync_platform_geometry();
+        self.refresh();
+    }
+
+    /// The scale factor, viewport and pointer, from the platform's, zoomed.
+    fn sync_platform_geometry(&mut self) {
+        self.scale_factor = self.platform_window.scale_factor() * self.content_zoom;
+        let size = self.platform_window.content_size();
+        self.viewport_size = size.map(|v| self.pixels_from_platform(v));
+        let at = self.platform_window.mouse_position();
+        self.mouse_position = self.point_from_platform(at);
+    }
+
+    fn pixels_from_platform(&self, value: Pixels) -> Pixels {
+        if self.content_zoom == 1.0 {
+            value
+        } else {
+            px(f32::from(value) / self.content_zoom)
+        }
+    }
+
+    /// A point in platform points (as the platform reports the pointer) in
+    /// this window's zoomed logical pixels.
+    pub fn point_from_platform(&self, at: Point<Pixels>) -> Point<Pixels> {
+        at.map(|v| self.pixels_from_platform(v))
+    }
+
+    /// Bounds in this window's zoomed logical pixels, in platform points (as
+    /// the platform places an input method's candidate window).
+    pub fn bounds_to_platform(&self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+        if self.content_zoom == 1.0 {
+            bounds
+        } else {
+            bounds.map(|v| v * self.content_zoom)
+        }
+    }
+
+    /// An input event as the platform sends it (positions and pixel scroll
+    /// deltas in platform points), in this window's zoomed logical pixels.
+    /// The platform's events pass through this before [`Self::dispatch_event`].
+    pub fn input_from_platform(&self, event: PlatformInput) -> PlatformInput {
+        if self.content_zoom == 1.0 {
+            return event;
+        }
+        let at = |p: Point<Pixels>| self.point_from_platform(p);
+        match event {
+            PlatformInput::MouseDown(mut e) => {
+                e.position = at(e.position);
+                PlatformInput::MouseDown(e)
+            }
+            PlatformInput::MouseUp(mut e) => {
+                e.position = at(e.position);
+                PlatformInput::MouseUp(e)
+            }
+            PlatformInput::MousePressure(mut e) => {
+                e.position = at(e.position);
+                PlatformInput::MousePressure(e)
+            }
+            PlatformInput::MouseMove(mut e) => {
+                e.position = at(e.position);
+                PlatformInput::MouseMove(e)
+            }
+            PlatformInput::MouseExited(mut e) => {
+                e.position = at(e.position);
+                PlatformInput::MouseExited(e)
+            }
+            PlatformInput::ScrollWheel(mut e) => {
+                e.position = at(e.position);
+                // Content follows the fingers: a point of travel on the
+                // trackpad moves the page a point on screen.
+                if let crate::ScrollDelta::Pixels(delta) = e.delta {
+                    e.delta = crate::ScrollDelta::Pixels(at(delta));
+                }
+                PlatformInput::ScrollWheel(e)
+            }
+            PlatformInput::Pinch(mut e) => {
+                e.position = at(e.position);
+                PlatformInput::Pinch(e)
+            }
+            PlatformInput::LongPress(mut e) => {
+                e.start_position = at(e.start_position);
+                e.position = at(e.position);
+                PlatformInput::LongPress(e)
+            }
+            PlatformInput::TouchDrag(mut e) => {
+                e.start_position = at(e.start_position);
+                e.position = at(e.position);
+                PlatformInput::TouchDrag(e)
+            }
+            PlatformInput::Touch(mut e) => {
+                e.position = at(e.position);
+                e.predicted_position = e.predicted_position.map(at);
+                PlatformInput::Touch(e)
+            }
+            PlatformInput::FileDrop(FileDropEvent::Entered { position, paths }) => {
+                PlatformInput::FileDrop(FileDropEvent::Entered { position: at(position), paths })
+            }
+            PlatformInput::FileDrop(FileDropEvent::Pending { position }) => {
+                PlatformInput::FileDrop(FileDropEvent::Pending { position: at(position) })
+            }
+            PlatformInput::FileDrop(FileDropEvent::Submit { position }) => {
+                PlatformInput::FileDrop(FileDropEvent::Submit { position: at(position) })
+            }
+            other => other,
+        }
     }
 
     /// Returns the bounds of the current window in the global coordinate space, which could span across multiple displays.
@@ -2878,7 +3016,8 @@ impl Window {
 
     /// Opens the native title bar context menu, useful when implementing client side decorations (Wayland and X11)
     pub fn show_window_menu(&self, position: Point<Pixels>) {
-        self.platform_window.show_window_menu(position)
+        // equipe: zoomed logical pixels to platform points.
+        self.platform_window.show_window_menu(position.map(|v| v * self.content_zoom))
     }
 
     /// Handle window movement for Linux and macOS.

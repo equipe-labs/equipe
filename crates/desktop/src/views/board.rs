@@ -114,6 +114,8 @@ pub struct BoardUi {
     pub pulse: f32,
     pulse_step: u32,
     _ticker: Option<Task<()>>,
+    /// 티켓's own: menus, the board's drag, the new ticket sheet, the page's edits.
+    pub tk: super::tickets::TicketsUi,
 }
 
 impl BoardUi {
@@ -132,6 +134,7 @@ impl BoardUi {
         if let Some(diff) = &self.diff {
             diff.comment.update(cx, |s, cx| s.set_placeholder(t!("diff.comment_placeholder"), window, cx));
         }
+        self.tk.relocalize(window, cx);
     }
 
     pub fn new(window: &mut Window, cx: &mut Context<Shell>, fetched: tokio::sync::mpsc::UnboundedSender<Fetched>) -> Self {
@@ -171,6 +174,7 @@ impl BoardUi {
             pulse: 1.,
             pulse_step: 0,
             _ticker: None,
+            tk: super::tickets::TicketsUi::new(window, cx),
         }
     }
 
@@ -181,6 +185,7 @@ impl BoardUi {
             || self.naming.read(cx).focus_handle(cx).is_focused(window)
             || self.slice_search.read(cx).focus_handle(cx).is_focused(window)
             || self.diff.as_ref().is_some_and(|d| d.comment.read(cx).focus_handle(cx).is_focused(window))
+            || self.tk.typing(window, cx)
     }
 
     /// The stat of a ticket's branch, while it still looks as it did when asked.
@@ -211,8 +216,13 @@ impl Shell {
         board::rows(&self.model, &self.board.view, &self.saved_views())
     }
 
-    /// The thing picked in the list.
+    /// The thing picked in the list — on 티켓's board, only a card picked
+    /// by hand (the board shows whole until one is).
     pub fn picked_need(&self) -> Option<Need> {
+        if self.tickets_board() {
+            let shown = |id: TicketId| self.board_columns().iter().any(|c| c.cards.contains(&id));
+            return self.board.view.selected.filter(|n| matches!(n, Need::Ticket(id) if shown(*id)));
+        }
         board::selected(&self.board_rows(), &self.board.view)
     }
 
@@ -227,7 +237,8 @@ impl Shell {
         let reply = self.board.reply.clone();
         let naming = self.board.naming.clone();
         let slice = self.board.slice_search.clone();
-        vec![
+        let mut tickets = self.tickets_subscriptions(window, cx);
+        tickets.extend(vec![
             cx.subscribe_in(&slice, window, |_, _, event: &InputEvent, _, cx| {
                 if matches!(event, InputEvent::Change) {
                     cx.notify();
@@ -257,7 +268,8 @@ impl Shell {
                     this.board_save_view(window, cx);
                 }
             }),
-        ]
+        ]);
+        tickets
     }
 
     /// The list or the pick changed: the peek starts at its top, what the
@@ -291,6 +303,7 @@ impl Shell {
         if let Some(id) = self.board_ticket.take() {
             self.board_reveal(id);
         }
+        self.tickets_sync(cx);
         if self.screen != Screen::Board {
             return;
         }
@@ -376,6 +389,7 @@ impl Shell {
     pub fn open_side_menu(&mut self, menu: Menu, cx: &mut Context<Self>) {
         if self.board.view.menu != menu {
             self.board.view.menu = menu;
+            self.board.view.triage = false;
             self.board.view.selected = None;
             self.board.view.page = None;
             self.board.view.chosen.clear();
@@ -388,6 +402,9 @@ impl Shell {
 
     pub fn board_pick(&mut self, need: Need, cx: &mut Context<Self>) {
         self.board.view.selected = Some(need);
+        if self.tickets_board() {
+            self.board.view.peek = true;
+        }
         self.composer.flash = None;
         self.board_changed(cx);
     }
@@ -599,6 +616,9 @@ impl Shell {
     pub fn board_undo(&mut self, cx: &mut Context<Self>) {
         if let Some(p) = self.board.undo.undo() {
             self.model.unact(p.ticket);
+            if !p.restore.is_empty() {
+                self.tickets_restore(p.restore.clone());
+            }
             if self.model.answers.get(&p.ticket).is_some_and(|a| a.here && !a.settled) {
                 self.model.answers.remove(&p.ticket);
                 self.model.revision += 1;
@@ -617,6 +637,7 @@ impl Shell {
             for command in p.commands {
                 self.send_command(command);
             }
+            self.tickets_sent(p.restore);
         }
         // The live dots pulse and the sidebar's spinners turn while a member works.
         if self.model.tickets.iter().any(|t| self.model.is_live(t)) || self.model.members.iter().any(|m| m.presence == Presence::Working) {
@@ -865,6 +886,9 @@ impl Shell {
     /// Esc: a menu, a question or a note first, then the diff, the page, the
     /// choice, the search, the peek.
     pub fn board_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tickets_escape(window, cx) {
+            return;
+        }
         if self.board.keys_open {
             self.board.keys_open = false;
         } else if self.board.popover.is_some() {
@@ -906,6 +930,10 @@ impl Shell {
         }
         if self.board.typing(window, cx) {
             return false;
+        }
+        // 티켓's own: its menus, the sheet, V, C, P S O E, the board's arrows.
+        if self.board.diff.is_none() && self.on_tickets_key(key, m, window, cx) {
+            return true;
         }
         // The diff has keys of its own.
         if self.board.diff.is_some() && self.on_diff_key(key, m, window, cx) {
@@ -951,6 +979,12 @@ impl Shell {
             return true;
         }
         if m.alt && key == "v" {
+            // 티켓: the views, to pick one or keep this one; elsewhere, keep it.
+            if self.tickets_on() {
+                self.board.tk.views_open = !self.board.tk.views_open;
+                cx.notify();
+                return true;
+            }
             self.board.flow = Some(Flow::SaveView);
             self.board.naming.update(cx, |s, cx| {
                 s.set_value(String::new(), window, cx);
@@ -1036,13 +1070,8 @@ impl Shell {
             "a" | "y" => self.board_yes(cx),
             "n" => self.board_no(cx),
             "r" => self.board_open_reply(window, cx),
-            "c" => self.board_talk(window, cx),
+            "t" => self.board_talk(window, cx),
             "d" => self.board_open_diff(window, cx),
-            "m" => {
-                if let Some(id) = self.picked().filter(Ticket::not_on_main).map(|t| t.id) {
-                    self.board_merge(id, cx);
-                }
-            }
             _ => return false,
         }
         true
@@ -1166,8 +1195,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         Some((tab, t)) => super::peek::page(shell, &t, tab, cx).into_any_element(),
         None => {
             let rows = shell.board_rows();
-            let pick = board::selected(&rows, view);
-            let list = list(shell, &rows, pick, cx);
+            let pick = if shell.tickets_board() { shell.picked_need() } else { board::selected(&rows, view) };
+            let list = if shell.tickets_board() { super::tickets::board(shell, cx) } else { list(shell, &rows, pick, cx).into_any_element() };
             let peek = pick.filter(|_| view.peek).map(|need| super::peek::panel(shell, need, cx));
             match (peek, shell.board.wide) {
                 (Some(peek), true) => h_flex().flex_1().min_h_0().items_start().child(list).child(div().w(px(PEEK)).h_full().flex_none().border_l_1().border_color(p.hair).child(peek)).into_any_element(),
@@ -1189,9 +1218,14 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .relative()
         .child(toolbar(shell, cx))
         .children(super::peek::save_view_bar(shell, cx))
+        .children(super::tickets::quick_bar(shell, cx))
         .child(body)
         .children(bulk_bar(shell, cx))
         .children(toast(shell, cx))
+        .children(super::tickets::edit_menu(shell, cx))
+        .children(super::tickets::views_menu(shell, cx))
+        .children(super::tickets::sheet(shell, cx))
+        .children(super::tickets::confirm_card(shell, cx))
         .children(shell.board.keys_open.then(|| keys_sheet(p, cx)))
         .into_any_element()
 }
@@ -1208,7 +1242,8 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         Menu::Working => Some(working_summary(&shell.model, false)),
         _ => None,
     };
-    let grouping = matches!(view.menu, Menu::All | Menu::View(_));
+    let grouping = matches!(view.menu, Menu::All | Menu::View(_)) && view.layout == crate::tickets::Layout::List;
+    let tickets_on = shell.tickets_on();
     let (_, group) = board::effective(view, &views);
     let chips: Vec<String> = board::chips(&view.query);
     let saved_chips: Vec<String> = match view.menu {
@@ -1249,6 +1284,7 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                 .border_color(p.hair)
                 .window_control_area(WindowControlArea::Drag)
                 .child(h_flex().gap_2().items_baseline().flex_none().child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(title)).child(div().text_size(px(SMALL)).text_color(p.muted).child(count.to_string())))
+                .when(tickets_on, |bar| bar.child(super::tickets::views_button(shell, cx)))
                 .child(super::header::slice_control(shell, "board", cx))
                 .child(
                     h_flex()
@@ -1288,6 +1324,7 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                 )
                 .child(div().flex_1())
                 .children(summary.map(|s| div().flex_none().text_size(px(SMALL)).text_color(p.muted).child(s)))
+                .when(tickets_on, |bar| bar.child(super::tickets::layout_toggle(shell, cx)))
                 .when(grouping, |bar| {
                     bar.child(
                         h_flex()
@@ -1311,6 +1348,7 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                             .child(super::sidebar::icon(IconName::ChevronDown, 12., p.muted)),
                     )
                 })
+                .when(tickets_on, |bar| bar.child(super::tickets::new_button(shell, cx)))
                 .children(popover(shell, cx)),
         )
         .when(has_chips, |bar| {
@@ -1426,13 +1464,16 @@ fn list(shell: &Shell, rows: &[Row], pick: Option<Need>, cx: &mut Context<Shell>
         .px_2()
         .pt_1()
         .pb_6()
+        .children(super::tickets::triage_banner(shell, cx))
         .children(rows.iter().enumerate().map(|(ix, row)| list_row(shell, ix, row, pick, cx)))
         .when(empty, |l| l.child(empty_note(shell, p, cx)))
 }
 
 fn empty_note(shell: &Shell, p: Palette, cx: &mut Context<Shell>) -> AnyElement {
     let view = &shell.board.view;
-    let (title, text, clear) = if !Filter::parse(&view.query).is_empty() {
+    let (title, text, clear) = if view.triage && matches!(view.menu, Menu::All | Menu::View(_)) {
+        (t!("tickets.triage_done_title").to_owned(), t!("tickets.triage_done").to_owned(), false)
+    } else if !Filter::parse(&view.query).is_empty() {
         (t!("board.empty_filtered_title").to_owned(), t!("board.empty_filtered").to_owned(), true)
     } else {
         match view.menu {
@@ -1574,12 +1615,14 @@ pub fn live_activity(model: &Model, t: &Ticket) -> Option<String> {
     })
 }
 
-fn meta(shell: &Shell, t: &Ticket) -> Meta {
+/// A row's chips: what it waits on, what it holds up, where its work is,
+/// quiet, failed — each its words, colour and what it means on the pointer.
+pub fn row_flags(shell: &Shell, t: &Ticket) -> Vec<(String, Rgba, Option<String>)> {
     let p = shell.palette;
     let model = &shell.model;
     let mut flags = Vec::new();
     if let Some(dep) = model.blocked_by(t).filter(|_| matches!(t.status, TicketStatus::Todo | TicketStatus::Proposed)) {
-        flags.push((format!("⛓T-{dep}"), p.orange, None));
+        flags.push((format!("⛔ T-{dep}"), p.orange, Some(t!("tickets.tip_blocked", id = dep))));
     }
     let unblocks = model.unblocks(t.id).len();
     if unblocks > 0 && !t.status.is_closed() {
@@ -1599,6 +1642,13 @@ fn meta(shell: &Shell, t: &Ticket) -> Meta {
     if model.failed(t) {
         flags.push((t!("board.flag_error").to_owned(), p.red, None));
     }
+    flags
+}
+
+fn meta(shell: &Shell, t: &Ticket) -> Meta {
+    let p = shell.palette;
+    let model = &shell.model;
+    let flags = row_flags(shell, t);
     let activity = match t.status {
         TicketStatus::InProgress => live_activity(model, t).map(|a| (a, p.text2)),
         TicketStatus::Waiting => board::first_need(t).map(|n| (n, p.accent)),
@@ -1619,6 +1669,9 @@ fn meta(shell: &Shell, t: &Ticket) -> Meta {
 }
 
 fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Context<Shell>) -> AnyElement {
+    if let (true, Need::Ticket(id)) = (shell.tickets_on(), need) {
+        return super::tickets::row(shell, id, depth, picked, cx);
+    }
     let p = shell.palette;
     let model = &shell.model;
     let group = SharedString::from(format!("row-{need:?}"));
@@ -1771,7 +1824,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                         .rounded(px(3.))
                         .border_1()
                         .border_color(if chosen { p.accent } else { p.hair })
-                        .when(chosen, |c| c.bg(p.accent).text_color(p.on_primary).text_size(px(10.)).child("✓"))
+                        .when(chosen, |c| c.bg(p.accent).text_color(p.on_accent).text_size(px(10.)).child("✓"))
                         .when(!chosen, |c| c.invisible().group_hover(group.clone(), |s| s.visible()))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
@@ -1867,6 +1920,14 @@ fn bulk_bar(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                             cx.notify();
                         })).into_any_element(),
                     ],
+                    None if shell.tickets_on() => {
+                        let mut tools = super::tickets::bulk_tools(shell, cx);
+                        tools.push(btn(p, "bulk-clear", t!("board.clear_choice"), Some("Esc"), false, true).on_click(cx.listener(|this, _, _, cx| {
+                            this.board.view.chosen.clear();
+                            cx.notify();
+                        })).into_any_element());
+                        tools
+                    }
                     None => vec![
                         btn(p, "bulk-yes", t!("board.bulk_accept"), Some("A"), true, shell.can_act()).on_click(cx.listener(|this, _, _, cx| this.board_yes(cx))).into_any_element(),
                         btn(p, "bulk-no", t!("board.bulk_drop"), Some("N"), false, shell.can_act()).on_click(cx.listener(|this, _, _, cx| this.board_no(cx))).into_any_element(),
@@ -1931,24 +1992,33 @@ pub fn toast(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
 
 /// The keys, on ?.
 fn keys_sheet(p: Palette, cx: &mut Context<Shell>) -> AnyElement {
-    let rows: [(&str, &str); 18] = [
+    let rows: [(&str, &str); 27] = [
         ("A", t!("board.key_yes")),
         ("⇧A", t!("board.key_method")),
         ("R", t!("board.key_reply")),
         ("N", t!("board.key_no")),
         ("D", t!("board.key_diff")),
-        ("C", t!("board.key_talk")),
-        ("M", t!("board.key_merge")),
+        ("T", t!("board.key_talk")),
         ("U", t!("board.key_undo")),
+        ("C", t!("tickets.key_new")),
+        ("V", t!("tickets.key_layout")),
+        ("P", t!("tickets.key_priority")),
+        ("S", t!("tickets.key_status")),
+        ("M", t!("tickets.key_assignee")),
+        ("⇧P", t!("tickets.key_project")),
+        ("B", t!("tickets.key_depends")),
+        ("⇧C", t!("tickets.key_sheet")),
+        ("E", t!("tickets.key_title")),
+        ("H L ←→", t!("tickets.key_columns")),
         ("J K ↑↓", t!("board.key_move")),
         ("Space", t!("board.key_peek")),
         ("⏎", t!("board.key_page")),
         ("/", t!("board.key_search")),
         ("F", t!("board.key_filter")),
         ("X ⇧↑↓ ⌘A", t!("board.key_choose")),
-        ("⌥V", t!("board.key_save_view")),
+        ("⌥V", t!("tickets.key_views")),
         ("G I · G L · G B", t!("board.key_go")),
-        ("⌘0–9", t!("board.key_projects")),
+        ("⌃0–9", t!("board.key_projects")),
         ("Esc", t!("board.key_back")),
     ];
     deferred(

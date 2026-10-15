@@ -419,7 +419,7 @@ pub fn core(lang: Lang) -> &'static Catalog {
 /// keeps its own (`in_progress`, `read_only`); these are only for people.
 pub mod label {
     use super::{Lang, core};
-    use equipe_protocol::{DesktopState, MemberRef, Mode, TicketKind, TicketStatus};
+    use equipe_protocol::{DesktopState, MemberRef, Mode, Priority, TicketKind, TicketStatus};
 
     /// `read-only`, `ask me`, `auto`, `full access`.
     pub fn mode(lang: Lang, mode: Mode) -> &'static str {
@@ -461,6 +461,16 @@ pub mod label {
             TicketStatus::Review => "status.review",
             TicketStatus::Done => "status.done",
             TicketStatus::Cancelled => "status.cancelled",
+        })
+    }
+
+    /// `urgent`, `high`, `normal`, `low`.
+    pub fn priority(lang: Lang, priority: Priority) -> &'static str {
+        core(lang).get(match priority {
+            Priority::Urgent => "priority.urgent",
+            Priority::High => "priority.high",
+            Priority::Normal => "priority.normal",
+            Priority::Low => "priority.low",
         })
     }
 

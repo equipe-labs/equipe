@@ -11,7 +11,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Instant;
 
 use equipe_core::i18n::{Front, Lang};
 use equipe_core::protocol::{Command, Mode, SessionId};
@@ -67,8 +66,6 @@ pub struct SettingsUi {
     pub pop: Option<Pop>,
     /// Where each control that opens a pop-up was last drawn.
     anchors: Rc<RefCell<HashMap<Pop, Bounds<Pixels>>>>,
-    /// The switch just flipped, to slide its knob.
-    flipped: Option<(SharedString, Instant)>,
     pub scroll: ScrollHandle,
 }
 
@@ -81,7 +78,6 @@ impl SettingsUi {
             turn: 0,
             pop: None,
             anchors: Rc::default(),
-            flipped: None,
             scroll: ScrollHandle::new(),
         }
     }
@@ -162,38 +158,19 @@ impl Section {
 
 // ── controls, on the app's tokens ──
 
-/// On or off: a small switch, its knob sliding when flipped.
+/// On or off: the app's switch (`ui::switch`), flipping a setting of the shell's.
 fn switch(shell: &Shell, id: &str, on: bool, enabled: bool, flip: impl Fn(&mut Shell, bool, &mut Window, &mut Context<Shell>) + 'static, cx: &mut Context<Shell>) -> AnyElement {
-    let p = shell.palette;
-    let key = SharedString::from(format!("switch-{id}"));
-    let (w, h, knob) = (34., 20., 16.);
-    let (from, to) = if on { (2., w - knob - 2.) } else { (w - knob - 2., 2.) };
-    let moving = shell.settings.flipped.as_ref().filter(|(k, at)| *k == key && at.elapsed() < motion::BASE).map(|(_, at)| at.elapsed().as_nanos() as u64);
-    let knob_color = if p.is_dark() && on { p.on_primary } else { rgb(0xFFFFFF) };
-    let knob_el = div().absolute().top(px((h - knob) / 2.)).size(px(knob)).rounded_full().bg(knob_color).shadow(motion::float_shadow(0.25));
-    let knob_el: AnyElement = match moving {
-        Some(n) => knob_el.left(px(from)).with_animation(ElementId::NamedInteger(key.clone(), n), Animation::new(motion::FAST).with_easing(motion::ease_out), move |k, t| k.left(px(from + (to - from) * t))).into_any_element(),
-        None => knob_el.left(px(to)).into_any_element(),
-    };
-    let track = if on { p.accent } else { p.side_sel };
-    div()
-        .id(key.clone())
-        .relative()
-        .flex_none()
-        .w(px(w))
-        .h(px(h))
-        .rounded_full()
-        .bg(track)
-        .when(!on, |d| d.border_1().border_color(p.hair))
-        .when(!enabled, |d| d.opacity(0.4))
-        .when(enabled, |d| {
-            d.cursor_pointer().on_click(cx.listener(move |this, _, window, cx| {
-                this.settings.flipped = Some((key.clone(), Instant::now()));
-                flip(this, !on, window, cx);
-                cx.notify();
-            }))
+    let handle = cx.entity().downgrade();
+    ui::switch(shell.palette, format!("switch-{id}"), on)
+        .disabled(!enabled)
+        .on_flip(move |on, window, cx| {
+            handle
+                .update(cx, |this, cx| {
+                    flip(this, on, window, cx);
+                    cx.notify();
+                })
+                .ok();
         })
-        .child(knob_el)
         .into_any_element()
 }
 
@@ -230,6 +207,53 @@ fn segmented<T: Copy + PartialEq + 'static>(shell: &Shell, id: &str, options: Ve
                 .child(label);
             if on { seg.into_any_element() } else { motion::hover_fill(seg, SharedString::from(format!("{id}-{ix}-fill")), p.wash, false).into_any_element() }
         }))
+        .into_any_element()
+}
+
+/// The window's size: − and + either side of it, as the segmented control's
+/// pill, and "실제 크기" beside it when it isn't (⌘+ / ⌘- / ⌘0 do the same).
+fn zoom_stepper(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
+    use crate::zoom::{self, Step};
+    let p = shell.palette;
+    let now = shell.remembered.zoom.0;
+    let step = |id: &'static str, glyph: &'static str, how: Step, tip: &'static str, keys: &'static str, cx: &mut Context<Shell>| {
+        let enabled = zoom::step(now, how) != now;
+        let seg = h_flex()
+            .id(id)
+            .h_full()
+            .w(px(CONTROL))
+            .justify_center()
+            .items_center()
+            .rounded(px(R_SM))
+            .text_size(px(UI))
+            .text_color(p.text2)
+            .when(!enabled, |s| s.opacity(0.4))
+            .when(enabled, |s| {
+                s.cursor_pointer().on_click(cx.listener(move |this, _, window, cx| this.zoom(how, window, cx)))
+            })
+            .tip(p, tip, Some(keys))
+            .child(glyph);
+        motion::hover_fill(seg, SharedString::from(format!("{id}-fill")), p.wash, false).into_any_element()
+    };
+    let pill = h_flex()
+        .flex_none()
+        .h(px(CONTROL))
+        .p(px(2.))
+        .gap(px(2.))
+        .items_center()
+        .rounded(px(R_MD))
+        .bg(if p.is_dark() { p.wash } else { p.code_bg })
+        .child(step("zoom-out", "−", Step::Out, t!("main.menu_zoom_out"), "⌘-", cx))
+        .child(div().min_w(px(48.)).text_center().text_size(px(SMALL)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(zoom::label(now)))
+        .child(step("zoom-in", "+", Step::In, t!("main.menu_zoom_in"), "⌘+", cx));
+    h_flex()
+        .flex_none()
+        .gap_2()
+        .items_center()
+        .when(now != zoom::ACTUAL, |row| {
+            row.child(ui::button(p, "zoom-actual", Kind::Ghost, t!("main.menu_actual_size")).key("⌘0").on_click(cx.listener(|this, _, window, cx| this.zoom(Step::Actual, window, cx))))
+        })
+        .child(pill)
         .into_any_element()
 }
 
@@ -337,6 +361,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     language.control = Some(picker(shell, Pop::Language, language_label(shell), 0., cx));
     let looks = Appearance::ALL.into_iter().map(|a| (a, appearance_word(a).to_owned())).collect();
     let appearance = Line::new(t!("settings.appearance"), t!("settings.appearance_desc")).words("appearance theme dark light").control(segmented(shell, "appearance", looks, shell.remembered.appearance, |this, a, window, cx| this.set_appearance(a, window, cx), cx));
+    let zoom = Line::new(t!("settings.zoom"), t!("settings.zoom_desc")).words("zoom size scale text font larger smaller bigger").control(zoom_stepper(shell, cx));
     let starts = Start::ALL.into_iter().map(|s| (s, start_word(s).to_owned())).collect();
     let start = Line::new(t!("settings.start"), t!("settings.start_desc")).words("launch").control(segmented(shell, "start", starts, shell.remembered.start, |this, s, _, _| this.set_start(s), cx));
     let follow = Line::new(t!("settings.follow_project"), t!("settings.follow_project_desc"))
@@ -358,7 +383,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             .control(ui::button(p, "open-notifications", Kind::Secondary, t!("settings.open_system_settings")).icon(Icon::External).on_click(|_, _, cx| cx.open_url("x-apple.systempreferences:com.apple.Notifications-Settings.extension"))),
     ];
     vec![
-        Section::new(t!("settings.section_look"), vec![language, appearance]).foot(format!("{} {}", t!("settings.language_note"), t!("settings.this_mac_foot"))),
+        Section::new(t!("settings.section_look"), vec![language, appearance, zoom]).foot(format!("{} {}", t!("settings.language_note"), t!("settings.this_mac_foot"))),
         Section::new(t!("settings.section_start"), vec![start]),
         Section::new(t!("settings.section_conversation"), vec![follow]),
         Section::new(t!("settings.section_notifications"), notifications).foot(t!("settings.notifications_foot")),
@@ -427,7 +452,7 @@ fn phones(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Section {
     let words = "phone iphone android mobile app pair qr device equipe 휴대폰 아이폰 기기 앱";
     let pair = Line::new(t!("pair.settings_pair"), t!("pair.settings_pair_desc", host = shell.endpoint.label()))
         .words(words)
-        .control(ui::button(p, "pair-phone", Kind::Primary, t!("pair.menu_item")).icon(Icon::Phone).disabled(!connected).on_click(cx.listener(|this, _, window, cx| this.open_pairing(window, cx))));
+        .control(ui::button(p, "pair-phone", Kind::Secondary, t!("pair.menu_item")).icon(Icon::Phone).disabled(!connected).on_click(cx.listener(|this, _, window, cx| this.open_pairing(window, cx))));
     let mut lines = vec![pair];
     let now = crate::state::now_unix();
     match &shell.pairing.devices {
@@ -446,7 +471,7 @@ fn phones(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Section {
                             this.forgetting = None;
                             cx.notify();
                         })))
-                        .child(ui::button(p, ("forget-yes", ix), Kind::Primary, t!("pair.forget_sure")).disabled(!connected).on_click(cx.listener(move |this, _, _, cx| this.forget_device(&again, cx))))
+                        .child(ui::button(p, ("forget-yes", ix), Kind::Danger, t!("pair.forget_sure")).disabled(!connected).on_click(cx.listener(move |this, _, _, cx| this.forget_device(&again, cx))))
                         .into_any_element()
                 } else {
                     ui::button(p, ("forget", ix), Kind::Secondary, t!("pair.forget")).disabled(!connected).on_click(cx.listener(move |this, _, _, cx| this.forget_device(&id, cx))).into_any_element()
@@ -630,7 +655,7 @@ fn about(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         .control(h_flex().gap_1().items_center().child(value(p, version)).child(ui::icon_button(p, "copy-version", Icon::Copy, t!("settings.copy_version"), None).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(version.to_owned())))));
     let mut updates = vec![this_version];
     if let Some(ready) = shell.update_ready.clone() {
-        updates.push(Line::new(crate::relaunch::label(&ready), t!("settings.update_ready_desc")).words("update").control(ui::button(p, "relaunch-now", Kind::Primary, t!("settings.relaunch")).on_click(cx.listener(|this, _, _, cx| this.relaunch_to_update(cx)))));
+        updates.push(Line::new(crate::relaunch::label(&ready), t!("settings.update_ready_desc")).words("update").control(ui::button(p, "relaunch-now", Kind::Secondary, t!("settings.relaunch")).on_click(cx.listener(|this, _, _, cx| this.relaunch_to_update(cx)))));
     }
     updates.push(
         Line::new(t!("settings.check_updates"), if can { t!("settings.check_updates_desc") } else { t!("settings.no_updater") })
@@ -790,7 +815,7 @@ fn nav(shell: &Shell, found: &[(Category, usize)], searching: bool, cx: &mut Con
                 }))
                 .child(div().w(px(ICON)).flex_none().flex().items_center().justify_center().child(dot(p.orange, 7.)))
                 .child(div().flex_1().min_w_0().truncate().text_color(p.text2).child(t!("board.menu_inbox")))
-                .child(div().flex_none().min_w(px(18.)).h(px(18.)).px(px(5.)).flex().items_center().justify_center().rounded(px(9.)).bg(p.accent).text_color(p.on_primary).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child(needs.to_string()))
+                .child(div().flex_none().min_w(px(18.)).h(px(18.)).px(px(5.)).flex().items_center().justify_center().rounded(px(9.)).bg(p.accent).text_color(p.on_accent).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child(needs.to_string()))
         }))
         .into_any_element()
 }

@@ -2162,7 +2162,7 @@ dependencies = [
 
 [[package]]
 name = "equipe"
-version = "0.44.0"
+version = "0.46.0"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -2194,7 +2194,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-core"
-version = "0.44.0"
+version = "0.46.0"
 dependencies = [
  "base64 0.23.1",
  "equipe-protocol",
@@ -2210,7 +2210,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-desktop"
-version = "0.44.0"
+version = "0.46.0"
 dependencies = [
  "base64 0.23.1",
  "block2 0.6.2",
@@ -2240,7 +2240,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-protocol"
-version = "0.44.0"
+version = "0.46.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2248,7 +2248,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-providers"
-version = "0.44.0"
+version = "0.46.0"
 dependencies = [
  "base64 0.23.1",
  "dirs 7.0.0",
