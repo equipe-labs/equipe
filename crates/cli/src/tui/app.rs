@@ -1637,8 +1637,9 @@ impl App {
             self.flash = Some(t!("app.ticket_ready", id = ticket.id));
         }
         if ticket.status == TicketStatus::Waiting && was != Some(TicketStatus::Waiting) {
-            let needs = ticket.note.as_deref().map(board::waiting_needs).unwrap_or_default().join(", ");
-            self.flash = Some(t!("app.ticket_waits", id = ticket.id, needs = needs));
+            // Its asks are in the conversation, one under another; here, how many.
+            let name = ticket.assignee.clone().or(ticket.owner.clone()).unwrap_or_default();
+            self.flash = Some(t!("app.ticket_waits", id = ticket.id, name = name, count = ticket.asks().len().max(1)));
         }
         match self.tickets.iter_mut().find(|t| t.id == ticket.id) {
             Some(slot) => *slot = ticket,
@@ -3337,6 +3338,7 @@ mod tests {
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: None,
+            asks: vec![],
         }
     }
 
@@ -4470,7 +4472,7 @@ mod tests {
         waiting.note = Some("Waiting on you:\n- [ ] GitHub token\n- [ ] PostHog secrets".into());
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: waiting });
         let flash = app.flash.clone().unwrap();
-        assert!(flash.contains("T-6 your turn: GitHub token, PostHog secrets") && flash.contains("/resume T-6"), "{flash}");
+        assert_eq!(flash, "T-6 your turn — frontend asks you 2 things · /resume T-6", "how many, not every ask run together");
         type_text(&mut app, "/resume");
         assert!(enter(&mut app).is_empty());
         assert!(app.flash.as_deref().unwrap().contains("your turn: T-6"), "{:?}", app.flash);

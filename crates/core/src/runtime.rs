@@ -470,7 +470,7 @@ struct TurnDone {
 }
 
 enum Internal {
-    Event(Event),
+    Event(Box<Event>),
     Done(TurnDone),
     /// Nobody answered a request for permission in time.
     ApprovalTimedOut(u64),
@@ -610,7 +610,7 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                 None => break,
             },
             Some(message) = internal.recv() => match message {
-                Internal::Event(event) => rt.publish(event),
+                Internal::Event(event) => rt.publish(*event),
                 Internal::Done(done) => rt.on_turn_done(done).await,
                 Internal::ApprovalTimedOut(id) => rt.answer(id, Decision::Deny, "Nobody answered in time."),
                 Internal::Frame(session, frame) => {
@@ -653,7 +653,13 @@ impl Runtime {
     /// Fold an event into its session, journal what became final, and pass it to
     /// the screens following its squad. `squad` names the squad of an event that
     /// has no session to say it (a failed start, a board error).
-    fn publish_in(&mut self, squad: Option<&str>, event: Event) {
+    fn publish_in(&mut self, squad: Option<&str>, mut event: Event) {
+        // A ticket waiting for the person carries what it asks, item by item
+        // (kept in its note); any other, nothing.
+        if let Event::TicketChanged { ticket, .. } = &mut event {
+            ticket.asks = Vec::new();
+            ticket.asks = ticket.asks();
+        }
         // Where a member's browser goes, to bring it back there on screen.
         if let Event::ToolUse { session, tool, target: Some(url) } = &event
             && tool.ends_with("browser_navigate")
@@ -1419,7 +1425,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             }
             for t in here.iter().filter(|t| t.status == TicketStatus::Waiting) {
                 let needs = t.note.as_deref().map(board::waiting_needs).unwrap_or_default();
-                let needs = if needs.is_empty() { String::new() } else { format!(": needs {}", needs.join(", ")) };
+                let needs = if needs.is_empty() { String::new() } else { format!(": needs {}", needs.join("; ")) };
                 line.push_str(&format!("; T-{} ({}) waits for the person{needs}", t.id, t.title));
             }
             let open = here.iter().filter(|t| matches!(t.status, TicketStatus::Todo | TicketStatus::InProgress)).count();
@@ -1736,7 +1742,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 let history = recent_history(&history);
                 tokio::spawn(async move {
                     let emit = |event| {
-                        let _ = internal.send(Internal::Event(event));
+                        let _ = internal.send(Internal::Event(Box::new(event)));
                     };
                     let mut streamed = false;
                     let request = responses::TurnRequest {
@@ -1784,7 +1790,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                     .collect();
                 tokio::spawn(async move {
                     let emit = |event| {
-                        let _ = internal.send(Internal::Event(event));
+                        let _ = internal.send(Internal::Event(Box::new(event)));
                     };
                     let mut streamed = false;
                     let request = claude_code::TurnRequest {
@@ -2038,7 +2044,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         tokio::spawn(async move {
             let _ = std::fs::create_dir_all(&cwd);
             if let Some(text) = claude_code::suggest(&binary, &cwd, &conversation).await {
-                let _ = internal.send(Internal::Event(Event::Suggestion { session: id, text }));
+                let _ = internal.send(Internal::Event(Box::new(Event::Suggestion { session: id, text })));
             }
         });
     }
@@ -3496,6 +3502,7 @@ there, end your turn, and carry on when they say they're done."
                     merged: None,
                     created_by: member.clone(),
                     note: None,
+                    asks: vec![],
                 };
                 let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
                 let new_id = journal.create_ticket(&ticket).map_err(|e| e.to_string())?;
@@ -4240,7 +4247,8 @@ lesson in your memory before you start, so the next ticket begins with it.\n"
     out.push_str(if board_tools {
         "\nWhen it meets the acceptance criteria, call submit_for_review with a short summary, then end your turn. \
 If you can't go on without something only the person can do (a token, an account, a setting), call block_on_person \
-with what they need to do and end your turn — you are free for other work until they have. If you need a decision, \
+with what they need to do — each ask its own item, a full sentence, files by their path in backticks — and end your \
+turn: you are free for other work until they have. If you need a decision, \
 say so and end your turn — the person answers here."
     } else {
         "\nWhen it's done, say so plainly; the person accepts it. If you are blocked or need a decision, say so."

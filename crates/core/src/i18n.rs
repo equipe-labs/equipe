@@ -488,6 +488,24 @@ pub mod label {
     }
 }
 
+/// The ticket a line of news says waits for the person (`news.waiting`, in
+/// any language: a line kept from before the language changed still reads).
+pub fn waiting_ticket(text: &str) -> Option<crate::protocol::TicketId> {
+    let rest = text.trim().strip_prefix("T-")?;
+    let digits = rest.chars().take_while(char::is_ascii_digit).count();
+    let id = rest[..digits].parse().ok()?;
+    let after = &rest[digits..];
+    Lang::ALL
+        .into_iter()
+        .any(|lang| {
+            let template = core(lang).get("news.waiting");
+            let Some(tail) = template.strip_prefix("T-{id}") else { return false };
+            let literal = tail.split('{').next().unwrap_or_default();
+            !literal.trim().is_empty() && after.starts_with(literal)
+        })
+        .then_some(id)
+}
+
 /// A line of a conversation as the person reads it: the lines the transcript
 /// writes itself (`Stopped.`, a ticket's branch…) in `lang`; any other line
 /// — equipe's notices, already in the person's language — as it is.
@@ -750,6 +768,16 @@ mod tests {
         assert_eq!(note(Lang::En, &ticket), ticket);
         assert_eq!(note(Lang::Ko, &ticket), "── T-4 · a — b — 브랜치 equipe/t-4");
         assert_eq!(note(Lang::Ko, "✓ 허용함: ls"), "✓ 허용함: ls", "a notice is in the person's language already");
+    }
+
+    #[test]
+    fn a_waiting_line_names_its_ticket_in_any_language() {
+        for lang in Lang::ALL {
+            let line = core(lang).fill("news.waiting", &[("id", "117".into()), ("name", "ios".into()), ("title", "앱스토어 제출".into())]);
+            assert_eq!(waiting_ticket(&line), Some(117), "{lang:?}: {line}");
+        }
+        assert_eq!(waiting_ticket("T-4 · Research"), None);
+        assert_eq!(waiting_ticket("You accepted T-58 · 헤더."), None);
     }
 
     #[test]

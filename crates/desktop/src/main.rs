@@ -41,6 +41,7 @@ mod settings;
 mod update;
 mod views;
 mod wire;
+mod yourturn;
 
 use std::time::Duration;
 
@@ -100,6 +101,8 @@ pub struct Shell {
     pub chat: Chat,
     pub composer: Composer,
     pub board: BoardUi,
+    /// The answer boxes of the cards tickets waiting for the person ask on.
+    pub turn: views::yourturn::TurnUi,
     pub settings: views::settings::SettingsUi,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
     pub browser: Entity<BrowserPanel>,
@@ -178,6 +181,7 @@ impl Shell {
             chat: Chat::new(cx),
             composer: Composer::new(window, cx),
             board: BoardUi::new(window, cx, fetched_tx),
+            turn: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
             browser,
             board_ticket: None,
@@ -345,7 +349,8 @@ impl Shell {
     /// conversation list.
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.composer.follow(&self.model, window, cx);
-        self.chat.sync(&self.model, cx);
+        self.turn_sync(window, cx);
+        self.chat_sync(cx);
         self.board_sync(cx);
         self.sync_browser(window, cx);
     }

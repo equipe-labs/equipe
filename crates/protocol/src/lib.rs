@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub mod asks;
 pub mod rpc;
 pub mod stream;
 pub mod tags;
@@ -228,6 +229,10 @@ pub struct Ticket {
     pub created_by: String,
     /// The latest word on it: a hand-in summary, why it was reopened.
     pub note: Option<String>,
+    /// While it waits for the person: what it asks of them, one item each
+    /// ([`Ticket::asks`] reads an older daemon's note when this is empty).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asks: Vec<String>,
 }
 
 impl Ticket {
@@ -1149,7 +1154,27 @@ mod tests {
             kind: TicketKind::Code,
             created_by: "pm".into(),
             note: None,
+            asks: vec![],
         }
+    }
+
+    #[test]
+    fn a_tickets_asks_travel_as_a_list_and_are_left_out_when_none() {
+        let mut t = ticket(117);
+        assert!(serde_json::to_value(&t).unwrap().get("asks").is_none(), "nothing asked: the wire as before");
+        t.status = TicketStatus::Waiting;
+        t.asks = vec!["심사 연락처를 알려 주세요.".into(), "리뷰 일정을 정해 주세요.".into()];
+        let wire = serde_json::to_value(&t).unwrap();
+        assert_eq!(wire["asks"], json!(["심사 연락처를 알려 주세요.", "리뷰 일정을 정해 주세요."]));
+        let back: Ticket = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(back, t);
+        // From a daemon that doesn't send them: none, and the note says them.
+        let mut old = wire;
+        old.as_object_mut().unwrap().remove("asks");
+        old["note"] = json!("Waiting on you:\n- [ ] a\n- [ ] b");
+        let old: Ticket = serde_json::from_value(old).unwrap();
+        assert!(old.asks.is_empty());
+        assert_eq!(old.asks(), ["a", "b"]);
     }
 
     #[test]

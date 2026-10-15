@@ -16,6 +16,11 @@
 //! `FAKE_SECONDS` (default 4) is how long a reply streams; `FAKE_SAID` adds a
 //! last message of the person's to the PM's history (attachment tags and all).
 //!
+//! `FAKE_TURN=1` puts T-117 down for the person — three asks, one naming a
+//! folder with spaces and a file it made under the app's repository — with
+//! its news last in the PM's conversation; `FAKE_TURN=elsewhere` also answers
+//! it from "another screen" after `FAKE_TURN_AFTER` ms (default 5000).
+//!
 //! Pairing a phone: a code at once, and two phones paired already.
 //! `FAKE_PAIR=ask` has a phone ask 1.5 s after the code shows (`allow` pairs
 //! it); `relay` fails as an unreachable relay would; `silent` never answers,
@@ -233,7 +238,35 @@ fn board() -> Vec<Ticket> {
         done.merged = Some(false);
         out.push(done);
     }
+    if your_turn().is_some() {
+        out.push(turn_ticket());
+    }
     out
+}
+
+/// `FAKE_TURN`: T-117 waits for the person (`1`), and is answered elsewhere (`elsewhere`).
+fn your_turn() -> Option<String> {
+    std::env::var("FAKE_TURN").ok().filter(|v| !v.is_empty() && v != "0")
+}
+
+/// What T-117 asks: as the person once saw it joined into one line.
+const TURN_ASKS: [&str; 3] = [
+    "심사 연락처(App Review Information)를 알려 주세요: 이름, 전화번호(국가번호 포함), 이메일. 심사팀만 보고 공개되지 않습니다.",
+    "회사 iOS 엔지니어 리뷰를 언제, 누가 할지 정해 주세요. equipe-app 규칙상 스토어 출시 전에 꼭 받아야 합니다.",
+    "스크린샷과 문구를 확인해 주세요: outputs/T-117 앱스토어 제출/screenshots-6.9/ (en·ko 5장씩, 실제 앱 화면) 와 listing.json. ko 스크린샷 속 티켓 제목은 데모 데이터라 영어입니다. 그대로 둬도 되면 '괜찮음'이라고만 답해 주세요.",
+];
+
+/// T-117, waiting, with the folder and file its third ask names on disk.
+fn turn_ticket() -> Ticket {
+    let shots = repo("app").join("outputs/T-117 앱스토어 제출/screenshots-6.9");
+    let _ = std::fs::create_dir_all(&shots);
+    let _ = std::fs::write(repo("app").join("listing.json"), "{ \"name\": \"equipe\" }\n");
+    let asks: Vec<String> = TURN_ASKS.iter().map(|a| (*a).to_owned()).collect();
+    let note = equipe_core::protocol::asks::waiting_note(&asks, Some("앱스토어 심사 제출에 필요합니다"));
+    let mut t = ticket(117, "waiting", "app", "frontend", "앱스토어 제출", "App Store Connect에 1.0을 제출합니다.", &[], None, Some(&note));
+    t.kind = equipe_core::protocol::TicketKind::Task;
+    t.asks = asks;
+    t
 }
 
 fn tickets() -> &'static std::sync::Mutex<Vec<Ticket>> {
@@ -260,7 +293,11 @@ fn on_ticket_command(command: &Command) -> Option<Ticket> {
             t.status = TicketStatus::InProgress;
             t.note = Some(note.clone());
         }
-        Command::Resume { .. } => t.status = TicketStatus::InProgress,
+        Command::Resume { note, .. } => {
+            t.status = TicketStatus::InProgress;
+            t.note = Some(if note.trim().is_empty() { "Resumed: the person did what you were waiting for.".into() } else { format!("Resumed: {note}") });
+            t.asks.clear();
+        }
         _ => t.status = TicketStatus::Cancelled,
     }
     Some(t.clone())
@@ -348,6 +385,29 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         // attachment tags comes back after a restart.
                         let mut history = history;
                         history.extend(std::env::var("FAKE_SAID").ok().filter(|s| !s.is_empty()).map(|text| Entry::User { text }));
+                        if let Some(how) = your_turn() {
+                            history.push(Entry::Note { text: "frontend handed in T-63 for your review · 경쟁 앱 온보딩 조사.".into() });
+                            history.push(Entry::Note { text: "T-117 waits for you — frontend needs something only you can do · 앱스토어 제출.".into() });
+                            if how == "elsewhere" {
+                                let events = events.clone();
+                                tokio::spawn(async move {
+                                    let after = std::env::var("FAKE_TURN_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(5000);
+                                    tokio::time::sleep(Duration::from_millis(after)).await;
+                                    let changed = {
+                                        let mut all = tickets().lock().unwrap();
+                                        all.iter_mut().find(|t| t.id == 117 && t.status == TicketStatus::Waiting).map(|t| {
+                                            t.status = TicketStatus::InProgress;
+                                            t.note = Some("Resumed: 1. 심사 연락처(App Review Information)를 알려 주세요: 이름, 전화번호(국가번호 포함), 이메일. 심사팀만…\n→ 고아벨, +82 10 1234 5678, review@equipe.im\n\n3. 스크린샷과 문구를 확인해 주세요: outputs/T-117 앱스토어 제출/screenshots-6.9/ (en·ko 5장씩…\n→ 괜찮음".into());
+                                            t.asks.clear();
+                                            t.clone()
+                                        })
+                                    };
+                                    if let Some(ticket) = changed {
+                                        let _ = events.send(Event::TicketChanged { squad: "demo".into(), ticket });
+                                    }
+                                });
+                            }
+                        }
                         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
                         let frontend = on(info(2, "frontend", vec![]), 47, "web", "상품 상세 페이지 이미지 갤러리", true, ("Edit", "src/gallery.tsx"), Some(Estimate { done_at: Some(now + 25 * 60), ..Default::default() }));
                         let backend = on(info(3, "backend", vec![]), 70, "api", "주문 API 페이지네이션", true, ("Bash", "cargo test -p api"), Some(Estimate { done_at: Some(now + 50 * 60), guessed: true, ..Default::default() }));

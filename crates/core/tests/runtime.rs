@@ -761,6 +761,7 @@ async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
                     kind: equipe_core::protocol::TicketKind::Code,
                     created_by: "pm".into(),
                     note: None,
+                    asks: vec![],
                 })
                 .unwrap();
             assert_eq!(made, id);
@@ -934,6 +935,7 @@ async fn a_member_waiting_on_the_person_takes_its_next_ticket_and_comes_back_to_
     let waiting = until(&mut events, |e| is_waiting(e, 1)).await;
     let ticket = ticket_changed(&waiting).pop().unwrap();
     assert_eq!(ticket.note.as_deref(), Some("Waiting on you:\n- [ ] GitHub token\n- [ ] PostHog secrets\n(to deploy)"));
+    assert_eq!(ticket.asks, ["GitHub token", "PostHog secrets"], "the asks travel as a list");
     assert_eq!(ticket.assignee.as_deref(), Some("backend"));
     assert!(first.path.exists(), "the worktree stays while the ticket waits");
     let branch = ticket.branch.clone().unwrap();
@@ -984,6 +986,7 @@ async fn a_waiting_ticket_stays_put_through_a_restart_until_the_pm_resumes_it() 
     let backend = snapshot.sessions.iter().find(|s| s.session == 2).unwrap();
     assert!(backend.work.is_none(), "a waiting ticket isn't picked up again");
     assert_eq!(snapshot.tickets[0].status, TicketStatus::Waiting);
+    assert_eq!(snapshot.tickets[0].asks, ["a Vercel token"], "read back from the note it is kept in");
     let worktree = snapshot.tickets[0].worktree.clone().unwrap();
     assert!(worktree.exists());
 

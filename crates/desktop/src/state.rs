@@ -273,6 +273,9 @@ pub struct Model {
     pub browsers_shown: bool,
     /// The person took the Mac's screen back from the members.
     pub desktop_stopped: bool,
+    /// What the person answered tickets that waited for them with, here or on
+    /// another screen (`crate::yourturn`), for the cards that asked.
+    pub answers: HashMap<TicketId, crate::yourturn::Answered>,
 }
 
 impl Model {
@@ -304,6 +307,7 @@ impl Model {
             suggestions_off: false,
             browsers_shown: false,
             desktop_stopped: false,
+            answers: HashMap::new(),
         }
     }
 
@@ -805,17 +809,35 @@ impl Model {
                     self.alerts.push(Alert::Review { ticket: ticket.id, title: ticket.title.clone(), by: ticket.assignee.clone().or(ticket.owner.clone()), project: self.ticket_project_name(ticket) });
                 }
                 TicketStatus::Waiting => {
-                    let needs = ticket.note.as_deref().map(equipe_core::board::waiting_needs).unwrap_or_default().join(", ");
-                    self.flash = Some(t!("state.waiting_flash", id = ticket.id, needs = needs));
-                    self.alerts.push(Alert::Waiting { ticket: ticket.id, by: ticket.assignee.clone().or(ticket.owner.clone()) });
+                    // Its card is in the conversation on screen: no need to say it twice.
+                    let by = ticket.assignee.clone().or(ticket.owner.clone());
+                    let here = self.selected_member().is_some_and(|m| by.as_deref() == Some(m.name.as_str()));
+                    if !here {
+                        let name = by.clone().unwrap_or_default();
+                        self.flash = Some(t!("state.waiting_flash", id = ticket.id, name = name, count = ticket.asks().len().max(1)));
+                    }
+                    self.alerts.push(Alert::Waiting { ticket: ticket.id, by });
                 }
                 _ => {}
             }
+        }
+        // A card asking the person, answered here or elsewhere: it shows so.
+        let asked = was == Some(TicketStatus::Waiting) || ticket.status == TicketStatus::Waiting;
+        let answered = crate::yourturn::on_ticket(&mut self.answers, was, ticket, self.unix);
+        if asked || answered {
+            self.revision += 1;
         }
         match self.tickets.iter_mut().find(|t| t.id == ticket.id) {
             Some(slot) => *slot = ticket.clone(),
             None => self.tickets.push(ticket.clone()),
         }
+    }
+
+    /// The person sent a card's answers from here: it says so until the
+    /// daemon moves the ticket.
+    pub fn answer_sent(&mut self, id: TicketId, text: String) {
+        crate::yourturn::sent(&mut self.answers, id, text, self.unix);
+        self.revision += 1;
     }
 
     /// The subagents under each member, which the sidebar lists.
@@ -1222,8 +1244,41 @@ mod tests {
         assert!(matches!(alerts[0], Alert::Approval { .. }));
         assert!(matches!(alerts[1], Alert::Review { ticket: 3, .. }));
         assert!(matches!(alerts[2], Alert::Waiting { ticket: 3, .. }));
-        assert!(model.take_flash().unwrap().contains("GitHub token"));
+        // backend's conversation is on screen: its card says it there, the flash doesn't.
+        assert_eq!(model.take_flash().as_deref(), Some("T-3 검토 · 나에게에서 A 수락, R 변경 요청"));
         assert!(model.take_alerts().is_empty());
+    }
+
+    #[test]
+    fn a_wait_elsewhere_is_one_short_line_and_its_card_follows_where_it_was_answered() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "backend", "backend", SessionState::Working)]), T0);
+        model.select(1);
+        let tick = |status, note: Option<&str>| {
+            let mut t = ticket(3, status, note);
+            t.assignee = Some("backend".into());
+            Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: t })
+        };
+        model.apply(tick("in_progress", None), T0);
+        model.apply(tick("waiting", Some("Waiting on you:\n- [ ] 토큰을 알려 주세요.\n- [ ] 일정을 정해 주세요.")), T0);
+        assert_eq!(model.take_flash().as_deref(), Some("T-3 내 차례 — backend이(가) 2가지를 묻습니다"), "no asks run together, no keys to learn");
+        // Answered on another screen: the card learns it as the ticket moves.
+        let revision = model.revision;
+        model.unix = 1_000;
+        model.apply(tick("todo", Some("Resumed: 1. 토큰을 알려 주세요.\n→ ghp_x")), T0);
+        assert!(model.revision > revision, "the conversation draws its card again");
+        let answered = &model.answers[&3];
+        assert_eq!((answered.here, answered.settled, answered.at), (false, true, Some(1_000)));
+        assert_eq!(answered.text, "1. 토큰을 알려 주세요.\n→ ghp_x");
+        // Asked again, then answered from here.
+        model.apply(tick("waiting", Some("Waiting on you:\n- [ ] 다시 알려 주세요.")), T0);
+        assert!(!model.answers.contains_key(&3), "a new round");
+        model.answer_sent(3, "1. 다시 알려 주세요.\n→ ok".into());
+        let t = model.tickets.iter().find(|t| t.id == 3).cloned();
+        assert_eq!(crate::yourturn::phase(t.as_ref(), model.answers.get(&3)), crate::yourturn::Phase::Sending);
+        model.apply(tick("todo", Some("Resumed: 1. 다시 알려 주세요.\n→ ok")), T0);
+        let t = model.tickets.iter().find(|t| t.id == 3).cloned();
+        assert_eq!(crate::yourturn::phase(t.as_ref(), model.answers.get(&3)), crate::yourturn::Phase::Answered { here: true });
     }
 
     #[test]

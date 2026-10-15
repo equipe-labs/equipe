@@ -248,7 +248,14 @@ impl Bridge {
     fn waiting_text(&self, squad: &str, t: &Ticket) -> String {
         let who = escape(&t.assignee.as_ref().or(t.owner.as_ref()).cloned().unwrap_or_else(|| t!("telegram.a_member_cap").into()));
         let mut text = format!("✋ <b>T-{}</b> {}{}\n", t.id, escape(&t.title), self.where_(squad));
+        let asks = t.asks();
         match t.note.as_deref().filter(|n| !n.trim().is_empty()) {
+            // Its asks one under another, numbered, and why.
+            Some(note) if !asks.is_empty() => {
+                let listed = asks.iter().enumerate().map(|(n, a)| format!("{}. {}", n + 1, escape(&cut(a, 600)))).collect::<Vec<_>>().join("\n");
+                let why = equipe_core::protocol::asks::waiting_why(note).map(|w| format!("\n<i>{}</i>", escape(&w))).unwrap_or_default();
+                text.push_str(&format!("{}\n\n{listed}{why}", t!("telegram.needs_you_with_note", who = who)));
+            }
             Some(note) => text.push_str(&format!("{}\n\n{}", t!("telegram.needs_you_with_note", who = who), escape(&cut(note, 1500)))),
             None => text.push_str(&t!("telegram.needs_you", who = who)),
         }
@@ -992,6 +999,7 @@ mod tests {
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: Some("Done: <form> & tests".into()),
+            asks: vec![],
         }
     }
 

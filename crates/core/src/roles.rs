@@ -254,8 +254,10 @@ with `--edits` when it should change a project's files). Code needs an engineer:
         (true, false) => "Your equipe tools: `board` shows the board, `create_ticket` proposes work outside your \
 ticket, `comment` notes something on a ticket, and `submit_for_review` hands in the ticket you are on once \
 it meets its acceptance criteria. When you can't go on without something only the person can do — a token, an \
-account, a setting — `block_on_person` puts the ticket down with what they need to do, and you take other work \
-until they have; don't keep a ticket open just to wait.",
+account, a setting, an answer or a decision — `block_on_person` puts the ticket down with what they need to do, and \
+you take other work until they have; don't keep a ticket open just to wait. Give each thing you ask its own item in \
+`needs`, a complete sentence that stands alone (never several joined into one), and name a file or folder by its \
+path in backticks (`outputs/shots/`), so the person can open it from the card they answer on.",
         (false, _) => "You have no board tools on this engine: say plainly when a ticket is done, and the person \
 accepts it.",
     };
@@ -494,6 +496,18 @@ mod tests {
         assert!(text.contains("pm (the PM) keeps the plan"), "{text}");
         assert!(text.contains("new ticket"), "{text}");
         assert!(text.contains("language they write in"), "{text}");
+    }
+
+    #[test]
+    fn a_member_asks_the_person_one_whole_sentence_an_item_and_files_by_path() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "ios", role: "mobile" }];
+        let text = charter(role("mobile").unwrap(), "ios", &ctx(&team, &[], true));
+        for part in ["its own item in", "complete sentence", "never several joined into one", "path in backticks"] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+        let schema = crate::board::tools(false).into_iter().find(|t| t["name"] == crate::board::BLOCK_ON_PERSON).unwrap();
+        let needs = schema["inputSchema"]["properties"]["needs"]["description"].as_str().unwrap();
+        assert!(needs.contains("one per item") && needs.contains("complete sentence") && needs.contains("backticks"), "{needs}");
     }
 
     #[test]
