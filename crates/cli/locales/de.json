@@ -785,5 +785,13 @@
   "view.write_goes_to_pm": "Was du schreibst, geht an den PM, zu T-{id}.",
   "view.writes": "schreibt {files}",
   "view.your_turn_answer": "Antworten: /resume T-{id} mit deinen Antworten, oder a auf dem Board",
-  "view.your_turn_heading": "Du bist dran · T-{id} · {title}"
+  "view.your_turn_heading": "Du bist dran · T-{id} · {title}",
+  "app.new_prompt": "Gib den Titel des neuen Tickets ein, dann Enter – der PM bestimmt, wer es macht.",
+  "app.new_sent": "„{title}“ kommt aufs Board.",
+  "app.title_prompt": "Ändere den Titel von T-{id}, dann Enter.",
+  "app.title_usage": "/title T-n <neuer Titel>",
+  "commands.new": "Ein eigenes Ticket aufs Board setzen (⇧N im Board)",
+  "commands.new_args": "<Titel>",
+  "commands.title": "Den Titel eines Tickets ändern (⇧E im Board)",
+  "commands.title_args": "T-n <Titel>"
 }

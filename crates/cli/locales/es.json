@@ -785,5 +785,13 @@
   "view.write_goes_to_pm": "Lo que escribas va al PM, sobre T-{id}.",
   "view.writes": "escribe {files}",
   "view.your_turn_answer": "Responder: /resume T-{id} con tus respuestas, o a en el tablero",
-  "view.your_turn_heading": "Tu turno · T-{id} · {title}"
+  "view.your_turn_heading": "Tu turno · T-{id} · {title}",
+  "app.new_prompt": "Escribe el título del nuevo ticket y pulsa Enter; el PM le asigna responsable.",
+  "app.new_sent": "«{title}» va al tablero.",
+  "app.title_prompt": "Cambia el título de T-{id} y pulsa Enter.",
+  "app.title_usage": "/title T-n <nuevo título>",
+  "commands.new": "Pon un ticket tuyo en el tablero (⇧N en el tablero)",
+  "commands.new_args": "<título>",
+  "commands.title": "Cambiar el título de un ticket (⇧E en el tablero)",
+  "commands.title_args": "T-n <título>"
 }

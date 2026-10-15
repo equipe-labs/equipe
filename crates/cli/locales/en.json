@@ -785,5 +785,13 @@
   "view.write_goes_to_pm": "What you write goes to the PM, about T-{id}.",
   "view.writes": "writes {files}",
   "view.your_turn_answer": "Answer with /resume T-{id} and your answers, or a on the board",
-  "view.your_turn_heading": "Your turn · T-{id} · {title}"
+  "view.your_turn_heading": "Your turn · T-{id} · {title}",
+  "app.new_prompt": "Type the new ticket's title, then Enter — the PM gives it an owner.",
+  "app.new_sent": "“{title}” goes on the board.",
+  "app.title_prompt": "Change T-{id}'s title, then Enter.",
+  "app.title_usage": "/title T-n <new title>",
+  "commands.new": "Put a ticket of your own on the board (⇧N on the board)",
+  "commands.new_args": "<title>",
+  "commands.title": "Change a ticket's title (⇧E on the board)",
+  "commands.title_args": "T-n <title>"
 }

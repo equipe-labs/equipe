@@ -8,7 +8,7 @@ use equipe_core::t;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use equipe_core::protocol::{Command, OffMain, Ticket, TicketId, TicketKind, TicketStatus};
+use equipe_core::protocol::{Command, OffMain, Priority, Ticket, TicketId, TicketKind, TicketStatus};
 
 use crate::state::{Model, Need, Section, status_word};
 
@@ -33,19 +33,21 @@ pub enum GroupBy {
     Status,
     Project,
     Member,
+    Priority,
     /// A tree of what waits for what.
     Deps,
     None,
 }
 
 impl GroupBy {
-    pub const ALL: [GroupBy; 5] = [GroupBy::Status, GroupBy::Project, GroupBy::Member, GroupBy::Deps, GroupBy::None];
+    pub const ALL: [GroupBy; 6] = [GroupBy::Status, GroupBy::Project, GroupBy::Member, GroupBy::Priority, GroupBy::Deps, GroupBy::None];
 
     pub fn label(self) -> &'static str {
         match self {
             GroupBy::Status => t!("board.group_status"),
             GroupBy::Project => t!("board.group_project"),
             GroupBy::Member => t!("board.group_member"),
+            GroupBy::Priority => t!("tickets.group_priority"),
             GroupBy::Deps => t!("board.group_deps"),
             GroupBy::None => t!("board.group_none"),
         }
@@ -56,6 +58,7 @@ impl GroupBy {
             GroupBy::Status => "status",
             GroupBy::Project => "project",
             GroupBy::Member => "member",
+            GroupBy::Priority => "priority",
             GroupBy::Deps => "deps",
             GroupBy::None => "none",
         }
@@ -137,6 +140,8 @@ pub struct View {
     pub chosen: BTreeSet<TicketId>,
     /// Where a ⇧↑↓ range started.
     pub anchor: Option<TicketId>,
+    /// 티켓 as rows or as a board.
+    pub layout: crate::tickets::Layout,
 }
 
 /// A ticket page's tabs.
@@ -336,9 +341,12 @@ fn finished<'a>(model: &'a Model, tickets: &[&'a Ticket], window: DoneWindow) ->
         .iter()
         .copied()
         .filter(|t| t.status.is_closed())
-        .filter(|t| window.seconds().is_none_or(|w| model.in_state_for(t).is_some_and(|s| s <= w)))
+        .filter(|t| {
+            let at = crate::tickets::changed_at(model, t);
+            window.seconds().is_none_or(|w| at > 0 && model.unix.saturating_sub(at) <= w)
+        })
         .collect();
-    done.sort_by_key(|t| (std::cmp::Reverse(model.since.get(&t.id).copied().unwrap_or(0)), std::cmp::Reverse(t.id)));
+    done.sort_by_key(|t| (std::cmp::Reverse(crate::tickets::changed_at(model, t)), std::cmp::Reverse(t.id)));
     done
 }
 
@@ -350,12 +358,13 @@ pub fn all(model: &Model, view: &View, filter: &Filter, group: GroupBy) -> Vec<R
     let window = if filter.reaches_done() && !view.done_open { DoneWindow::All } else { view.window };
     let mut out = Vec::new();
     let item = |t: &Ticket, depth: usize| Row::Item { need: Need::Ticket(t.id), depth };
-    let by_status = |list: &mut Vec<&Ticket>| list.sort_by_key(|t| (status_rank(t.status), t.id));
+    // Within a status, as the person ordered the board.
+    let by_status = |list: &mut Vec<&Ticket>| list.sort_by_key(|t| (status_rank(t.status), t.order_key(), t.id));
     let open: Vec<&Ticket> = here.iter().copied().filter(|t| !t.status.is_closed()).collect();
     match group {
         GroupBy::Status => {
             for status in &STATUS_ORDER[..5] {
-                let list: Vec<&Ticket> = open.iter().copied().filter(|t| t.status == *status).collect();
+                let list = crate::tickets::in_board_order(open.iter().copied().filter(|t| t.status == *status).collect());
                 if !list.is_empty() {
                     let tone = if matches!(status, TicketStatus::Review | TicketStatus::Waiting) { Tone::ForYou } else { Tone::Plain };
                     out.push(Row::Heading { label: status_word(*status).to_owned(), count: list.len(), tone, hint: None });
@@ -386,6 +395,16 @@ pub fn all(model: &Model, view: &View, filter: &Filter, group: GroupBy) -> Vec<R
                 let label = if name.is_empty() { t!("board.nobody").to_owned() } else { name };
                 out.push(Row::Heading { label, count: list.len(), tone: Tone::Plain, hint: None });
                 out.extend(list.into_iter().map(|t| item(t, 0)));
+            }
+        }
+        GroupBy::Priority => {
+            for priority in Priority::ALL {
+                let mut list: Vec<&Ticket> = open.iter().copied().filter(|t| t.priority == priority).collect();
+                if !list.is_empty() {
+                    by_status(&mut list);
+                    out.push(Row::Heading { label: crate::tickets::priority_word(priority).to_owned(), count: list.len(), tone: Tone::Plain, hint: None });
+                    out.extend(list.into_iter().map(|t| item(t, 0)));
+                }
             }
         }
         GroupBy::Deps => {
@@ -625,6 +644,8 @@ pub struct Pending {
     pub text: String,
     pub commands: Vec<Command>,
     pub due: Instant,
+    /// Tickets as they were before an edit shown at once: put back if taken back.
+    pub restore: Vec<Ticket>,
 }
 
 /// Actions held back, latest last.
@@ -638,7 +659,13 @@ impl Undo {
     pub const DELAY: Duration = Duration::from_secs(5);
 
     pub fn push(&mut self, ticket: TicketId, text: String, commands: Vec<Command>, now: Instant) {
-        self.pending.push(Pending { ticket, text, commands, due: now + Self::DELAY });
+        self.pending.push(Pending { ticket, text, commands, due: now + Self::DELAY, restore: Vec::new() });
+    }
+
+    /// An edit already shown: `restore` is how the tickets were, put back if
+    /// it is taken back.
+    pub fn push_edit(&mut self, ticket: TicketId, text: String, commands: Vec<Command>, restore: Vec<Ticket>, now: Instant) {
+        self.pending.push(Pending { ticket, text, commands, due: now + Self::DELAY, restore });
     }
 
     /// The actions whose time has come, to send now.

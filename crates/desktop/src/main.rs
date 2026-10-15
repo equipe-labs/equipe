@@ -28,6 +28,7 @@ mod state;
 mod stream;
 mod target;
 mod theme;
+mod tickets;
 mod tips;
 mod ui;
 mod i18n;
@@ -213,6 +214,7 @@ impl Shell {
             shell.board.sidebar_width = width.clamp(views::sidebar::MIN_WIDTH, views::sidebar::MAX_WIDTH);
         }
         shell.chat.follow = !shell.remembered.whole_conversation;
+        shell.board.view.layout = if shell.remembered.tickets_board { tickets::Layout::Board } else { tickets::Layout::List };
         shell._clicks = Some(cx.spawn_in(window, async move |this, cx| {
             while let Some(go) = clicked.recv().await {
                 if this.update_in(cx, |this, window, cx| this.go(go, window, cx)).is_err() {

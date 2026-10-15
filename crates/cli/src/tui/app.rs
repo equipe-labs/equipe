@@ -15,7 +15,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
 use equipe_core::board;
 use equipe_core::protocol::{
     Access, Approval, Command, Decision, Engine, Entry, Event, Member, Mode, SessionId, SessionInfo, SessionSpec,
-    SessionState, Snapshot, Ticket, TicketId, TicketStatus, Transcript, new_session_id,
+    SessionState, Snapshot, Ticket, TicketDraft, TicketEdit, TicketId, TicketStatus, Transcript, new_session_id,
 };
 use equipe_core::i18n::label;
 use equipe_core::roles;
@@ -1377,6 +1377,18 @@ impl App {
                 let ticket = ticket.filter(Ticket::not_on_main)?;
                 self.ask(Question::Method(ticket.id));
             }
+            // ⇧N: a new ticket of the person's own; ⇧E: the picked one's title, to change.
+            KeyCode::Char('N') => {
+                self.composer.clear();
+                self.composer.insert_str("/new ");
+                self.flash = Some(t!("app.new_prompt").into());
+            }
+            KeyCode::Char('E') => {
+                let ticket = ticket?;
+                self.composer.clear();
+                self.composer.insert_str(&format!("/title T-{} {}", ticket.id, ticket.title));
+                self.flash = Some(t!("app.title_prompt", id = ticket.id));
+            }
             KeyCode::Char('d') => {
                 let ticket = ticket.filter(|t| t.branch.is_some())?;
                 self.view_diff = Some(ticket.id);
@@ -2383,6 +2395,8 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 }
             },
             "accept" | "merge" | "reopen" | "resume" | "cancel" => self.decide(name, rest),
+            "new" => self.new_ticket(rest),
+            "title" => self.retitle(rest),
             "mode" => self.set_mode(rest),
             "lang" => self.set_lang(rest),
             "close" => match self.agents.get_mut(self.selected) {
@@ -2899,6 +2913,29 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
     /// `/accept T-3`, `/reopen T-3 what to change`, `/resume T-3 what I did`,
     /// `/cancel T-3`: the person's
     /// calls, sent straight to equipe — never through a member.
+    /// `/new <title>`: a ticket of the person's own, ready, for the PM to give
+    /// an owner (the desktop's sheet sets the rest).
+    fn new_ticket(&mut self, title: &str) -> Vec<Command> {
+        let title = title.trim();
+        if title.is_empty() {
+            self.flash = Some(t!("app.new_prompt").into());
+            return Vec::new();
+        }
+        self.flash = Some(t!("app.new_sent", title = title));
+        vec![Command::CreateTicket { squad: self.squad.clone(), draft: TicketDraft { title: title.to_owned(), ..Default::default() } }]
+    }
+
+    /// `/title T-n <words>`: the ticket's title, changed by the person.
+    fn retitle(&mut self, rest: &str) -> Vec<Command> {
+        let (id, title) = rest.split_once(' ').unwrap_or((rest, ""));
+        let (Some(ticket), false) = (board::parse_ticket_id(id), title.trim().is_empty()) else {
+            self.flash = Some(t!("app.title_usage").into());
+            return Vec::new();
+        };
+        let changes = TicketEdit { title: Some(title.trim().to_owned()), ..Default::default() };
+        vec![Command::EditTicket { squad: self.squad.clone(), ticket, changes }]
+    }
+
     fn decide(&mut self, verb: &str, rest: &str) -> Vec<Command> {
         let (id, note) = rest.split_once(' ').unwrap_or((rest, ""));
         let Some(ticket) = board::parse_ticket_id(id).filter(|_| !id.is_empty()) else {
@@ -4409,6 +4446,25 @@ mod tests {
         app.on_key(KeyEvent::from(KeyCode::Enter), Instant::now());
         assert!(app.upload.is_none());
         assert!(app.flash.as_deref().unwrap().contains("No image"));
+    }
+
+    #[test]
+    fn the_person_writes_a_ticket_and_retitles_one_from_the_console() {
+        let (mut app, _, _) = team();
+        type_text(&mut app, "/new Release notes");
+        assert_eq!(enter(&mut app), vec![Command::CreateTicket { squad: "acme".into(), draft: TicketDraft { title: "Release notes".into(), ..Default::default() } }]);
+        type_text(&mut app, "/title T-3 Clearer words");
+        let changes = TicketEdit { title: Some("Clearer words".into()), ..Default::default() };
+        assert_eq!(enter(&mut app), vec![Command::EditTicket { squad: "acme".into(), ticket: 3, changes }]);
+        type_text(&mut app, "/title T-3");
+        assert!(enter(&mut app).is_empty(), "no words: nothing sent");
+        assert!(app.flash.as_deref().unwrap().contains("/title"));
+        // On the board, ⇧E puts the picked ticket's title in the box to change.
+        app.tickets = vec![ticket(7, TicketStatus::Todo)];
+        app.pane = Pane::Board;
+        app.board_selected = Some(7);
+        app.on_key(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::SHIFT), Instant::now());
+        assert!(app.composer.text().starts_with("/title T-7 "), "{}", app.composer.text());
     }
 
     #[test]

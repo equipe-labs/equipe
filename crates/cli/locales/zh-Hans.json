@@ -782,5 +782,13 @@
   "view.write_goes_to_pm": "你写的内容会发给 PM，关于 T-{id}。",
   "view.writes": "写入 {files}",
   "view.your_turn_answer": "回答：在 /resume T-{id} 后写下答案，或在看板上按 a",
-  "view.your_turn_heading": "轮到你 · T-{id} · {title}"
+  "view.your_turn_heading": "轮到你 · T-{id} · {title}",
+  "app.new_prompt": "输入新工单的标题，然后按 Enter——由 PM 指定负责人。",
+  "app.new_sent": "「{title}」已放上看板。",
+  "app.title_prompt": "修改 T-{id} 的标题，然后按 Enter。",
+  "app.title_usage": "/title T-n <新标题>",
+  "commands.new": "把你自己的工单放上看板（看板中 ⇧N）",
+  "commands.new_args": "<标题>",
+  "commands.title": "修改工单标题（看板中 ⇧E）",
+  "commands.title_args": "T-n <标题>"
 }

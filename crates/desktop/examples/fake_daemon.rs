@@ -6,7 +6,9 @@
 //! Korean reply — Markdown with a list, a table, a code block and `T-12` —
 //! between tool steps. `interrupt` ends the turn at once; `focus` moves the PM's
 //! thread; accept, merge, reopen, resume and cancel move tickets as the daemon
-//! would. `FAKE_EMPTY=1` starts with nothing waiting for the person.
+//! would — and so do the person's own create, edit, move and comment (by
+//! `equipe_core::board`'s rules), each kept in the ticket's record.
+//! `FAKE_EMPTY=1` starts with nothing waiting for the person.
 //!
 //! ```text
 //! export EQUIPE_HOME=$(mktemp -d) EQUIPE_SQUAD=demo
@@ -32,7 +34,7 @@ use std::time::Duration;
 
 use equipe_core::gateway;
 use equipe_core::protocol::rpc::{self, Hello, Message};
-use equipe_core::protocol::{Access, Approval, Command, Engine, Entry, Estimate, Event, Member, SessionId, SessionInfo, SessionState, Snapshot, Ticket, TicketStatus, TurnOutcome, Usage, WorkInfo};
+use equipe_core::protocol::{Access, Approval, Command, Engine, Entry, Estimate, Event, Member, Priority, SessionId, SessionInfo, SessionState, Snapshot, Ticket, TicketEntry, TicketStatus, TurnOutcome, Usage, WorkInfo};
 use equipe_providers::credentials::equipe_home;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -275,8 +277,170 @@ fn turn_ticket() -> Ticket {
 
 fn tickets() -> &'static std::sync::Mutex<Vec<Ticket>> {
     static TICKETS: std::sync::OnceLock<std::sync::Mutex<Vec<Ticket>>> = std::sync::OnceLock::new();
-    TICKETS.get_or_init(|| std::sync::Mutex::new(board()))
+    TICKETS.get_or_init(|| {
+        let now = unix();
+        let mut all = board();
+        // How pressing, and when each last moved: a spread, as a real board has.
+        for t in &mut all {
+            t.priority = match t.id {
+                42 | 55 | 72 => Priority::Urgent,
+                47 | 70 | 61 | 52 => Priority::High,
+                62 | 64 | 66 => Priority::Low,
+                _ => Priority::Normal,
+            };
+            t.updated = now - u64::from(t.id % 9) * 3_400 - if t.status.is_closed() { u64::from(t.id % 5) * 86_400 } else { 0 };
+        }
+        std::sync::Mutex::new(all)
+    })
 }
+
+fn unix() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Each ticket's record, as `ticket_history` answers it.
+fn records() -> &'static std::sync::Mutex<HashMap<u32, Vec<TicketEntry>>> {
+    static RECORDS: std::sync::OnceLock<std::sync::Mutex<HashMap<u32, Vec<TicketEntry>>>> = std::sync::OnceLock::new();
+    RECORDS.get_or_init(|| {
+        let now = unix();
+        let e = |ago: u64, by: &str, kind: &str, text: &str| TicketEntry { at: now - ago, by: by.into(), kind: kind.into(), text: text.into() };
+        let mut out = HashMap::new();
+        out.insert(
+            42,
+            vec![
+                e(3 * 86_400, "pm", "created", "체크아웃 페이지 결제 수단 선택"),
+                e(3 * 86_400 - 60, "equipe", "assigned", "frontend"),
+                e(2 * 86_400, "you", "edited", "우선순위 보통 → 긴급"),
+                e(86_400, "you", "comment", "간편결제는 토스페이만 먼저 붙여 주세요."),
+                e(5_400, "frontend", "handed in", "결제 수단 선택을 라디오 그룹으로 바꿨습니다."),
+            ],
+        );
+        out.insert(47, vec![e(2 * 86_400, "pm", "created", "상품 상세 페이지 이미지 갤러리"), e(86_400, "equipe", "assigned", "frontend")]);
+        std::sync::Mutex::new(out)
+    })
+}
+
+fn record(id: u32, kind: &str, text: &str) {
+    records().lock().unwrap().entry(id).or_default().push(TicketEntry { at: unix(), by: "you".into(), kind: kind.into(), text: text.into() });
+}
+
+/// The person's own hand on the board, as the daemon does it: what changed,
+/// or why not (an error, as the daemon says it).
+fn on_board_command(command: &Command) -> Option<Vec<Event>> {
+    let squad = || "demo".to_owned();
+    let changed = |t: &Ticket| Event::TicketChanged { squad: squad(), ticket: Ticket { updated: unix(), ..t.clone() } };
+    let refuse = |message: String| vec![Event::Error { session: None, message, next: None }];
+    let mut all = tickets().lock().unwrap();
+    match command {
+        Command::CreateTicket { draft, .. } => {
+            if draft.title.trim().is_empty() {
+                return Some(refuse("티켓에는 제목이 있어야 합니다.".into()));
+            }
+            let id = all.iter().map(|t| t.id).max().unwrap_or(0) + 1;
+            let mut t = ticket(id, "todo", "web", "", draft.title.trim(), &draft.body, &draft.depends_on, None, None);
+            t.owner = draft.assignee.clone();
+            t.assignee = None;
+            t.project = draft.project.clone().or_else(|| Some(repo("web")));
+            t.created_by = "you".into();
+            t.priority = draft.priority;
+            if let Some(kind) = draft.kind {
+                t.kind = kind;
+            }
+            all.push(t.clone());
+            record(id, "created", &t.title);
+            Some(vec![changed(&t)])
+        }
+        Command::EditTicket { ticket, changes, .. } => {
+            if let Some(deps) = &changes.depends_on
+                && let Some(path) = equipe_core::board::dependency_loop(&all, *ticket, deps)
+            {
+                let path: Vec<String> = path.iter().map(|id| format!("T-{id}")).collect();
+                return Some(refuse(format!("서로를 기다리는 고리가 생깁니다: {}.", path.join(" → "))));
+            }
+            let t = all.iter_mut().find(|t| t.id == *ticket)?;
+            if let Some(title) = &changes.title {
+                t.title = title.trim().to_owned();
+            }
+            if let Some(body) = &changes.body {
+                t.body = body.trim().to_owned();
+            }
+            if let Some(p) = changes.priority {
+                t.priority = p;
+            }
+            if let Some(owner) = &changes.assignee {
+                t.owner = owner.clone();
+                t.assignee = owner.clone().filter(|_| t.status == TicketStatus::InProgress);
+            }
+            if let Some(project) = &changes.project {
+                t.project = project.clone();
+            }
+            if let Some(kind) = changes.kind {
+                t.kind = kind;
+            }
+            if let Some(deps) = &changes.depends_on {
+                t.depends_on = deps.clone();
+            }
+            let t = t.clone();
+            record(t.id, "edited", "");
+            Some(vec![changed(&t)])
+        }
+        Command::MoveTicket { ticket, status, before, .. } => {
+            let found = all.iter().find(|t| t.id == *ticket)?.clone();
+            let to = status.unwrap_or(found.status);
+            let rule = match equipe_core::board::move_rule(found.status, to) {
+                Ok(rule) => rule,
+                Err(why) => return Some(refuse(format!("T-{ticket}: {}", why.code()))),
+            };
+            let mut out = Vec::new();
+            let placed = {
+                let mut column: Vec<&Ticket> = all.iter().filter(|t| t.status == to && t.id != *ticket).collect();
+                equipe_core::board::board_order(&mut column);
+                equipe_core::board::rank_before(&column, *before).ok_or_else(|| equipe_core::board::spread(&column))
+            };
+            let rank = match placed {
+                Ok(rank) => rank,
+                Err(spread) => {
+                    for (id, r) in &spread {
+                        if let Some(t) = all.iter_mut().find(|t| t.id == *id) {
+                            t.rank = *r;
+                            out.push(changed(t));
+                        }
+                    }
+                    let mut column: Vec<&Ticket> = all.iter().filter(|t| t.status == to && t.id != *ticket).collect();
+                    equipe_core::board::board_order(&mut column);
+                    equipe_core::board::rank_before(&column, *before).unwrap_or(0)
+                }
+            };
+            let t = all.iter_mut().find(|t| t.id == *ticket)?;
+            t.rank = rank;
+            use equipe_core::board::Move;
+            t.status = match rule {
+                Move::Reorder => t.status,
+                Move::Accept => TicketStatus::Done,
+                Move::Cancel => TicketStatus::Cancelled,
+                Move::Resume | Move::SendBack | Move::TakeOn => TicketStatus::Todo,
+                Move::BackToProposal => TicketStatus::Proposed,
+                Move::Restore(s) => s,
+            };
+            if t.status != found.status {
+                record(t.id, "moved", t.status.label());
+            }
+            out.push(changed(t));
+            Some(out)
+        }
+        Command::CommentTicket { ticket, text, .. } => {
+            record(*ticket, "comment", text);
+            let entries = records().lock().unwrap().get(ticket).cloned().unwrap_or_default();
+            Some(vec![Event::TicketHistory { squad: squad(), ticket: *ticket, entries }])
+        }
+        Command::TicketHistory { ticket, .. } => {
+            let entries = records().lock().unwrap().get(ticket).cloned().unwrap_or_default();
+            Some(vec![Event::TicketHistory { squad: squad(), ticket: *ticket, entries }])
+        }
+        _ => None,
+    }
+}
+
 
 /// A command about a ticket, done as the daemon would: the ticket as it is now.
 fn on_ticket_command(command: &Command) -> Option<Ticket> {
@@ -561,7 +725,11 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 tokio::spawn(async move { pairing(&pair, &events).await });
                             }
                             other => {
-                                if let Some(ticket) = on_ticket_command(&other) {
+                                if let Some(said) = on_board_command(&other) {
+                                    for event in said {
+                                        let _ = events.send(event);
+                                    }
+                                } else if let Some(ticket) = on_ticket_command(&other) {
                                     let _ = events.send(Event::TicketChanged { squad: "demo".into(), ticket });
                                 }
                             }

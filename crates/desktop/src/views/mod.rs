@@ -14,4 +14,5 @@ pub mod pair;
 pub mod peek;
 pub mod settings;
 pub mod sidebar;
+pub mod tickets;
 pub mod yourturn;
