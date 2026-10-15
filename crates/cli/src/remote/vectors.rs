@@ -397,7 +397,7 @@ fn config(devices: Vec<Device>) -> Config {
 }
 
 fn device() -> Device {
-    Device { id: device_id(), name: PHONE.into(), platform: "ios".into(), key: key("device").public, added: NOW / 1000 }
+    Device { id: device_id(), name: PHONE.into(), platform: "ios".into(), key: key("device").public, added: NOW / 1000, seen: 0 }
 }
 
 /// A core with a pairing under way on the vectors' secret.
@@ -563,7 +563,7 @@ fn frame_vectors() -> Value {
     step(&mut core, &mut steps, "seq 6", "device", NOW, 6, true, "the stranger's frame didn't move seq");
     let presence_off = json!({ "type": "presence", "device": device_id(), "online": false });
     let presence_on = json!({ "type": "presence", "device": device_id(), "online": true });
-    assert_eq!(core.on_relay(&presence_off, NOW), vec![Action::Close { device: device_id() }]);
+    assert_eq!(core.on_relay(&presence_off, NOW), vec![Action::Close { device: device_id() }, Action::Save], "the device closes, and when it was last seen is kept");
     assert!(core.on_relay(&presence_on, NOW).is_empty());
     steps.push(json!({ "name": "the phone reconnects", "relay_tells_daemon": [presence_off, presence_on], "why": "a new WebSocket: both directions count from 1 again" }));
     step(&mut core, &mut steps, "seq 1 on the new connection", "device", NOW, 1, true, "counting starts over; the daemon's answer is its seq 1 too");

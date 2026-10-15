@@ -107,6 +107,7 @@
   "notice.refused": "✗ {why} Abgelehnt: {action}",
   "notice.remembered": "✎ {name} hat sich für den Squad gemerkt: {what} · /memory zeigt, was der Squad weiß",
   "notice.restarted": "equipe wurde neu gestartet; T-{id} wird wieder aufgenommen.",
+  "pairing.unavailable": "Dieser Daemon kann gerade keine Handys koppeln — starte ihn mit `equipe daemon restart` neu.",
   "status.cancelled": "abgebrochen",
   "status.done": "erledigt",
   "status.in_progress": "in Arbeit",

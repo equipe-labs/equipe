@@ -97,6 +97,9 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
     let mut forwarder: Option<tokio::task::JoinHandle<()>> = None;
     // Set when the connection becomes a browser panel's stream.
     let mut stream: Option<(std::sync::Arc<crate::browser::Hub>, u8)> = None;
+    // Pairing a phone: this screen's line to the phone link, opened when it asks.
+    let mut pairing: Option<crate::pairing::Bridge> = None;
+    let mut lang: Option<crate::i18n::Lang> = None;
     while let Ok(Some(line)) = lines.next_line().await {
         let Ok(message) = Message::from_line(&line) else {
             continue;
@@ -108,8 +111,9 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
                     continue;
                 };
                 // The screen's language is what equipe says to the person in.
-                if let Some(lang) = params.lang.clone() {
-                    core.send(Command::Language { lang });
+                if let Some(code) = params.lang.clone() {
+                    lang = crate::i18n::Lang::parse(&code);
+                    core.send(Command::Language { lang: code });
                 }
                 let Some((snapshot, mut events)) = core.subscribe(&params.squad).await else {
                     break;
@@ -126,7 +130,19 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
             }
             (Some(rpc::COMMAND), _) => {
                 if let Some(command) = message.params_as::<Command>() {
-                    core.send(command);
+                    if let Command::Language { lang: code } = &command
+                        && let Some(now) = crate::i18n::Lang::parse(code)
+                    {
+                        lang = Some(now);
+                        if let Some(bridge) = &mut pairing {
+                            bridge.lang = now;
+                        }
+                    }
+                    if crate::pairing::is_pairing(&command) {
+                        pairing.get_or_insert_with(|| crate::pairing::Bridge::new(&home, lang)).send(&command, &out_tx).await;
+                    } else {
+                        core.send(command);
+                    }
                 }
             }
             (Some(rpc::TOOL), Some(id)) => {
@@ -200,6 +216,8 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
     if let Some(forwarder) = forwarder {
         forwarder.abort();
     }
+    // Its line to the phone link closes, and any code it had open with it.
+    drop(pairing);
     drop(out_tx);
     let writer = writer_task.await;
     if let (Some((hub, quality)), Ok(writer)) = (stream, writer) {

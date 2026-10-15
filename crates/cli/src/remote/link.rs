@@ -22,7 +22,8 @@ use super::core::{Action, Core};
 enum Ask {
     Pair(UnboundedSender<Value>),
     Answer(bool),
-    Cancel,
+    /// The asking connection gave up: its pairing, if it has the one open, ends.
+    Cancel(UnboundedSender<Value>),
     Devices(UnboundedSender<Value>),
     Remove(String, UnboundedSender<Value>),
     /// `equipe demo reset`, to a running `equipe demo serve`.
@@ -110,11 +111,16 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
             }
             Some(Input::Ask(ask)) => match ask {
                 Ask::Pair(conn) => {
+                    // Another screen's code is open: it stays, this one waits.
+                    if core.pairing_under_way(now) && !pair_conn.as_ref().is_some_and(|c| c.same_channel(&conn)) {
+                        let _ = conn.send(json!({ "error": t!("remote.pairing_under_way"), "why": "busy" }));
+                        continue;
+                    }
                     if core.config.is_none() {
                         match super::register(&home).await {
                             Ok(config) => core.config = Some(config),
                             Err(why) => {
-                                let _ = conn.send(json!({ "error": why }));
+                                let _ = conn.send(json!({ "error": why, "why": "relay" }));
                                 continue;
                             }
                         }
@@ -130,10 +136,14 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                                 backoff = Duration::from_secs(2);
                             }
                             Err(err) => {
-                                let _ = conn.send(json!({ "error": t!("link.couldnt_reach_relay", err = err) }));
+                                let _ = conn.send(json!({ "error": t!("link.couldnt_reach_relay", err = err), "why": "relay" }));
                                 continue;
                             }
                         }
+                    }
+                    // The same screen asking again: its old code closes first.
+                    if pair_conn.as_ref().is_some_and(|c| c.same_channel(&conn)) {
+                        actions.extend(core.end_pairing());
                     }
                     match core.begin_pairing(now) {
                         Ok((_, opened)) => {
@@ -148,26 +158,23 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                     }
                 }
                 Ask::Answer(approve) => actions.extend(core.answer_pairing(approve, now)),
-                Ask::Cancel => {
-                    pair_conn = None;
-                    actions.extend(core.end_pairing());
+                // Only the connection whose code is open can close it.
+                Ask::Cancel(conn) => {
+                    if pair_conn.as_ref().is_some_and(|c| c.same_channel(&conn)) {
+                        pair_conn = None;
+                        actions.extend(core.end_pairing());
+                    }
                 }
                 Ask::Devices(conn) => {
-                    let list: Vec<Value> = core
-                        .config
-                        .iter()
-                        .flat_map(|c| c.devices.iter())
-                        .map(|d| json!({ "name": d.name, "platform": d.platform, "added": d.added }))
-                        .collect();
-                    let _ = conn.send(json!({ "devices": list, "relay": super::relay_url(core.config.as_ref()), "connected": relay.is_some() }));
+                    let _ = conn.send(json!({ "op": "devices", "devices": core.device_list(), "relay": super::relay_url(core.config.as_ref()), "connected": relay.is_some() }));
                 }
                 Ask::Remove(name, conn) => match core.remove_device(&name) {
                     Ok(out) => {
                         actions.extend(out);
-                        let _ = conn.send(json!({ "removed": name, "told_relay": relay.is_some() }));
+                        let _ = conn.send(json!({ "op": "remove", "removed": name, "told_relay": relay.is_some() }));
                     }
                     Err(why) => {
-                        let _ = conn.send(json!({ "error": why }));
+                        let _ = conn.send(json!({ "op": "remove", "error": why }));
                     }
                 },
                 Ask::DemoReset { conn, .. } => {
@@ -270,7 +277,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                     retry_at = tokio::time::Instant::now() + backoff;
                     backoff = (backoff * 2).min(Duration::from_secs(60));
                     if let Some(conn) = &pair_conn {
-                        let _ = conn.send(json!({ "error": t!("link.couldnt_reach_relay", err = err) }));
+                        let _ = conn.send(json!({ "error": t!("link.couldnt_reach_relay", err = err), "why": "relay" }));
                         pair_conn = None;
                         core.end_pairing();
                     }
@@ -515,7 +522,7 @@ async fn serve_local(stream: UnixStream, input: UnboundedSender<Input>) {
                 Ask::Pair(out_tx.clone())
             }
             "answer" => Ask::Answer(ask["approve"] == true),
-            "cancel" => Ask::Cancel,
+            "cancel" => Ask::Cancel(out_tx.clone()),
             "devices" => Ask::Devices(out_tx.clone()),
             "remove" => Ask::Remove(ask["name"].as_str().unwrap_or_default().to_owned(), out_tx.clone()),
             _ => continue,
@@ -526,8 +533,110 @@ async fn serve_local(stream: UnixStream, input: UnboundedSender<Input>) {
     }
     // `equipe pair` left (Ctrl-C) before it finished: the slot closes.
     if pairing {
-        let _ = input.send(Input::Ask(Ask::Cancel));
+        let _ = input.send(Input::Ask(Ask::Cancel(out_tx.clone())));
     }
     drop(out_tx);
     let _ = writer_task.await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A relay on this machine that opens every slot it's asked to; every
+    /// frame the daemon sends it goes to the result.
+    async fn fake_relay() -> (String, mpsc::UnboundedReceiver<Value>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (frames_tx, frames) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                let frames_tx = frames_tx.clone();
+                tokio::spawn(async move {
+                    let Ok(ws) = tokio_tungstenite::accept_async(tcp).await else { return };
+                    let (mut sink, mut source) = ws.split();
+                    while let Some(Ok(message)) = source.next().await {
+                        let Ws::Text(text) = message else { continue };
+                        let frame: Value = serde_json::from_str(&text).unwrap();
+                        if frame["type"] == "pair_open" {
+                            let _ = sink.send(Ws::text(json!({ "type": "pair_opened", "slot": frame["slot"] }).to_string())).await;
+                        }
+                        let _ = frames_tx.send(frame);
+                    }
+                });
+            }
+        });
+        (format!("http://{addr}"), frames)
+    }
+
+    /// One line to the daemon's local socket, as `equipe pair` or a screen's bridge has.
+    struct Line {
+        lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+        writer: tokio::net::unix::OwnedWriteHalf,
+    }
+
+    impl Line {
+        async fn open(home: &Path) -> Self {
+            for _ in 0..100 {
+                if let Ok(stream) = UnixStream::connect(super::super::local_socket(home)).await {
+                    let (reader, writer) = stream.into_split();
+                    return Self { lines: BufReader::new(reader).lines(), writer };
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            panic!("the daemon's local socket never opened");
+        }
+
+        async fn ask(&mut self, ask: Value) -> Value {
+            self.writer.write_all(format!("{ask}\n").as_bytes()).await.unwrap();
+            self.said().await
+        }
+
+        async fn said(&mut self) -> Value {
+            let line = tokio::time::timeout(Duration::from_secs(5), self.lines.next_line()).await.expect("an answer in time").unwrap().expect("the line open");
+            serde_json::from_str(&line).unwrap()
+        }
+    }
+
+    async fn frame(frames: &mut mpsc::UnboundedReceiver<Value>) -> (String, String) {
+        let frame = tokio::time::timeout(Duration::from_secs(5), frames.recv()).await.expect("a frame in time").unwrap();
+        (frame["type"].as_str().unwrap_or_default().to_owned(), frame["slot"].as_str().unwrap_or_default().to_owned())
+    }
+
+    #[tokio::test]
+    async fn a_code_belongs_to_the_line_that_opened_it_and_closes_with_it() {
+        let (relay, mut frames) = fake_relay().await;
+        let home = PathBuf::from(format!("/tmp/eqlink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let keys = super::super::seal::generate();
+        let config = super::super::Config { relay, id: "d1".into(), token: "t".into(), private: keys.private, public: keys.public, devices: vec![] };
+        super::super::save(&home, &config).unwrap();
+        tokio::spawn(serve_forever(home.clone(), home.join("equipe.sock"), "test".into()));
+
+        // A screen opens a code: shown once the relay has its slot open.
+        let mut screen = Line::open(&home).await;
+        let first = screen.ask(json!({ "op": "pair" })).await;
+        let url = first["qr"].as_str().unwrap_or_else(|| panic!("{first}")).to_owned();
+        let (kind, slot) = frame(&mut frames).await;
+        assert_eq!(kind, "pair_open");
+        // `equipe pair` meanwhile is told one is open, and can't close it.
+        let mut terminal = Line::open(&home).await;
+        let busy = terminal.ask(json!({ "op": "pair" })).await;
+        assert_eq!(busy["why"], "busy", "{busy}");
+        terminal.writer.write_all(b"{\"op\":\"cancel\"}\n").await.unwrap();
+        let listed = terminal.ask(json!({ "op": "devices" })).await;
+        assert_eq!((listed["op"].as_str(), listed["connected"].as_bool(), listed["devices"].as_array().map(Vec::len)), (Some("devices"), Some(true), Some(0)));
+        // The screen asks again (its code ran out on screen): the old slot
+        // closes and a new code opens.
+        let again = screen.ask(json!({ "op": "pair" })).await;
+        assert_ne!(again["qr"].as_str().unwrap(), url, "a new code, not the old one");
+        assert_eq!(frame(&mut frames).await, ("pair_close".into(), slot.clone()), "the terminal's cancel didn't touch the screen's code; the screen's new ask did");
+        let (kind, second) = frame(&mut frames).await;
+        assert_eq!(kind, "pair_open");
+        // The screen goes away: its code closes, and the terminal may open one.
+        drop(screen);
+        assert_eq!(frame(&mut frames).await, ("pair_close".into(), second));
+        assert!(terminal.ask(json!({ "op": "pair" })).await["qr"].is_string());
+        let _ = std::fs::remove_dir_all(&home);
+    }
 }

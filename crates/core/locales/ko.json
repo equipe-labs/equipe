@@ -107,6 +107,7 @@
   "notice.refused": "✗ {why} 거절함: {action}",
   "notice.remembered": "✎ {name}이(가) 스쿼드를 위해 기억합니다: {what} · /memory에서 스쿼드가 아는 것을 봅니다",
   "notice.restarted": "equipe가 다시 시작했습니다. T-{id}을(를) 다시 이어갑니다.",
+  "pairing.unavailable": "이 데몬은 지금 휴대폰을 연결할 수 없어요 — `equipe daemon restart`로 다시 시작해 보세요.",
   "status.cancelled": "취소됨",
   "status.done": "끝남",
   "status.in_progress": "작업 중",

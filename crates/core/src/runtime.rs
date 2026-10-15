@@ -884,6 +884,9 @@ impl Runtime {
                     self.publish_allowed(&squad);
                 }
             }
+            // Phones are paired by the gateway, per screen, with the daemon's
+            // phone link (`crate::pairing`); they never reach the runtime.
+            Command::PairStart | Command::PairAnswer { .. } | Command::PairCancel | Command::Devices | Command::Unpair { .. } => {}
         }
     }
 
