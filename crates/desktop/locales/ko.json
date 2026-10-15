@@ -145,7 +145,7 @@
   "chat.hint_review": "리뷰 대기 · /accept T-{id} · /reopen T-{id} 이유",
   "chat.hint_waiting": "사람 대기 · 할 일을 마치면 /resume T-{id}",
   "chat.hint_working": "여기에 쓰면 작업 중인 멤버가 다음 단계에서 읽습니다",
-  "chat.jump_to_bottom": "↓ 맨 아래로",
+  "chat.jump_to_bottom": "맨 아래로",
   "chat.member_left_text": "{name}은(는) 더 이상 일하지 않습니다.",
   "chat.member_left_title": "스쿼드를 떠난 멤버입니다",
   "chat.member_text": "이 멤버에게 바로 말하면 PM도 알게 됩니다. 일은 보드에서 가져가 자기 작업 폴더에서 합니다.",

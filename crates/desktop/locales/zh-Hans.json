@@ -145,7 +145,7 @@
   "chat.hint_review": "Awaiting review · /accept T-{id} · /reopen T-{id} reason",
   "chat.hint_waiting": "Waiting on you · when your part is done, /resume T-{id}",
   "chat.hint_working": "What you write here, the working member reads at its next step",
-  "chat.jump_to_bottom": "↓ To bottom",
+  "chat.jump_to_bottom": "Latest",
   "chat.member_left_text": "{name} no longer works here.",
   "chat.member_left_title": "This member left the squad",
   "chat.member_text": "The PM hears about what you tell this member. It takes work from the board and does it in its own folder.",

@@ -420,7 +420,11 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         MessageScroller::new("conversation", shell.chat.scroller.clone(), move |ix, window, cx| row(&rows, ix, window, cx))
             .with_jump_button_transition(std::time::Duration::ZERO)
             .with_row_style(StyleRefinement::default().pb(px(8.)))
-            .with_jump_button_label(t!("chat.jump_to_bottom")),
+            .with_jump_button_label(t!("chat.jump_to_bottom"))
+            // In the app's colours, with its words beside the arrow: on its own
+            // the arrow sat white on white.
+            .with_jump_button_style(StyleRefinement::default().bg(to_hsla(p.raised)).text_color(to_hsla(p.text)).border_color(to_hsla(p.hair)))
+            .with_jump_button_renderer(|button| button.label(t!("chat.jump_to_bottom")).px_3()),
     )
 }
 
