@@ -10,7 +10,7 @@ use std::time::Duration;
 use equipe_core::journal::{self, Journal};
 use equipe_core::protocol::rpc::{ToolCall, ToolResult};
 use equipe_core::protocol::{
-    Access, Command, Engine, Entry, Event, SessionSpec, SessionState, Ticket, TicketStatus, TurnOutcome,
+    Access, Command, Engine, Entry, Event, OffMain, SessionSpec, SessionState, Ticket, TicketStatus, TurnOutcome,
 };
 use equipe_core::runtime::{self, Config, Handle};
 use equipe_core::{squad_home, squads};
@@ -729,6 +729,92 @@ async fn accepted_work_is_where_the_next_ticket_starts_and_lands_on_main_only_wh
 }
 
 #[tokio::test]
+async fn work_not_on_main_says_why_can_be_kept_on_its_branch_and_settles_when_nothing_is_left_to_merge() {
+    let repo = repo();
+    let claude = fake_claude(true, &answering("ok"));
+    let home = squad_home(&[&repo]);
+    // T-1 changed a file and changed it back (+0 −0); T-2 rewrote the README
+    // that main rewrites too; T-3 is real work.
+    let on_branch = |id: u32, steps: &[(&str, Option<&str>)]| {
+        let branch = format!("equipe/dev-t{id}");
+        git(&repo, &["branch", &branch, "main"]);
+        let path = scratch("wt").join("w");
+        git(&repo, &["worktree", "add", "-q", &path.to_string_lossy(), &branch]);
+        for (file, text) in steps {
+            match text {
+                Some(text) => std::fs::write(path.join(file), text).unwrap(),
+                None => std::fs::remove_file(path.join(file)).unwrap(),
+            }
+            git(&path, &["add", "-A"]);
+            git(&path, &["commit", "-qm", file]);
+        }
+        git(&repo, &["worktree", "remove", "--force", &path.to_string_lossy()]);
+    };
+    on_branch(1, &[("NOTE.md", Some("x\n")), ("NOTE.md", None)]);
+    on_branch(2, &[("README.md", Some("theirs\n"))]);
+    on_branch(3, &[("PAGE.md", Some("page\n"))]);
+    std::fs::write(repo.join("README.md"), "ours\n").unwrap();
+    git(&repo, &["commit", "-qam", "ours"]);
+    {
+        let journal = Journal::for_squad(&home, "acme").unwrap();
+        for id in [1, 2, 3] {
+            let made = journal
+                .create_ticket(&Ticket {
+                    id: 0,
+                    title: format!("Piece {id}"),
+                    body: "-".into(),
+                    status: TicketStatus::Done,
+                    owner: Some("frontend".into()),
+                    assignee: None,
+                    project: Some(repo.clone()),
+                    depends_on: Vec::new(),
+                    branch: Some(format!("equipe/dev-t{id}")),
+                    worktree: None,
+                    merged: None,
+                    off_main: None,
+                    kind: equipe_core::protocol::TicketKind::Code,
+                    created_by: "pm".into(),
+                    note: None,
+                })
+                .unwrap();
+            let mut t = journal.ticket(made).unwrap().unwrap();
+            t.merged = Some(false);
+            journal.save_ticket(&t).unwrap();
+        }
+    }
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+
+    // A merge that conflicts merges nothing, and the ticket says why.
+    handle.send(Command::Merge { squad: "acme".into(), ticket: 2, push: false });
+    let failed = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
+    let two = ticket_changed(&failed).pop().unwrap();
+    assert!(matches!(&two.off_main, Some(OffMain::Conflict { detail }) if detail.contains("README.md")), "{two:?}");
+    assert!(two.waits_to_merge(), "still the person's call");
+
+    // Kept on its branch: it stops asking, and is still not on main.
+    handle.send(Command::KeepOnBranch { squad: "acme".into(), ticket: 3 });
+    let kept = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 3)).await;
+    let three = ticket_changed(&kept).pop().unwrap();
+    assert_eq!((three.off_main.clone(), three.merged), (Some(OffMain::Kept), Some(false)));
+    assert!(three.not_on_main() && !three.waits_to_merge());
+    // Only work accepted and off main can be kept.
+    handle.send(Command::KeepOnBranch { squad: "acme".into(), ticket: 9 });
+    until(&mut events, |e| matches!(e, Event::Error { .. })).await;
+
+    // Merged after all: on main, its reason gone.
+    handle.send(Command::Merge { squad: "acme".into(), ticket: 3, push: false });
+    let merged = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 3 && ticket.merged == Some(true))).await;
+    assert_eq!(ticket_changed(&merged).pop().unwrap().off_main, None);
+    assert!(repo.join("PAGE.md").exists() && !repo.join("NOTE.md").exists());
+    // T-1 had nothing left to bring: settled as merged — on the daemon's
+    // minute, or after a merge at the latest — and no longer asks.
+    let board = handle.snapshot("acme").await.tickets;
+    let off: Vec<(u32, Option<bool>, Option<OffMain>)> = board.iter().map(|t| (t.id, t.merged, t.off_main.clone())).collect();
+    assert_eq!(off, [(1, Some(true), None), (2, Some(false), two.off_main.clone()), (3, Some(true), None)]);
+}
+
+#[tokio::test]
 async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
     let repo = repo();
     let claude = fake_claude(true, &answering("ok"));
@@ -758,6 +844,7 @@ async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
                     branch: Some(format!("equipe/dev-t{id}")),
                     worktree: None,
                     merged: Some(false),
+                    off_main: None,
                     kind: equipe_core::protocol::TicketKind::Code,
                     created_by: "pm".into(),
                     note: None,

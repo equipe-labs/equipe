@@ -164,7 +164,7 @@ type Branch = (&'static str, Vec<(&'static str, usize)>);
 fn seed_repos() {
     let _ = std::fs::remove_dir_all(root());
     let projects: [(&str, Vec<Branch>); 3] = [
-        ("web", vec![("equipe/t-42-checkout", vec![("src/checkout.tsx", 48), ("src/cart.ts", 12), ("src/api/pay.ts", 21)]), ("equipe/t-51-footer", vec![("src/footer.tsx", 9)])]),
+        ("web", vec![("equipe/t-42-checkout", vec![("src/checkout.tsx", 48), ("src/cart.ts", 12), ("src/api/pay.ts", 21)]), ("equipe/t-51-footer", vec![("src/footer.tsx", 9)]), ("equipe/t-49-banner", vec![("src/banner.tsx", 14), ("README.md", 2)])]),
         ("app", vec![]),
         ("api", vec![("equipe/t-71-rate-limit", vec![("src/limit.rs", 64), ("src/main.rs", 6), ("tests/limit.rs", 30)])]),
     ];
@@ -232,6 +232,10 @@ fn board() -> Vec<Ticket> {
         let mut done = ticket(51, "done", "web", "frontend", "푸터 링크 정리", "", &[], Some("equipe/t-51-footer"), Some("링크를 정리했습니다."));
         done.merged = Some(false);
         out.push(done);
+        let mut clash = ticket(49, "done", "web", "frontend", "공지 배너", "", &[], Some("equipe/t-49-banner"), Some("상단 공지 배너를 넣었습니다."));
+        clash.merged = Some(false);
+        clash.off_main = Some(equipe_core::protocol::OffMain::Conflict { detail: "equipe/t-49-banner conflicts with main in README.md — nothing was merged".into() });
+        out.push(clash);
     }
     out
 }
@@ -245,7 +249,7 @@ fn tickets() -> &'static std::sync::Mutex<Vec<Ticket>> {
 fn on_ticket_command(command: &Command) -> Option<Ticket> {
     let mut all = tickets().lock().unwrap();
     let id = match command {
-        Command::Accept { ticket, .. } | Command::Merge { ticket, .. } | Command::Reopen { ticket, .. } | Command::Resume { ticket, .. } | Command::Cancel { ticket, .. } => *ticket,
+        Command::Accept { ticket, .. } | Command::Merge { ticket, .. } | Command::KeepOnBranch { ticket, .. } | Command::Reopen { ticket, .. } | Command::Resume { ticket, .. } | Command::Cancel { ticket, .. } => *ticket,
         _ => return None,
     };
     let t = all.iter_mut().find(|t| t.id == id)?;
@@ -255,7 +259,11 @@ fn on_ticket_command(command: &Command) -> Option<Ticket> {
             t.status = TicketStatus::Done;
             t.merged = t.branch.as_ref().map(|_| false);
         }
-        Command::Merge { .. } => t.merged = Some(true),
+        Command::Merge { .. } => {
+            t.merged = Some(true);
+            t.off_main = None;
+        }
+        Command::KeepOnBranch { .. } => t.off_main = Some(equipe_core::protocol::OffMain::Kept),
         Command::Reopen { note, .. } => {
             t.status = TicketStatus::InProgress;
             t.note = Some(note.clone());

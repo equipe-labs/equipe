@@ -6,7 +6,7 @@
 
 use equipe_core::t;
 
-use equipe_core::protocol::{Ticket, TicketId, TicketStatus};
+use equipe_core::protocol::{OffMain, Ticket, TicketId, TicketStatus};
 use gpui_kit::component::input::{Input, Textarea};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -16,7 +16,7 @@ use super::board::{Flow, btn, dot, hue_of, kbd, live_activity, member_color};
 use super::icons;
 use crate::board::{self as rules, MergeWay, Tab};
 use crate::convo::Block;
-use crate::state::{Need, local_hm, short_span, status_word};
+use crate::state::{Need, local_hm, short_span};
 use crate::theme::{MONO, Palette, SMALL, look};
 use crate::Shell;
 
@@ -164,7 +164,7 @@ fn head(shell: &Shell, t: &Ticket, wide: bool, cx: &mut Context<Shell>) -> AnyEl
                 .items_center()
                 .child(icons::status(p, t.status, 14.))
                 .child(div().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{}", t.id)))
-                .child(div().text_size(px(12.)).text_color(icons::color(p, t.status)).child(if t.not_on_main() { t!("state.not_on_main") } else { status_word(t.status) })),
+                .child(div().text_size(px(12.)).text_color(icons::color(p, t.status)).child(crate::state::state_word(t))),
         )
         .child(div().text_size(px(if wide { 20. } else { 16. })).line_height(px(if wide { 28. } else { 24. })).font_weight(FontWeight::SEMIBOLD).child(t.title.clone()))
         .child(h_flex().flex_wrap().gap_x_3().gap_y_1().text_size(px(12.)).text_color(p.muted).children(facts))
@@ -220,6 +220,23 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, cx: &mut Context<Shell>) -> Vec<A
             }
         }
         TicketStatus::Review | TicketStatus::Done => {
+            // Accepted, not in main: why, first.
+            if let Some(why) = rules::off_main_why(t, shell.merge_way_of(&model.ticket_project_name(t).unwrap_or_default())) {
+                let tone = if matches!(t.off_main, Some(OffMain::Conflict { .. } | OffMain::Failed { .. })) { p.amber } else { p.accent };
+                out.push(
+                    v_flex()
+                        .gap_1()
+                        .pl_3()
+                        .py_1()
+                        .border_l_2()
+                        .border_color(tone)
+                        .text_size(px(13.))
+                        .line_height(px(20.))
+                        .child(div().text_color(p.text).child(t!("state.not_on_main_hint")))
+                        .child(div().text_color(p.text2).child(why))
+                        .into_any_element(),
+                );
+            }
             if let Some(note) = t.note.as_deref().filter(|n| !n.trim().is_empty()) {
                 out.push(v_flex().gap_1().child(kicker(p, t!("peek.hand_in"))).child(md("peek-note", note)).into_any_element());
             }
@@ -430,10 +447,15 @@ fn foot(shell: &Shell, t: &Ticket, cx: &mut Context<Shell>) -> AnyElement {
             add(btn(p, "p-reply", t!("peek.reply_pm"), Some("R"), false, can).on_click(cx.listener(|this, _, w, cx| this.board_open_reply(w, cx))));
         }
         TicketStatus::Done if t.not_on_main() => {
-            add(btn(p, "p-merge", t!("peek.merge"), Some("M"), true, can).on_click(cx.listener(move |this, _, _, cx| {
-                this.board.flow = Some(Flow::Method(id));
-                cx.notify();
-            })));
+            let label = match way {
+                Some(MergeWay::Push) => t!("peek.merge_main_push"),
+                Some(MergeWay::Merge) => t!("peek.merge_main"),
+                _ => t!("peek.merge_main_ask"),
+            };
+            add(btn(p, "p-merge", label, Some("M"), true, can).on_click(cx.listener(move |this, _, _, cx| this.board_merge(id, cx))));
+            if t.waits_to_merge() {
+                add(btn(p, "p-keep", t!("peek.keep_on_branch"), None, false, can).on_click(cx.listener(move |this, _, _, cx| this.board_keep(id, cx))));
+            }
         }
         _ => {}
     }
