@@ -55,8 +55,11 @@ struct Tip {
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let p = self.p;
+        // A long label (a ticket's whole title) wraps within a readable width.
+        let long = self.label.chars().count() > 48;
         h_flex()
-            .h(px(24.))
+            .min_h(px(24.))
+            .when(long, |chip| chip.max_w(px(380.)).py(px(4.)))
             .px_2()
             .gap_2()
             .items_center()
@@ -66,10 +69,10 @@ impl Render for Tip {
             .border_color(rgba(0xFFFFFF14))
             .shadow(motion::float_shadow(0.6))
             .text_size(px(SMALL - 1.))
-            .whitespace_nowrap()
+            .when(!long, |chip| chip.whitespace_nowrap())
             .text_color(p.tip_text())
-            .child(self.label.clone())
-            .when_some(self.keys.clone(), |chip, keys| chip.child(div().text_color(p.tip_muted()).child(keys)))
+            .child(div().when(long, |d| d.flex_1().min_w_0()).child(self.label.clone()))
+            .when_some(self.keys.clone(), |chip, keys| chip.child(div().flex_none().whitespace_nowrap().text_color(p.tip_muted()).child(keys)))
     }
 }
 

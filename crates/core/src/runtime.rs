@@ -661,6 +661,8 @@ impl Runtime {
         if let Event::TicketChanged { ticket, .. } = &mut event {
             ticket.asks = Vec::new();
             ticket.asks = ticket.asks();
+            // It changed now: the screens know when it finished.
+            ticket.updated_at = Some(now_secs());
         }
         // Where a member's browser goes, to bring it back there on screen.
         if let Event::ToolUse { session, tool, target: Some(url) } = &event
@@ -3607,6 +3609,7 @@ there, end your turn, and carry on when they say they're done."
                     created_by: member.clone(),
                     note: None,
                     asks: vec![],
+                    updated_at: None,
                 };
                 let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
                 let new_id = journal.create_ticket(&ticket).map_err(|e| e.to_string())?;
