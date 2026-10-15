@@ -392,6 +392,12 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         // `FAKE_SAID`: one more message of the person's, last — as one with
                         // attachment tags comes back after a restart.
                         let mut history = history;
+                        // `FAKE_SCOPED=1`: a history over two projects and the whole
+                        // squad, each turn marked with what it was about.
+                        if std::env::var_os("FAKE_SCOPED").is_some() {
+                            history = scoped_history();
+                            routes.lock().await.thread.insert(1, Some("app".into()));
+                        }
                         history.extend(std::env::var("FAKE_SAID").ok().filter(|s| !s.is_empty()).map(|text| Entry::User { text }));
                         if let Some(how) = your_turn() {
                             history.push(Entry::Note { text: "frontend handed in T-63 for your review · 경쟁 앱 온보딩 조사.".into() });
@@ -572,6 +578,34 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
             }
         }
     }
+}
+
+/// The PM's history with `FAKE_SCOPED`: the app, news of the web, the web,
+/// the whole squad, the app again.
+fn scoped_history() -> Vec<Entry> {
+    let about = |p: Option<&str>| Entry::Thread { project: p.map(str::to_owned) };
+    let user = |t: &str| Entry::User { text: t.into() };
+    let reply = |t: &str| Entry::Reply { text: t.into() };
+    let read = |p: &str, f: &str| Entry::Tool { tool: "Read".into(), target: Some(format!("/tmp/fake/site/{p}/{f}")), outcome: None };
+    vec![
+        about(Some("app")),
+        user("온보딩 첫 화면 문구를 다듬어 줘"),
+        read("app", "src/onboarding.tsx"),
+        reply("네, **T-60** 시안에 맞춰 첫 화면 제목을 \"팀이 일하는 곳\"으로 바꾸고 버튼은 \"시작하기\" 하나로 줄이겠습니다."),
+        about(Some("web")),
+        Entry::Note { text: "frontend이(가) T-47을(를) 검토해 달라고 넘겼습니다 · 상품 상세 페이지 이미지 갤러리.".into() },
+        user("상품 상세 갤러리는 어디까지 됐어?"),
+        read("web", "src/gallery.tsx"),
+        read("web", "src/gallery.test.tsx"),
+        reply("**T-47**은 검토를 기다리고 있습니다. 스와이프와 확대는 끝났고, 썸네일 줄은 다음 차례입니다."),
+        about(None),
+        user("이번 주 우선순위 정리해 줘"),
+        reply("이번 주는 세 가지입니다.\n\n1. web — 갤러리 검토 (**T-47**)\n2. api — 주문 페이지네이션 (**T-70**)\n3. app — 온보딩 시안 (**T-60**)"),
+        about(Some("app")),
+        user("온보딩 두 번째 화면도 같은 톤으로"),
+        read("app", "src/onboarding.tsx"),
+        reply("두 번째 화면도 같은 톤으로 맞췄습니다. 설명은 두 줄로 줄였어요."),
+    ]
 }
 
 /// One turn: a couple of steps, then the reply a few characters at a time.

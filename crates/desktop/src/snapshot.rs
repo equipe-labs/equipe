@@ -9,7 +9,7 @@
 //! `menu:<inbox|working|all|view0…>` (a sidebar item) · `cmenu:<attach|recent|to|model|effort|mode|context>` (a composer menu) · `bkey:<key>` (a work
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
-//! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in points) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `settings[:<category>]` (settings, at general · squad · team · permissions · projects · browser · keys · about) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
+//! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in points) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `settings[:<category>]` (settings, at general · squad · team · permissions · projects · browser · keys · about) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
 //! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
 //! `answer:<ticket>,<n>,<words>` / `aok:<ticket>,<n>` / `atick:<ticket>,<n>` / `asend:<ticket>` (a waiting ticket's card: type in box n, its quick OK, tick thing n off, send) ·
@@ -106,6 +106,11 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 "board" => shell.update(cx, |shell, cx| shell.show(crate::Screen::Board, cx)),
                 "chat" => shell.update(cx, |shell, cx| shell.show(crate::Screen::Chat, cx)),
                 "folds" => shell.update(cx, |shell, cx| shell.toggle_folds(cx)),
+                "elsewhere" => shell.update(cx, |shell, cx| {
+                    if let Some(fold) = shell.chat.nth_fold(arg.parse().unwrap_or(0)) {
+                        shell.toggle_elsewhere(fold, cx);
+                    }
+                }),
                 "chooser" => shell.update(cx, |shell, cx| shell.open_chooser(window, cx)),
                 "connect" => shell.update(cx, |shell, cx| shell.connect_typed(&arg, window, cx)),
                 "pass" => shell.update(cx, |shell, cx| {

@@ -136,10 +136,229 @@ impl Transcript {
     }
 }
 
+/// What a conversation is about, line by line. The PM keeps one conversation
+/// for the whole squad; each line of it is about one project — or, `None`, the
+/// whole squad. A [`Entry::Thread`] marker says what the lines after it are
+/// about: the daemon leaves one before a message of the person's about another
+/// project than the last (the project they looked at when they sent it), and
+/// around news of another project's ticket. The member's replies and steps
+/// follow the message they answer. A screen shows one project's slice of it
+/// ([`slice`]); the engine always gets the whole.
+pub mod scope {
+    use std::borrow::Borrow;
+    use std::ops::Range;
+
+    use crate::Entry;
+
+    /// How the daemon opens a message the person sent looking at one project
+    /// (the project's name follows, then ` — `).
+    pub const LOOKING_AT: &str = "[equipe: the person is looking at the project ";
+    /// How it opens one sent looking at the whole squad.
+    pub const WHOLE_SQUAD: &str = "[equipe: the person is looking at the whole squad";
+
+    /// What `entry` says the lines from it on are about, when it says: a
+    /// marker, or (in older history) a message that kept the daemon's prefix.
+    pub fn marker(entry: &Entry) -> Option<Option<String>> {
+        match entry {
+            Entry::Thread { project } => Some(project.clone()),
+            Entry::User { text } => said_about(text),
+            _ => None,
+        }
+    }
+
+    /// The project a message names in the daemon's prefix, if it kept one.
+    pub fn said_about(text: &str) -> Option<Option<String>> {
+        if let Some(rest) = text.strip_prefix(LOOKING_AT) {
+            let name = rest.split_once(" — ").map_or_else(|| rest.split(']').next().unwrap_or_default(), |(name, _)| name).trim();
+            return (!name.is_empty()).then(|| Some(name.to_owned()));
+        }
+        text.starts_with(WHOLE_SQUAD).then_some(None)
+    }
+
+    /// What each line is about, in order. Lines before any marker are about
+    /// the whole squad.
+    pub fn of(entries: &[Entry]) -> Vec<Option<String>> {
+        let mut now: Option<String> = None;
+        entries
+            .iter()
+            .map(|entry| {
+                if let Some(about) = marker(entry) {
+                    now = about;
+                }
+                now.clone()
+            })
+            .collect()
+    }
+
+    /// What the conversation is about at its end, if a marker said so.
+    pub fn current(entries: &[Entry]) -> Option<Option<String>> {
+        entries.iter().rev().find_map(marker)
+    }
+
+    /// The lines a screen sends from `from` on, said about what they are about
+    /// where they start: the marker in force there goes first, so a screen
+    /// that gets only the latest lines reads them as the daemon does.
+    pub fn from(entries: &[Entry], from: usize) -> Vec<Entry> {
+        let from = from.min(entries.len());
+        let mut out = Vec::with_capacity(entries.len() - from + 1);
+        let opens_with_marker = entries.get(from).is_some_and(|e| matches!(e, Entry::Thread { .. }));
+        if !opens_with_marker && let Some(about) = current(&entries[..from]) {
+            out.push(Entry::Thread { project: about });
+        }
+        out.extend_from_slice(&entries[from..]);
+        out
+    }
+
+    /// A stretch of the conversation as one project's slice shows it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Part {
+        /// Lines about the project: shown.
+        Here(Range<usize>),
+        /// Lines about other projects or the whole squad, folded into one row
+        /// saying how many things were said there.
+        Elsewhere { lines: Range<usize>, said: usize },
+    }
+
+    /// Whether a line is something said — a message, a reply, news, an error,
+    /// a commit — rather than a step, a marker or a screen's own line (those
+    /// open with a private-use character).
+    pub fn is_said(entry: &Entry) -> bool {
+        match entry {
+            Entry::User { .. } | Entry::Reply { .. } | Entry::Error { .. } | Entry::Landed { .. } => true,
+            Entry::Note { text } => !text.chars().next().is_some_and(|c| ('\u{E000}'..='\u{F8FF}').contains(&c)),
+            Entry::Tool { .. } | Entry::Thread { .. } => false,
+        }
+    }
+
+    /// `lines` (each with what it is about) as `project`'s slice shows them:
+    /// its own lines, and between them the rest folded. A reply about the
+    /// whole squad still streaming at the end (`live`) shows too: the person
+    /// is waiting for it. Folds with nothing said in them are left out.
+    pub fn slice<E: Borrow<Entry>>(lines: &[(E, Option<String>)], project: &str, live: bool) -> Vec<Part> {
+        let last = lines.len().checked_sub(1);
+        let here = |ix: usize| {
+            let (entry, about) = &lines[ix];
+            about.as_deref() == Some(project) || (live && Some(ix) == last && about.is_none() && matches!(entry.borrow(), Entry::Reply { .. }))
+        };
+        let mut parts: Vec<Part> = Vec::new();
+        let mut ix = 0;
+        while ix < lines.len() {
+            let shown = here(ix);
+            let start = ix;
+            while ix < lines.len() && here(ix) == shown {
+                ix += 1;
+            }
+            if shown {
+                parts.push(Part::Here(start..ix));
+            } else {
+                let said = lines[start..ix].iter().filter(|(e, _)| is_said(e.borrow())).count();
+                if said > 0 {
+                    parts.push(Part::Elsewhere { lines: start..ix, said });
+                }
+            }
+        }
+        parts
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Usage;
+
+    mod scopes {
+        use super::super::scope::{self, Part};
+        use crate::Entry;
+
+        fn user(text: &str) -> Entry {
+            Entry::User { text: text.into() }
+        }
+        fn reply(text: &str) -> Entry {
+            Entry::Reply { text: text.into() }
+        }
+        fn about(project: Option<&str>) -> Entry {
+            Entry::Thread { project: project.map(str::to_owned) }
+        }
+        fn tool() -> Entry {
+            Entry::Tool { tool: "Read".into(), target: None, outcome: None }
+        }
+
+        #[test]
+        fn a_turn_its_reply_and_its_steps_are_about_the_project_it_was_sent_in() {
+            let lines = vec![user("old"), reply("old answer"), about(Some("app")), user("fix it"), tool(), reply("fixed"), about(Some("site")), user("and here")];
+            let s = scope::of(&lines);
+            assert_eq!(s[..2], [None, None], "before any marker: the whole squad");
+            assert!(s[2..6].iter().all(|p| p.as_deref() == Some("app")), "{s:?}");
+            assert_eq!(s[7].as_deref(), Some("site"));
+            assert_eq!(scope::current(&lines), Some(Some("site".into())));
+            assert_eq!(scope::current(&lines[..2]), None, "no marker yet");
+        }
+
+        #[test]
+        fn news_is_about_its_ticket_and_the_turn_goes_on_after_it() {
+            let news = Entry::Note { text: "frontend handed in T-4".into() };
+            let lines = vec![about(Some("app")), user("go"), reply("on it"), about(Some("site")), news, about(Some("app")), reply("done")];
+            let s = scope::of(&lines);
+            assert_eq!(s[4].as_deref(), Some("site"));
+            assert_eq!(s[6].as_deref(), Some("app"), "the reply after the news is still the turn's");
+        }
+
+        #[test]
+        fn older_history_is_read_from_the_prefix_it_kept_else_the_whole_squad() {
+            let lines = vec![user("plain"), user("[equipe: the person is looking at the project web — new work is for it unless they say otherwise]\n\nhi"), reply("hello"), user("[equipe: the person is looking at the whole squad — you oversee every project.]\n\nall")];
+            let s = scope::of(&lines);
+            assert_eq!(s, vec![None, Some("web".into()), Some("web".into()), None]);
+            assert_eq!(scope::said_about("[equipe: the person is looking at the project x]"), Some(Some("x".into())));
+            assert_eq!(scope::said_about("nothing"), None);
+        }
+
+        #[test]
+        fn the_latest_lines_carry_the_marker_in_force_where_they_start() {
+            let lines = vec![about(Some("app")), user("a"), reply("b"), user("c")];
+            assert_eq!(scope::from(&lines, 2), vec![about(Some("app")), reply("b"), user("c")]);
+            assert_eq!(scope::from(&lines, 0), lines, "a marker first already");
+            assert_eq!(scope::from(&[user("x"), reply("y")], 1), vec![reply("y")], "no marker, nothing to add");
+        }
+
+        #[test]
+        fn a_slice_shows_its_project_and_folds_the_rest_counting_what_was_said() {
+            let lines = vec![
+                about(Some("app")), user("a1"), tool(), reply("a2"),
+                about(Some("site")), user("s1"), tool(), tool(), reply("s2"),
+                about(None), user("all"), reply("all answer"),
+                about(Some("app")), user("a3"), reply("a4"),
+            ];
+            let s = scope::of(&lines);
+            let pairs: Vec<(&Entry, Option<String>)> = lines.iter().zip(s).collect();
+            assert_eq!(
+                scope::slice(&pairs, "app", false),
+                vec![Part::Here(0..4), Part::Elsewhere { lines: 4..12, said: 4 }, Part::Here(12..15)],
+                "site's turn and the squad-wide one fold together: four things said"
+            );
+            assert_eq!(scope::slice(&pairs, "site", false), vec![Part::Elsewhere { lines: 0..4, said: 2 }, Part::Here(4..9), Part::Elsewhere { lines: 9..15, said: 4 }]);
+            assert_eq!(scope::slice(&pairs, "web", false), vec![Part::Elsewhere { lines: 0..15, said: 8 }]);
+        }
+
+        #[test]
+        fn a_squad_wide_reply_streaming_now_shows_in_any_slice() {
+            let lines = vec![about(Some("app")), user("a"), reply("b"), about(None), user("all?"), reply("stream")];
+            let s = scope::of(&lines);
+            let pairs: Vec<(&Entry, Option<String>)> = lines.iter().zip(s).collect();
+            assert_eq!(scope::slice(&pairs, "app", true), vec![Part::Here(0..3), Part::Elsewhere { lines: 3..5, said: 1 }, Part::Here(5..6)]);
+            assert_eq!(scope::slice(&pairs, "app", false), vec![Part::Here(0..3), Part::Elsewhere { lines: 3..6, said: 2 }]);
+            // Another project's reply streaming stays folded.
+            let lines = vec![about(Some("site")), user("s"), reply("stream")];
+            let pairs: Vec<(&Entry, Option<String>)> = lines.iter().zip(scope::of(&lines)).collect();
+            assert_eq!(scope::slice(&pairs, "app", true), vec![Part::Elsewhere { lines: 0..3, said: 2 }]);
+        }
+
+        #[test]
+        fn a_fold_with_nothing_said_is_left_out() {
+            let lines = vec![about(Some("site")), tool(), Entry::Note { text: "\u{E001}3:10:00@1".into() }, about(Some("app")), user("a")];
+            let pairs: Vec<(&Entry, Option<String>)> = lines.iter().zip(scope::of(&lines)).collect();
+            assert_eq!(scope::slice(&pairs, "app", false), vec![Part::Here(3..5)]);
+        }
+    }
 
     fn delta(text: &str) -> Event {
         Event::TextDelta { session: 1, text: text.into() }

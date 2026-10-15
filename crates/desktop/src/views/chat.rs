@@ -72,14 +72,26 @@ const PART_ROW: u32 = 1 << 21;
 /// The side panel's width; the conversation keeps the rest.
 const SIDE: f32 = 420.;
 
-/// Whose conversation, and the ticket it shows the work of.
-type Shown = (SessionId, Option<u32>);
+/// Whose conversation, the ticket it shows the work of, and the project's
+/// slice of it on screen (`Model::chat_slice`).
+type Shown = (SessionId, Option<u32>, Option<Option<String>>);
 
 pub struct Chat {
     scroller: Entity<MessageScrollerState>,
     blocks: Rc<Vec<Block>>,
-    /// Whose conversation `blocks` are, and the ticket it shows the work of.
-    shown: Option<(SessionId, Option<u32>)>,
+    /// Whose conversation `blocks` are, the ticket it shows the work of, and
+    /// the slice of it.
+    shown: Option<Shown>,
+    /// What each of `blocks` is about (`None`: the whole squad, or not said).
+    about: Rc<Vec<Option<String>>>,
+    /// The latest reply came about another project than the one shown.
+    answered_in: Option<Option<String>>,
+    /// The conversation follows the project in focus (settings ▸ 일반).
+    pub follow: bool,
+    /// Folded stretches of other projects the person opened.
+    pub elsewhere: HashSet<u64>,
+    /// The list was drawn anew for another slice: it fades in (by serial).
+    faded_in: Option<u64>,
     seen_revision: u64,
     /// Every group of calls and run of news open (⌘⇧O).
     pub expanded: bool,
@@ -162,6 +174,11 @@ impl Chat {
             scroller: cx.new(|cx| MessageScrollerState::new(0, cx)),
             blocks: Rc::new(Vec::new()),
             shown: None,
+            about: Rc::default(),
+            answered_in: None,
+            follow: true,
+            elsewhere: HashSet::new(),
+            faded_in: None,
             seen_revision: 0,
             expanded: false,
             shown_expanded: false,
@@ -180,29 +197,35 @@ impl Chat {
 
     /// Bring the list up to what the model shows. Cheap when nothing moved.
     pub fn sync(&mut self, model: &Model, looks: &HashMap<u32, u64>, cx: &mut App) {
-        let key = model.viewed().map(|id| (id, model.opened));
+        let key = model.viewed().map(|id| (id, model.opened, model.chat_slice(self.follow)));
         let moved = key != self.shown;
         if !moved && model.revision == self.seen_revision && self.expanded == self.shown_expanded {
             return;
         }
-        let mut new = model.convo().map(|c| c.blocks()).unwrap_or_default();
-        crate::yourturn::mark(&mut new, looks);
-        let old = std::mem::replace(&mut self.blocks, Rc::new(new));
+        let mut view = model.conversation(self.follow, &self.elsewhere);
+        crate::yourturn::mark(&mut view.blocks, looks);
+        self.about = Rc::new(view.about);
+        self.answered_in = view.answered_in;
+        let old = std::mem::replace(&mut self.blocks, Rc::new(view.blocks));
         self.seen_revision = model.revision;
         let folds_changed = self.expanded != self.shown_expanded;
         self.shown_expanded = self.expanded;
         let n = self.blocks.len();
         if moved {
             // What was open stays so for when the conversation comes back.
-            if let Some(old) = self.shown {
+            // Only the slice changed: the same conversation fades in, at its
+            // end, rather than flashing.
+            let resliced = matches!((&self.shown, &key), (Some(a), Some(b)) if a.0 == b.0 && a.1 == b.1);
+            if let Some(old) = self.shown.take() {
                 let serial = self.serial;
                 let kept: HashSet<(usize, u32)> = self.opened.iter().filter(|(row, _)| row >> 24 == serial).map(|(row, part)| ((row & 0xFF_FFFF) as usize, *part)).collect();
                 self.remembered.insert(old, kept);
             }
-            self.shown = key;
             self.serial += 1;
             let serial = self.serial;
-            self.opened = Rc::new(key.and_then(|k| self.remembered.get(&k)).map(|kept| kept.iter().map(|(ix, part)| (serial << 24 | *ix as u64, *part)).collect()).unwrap_or_default());
+            self.faded_in = resliced.then_some(serial);
+            self.opened = Rc::new(key.as_ref().and_then(|k| self.remembered.get(k)).map(|kept| kept.iter().map(|(ix, part)| (serial << 24 | *ix as u64, *part)).collect()).unwrap_or_default());
+            self.shown = key;
             self.views.borrow_mut().map.clear();
             self.scroller.update(cx, |s, cx| s.reset(n, cx));
             if self.find.open {
@@ -216,7 +239,10 @@ impl Chat {
         if n > old.len() {
             let now = std::time::Instant::now();
             let mut arrived: HashMap<u64, std::time::Instant> = self.arrived.iter().filter(|(_, at)| now.duration_since(**at) < ARRIVING).map(|(k, v)| (*k, *v)).collect();
-            for ix in old.len()..n {
+            // Rows put in between (a fold opened) rise where they come; else the new ones at the end.
+            let tail = old.iter().rev().zip(self.blocks.iter().rev()).take_while(|(a, b)| a == b).count().min(old.len() - same);
+            let added = n - old.len();
+            for ix in n - tail - added..n - tail {
                 arrived.insert(self.serial << 24 | ix as u64, now);
             }
             self.arrived = Rc::new(arrived);
@@ -232,6 +258,12 @@ impl Chat {
             }
             cx.notify();
         });
+    }
+
+    /// The `n`th stretch of other projects folded in the conversation (the snapshot script's).
+    #[cfg_attr(not(feature = "snapshot"), allow(dead_code))]
+    pub fn nth_fold(&self, n: usize) -> Option<u64> {
+        self.blocks.iter().filter_map(|b| if let Block::Elsewhere { key, .. } = b { Some(*key) } else { None }).nth(n)
     }
 
     /// Back to the end, following it again.
@@ -501,9 +533,24 @@ struct Rows {
     attached: attached::Ctx,
     /// The cards of tickets waiting for the person, as things stand.
     turns: HashMap<u32, Rc<yourturn::Card>>,
+    /// What each row is about, and — while the conversation follows the
+    /// project, of several — the projects in order, for the chips and dots
+    /// that say so, and the one in focus (its own rows need none).
+    about: Rc<Vec<Option<String>>>,
+    projects: Rc<Vec<String>>,
+    focus: Option<String>,
 }
 
 impl Rows {
+    /// The project row `ix` is about, as its chip or dot shows it: its name
+    /// and colour — while every project shows, or in a fold of other
+    /// projects' talk opened.
+    fn project_of(&self, ix: usize) -> Option<(String, Rgba)> {
+        let name = self.about.get(ix)?.as_ref().filter(|n| Some(*n) != self.focus.as_ref())?;
+        let at = self.projects.iter().position(|p| p == name)?;
+        Some((name.clone(), header::project_color(self.p, at)))
+    }
+
     /// Whether `part` of row `key` is open: as it opens by itself
     /// (`default`), unless the person turned it.
     fn is_open(&self, key: u64, part: u32, default: bool) -> bool {
@@ -536,6 +583,11 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     let latest_reply = blocks.iter().rposition(|b| matches!(b, Block::Reply { live: false, .. }));
     let turn_ends = turn_ends(&blocks);
     let replying = blocks.iter().any(|b| matches!(b, Block::Reply { live: true, .. }));
+    // The conversation sliced, of several projects: each message not of the
+    // project in focus says which it was about.
+    let names = shell.model.project_names();
+    let slice = shell.model.chat_slice(shell.chat.follow);
+    let every = slice.is_some() && names.len() > 1;
     let rows = Rc::new(Rows {
         p,
         tones: render::tones(&p),
@@ -553,6 +605,9 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         base: render::base_dir(shell),
         arrived: shell.chat.arrived.clone(),
         attached: attached::Ctx::of(shell, cx.entity().downgrade(), COLUMN - 120.),
+        about: shell.chat.about.clone(),
+        projects: Rc::new(if every { names } else { Vec::new() }),
+        focus: slice.flatten(),
         turns: shell
             .chat
             .blocks
@@ -564,8 +619,10 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     // While a reply streams: a small pulse over the composer, where the jump
     // button would be (which has the place while you read back).
     let following = shell.chat.scroller.read(cx).is_following_tail();
-    let pulse = (replying && following).then(|| pulse_pill(p));
-    div().flex_1().min_h_0().w_full().max_w(px(COLUMN)).px_4().relative().children(pulse).child(
+    // A reply about another project came: a pill to go there, the view stays.
+    let answered = shell.chat.answered_in.clone().map(|about| answered_pill(p, about, cx));
+    let pulse = (replying && following && answered.is_none()).then(|| pulse_pill(p));
+    let scroller = div().flex_1().min_h_0().w_full().relative().children(pulse).child(
         MessageScroller::new("conversation", shell.chat.scroller.clone(), move |ix, window, cx| row(&rows, ix, window, cx))
             // It fades and slides up into place, bottom-centre over the composer.
             .with_jump_button_transition(motion::BASE)
@@ -582,7 +639,68 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
                     .shadow(motion::float_shadow(0.8)),
             )
             .with_jump_button_renderer(|button| button.label(t!("chat.jump_to_bottom")).px_3()),
-    )
+    );
+    // The pill has its own room under the list, so it covers nothing.
+    let list = v_flex().flex_1().min_h_0().w_full().max_w(px(COLUMN)).px_4().child(scroller).children(answered);
+    // Another project's slice: the list fades in at its end.
+    match shell.chat.faded_in {
+        Some(serial) if serial == shell.chat.serial => motion::fade(list, ("slice-in", serial), motion::BASE).into_any_element(),
+        _ => list.into_any_element(),
+    }
+}
+
+/// Where a reply about another project came, over the composer: a click goes
+/// to that project (or every project, for the whole squad's).
+fn answered_pill(p: Palette, about: Option<String>, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+    let place = about.clone().unwrap_or_else(|| t!("header.all_projects").to_owned());
+    let words = t!("chat.answered_in", project = place);
+    let pill = h_flex()
+        .id("answered-in")
+        .h(px(30.))
+        .pl_3()
+        .pr_2()
+        .gap(px(4.))
+        .items_center()
+        .rounded_full()
+        .bg(p.popover())
+        .border_1()
+        .border_color(p.hair)
+        .shadow(motion::float_shadow(0.5))
+        .text_size(px(12.5))
+        .text_color(p.text)
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.wash))
+        .child(words)
+        .child(icon(Icon::ChevronRight, 12., p.muted))
+        .on_click(cx.listener(move |shell, _, window, cx| shell.focus_project(about.clone(), window, cx)));
+    h_flex().flex_none().w_full().pt_1().pb_2().justify_center().child(motion::rise(pill, "answered-in-rise"))
+}
+
+/// A stretch about other projects, folded: a quiet line saying how many
+/// things were said there; a click opens it in place (and closes it again).
+fn elsewhere_row(rows: &Rows, fold: u64, said: usize, open: bool, window: &mut Window, cx: &mut App) -> AnyElement {
+    let p = rows.p;
+    let progress = motion::openness(("elsewhere-open", fold), open, window, cx);
+    let handle = rows.handle.clone();
+    let words = if open { t!("chat.elsewhere_open", count = said) } else { t!("chat.elsewhere_closed", count = said) };
+    let rule = move || div().flex_1().h(px(1.)).bg(p.hair);
+    h_flex()
+        .id(("elsewhere", fold))
+        .my_1()
+        .h(px(28.))
+        .gap(px(10.))
+        .items_center()
+        .cursor_pointer()
+        .text_size(px(12.))
+        .text_color(p.muted)
+        .hover(move |s| s.text_color(p.text2))
+        .child(rule())
+        .child(h_flex().flex_none().gap(px(6.)).items_center().child(words).child(chevron(p.muted, progress)))
+        .child(rule())
+        .on_click(move |_, _, cx| {
+            handle.update(cx, |shell, cx| shell.toggle_elsewhere(fold, cx)).ok();
+        })
+        .into_any_element()
 }
 
 pub type Handle = WeakEntity<Shell>;
@@ -602,7 +720,7 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
     let key = rows.serial << 24 | ix as u64;
     let opened = |part: u32| rows.opened.contains(&(key, part));
     match &rows.blocks[ix] {
-        Block::User(text) => user_row(rows, key, text, opened(PART_MORE), cx),
+        Block::User(text) => user_row(rows, key, text, opened(PART_MORE), rows.project_of(ix), cx),
         Block::Reply { text, first, live, worked } => reply_row(rows, ix, key, text, *first, *live, worked.as_ref(), window, cx),
         Block::Steps(lines) => group(rows, key, lines, window, cx),
         Block::News(news) => news_rows(rows, key, news, window, cx),
@@ -703,6 +821,7 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             .into_any_element(),
         Block::Memo(text) => waiting(rows, key, "memo", text, p.muted, t!("chat.memo_note"), cx),
         Block::Steering(text) => waiting(rows, key, "steering", text, p.accent, t!("chat.steering_note"), cx),
+        Block::Elsewhere { key: fold, said, open } => elsewhere_row(rows, *fold, *said, *open, window, cx),
     }
 }
 
@@ -770,6 +889,22 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
         .child(div().text_size(px(BODY)).line_height(px(24.)).text_color(p.text).child(body))
         .children(actions)
         .into_any_element()
+}
+
+/// The project a message of yours was about: a dot of its colour and its name.
+fn project_chip(p: Palette, name: String, color: Rgba) -> impl IntoElement {
+    h_flex()
+        .h(px(20.))
+        .px(px(7.))
+        .gap(px(5.))
+        .items_center()
+        .rounded(px(R_SM))
+        .border_1()
+        .border_color(p.hair)
+        .text_size(px(11.5))
+        .text_color(p.text2)
+        .child(super::board::dot(color, 6.))
+        .child(name)
 }
 
 /// A small icon button under a reply, named in its tooltip.
@@ -1086,6 +1221,8 @@ fn diff_lines(rows: &Rows, id: u64, card: tools::DiffCard, path: Option<&str>) -
 /// in a row fold into one line that counts them.
 fn news_rows(rows: &Rows, key: u64, news: &[crate::activity::News], window: &mut Window, cx: &mut App) -> AnyElement {
     let p = rows.p;
+    // While every project shows: a dot of the project the news is about.
+    let project = rows.project_of((key & 0xFF_FFFF) as usize);
     let line = |n: usize, item: &crate::activity::News| {
         h_flex()
             .h(px(24.))
@@ -1093,6 +1230,7 @@ fn news_rows(rows: &Rows, key: u64, news: &[crate::activity::News], window: &mut
             .items_center()
             .text_size(px(SMALL))
             .child(news_icon(rows, item.kind))
+            .children(project.as_ref().map(|(name, color)| tip(div().id(("news-project", key << 8 | n as u64)).child(super::board::dot(*color, 6.)), p, name.clone(), None)))
             .child(linked(rows, ("news", key << 8 | n as u64), &item.text, p.muted, false))
             .into_any_element()
     };
@@ -1166,7 +1304,7 @@ fn waiting(rows: &Rows, key: u64, id: &'static str, raw: &str, mark: Rgba, note:
 /// wide as your words up to most of the column, no name over it; what it
 /// attached just above it, its start only when it is long ("더 보기"), and on
 /// hover a small row of actions beneath.
-fn user_row(rows: &Rows, key: u64, raw: &str, open: bool, cx: &mut App) -> AnyElement {
+fn user_row(rows: &Rows, key: u64, raw: &str, open: bool, project: Option<(String, Rgba)>, cx: &mut App) -> AnyElement {
     let p = rows.p;
     let parts = crate::sent::parts(raw);
     let text = parts.text.as_str();
@@ -1216,8 +1354,16 @@ fn user_row(rows: &Rows, key: u64, raw: &str, open: bool, cx: &mut App) -> AnyEl
         .items_end()
         .children(files)
         .children(bubble)
-        // Beneath, on the right, shown on hover; its room is kept so nothing moves.
-        .child(h_flex().h(px(24.)).gap(px(2.)).invisible().group_hover(group, |s| s.visible()).child(copy))
+        // Beneath, on the right: the project it was about, while every
+        // project shows; then copy, shown on hover — its room kept so nothing moves.
+        .child(
+            h_flex()
+                .h(px(24.))
+                .gap(px(6.))
+                .items_center()
+                .children(project.map(|(name, color)| project_chip(p, name, color)))
+                .child(div().invisible().group_hover(group, |s| s.visible()).child(copy)),
+        )
         .into_any_element()
 }
 
@@ -1461,6 +1607,25 @@ impl Shell {
 
     pub fn toggle_folds(&mut self, cx: &mut Context<Self>) {
         self.chat.expanded = !self.chat.expanded;
+        self.chat_sync(cx);
+        cx.notify();
+    }
+
+    /// Open or close a stretch of other projects folded in the conversation.
+    pub fn toggle_elsewhere(&mut self, fold: u64, cx: &mut Context<Self>) {
+        if !self.chat.elsewhere.remove(&fold) {
+            self.chat.elsewhere.insert(fold);
+        }
+        self.model.revision += 1;
+        self.chat_sync(cx);
+        cx.notify();
+    }
+
+    /// The conversation follows the project in focus, or shows whole (settings ▸ 일반).
+    pub fn set_follow_project(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.remembered.whole_conversation = !on;
+        self.remembered.save(&equipe_providers::credentials::equipe_home());
+        self.chat.follow = on;
         self.chat_sync(cx);
         cx.notify();
     }

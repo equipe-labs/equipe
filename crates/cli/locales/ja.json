@@ -703,6 +703,7 @@
   "view.members": "メンバー{open}人",
   "view.members_working": "メンバー{open}人 · {working}人作業中",
   "view.memo_note": "メモ · このターンが終わったら読みます",
+  "view.elsewhere.other": "他のプロジェクトの会話 {count}件 · /project all ですべて表示",
   "view.memos": "メモ{n}件",
   "view.mode_hint": "/mode {member} full で{member}は確認しなくなります · すべてのモードは /mode",
   "view.more_lines.one": "ほか{count}行",

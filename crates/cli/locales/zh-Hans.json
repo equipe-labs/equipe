@@ -703,6 +703,7 @@
   "view.members": "{open} 名成员",
   "view.members_working": "{open} 名成员 · {working} 名工作中",
   "view.memo_note": "备忘 · 本轮结束后读取",
+  "view.elsewhere.other": "其他项目的对话 {count} 条 · /project all 显示全部",
   "view.memos": "{n} 条备忘",
   "view.mode_hint": "/mode {member} full 让 {member} 不再询问 · /mode 查看所有模式",
   "view.more_lines.one": "还有 {count} 行",

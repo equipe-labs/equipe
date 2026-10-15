@@ -2379,7 +2379,106 @@ async fn a_member_keeps_one_conversation_whatever_project_is_in_view() {
     assert!(arg(&all[0], "-p").unwrap().contains("looking at the project app"));
     assert!(arg(&all[1], "-p").unwrap().contains("looking at the project site"));
     assert!(arg(&all[2], "-p").unwrap().contains("looking at the whole squad"));
-    assert!(!seen.iter().any(|e| matches!(e, Event::Thread { .. } | Event::LaneOpened { .. })), "{seen:#?}");
+    assert!(!seen.iter().any(|e| matches!(e, Event::LaneOpened { .. })), "{seen:#?}");
+    // One conversation; each message marked with the project it was about,
+    // for the screens to show one project's slice.
+    let marked: Vec<Option<&str>> = seen.iter().filter_map(|e| if let Event::Thread { session: 1, project } = e { Some(project.as_deref()) } else { None }).collect();
+    assert_eq!(marked, [Some("app"), Some("site"), None], "{seen:#?}");
+}
+
+#[tokio::test]
+async fn each_message_its_reply_and_its_steps_are_about_the_project_in_focus_when_sent() {
+    use equipe_core::protocol::transcript::scope;
+    let site = named("site");
+    let app = named("app");
+    let (claude, _recorded) = recording_claude(&answering_per_call("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    let mut seen = Vec::new();
+    for (project, text) in [(Some("app"), "app one"), (Some("app"), "app two"), (Some("site"), "site one"), (None, "squad one")] {
+        handle.send(Command::Focus { squad: "acme".into(), project: project.map(str::to_owned) });
+        handle.send(Command::Submit { session: 1, text: text.into() });
+        seen.extend(until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await);
+    }
+    // A marker only where the project changes.
+    assert_eq!(seen.iter().filter(|e| matches!(e, Event::Thread { .. })).count(), 3, "{seen:#?}");
+    // A screen attaching reads what each line is about from the conversation.
+    let recent = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 1).unwrap().recent;
+    let about: Vec<(String, Option<String>)> = recent
+        .iter()
+        .zip(scope::of(&recent))
+        .filter_map(|(e, about)| match e {
+            Entry::User { text } => Some((format!("user: {text}"), about)),
+            Entry::Reply { text } => Some((format!("reply: {text}"), about)),
+            _ => None,
+        })
+        .collect();
+    let app = || Some("app".to_owned());
+    assert_eq!(
+        about,
+        [
+            ("user: app one".into(), app()),
+            ("reply: ok".into(), app()),
+            ("user: app two".into(), app()),
+            ("reply: ok".into(), app()),
+            ("user: site one".into(), Some("site".into())),
+            ("reply: ok".into(), Some("site".into())),
+            ("user: squad one".into(), None),
+            ("reply: ok".into(), None),
+        ]
+    );
+    // The PM is told as before: the whole conversation, the prefix in its prompt only.
+    assert!(!recent.iter().any(|e| matches!(e, Entry::User { text } if text.starts_with('['))));
+    assert!(scope::LOOKING_AT.starts_with("[equipe: the person is looking at the project") && scope::WHOLE_SQUAD.starts_with("[equipe: the person is looking at the whole squad"));
+}
+
+#[tokio::test]
+async fn news_in_the_pms_conversation_is_about_its_tickets_project() {
+    use equipe_core::protocol::transcript::scope;
+    let site = named("site");
+    let app = named("app");
+    let (claude, _recorded) = recording_claude(&answering_per_call("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
+    handle.send(Command::Submit { session: 1, text: "hi".into() });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    // A teammate proposes work for the app: the news is about the app.
+    add(&handle, &mut events, 2, member(&site, "designer")).await;
+    let made = tool(&handle, "designer", "create_ticket", serde_json::json!({ "title": "App icon", "body": "x", "project": "app" })).await;
+    assert!(!made.is_error, "{made:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
+    let marks: Vec<Option<&str>> = seen.iter().filter_map(|e| if let Event::Thread { session: 1, project } = e { Some(project.as_deref()) } else { None }).collect();
+    assert_eq!(marks, [Some("app")], "the PM rests: no need to mark the way back — {seen:#?}");
+    let recent = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 1).unwrap().recent;
+    let scopes = scope::of(&recent);
+    let at = recent.iter().rposition(|e| matches!(e, Entry::Note { .. })).unwrap();
+    assert_eq!(scopes[at].as_deref(), Some("app"), "{recent:#?}");
+    let hi = recent.iter().position(|e| matches!(e, Entry::User { text } if text == "hi")).unwrap();
+    assert_eq!(scopes[hi].as_deref(), Some("site"));
+}
+
+#[tokio::test]
+async fn news_of_another_project_mid_turn_leaves_the_reply_about_its_own() {
+    use equipe_core::protocol::transcript::scope;
+    let site = named("site");
+    let app = named("app");
+    let (claude, _recorded) = recording_claude(&format!("sleep 1\n{}", answering_per_call("ok")));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "designer")).await;
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
+    handle.send(Command::Submit { session: 1, text: "hi".into() });
+    until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, .. })).await;
+    let made = tool(&handle, "designer", "create_ticket", serde_json::json!({ "title": "App icon", "body": "x", "project": "app" })).await;
+    assert!(!made.is_error, "{made:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    let marks: Vec<Option<&str>> = seen.iter().filter_map(|e| if let Event::Thread { session: 1, project } = e { Some(project.as_deref()) } else { None }).collect();
+    assert_eq!(marks, [Some("app"), Some("site")], "{seen:#?}");
+    let recent = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 1).unwrap().recent;
+    let scopes = scope::of(&recent);
+    let reply = recent.iter().rposition(|e| matches!(e, Entry::Reply { .. })).unwrap();
+    assert_eq!(scopes[reply].as_deref(), Some("site"), "{recent:#?}");
 }
 
 #[tokio::test]

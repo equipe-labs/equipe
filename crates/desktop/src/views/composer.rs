@@ -433,7 +433,11 @@ fn placeholder(model: &Model) -> String {
             let to = if member.ticket == Some(ticket) { member.name.as_str() } else { model.members.iter().find(|m| Model::is_pm(m)).map_or(member.name.as_str(), |m| m.name.as_str()) };
             t!("composer.placeholder_ticket", id = ticket, name = to)
         }
-        None => t!("composer.placeholder_to", name = member.name),
+        // To the PM, with a project in focus: about it.
+        None => match model.focus.as_deref().filter(|_| Model::is_pm(member)) {
+            Some(project) => t!("composer.placeholder_to_in", name = member.name, project = project),
+            None => t!("composer.placeholder_to", name = member.name),
+        },
     }
 }
 

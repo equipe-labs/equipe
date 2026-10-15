@@ -705,6 +705,8 @@
   "view.members": "{open} membres",
   "view.members_working": "{open} membres · {working} au travail",
   "view.memo_note": "mémo · lu à la fin de ce tour",
+  "view.elsewhere.one": "{count} message d'autres projets · /project all l'affiche",
+  "view.elsewhere.other": "{count} messages d'autres projets · /project all les affiche",
   "view.memos": "{n} mémos",
   "view.mode_hint": "/mode {member} full : {member} ne demande plus · /mode pour tous les modes",
   "view.more_lines.one": "{count} ligne de plus",

@@ -212,6 +212,7 @@ impl Shell {
         if let Some(width) = shell.remembered.sidebar_width {
             shell.board.sidebar_width = width.clamp(views::sidebar::MIN_WIDTH, views::sidebar::MAX_WIDTH);
         }
+        shell.chat.follow = !shell.remembered.whole_conversation;
         shell._clicks = Some(cx.spawn_in(window, async move |this, cx| {
             while let Some(go) = clicked.recv().await {
                 if this.update_in(cx, |this, window, cx| this.go(go, window, cx)).is_err() {
