@@ -824,8 +824,25 @@ fn install_screen(p: Palette) -> AnyElement {
         .into_any_element()
 }
 
+impl Shell {
+    /// The language changed: the words kept in the inputs outside the board
+    /// follow, as the board's do ([`views::board::BoardUi::relocalize`]).
+    fn relocalize_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(input) = &self.chat.find.input {
+            input.update(cx, |s, cx| s.set_placeholder(t!("chat.find_placeholder"), window, cx));
+        }
+        self.connect.input.update(cx, |s, cx| s.set_placeholder(t!("connect.host_placeholder"), window, cx));
+        self.ask.input.update(cx, |s, cx| s.set_placeholder(t!("connect.secret_placeholder"), window, cx));
+        self.browser.update(cx, |b, cx| b.relocalize(window, cx));
+    }
+}
+
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.board.words != crate::i18n::lang() {
+            self.relocalize_inputs(window, cx);
+        }
+        self.board.relocalize(window, cx);
         self.board_prepare(window, cx);
         self.renders += 1;
         if self.log_renders {
@@ -918,6 +935,16 @@ fn app_menu(cx: &mut App) {
         KeyBinding::new("alt-cmd-h", HideOthers, None),
         KeyBinding::new("cmd-q", Quit, None),
     ]);
+    CAN_UPDATE.store(can_update, std::sync::atomic::Ordering::Relaxed);
+    set_menus(cx);
+}
+
+/// Whether the app updates itself, as the app menu found at start.
+static CAN_UPDATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The menu bar, in the language in use: at start, and again when it changes.
+pub fn set_menus(cx: &mut App) {
+    let can_update = CAN_UPDATE.load(std::sync::atomic::Ordering::Relaxed);
     cx.set_menus(vec![Menu::new("equipe").items([
         MenuItem::action(t!("main.menu_choose_target"), ChooseTarget),
         MenuItem::action(t!("settings.menu_item"), OpenSettings),
@@ -952,10 +979,9 @@ fn main() {
     if let Some(code) = askpass::helper() {
         std::process::exit(code);
     }
-    // The language picked in the app's settings, before any word is shown.
-    if let Some(lang) = Remembered::load(&equipe_home()).lang.as_deref().and_then(equipe_core::i18n::Lang::parse) {
-        i18n::set(lang);
-    }
+    // The language picked for every screen — this app's own pick from before
+    // becomes that, once — else the Mac's, before any word is shown.
+    i18n::migrate(&equipe_home());
     // Images a reply points at on the web come through this client.
     let http = std::sync::Arc::new(reqwest_client::ReqwestClient::user_agent("equipe-desktop").unwrap_or_else(|_| reqwest_client::ReqwestClient::new()));
     // The app's icons, then GPUI Kit's own (the sidebar's, the components').

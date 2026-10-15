@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use equipe_core::i18n::label;
 use equipe_core::protocol::{Command, Engine, Mode, SessionId};
 use gpui_kit::component::input::{InlineToken, InputEvent, Paste, Textarea, TextareaState};
 use gpui_kit::component::speech::{SpeechError, SpeechEvent, SpeechState, SystemRecognizer};
@@ -270,7 +271,7 @@ pub struct Composer {
 impl Composer {
     pub fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
         let placeholder = t!("composer.placeholder").to_owned();
-        let locale = speech_locale(equipe_core::i18n::Lang::detect());
+        let locale = speech_locale(crate::i18n::lang());
         let speech = cx.new(|cx| SpeechState::new(cx).recognizer(SystemRecognizer::new().locale(locale)));
         let heard = cx.subscribe_in(&speech, window, |shell: &mut Shell, _, event: &SpeechEvent, window, cx| shell.on_speech(event, window, cx));
         let state = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, MAX_LINES).submit_on_enter(true).placeholder(placeholder.clone()));
@@ -946,7 +947,8 @@ impl Shell {
             }
             MenuKind::Mode => {
                 title = Some(t!("composer.menu_mode").to_owned());
-                Mode::ALL.iter().map(|m| Row::new(m.label(), m.short(), Act::Mode(*m)).checked(*m == self.model.mode)).collect()
+                let lang = crate::i18n::lang();
+                Mode::ALL.iter().map(|m| Row::new(label::mode(lang, *m), label::mode_short(lang, *m), Act::Mode(*m)).checked(*m == self.model.mode)).collect()
             }
             MenuKind::Context => {
                 let Some(member) = member else { return };
@@ -1669,7 +1671,8 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         None,
         cx,
     );
-    let mode_pill = member.map(|_| picker("mode", t!("composer.aria_mode", mode = model.mode.label()), model.mode.label().to_owned(), p.muted, MenuKind::Mode, Some((t!("composer.tip_mode"), "⌘⇧M")), cx));
+    let mode_word = label::mode(crate::i18n::lang(), model.mode);
+    let mode_pill = member.map(|_| picker("mode", t!("composer.aria_mode", mode = mode_word), mode_word.to_owned(), p.muted, MenuKind::Mode, Some((t!("composer.tip_mode"), "⌘⇧M")), cx));
     let model_pill = member.and_then(|m| m.model.clone()).map(|m| picker("model", t!("composer.aria_model", model = m.clone()), short_model(&m), p.text2, MenuKind::Model, Some((t!("composer.tip_model"), "⌘⇧I")), cx));
     let effort_pill = member.map(|m| {
         let now = model.efforts.get(&m.session).cloned();
@@ -1747,7 +1750,7 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     };
     wants.push((Slot::Fixed, pill_width(&to_text)));
     if member.is_some() {
-        wants.push((Slot::Mode, pill_width(model.mode.label())));
+        wants.push((Slot::Mode, pill_width(label::mode(crate::i18n::lang(), model.mode))));
     }
     if let Some(used) = member.and_then(|m| m.context) {
         wants.push((Slot::Ring, 8. + ICON_SM + 6. + text_width(&format!("{used}%")) + 8.));
@@ -1999,7 +2002,7 @@ fn chip_detail(item: &attach::Item) -> String {
             let m = &item.meta;
             match item.kind {
                 Kind::Pdf => m.pages.map_or(size.clone(), |n| t!("composer.pdf_pages", size = size, pages = n)),
-                Kind::Text => m.lines.map_or(size.clone(), |n| t!("composer.text_lines", size = size, lines = n)),
+                Kind::Text => m.lines.map_or(size.clone(), |n| t!("composer.text_lines", size = size, count = n)),
                 Kind::Video => match m.duration {
                     Some(d) if m.frames > 0 => t!("composer.video_frames", duration = media::clock(d), frames = m.frames),
                     Some(d) => format!("{} · {size}", media::clock(d)),

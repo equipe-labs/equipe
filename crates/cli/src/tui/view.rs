@@ -18,6 +18,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use equipe_core::board::{self, project_name};
+use equipe_core::i18n::label;
 use equipe_core::protocol::{Entry, Estimate, SessionId, TicketId, TicketStatus};
 
 use super::app::{Agent, AgentState, App, BoardMenu, BoardRule, Divider, Hit, Pane, Section, Side, Spot, TextView, elapsed, needs_way, relative, section_of, status_word, tool_verb};
@@ -550,7 +551,7 @@ fn waiting_card(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Op
         let needs = if needs.is_empty() { String::new() } else { format!(" · {}", t!("view.card_needs", what = needs.join(", "))) };
         let width_of = |s: &str| unicode_width::UnicodeWidthStr::width(s);
         // The card is short of room: only work that isn't code names its kind.
-        let kind = if t.kind.in_home() { format!("{} · ", t.kind.label()) } else { String::new() };
+        let kind = if t.kind.in_home() { format!("{} · ", label::kind(crate::i18n::lang(), t.kind)) } else { String::new() };
         let title_room = title_room.saturating_sub(cols(&kind));
         let title = ui::fit(&t.title, if needs.is_empty() { title_room } else { title_room.min(width_of(&t.title)).min(title_room / 2) });
         let needs = ui::fit(&needs, title_room.saturating_sub(width_of(&title)));
@@ -930,7 +931,7 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
     let area = pane_title(title, vec![Span::styled(t!("view.esc_closes"), theme.dim())], area, frame);
     let width = (area.width as usize).saturating_sub(1);
     let commands: Vec<(String, &str)> =
-        super::commands::COMMANDS.iter().map(|c| (format!("/{} {}", c.name, c.args).trim_end().to_owned(), c.about)).collect();
+        super::commands::commands().iter().map(|c| (format!("/{} {}", c.name, c.args).trim_end().to_owned(), c.about)).collect();
     // Keys and commands each line up in a column as wide as their longest.
     let rows = |pairs: &[(String, &str)], column: usize| -> Vec<Line<'static>> {
         let column = column.min(width / 2) + 3;
@@ -964,7 +965,7 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
     let look = pairs(&[
         ("Ctrl-B", t!("view.help_ctrl_b")),
         ("Ctrl-P", t!("view.help_ctrl_p")),
-        ("PgUp · PgDn · wheel", t!("view.help_scroll")),
+        (t!("view.help_scroll_key"), t!("view.help_scroll")),
         ("Ctrl-W", t!("view.help_ctrl_w")),
         (t!("view.help_click_drag_key"), t!("view.help_click_drag")),
     ]);
@@ -982,7 +983,7 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
     lines.extend(rows(&answer, keys));
     lines.extend(heading(t!("view.help_modes")));
     let modes: Vec<(String, &str)> =
-        equipe_core::protocol::Mode::ALL.iter().map(|m| (m.label().to_owned(), m.summary())).collect();
+        equipe_core::protocol::Mode::ALL.iter().map(|m| (super::commands::mode_word(*m).to_owned(), label::mode_summary(crate::i18n::lang(), *m))).collect();
     lines.extend(rows(&modes, keys));
     lines.extend(heading(t!("view.help_commands")));
     let widest = commands.iter().map(|(k, _)| cols(k)).max().unwrap_or(0);
@@ -1046,7 +1047,7 @@ fn header(app: &App, theme: Theme, narrow: bool, width: usize) -> (Vec<Span<'sta
         spans.push(Span::styled(summary, theme.dim()));
     }
     // Who has the Mac's screen, whichever squad: there is only one.
-    if let Some(desktop) = app.desktop.summary(Some(&app.squad)) {
+    if let Some(desktop) = label::desktop(crate::i18n::lang(), &app.desktop, Some(&app.squad)) {
         spans.push(Span::styled(format!("   ▣ {desktop}"), theme.accent()));
     }
     let mut hits = Vec::new();
@@ -1359,7 +1360,7 @@ fn subagent_rows(agent: &Agent) -> Vec<String> {
         })
         .collect();
     if agent.subagents.len() > SUBAGENTS_SHOWN {
-        rows.push(format!("↳ {}", t!("view.more_subagents", n = agent.subagents.len() - SUBAGENTS_SHOWN)));
+        rows.push(format!("↳ {}", t!("view.more_subagents", count = agent.subagents.len() - SUBAGENTS_SHOWN)));
     }
     rows
 }
@@ -1423,7 +1424,7 @@ fn tool_line(line: &ToolLine, theme: Theme, width: usize) -> Vec<Line<'static>> 
 
 /// A step's verb as the person reads it — `read`, `edit`, `run` — in their
 /// language; a tool equipe has no word for keeps its own name.
-fn verb_word(verb: &str) -> &str {
+pub(super) fn verb_word(verb: &str) -> &str {
     match verb {
         "read" => t!("view.verb_read"),
         "edit" => t!("view.verb_edit"),
@@ -1463,7 +1464,7 @@ fn tool_run(run: Vec<ToolLine>, expanded: bool, theme: Theme, width: usize) -> V
     }
     let hidden = run.len() - head - tail;
     lines.push(Line::from(vec![
-        Span::styled(format!("· {} · ", t!("view.more_steps", n = hidden)), theme.dim()),
+        Span::styled(format!("· {} · ", t!("view.more_steps", count = hidden)), theme.dim()),
         Span::styled("ctrl-o", theme.bold()),
         Span::styled(format!(" {}", t!("view.to_unfold")), theme.dim()),
     ]));
@@ -1677,7 +1678,7 @@ fn transcript_lines(agent: &Agent, looks: &Looks, theme: Theme, width: usize) ->
                     lines.push(mark_tickets(Line::from(spans).style(style), theme));
                 }
             }
-            Entry::Note { text } => match news_lines(text, looks, theme, width) {
+            Entry::Note { text } => match news_lines(&equipe_core::i18n::note(crate::i18n::lang(), text), looks, theme, width) {
                 Some(news) => {
                     begin(Block::News, &mut lines, &mut last);
                     lines.extend(news);
@@ -1824,7 +1825,7 @@ fn render_ticket(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     };
     let title = vec![
         Span::styled(format!("T-{}", ticket.id), theme.accent().add_modifier(Modifier::BOLD)),
-        Span::styled(format!("  ·  {}", ticket.status.label()), theme.dim()),
+        Span::styled(format!("  ·  {}", label::status(crate::i18n::lang(), ticket.status)), theme.dim()),
     ];
     let area = pane_title(title, switch_label(app, Pane::Conversation, theme), area, frame);
     let width = (area.width as usize).saturating_sub(1).min(PROSE_MAX + 20);
@@ -1879,7 +1880,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
     let mut footer: Vec<Line<'static>> = Vec::new();
     if agent.scroll_back > 0 && agent.unseen > 0 {
         footer.push(Line::from(vec![
-            Span::styled(t!("view.new_lines", n = agent.unseen), theme.accent()),
+            Span::styled(t!("view.new_lines", count = agent.unseen), theme.accent()),
             Span::styled(" · End", theme.dim()),
         ]));
     } else if agent.state == AgentState::Working {
@@ -2103,7 +2104,7 @@ fn row_meta(app: &App, t: &equipe_core::protocol::Ticket, theme: Theme) -> (Vec<
         },
         TicketStatus::Waiting => (t.note.as_deref().and_then(|n| board::waiting_needs(n).first().map(|s| (*s).to_owned())).unwrap_or_default(), theme.accent()),
         TicketStatus::Proposed => (t!("view.proposed_by", who = t.created_by), theme.dim()),
-        TicketStatus::Review | TicketStatus::Done if t.kind.in_home() => (t.kind.label().to_owned(), theme.dim()),
+        TicketStatus::Review | TicketStatus::Done if t.kind.in_home() => (label::kind(crate::i18n::lang(), t.kind).to_owned(), theme.dim()),
         TicketStatus::Review | TicketStatus::Done => (diff_short(app, t).unwrap_or_default(), theme.dim()),
         _ => (String::new(), theme.dim()),
     };
@@ -2260,7 +2261,7 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         );
     };
     let mut lines = wrapped(vec![Span::styled(format!("T-{}  ", t.id), theme.bold())], &ui::cell_safe(&t.title), theme.bold(), 0, width);
-    let mut facts = vec![t.kind.label().to_owned()];
+    let mut facts = vec![label::kind(crate::i18n::lang(), t.kind).to_owned()];
     if let Some(who) = t.assignee.as_ref().or(t.owner.as_ref()) {
         facts.push(who.clone());
     }
@@ -2436,7 +2437,7 @@ fn render_board(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         && let Some(last) = shown.last_mut()
     {
         *last = Line::from(vec![
-            Span::styled(format!("↓ {} · ", t!("view.more_lines", n = below + 1)), theme.accent()),
+            Span::styled(format!("↓ {} · ", t!("view.more_lines", count = below + 1)), theme.accent()),
             Span::styled("PgDn", theme.bold()),
             Span::styled(format!(" {}", t!("view.or_scroll_here")), theme.dim()),
         ]);
@@ -2444,7 +2445,7 @@ fn render_board(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     if top > 0 && height > 2
         && let Some(first) = shown.first_mut()
     {
-        *first = Line::from(vec![Span::styled(format!("↑ {} · ", t!("view.lines_above", n = top + 1)), theme.dim()), Span::styled("PgUp", theme.bold())]);
+        *first = Line::from(vec![Span::styled(format!("↑ {} · ", t!("view.lines_above", count = top + 1)), theme.dim()), Span::styled("PgUp", theme.bold())]);
     }
     frame.render_widget(Paragraph::new(shown), body);
     reverse_selection(frame, app, body, top, detail_width(body));
@@ -2502,7 +2503,7 @@ fn approval_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         lines.push(Line::from(vec![bar(), Span::styled(ui::fit(&t!("view.writes", files = writes.join(", ")), width), theme.dim())]));
     }
     if rows.len() > shown {
-        lines.push(Line::from(vec![bar(), Span::styled(format!("… {}", t!("view.more_lines", n = rows.len() - shown)), theme.dim())]));
+        lines.push(Line::from(vec![bar(), Span::styled(format!("… {}", t!("view.more_lines", count = rows.len() - shown)), theme.dim())]));
     }
     if let Some(reason) = &approval.reason {
         lines.push(Line::from(vec![bar(), Span::styled(ui::fit(reason, width), theme.dim())]));
@@ -2645,7 +2646,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
                 spans.push(Span::styled(format!(" · {}", t!("view.pm_hears")), theme.dim()));
             }
             if let Some(agent) = app.selected().filter(|a| a.member.is_some()) {
-                spans.push(Span::styled(format!(" · {}", app.mode_of(agent).label()), theme.dim()));
+                spans.push(Span::styled(format!(" · {}", label::mode(crate::i18n::lang(), app.mode_of(agent))), theme.dim()));
             }
             spans
         }

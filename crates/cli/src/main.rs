@@ -10,6 +10,7 @@ mod clip;
 mod daemon;
 mod home;
 mod i18n;
+mod lang;
 mod onboard;
 mod remote;
 mod telegram;
@@ -189,6 +190,12 @@ enum Command {
     },
     /// Update equipe to the latest release
     Update,
+    /// Show the language equipe speaks to you, or pick one for every screen:
+    /// ko, en, ja, zh-Hans, zh-Hant, es, fr, de — or auto, the system's
+    Lang {
+        /// A language's code, or `auto`
+        lang: Option<String>,
+    },
     /// The background daemon the team lives in
     Daemon {
         #[command(subcommand)]
@@ -308,6 +315,15 @@ async fn main() -> ExitCode {
         Command::Try { prompt, engine, model, edit } => app.run_try(&prompt, engine, model.as_deref(), edit).await,
         Command::Daemon { action } => daemon_command(action).await,
         Command::Update => update().await,
+        Command::Lang { lang } => match lang::command(&equipe_providers::credentials::equipe_home(), lang.as_deref()) {
+            Ok(lines) => {
+                for line in lines {
+                    println!("{line}");
+                }
+                Ok(())
+            }
+            Err(why) => Err(Failure::new(why)),
+        },
         Command::Attach { stdio: true, no_start } => attach::stdio(no_start).await,
         Command::Attach { stdio: false, .. } => return attach::usage(),
         Command::Receive { name, size, kind } => {
@@ -447,7 +463,7 @@ async fn main() -> ExitCode {
             let p = ui::out();
             println!("{}\n", p.kicker(t!("main.roles_kicker")));
             for role in equipe_core::ROLES {
-                println!("  {}  {}", p.bold(&format!("{:<9}", role.id)), ui::wrap(role.summary, 13, 13, ui::width()));
+                println!("  {}  {}", p.bold(&format!("{:<9}", role.id)), ui::wrap(crate::i18n::role_summary(&role), 13, 13, ui::width()));
                 let work = if role.edits { t!("main.role_edits") } else { t!("main.role_reads") };
                 let model = match role.tier {
                     Tier::Top => t!("main.tier_top"),
@@ -737,7 +753,7 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
                 if let Ok(Some(busy)) = equipe_core::gateway::busy(&daemon::socket()).await {
                     let working = if busy.working.is_empty() { t!("main.nobody_working").to_owned() } else { busy.working.join(", ") };
                     println!("{}", p.row(t!("main.row_working"), &working));
-                    println!("{}", p.row(t!("main.row_screen"), &busy.desktop.summary(None).unwrap_or_else(|| t!("main.screen_free").into())));
+                    println!("{}", p.row(t!("main.row_screen"), &equipe_core::i18n::label::desktop(crate::i18n::lang(), &busy.desktop, None).unwrap_or_else(|| t!("main.screen_free").into())));
                 }
             } else {
                 println!("{}", p.note(0, t!("main.daemon_not_running")));
@@ -979,7 +995,7 @@ impl App {
         println!("{}", p.row(t!("main.row_ready"), &p.bold(&ready.join(" · "))));
         // The Mac's screen, when a member has it, waits for it, or the person took it back.
         if let Ok(Some(busy)) = equipe_core::gateway::busy(&daemon::socket()).await
-            && let Some(desktop) = busy.desktop.summary(None)
+            && let Some(desktop) = equipe_core::i18n::label::desktop(crate::i18n::lang(), &busy.desktop, None)
         {
             println!("{}", p.row(t!("main.row_screen"), &desktop));
         }
@@ -1013,7 +1029,7 @@ impl App {
             Ok(models) => {
                 let shown = models.iter().take(4).cloned().collect::<Vec<_>>().join(", ");
                 let more = if models.len() > 4 { ", …" } else { "" };
-                println!("{}", p.row(t!("main.row_backend"), &p.ok(&t!("main.models", n = models.len(), list = p.dim(&format!("{shown}{more}"))))));
+                println!("{}", p.row(t!("main.row_backend"), &p.ok(&t!("main.models", count = models.len(), list = p.dim(&format!("{shown}{more}"))))));
                 true
             }
             Err(err) => {

@@ -6,6 +6,7 @@
 //! Handshake: `[attached]` → `squads` request → choose the squad → `hello`.
 //! After it, events come out of one channel and commands go into another.
 
+use equipe_core::t;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -178,7 +179,7 @@ where
         loop {
             let message = next_message(&mut lines, wait).await?;
             if message.method.as_deref() == Some(rpc::ATTACHED) {
-                let attached = message.params_as::<Attached>().ok_or_else(|| Failure::Other("the bridge's first line isn't `attached`".into()))?;
+                let attached = message.params_as::<Attached>().ok_or_else(|| Failure::Other(t!("failure.bridge_not_attached").into()))?;
                 check_protocol(&attached)?;
                 bridge = Some(attached);
                 break;
@@ -188,14 +189,14 @@ where
     }
 
     send(&mut writer, &Message::request(SQUADS_ID, rpc::SQUADS, ())).await?;
-    let squads = response(&mut lines, SQUADS_ID, wait, "squads").await?.result_as::<Squads>().ok_or_else(|| Failure::Other("the daemon's squad list is unreadable".into()))?;
+    let squads = response(&mut lines, SQUADS_ID, wait, "squads").await?.result_as::<Squads>().ok_or_else(|| Failure::Other(t!("failure.squads_unreadable").into()))?;
     let Some(squad) = choose_squad(&squads, opts.prefer.as_deref()) else {
         return Err(Failure::NoSquads.into());
     };
 
-    let hello = Message::request(HELLO_ID, rpc::HELLO, HelloParams { version: opts.version.clone(), squad });
+    let hello = Message::request(HELLO_ID, rpc::HELLO, HelloParams { version: opts.version.clone(), squad, lang: Some(crate::i18n::lang().code().to_owned()) });
     send(&mut writer, &hello).await?;
-    let hello = response(&mut lines, HELLO_ID, opts.step, "hello").await?.result_as::<Hello>().ok_or_else(|| Failure::Other("the daemon refused the hello".into()))?;
+    let hello = response(&mut lines, HELLO_ID, opts.step, "hello").await?.result_as::<Hello>().ok_or_else(|| Failure::Other(t!("failure.hello_refused").into()))?;
 
     let (events_tx, events) = mpsc::unbounded_channel();
     let pending: Pending = Arc::default();
@@ -214,7 +215,7 @@ where
                         match (&message.error, message.result_as::<rpc::Uploaded>()) {
                             (Some(error), _) => Err(error.message.clone()),
                             (None, Some(saved)) => Ok(saved.path),
-                            (None, None) => Err("the daemon's answer is unreadable".into()),
+                            (None, None) => Err(t!("failure.answer_unreadable").into()),
                         },
                     );
                 }

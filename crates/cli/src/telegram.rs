@@ -577,7 +577,7 @@ impl Bridge {
                 yours.push(t!("telegram.n_waiting_on_you", n = waiting));
             }
             if !s.approvals.is_empty() {
-                yours.push(t!("telegram.n_requests", n = s.approvals.len()));
+                yours.push(t!("telegram.n_requests", count = s.approvals.len()));
             }
             if !yours.is_empty() {
                 lines.push(t!("telegram.for_you_list", items = yours.join(" · ")));

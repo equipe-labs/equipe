@@ -682,15 +682,6 @@ impl Shell {
         }
     }
 
-    /// Start the app again: the same binary, then this one leaves.
-    pub fn restart(&mut self, cx: &mut Context<Self>) {
-        if let Ok(exe) = std::env::current_exe()
-            && std::process::Command::new(exe).spawn().is_ok()
-        {
-            cx.quit();
-        }
-    }
-
     // ── back and forward ──
 
     /// Where the window is now, for back and forward.

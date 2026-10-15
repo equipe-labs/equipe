@@ -1,0 +1,5 @@
+/* equipe's name and why it asks for the microphone and speech recognition, in ja. */
+"CFBundleDisplayName" = "equipe";
+"CFBundleName" = "equipe";
+"NSMicrophoneUsageDescription" = "メッセージを音声で入力するときにマイクを使います。音声がこの Mac の外に出ることはありません。";
+"NSSpeechRecognitionUsageDescription" = "話した内容をこの Mac 上で文字にして、入力欄に入れます。";

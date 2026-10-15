@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Instant;
 
-use equipe_core::i18n::Lang;
+use equipe_core::i18n::{Front, Lang};
 use equipe_core::protocol::{Command, Mode, SessionId};
 use equipe_core::t;
 use gpui_kit::component::input::{Input, InputState};
@@ -322,9 +322,9 @@ pub fn rule_words(rule: &str) -> String {
 }
 
 fn language_label(shell: &Shell) -> String {
-    match shell.remembered.lang.as_deref().and_then(Lang::parse) {
+    match shell.board.language {
         Some(lang) => lang.native_name().to_owned(),
-        None => t!("settings.language_system", lang = Lang::detect_system().native_name()),
+        None => t!("settings.language_system", lang = Lang::resolve_auto(Front::App).native_name()),
     }
 }
 
@@ -332,13 +332,9 @@ fn language_label(shell: &Shell) -> String {
 
 fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let p = shell.palette;
-    let mut language = Line::new(t!("sidebar.language"), if shell.board.restart_for_language { t!("sidebar.language_after_restart") } else { t!("settings.language_desc") })
+    let mut language = Line::new(t!("sidebar.language"), t!("settings.language_desc"))
         .words(Lang::ALL.iter().map(|l| l.native_name()).collect::<Vec<_>>().join(" ") + " language");
-    language.control = Some(if shell.board.restart_for_language {
-        h_flex().gap_2().child(picker(shell, Pop::Language, language_label(shell), 0., cx)).child(ui::button(p, "restart-language", Kind::Primary, t!("sidebar.restart_now")).on_click(cx.listener(|this, _, _, cx| this.restart(cx)))).into_any_element()
-    } else {
-        picker(shell, Pop::Language, language_label(shell), 0., cx)
-    });
+    language.control = Some(picker(shell, Pop::Language, language_label(shell), 0., cx));
     let looks = Appearance::ALL.into_iter().map(|a| (a, appearance_word(a).to_owned())).collect();
     let appearance = Line::new(t!("settings.appearance"), t!("settings.appearance_desc")).words("appearance theme dark light").control(segmented(shell, "appearance", looks, shell.remembered.appearance, |this, a, window, cx| this.set_appearance(a, window, cx), cx));
     let starts = Start::ALL.into_iter().map(|s| (s, start_word(s).to_owned())).collect();
@@ -359,7 +355,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             .control(ui::button(p, "open-notifications", Kind::Secondary, t!("settings.open_system_settings")).icon(Icon::External).on_click(|_, _, cx| cx.open_url("x-apple.systempreferences:com.apple.Notifications-Settings.extension"))),
     ];
     vec![
-        Section::new(t!("settings.section_look"), vec![language, appearance]).foot(t!("settings.this_mac_foot")),
+        Section::new(t!("settings.section_look"), vec![language, appearance]).foot(format!("{} {}", t!("settings.language_note"), t!("settings.this_mac_foot"))),
         Section::new(t!("settings.section_start"), vec![start]),
         Section::new(t!("settings.section_notifications"), notifications).foot(t!("settings.notifications_foot")),
     ]
@@ -823,8 +819,8 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
     let member = |session: SessionId| model.members.iter().find(|m| m.session == session);
     match pop {
         Pop::Language => {
-            let now = shell.remembered.lang.as_deref().and_then(Lang::parse);
-            let mut rows = vec![(t!("settings.language_system", lang = Lang::detect_system().native_name()), String::new(), now.is_none(), Act::Language(None))];
+            let now = shell.board.language;
+            let mut rows = vec![(t!("settings.language_system", lang = Lang::resolve_auto(Front::App).native_name()), String::new(), now.is_none(), Act::Language(None))];
             rows.extend(Lang::ALL.into_iter().map(|l| (l.native_name().to_owned(), String::new(), now == Some(l), Act::Language(Some(l)))));
             (240., rows)
         }
@@ -1012,14 +1008,23 @@ impl Shell {
         cx.notify();
     }
 
-    /// The language picked in settings: kept, and in use from the next start.
+    /// The language picked in settings (`None`: System, the Mac's — the
+    /// language set for equipe alone in System Settings included): kept for
+    /// every screen, the console's too, and shown at once, menus included.
+    /// What equipe says in the conversations follows.
     pub fn set_language(&mut self, choice: Option<Lang>, cx: &mut Context<Self>) {
-        let code = choice.map(|l| l.code().to_owned());
-        if self.remembered.lang != code {
-            self.remembered.lang = code;
-            self.remembered.save(&equipe_providers::credentials::equipe_home());
-            self.board.restart_for_language = true;
+        let home = equipe_providers::credentials::equipe_home();
+        if let Err(why) = equipe_core::i18n::save(&home, choice) {
+            eprintln!("equipe: the language wasn't kept: {why}");
         }
+        self.board.language = choice;
+        let lang = Lang::resolve_in(&home, Front::App);
+        if lang != crate::i18n::lang() {
+            crate::i18n::set(lang);
+            crate::set_menus(cx);
+            self.send_command(equipe_core::protocol::Command::Language { lang: lang.code().to_owned() });
+        }
+        cx.refresh_windows();
         cx.notify();
     }
 

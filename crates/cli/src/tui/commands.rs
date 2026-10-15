@@ -2,6 +2,7 @@
 //! offers as the person types `/…` or `@…`.
 
 use equipe_core::protocol::{Mode, TicketId};
+use equipe_core::i18n::label;
 use equipe_core::t;
 
 pub struct Spec {
@@ -10,8 +11,9 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-/// Every command, its `about` in the person's language.
-pub static COMMANDS: std::sync::LazyLock<[Spec; 27]> = std::sync::LazyLock::new(|| {
+/// Every command, its `about` (and the words in its `args`) in the language in use — asked afresh each
+/// time, since the person may switch language while the console runs.
+pub fn commands() -> [Spec; 28] {
     [
         Spec { name: "usage", args: "", about: t!("commands.usage") },
         Spec { name: "compact", args: "[member]", about: t!("commands.compact") },
@@ -23,11 +25,11 @@ pub static COMMANDS: std::sync::LazyLock<[Spec; 27]> = std::sync::LazyLock::new(
         Spec { name: "project", args: "[name|all]", about: t!("commands.project") },
         Spec { name: "accept", args: "T-n", about: t!("commands.accept") },
         Spec { name: "merge", args: "T-n", about: t!("commands.merge") },
-        Spec { name: "reopen", args: "T-n <what to change>", about: t!("commands.reopen") },
-        Spec { name: "resume", args: "T-n [what you did]", about: t!("commands.resume") },
+        Spec { name: "reopen", args: t!("commands.reopen_args"), about: t!("commands.reopen") },
+        Spec { name: "resume", args: t!("commands.resume_args"), about: t!("commands.resume") },
         Spec { name: "cancel", args: "T-n", about: t!("commands.cancel") },
         Spec { name: "board", args: "", about: t!("commands.board") },
-        Spec { name: "find", args: "<words>", about: t!("commands.find") },
+        Spec { name: "find", args: t!("commands.find_args"), about: t!("commands.find") },
         Spec { name: "tidy", args: "", about: t!("commands.tidy") },
         Spec { name: "add", args: "<role…> | custom <name> [--edits]", about: t!("commands.add") },
         Spec { name: "close", args: "", about: t!("commands.close") },
@@ -38,10 +40,11 @@ pub static COMMANDS: std::sync::LazyLock<[Spec; 27]> = std::sync::LazyLock::new(
         Spec { name: "suggest", args: "[on|off]", about: t!("commands.suggest") },
         Spec { name: "export", args: "", about: t!("commands.export") },
         Spec { name: "mouse", args: "", about: t!("commands.mouse") },
+        Spec { name: "lang", args: "[code|auto]", about: t!("commands.lang") },
         Spec { name: "help", args: "", about: t!("commands.help") },
         Spec { name: "quit", args: "", about: t!("commands.quit") },
     ]
-});
+}
 
 /// One completion: what the composer holds once it's taken, and how it is
 /// listed. A `text` without a trailing space is whole: Enter on it runs it.
@@ -82,6 +85,11 @@ pub struct Context<'a> {
 
 const MODES: [&str; 4] = ["read-only", "ask", "auto", "full"];
 
+/// The word that picks `mode` in `/mode`: `read-only`, `ask`, `auto`, `full`.
+pub fn mode_word(mode: Mode) -> &'static str {
+    MODES[Mode::ALL.iter().position(|m| *m == mode).unwrap_or(0)]
+}
+
 /// What could complete `text`, best first. Empty when nothing would, or when
 /// the text is already whole.
 pub fn complete(text: &str, ctx: &Context<'_>) -> Vec<Choice> {
@@ -96,7 +104,7 @@ pub fn complete(text: &str, ctx: &Context<'_>) -> Vec<Choice> {
             .collect()
     } else if let Some(command) = text.strip_prefix('/') {
         match command.split_once(' ') {
-            None => COMMANDS
+            None => commands()
                 .iter()
                 .filter(|c| c.name.starts_with(&command.to_lowercase()))
                 .map(|c| Choice {
@@ -147,8 +155,8 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             choices.extend(ctx.members.iter().filter(|(m, _)| starts(m)).map(|(m, _)| {
                 let own = ctx.member_modes.iter().find(|(name, _)| name == m).map(|(_, mode)| *mode);
                 let now = match (own, ctx.mode) {
-                    (Some(mode), _) => t!("commands.mode_member_own", mode = mode.label()),
-                    (None, Some(mode)) => t!("commands.mode_member_squad", mode = mode.label()),
+                    (Some(mode), _) => t!("commands.mode_member_own", mode = label::mode(crate::i18n::lang(), mode)),
+                    (None, Some(mode)) => t!("commands.mode_member_squad", mode = label::mode(crate::i18n::lang(), mode)),
                     (None, None) => t!("commands.mode_member").to_owned(),
                 };
                 word(m, &now, " ")
@@ -160,7 +168,7 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             let mut choices: Vec<Choice> =
                 MODES.iter().filter(|w| starts(w)).map(|m| word(m, &mode_about(m, own, words[0]), "")).collect();
             if starts("squad") {
-                let squad = ctx.mode.map_or(String::new(), |m| format!(" ({})", m.label()));
+                let squad = ctx.mode.map_or(String::new(), |m| format!(" ({})", label::mode(crate::i18n::lang(), m)));
                 choices.push(word("squad", &t!("commands.back_on_squad_mode", squad = squad), ""));
             }
             choices
@@ -230,6 +238,17 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             .filter(|(w, _)| starts(w))
             .map(|(w, about)| word(w, about, ""))
             .collect(),
+        ("lang", 1) => {
+            let system = t!("lang.system", name = crate::lang::name(equipe_core::i18n::Lang::resolve_auto(equipe_core::i18n::Front::Terminal)));
+            let mut choices: Vec<Choice> = if starts("auto") { vec![word("auto", &system, "")] } else { Vec::new() };
+            choices.extend(
+                equipe_core::i18n::Lang::ALL
+                    .iter()
+                    .filter(|l| starts(&l.code().to_lowercase()))
+                    .map(|l| word(l.code(), l.native_name(), "")),
+            );
+            choices
+        }
         ("suggest", 1) => [("on", t!("commands.suggest_on")), ("off", t!("commands.suggest_off"))]
             .iter()
             .filter(|(w, _)| starts(w))
@@ -247,7 +266,8 @@ fn mode_about(word: &str, now: Option<Mode>, who: &str) -> String {
     let Some(mode) = Mode::parse(word) else {
         return String::new();
     };
-    if now == Some(mode) { t!("commands.mode_now_for", who = who, about = mode.short()) } else { mode.short().to_owned() }
+    let about = label::mode_short(crate::i18n::lang(), mode);
+    if now == Some(mode) { t!("commands.mode_now_for", who = who, about = about) } else { about.to_owned() }
 }
 
 /// Folders that complete a typed path — `~/Pro` → `~/Projects/` — not the
@@ -283,6 +303,13 @@ fn folders(typed: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn each_mode_is_named_by_the_word_that_picks_it() {
+        for mode in Mode::ALL {
+            assert_eq!(Mode::parse(mode_word(mode)), Some(mode));
+        }
+    }
+
     fn ctx() -> Context<'static> {
         Context {
             review: vec![(8, "Translations"), (10, "PostHog")],
@@ -309,7 +336,7 @@ mod tests {
     fn a_slash_lists_the_commands_that_fit() {
         assert_eq!(texts(&complete("/reo", &ctx())), ["/reopen "]);
         assert_eq!(texts(&complete("/resume ", &ctx())), ["/resume T-11 "], "the tickets waiting on the person");
-        assert_eq!(complete("/", &ctx()).len(), COMMANDS.len());
+        assert_eq!(complete("/", &ctx()).len(), commands().len());
         assert_eq!(texts(&complete("/bo", &ctx())), ["/board"], "a command without arguments is whole");
         assert!(complete("/board", &ctx()).is_empty(), "nothing left to complete");
         assert!(complete("hello", &ctx()).is_empty());

@@ -263,7 +263,7 @@ pub fn render(shell: &Shell, diff: &DiffUi, cx: &mut Context<Shell>) -> impl Int
     let place = reviews.iter().position(|r| *r == id).map(|i| t!("diff.review_place", at = i + 1, of = reviews.len()));
     let stat = diff.files.as_ref().map(|f| {
         let (a, r) = f.iter().fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
-        t!("diff.stat", n = f.len(), a = a, r = r)
+        t!("diff.stat", count = f.len(), a = a, r = r)
     });
     let bar = h_flex()
         .h(px(48.))

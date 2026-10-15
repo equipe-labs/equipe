@@ -107,6 +107,10 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
                     let _ = out_tx.send(Message::failure(id, -32602, "hello needs { version, squad }"));
                     continue;
                 };
+                // The screen's language is what equipe says to the person in.
+                if let Some(lang) = params.lang.clone() {
+                    core.send(Command::Language { lang });
+                }
                 let Some((snapshot, mut events)) = core.subscribe(&params.squad).await else {
                     break;
                 };
@@ -430,9 +434,16 @@ impl Client {
     /// Attach to the daemon and follow `squad`. Returns the daemon's greeting,
     /// with the squad's snapshot.
     pub async fn connect(socket: &Path, version: &str, squad: &str) -> io::Result<(Self, Hello)> {
+        Self::connect_in(socket, version, squad, None).await
+    }
+
+    /// [`Client::connect`], saying the screen speaks `lang`: what the daemon
+    /// says to the person is in it from now on.
+    pub async fn connect_in(socket: &Path, version: &str, squad: &str, lang: Option<crate::i18n::Lang>) -> io::Result<(Self, Hello)> {
         let stream = UnixStream::connect(socket).await?;
         let (reader, mut writer) = stream.into_split();
-        let hello = Message::request(1, rpc::HELLO, HelloParams { version: version.to_owned(), squad: squad.to_owned() });
+        let params = HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: lang.map(|l| l.code().to_owned()) };
+        let hello = Message::request(1, rpc::HELLO, params);
         write_line(&mut writer, &hello).await?;
 
         let mut lines = BufReader::new(reader).lines();

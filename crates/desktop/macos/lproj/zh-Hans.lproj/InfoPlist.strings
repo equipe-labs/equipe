@@ -1,0 +1,5 @@
+/* equipe's name and why it asks for the microphone and speech recognition, in zh-Hans. */
+"CFBundleDisplayName" = "equipe";
+"CFBundleName" = "equipe";
+"NSMicrophoneUsageDescription" = "你用语音输入消息时，equipe 会使用麦克风。声音不会离开这台 Mac。";
+"NSSpeechRecognitionUsageDescription" = "equipe 在这台 Mac 上把你说的话转成文字，放进输入框。";

@@ -94,8 +94,11 @@ pub struct BoardUi {
     pub done_shown: std::collections::HashSet<String>,
     /// A small menu out of the sidebar's foot.
     pub popup: Option<super::sidebar::Popup>,
-    /// A language was picked: it takes a new start.
-    pub restart_for_language: bool,
+    /// The language picked in settings for every screen; `None`: System.
+    pub language: Option<equipe_core::i18n::Lang>,
+    /// The language the inputs' placeholders were written in: when the one in
+    /// use differs, they are written again ([`BoardUi::relocalize`]).
+    pub words: equipe_core::i18n::Lang,
     /// Where the window has been, for back and forward.
     pub history: Vec<super::sidebar::Place>,
     pub history_at: usize,
@@ -114,6 +117,23 @@ pub struct BoardUi {
 }
 
 impl BoardUi {
+    /// The language changed: the words kept in the inputs follow — the rest
+    /// of the screen is drawn afresh from `t!` anyway.
+    pub fn relocalize(&mut self, window: &mut Window, cx: &mut Context<Shell>) {
+        let lang = crate::i18n::lang();
+        if self.words == lang {
+            return;
+        }
+        self.words = lang;
+        self.search.update(cx, |s, cx| s.set_placeholder(t!("board.search_placeholder"), window, cx));
+        self.reply.update(cx, |s, cx| s.set_placeholder(t!("board.reply_placeholder"), window, cx));
+        self.naming.update(cx, |s, cx| s.set_placeholder(t!("board.view_name_placeholder"), window, cx));
+        self.slice_search.update(cx, |s, cx| s.set_placeholder(t!("header.find_project"), window, cx));
+        if let Some(diff) = &self.diff {
+            diff.comment.update(cx, |s, cx| s.set_placeholder(t!("diff.comment_placeholder"), window, cx));
+        }
+    }
+
     pub fn new(window: &mut Window, cx: &mut Context<Shell>, fetched: tokio::sync::mpsc::UnboundedSender<Fetched>) -> Self {
         Self {
             view: View { peek: true, ..View::default() },
@@ -141,7 +161,8 @@ impl BoardUi {
             folded: Default::default(),
             done_shown: Default::default(),
             popup: None,
-            restart_for_language: false,
+            language: equipe_core::i18n::saved(&equipe_providers::credentials::equipe_home()),
+            words: crate::i18n::lang(),
             history: Vec::new(),
             history_at: 0,
             spin: 0.,
@@ -1496,7 +1517,7 @@ fn meta(shell: &Shell, t: &Ticket) -> Meta {
         TicketStatus::InProgress => live_activity(model, t).map(|a| (a, p.text2)),
         TicketStatus::Waiting => board::first_need(t).map(|n| (n, p.accent)),
         TicketStatus::Proposed => Some((t!("board.proposed_by", who = t.created_by), p.muted)),
-        TicketStatus::Review | TicketStatus::Done if t.kind.in_home() => Some((t!("board.kind_label", kind = t.kind.label()), p.muted)),
+        TicketStatus::Review | TicketStatus::Done if t.kind.in_home() => Some((t!("board.kind_label", kind = equipe_core::i18n::label::kind(crate::i18n::lang(), t.kind)), p.muted)),
         TicketStatus::Review | TicketStatus::Done => shell.board.stat(t).map(|s| (s.short(), p.muted)),
         _ => None,
     };

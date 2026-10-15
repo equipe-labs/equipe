@@ -76,6 +76,11 @@ pub struct HelloParams {
     pub version: String,
     /// The squad to follow: only its members and board are snapshotted and streamed.
     pub squad: crate::SquadName,
+    /// The language the screen speaks (`ko`, `zh-Hant`): what equipe says to
+    /// the person from now on — notices, errors — is in it. An older daemon
+    /// ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
 }
 
 /// A member calling one of its board tools.
@@ -267,7 +272,7 @@ mod tests {
 
     #[test]
     fn requests_and_responses_pair_by_id() {
-        let req = Message::request(7, HELLO, HelloParams { version: "1".into(), squad: "acme".into() });
+        let req = Message::request(7, HELLO, HelloParams { version: "1".into(), squad: "acme".into(), lang: None });
         let res = Message::response(7, Hello { version: "1".into(), snapshot: Default::default() });
         assert_eq!(req.id, res.id);
         assert!(res.result_as::<Hello>().is_some());

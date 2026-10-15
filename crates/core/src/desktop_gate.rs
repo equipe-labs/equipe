@@ -315,19 +315,26 @@ fn blocked(act: &Act, scene: &Scene, in_messaging: bool) -> Option<&'static str>
 
 /// The line the person reads: what is about to happen, where, and the draft.
 pub fn describe(act: &Act, scene: &Scene) -> String {
+    describe_in(crate::i18n::Lang::En, act, scene)
+}
+
+/// [`describe`] in `lang`.
+pub fn describe_in(lang: crate::i18n::Lang, act: &Act, scene: &Scene) -> String {
+    let words = crate::i18n::core(lang);
+    let app = scene.app.name.clone();
     let what = match act {
-        Act::Type(text) => format!("type {:?}", short(text, 200)),
-        Act::Key(keys) => format!("press {keys}"),
-        Act::Drag => "drag".to_owned(),
+        Act::Type(text) => words.fill("desktop.act.type", &[("text", format!("{:?}", short(text, 200))), ("app", app)]),
+        Act::Key(keys) => words.fill("desktop.act.press", &[("keys", keys.clone()), ("app", app)]),
+        Act::Drag => words.fill("desktop.act.drag", &[("app", app)]),
         Act::Click | Act::Look => {
             let name = scene.target.as_ref().and_then(|t| t.names().find(|n| !n.trim().is_empty()));
             match name {
-                Some(name) => format!("click {name:?}"),
-                None => "click".to_owned(),
+                Some(name) => words.fill("desktop.act.click_on", &[("name", format!("{name:?}")), ("app", app)]),
+                None => words.fill("desktop.act.click", &[("app", app)]),
             }
         }
     };
-    let mut line = format!("{what} in {}", scene.app.name);
+    let mut line = what;
     if let Some(window) = scene.window.as_deref().filter(|w| !w.trim().is_empty()) {
         line.push_str(&format!(" · {}", short(window, 80)));
     }

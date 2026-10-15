@@ -44,6 +44,17 @@ use crate::squad_home;
 use crate::squad_memory;
 use crate::worktree::{self, Sandbox};
 
+/// What equipe says to the person, in their language: `say!(self, "notice.model", model = m)`.
+/// What it tells the models is written out in English instead.
+macro_rules! say {
+    ($rt:expr, $key:literal) => {
+        crate::i18n::core($rt.config.lang).get($key).to_owned()
+    };
+    ($rt:expr, $key:literal, $($name:ident = $value:expr),+ $(,)?) => {
+        crate::i18n::core($rt.config.lang).fill($key, &[$((stringify!($name), ($value).to_string())),+])
+    };
+}
+
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
 
@@ -88,6 +99,9 @@ pub struct Config {
     /// Members' browsers as lanes of one shared Chrome (the browser host),
     /// rather than a Chrome each: the person signs in once, Google included.
     pub browser_host: bool,
+    /// The language equipe speaks to the person in until a screen says
+    /// otherwise: notices, errors. What it tells the models stays English.
+    pub lang: crate::i18n::Lang,
 }
 
 impl Config {
@@ -105,6 +119,7 @@ impl Config {
             mac: Box::new(desktop::ThisMac),
             suggest: true,
             browser_host: cfg!(target_os = "macos"),
+            lang: crate::i18n::Lang::resolve(crate::i18n::Front::Terminal),
         }
     }
 
@@ -725,6 +740,11 @@ impl Runtime {
         self.publish(Event::Desktop { desktop });
     }
 
+    /// equipe's words for the person under `key`, in their language, filled in.
+    fn said(&self, key: &str, args: &[(&str, String)]) -> String {
+        crate::i18n::core(self.config.lang).fill(key, args)
+    }
+
     fn error(&mut self, session: Option<SessionId>, message: impl Into<String>, next: Option<&str>) {
         self.publish(Event::Error { session, message: message.into(), next: next.map(str::to_owned) });
     }
@@ -801,6 +821,11 @@ impl Runtime {
             Command::BrowserPopOut { page, bounds } => {
                 self.hub.op(&json!({ "op": "popout", "page": page, "bounds": bounds }));
             }
+            Command::Language { lang } => {
+                if let Some(lang) = crate::i18n::Lang::parse(&lang) {
+                    self.config.lang = lang;
+                }
+            }
             Command::Suggestions { squad, on } => {
                 if let Some(journal) = self.journal(&squad) {
                     let _ = journal.set_suggestions(on);
@@ -811,12 +836,8 @@ impl Runtime {
             Command::Refresh { session, summary } => {
                 if let Some(s) = self.sessions.get_mut(&session) {
                     s.refresh = Some(summary);
-                    let text = if summary {
-                        "Its next conversation at the desk starts afresh, from a summary of this one and its memory."
-                    } else {
-                        "Its next conversation at the desk starts clean — its memory and the board carry over."
-                    };
-                    self.publish(Event::Notice { session, text: text.into() });
+                    let text = if summary { say!(self, "notice.refresh_summary") } else { say!(self, "notice.refresh_clean") };
+                    self.publish(Event::Notice { session, text });
                 }
             }
             Command::SetModel { session, model } => {
@@ -828,7 +849,8 @@ impl Runtime {
                         let _ = journal.set_model(session, &model);
                     }
                     self.publish(Event::ModelKnown { session, model: model.clone() });
-                    self.publish(Event::Notice { session, text: format!("From its next turn: {model}. Its conversation carries on.") });
+                    let text = say!(self, "notice.model", model = model);
+                    self.publish(Event::Notice { session, text });
                 }
             }
             Command::Unqueue { session, text } => self.unqueue(session, &text),
@@ -837,8 +859,8 @@ impl Runtime {
                 if let Some(s) = self.sessions.get_mut(&session) {
                     s.effort = effort.clone();
                     let text = match &effort {
-                        Some(effort) => format!("From its next turn it thinks at effort {effort}."),
-                        None => "From its next turn it thinks at its engine's default effort.".to_owned(),
+                        Some(effort) => say!(self, "notice.effort", effort = effort),
+                        None => say!(self, "notice.effort_default"),
                     };
                     self.publish(Event::Notice { session, text });
                 }
@@ -972,7 +994,7 @@ impl Runtime {
             let first = text.lines().next().unwrap_or_default();
             let short: String = first.chars().take(120).collect();
             let more = if short.len() < text.len() { "…" } else { "" };
-            format!("↪ You → {name}: {short}{more}")
+            say!(self, "news.you_told", name = name, text = format!("{short}{more}"))
         });
         self.brief_pm(&squad, line(&name), shown);
     }
@@ -981,7 +1003,7 @@ impl Runtime {
 
     async fn start(&mut self, id: SessionId, spec: SessionSpec) {
         if self.sessions.contains_key(&id) {
-            return self.error(Some(id), format!("session {id} is already open"), None);
+            return self.error(Some(id), say!(self, "error.already_open", id = id), None);
         }
         let squad = spec.squad.clone();
         let fail = |rt: &mut Self, message: String, next: Option<&str>| {
@@ -994,10 +1016,10 @@ impl Runtime {
             (Some(squad), _) => {
                 // A squad may have no project yet: its home is where it works.
                 if !crate::squads::exists(&self.config.home, squad) {
-                    return fail(self, format!("There is no squad called {squad}."), Some("equipe"));
+                    return fail(self, say!(self, "error.no_squad", squad = squad), Some("equipe"));
                 }
             }
-            (None, Some(_)) => return fail(self, "A member joins a squad; name one.".into(), None),
+            (None, Some(_)) => return fail(self, say!(self, "error.join_a_squad"), None),
             (None, None) => {}
         }
 
@@ -1012,7 +1034,7 @@ impl Runtime {
                 match first_ready_engine(&preference, &self.config.store, &self.config.claude_binary).await {
                     Some(engine) => engine,
                     None => {
-                        let message = "No engine is ready. Sign in to Codex or Claude Code first.".to_owned();
+                        let message = say!(self, "error.no_engine");
                         return fail(self, message, Some("equipe login"));
                     }
                 }
@@ -1021,7 +1043,7 @@ impl Runtime {
         if spec.access == Access::EditFiles && engine == Engine::Codex {
             return fail(
                 self,
-                "Editing runs on Claude Code for now; Codex edits arrive with its ACP engine.".into(),
+                say!(self, "error.codex_edits"),
                 Some("equipe try --edit --engine claude \"…\""),
             );
         }
@@ -1030,7 +1052,7 @@ impl Runtime {
         let mut codex_cred = None;
         match engine {
             Engine::Codex => {
-                let cred = match codex_credentials(&self.client, &self.config.store).await {
+                let cred = match codex_credentials(&self.client, &self.config.store, self.config.lang).await {
                     Ok(cred) => cred,
                     Err((message, next)) => return fail(self, message, Some(next)),
                 };
@@ -1045,7 +1067,7 @@ impl Runtime {
                         None => catalog.into_iter().next(),
                     };
                     if model.is_none() {
-                        return fail(self, "The backend offered no models.".into(), Some("equipe status"));
+                        return fail(self, say!(self, "error.no_models"), Some("equipe status"));
                     }
                 }
                 codex_cred = Some(cred);
@@ -1053,11 +1075,11 @@ impl Runtime {
             Engine::Claude => {
                 match claude_code::auth_status(&self.config.claude_binary).await {
                     Ok(Some(status)) if status.logged_in => {}
-                    Ok(Some(_)) => return fail(self, "Claude Code isn't signed in.".into(), Some("equipe login claude")),
+                    Ok(Some(_)) => return fail(self, say!(self, "error.claude_signed_out"), Some("equipe login claude")),
                     Ok(None) => {
                         return fail(
                             self,
-                            "Claude Code isn't installed (no `claude` on PATH).".into(),
+                            say!(self, "error.claude_missing"),
                             Some("see https://code.claude.com/docs/en/setup"),
                         );
                     }
@@ -1085,7 +1107,7 @@ impl Runtime {
             (Some(_), _, Some(squad)) => {
                 let language = self.journal(squad).and_then(Journal::language);
                 if let Err(err) = squad_home::ensure(&self.config.home, squad, language.as_deref()) {
-                    return fail(self, format!("The squad's folder couldn't be made: {err}"), None);
+                    return fail(self, say!(self, "error.folder_not_made", err = err), None);
                 }
                 let access = if edits == Some(true) { Access::EditFiles } else { Access::ReadOnly };
                 (squad_home::path(&self.config.home, squad), None, access)
@@ -1190,7 +1212,7 @@ impl Runtime {
         if session.engine != Engine::Codex || session.codex.is_some() {
             return true;
         }
-        match codex_credentials(&self.client, &self.config.store).await {
+        match codex_credentials(&self.client, &self.config.store, self.config.lang).await {
             Ok(cred) => {
                 if let Some(session) = self.sessions.get_mut(&id) {
                     session.codex = Some(cred);
@@ -1206,7 +1228,7 @@ impl Runtime {
 
     async fn submit(&mut self, id: SessionId, text: String) {
         let Some(session) = self.sessions.get_mut(&id) else {
-            return self.error(Some(id), format!("no open session {id}"), None);
+            return self.error(Some(id), say!(self, "error.no_session", id = id), None);
         };
         if session.is_working() {
             // Said while it works: it reads it at its next step and carries on,
@@ -1632,6 +1654,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 projects: &names,
                 board_tools,
                 language: language.as_deref(),
+                screen_language: Some(self.config.lang.english_name()),
                 browser: browser.is_some(),
                 home: home.as_deref(),
                 memory: memory.as_deref(),
@@ -1700,7 +1723,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             Engine::Codex => {
                 let client = self.client.clone();
                 let Some(cred) = session.codex.clone() else {
-                    return self.error(Some(id), "Codex isn't signed in.", Some("equipe login codex"));
+                    return self.error(Some(id), say!(self, "error.codex_signed_out"), Some("equipe login codex"));
                 };
                 let model = session.model.clone().unwrap_or_default();
                 let effort = session.effort.clone();
@@ -1872,12 +1895,12 @@ for one project goes to it as tickets for its owners, with that project — and 
         };
         let dir = squad_home::path(&self.config.home, &squad);
         match squad_home::save(&dir, &name, &asked_for(prompt)) {
-            Ok(Some(change)) => self.publish(Event::Notice {
-                session: id,
-                text: format!("✎ {name} {} in the squad's folder · /home undo takes it back", change.what()),
-            }),
+            Ok(Some(change)) => {
+                let text = say!(self, "news.desk_saved", name = name, what = change.said(self.config.lang));
+                self.publish(Event::Notice { session: id, text });
+            }
             Ok(None) => {}
-            Err(err) => self.error(Some(id), format!("The squad's folder couldn't be saved: {err}"), None),
+            Err(err) => self.error(Some(id), say!(self, "error.folder_not_saved", err = err), None),
         }
     }
 
@@ -2135,7 +2158,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         }
         self.stop_turn(id);
         let Some(session) = self.sessions.get(&id) else {
-            return self.error(Some(id), format!("no open session {id}"), None);
+            return self.error(Some(id), say!(self, "error.no_session", id = id), None);
         };
         let squad = session.squad.clone();
         if session.work.is_some() {
@@ -2186,11 +2209,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                 }
                 self.publish(Event::NothingChanged { session: id });
             }
-            Err(err) => self.error(
-                Some(id),
-                format!("couldn't commit the changes: {err} — they are still in {}", sandbox.path.display()),
-                None,
-            ),
+            Err(err) => {
+                let message = say!(self, "error.not_committed", err = err, path = sandbox.path.display());
+                self.error(Some(id), message, None);
+            }
         }
     }
 
@@ -2240,7 +2262,8 @@ for one project goes to it as tickets for its owners, with that project — and 
                 let name = self.sessions.get(id).and_then(|s| s.name().map(str::to_owned)).unwrap_or_default();
                 Box::pin(self.close(*id)).await;
                 if let Some(pm) = self.pm_of(&squad) {
-                    self.publish(Event::Notice { session: pm, text: format!("{name} left, its work done: its role carries on") });
+                    let text = say!(self, "news.helper_left", name = name);
+                    self.publish(Event::Notice { session: pm, text });
                 }
             }
             // Gone or let go: no longer helpers.
@@ -2370,8 +2393,9 @@ for one project goes to it as tickets for its owners, with that project — and 
             let _ = journal.ticket_event(ticket.id, "equipe", "blocked", reason);
         }
         let line = format!("T-{} couldn't start for {name}: {reason}", ticket.id);
+        let shown = say!(self, "news.cannot_start", id = ticket.id, name = name, reason = reason);
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
-        self.brief_pm(squad, line.clone(), Some(format!("✗ {line}")));
+        self.brief_pm(squad, line, Some(shown));
     }
 
     /// Member `id` puts its ticket down. Changes are committed to the ticket's
@@ -2399,7 +2423,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             let message =
                 format!("equipe: T-{} {}\n\n{body}\n\nRun by {name} on equipe through Claude Code.", ticket.id, ticket.title);
             if let Err(err) = sandbox.commit_all(&message) {
-                let message = format!("couldn't commit T-{}: {err} — it is still in {}", ticket.id, sandbox.path.display());
+                let message = say!(self, "error.ticket_not_committed", id = ticket.id, err = err, path = sandbox.path.display());
                 self.error(Some(id), message, None);
             }
             if matches!(how, WorkEnd::HandedIn | WorkEnd::Waiting) {
@@ -2419,34 +2443,35 @@ for one project goes to it as tickets for its owners, with that project — and 
             (WorkEnd::HandedIn, Some(summary)) if ticket.kind.in_home() => Some(self.home_hand_in(&squad, &ticket, work.sandbox.as_ref(), summary)),
             _ => summary.clone(),
         };
-        let (by, event, line) = match how {
+        // What the PM is told, in English, and what the person reads (`news`).
+        let (by, event, line, news) = match how {
             WorkEnd::HandedIn => {
                 ticket.status = TicketStatus::Review;
                 ticket.note = handed_in;
-                (name.as_str(), "handed in", format!("{name} handed in T-{} for your review", ticket.id))
+                (name.as_str(), "handed in", format!("{name} handed in T-{} for your review", ticket.id), "news.handed_in")
             }
             WorkEnd::Waiting => {
                 ticket.status = TicketStatus::Waiting;
                 ticket.note = summary.clone();
-                (name.as_str(), "waiting", format!("T-{} waits for you — {name} needs something only you can do", ticket.id))
+                (name.as_str(), "waiting", format!("T-{} waits for you — {name} needs something only you can do", ticket.id), "news.waiting")
             }
             WorkEnd::Accepted if matches!(landed, Some(Err(_))) => {
                 sent_back_to_update(&mut ticket, &name);
-                ("equipe", "sent back", format!("T-{} went back to {name}: the squad's folder changed under it", ticket.id))
+                ("equipe", "sent back", format!("T-{} went back to {name}: the squad's folder changed under it", ticket.id), "news.sent_back")
             }
             WorkEnd::Accepted => {
                 ticket.status = TicketStatus::Done;
                 ticket.merged = merged_state(&ticket);
-                let line = if ticket.kind.in_home() {
-                    format!("You accepted T-{}; its work is in the squad's folder", ticket.id)
+                let (line, news) = if ticket.kind.in_home() {
+                    (format!("You accepted T-{}; its work is in the squad's folder", ticket.id), "news.accepted_home")
                 } else {
-                    format!("You accepted T-{}", ticket.id)
+                    (format!("You accepted T-{}", ticket.id), "news.accepted")
                 };
-                ("you", "accepted", line)
+                ("you", "accepted", line, news)
             }
             WorkEnd::Cancelled => {
                 ticket.status = TicketStatus::Cancelled;
-                ("you", "cancelled", format!("You cancelled T-{}", ticket.id))
+                ("you", "cancelled", format!("You cancelled T-{}", ticket.id), "news.cancelled")
             }
             WorkEnd::Left => {
                 ticket.status = TicketStatus::Todo;
@@ -2455,7 +2480,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                     Some(branch) => format!("{name} left the squad; the work so far is on {branch}."),
                     None => format!("{name} left the squad."),
                 });
-                ("equipe", "released", format!("{name} left T-{}; it is back on the board", ticket.id))
+                ("equipe", "released", format!("{name} left T-{}; it is back on the board", ticket.id), "news.left")
             }
         };
         let by = by.to_owned();
@@ -2467,7 +2492,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             let _ = journal.ticket_event(ticket.id, &by, event, summary.as_deref().unwrap_or(""));
         }
         let ticket_id = ticket.id;
-        let shown = format!("{line} · {}.", ticket.title);
+        let shown = self.said(news, &[("id", ticket.id.to_string()), ("name", name.clone()), ("title", ticket.title.clone())]);
         self.publish(Event::TicketChanged { squad: squad.clone(), ticket });
         self.publish(Event::WorkEnded { session: id, ticket: ticket_id });
         // Back at its desk: the thread it was in there.
@@ -2487,7 +2512,8 @@ for one project goes to it as tickets for its owners, with that project — and 
     fn find_ticket(&mut self, squad: &str, ticket: TicketId) -> Option<Ticket> {
         let found = self.journal(squad).and_then(|j| j.ticket(ticket).ok().flatten());
         if found.is_none() {
-            self.squad_error(squad, format!("There is no T-{ticket} on the board."));
+            let message = say!(self, "error.no_ticket", id = ticket);
+            self.squad_error(squad, message);
         }
         found
     }
@@ -2590,8 +2616,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                         let _ = journal.ticket_event(ticket.id, "equipe", "sent back", &note);
                     }
                     let line = format!("T-{} went back to {name}: the squad's folder changed under it · {}.", ticket.id, ticket.title);
+                    let shown = say!(self, "news.sent_back", id = ticket.id, name = name, title = ticket.title);
                     self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
-                    self.brief_pm(squad, line.clone(), Some(line));
+                    self.brief_pm(squad, line, Some(shown));
                     return;
                 }
             } else {
@@ -2609,10 +2636,17 @@ for one project goes to it as tickets for its owners, with that project — and 
             let _ = journal.set_ticket_work(ticket.id, &TicketWork { worktree: None, ..saved });
             let _ = journal.ticket_event(ticket.id, "you", verb, "");
         }
-        let landed = if status == TicketStatus::Done && ticket.kind.in_home() { "; its work is in the squad's folder" } else { "" };
+        let in_home = status == TicketStatus::Done && ticket.kind.in_home();
+        let landed = if in_home { "; its work is in the squad's folder" } else { "" };
         let line = format!("You {verb} T-{}{landed} · {}.", ticket.id, ticket.title);
+        let news = match status {
+            TicketStatus::Done if in_home => "news.accepted_home",
+            TicketStatus::Done => "news.accepted",
+            _ => "news.cancelled",
+        };
+        let shown = self.said(news, &[("id", ticket.id.to_string()), ("title", ticket.title.clone())]);
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
-        self.brief_pm(squad, line.clone(), Some(line));
+        self.brief_pm(squad, line, Some(shown));
     }
 
     /// The person accepts a ticket: it is done, and its branch stays to merge.
@@ -2621,7 +2655,8 @@ for one project goes to it as tickets for its owners, with that project — and 
             return;
         };
         if found.status.is_closed() {
-            return self.squad_error(squad, format!("T-{ticket} is already {}.", found.status.label()));
+            let message = say!(self, "error.already_closed", id = ticket, status = crate::i18n::label::status(self.config.lang, found.status));
+            return self.squad_error(squad, message);
         }
         match self.worker_on(squad, ticket) {
             Some(id) => {
@@ -2640,28 +2675,42 @@ for one project goes to it as tickets for its owners, with that project — and 
             return;
         };
         if found.status != TicketStatus::Done {
-            return self.squad_error(squad, format!("T-{ticket} isn't accepted yet — /accept T-{ticket} first."));
+            let message = say!(self, "error.not_accepted", id = ticket);
+            return self.squad_error(squad, message);
         }
         if found.kind.in_home() {
-            return self.squad_error(squad, format!("T-{ticket}'s work went into the squad's folder when you accepted it."));
+            let message = say!(self, "error.in_folder", id = ticket);
+            return self.squad_error(squad, message);
         }
         let (Some(branch), Some(repo)) =
             (found.branch.clone(), found.project.as_deref().and_then(|p| worktree::repo_root(p).ok()))
         else {
-            return self.squad_error(squad, format!("T-{ticket} has no branch to merge."));
+            let message = say!(self, "error.no_branch", id = ticket);
+            return self.squad_error(squad, message);
         };
         let message = format!("equipe: merge T-{ticket} {}\n\nAccepted by the person; merged from {branch}.", found.title);
         let main = match worktree::merge_into_main(&repo, &branch, &message) {
             Ok(main) => main,
-            Err(err) => return self.squad_error(squad, format!("T-{ticket} wasn't merged: {err}")),
+            Err(err) => {
+                let message = say!(self, "error.not_merged", id = ticket, err = err);
+                return self.squad_error(squad, message);
+            }
         };
         let mut line = format!("You merged T-{ticket} · {} into {main}", found.title);
+        let mut news = "news.merged";
         if push {
             match worktree::push_main(&repo) {
-                Ok(_) => line.push_str(" and pushed it"),
-                Err(err) => self.squad_error(squad, format!("{main} wasn't pushed: {err}")),
+                Ok(_) => {
+                    line.push_str(" and pushed it");
+                    news = "news.merged_pushed";
+                }
+                Err(err) => {
+                    let message = say!(self, "error.not_pushed", branch = main, err = err);
+                    self.squad_error(squad, message);
+                }
             }
         }
+        let shown = self.said(news, &[("id", ticket.to_string()), ("title", found.title.clone()), ("branch", main.clone())]);
         found.merged = Some(true);
         if let Some(journal) = self.journal(squad) {
             let _ = journal.save_ticket(&found);
@@ -2678,8 +2727,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: other });
             }
         }
-        let line = format!("{line}.");
-        self.brief_pm(squad, line.clone(), Some(line));
+        self.brief_pm(squad, format!("{line}."), Some(shown));
     }
 
     /// The person sends work back: the ticket goes to its member again, on the
@@ -2690,8 +2738,10 @@ for one project goes to it as tickets for its owners, with that project — and 
         };
         if self.worker_on(squad, ticket).is_some() {
             let who = found.assignee.clone().unwrap_or_default();
-            return self.squad_error(squad, format!("T-{ticket} is still being worked on — talk to {who} directly."));
+            let message = say!(self, "error.still_worked_on", id = ticket, name = who);
+            return self.squad_error(squad, message);
         }
+        let said = note.clone();
         let note = if note.trim().is_empty() { "Reopened.".to_owned() } else { format!("Reopened: {}", note.trim()) };
         found.owner = found.assignee.take().or(found.owner);
         found.status = TicketStatus::Todo;
@@ -2701,8 +2751,12 @@ for one project goes to it as tickets for its owners, with that project — and 
             let _ = journal.ticket_event(ticket, "you", "reopened", &note);
         }
         let line = format!("You reopened T-{} · {} — {note}", found.id, found.title);
+        let shown = match said.trim() {
+            "" => say!(self, "news.reopened", id = found.id, title = found.title),
+            said => say!(self, "news.reopened_note", id = found.id, title = found.title, note = said),
+        };
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: found });
-        self.brief_pm(squad, line.clone(), Some(line));
+        self.brief_pm(squad, line, Some(shown));
         self.dispatch(squad).await;
     }
 
@@ -2713,12 +2767,14 @@ for one project goes to it as tickets for its owners, with that project — and 
             return;
         };
         if found.status != TicketStatus::Waiting {
-            let status = found.status.label();
-            return self.squad_error(squad, format!("T-{ticket} isn't waiting on you — it is {status}."));
+            let status = crate::i18n::label::status(self.config.lang, found.status);
+            let message = say!(self, "error.not_waiting", id = ticket, status = status);
+            return self.squad_error(squad, message);
         }
         let found = self.resumed(squad, found, "you", &note);
         let line = format!("You resumed T-{} · {}", found.id, found.title);
-        self.brief_pm(squad, line.clone(), Some(line));
+        let shown = say!(self, "news.resumed", id = found.id, title = found.title);
+        self.brief_pm(squad, line, Some(shown));
         self.dispatch(squad).await;
     }
 
@@ -2749,7 +2805,8 @@ for one project goes to it as tickets for its owners, with that project — and 
             return;
         };
         if found.status.is_closed() {
-            return self.squad_error(squad, format!("T-{ticket} is already {}.", found.status.label()));
+            let message = say!(self, "error.already_closed", id = ticket, status = crate::i18n::label::status(self.config.lang, found.status));
+            return self.squad_error(squad, message);
         }
         match self.worker_on(squad, ticket) {
             Some(id) => {
@@ -2777,7 +2834,8 @@ for one project goes to it as tickets for its owners, with that project — and 
             let why = call.arguments["why"].as_str().unwrap_or_default().to_owned();
             if self.ask_in_panel(&call.squad, &call.member, url.as_deref(), &why) {
                 if let Some(id) = self.member_id(&call.squad, &call.member) {
-                    self.publish(Event::Notice { session: id, text: format!("🖥 {}'s browser opens in the person's browser panel: {why}", call.member) });
+                    let text = say!(self, "notice.browser_in_panel", name = call.member, why = why);
+                    self.publish(Event::Notice { session: id, text });
                 }
                 let _ = reply.send(ToolResult {
                     text: "Your browser is open in the person's browser panel, at that page, in their hands. Tell them what \
@@ -2792,7 +2850,8 @@ to do there and end your turn: you'll be told when they hand it back."
             }
             self.show_browser(&call.squad, Some(call.member.clone()), true);
             if let Some(id) = self.member_id(&call.squad, &call.member) {
-                self.publish(Event::Notice { session: id, text: format!("🖥 {}'s browser comes up on this Mac's screen: {why}", call.member) });
+                let text = say!(self, "notice.browser_on_screen", name = call.member, why = why);
+                self.publish(Event::Notice { session: id, text });
             }
             let _ = reply.send(ToolResult {
                 text: "Your browser comes up on the person's screen when this turn ends, at that page. Tell them what to do \
@@ -2820,7 +2879,7 @@ there, end your turn, and carry on when they say they're done."
     fn ask_permission(&mut self, call: ToolCall, reply: oneshot::Sender<ToolResult>) {
         let tool = call.arguments.get("tool_name").and_then(Value::as_str).unwrap_or("?").to_owned();
         let input = call.arguments.get("input").cloned().unwrap_or_else(|| json!({}));
-        let (action, reason) = permissions::describe(&tool, &input);
+        let (action, reason) = permissions::describe_in(self.config.lang, &tool, &input);
         let Some(id) = self.member_id(&call.squad, &call.member) else {
             let _ = reply.send(verdict(Decision::Deny, &input, "Unknown member."));
             return;
@@ -2828,13 +2887,15 @@ there, end your turn, and carry on when they say they're done."
         let ticket = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
         if permissions::blocked(&tool, &action) {
             let _ = reply.send(verdict(Decision::Deny, &input, "equipe never allows this, in any mode."));
-            self.publish(Event::Notice { session: id, text: format!("✗ equipe blocked: {action}") });
+            let text = say!(self, "notice.blocked", action = action);
+            self.publish(Event::Notice { session: id, text });
             self.audit(&call.squad, ticket, "equipe", "blocked", &action);
             return;
         }
         if let Some(why) = self.off_limits(id, &call.squad, &tool, &action, &input) {
             let _ = reply.send(verdict(Decision::Deny, &input, why));
-            self.publish(Event::Notice { session: id, text: format!("✗ {why} Refused: {action}") });
+            let text = say!(self, "notice.refused", why = why, action = action);
+            self.publish(Event::Notice { session: id, text });
             self.audit(&call.squad, ticket, "equipe", "refused", &action);
             return;
         }
@@ -2959,7 +3020,7 @@ there, end your turn, and carry on when they say they're done."
         let act = Act::of(&check.tool, &check.input);
         let apps = self.journal(&check.squad).map(Journal::messaging_apps).unwrap_or_default();
         let ticket = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
-        let action = desktop_gate::describe(&act, &check.scene);
+        let action = desktop_gate::describe_in(self.config.lang, &act, &check.scene);
         let why = match desktop_gate::judge(&act, &check.scene, &apps) {
             Verdict::Free => {
                 let _ = reply.send(ToolResult { text: String::new(), is_error: false });
@@ -2967,7 +3028,8 @@ there, end your turn, and carry on when they say they're done."
             }
             Verdict::Blocked(why) => {
                 let _ = reply.send(refuse(format!("{why} Ask the person to do it.")));
-                self.publish(Event::Notice { session: id, text: format!("✗ equipe blocked: {}", first_line(&action)) });
+                let text = say!(self, "notice.blocked", action = first_line(&action));
+                self.publish(Event::Notice { session: id, text });
                 self.audit(&check.squad, ticket, "equipe", "blocked", &action);
                 return;
             }
@@ -3046,10 +3108,10 @@ there, end your turn, and carry on when they say they're done."
             verdict(decision, &input, why)
         });
         let line = match (decision, &rule) {
-            (Decision::Always, Some(rule)) => format!("✓ You always allow {rule} for the squad · {}", approval.action),
-            (Decision::Allow | Decision::Always, _) => format!("✓ You allowed: {}", approval.action),
-            (Decision::Deny, _) if why == "The person declined." => format!("✗ You declined: {}", approval.action),
-            (Decision::Deny, _) => format!("✗ {why} Declined: {}", approval.action),
+            (Decision::Always, Some(rule)) => say!(self, "notice.always_allowed", rule = rule, action = approval.action),
+            (Decision::Allow | Decision::Always, _) => say!(self, "notice.allowed", action = approval.action),
+            (Decision::Deny, _) if why == "The person declined." => say!(self, "notice.declined", action = approval.action),
+            (Decision::Deny, _) => say!(self, "notice.declined_why", why = why, action = approval.action),
         };
         self.publish(Event::Notice { session: approval.session, text: line });
         let verb = match decision {
@@ -3078,7 +3140,7 @@ there, end your turn, and carry on when they say they're done."
     fn show_browser(&mut self, squad: &str, member: Option<String>, show: bool) {
         let team: Vec<String> = self.team(squad).into_iter().map(|(_, name, _)| name.to_owned()).collect();
         if let Some(name) = member.as_deref().filter(|name| !team.iter().any(|t| t == name)) {
-            return self.squad_error(squad, format!("No one called {name} on the squad."));
+            return self.squad_error(squad, say!(self, "error.no_member", name = name));
         }
         if let Some(journal) = self.journal(squad) {
             // One window to touch at a time: showing one member's hides the rest.
@@ -3292,12 +3354,14 @@ there, end your turn, and carry on when they say they're done."
                 match (by.is_some(), asked.is_some()) {
                     // Only a turn under way needs telling: between turns nothing waits on it.
                     (true, _) if working => {
-                        self.publish(Event::Notice { session, text: "🖐 The person took this browser in hand; its browser tools wait for them.".into() });
+                        let text = say!(self, "notice.browser_taken");
+                        self.publish(Event::Notice { session, text });
                     }
                     // Done with what it asked of them: it carries on.
                     (false, true) => self.submit(session, "The person finished in the browser.".into()).await,
                     (false, false) if working => {
-                        self.publish(Event::Notice { session, text: "🖐 The person gave the browser back.".into() });
+                        let text = say!(self, "notice.browser_given_back");
+                        self.publish(Event::Notice { session, text });
                     }
                     _ => {}
                 }
@@ -3358,7 +3422,7 @@ there, end your turn, and carry on when they say they're done."
         match &member {
             None => {
                 let Some(mode) = mode else {
-                    return self.squad_error(squad, "Name a mode: read-only, ask, auto or full.");
+                    return self.squad_error(squad, say!(self, "error.name_a_mode"));
                 };
                 if let Some(journal) = self.journal(squad) {
                     let _ = journal.set_mode(mode);
@@ -3366,7 +3430,7 @@ there, end your turn, and carry on when they say they're done."
             }
             Some(name) => {
                 let Some(id) = self.member_id(squad, name) else {
-                    return self.squad_error(squad, format!("No one called {name} on the squad."));
+                    return self.squad_error(squad, say!(self, "error.no_member", name = name));
                 };
                 if let Some(session) = self.sessions.get_mut(&id) {
                     session.mode = mode;
@@ -3441,7 +3505,8 @@ there, end your turn, and carry on when they say they're done."
                 if !is_pm {
                     reply = format!("Proposed T-{new_id} — it waits for the PM or the person to accept it.");
                     let line = format!("{member} proposed T-{new_id}: {title}");
-                    self.brief_pm(&squad, line.clone(), Some(line));
+                    let shown = say!(self, "news.proposed", name = member, id = new_id, title = title);
+                    self.brief_pm(&squad, line, Some(shown));
                 }
                 let staffed = |o: &str| self.member_id(&squad, o).is_some() || self.team(&squad).iter().any(|(_, _, r)| r == o);
                 if let Some(owner) = owner.filter(|o| !staffed(o)) {
@@ -3594,13 +3659,17 @@ it back there once they have done it. End your turn now with a short line on wha
                     };
                     let today = squad_memory::date(now_secs());
                     let (change, new) = squad_memory::remember(&folder, &member, &fact, &today, language.as_deref())?;
-                    let verb = if new { "remembered" } else { "updated" };
-                    let text = format!("✎ {member} {verb} for the squad: {} · /memory shows what the squad knows", clip(fact.description.trim(), 80));
+                    let what = clip(fact.description.trim(), 80);
+                    let text = if new {
+                        say!(self, "notice.remembered", name = member, what = what)
+                    } else {
+                        say!(self, "notice.memory_updated", name = member, what = what)
+                    };
                     (change, text)
                 } else {
                     let fact = board::arg_str(&args, "name").ok_or("Which fact? Give its name.")?;
                     let change = squad_memory::forget(&folder, &member, fact, language.as_deref())?;
-                    (change, format!("✎ {member} forgot {fact} from the squad's memory · /home undo takes it back"))
+                    (change, say!(self, "notice.forgot", name = member, fact = fact))
                 };
                 self.publish(Event::Notice { session: id, text });
                 Ok(format!("Saved in the squad's memory ({}). Every member has it from their next turn.", change.what()))
@@ -3848,7 +3917,8 @@ it back there once they have done it. End your turn now with a short line on wha
             self.save_waiting(id);
         }
         for (id, ticket) in on_tickets {
-            self.publish(Event::Notice { session: id, text: format!("equipe restarted; picking T-{ticket} up again.") });
+            let text = say!(self, "notice.restarted", id = ticket);
+            self.publish(Event::Notice { session: id, text });
             self.start_turn(
                 id,
                 format!(
@@ -3899,11 +3969,17 @@ check what is already done in your worktree first."
             (_, true) => format!("the last one ({}k tokens) had gone unused for over an hour", used / 1000),
             _ => "asked for one".to_owned(),
         };
+        let shown = match (full, cold) {
+            _ if !summary => say!(self, "notice.fresh_clean"),
+            (true, _) => say!(self, "notice.fresh_full", used = used / 1000, window = window / 1000),
+            (_, true) => say!(self, "notice.fresh_cold", used = used / 1000),
+            _ => say!(self, "notice.fresh_asked"),
+        };
         let squad = session.squad.clone();
         if let Some(journal) = squad.as_deref().and_then(|s| journal_for(&mut self.journals, &self.config.home, s)) {
             let _ = journal.clear_engine_session(id);
         }
-        self.publish(Event::Notice { session: id, text: format!("── a fresh conversation: {why} ──") });
+        self.publish(Event::Notice { session: id, text: shown });
         Some(if summary && !tail.is_empty() {
             format!(
                 "[equipe: this is a fresh conversation — {why}. Where the last one left off, latest last:\n{tail}\nYour memory and the board hold the rest.]"
@@ -3949,7 +4025,7 @@ check what is already done in your worktree first."
             let _ = journal.set_tidied_at();
             let stale = journal.stale_tickets(TIDY_AFTER).unwrap_or_default();
             if let Some(line) = tidy_line(&stale) {
-                let shown = format!("── {} tickets haven't moved in a week: the PM will suggest tidying them ──", stale.len());
+                let shown = say!(self, "news.stale", count = stale.len());
                 self.brief_pm(&squad, line, Some(shown));
             }
         }
@@ -4365,15 +4441,16 @@ async fn first_ready_engine(preference: &[Engine], store: &CredentialStore, clau
 }
 
 /// The Codex login, refreshed if stale — or why there isn't one.
-async fn codex_credentials(client: &reqwest::Client, store: &CredentialStore) -> Result<Credentials, (String, &'static str)> {
+async fn codex_credentials(client: &reqwest::Client, store: &CredentialStore, lang: crate::i18n::Lang) -> Result<Credentials, (String, &'static str)> {
+    let words = crate::i18n::core(lang);
     let cred = store
         .load("openai")
-        .map_err(|err| (format!("couldn't read {}: {err}", store.path("openai").display()), "equipe login codex"))?
+        .map_err(|err| (words.fill("error.codex_unreadable", &[("path", store.path("openai").display().to_string()), ("err", err.to_string())]), "equipe login codex"))?
         .filter(|c| c.method == AuthMethod::OauthSubscription)
-        .ok_or(("Codex isn't signed in.".to_owned(), "equipe login codex"))?;
+        .ok_or((words.get("error.codex_signed_out").to_owned(), "equipe login codex"))?;
     codex::ensure_fresh(client, store, cred)
         .await
-        .map_err(|err| (format!("couldn't refresh the Codex login: {err}"), "equipe login codex"))
+        .map_err(|err| (words.fill("error.codex_not_refreshed", &[("err", err.to_string())]), "equipe login codex"))
 }
 
 /// The journal of `squad`, opened on first use.

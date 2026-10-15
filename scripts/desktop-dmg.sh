@@ -90,6 +90,20 @@ app="$work/equipe.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 lipo -create "${binaries[@]}" -output "$app/Contents/MacOS/equipe-desktop"
 cp crates/desktop/macos/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
+# The languages the app speaks, each with its name and its reasons for the
+# microphone and speech recognition: macOS lists equipe under System Settings ›
+# General › Language & Region › Applications, and asks in the person's language.
+langs=(ko en ja zh-Hans zh-Hant es fr de)
+localizations=""
+for lang in "${langs[@]}"; do
+  strings="crates/desktop/macos/lproj/$lang.lproj/InfoPlist.strings"
+  [ -f "$strings" ] || die "no $strings"
+  plutil -lint "$strings" >/dev/null || die "$strings doesn't parse"
+  mkdir -p "$app/Contents/Resources/$lang.lproj"
+  cp "$strings" "$app/Contents/Resources/$lang.lproj/InfoPlist.strings"
+  localizations="$localizations
+		<string>$lang</string>"
+done
 
 updates_plist=""
 if [ -n "$public_key" ]; then
@@ -130,7 +144,10 @@ cat > "$app/Contents/Info.plist" <<EOF
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
-	<string>ko</string>
+	<string>en</string>
+	<key>CFBundleLocalizations</key>
+	<array>$localizations
+	</array>
 	<key>CFBundleDisplayName</key>
 	<string>equipe</string>
 	<key>CFBundleExecutable</key>
@@ -158,9 +175,9 @@ cat > "$app/Contents/Info.plist" <<EOF
 	<key>NSHumanReadableCopyright</key>
 	<string>MIT License</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>말로 메시지를 쓸 때 마이크를 씁니다. 소리는 이 Mac 밖으로 나가지 않습니다.</string>
+	<string>equipe uses the microphone when you dictate a message. The sound never leaves this Mac.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>말한 내용을 이 Mac에서 글로 바꿔 입력창에 넣습니다.</string>$updates_plist
+	<string>equipe turns what you say into text on this Mac and puts it in the message box.</string>$updates_plist
 </dict>
 </plist>
 EOF

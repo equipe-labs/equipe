@@ -443,6 +443,9 @@ pub enum Command {
     /// The real Chrome window, with `page` in front — beside the app when
     /// `bounds` says where (screen points) — for what a picture can't do.
     BrowserPopOut { page: u64, bounds: Option<ScreenBounds> },
+    /// The person switched their screen to `lang` (`ko`, `zh-Hant`): what equipe
+    /// says to them from now on is in it, as when a screen says hello.
+    Language { lang: String },
     /// The person takes back one of the squad's "always allow" rules (an
     /// answer of [`Decision::Always`]): that kind of thing asks again. Answered
     /// by [`Event::Allowed`].

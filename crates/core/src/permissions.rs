@@ -156,9 +156,15 @@ pub const APPROVE_TOOL: &str = "approve";
 pub const BROWSER_CODE: &str = "mcp__browser__browser_run_code_unsafe";
 
 pub fn describe(tool: &str, input: &Value) -> (String, Option<String>) {
+    describe_in(crate::i18n::Lang::En, tool, input)
+}
+
+/// [`describe`], its reason in `lang`: the person reads it.
+pub fn describe_in(lang: crate::i18n::Lang, tool: &str, input: &Value) -> (String, Option<String>) {
+    let words = crate::i18n::core(lang);
     if tool == BROWSER_CODE {
         let code = input.get("code").and_then(Value::as_str).unwrap_or_default().to_owned();
-        return (code, Some("Runs code on this Mac, outside the sandbox".into()));
+        return (code, Some(words.get("approval.runs_code").to_owned()));
     }
     let field = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_owned);
     let action = match tool {
@@ -176,8 +182,8 @@ pub fn describe(tool: &str, input: &Value) -> (String, Option<String>) {
     // A command that asks to leave the sandbox says so: that is what is being allowed.
     let outside = input.get("dangerouslyDisableSandbox").and_then(Value::as_bool) == Some(true);
     let reason = match (outside, field("description")) {
-        (true, Some(why)) => Some(format!("Outside the sandbox · {why}")),
-        (true, None) => Some("Outside the sandbox".into()),
+        (true, Some(why)) => Some(words.fill("approval.outside_why", &[("why", why)])),
+        (true, None) => Some(words.get("approval.outside").to_owned()),
         (false, why) => why,
     };
     (action, reason)

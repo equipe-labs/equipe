@@ -6,6 +6,21 @@ use crate::{Entry, Event, TurnOutcome};
 #[cfg(test)]
 use crate::ToolOutcome;
 
+/// The lines the transcript writes itself, as they are kept and sent — in
+/// English; a screen shows them in the person's language
+/// (`equipe_core::i18n::note`).
+pub mod notes {
+    pub const STOPPED: &str = "Stopped.";
+    pub const ENDED_EARLY: &str = "The engine ended early.";
+    pub const NOTHING_CHANGED: &str = "No files changed, so no branch was kept.";
+    /// Before the branch's name.
+    pub const WORKING_ON: &str = "Working on branch ";
+    /// After it.
+    pub const WORKING_REST: &str = " in its own worktree. Your checkout stays untouched; closing the session lands the branch.";
+    /// Between a ticket's header (`── T-12 · title`) and its branch.
+    pub const ON_BRANCH: &str = " — on branch ";
+}
+
 /// Keep at most this many lines in memory; older ones live in the journal.
 pub const IN_MEMORY_LINES: usize = 500;
 /// How far back a tool's answer looks for its call (parallel calls answer
@@ -82,31 +97,27 @@ impl Transcript {
             }
         }
         let new = match event {
-            Event::SessionStarted { workspace: Some(ws), .. } => Some(Entry::Note {
-                text: format!(
-                    "Working on branch {} in its own worktree. Your checkout stays untouched; \
-closing the session lands the branch.",
-                    ws.branch
-                ),
-            }),
+            Event::SessionStarted { workspace: Some(ws), .. } => {
+                Some(Entry::Note { text: format!("{}{}{}", notes::WORKING_ON, ws.branch, notes::WORKING_REST) })
+            }
             // A message sent while it worked, where it was read.
             Event::UserMessage { text, .. } | Event::Steered { text, .. } => Some(Entry::User { text: text.clone() }),
             Event::Notice { text, .. } => Some(Entry::Note { text: text.clone() }),
             Event::Thread { project, .. } => Some(Entry::Thread { project: project.clone() }),
             Event::WorkStarted { ticket, title, workspace, .. } => Some(Entry::Note {
                 text: match workspace {
-                    Some(ws) => format!("── T-{ticket} · {title} — on branch {}", ws.branch),
+                    Some(ws) => format!("── T-{ticket} · {title}{}{}", notes::ON_BRANCH, ws.branch),
                     None => format!("── T-{ticket} · {title}"),
                 },
             }),
             Event::ToolUse { tool, target, .. } => Some(Entry::Tool { tool: tool.clone(), target: target.clone(), outcome: None }),
-            Event::TurnEnded { outcome: TurnOutcome::Interrupted, .. } => Some(Entry::Note { text: "Stopped.".into() }),
+            Event::TurnEnded { outcome: TurnOutcome::Interrupted, .. } => Some(Entry::Note { text: notes::STOPPED.into() }),
             Event::TurnEnded { outcome: TurnOutcome::Incomplete, .. } => {
-                Some(Entry::Note { text: "The engine ended early.".into() })
+                Some(Entry::Note { text: notes::ENDED_EARLY.into() })
             }
             Event::Error { message, next, .. } => Some(Entry::Error { message: message.clone(), next: next.clone() }),
             Event::BranchLanded { branch, stat, .. } => Some(Entry::Landed { branch: branch.clone(), stat: stat.clone() }),
-            Event::NothingChanged { .. } => Some(Entry::Note { text: "No files changed, so no branch was kept.".into() }),
+            Event::NothingChanged { .. } => Some(Entry::Note { text: notes::NOTHING_CHANGED.into() }),
             _ => None,
         };
         if let Some(entry) = new {

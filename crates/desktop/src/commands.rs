@@ -3,8 +3,9 @@
 //! (`crates/cli/src/tui/commands.rs`), kept the same on purpose; if one changes,
 //! change the other.
 
-use equipe_core::t;
+use equipe_core::i18n::label;
 use equipe_core::protocol::{Mode, TicketId};
+use equipe_core::t;
 
 pub struct Spec {
     pub name: &'static str,
@@ -129,7 +130,8 @@ pub struct Context<'a> {
     pub selected_models: Vec<String>,
 }
 
-const MODES: [&str; 4] = ["read-only", "ask", "auto", "full"];
+/// The modes as typed, in `Mode::ALL`'s order.
+pub const MODES: [&str; 4] = ["read-only", "ask", "auto", "full"];
 
 /// What could complete `text`, best first. Empty when nothing would, or when
 /// the text is already whole.
@@ -217,8 +219,8 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             choices.extend(ctx.members.iter().filter(|(m, _)| starts(m)).map(|(m, _)| {
                 let own = ctx.member_modes.iter().find(|(name, _)| name == m).map(|(_, mode)| *mode);
                 let now = match (own, ctx.mode) {
-                    (Some(mode), _) => t!("commands.mode_member_own", mode = mode.label()),
-                    (None, Some(mode)) => t!("commands.mode_member_squad", mode = mode.label()),
+                    (Some(mode), _) => t!("commands.mode_member_own", mode = label::mode(crate::i18n::lang(), mode)),
+                    (None, Some(mode)) => t!("commands.mode_member_squad", mode = label::mode(crate::i18n::lang(), mode)),
                     (None, None) => t!("commands.mode_member").to_owned(),
                 };
                 word(m, &now, " ")
@@ -230,7 +232,7 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             let mut choices: Vec<Choice> =
                 MODES.iter().filter(|w| starts(w)).map(|m| word(m, &mode_about(m, own, words[0]), "")).collect();
             if starts("squad") {
-                let squad = ctx.mode.map_or(String::new(), |m| format!(" ({})", m.label()));
+                let squad = ctx.mode.map_or(String::new(), |m| format!(" ({})", label::mode(crate::i18n::lang(), m)));
                 choices.push(word("squad", &t!("commands.mode_back_on_squad", squad = squad), ""));
             }
             choices
@@ -307,7 +309,7 @@ fn mode_about(word: &str, now: Option<Mode>, who: &str) -> String {
         return String::new();
     };
     let on = if now == Some(mode) { t!("commands.mode_now_for", who = who) } else { String::new() };
-    format!("{on}{}", mode.short())
+    format!("{on}{}", label::mode_short(crate::i18n::lang(), mode))
 }
 
 /// Folders that complete a typed path — `~/Pro` → `~/Projects/` — not the
@@ -385,9 +387,9 @@ mod tests {
         assert_eq!(texts(&complete("/mode f", &ctx())), ["/mode full", "/mode frontend "]);
         assert_eq!(texts(&complete("/mode frontend a", &ctx())), ["/mode frontend ask", "/mode frontend auto"]);
         let modes = complete("/mode ", &ctx());
-        assert!(modes[2].about.starts_with("now, for the squad · works alone, sandboxed"), "{:?}", modes[2]);
-        assert!(modes.iter().any(|c| c.label == "frontend" && c.about.contains("full access of its own")), "{modes:?}");
-        assert!(complete("/mode pm s", &ctx()).iter().any(|c| c.about.contains("back on the squad's mode (auto)")));
+        assert!(modes[2].about.starts_with("스쿼드의 현재 모드 · 샌드박스 안에서 혼자 일함"), "{:?}", modes[2]);
+        assert!(modes.iter().any(|c| c.label == "frontend" && c.about.contains("자체 모드 전체 권한")), "{modes:?}");
+        assert!(complete("/mode pm s", &ctx()).iter().any(|c| c.about.contains("스쿼드 모드로 되돌리기 (자동)")));
         assert_eq!(texts(&complete("/add designer q", &ctx())), ["/add designer qa "]);
         assert_eq!(texts(&complete("/browser show f", &ctx())), ["/browser show frontend"]);
         assert_eq!(texts(&complete("@fr", &ctx())), ["@frontend "]);

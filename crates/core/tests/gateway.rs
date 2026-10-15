@@ -60,6 +60,7 @@ fn config(home: &Path, claude: &Path) -> Config {
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,
+        lang: equipe_core::i18n::Lang::En,
     }
 }
 
@@ -174,6 +175,18 @@ async fn two_screens_watch_the_same_team() {
     a.send(Command::Submit { session: 21, text: "from A".into() });
     let seen_by_b = until(&mut b, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(seen_by_b.iter().any(|e| matches!(e, Event::UserMessage { text, .. } if text == "from A")));
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_screen_says_its_language_when_it_attaches() {
+    let (home, _project) = squad();
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    let (mut screen, _) = Client::connect_in(&socket, "test", "acme", Some(equipe_core::i18n::Lang::De)).await.unwrap();
+    screen.send(Command::Accept { squad: "acme".into(), ticket: 99 });
+    let seen = until(&mut screen, |e| matches!(e, Event::Error { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::Error { message, .. }) if message == "Auf dem Board gibt es kein T-99."), "{seen:#?}");
     gateway::shutdown(&socket).await.unwrap();
 }
 

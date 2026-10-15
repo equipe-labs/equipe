@@ -112,7 +112,7 @@ fn spawn_detached() -> io::Result<()> {
 /// Attach to the daemon (starting it if needed) and follow `squad`.
 pub async fn attach(squad: &str) -> io::Result<(Client, Hello)> {
     ensure_running().await?;
-    Client::connect(&socket(), &build_id(), squad).await
+    Client::connect_in(&socket(), &build_id(), squad, Some(crate::i18n::lang())).await
 }
 
 /// `equipe daemon stop`: `Ok(false)` when none was running.

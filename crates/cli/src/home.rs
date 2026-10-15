@@ -41,7 +41,7 @@ pub fn open(dir: &Path) {
 
 /// "2 · 5m ago · backend saved notes/a.md — what the person asked"
 pub fn line(n: usize, change: &Change, now: i64) -> String {
-    format!("{n} · {} · {} {} — {}", ago(now - change.at), change.by, change.what(), change.why)
+    format!("{n} · {} · {} {} — {}", ago(now - change.at), change.by, change.said(crate::i18n::lang()), change.why)
 }
 
 fn ago(secs: i64) -> String {
@@ -122,7 +122,7 @@ pub fn memory(dir: &Path, words: &[&str]) -> Result<Vec<String>, String> {
 
 fn undo(dir: &Path, n: usize) -> Result<Vec<String>, String> {
     let change = squad_home::undo(dir, n)?;
-    Ok(vec![t!("home.taken_back", what = change.what())])
+    Ok(vec![t!("home.taken_back", what = change.said(crate::i18n::lang()))])
 }
 
 /// The squad's folder under equipe's home.

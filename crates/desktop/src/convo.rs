@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use equipe_core::protocol::{Entry, Event, SessionInfo, TicketId, ToolOutcome, Transcript, TurnOutcome};
+use equipe_core::t;
 
 use crate::state::Clock;
 
@@ -58,6 +59,10 @@ pub struct Convo {
 /// The transcript line where reasoning ended: `THOUGHT` + its number + `:` +
 /// seconds. A private-use character, so no other note starts so.
 pub const THOUGHT: char = '\u{E000}';
+
+/// The transcript line where a turn ended: `WORKED` + its seconds + `:` + the
+/// time of day — worded when drawn, so in the language in use then.
+pub const WORKED: char = '\u{E001}';
 
 impl Convo {
     pub fn new(base: PathBuf, is_pm: bool) -> Self {
@@ -225,10 +230,7 @@ impl Convo {
 
     /// Start a lane's conversation with what the member said about its project.
     pub fn open_lane(&mut self, main: &Convo) {
-        // Not the line that says other projects' parts were left out: it is
-        // about the member's conversation, not this one.
-        let said = main.shown().into_iter().filter(|e| !matches!(e.as_ref(), Entry::Note { text } if text.starts_with("· 다른 프로젝트")));
-        self.transcript = Transcript::from_entries(said.map(Cow::into_owned).collect());
+        self.transcript = Transcript::from_entries(main.shown().into_iter().map(Cow::into_owned).collect());
         self.lane = true;
     }
 
@@ -237,7 +239,7 @@ impl Convo {
         if let Some(since) = self.working_since.take() {
             let took = now.saturating_duration_since(since);
             if took >= Duration::from_secs(1) {
-                self.transcript.push_local(Entry::Note { text: format!("─ worked {} · {}", elapsed(took), at.hm()) });
+                self.transcript.push_local(Entry::Note { text: format!("{WORKED}{}:{}", took.as_secs(), at.hm()) });
             }
         }
     }
@@ -308,9 +310,9 @@ impl Convo {
 pub fn elapsed(took: Duration) -> String {
     let s = took.as_secs();
     match s {
-        0..=59 => format!("{s}s"),
-        60..=3599 => format!("{}m {:02}s", s / 60, s % 60),
-        _ => format!("{}h {:02}m", s / 3600, (s % 3600) / 60),
+        0..=59 => t!("time.secs", s = s),
+        60..=3599 => t!("time.mins_secs", m = s / 60, s = format!("{:02}", s % 60)),
+        _ => t!("time.hours_mins", h = s / 3600, m = format!("{:02}", (s % 3600) / 60)),
     }
 }
 
@@ -419,7 +421,7 @@ impl Block {
     pub fn searchable(&self) -> Option<String> {
         match self {
             Block::User(t) | Block::Reply { text: t, .. } | Block::Note(t) | Block::Memo(t) | Block::Steering(t) => Some(t.clone()),
-            Block::Steps(lines) => Some(lines.iter().map(|l| format!("{} {}", l.verb, l.targets.join(" "))).collect::<Vec<_>>().join("\n")),
+            Block::Steps(lines) => Some(lines.iter().map(|l| format!("{} {}", verb_word(&l.verb), l.targets.join(" "))).collect::<Vec<_>>().join("\n")),
             Block::Error { message, .. } => Some(message.clone()),
             Block::Landed { branch, stat } => Some(format!("{branch}\n{stat}")),
             Block::Thought { .. } | Block::Thinking(_) => None,
@@ -431,6 +433,12 @@ impl Block {
 fn thought_of(text: &str) -> Option<(usize, u64)> {
     let (n, secs) = text.strip_prefix(THOUGHT)?.split_once(':')?;
     Some((n.parse().ok()?, secs.parse().ok()?))
+}
+
+/// The line a turn's end leaves, worded now: `─ worked 1m 05s · 14:02`.
+fn worked_of(text: &str) -> Option<String> {
+    let (secs, at) = text.strip_prefix(WORKED)?.split_once(':')?;
+    Some(t!("chat.worked", took = elapsed(Duration::from_secs(secs.parse().ok()?)), at = at))
 }
 
 /// Gather entries into blocks: tool use into runs (merging looking-around
@@ -496,9 +504,10 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
                 blocks.push(Block::Reply { text: text.clone(), first: !after_reply, live: false });
                 after_reply = true;
             }
-            Entry::Note { text } => match thought_of(text) {
-                Some((n, secs)) => blocks.push(Block::Thought { n, secs, text: String::new() }),
-                None => blocks.push(Block::Note(text.clone())),
+            Entry::Note { text } => match (thought_of(text), worked_of(text)) {
+                (Some((n, secs)), _) => blocks.push(Block::Thought { n, secs, text: String::new() }),
+                (None, Some(worked)) => blocks.push(Block::Note(worked)),
+                (None, None) => blocks.push(Block::Note(equipe_core::i18n::note(crate::i18n::lang(), text).into_owned())),
             },
             Entry::Error { message, next } => blocks.push(Block::Error { message: message.clone(), next: next.clone() }),
             Entry::Landed { branch, stat } => blocks.push(Block::Landed { branch: branch.clone(), stat: stat.clone() }),
@@ -519,6 +528,29 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
 /// The member's auto memory, which equipe keeps under the squad's members.
 fn is_memory(tool: &str, target: &str) -> bool {
     matches!(tool, "Write" | "Edit" | "MultiEdit") && target.contains("/.equipe/") && target.contains("/members/") && target.contains("/memory/")
+}
+
+/// A step's verb ([`tool_verb`]) as the person reads it; a tool without a
+/// word of its own reads as its name.
+pub fn verb_word(verb: &str) -> &str {
+    match verb {
+        "read" => t!("chat.verb_read"),
+        "edit" => t!("chat.verb_edit"),
+        "write" => t!("chat.verb_write"),
+        "run" => t!("chat.verb_run"),
+        "search" => t!("chat.verb_search"),
+        "fetch" => t!("chat.verb_fetch"),
+        "delegate" => t!("chat.verb_delegate"),
+        "board" => t!("chat.verb_board"),
+        "ticket" => t!("chat.verb_ticket"),
+        "comment" => t!("chat.verb_comment"),
+        "hand in" => t!("chat.verb_hand_in"),
+        "wait on you" => t!("chat.verb_wait_on_you"),
+        "ask you" => t!("chat.verb_ask_you"),
+        "browse" => t!("chat.verb_browse"),
+        "recall" => t!("chat.verb_recall"),
+        other => other,
+    }
 }
 
 /// How a tool use reads in one word.
@@ -798,7 +830,7 @@ mod tests {
         c.on_event(&Event::UserMessage { session: 1, text: "go".into() }, t0, T);
         c.on_event(&Event::TextDelta { session: 1, text: "ok".into() }, t0, T);
         c.on_event(&Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }, t0 + Duration::from_secs(65), T);
-        assert!(matches!(c.blocks().last(), Some(Block::Note(t)) if t == "─ worked 1m 05s · 14:02"), "{:?}", c.blocks());
+        assert!(matches!(c.blocks().last(), Some(Block::Note(t)) if t == "─ 1분 05초 작업함 · 14:02"), "{:?}", c.blocks());
         // A turn under a second says nothing.
         let mut quick = convo(true);
         quick.on_event(&Event::UserMessage { session: 1, text: "go".into() }, t0, T);
@@ -912,7 +944,7 @@ mod tests {
         assert!(c.is_pm);
         assert_eq!(c.queued, ["m"]);
         c.on_event(&Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }, now + Duration::from_secs(3), T);
-        assert!(c.blocks().iter().any(|b| matches!(b, Block::Note(t) if t.starts_with("─ worked 3s"))), "{:?}", c.blocks());
+        assert!(c.blocks().iter().any(|b| matches!(b, Block::Note(t) if t.starts_with("─ 3초 작업함"))), "{:?}", c.blocks());
     }
 
     #[test]

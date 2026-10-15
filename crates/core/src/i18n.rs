@@ -3,11 +3,26 @@
 //! Each front end keeps its words in `locales/<code>.json` — one flat object
 //! of `"key": "text"` per language, `{name}` where a value goes in — and loads
 //! the person's language with English behind it: a word not translated yet
-//! shows in English, never as a blank. Which language: `EQUIPE_LANG` when set,
-//! else the locale the terminal says (`LC_ALL`, `LC_MESSAGES`, `LANG`), else the
-//! system's preferred languages — a Mac app has only the last.
+//! shows in English, never as a blank. A word that changes with a number has
+//! a key per plural form, `key.one` and `key.other`, and is asked for with a
+//! `count`: `t!("board.tickets", count = n)`.
+//!
+//! Which language ([`resolve`]): `EQUIPE_LANG` (an override), the language the
+//! person picked — one choice for every front end, in `<home>/state.json` —
+//! then, in a terminal, the locale (`LANGUAGE`, `LC_ALL`, `LC_MESSAGES`,
+//! `LANG`), then the first of the system's preferred languages equipe speaks;
+//! English when none is. The person is never asked up front, and nothing is
+//! guessed from where they are. A front end switches language while it runs
+//! ([`Words::set`]).
+//!
+//! equipe core has words of its own ([`core`]): what the daemon says to the
+//! person — notices in conversations, errors — in the language their screen
+//! said it speaks, and the labels of the protocol's names ([`label`]).
+//! What equipe tells the models stays in English.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 /// The languages equipe speaks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -53,10 +68,29 @@ impl Lang {
         }
     }
 
+    /// Its name in English, as the squad's prompts name the person's language.
+    pub fn english_name(self) -> &'static str {
+        match self {
+            Lang::Ko => "Korean",
+            Lang::En => "English",
+            Lang::Ja => "Japanese",
+            Lang::ZhHans => "Simplified Chinese",
+            Lang::ZhHant => "Traditional Chinese",
+            Lang::Es => "Spanish",
+            Lang::Fr => "French",
+            Lang::De => "German",
+        }
+    }
+
+    /// Its place in [`Lang::ALL`].
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
     /// The language a locale tag names — `ko_KR.UTF-8`, `zh-Hant-TW`,
-    /// `zh_HK`, `en-US`, `de` — if equipe speaks it.
+    /// `zh_HK`, `en-US`, `es-419`, `de` — if equipe speaks it.
     pub fn parse(tag: &str) -> Option<Lang> {
-        let tag = tag.split(['.', '@']).next().unwrap_or_default().replace('_', "-").to_ascii_lowercase();
+        let tag = tag.trim().split(['.', '@']).next().unwrap_or_default().replace('_', "-").to_ascii_lowercase();
         let mut parts = tag.split('-');
         Some(match parts.next()? {
             "ko" => Lang::Ko,
@@ -73,25 +107,117 @@ impl Lang {
         })
     }
 
-    /// The person's language in a terminal: `EQUIPE_LANG`, the locale
-    /// variables, then the system's; English when none is one equipe speaks.
-    pub fn detect() -> Lang {
-        let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty() && v != "C" && v != "POSIX");
-        ["EQUIPE_LANG", "LC_ALL", "LC_MESSAGES", "LANG"]
-            .iter()
-            .find_map(|name| env(name))
-            .and_then(|tag| Lang::parse(&tag))
-            .unwrap_or_else(Lang::detect_system)
+    /// Which plural form `n` takes: `one` or `other`. Korean, Japanese and
+    /// Chinese have none; English, Spanish and German say `one` for 1 only,
+    /// French for 0 and 1.
+    pub fn plural(self, n: u64) -> &'static str {
+        match self {
+            Lang::Ko | Lang::Ja | Lang::ZhHans | Lang::ZhHant => "other",
+            Lang::En | Lang::Es | Lang::De if n == 1 => "one",
+            Lang::Fr if n <= 1 => "one",
+            _ => "other",
+        }
     }
 
-    /// The person's language in an app: `EQUIPE_LANG`, else the first of the
-    /// system's preferred languages equipe speaks; English otherwise.
-    pub fn detect_system() -> Lang {
-        if let Some(lang) = std::env::var("EQUIPE_LANG").ok().and_then(|tag| Lang::parse(&tag)) {
+    /// The plural forms a word in it needs.
+    pub fn plural_forms(self) -> &'static [&'static str] {
+        match self {
+            Lang::Ko | Lang::Ja | Lang::ZhHans | Lang::ZhHant => &["other"],
+            _ => &["one", "other"],
+        }
+    }
+
+    /// The person's language, for a front end of this kind: see [`resolve`].
+    pub fn resolve(front: Front) -> Lang {
+        Lang::resolve_in(&home(), front)
+    }
+
+    /// [`Lang::resolve`], with the pick kept in `home`.
+    pub fn resolve_in(home: &std::path::Path, front: Front) -> Lang {
+        resolve(&env, saved(home), front, &system_languages())
+    }
+
+    /// What "System" — no language picked — comes to right now: see [`auto`].
+    /// A settings screen shows it beside "System".
+    pub fn resolve_auto(front: Front) -> Lang {
+        auto(&env, front, &system_languages())
+    }
+}
+
+/// Which kind of front end asks: a terminal has a locale of its own; an app
+/// has only the system's languages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Front {
+    Terminal,
+    App,
+}
+
+fn env(name: &str) -> Option<String> {
+    std::env::var(name).ok()
+}
+
+fn home() -> std::path::PathBuf {
+    equipe_providers::credentials::equipe_home()
+}
+
+/// The system's preferred languages, most preferred first. On a Mac,
+/// `CFLocaleCopyPreferredLanguages`: it honours the language picked for
+/// equipe alone in System Settings › General › Language & Region › Applications.
+fn system_languages() -> Vec<String> {
+    sys_locale::get_locales().collect()
+}
+
+/// A locale value that names no language: `C`, `POSIX`, `C.UTF-8`.
+fn names_no_language(value: &str) -> bool {
+    matches!(value.split(['.', '@']).next().unwrap_or_default(), "" | "C" | "POSIX")
+}
+
+/// The person's language: `EQUIPE_LANG` (for development, or to override),
+/// the language they picked (`saved`), else what [`auto`] finds.
+pub fn resolve(env: &dyn Fn(&str) -> Option<String>, saved: Option<Lang>, front: Front, system: &[String]) -> Lang {
+    env("EQUIPE_LANG").and_then(|tag| Lang::parse(&tag)).or(saved).unwrap_or_else(|| auto(env, front, system))
+}
+
+/// The language nobody picked. In a terminal: GNU's `LANGUAGE` list, first
+/// language equipe speaks — unless the locale is `C` or `POSIX`, as gettext
+/// does; then the first of `LC_ALL`, `LC_MESSAGES`, `LANG` that names a
+/// language. Then the system's preferred languages, walked in order: the first
+/// one equipe speaks, so `[pt-BR, ko]` is Korean. English when none is.
+pub fn auto(env: &dyn Fn(&str) -> Option<String>, front: Front, system: &[String]) -> Lang {
+    if front == Front::Terminal {
+        let set = |name: &str| env(name).filter(|v| !v.trim().is_empty());
+        let locale = ["LC_ALL", "LC_MESSAGES", "LANG"].iter().find_map(|name| set(name));
+        if locale.as_deref().is_some_and(|l| !names_no_language(l))
+            && let Some(lang) = set("LANGUAGE").and_then(|list| list.split(':').find_map(Lang::parse))
+        {
             return lang;
         }
-        sys_locale::get_locales().find_map(|tag| Lang::parse(&tag)).unwrap_or(Lang::En)
+        let named = ["LC_ALL", "LC_MESSAGES", "LANG"].iter().find_map(|name| set(name).filter(|v| !names_no_language(v)));
+        if let Some(lang) = named.as_deref().and_then(Lang::parse) {
+            return lang;
+        }
     }
+    system.iter().find_map(|tag| Lang::parse(tag)).unwrap_or(Lang::En)
+}
+
+/// The language the person picked, for every front end and the daemon alike
+/// (`lang` in `<home>/state.json`); `None`: none, "System".
+pub fn saved(home: &std::path::Path) -> Option<Lang> {
+    crate::squads::state(home).get("lang")?.as_str().and_then(Lang::parse)
+}
+
+/// Keep `lang` as the person's pick — or, `None` ("System"), forget it: only
+/// a choice is kept, never what "System" came to.
+pub fn save(home: &std::path::Path, lang: Option<Lang>) -> Result<(), String> {
+    let mut state = crate::squads::state(home);
+    if state.get("lang").and_then(|v| v.as_str()) == lang.map(Lang::code) {
+        return Ok(());
+    }
+    match lang {
+        Some(lang) => state.insert("lang".into(), lang.code().into()),
+        None => state.remove("lang"),
+    };
+    crate::squads::save_state(home, state)
 }
 
 /// A front end's words in one language, with English behind it.
@@ -117,9 +243,23 @@ impl Catalog {
         self.words.get(key).or_else(|| self.english.get(key)).map_or(key, String::as_str)
     }
 
-    /// The word for `key` with each `{name}` filled in.
+    /// The word for `key` said of `n` things: its plural form for `n` in the
+    /// language (`key.one`, `key.other`), else in English, else `key` itself.
+    pub fn plural<'a>(&'a self, key: &'a str, n: u64) -> &'a str {
+        fn pick<'t>(table: &'t HashMap<String, String>, key: &str, form: &str) -> Option<&'t str> {
+            table.get(&format!("{key}.{form}")).or_else(|| table.get(&format!("{key}.other"))).or_else(|| table.get(key)).map(String::as_str)
+        }
+        pick(&self.words, key, self.lang.plural(n)).or_else(|| pick(&self.english, key, Lang::En.plural(n))).unwrap_or(key)
+    }
+
+    /// The word for `key` with each `{name}` filled in. With a `count` among
+    /// them, the plural form for it.
     pub fn fill(&self, key: &str, args: &[(&str, String)]) -> String {
-        fill(self.get(key), args)
+        let count = args.iter().find(|(name, _)| *name == "count").and_then(|(_, v)| v.trim().trim_start_matches('-').parse::<u64>().ok());
+        match count {
+            Some(n) => fill(self.plural(key, n), args),
+            None => fill(self.get(key), args),
+        }
     }
 }
 
@@ -151,8 +291,16 @@ pub fn placeholders(text: &str) -> Vec<String> {
     out
 }
 
+/// A key's plural form, if it is one: `("board.tickets", "one")`.
+fn plural_form(key: &str) -> Option<(&str, &str)> {
+    let (base, form) = key.rsplit_once('.')?;
+    matches!(form, "one" | "other").then_some((base, form))
+}
+
 /// What is wrong with a front end's translations: a key English lacks, one a
 /// language lacks, or a translation taking other `{name}`s than English's.
+/// A word with plural forms needs, in each language, the forms that language
+/// has — Korean `.other` only, French `.one` and `.other` — and English both.
 pub fn problems(files: &[(&str, &str)]) -> Vec<String> {
     let table = |code: &str| -> Result<HashMap<String, String>, String> {
         let json = files.iter().find(|(c, _)| *c == code).map(|(_, j)| *j).ok_or(format!("no {code}.json"))?;
@@ -163,6 +311,15 @@ pub fn problems(files: &[(&str, &str)]) -> Vec<String> {
         Err(e) => return vec![e],
     };
     let mut out = Vec::new();
+    for key in english.keys() {
+        if let Some((base, _)) = plural_form(key) {
+            for form in ["one", "other"] {
+                if !english.contains_key(&format!("{base}.{form}")) {
+                    out.push(format!("en: missing {base}.{form}"));
+                }
+            }
+        }
+    }
     for lang in Lang::ALL {
         let words = match table(lang.code()) {
             Ok(t) => t,
@@ -172,12 +329,16 @@ pub fn problems(files: &[(&str, &str)]) -> Vec<String> {
             }
         };
         for (key, text) in &english {
+            let needed = match plural_form(key) {
+                Some((_, form)) => lang.plural_forms().contains(&form),
+                None => true,
+            };
             match words.get(key) {
-                None => out.push(format!("{}: missing {key}", lang.code())),
+                None if needed => out.push(format!("{}: missing {key}", lang.code())),
                 Some(word) if placeholders(word) != placeholders(text) => {
                     out.push(format!("{}: {key} takes {:?}, English {:?}", lang.code(), placeholders(word), placeholders(text)))
                 }
-                Some(_) => {}
+                _ => {}
             }
         }
         for key in words.keys().filter(|k| !english.contains_key(*k)) {
@@ -185,31 +346,206 @@ pub fn problems(files: &[(&str, &str)]) -> Vec<String> {
         }
     }
     out.sort();
+    out.dedup();
     out
 }
 
+/// A front end's words in every language, one of them in use — switched while
+/// the front end runs ([`Words::set`]); each language is loaded the first time
+/// it is used and kept, so a word stays a `&'static str`.
+pub struct Words {
+    files: &'static [(&'static str, &'static str)],
+    first: fn() -> Lang,
+    /// `Lang::index` of the language in use; `u8::MAX` until one is.
+    current: AtomicU8,
+    tables: [OnceLock<Catalog>; 8],
+}
+
+impl Words {
+    /// `files` as `include_str!` brings them in; `first` says the language
+    /// to start in, asked the first time a word is.
+    pub const fn new(files: &'static [(&'static str, &'static str)], first: fn() -> Lang) -> Self {
+        Self { files, first, current: AtomicU8::new(u8::MAX), tables: [const { OnceLock::new() }; 8] }
+    }
+
+    /// The language in use.
+    pub fn lang(&self) -> Lang {
+        match self.current.load(Ordering::Acquire) {
+            u8::MAX => {
+                let first = (self.first)();
+                let _ = self.current.compare_exchange(u8::MAX, first.index() as u8, Ordering::AcqRel, Ordering::Acquire);
+                Lang::ALL[self.current.load(Ordering::Acquire) as usize]
+            }
+            i => Lang::ALL[i as usize],
+        }
+    }
+
+    /// The words in the language in use.
+    pub fn catalog(&self) -> &Catalog {
+        self.of(self.lang())
+    }
+
+    /// The words in `lang`, whichever is in use.
+    pub fn of(&self, lang: Lang) -> &Catalog {
+        self.tables[lang.index()].get_or_init(|| Catalog::load(lang, self.files))
+    }
+
+    /// Use `lang` from now on: the next word asked for is in it.
+    pub fn set(&self, lang: Lang) {
+        self.current.store(lang.index() as u8, Ordering::Release);
+    }
+}
+
+/// equipe core's own words, in every language.
+pub const FILES: &[(&str, &str)] = &[
+    ("ko", include_str!("../locales/ko.json")),
+    ("en", include_str!("../locales/en.json")),
+    ("ja", include_str!("../locales/ja.json")),
+    ("zh-Hans", include_str!("../locales/zh-Hans.json")),
+    ("zh-Hant", include_str!("../locales/zh-Hant.json")),
+    ("es", include_str!("../locales/es.json")),
+    ("fr", include_str!("../locales/fr.json")),
+    ("de", include_str!("../locales/de.json")),
+];
+
+static CORE: Words = Words::new(FILES, || Lang::En);
+
+/// equipe core's words in `lang`: what the daemon says to the person.
+pub fn core(lang: Lang) -> &'static Catalog {
+    CORE.of(lang)
+}
+
+/// The protocol's names as a screen shows them, in a language. The wire
+/// keeps its own (`in_progress`, `read_only`); these are only for people.
+pub mod label {
+    use super::{Lang, core};
+    use equipe_protocol::{DesktopState, MemberRef, Mode, TicketKind, TicketStatus};
+
+    /// `read-only`, `ask me`, `auto`, `full access`.
+    pub fn mode(lang: Lang, mode: Mode) -> &'static str {
+        core(lang).get(match mode {
+            Mode::ReadOnly => "mode.read_only",
+            Mode::Ask => "mode.ask",
+            Mode::Auto => "mode.auto",
+            Mode::Full => "mode.full",
+        })
+    }
+
+    /// What a mode means, short enough for a menu line.
+    pub fn mode_short(lang: Lang, mode: Mode) -> &'static str {
+        core(lang).get(match mode {
+            Mode::ReadOnly => "mode.read_only.short",
+            Mode::Ask => "mode.ask.short",
+            Mode::Auto => "mode.auto.short",
+            Mode::Full => "mode.full.short",
+        })
+    }
+
+    /// What a mode means, in full.
+    pub fn mode_summary(lang: Lang, mode: Mode) -> &'static str {
+        core(lang).get(match mode {
+            Mode::ReadOnly => "mode.read_only.summary",
+            Mode::Ask => "mode.ask.summary",
+            Mode::Auto => "mode.auto.summary",
+            Mode::Full => "mode.full.summary",
+        })
+    }
+
+    /// `todo`, `in progress`, `review`…
+    pub fn status(lang: Lang, status: TicketStatus) -> &'static str {
+        core(lang).get(match status {
+            TicketStatus::Proposed => "status.proposed",
+            TicketStatus::Todo => "status.todo",
+            TicketStatus::InProgress => "status.in_progress",
+            TicketStatus::Waiting => "status.waiting",
+            TicketStatus::Review => "status.review",
+            TicketStatus::Done => "status.done",
+            TicketStatus::Cancelled => "status.cancelled",
+        })
+    }
+
+    /// `code`, `task`, `action`.
+    pub fn kind(lang: Lang, kind: TicketKind) -> &'static str {
+        core(lang).get(match kind {
+            TicketKind::Code => "kind.code",
+            TicketKind::Task => "kind.task",
+            TicketKind::Action => "kind.action",
+        })
+    }
+
+    /// Who has the Mac's screen, in one line for a screen following squad
+    /// `here` — [`DesktopState::summary`] in `lang`.
+    pub fn desktop(lang: Lang, state: &DesktopState, here: Option<&str>) -> Option<String> {
+        let words = core(lang);
+        if state.stopped {
+            return Some(words.get("desktop.stopped").to_owned());
+        }
+        let name = |m: &MemberRef| if here == Some(m.squad.as_str()) { m.member.clone() } else { m.to_string() };
+        let holder = state.holder.as_ref().map(|m| words.fill("desktop.on_screen", &[("name", name(m))]));
+        let waiting = (!state.queue.is_empty()).then(|| words.fill("desktop.waiting", &[("count", state.queue.len().to_string())]));
+        let parts: Vec<String> = holder.into_iter().chain(waiting).collect();
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
+}
+
+/// A line of a conversation as the person reads it: the lines the transcript
+/// writes itself (`Stopped.`, a ticket's branch…) in `lang`; any other line
+/// — equipe's notices, already in the person's language — as it is.
+pub fn note(lang: Lang, text: &str) -> std::borrow::Cow<'_, str> {
+    use equipe_protocol::transcript::notes;
+    use std::borrow::Cow;
+    let words = core(lang);
+    let fixed = match text {
+        notes::STOPPED => Some("note.stopped"),
+        notes::ENDED_EARLY => Some("note.ended_early"),
+        notes::NOTHING_CHANGED => Some("note.nothing_changed"),
+        _ => None,
+    };
+    if let Some(key) = fixed {
+        return Cow::Borrowed(words.get(key));
+    }
+    if let Some(branch) = text.strip_prefix(notes::WORKING_ON).and_then(|rest| rest.strip_suffix(notes::WORKING_REST)) {
+        return Cow::Owned(words.fill("note.working_on", &[("branch", branch.to_owned())]));
+    }
+    if text.starts_with("── T-")
+        && let Some((head, branch)) = text.rsplit_once(notes::ON_BRANCH)
+    {
+        return Cow::Owned(words.fill("note.ticket_on_branch", &[("ticket", head.to_owned()), ("branch", branch.to_owned())]));
+    }
+    Cow::Borrowed(text)
+}
+
 /// Declare a front end's words, next to its `FILES` (each language's
-/// `locales/<code>.json`, `include_str!`-ed): a `catalog()` in the person's
-/// language — in tests always `$test`, what its tests read — and `set`.
-/// Then `t!("board.accept")` is the word; `t!("chat.sent", name = who)`
-/// fills it in.
+/// `locales/<code>.json`, `include_str!`-ed): `catalog()`, the words in the
+/// language in use — in tests always `$test`, what its tests read — `lang()`,
+/// and `set`, to switch while it runs. `front` says how its language is found
+/// (a [`Front`]; a terminal's by default). Then `t!("board.accept")` is the
+/// word; `t!("chat.sent", name = who)` fills it in; `t!("board.tickets",
+/// count = n)` picks the plural form for `n`.
 #[macro_export]
 macro_rules! words {
     (test = $test:expr) => {
-        static CATALOG: std::sync::OnceLock<$crate::i18n::Catalog> = std::sync::OnceLock::new();
+        $crate::words!(test = $test, front = $crate::i18n::Front::Terminal);
+    };
+    (test = $test:expr, front = $front:expr) => {
+        static WORDS: $crate::i18n::Words =
+            $crate::i18n::Words::new(FILES, || if cfg!(test) { $test } else { $crate::i18n::Lang::resolve($front) });
 
-        /// The words in the person's language, loaded once.
+        /// The words in the language in use.
         pub fn catalog() -> &'static $crate::i18n::Catalog {
-            CATALOG.get_or_init(|| {
-                let lang = if cfg!(test) { $test } else { $crate::i18n::Lang::detect() };
-                $crate::i18n::Catalog::load(lang, FILES)
-            })
+            WORDS.catalog()
         }
 
-        /// Use `lang` from now on, if no word was shown yet. False after.
+        /// The language in use.
         #[allow(dead_code)]
-        pub fn set(lang: $crate::i18n::Lang) -> bool {
-            CATALOG.set($crate::i18n::Catalog::load(lang, FILES)).is_ok()
+        pub fn lang() -> $crate::i18n::Lang {
+            WORDS.lang()
+        }
+
+        /// Use `lang` from now on: every word asked for after is in it.
+        #[allow(dead_code)]
+        pub fn set(lang: $crate::i18n::Lang) {
+            WORDS.set(lang)
         }
     };
 }
@@ -237,11 +573,82 @@ mod tests {
         assert_eq!(Lang::parse("en-US"), Some(Lang::En));
         assert_eq!(Lang::parse("zh-Hant-TW"), Some(Lang::ZhHant));
         assert_eq!(Lang::parse("zh_HK"), Some(Lang::ZhHant));
+        assert_eq!(Lang::parse("zh-MO"), Some(Lang::ZhHant));
+        assert_eq!(Lang::parse("zh_TW.UTF-8"), Some(Lang::ZhHant));
         assert_eq!(Lang::parse("zh-Hans-CN"), Some(Lang::ZhHans));
+        assert_eq!(Lang::parse("zh-SG"), Some(Lang::ZhHans));
         assert_eq!(Lang::parse("zh"), Some(Lang::ZhHans));
+        assert_eq!(Lang::parse("es-419"), Some(Lang::Es));
         assert_eq!(Lang::parse("de_DE@euro"), Some(Lang::De));
         assert_eq!(Lang::parse("pt-BR"), None);
         assert!(Lang::ALL.iter().all(|l| Lang::parse(l.code()) == Some(*l)));
+        assert!(Lang::ALL.iter().enumerate().all(|(i, l)| l.index() == i));
+    }
+
+    fn env_of(vars: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        move |name| vars.iter().find(|(n, _)| *n == name).map(|(_, v)| (*v).to_owned())
+    }
+
+    fn system(tags: &[&str]) -> Vec<String> {
+        tags.iter().map(|t| (*t).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_language_is_the_override_then_the_pick_then_language_then_the_locale_then_the_system_then_english() {
+        let all = env_of(&[("EQUIPE_LANG", "de"), ("LANGUAGE", "fr:en"), ("LC_ALL", "es_ES.UTF-8"), ("LANG", "ja_JP.UTF-8")]);
+        let mac = system(&["zh-Hant-TW"]);
+        let term = Front::Terminal;
+        assert_eq!(resolve(&all, Some(Lang::Ko), term, &mac), Lang::De, "EQUIPE_LANG first");
+        let picked = env_of(&[("LANGUAGE", "fr:en"), ("LC_ALL", "es_ES.UTF-8"), ("LANG", "ja_JP.UTF-8")]);
+        assert_eq!(resolve(&picked, Some(Lang::Ko), term, &mac), Lang::Ko, "then the person's pick");
+        assert_eq!(resolve(&picked, None, term, &mac), Lang::Fr, "then LANGUAGE");
+        let locale = env_of(&[("LC_MESSAGES", "es_ES.UTF-8"), ("LANG", "ja_JP.UTF-8")]);
+        assert_eq!(resolve(&locale, None, term, &mac), Lang::Es, "then LC_ALL, LC_MESSAGES, LANG");
+        let none = env_of(&[]);
+        assert_eq!(resolve(&none, None, term, &mac), Lang::ZhHant, "then the system's");
+        assert_eq!(resolve(&none, None, term, &[]), Lang::En, "else English");
+        assert_eq!(resolve(&env_of(&[("EQUIPE_LANG", "klingon")]), None, term, &mac), Lang::ZhHant, "an override equipe can't speak is no override");
+    }
+
+    #[test]
+    fn language_is_a_list_and_counts_only_where_the_locale_names_a_language() {
+        let mac = system(&["ko-KR"]);
+        let term = Front::Terminal;
+        assert_eq!(auto(&env_of(&[("LANGUAGE", "pt_BR:it:de"), ("LANG", "en_US.UTF-8")]), term, &mac), Lang::De, "the first it speaks");
+        assert_eq!(auto(&env_of(&[("LANGUAGE", "fr"), ("LC_ALL", "C")]), term, &mac), Lang::Ko, "the C locale turns LANGUAGE off, as gettext does");
+        assert_eq!(auto(&env_of(&[("LANGUAGE", "fr")]), term, &mac), Lang::Ko, "so does no locale at all");
+        assert_eq!(auto(&env_of(&[("LANGUAGE", "pt"), ("LANG", "ja_JP")]), term, &mac), Lang::Ja, "nothing it speaks: the locale");
+        assert_eq!(auto(&env_of(&[("LC_ALL", "POSIX"), ("LANG", "fr_FR.UTF-8")]), term, &mac), Lang::Fr, "C and POSIX are skipped");
+        assert_eq!(auto(&env_of(&[("LC_ALL", "C.UTF-8")]), term, &mac), Lang::Ko);
+        assert_eq!(auto(&env_of(&[("LANG", "pt_BR.UTF-8")]), term, &mac), Lang::Ko, "a locale it doesn't speak: the system's");
+    }
+
+    #[test]
+    fn an_app_walks_the_system_list_past_languages_it_doesnt_speak() {
+        let locale = env_of(&[("LANG", "fr_FR.UTF-8"), ("LANGUAGE", "de")]);
+        assert_eq!(auto(&locale, Front::App, &system(&["pt-BR", "ko-KR", "en-US"])), Lang::Ko, "an app has no locale of its own");
+        assert_eq!(auto(&locale, Front::App, &system(&["zh-Hant-HK", "en"])), Lang::ZhHant);
+        assert_eq!(auto(&locale, Front::App, &system(&["zh-Hans-CN"])), Lang::ZhHans);
+        assert_eq!(auto(&locale, Front::App, &system(&["it-IT", "pt-PT"])), Lang::En);
+        assert_eq!(resolve(&env_of(&[("EQUIPE_LANG", "ja")]), None, Front::App, &system(&["ko"])), Lang::Ja);
+    }
+
+    #[test]
+    fn the_pick_is_kept_and_system_forgets_it() {
+        let home = std::env::temp_dir().join(format!("equipe-lang-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(saved(&home), None, "nothing picked yet");
+        crate::squads::remember_last(&home, "acme").unwrap();
+        save(&home, Some(Lang::ZhHant)).unwrap();
+        assert_eq!(saved(&home), Some(Lang::ZhHant));
+        let text = std::fs::read_to_string(home.join("state.json")).unwrap();
+        assert!(text.contains(r#""lang": "zh-Hant""#), "{text}");
+        assert_eq!(crate::squads::last_squad(&home).as_deref(), Some("acme"), "the rest of the state stays");
+        save(&home, None).unwrap();
+        assert_eq!(saved(&home), None);
+        let text = std::fs::read_to_string(home.join("state.json")).unwrap();
+        assert!(!text.contains("lang"), "System is kept as no pick at all: {text}");
+        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]
@@ -255,6 +662,31 @@ mod tests {
     }
 
     #[test]
+    fn plural_forms_follow_each_languages_rule() {
+        assert_eq!([0, 1, 2].map(|n| Lang::En.plural(n)), ["other", "one", "other"]);
+        assert_eq!([0, 1, 2].map(|n| Lang::De.plural(n)), ["other", "one", "other"]);
+        assert_eq!([0, 1, 2].map(|n| Lang::Es.plural(n)), ["other", "one", "other"]);
+        assert_eq!([0, 1, 2].map(|n| Lang::Fr.plural(n)), ["one", "one", "other"]);
+        for lang in [Lang::Ko, Lang::Ja, Lang::ZhHans, Lang::ZhHant] {
+            assert_eq!([0, 1, 2].map(|n| lang.plural(n)), ["other"; 3]);
+        }
+        let files = [
+            ("en", r#"{"t.one": "{count} ticket", "t.other": "{count} tickets", "plain": "{count} things"}"#),
+            ("fr", r#"{"t.one": "{count} ticket", "t.other": "{count} tickets"}"#),
+            ("ko", r#"{"t.other": "티켓 {count}개"}"#),
+            ("de", r#"{}"#),
+        ];
+        let count = |lang, n: u64| Catalog::load(lang, &files).fill("t", &[("count", n.to_string())]);
+        assert_eq!([count(Lang::En, 1), count(Lang::En, 0), count(Lang::En, 3)], ["1 ticket", "0 tickets", "3 tickets"]);
+        assert_eq!([count(Lang::Fr, 0), count(Lang::Fr, 2)], ["0 ticket", "2 tickets"]);
+        assert_eq!([count(Lang::Ko, 1), count(Lang::Ko, 5)], ["티켓 1개", "티켓 5개"]);
+        assert_eq!(count(Lang::De, 1), "1 ticket", "untranslated: English's form for the number");
+        let en = Catalog::load(Lang::En, &files);
+        assert_eq!(en.fill("plain", &[("count", "1".into())]), "1 things", "a word without forms is the word");
+        assert_eq!(en.fill("t", &[("count", "many".into())]), "t", "no number, no form");
+    }
+
+    #[test]
     fn translations_that_lack_a_word_or_take_other_values_are_found() {
         let mut files: Vec<(&str, &str)> = Lang::ALL.iter().map(|l| (l.code(), r#"{"hi": "x {name}"}"#)).collect();
         assert!(problems(&files).is_empty());
@@ -263,5 +695,74 @@ mod tests {
         assert!(found.iter().any(|p| p.starts_with("ja: hi takes")), "{found:?}");
         assert!(found.iter().any(|p| p == "ja: extra isn't in English"), "{found:?}");
         assert_eq!(placeholders("{a} and {b}, {a} — {not a name}"), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_plural_word_needs_the_forms_each_language_has() {
+        let one_other = r#"{"t.one": "{count} t", "t.other": "{count} ts"}"#;
+        let other = r#"{"t.other": "{count} t"}"#;
+        let files: Vec<(&str, &str)> =
+            Lang::ALL.iter().map(|l| (l.code(), if l.plural_forms().len() == 1 { other } else { one_other })).collect();
+        assert!(problems(&files).is_empty(), "{:?}", problems(&files));
+        let mut lacking = files.clone();
+        lacking[Lang::Fr.index()] = ("fr", other);
+        lacking[Lang::Ko.index()] = ("ko", r#"{"t.one": "{count} t"}"#);
+        let found = problems(&lacking);
+        assert_eq!(found, ["fr: missing t.one", "ko: missing t.other"]);
+        let mut english = files.clone();
+        english[Lang::En.index()] = ("en", r#"{"t.one": "a t"}"#);
+        assert!(problems(&english).contains(&"en: missing t.other".to_owned()), "{:?}", problems(&english));
+    }
+
+    #[test]
+    fn words_switch_language_while_running() {
+        static FILES: &[(&str, &str)] = &[("ko", r#"{"hi": "안녕"}"#), ("en", r#"{"hi": "Hi"}"#), ("ja", r#"{"hi": "やあ"}"#)];
+        let words = Words::new(FILES, || Lang::Ko);
+        assert_eq!((words.lang(), words.catalog().get("hi")), (Lang::Ko, "안녕"));
+        words.set(Lang::Ja);
+        assert_eq!((words.lang(), words.catalog().get("hi")), (Lang::Ja, "やあ"));
+        assert_eq!(words.of(Lang::En).get("hi"), "Hi", "any language, whichever is in use");
+    }
+
+    #[test]
+    fn core_has_every_word_in_every_language() {
+        let found = problems(FILES);
+        assert!(found.is_empty(), "{}", found.join("\n"));
+        assert_eq!(label::mode(Lang::En, equipe_protocol::Mode::Ask), equipe_protocol::Mode::Ask.label());
+        assert_eq!(label::status(Lang::En, equipe_protocol::TicketStatus::InProgress), "in progress");
+        for mode in equipe_protocol::Mode::ALL {
+            assert_eq!(label::mode(Lang::En, mode), mode.label());
+            assert_eq!(label::mode_short(Lang::En, mode), mode.short());
+            assert_eq!(label::mode_summary(Lang::En, mode), mode.summary());
+        }
+        assert_eq!(label::kind(Lang::De, equipe_protocol::TicketKind::Task), "Aufgabe");
+    }
+
+    #[test]
+    fn the_transcripts_own_lines_read_in_the_persons_language_and_the_rest_as_they_are() {
+        use equipe_protocol::transcript::notes;
+        assert_eq!(note(Lang::En, notes::STOPPED), notes::STOPPED);
+        assert_eq!(note(Lang::Ko, notes::STOPPED), "멈췄습니다.");
+        let working = format!("{}equipe/try-1{}", notes::WORKING_ON, notes::WORKING_REST);
+        assert_eq!(note(Lang::En, &working), working, "English reads as it always did");
+        assert!(note(Lang::Fr, &working).contains("equipe/try-1"));
+        let ticket = format!("── T-4 · a — b{}equipe/t-4", notes::ON_BRANCH);
+        assert_eq!(note(Lang::En, &ticket), ticket);
+        assert_eq!(note(Lang::Ko, &ticket), "── T-4 · a — b — 브랜치 equipe/t-4");
+        assert_eq!(note(Lang::Ko, "✓ 허용함: ls"), "✓ 허용함: ls", "a notice is in the person's language already");
+    }
+
+    #[test]
+    fn who_has_the_screen_reads_as_before_in_english_and_counts_in_each_language() {
+        use equipe_protocol::{DesktopState, MemberRef};
+        let who = |squad: &str, member: &str| MemberRef { squad: squad.into(), member: member.into() };
+        let state = DesktopState { holder: Some(who("acme", "qa")), queue: vec![who("beta", "pm")], stopped: false };
+        assert_eq!(label::desktop(Lang::En, &state, Some("acme")), state.summary(Some("acme")));
+        assert_eq!(label::desktop(Lang::Ko, &state, Some("acme")).as_deref(), Some("qa이(가) 화면 사용 중 · 1명 대기"));
+        let two = DesktopState { queue: vec![who("a", "x"), who("b", "y")], ..DesktopState::default() };
+        assert_eq!(label::desktop(Lang::De, &two, None).as_deref(), Some("2 warten"));
+        assert_eq!(label::desktop(Lang::En, &DesktopState::default(), None), None);
+        let stopped = DesktopState { stopped: true, ..DesktopState::default() };
+        assert_eq!(label::desktop(Lang::En, &stopped, None), stopped.summary(None));
     }
 }

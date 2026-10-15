@@ -115,6 +115,28 @@ impl Change {
         }
         if parts.is_empty() { "nothing".to_owned() } else { parts.join(", ") }
     }
+
+    /// [`Change::what`] in `lang`, for the person.
+    pub fn said(&self, lang: crate::i18n::Lang) -> String {
+        let words = crate::i18n::core(lang);
+        let mut parts: Vec<String> = self
+            .files
+            .iter()
+            .take(3)
+            .map(|(verb, file)| {
+                let key = match *verb {
+                    "saved" => "change.saved",
+                    "removed" => "change.removed",
+                    _ => "change.updated",
+                };
+                words.fill(key, &[("file", file.clone())])
+            })
+            .collect();
+        if self.files.len() > 3 {
+            parts.push(words.fill("change.more", &[("count", (self.files.len() - 3).to_string())]));
+        }
+        if parts.is_empty() { words.get("change.nothing").to_owned() } else { parts.join(words.get("list.separator")) }
+    }
 }
 
 /// Save whatever changed in the home, by `by` for `why`. `None` when nothing had.
@@ -261,6 +283,17 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_change_is_told_in_the_persons_language() {
+        use crate::i18n::Lang;
+        let files = |n: usize| (0..n).map(|i| (["saved", "updated", "removed"][i % 3], format!("notes/{i}.md"))).collect();
+        let change = |n| Change { id: "x".into(), by: "pm".into(), why: "w".into(), at: 0, files: files(n) };
+        assert_eq!(change(4).said(Lang::En), change(4).what(), "English says what it always said");
+        assert_eq!(change(4).said(Lang::Ko), "notes/0.md 저장, notes/1.md 수정, notes/2.md 삭제, 외 1개");
+        assert_eq!(change(5).said(Lang::Ja), "notes/0.md を保存、notes/1.md を更新、notes/2.md を削除、ほか 2 件");
+        assert_eq!(change(0).said(Lang::De), "nichts");
+    }
 
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 

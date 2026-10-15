@@ -167,7 +167,8 @@ pub struct Remembered {
     pub views: Vec<KeptView>,
     /// How wide the sidebar was left (px).
     pub sidebar_width: Option<f32>,
-    /// The language picked in settings (`ko`, `en`, …); `None`: the Mac's.
+    /// The language this app kept before the pick was everyone's (`ko`, `en`, …):
+    /// read once, moved to the shared pick (`i18n::migrate`), never written again.
     pub lang: Option<String>,
     /// Light or dark, or as the Mac is.
     pub appearance: Appearance,
