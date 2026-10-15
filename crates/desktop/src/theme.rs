@@ -120,3 +120,63 @@ pub const SMALL: f32 = 13.;
 /// Project chips take the project's order and these colours (T-54 §2.1).
 pub const PROJECT_HUES: [usize; 8] = [2, 6, 4, 7, 5, 1, 3, 0];
 pub const MONO: &str = "Menlo";
+
+// ── one scale for everything ──
+//
+// Space: 4 · 8 · 12 · 16 · 24 (GPUI's `_1` `_2` `_3` `_4` `_6`; S3 and S6 named where a
+// padding has to be computed). Radii: 6 for chips and small buttons, 8 for
+// controls, menus and rows, 12 for cards, 16 for the composer and dialogs.
+// Controls are 28 tall with 16-point icons; a text field is 36; a menu or list
+// row is 32. Motion is short and eases out (`crate::motion`).
+
+pub const S3: f32 = 12.;
+pub const S6: f32 = 24.;
+
+pub const R_SM: f32 = 6.;
+pub const R_MD: f32 = 8.;
+pub const R_LG: f32 = 12.;
+pub const R_XL: f32 = 16.;
+
+/// Buttons, pickers and icon buttons.
+pub const CONTROL: f32 = 28.;
+/// A one-line text field, and the buttons on its line.
+pub const FIELD: f32 = 36.;
+/// A row of a menu, a list or a chooser.
+pub const ROW: f32 = 32.;
+pub const ICON: f32 = 16.;
+pub const ICON_SM: f32 = 14.;
+/// Popovers and tooltips sit this far from what opened them.
+pub const GAP: f32 = 6.;
+
+impl Palette {
+    pub fn is_dark(&self) -> bool {
+        self.bg.r < 0.5
+    }
+
+    /// What floats over the window: menus, popovers, the jump button.
+    pub fn popover(&self) -> Rgba {
+        if self.is_dark() { rgb(0x1B1B1F) } else { rgb(0xFFFFFF) }
+    }
+
+    /// A tooltip: a small dark chip in either appearance.
+    pub fn tip_bg(&self) -> Rgba {
+        if self.is_dark() { rgb(0x2E2E33) } else { rgb(0x232428) }
+    }
+
+    pub fn tip_text(&self) -> Rgba {
+        rgb(0xF3F2EE)
+    }
+
+    pub fn tip_muted(&self) -> Rgba {
+        rgb(0xA3A4AB)
+    }
+
+    /// What went wrong.
+    pub fn danger(&self) -> Rgba {
+        if self.is_dark() { rgb(0xF0918A) } else { rgb(0xB3261E) }
+    }
+
+    pub fn danger_bg(&self) -> Rgba {
+        if self.is_dark() { rgba(0xF0918A1F) } else { rgba(0xB3261E14) }
+    }
+}

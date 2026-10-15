@@ -33,7 +33,17 @@ use crate::diffs::Kind;
 use crate::render::view::{self, Look};
 use crate::render::{self, Tones, hash_of, plugins, tools};
 use crate::state::{Model, Presence};
-use crate::theme::{BODY, MONO, Palette, SMALL, look};
+use crate::icons::{Icon, icon};
+use crate::motion;
+use crate::theme::{BODY, CONTROL, ICON_SM, MONO, Palette, R_MD, R_SM, SMALL, look};
+use crate::tips::tip;
+
+/// Where text starts inside the column: the cards' and the composer's inner
+/// padding plus their border. Replies, banners and card text all start here;
+/// cards and your own messages have their edge at the column's.
+const TEXT_INSET: f32 = 13.;
+/// How long after it arrives a row is still arriving (its entrance plays).
+const ARRIVING: std::time::Duration = std::time::Duration::from_millis(400);
 use crate::{Screen, Shell};
 
 /// Reading width: about 48 Korean characters.
@@ -68,6 +78,9 @@ pub struct Chat {
     /// An image looked at closer, over the conversation.
     pub lightbox: Option<ImageSource>,
     pub find: Find,
+    /// Rows that came in while the conversation was on screen, and when: they
+    /// rise into place (rows scrolled back into view don't).
+    arrived: Rc<HashMap<u64, std::time::Instant>>,
 }
 
 /// ⌘F: words looked for in the conversation, the rows they are in, and the
@@ -132,6 +145,7 @@ impl Chat {
             opened: Rc::default(),
             lightbox: None,
             find: Find::default(),
+            arrived: Rc::default(),
         }
     }
 
@@ -162,6 +176,14 @@ impl Chat {
         // Rows from the first that differs are new or changed (a streaming
         // reply is the last row growing); the list measures only those again.
         let same = old.iter().zip(self.blocks.iter()).take_while(|(a, b)| a == b).count();
+        if n > old.len() {
+            let now = std::time::Instant::now();
+            let mut arrived: HashMap<u64, std::time::Instant> = self.arrived.iter().filter(|(_, at)| now.duration_since(**at) < ARRIVING).map(|(k, v)| (*k, *v)).collect();
+            for ix in old.len()..n {
+                arrived.insert(self.serial << 24 | ix as u64, now);
+            }
+            self.arrived = Rc::new(arrived);
+        }
         self.scroller.update(cx, |s, cx| {
             if old.len() != n {
                 s.splice(same..old.len(), n - same, cx);
@@ -325,10 +347,19 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         v_flex()
             .w_full()
             .max_w(px(COLUMN))
-            .px_4()
+            .px(px(16. + TEXT_INSET))
             .pt_3()
-            .child(h_flex().gap_2().text_size(px(15.)).child(div().text_color(p.accent).child(format!("T-{}", t.id))).child(div().font_weight(FontWeight::SEMIBOLD).child(t.title.clone())))
-            .child(div().text_size(px(12.)).text_color(p.muted).child(hint))
+            .gap_0p5()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_baseline()
+                    .text_size(px(15.))
+                    .line_height(px(22.))
+                    .child(div().flex_none().font_family(MONO).text_size(px(13.)).text_color(p.accent).child(format!("T-{}", t.id)))
+                    .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(FontWeight::SEMIBOLD).child(t.title.clone())),
+            )
+            .child(div().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(hint))
     });
     v_flex()
         .flex_1()
@@ -395,6 +426,7 @@ struct Rows {
     /// The last reply, when the turn is over: it can be asked again.
     retry_at: Option<usize>,
     base: std::path::PathBuf,
+    arrived: Rc<HashMap<u64, std::time::Instant>>,
 }
 
 fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
@@ -415,22 +447,41 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         handle: cx.entity().downgrade(),
         retry_at,
         base: render::base_dir(shell),
+        arrived: shell.chat.arrived.clone(),
     });
     div().flex_1().min_h_0().w_full().max_w(px(COLUMN)).px_4().child(
         MessageScroller::new("conversation", shell.chat.scroller.clone(), move |ix, window, cx| row(&rows, ix, window, cx))
-            .with_jump_button_transition(std::time::Duration::ZERO)
-            .with_row_style(StyleRefinement::default().pb(px(8.)))
+            // It fades and slides up into place, bottom-centre over the composer.
+            .with_jump_button_transition(motion::BASE)
+            .with_row_style(StyleRefinement::default().pb(px(8.)).pl(px(TEXT_INSET)).pr(px(TEXT_INSET)))
             .with_jump_button_label(t!("chat.jump_to_bottom"))
-            // In the app's colours, with its words beside the arrow: on its own
-            // the arrow sat white on white.
-            .with_jump_button_style(StyleRefinement::default().bg(Hsla::from(p.raised)).text_color(Hsla::from(p.text)).border_color(Hsla::from(p.hair)))
+            // A pill in the app's colours, with its words beside the arrow: on
+            // its own the arrow sat white on white.
+            .with_jump_button_style(
+                StyleRefinement::default()
+                    .h(px(32.))
+                    .bg(Hsla::from(p.popover()))
+                    .text_color(Hsla::from(p.text))
+                    .border_color(Hsla::from(p.hair))
+                    .shadow(motion::float_shadow(0.8)),
+            )
             .with_jump_button_renderer(|button| button.label(t!("chat.jump_to_bottom")).px_3()),
     )
 }
 
 pub type Handle = WeakEntity<Shell>;
 
+/// A row: new ones rise into place.
 fn row(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyElement {
+    let key = rows.serial << 24 | ix as u64;
+    let body = row_body(rows, ix, window, cx);
+    match rows.arrived.get(&key) {
+        Some(at) if at.elapsed() < ARRIVING => motion::rise(div().child(body), ("row-in", key)).into_any_element(),
+        _ => body,
+    }
+}
+
+fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyElement {
     let p = rows.p;
     let key = rows.serial << 24 | ix as u64;
     let opened = |part: u32| rows.opened.contains(&(key, part));
@@ -445,12 +496,12 @@ fn row(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyElement 
             let mut tools: Vec<AnyElement> = Vec::new();
             if !live {
                 let raw = text.clone();
-                tools.push(tool_button(p, ("reply-copy", key), t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))).into_any_element());
+                tools.push(tool_button(p, ("reply-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))).into_any_element());
             }
             if rows.retry_at == Some(ix) {
                 let handle = rows.handle.clone();
                 tools.push(
-                    tool_button(p, ("reply-retry", key), t!("chat.retry_reply"), move |window, cx| {
+                    tool_button(p, ("reply-retry", key), Icon::Retry, t!("chat.retry_reply"), move |window, cx| {
                         handle.update(cx, |shell, cx| shell.retry_last(window, cx)).ok();
                     })
                     .into_any_element(),
@@ -576,16 +627,18 @@ fn user_row(rows: &Rows, key: u64, text: &str, open: bool, cx: &mut App) -> AnyE
     let body = TextView::new(&state).style(view::style(p, &look)).selectable(true).when(clamped, |v| v.max_lines(USER_LINES));
     let group: SharedString = format!("user-{key}").into();
     let raw = text.to_owned();
-    let copy = tool_button(p, ("user-copy", key), t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))).into_any_element();
+    let copy = tool_button(p, ("user-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))).into_any_element();
     let handle = rows.handle.clone();
     v_flex()
         .group(group.clone())
         .relative()
         .gap_1()
-        .px_4()
+        // Its edge on the column's, its words where every row's start.
+        .mx(px(-TEXT_INSET))
+        .px(px(TEXT_INSET))
         .py_3()
         .mt_3()
-        .rounded(px(8.))
+        .rounded(px(crate::theme::R_LG))
         .bg(p.wash)
         .text_size(px(BODY))
         .line_height(px(24.))
@@ -639,12 +692,12 @@ pub fn escape_markdown(text: &str) -> String {
 fn toolbar(p: Palette, group: SharedString, under_header: bool, items: Vec<AnyElement>) -> impl IntoElement {
     h_flex()
         .absolute()
-        .right_0()
-        .top(px(if under_header { 10. } else { -2. }))
+        .right(px(if under_header { 0. } else { 4. }))
+        .top(px(if under_header { 10. } else { 6. }))
         .gap(px(2.))
         .p(px(2.))
-        .rounded(px(7.))
-        .bg(p.raised)
+        .rounded(px(R_MD))
+        .bg(p.popover())
         .border_1()
         .border_color(p.hair)
         .invisible()
@@ -652,18 +705,20 @@ fn toolbar(p: Palette, group: SharedString, under_header: bool, items: Vec<AnyEl
         .children(items)
 }
 
-fn tool_button(p: Palette, id: (&'static str, u64), label: &'static str, on_click: impl Fn(&mut Window, &mut App) + 'static) -> impl IntoElement {
-    div()
+/// An icon over a row (copy, ask again), named in its tooltip.
+fn tool_button(p: Palette, id: (&'static str, u64), glyph: Icon, label: &'static str, on_click: impl Fn(&mut Window, &mut App) + 'static) -> impl IntoElement {
+    let b = div()
         .id(id)
-        .px_2()
-        .rounded(px(5.))
-        .text_size(px(12.))
-        .font_weight(FontWeight::NORMAL)
-        .text_color(p.muted)
+        .size(px(24.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(R_SM))
         .cursor_pointer()
-        .hover(move |s| s.bg(p.wash).text_color(p.text))
-        .child(label)
-        .on_click(move |_, window, cx| on_click(window, cx))
+        .hover(move |s| s.bg(p.wash))
+        .child(icon(glyph, ICON_SM, p.text2))
+        .on_click(move |_, window, cx| on_click(window, cx));
+    tip(b, p, label, None)
 }
 
 /// A run of tool steps: each with how it ended, how long it took, and — open
@@ -853,37 +908,35 @@ fn find_bar(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement +
     } else {
         format!("{}/{}", find.at + 1, find.hits.len())
     };
-    let button = |id: &'static str, label: &'static str| {
-        div().id(id).px_2().rounded(px(5.)).text_color(p.muted).cursor_pointer().hover(move |s| s.bg(p.wash).text_color(p.text)).child(label)
+    let button = |id: &'static str, glyph: Icon, label: &'static str, keys: &'static str| {
+        let b = div().id(id).size(px(24.)).flex().flex_none().items_center().justify_center().rounded(px(R_SM)).cursor_pointer().hover(move |s| s.bg(p.wash)).child(icon(glyph, ICON_SM, p.text2));
+        tip(b, p, label, Some(keys))
     };
-    Some(
-        h_flex()
-            .key_context("FindBar")
-            .absolute()
-            .top(px(8.))
-            .right(px(16.))
-            .w(px(340.))
-            .gap_1()
-            .px_2()
-            .py_1()
-            .rounded(px(8.))
-            .bg(p.raised)
-            .border_1()
-            .border_color(p.hair)
-            .text_size(px(SMALL))
-            .child(div().flex_1().min_w_0().child(Input::new(&input).appearance(false).cleanable(false)))
-            .child(div().flex_none().text_color(p.muted).child(count))
-            .child(button("find-prev", "↑").on_click(cx.listener(|this, _, _, cx| this.find_step(true, cx))))
-            .child(button("find-next", "↓").on_click(cx.listener(|this, _, _, cx| this.find_step(false, cx))))
-            .child(button("find-close", "✕").on_click(cx.listener(|this, _, window, cx| this.find_close(window, cx)))),
-    )
+    let bar = h_flex()
+        .key_context("FindBar")
+        .w(px(340.))
+        .h(px(CONTROL + 8.))
+        .gap_1()
+        .pl_1()
+        .pr_1()
+        .items_center()
+        .rounded(px(R_MD))
+        .bg(p.popover())
+        .border_1()
+        .border_color(p.hair)
+        .text_size(px(SMALL))
+        .child(div().flex_1().min_w_0().child(Input::new(&input).appearance(false).cleanable(false)))
+        .child(div().flex_none().pr_1().text_size(px(12.)).text_color(p.muted).child(count))
+        .child(button("find-prev", Icon::ChevronUp, t!("chat.find_previous"), "⇧⏎").on_click(cx.listener(|this, _, _, cx| this.find_step(true, cx))))
+        .child(button("find-next", Icon::ChevronDown, t!("chat.find_next"), "⏎").on_click(cx.listener(|this, _, _, cx| this.find_step(false, cx))))
+        .child(button("find-close", Icon::X, t!("chat.find_close"), "Esc").on_click(cx.listener(|this, _, window, cx| this.find_close(window, cx))));
+    Some(div().absolute().top(px(8.)).right(px(16.)).child(motion::pop(bar, "find-in", false)))
 }
 
 /// An image from a reply, large, over the conversation; a click puts it away.
 fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
     let source = shell.chat.lightbox.clone()?;
-    Some(
-        div()
+    let backdrop = div()
             .id("lightbox")
             .absolute()
             .inset_0()
@@ -897,9 +950,10 @@ fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement +
                 this.chat.lightbox = None;
                 cx.notify();
             }))
-            .child(img(source).max_w_full().max_h_full().rounded(px(6.))),
-    )
+            .child(motion::rise(div().max_w_full().max_h_full().flex().items_center().justify_center().child(img(source).max_w_full().max_h_full().rounded(px(R_MD))), "lightbox-image"));
+    Some(motion::fade(backdrop, "lightbox-in", motion::BASE))
 }
+
 
 /// Markdown at `size`, in the palette's colours; headings stay near body size
 /// (a conversation is not a document), `T-n` is a way to the board. For text
