@@ -99,6 +99,19 @@ pub fn tip_at<E: StatefulInteractiveElement + ParentElement + 'static>(el: E, p:
         .on_mouse_down(MouseButton::Left, |_, _, cx| hide(cx))
 }
 
+/// The same, as a method: `.tip(p, "Search", Some("⌘K"))`, `.tip_at(…, Placement::Right)`.
+pub trait TipExt: StatefulInteractiveElement + ParentElement + Sized + 'static {
+    fn tip(self, p: Palette, label: impl Into<SharedString>, keys: Option<&str>) -> Self {
+        tip(self, p, label, keys)
+    }
+
+    fn tip_at(self, p: Palette, label: impl Into<SharedString>, keys: Option<&str>, placement: Placement) -> Self {
+        tip_at(self, p, label, keys, placement)
+    }
+}
+
+impl<E: StatefulInteractiveElement + ParentElement + 'static> TipExt for E {}
+
 /// Put any tooltip away now (a click, a menu opening).
 pub fn hide(cx: &mut App) {
     if let Some(overlay) = cx.try_global::<Tips>().map(|t| t.0.clone()) {

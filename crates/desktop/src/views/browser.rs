@@ -33,7 +33,11 @@ use gpui_kit::*;
 
 use crate::stream::{Link, Update};
 use crate::target::Endpoint;
-use crate::theme::{Palette, SANS, SMALL, UI};
+use crate::icons::{Icon, icon};
+use crate::motion;
+use crate::theme::{CONTROL, ICON_SM, Palette, R_LG, R_MD, R_SM, SANS, SMALL, UI};
+use crate::tips::tip;
+use crate::ui::{self, Kind};
 
 /// Where the page's picture was last drawn (window coordinates), and of what frame.
 type Placed = Rc<RefCell<Option<(Bounds<Pixels>, FrameHeader)>>>;
@@ -757,11 +761,11 @@ impl BrowserPanel {
                         .id(SharedString::from(format!("tab-{}", page.id)))
                         .flex_none()
                         .max_w(px(180.))
-                        .h(px(26.))
+                        .h(px(CONTROL))
                         .px_2()
                         .gap_1()
                         .items_center()
-                        .rounded(px(6.))
+                        .rounded(px(R_SM))
                         .border_1()
                         .border_color(if on { dot } else { p.hair })
                         .when(on, |t| t.bg(p.wash))
@@ -775,102 +779,75 @@ impl BrowserPanel {
                             this.follow = followed;
                             this.select(lane_id.clone(), page_id, window, cx);
                         }))
-                        .when(page.loading, |t| t.child(div().text_color(p.muted).child("◌")))
+                        .when(page.loading, |t| t.child({ use gpui_kit::component::Sizable as _; gpui_kit::component::spinner::Spinner::new().with_size(px(11.)) }.color(Hsla::from(p.muted))))
                         .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
                         .when(close_lane.is_empty(), |t| {
                             t.child(
                                 div()
                                     .id(SharedString::from(format!("close-{}", page.id)))
-                                    .px_1()
-                                    .text_color(p.muted)
-                                    .hover(move |s| s.text_color(p.text))
+                                    .size(px(18.))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(4.))
+                                    .hover(move |s| s.bg(p.wash))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         cx.stop_propagation();
                                         this.command(Command::BrowserCloseTab { page: page_id }, cx);
                                     }))
-                                    .child("×"),
+                                    .child(icon(Icon::X, 12., p.muted)),
                             )
                         }),
                 );
             }
         }
-        row.child(
-            div()
-                .id("browser-new-tab")
-                .flex_none()
-                .h(px(26.))
-                .px_2()
-                .flex()
-                .items_center()
-                .rounded(px(6.))
-                .text_size(px(UI))
-                .text_color(p.text2)
-                .cursor_pointer()
-                .hover(move |s| s.bg(p.wash))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.new_tab = true;
-                    this.command(Command::BrowserNewTab { url: None }, cx);
-                }))
-                .child("+"),
-        )
+        row.child(ui::icon_button(p, "browser-new-tab", Icon::Plus, t!("browser.new_tab"), None).on_click(cx.listener(|this, _, _, cx| {
+            this.new_tab = true;
+            this.command(Command::BrowserNewTab { url: None }, cx);
+        })))
     }
 
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let p = self.palette;
-        let button = |id: &'static str, label: &'static str| {
-            div()
-                .id(id)
-                .flex_none()
-                .h(px(28.))
-                .min_w(px(28.))
-                .px_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(6.))
-                .text_size(px(UI))
-                .text_color(p.text2)
-                .cursor_pointer()
-                .hover(move |s| s.bg(p.wash))
-                .child(label)
-        };
         let loading = self.page().is_some_and(|pg| pg.loading);
         h_flex()
             .px_2()
-            .pb_1()
+            .pb_2()
             .gap_1()
             .items_center()
-            .child(button("browser-back", "←").on_click(cx.listener(|this, _, _, cx| this.nav(BrowserNavAction::Back, cx))))
-            .child(button("browser-forward", "→").on_click(cx.listener(|this, _, _, cx| this.nav(BrowserNavAction::Forward, cx))))
+            .child(ui::icon_button(p, "browser-back", Icon::ArrowLeft, t!("browser.back"), Some("⌘[")).disabled(self.page().is_none()).on_click(cx.listener(|this, _, _, cx| this.nav(BrowserNavAction::Back, cx))))
+            .child(ui::icon_button(p, "browser-forward", Icon::ArrowRight, t!("browser.forward"), Some("⌘]")).disabled(self.page().is_none()).on_click(cx.listener(|this, _, _, cx| this.nav(BrowserNavAction::Forward, cx))))
             .child(if loading {
-                button("browser-reload", "✕").on_click(cx.listener(|this, _, _, cx| this.nav(BrowserNavAction::Stop, cx)))
+                ui::icon_button(p, "browser-reload", Icon::X, t!("browser.stop"), None).on_click(cx.listener(|this, _, _, cx| this.nav(BrowserNavAction::Stop, cx)))
             } else {
-                button("browser-reload", "↻").on_click(cx.listener(|this, _, _, cx| this.nav(BrowserNavAction::Reload, cx)))
+                ui::icon_button(p, "browser-reload", Icon::Reload, t!("browser.reload"), Some("⌘R")).on_click(cx.listener(|this, _, _, cx| this.nav(BrowserNavAction::Reload, cx)))
             })
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
-                    .h(px(28.))
-                    .px_2()
+                    .h(px(CONTROL))
+                    .pl(px(4.))
                     .flex()
                     .items_center()
-                    .rounded(px(6.))
+                    .rounded(px(R_MD))
                     .bg(p.code_bg)
                     .border_1()
                     .border_color(p.hair)
                     .text_size(px(SMALL))
                     .child(Input::new(&self.url).appearance(false).bordered(false)),
             )
-            .child(
+            .child(tip(
                 div()
                     .id("browser-follow")
                     .flex_none()
-                    .h(px(28.))
+                    .h(px(CONTROL))
                     .px_2()
                     .flex()
                     .items_center()
-                    .rounded(px(6.))
+                    .gap_1p5()
+                    .rounded(px(R_MD))
                     .text_size(px(12.))
                     .cursor_pointer()
                     .when(self.follow, |b| b.bg(p.accent_bg).text_color(p.accent))
@@ -880,24 +857,13 @@ impl BrowserPanel {
                         this.follow_viewed(true, window, cx);
                         cx.notify();
                     }))
+                    .child(icon(Icon::Locate, ICON_SM, if self.follow { p.accent } else { p.muted }))
                     .child(t!("browser.follow")),
-            )
-            .child(
-                div()
-                    .id("browser-pop-out")
-                    .flex_none()
-                    .h(px(28.))
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .rounded(px(6.))
-                    .text_size(px(12.))
-                    .text_color(p.text2)
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(p.wash))
-                    .on_click(cx.listener(|this, _, window, cx| this.pop_out(window, cx)))
-                    .child(t!("browser.open_in_chrome")),
-            )
+                p,
+                t!("browser.follow_tip"),
+                None,
+            ))
+            .child(ui::button(p, "browser-pop-out", Kind::Ghost, t!("browser.open_in_chrome")).icon(Icon::External).on_click(cx.listener(|this, _, window, cx| this.pop_out(window, cx))))
     }
 
     fn viewport(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -966,40 +932,26 @@ impl BrowserPanel {
     fn dialog_card(&self, d: Dialog, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let p = self.palette;
         let asks = d.kind != "alert";
-        let button = |id: &'static str, label: &'static str, primary: bool| {
-            div()
-                .id(id)
-                .h(px(30.))
-                .px_3()
-                .flex()
-                .items_center()
-                .rounded(px(6.))
-                .text_size(px(SMALL))
-                .cursor_pointer()
-                .when(primary, |b| b.bg(p.primary).text_color(p.on_primary).font_weight(FontWeight::SEMIBOLD))
-                .when(!primary, |b| b.border_1().border_color(p.hair).text_color(p.text).hover(move |s| s.bg(p.wash)))
-                .child(label)
-        };
-        div().absolute().inset_0().flex().items_start().justify_center().pt(px(48.)).child(
+        div().absolute().inset_0().flex().items_start().justify_center().pt(px(48.)).child(motion::dialog(
             v_flex()
                 .w(px(360.))
                 .p_4()
                 .gap_3()
-                .rounded(px(10.))
-                .bg(p.raised)
+                .rounded(px(R_LG))
+                .bg(p.popover())
                 .border_1()
                 .border_color(p.hair)
-                .shadow_lg()
                 .child(div().text_size(px(12.)).text_color(p.muted).child(t!("browser.page_asks")))
                 .child(div().text_size(px(UI)).text_color(p.text).child(d.message.clone()))
                 .when(d.kind == "prompt", |c| {
                     c.child(
                         div()
-                            .h(px(30.))
-                            .px_2()
+                            .h(px(36.))
+                            .pl(px(2.))
                             .flex()
                             .items_center()
-                            .rounded(px(6.))
+                            .rounded(px(R_MD))
+                            .bg(p.code_bg)
                             .border_1()
                             .border_color(p.hair)
                             .child(Input::new(&self.prompt).appearance(false).bordered(false)),
@@ -1009,13 +961,14 @@ impl BrowserPanel {
                     h_flex()
                         .gap_2()
                         .justify_end()
-                        .when(asks, |r| r.child(button("dialog-cancel", t!("browser.cancel"), false).on_click(cx.listener(|this, _, _, cx| this.answer(false, None, cx)))))
-                        .child(button("dialog-ok", t!("browser.ok"), true).on_click(cx.listener(|this, _, _, cx| {
+                        .when(asks, |r| r.child(ui::button(p, "dialog-cancel", Kind::Secondary, t!("browser.cancel")).on_click(cx.listener(|this, _, _, cx| this.answer(false, None, cx)))))
+                        .child(ui::button(p, "dialog-ok", Kind::Primary, t!("browser.ok")).on_click(cx.listener(|this, _, _, cx| {
                             let text = this.prompt.read(cx).value().to_string();
                             this.answer(true, Some(text), cx)
                         }))),
                 ),
-        )
+            ("browser-dialog", d.page),
+        ))
     }
 
     fn status(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -1036,7 +989,8 @@ impl BrowserPanel {
             .h(px(22.))
             .flex()
             .items_center()
-            .rounded(px(5.))
+            .rounded(px(R_SM))
+
             .border_1()
             .border_color(p.hair)
             .text_color(p.text)

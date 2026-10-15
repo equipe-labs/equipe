@@ -14,7 +14,10 @@ use gpui_kit::*;
 use crate::askpass::{Answer, Ask, Prompt};
 use crate::failure::Guide;
 use crate::target::Endpoint;
-use crate::theme::{BODY, MONO, Palette, SMALL};
+use crate::icons::{Icon, icon};
+use crate::motion;
+use crate::theme::{BODY, FIELD, ICON, MONO, Palette, R_MD, R_XL, S3, S6, SMALL, UI};
+use crate::ui::{self, Kind};
 use crate::Shell;
 
 /// The chooser's state.
@@ -47,31 +50,19 @@ impl AskUi {
     }
 }
 
-fn button(p: Palette, id: &'static str, label: impl Into<SharedString>, primary: bool) -> Stateful<Div> {
-    h_flex()
-        .id(id)
-        .h(px(30.))
-        .px_3()
-        .items_center()
-        .rounded(px(6.))
-        .text_size(px(SMALL))
-        .cursor_pointer()
-        .when(primary, |b| b.bg(p.primary).text_color(p.on_primary).font_weight(FontWeight::SEMIBOLD))
-        .when(!primary, |b| b.border_1().border_color(p.hair).hover(move |s| s.bg(p.wash)))
-        .child(label.into())
-}
-
-/// A one-line text box in the window's own colours.
+/// A one-line text box in the window's own colours, `FIELD` tall, its text
+/// `S3` in from its edge (the box pads its text itself; the rest is ours).
 fn field(p: Palette, state: &Entity<InputState>) -> impl IntoElement {
-    div()
+    h_flex()
         .w_full()
-        .px_3()
-        .py_2()
-        .rounded(px(8.))
+        .h(px(FIELD))
+        .pl(px(S3) - gpui_kit::component::Size::Medium.input_px())
+        .items_center()
+        .rounded(px(R_MD))
         .bg(p.code_bg)
         .border_1()
         .border_color(p.hair)
-        .text_size(px(BODY))
+        .text_size(px(UI))
         .text_color(p.text)
         .child(Input::new(state).appearance(false).bordered(false))
 }
@@ -86,18 +77,23 @@ fn command_line(p: Palette, ix: usize, text: String) -> impl IntoElement {
             div()
                 .flex_1()
                 .min_w_0()
-                .px_3()
-                .py_1()
-                .rounded(px(8.))
+                .h(px(FIELD))
+                .px(px(S3))
+                .flex()
+                .items_center()
+                .rounded(px(R_MD))
                 .bg(p.code_bg)
                 .border_1()
                 .border_color(p.hair)
                 .font_family(MONO)
                 .text_size(px(SMALL))
                 .text_color(p.text2)
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
                 .child(text),
         )
-        .child(button(p, "copy", t!("connect.copy"), false).id(("copy", ix)).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
+        .child(ui::button(p, ("copy", ix), Kind::Secondary, t!("connect.copy")).icon(Icon::Copy).field().on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
 }
 
 /// The body when nothing is attached: the cause, what to do, the lines to paste.
@@ -110,7 +106,7 @@ pub fn guide_screen(shell: &Shell, guide: &Guide, cx: &mut Context<Shell>) -> An
         .overflow_y_scroll()
         .items_center()
         .py_8()
-        .child(
+        .child(motion::rise(
             v_flex()
                 .w_full()
                 .max_w(px(560.))
@@ -134,52 +130,82 @@ pub fn guide_screen(shell: &Shell, guide: &Guide, cx: &mut Context<Shell>) -> An
                     h_flex()
                         .gap_2()
                         .pt_2()
-                        .child(button(p, "retry", t!("connect.retry"), true).on_click(cx.listener(|this, _, _, cx| this.retry(cx))))
-                        .child(button(p, "switch", t!("connect.switch_target"), false).on_click(cx.listener(|this, _, window, cx| this.open_chooser(window, cx)))),
+                        .child(ui::button(p, "retry", Kind::Primary, t!("connect.retry")).field().on_click(cx.listener(|this, _, _, cx| this.retry(cx))))
+                        .child(ui::button(p, "switch", Kind::Secondary, t!("connect.switch_target")).field().on_click(cx.listener(|this, _, window, cx| this.open_chooser(window, cx)))),
                 ),
-        )
+            "guide-in",
+        ))
         .into_any_element()
 }
 
-fn row(p: Palette, id: impl Into<ElementId>, label: String, note: &'static str, current: bool) -> Stateful<Div> {
+/// The chooser's grid: every row is [S3 | ✓ | S2 | name … detail | S3], inside
+/// a highlight with the same S3 padding; the section labels and the field's
+/// text start at that same S3.
+fn row(p: Palette, id: impl Into<ElementId>, glyph: Icon, label: String, note: &'static str, current: bool) -> Stateful<Div> {
     h_flex()
         .id(id)
-        .h(px(36.))
-        .px_3()
+        .h(px(FIELD))
+        .px(px(S3))
         .gap_2()
         .items_center()
-        .rounded(px(6.))
-        .text_size(px(BODY))
+        .rounded(px(R_MD))
+        .text_size(px(UI))
+        .text_color(p.text)
         .when(current, |r| r.bg(p.wash).font_weight(FontWeight::SEMIBOLD))
-        .when(!current, |r| r.hover(move |s| s.bg(p.wash)).cursor_pointer())
-        .child(div().w(px(16.)).text_color(p.accent).child(if current { "✓" } else { "" }))
-        .child(div().flex_1().min_w_0().child(label))
-        .child(div().text_size(px(SMALL)).text_color(p.muted).child(note))
+        .when(!current, |r| r.cursor_pointer())
+        .child(div().w(px(ICON)).flex_none().flex().justify_center().when(current, |d| d.child(icon(Icon::Check, ICON, p.accent))))
+        .child(icon(glyph, ICON, p.muted))
+        .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label))
+        .child(div().flex_none().font_weight(FontWeight::NORMAL).text_size(px(12.)).text_color(p.muted).child(note))
 }
 
-fn modal(p: Palette, card: impl IntoElement) -> AnyElement {
-    div()
-        .absolute()
-        .inset_0()
-        .occlude()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(rgba(0x00000066))
-        .child(
-            v_flex()
-                .w(px(500.))
-                .max_h(px(620.))
-                .p_5()
-                .gap_3()
-                .rounded(px(12.))
-                .bg(p.raised)
-                .border_1()
-                .border_color(p.hair)
-                .text_color(p.text)
-                .child(card),
-        )
-        .into_any_element()
+/// A row that eases its fill in under the pointer (the current one is filled already).
+fn hoverable(p: Palette, row: Stateful<Div>, id: impl Into<ElementId>, current: bool) -> AnyElement {
+    if current { row.into_any_element() } else { motion::hover_fill(row, id, p.wash, false).into_any_element() }
+}
+
+/// A section's name, at the rows' inner padding.
+fn label(p: Palette, text: &'static str) -> impl IntoElement {
+    div().px(px(S3)).pt_2().pb_1().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child(text)
+}
+
+/// A box over the window: the window dims, the card settles in.
+fn modal(p: Palette, id: &'static str, card: impl IntoElement) -> AnyElement {
+    motion::fade(
+        div()
+            .absolute()
+            .inset_0()
+            .occlude()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00000073))
+            .child(motion::dialog(
+                v_flex()
+                    .w(px(480.))
+                    .max_h(px(640.))
+                    .p(px(S6))
+                    .gap_3()
+                    .rounded(px(R_XL))
+                    .bg(p.popover())
+                    .border_1()
+                    .border_color(p.hair)
+                    .text_color(p.text)
+                    .child(card),
+                (id, 1usize),
+            )),
+        (id, 0usize),
+        motion::FAST,
+    )
+    .into_any_element()
+}
+
+/// The title and the words under it, as every box here has them.
+fn heading(p: Palette, title: String, text: Option<String>) -> impl IntoElement {
+    v_flex()
+        .gap_1()
+        .child(div().text_size(px(17.)).line_height(px(24.)).font_weight(FontWeight::SEMIBOLD).child(title))
+        .children(text.map(|t| div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).child(t)))
 }
 
 /// "Where is the daemon?": this Mac or an SSH host.
@@ -196,43 +222,48 @@ pub fn chooser(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         _ => None,
     };
     let hosts = in_use.into_iter().chain(ui.hosts.iter().cloned().map(|h| (h, "~/.ssh/config"))).chain(remembered.into_iter().map(|h| (h, t!("connect.host_recent"))));
-    let hosts: Vec<_> = hosts
+    let hosts: Vec<AnyElement> = hosts
         .enumerate()
         .map(|(ix, (spec, note))| {
             let current = matches!((current, crate::target::SshHost::parse(&spec)), (Endpoint::Ssh(c), Ok(h)) if *c == h);
             let target = spec.clone();
-            row(p, ("host", ix), spec, note, current).on_click(cx.listener(move |this, _, window, cx| this.connect_typed(&target, window, cx)))
+            let row = row(p, ("host", ix), Icon::Server, spec, note, current).on_click(cx.listener(move |this, _, window, cx| this.connect_typed(&target, window, cx)));
+            hoverable(p, row, ("host-fill", ix), current)
         })
         .collect();
+    let on_mac = matches!(current, Endpoint::Local { .. });
+    let mac = row(p, "this-mac", Icon::Laptop, t!("connect.this_mac").into(), t!("connect.this_mac_note"), on_mac).on_click(cx.listener(move |this, _, window, cx| this.connect_to(this_mac.clone(), window, cx)));
 
     modal(
         p,
+        "chooser",
         v_flex()
             .gap_3()
-            .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(t!("connect.title")))
-            .child(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).child(t!("connect.intro")))
-            .child(row(p, "this-mac", t!("connect.this_mac").into(), t!("connect.this_mac_note"), matches!(current, Endpoint::Local { .. })).on_click(cx.listener(move |this, _, window, cx| this.connect_to(this_mac.clone(), window, cx))))
-            .when(!hosts.is_empty(), |c| {
-                c.child(div().text_size(px(SMALL)).text_color(p.muted).child(t!("connect.ssh_hosts")))
-                    .child(v_flex().id("hosts").max_h(px(190.)).overflow_y_scroll().children(hosts))
-            })
-            .child(div().text_size(px(SMALL)).text_color(p.muted).child(t!("connect.type_host")))
+            .child(heading(p, t!("connect.title").into(), Some(t!("connect.intro").into())))
             .child(
-                h_flex()
-                    .gap_2()
-                    .child(div().flex_1().child(field(p, &ui.input)))
-                    .child(button(p, "connect", t!("connect.connect"), true).on_click(cx.listener(|this, _, window, cx| {
-                        let text = this.connect.input.read(cx).value().to_string();
-                        this.connect_typed(&text, window, cx);
-                    }))),
+                v_flex()
+                    .gap(px(2.))
+                    .child(hoverable(p, mac, "this-mac-fill", on_mac))
+                    .when(!hosts.is_empty(), |c| c.child(label(p, t!("connect.ssh_hosts"))).child(v_flex().id("hosts").gap(px(2.)).max_h(px(196.)).overflow_y_scroll().children(hosts))),
             )
-            .children(ui.error.clone().map(|e| div().text_size(px(SMALL)).text_color(p.accent).child(e)))
             .child(
-                div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).child(
-                    t!("connect.ssh_first_time"),
-                ),
+                v_flex()
+                    .gap_1()
+                    .child(label(p, t!("connect.type_host")))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(div().flex_1().min_w_0().child(field(p, &ui.input)))
+                            .child(ui::button(p, "connect", Kind::Primary, t!("connect.connect")).field().on_click(cx.listener(|this, _, window, cx| {
+                                let text = this.connect.input.read(cx).value().to_string();
+                                this.connect_typed(&text, window, cx);
+                            }))),
+                    )
+                    .children(ui.error.clone().map(|e| div().px(px(S3)).pt_1().text_size(px(SMALL)).text_color(p.danger()).child(e))),
             )
-            .child(h_flex().justify_end().child(button(p, "close", t!("connect.close"), false).on_click(cx.listener(|this, _, window, cx| this.close_chooser(window, cx))))),
+            .child(div().px(px(S3)).text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("connect.ssh_first_time")))
+            .child(h_flex().pt_1().justify_end().child(ui::button(p, "close", Kind::Secondary, t!("connect.close")).field().key("Esc").on_click(cx.listener(|this, _, window, cx| this.close_chooser(window, cx))))),
     )
 }
 
@@ -246,46 +277,33 @@ pub fn question(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             this.answer_prompt(a.clone(), window, cx);
         })
     };
-    let card = match &prompt.ask {
-        Ask::Secret { label } => v_flex()
-            .gap_3()
-            .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(t!("connect.sign_in_to", who = who)))
-            .child(div().text_size(px(BODY)).line_height(px(24.)).text_color(p.text2).child(label.clone()))
-            .child(field(p, &shell.ask.input))
-            .child(div().text_size(px(SMALL)).text_color(p.muted).child(t!("connect.secret_note")))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .justify_end()
-                    .child(button(p, "ask-cancel", t!("connect.cancel"), false).on_click(answer(Answer::Cancel)))
-                    .child(button(p, "ask-ok", t!("connect.ok"), true).on_click(cx.listener(|this, _, window, cx| this.submit_secret(window, cx)))),
-            ),
-        Ask::HostKey { host, fingerprint, text } => v_flex()
-            .gap_3()
-            .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(t!("connect.new_machine")))
-            .child(div().text_size(px(BODY)).line_height(px(24.)).text_color(p.text2).child(t!("connect.host_key_text", host = if host.is_empty() { who.clone() } else { format!("'{host}'") })))
-            .when(!fingerprint.is_empty(), |c| {
-                c.child(div().px_3().py_2().rounded(px(8.)).bg(p.code_bg).border_1().border_color(p.hair).font_family(MONO).text_size(px(SMALL)).text_color(p.text).child(fingerprint.clone()))
-            })
-            .child(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).child(text.lines().filter(|l| !l.contains("Are you sure")).collect::<Vec<_>>().join("\n")))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .justify_end()
-                    .child(button(p, "ask-no", t!("connect.dont_connect"), false).on_click(answer(Answer::Cancel)))
-                    .child(button(p, "ask-yes", t!("connect.fingerprint_ok"), true).on_click(answer(Answer::Yes))),
-            ),
-        Ask::Confirm { text } => v_flex()
-            .gap_3()
-            .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(t!("connect.ssh_confirm")))
-            .child(div().text_size(px(BODY)).line_height(px(24.)).text_color(p.text2).child(text.clone()))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .justify_end()
-                    .child(button(p, "ask-no", t!("connect.no"), false).on_click(answer(Answer::Cancel)))
-                    .child(button(p, "ask-yes", t!("connect.yes"), true).on_click(answer(Answer::Yes))),
-            ),
+    let buttons = |no: (&'static str, &'static str), yes: (&'static str, &'static str)| (no, yes);
+    let (card, (no, yes)) = match &prompt.ask {
+        Ask::Secret { label } => (
+            v_flex()
+                .gap_3()
+                .child(heading(p, t!("connect.sign_in_to", who = who), Some(label.clone())))
+                .child(field(p, &shell.ask.input))
+                .child(div().px(px(S3)).text_size(px(12.)).text_color(p.muted).child(t!("connect.secret_note"))),
+            buttons(("ask-cancel", t!("connect.cancel")), ("ask-ok", t!("connect.ok"))),
+        ),
+        Ask::HostKey { host, fingerprint, text } => (
+            v_flex()
+                .gap_3()
+                .child(heading(p, t!("connect.new_machine").into(), Some(t!("connect.host_key_text", host = if host.is_empty() { who.clone() } else { format!("'{host}'") }))))
+                .when(!fingerprint.is_empty(), |c| c.child(div().px(px(S3)).py_2().rounded(px(R_MD)).bg(p.code_bg).border_1().border_color(p.hair).font_family(MONO).text_size(px(SMALL)).text_color(p.text).child(fingerprint.clone())))
+                .child(div().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(text.lines().filter(|l| !l.contains("Are you sure")).collect::<Vec<_>>().join("\n"))),
+            buttons(("ask-no", t!("connect.dont_connect")), ("ask-yes", t!("connect.fingerprint_ok"))),
+        ),
+        Ask::Confirm { text } => (
+            v_flex().gap_3().child(heading(p, t!("connect.ssh_confirm").into(), Some(text.clone()))),
+            buttons(("ask-no", t!("connect.no")), ("ask-yes", t!("connect.yes"))),
+        ),
     };
-    Some(modal(p, card))
+    let secret = matches!(prompt.ask, Ask::Secret { .. });
+    let yes_button = ui::button(p, yes.0, Kind::Primary, yes.1).field();
+    let yes_button = if secret { yes_button.on_click(cx.listener(|this, _, window, cx| this.submit_secret(window, cx))) } else { yes_button.on_click(answer(Answer::Yes)) };
+    let card = card.child(h_flex().pt_1().gap_2().justify_end().child(ui::button(p, no.0, Kind::Secondary, no.1).field().on_click(answer(Answer::Cancel))).child(yes_button));
+    Some(modal(p, "question", card))
 }
+

@@ -2347,12 +2347,38 @@ mod tests {
 
     #[test]
     fn a_menu_walks_only_rows_that_do_something() {
-        let rows = vec![Row { label: "title".into(), hint: String::new(), on: false, act: None }, Row::new("a", "", Act::Commands), Row::new("b", "", Act::Screenshot).checked(true)];
+        let rows = vec![Row::note("title"), Row::new("a", "", Act::Commands), Row::new("b", "", Act::Screenshot).checked(true)];
         let mut menu = Menu { kind: MenuKind::Attach, title: None, pick: Menu::first_pick(&rows), rows };
         assert_eq!(menu.pick, 2, "the checked one first");
         menu.step(false);
         assert_eq!(menu.pick, 1, "past the title, round to the first");
         menu.step(true);
         assert_eq!(menu.pick, 2);
+    }
+
+    #[test]
+    fn a_menu_opens_from_its_own_control_flush_with_its_edge() {
+        use gpui_kit::base::Align;
+        // Recent files open where the "+" menu was; the rest from themselves.
+        assert_eq!(MenuKind::Recent.trigger(), MenuKind::Attach);
+        for kind in [MenuKind::Attach, MenuKind::To, MenuKind::Model, MenuKind::Effort, MenuKind::Mode, MenuKind::Context] {
+            assert_eq!(kind.trigger(), kind);
+        }
+        // The bar's left-hand controls line up left edges; the right-hand ones, right edges.
+        for kind in [MenuKind::Attach, MenuKind::Recent, MenuKind::To, MenuKind::Mode] {
+            assert_eq!(kind.align(), Align::Start, "{kind:?}");
+        }
+        for kind in [MenuKind::Model, MenuKind::Effort, MenuKind::Context] {
+            assert_eq!(kind.align(), Align::End, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn menu_rows_say_their_shortcut_and_lead_with_an_icon() {
+        let row = Row::new("files", "", Act::PickFiles).icon(super::Icon::Paperclip).keys("⌘U");
+        assert_eq!(row.keys, Some("⌘U"));
+        assert_eq!(row.lead, super::Lead::Icon(super::Icon::Paperclip));
+        assert!(Row::new("recent", "", Act::Recent).submenu().more);
+        assert!(Row::note("why").act.is_none());
     }
 }

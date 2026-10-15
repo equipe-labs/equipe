@@ -9,7 +9,9 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::theme::{MONO, Palette, SMALL, look};
+use crate::motion;
+use crate::theme::{MONO, Palette, R_LG, R_MD, SMALL, look};
+use crate::ui;
 use crate::{Screen, Shell};
 
 // ── the queue ──
@@ -238,38 +240,23 @@ impl Shell {
     }
 }
 
+/// The card's buttons: the app's one button, 28 tall, its key beside its name.
 fn button(p: Palette, id: impl Into<ElementId>, label: &'static str, key: &'static str, primary: bool, on: impl Fn(&mut Window, &mut App) + 'static) -> impl IntoElement {
-    h_flex()
-        .id(id.into())
-        .h(px(28.))
-        .px_3()
-        .gap_2()
-        .items_center()
-        .rounded(px(6.))
-        .text_size(px(SMALL))
-        .cursor_pointer()
-        .when(primary, |b| b.bg(p.primary).text_color(p.on_primary).font_weight(FontWeight::SEMIBOLD))
-        .when(!primary, |b| b.border_1().border_color(p.hair).hover(move |s| s.bg(p.wash)))
-        .on_click(move |_, window, cx| on(window, cx))
-        .child(label)
-        .child(div().text_size(px(12.)).opacity(0.6).child(key))
+    let kind = if primary { ui::Kind::Primary } else { ui::Kind::Secondary };
+    ui::button(p, id, kind, label).key(key).on_click(move |_, window, cx| on(window, cx))
 }
 
 /// The oldest request, drawn as a card above the composer.
 pub fn approval(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let id = shell.model.approvals.first()?.id;
+    let p = shell.palette;
+    // Each request rises into place as it comes to the front.
     Some(
-        div()
-            .w_full()
-            .mb_3()
-            .p_4()
-            .rounded(px(12.))
-            .bg(shell.palette.raised)
-            .border_1()
-            .border_l_2()
-            .border_color(shell.palette.hair)
-            .child(card(shell, id, true, cx)?)
-            .into_any_element(),
+        motion::rise(
+            div().w_full().mb_3().p_3().rounded(px(R_LG)).bg(p.raised).border_1().border_color(p.hair).shadow_sm().child(card(shell, id, true, cx)?),
+            ("approval-in", id),
+        )
+        .into_any_element(),
     )
 }
 
@@ -310,8 +297,9 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
                 v_flex()
                     .px_3()
                     .py_2()
-                    .rounded(px(8.))
+                    .rounded(px(R_MD))
                     .bg(p.code_bg)
+
                     .border_1()
                     .border_color(p.hair)
                     .font_family(MONO)

@@ -10,7 +10,7 @@
 use equipe_core::t;
 
 use equipe_core::protocol::{Ticket, TicketId, TicketStatus};
-use gpui_kit::component::tooltip::Tooltip;
+use crate::tips::TipExt as _;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -96,7 +96,7 @@ pub fn icon_button(p: Palette, id: impl Into<ElementId>, name: IconName, enabled
         .when(enabled, |b| b.cursor_pointer().hover(move |s| s.bg(p.side_hover)))
         .when(!enabled, |b| b.opacity(0.35))
         .child(icon(name, 16., p.text2))
-        .when_some(tip, |b, tip| b.tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx)))
+        .when_some(tip, |b, tip| b.tip(p, tip, None))
 }
 
 /// The strip's buttons: hide or show the sidebar, search, back, forward. On
@@ -201,7 +201,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 .justify_center()
                 .rounded(px(4.))
                 .hover(move |s| s.bg(p.side_hover))
-                .tooltip(move |w, cx| Tooltip::new(tip).build(w, cx))
+                .tip(p, tip, None)
                 .child(icon(name, 13., p.muted))
         };
         let head = section_head(p, SharedString::from(format!("project-{key}")), folded)
@@ -415,7 +415,7 @@ fn ticket_row(shell: &Shell, t: &Ticket, on: bool, cx: &mut Context<Shell>) -> A
     let yes = (matches!(t.status, TicketStatus::Review | TicketStatus::Waiting | TicketStatus::Proposed) || t.not_on_main()) && shell.can_act();
     row_shell(p, ("ticket", id as usize), on)
         .group(group.clone())
-        .tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
+        .tip_at(p, tip, None, gpui_kit::base::Placement::Right)
         .on_click(cx.listener(move |this, _, window, cx| this.open_ticket_row(id, window, cx)))
         .child(mark_element(p, mark(model, t), shell.board.spin))
         .child(fading_title(p, t.title.clone(), on, t.status.is_closed()))
@@ -558,7 +558,7 @@ fn footer(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElemen
                 .rounded(px(8.))
                 .cursor_pointer()
                 .hover(move |s| s.bg(p.side_hover))
-                .tooltip(move |w, cx| Tooltip::new(tip.clone()).build(w, cx))
+                .tip_at(p, tip, None, gpui_kit::base::Placement::Right)
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.board.popup = if this.board.popup == Some(Popup::Account) { None } else { Some(Popup::Account) };
                     cx.notify();

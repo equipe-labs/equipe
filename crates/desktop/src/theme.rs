@@ -123,15 +123,13 @@ pub const MONO: &str = "Menlo";
 
 // ── one scale for everything ──
 //
-// Space: 4 · 8 · 12 · 16 · 24. Radii: 6 for chips and small buttons, 8 for
+// Space: 4 · 8 · 12 · 16 · 24 (GPUI's `_1` `_2` `_3` `_4` `_6`; S3 and S6 named where a
+// padding has to be computed). Radii: 6 for chips and small buttons, 8 for
 // controls, menus and rows, 12 for cards, 16 for the composer and dialogs.
 // Controls are 28 tall with 16-point icons; a text field is 36; a menu or list
 // row is 32. Motion is short and eases out (`crate::motion`).
 
-pub const S1: f32 = 4.;
-pub const S2: f32 = 8.;
 pub const S3: f32 = 12.;
-pub const S4: f32 = 16.;
 pub const S6: f32 = 24.;
 
 pub const R_SM: f32 = 6.;

@@ -27,6 +27,7 @@ mod stream;
 mod target;
 mod theme;
 mod tips;
+mod ui;
 mod i18n;
 mod icons;
 mod motion;
@@ -749,38 +750,15 @@ impl Shell {
                 .child(div().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child("✗"))
                 .child(div().text_color(p.text).child(format!("{} · {since}", guide.short)))
                 .child(div().flex_1().min_w_0().text_color(p.muted).child(if waits { t!("main.banner_needs_you") } else { t!("main.banner_reconnecting") }))
-                .child(
-                    div()
-                        .id("banner-retry")
-                        .px_2()
-                        .rounded(px(6.))
-                        .border_1()
-                        .border_color(p.hair)
-                        .text_color(p.text)
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(p.wash))
-                        .on_click(cx.listener(|this, _, _, cx| this.retry(cx)))
-                        .child(t!("main.retry")),
-                ),
+                .child(ui::button(p, "banner-retry", ui::Kind::Secondary, t!("main.retry")).icon(icons::Icon::Retry).on_click(cx.listener(|this, _, _, cx| this.retry(cx)))),
         )
     }
 }
 
 /// The body on a Mac without equipe: what the app needs, and the line that installs it.
 fn install_screen(p: Palette) -> AnyElement {
-    let button = |label: &'static str| {
-        div()
-            .px_3()
-            .py_1()
-            .rounded(px(8.))
-            .border_1()
-            .border_color(p.hair)
-            .text_size(px(SMALL))
-            .text_color(p.text)
-            .cursor_pointer()
-            .hover(move |s| s.bg(p.wash))
-            .child(label)
-    };
+    let button = |id: &'static str, label: &'static str| ui::button(p, id, ui::Kind::Secondary, label);
+
     v_flex()
         .flex_1()
         .items_center()
@@ -813,8 +791,8 @@ fn install_screen(p: Palette) -> AnyElement {
         .child(
             h_flex()
                 .gap_2()
-                .child(button(t!("main.copy_command")).id("copy-install").on_click(|_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(install::INSTALL_COMMAND.to_owned()))))
-                .child(button(t!("main.install_guide")).id("open-site").on_click(|_, _, cx| cx.open_url(install::SITE))),
+                .child(button("copy-install", t!("main.copy_command")).icon(icons::Icon::Copy).on_click(|_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(install::INSTALL_COMMAND.to_owned()))))
+                .child(button("open-site", t!("main.install_guide")).icon(icons::Icon::External).on_click(|_, _, cx| cx.open_url(install::SITE))),
         )
         .child(div().text_size(px(SMALL)).text_color(p.muted).child(t!("main.homebrew_hint")))
         .into_any_element()

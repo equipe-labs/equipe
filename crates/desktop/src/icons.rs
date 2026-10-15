@@ -11,18 +11,16 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     Chosen,
     [
-        ArrowDown, ArrowLeft, ArrowRight, ArrowUp, AtSign, Camera, Check, ChevronDown, ChevronRight, ChevronUp, Clock, Copy, Eraser, ExternalLink, FolderOpen, Gauge, Laptop, Locate, Mic, Minimize2, Paperclip, Plus, RotateCcw, RotateCw, Search, Server, ShieldCheck, Sparkles, Square, SquareSlash, X
+        ArrowLeft, ArrowRight, ArrowUp, Camera, Check, ChevronDown, ChevronRight, ChevronUp, Clock, Copy, Eraser, ExternalLink, Laptop, Locate, Mic, Minimize2, Paperclip, Plus, RotateCcw, RotateCw, Server, SquareSlash, X
     ]
 );
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
-    ArrowDown,
     ArrowLeft,
     ArrowRight,
     /// Send.
     ArrowUp,
-    At,
     Camera,
     Check,
     ChevronDown,
@@ -35,39 +33,28 @@ pub enum Icon {
     Clear,
     /// `/compact`.
     Compact,
-    /// The effort picker.
-    Effort,
     External,
     File,
-    Folder,
     Laptop,
     /// Follow the conversation's browser.
     Locate,
     Mic,
-    /// The mode picker.
-    Mode,
-    /// The model picker.
-    Model,
     Paperclip,
     Plus,
     Reload,
     Retry,
-    Search,
     Server,
     /// Commands.
     Slash,
-    /// Stop.
-    Stop,
     X,
 }
 
 impl Icon {
-    pub const ALL: [Icon; 32] = [
-        Icon::ArrowDown,
+    #[cfg(test)]
+    pub const ALL: [Icon; 24] = [
         Icon::ArrowLeft,
         Icon::ArrowRight,
         Icon::ArrowUp,
-        Icon::At,
         Icon::Camera,
         Icon::Check,
         Icon::ChevronDown,
@@ -77,33 +64,25 @@ impl Icon {
         Icon::Copy,
         Icon::Clear,
         Icon::Compact,
-        Icon::Effort,
         Icon::External,
         Icon::File,
-        Icon::Folder,
         Icon::Laptop,
         Icon::Locate,
         Icon::Mic,
-        Icon::Mode,
-        Icon::Model,
         Icon::Paperclip,
         Icon::Plus,
         Icon::Reload,
         Icon::Retry,
-        Icon::Search,
         Icon::Server,
         Icon::Slash,
-        Icon::Stop,
         Icon::X,
     ];
 
     pub fn path(self) -> &'static str {
         match self {
-            Icon::ArrowDown => "icons/arrow-down.svg",
             Icon::ArrowLeft => "icons/arrow-left.svg",
             Icon::ArrowRight => "icons/arrow-right.svg",
             Icon::ArrowUp => "icons/arrow-up.svg",
-            Icon::At => "icons/at-sign.svg",
             Icon::Camera => "icons/camera.svg",
             Icon::Check => "icons/check.svg",
             Icon::ChevronDown => "icons/chevron-down.svg",
@@ -113,23 +92,17 @@ impl Icon {
             Icon::Copy => "icons/copy.svg",
             Icon::Clear => "icons/eraser.svg",
             Icon::Compact => "icons/minimize-2.svg",
-            Icon::Effort => "icons/gauge.svg",
             Icon::External => "icons/external-link.svg",
             Icon::File => "icons/file.svg",
-            Icon::Folder => "icons/folder-open.svg",
             Icon::Laptop => "icons/laptop.svg",
             Icon::Locate => "icons/locate.svg",
             Icon::Mic => "icons/mic.svg",
-            Icon::Mode => "icons/shield-check.svg",
-            Icon::Model => "icons/sparkles.svg",
             Icon::Paperclip => "icons/paperclip.svg",
             Icon::Plus => "icons/plus.svg",
             Icon::Reload => "icons/rotate-cw.svg",
             Icon::Retry => "icons/rotate-ccw.svg",
-            Icon::Search => "icons/search.svg",
             Icon::Server => "icons/server.svg",
             Icon::Slash => "icons/square-slash.svg",
-            Icon::Stop => "icons/square.svg",
             Icon::X => "icons/x.svg",
         }
     }
