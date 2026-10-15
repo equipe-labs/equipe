@@ -310,6 +310,29 @@ Snapshot steps: `browser`, `bopen:<url>`, `bpick:<n>`, `bclick:<fx>,<fy>`,
 `bkeys:<text>`, `bime:ㅎ|하|한`. The host's ops have a smoke test:
 `npx -y -p playwright@1.64.0 node scripts/browser-host-smoke.cjs`.
 
+## Zoom (⌘+ ⌘- ⌘0)
+
+The window zooms as a browser (or Claude) does: 보기 ▸ 확대 (⌘+, also ⌘=),
+축소 (⌘-), 실제 크기 (⌘0), through 67 · 75 · 80 · 90 · 100 · 110 · 125 · 150 ·
+175 · 200 %. Settings ▸ 일반 ▸ 화면 크기 has the same as − / + and 실제 크기. The
+size is kept in `desktop-target` (`zoom 125`) and put back at launch; a small
+chip with the new size shows near the window's top for a moment (`zoom.rs`).
+
+Everything scales together because GPUI draws the window larger, not the app:
+`Window::set_content_zoom` (an `equipe:` patch in `vendor/gpui-pre`) multiplies
+the display's scale factor by the zoom and divides the viewport and every input
+position (and pixel scroll deltas) by it, so layout reflows, text and icons are
+rasterized at the effective scale (crisp, not stretched), hit-testing agrees
+with what is drawn, and the IME's candidate window is placed in the platform's
+points. The window's own geometry (`bounds`, `resize`) stays in screen points.
+AppKit's traffic lights don't zoom: they stay 14 pt in and move down to the
+zoomed title bar's centre line, and the strip's buttons start after them at
+every size (`views::sidebar::lights_at`, `lights_end`).
+
+⌘0 is actual size, as everywhere on the Mac, so the project slices are ⌃0–⌃9
+(⌃0: every project). Snapshot steps: `zoom:<pct|in|out|actual>`; `click:` and
+`hover:` take screen points and go through the zoom as the Mac's events do.
+
 ## Shipping the app
 
 Direct download from the website (the Mac App Store build is separate — it

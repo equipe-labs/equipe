@@ -1931,7 +1931,7 @@ fn keys_sheet(p: Palette, cx: &mut Context<Shell>) -> AnyElement {
         ("X ⇧↑↓ ⌘A", t!("board.key_choose")),
         ("⌥V", t!("board.key_save_view")),
         ("G I · G L · G B", t!("board.key_go")),
-        ("⌘0–9", t!("board.key_projects")),
+        ("⌃0–9", t!("board.key_projects")),
         ("Esc", t!("board.key_back")),
     ];
     deferred(

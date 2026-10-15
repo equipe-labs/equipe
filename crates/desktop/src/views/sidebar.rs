@@ -39,13 +39,31 @@ const LIGHT: f32 = 14.;
 /// Where the traffic lights sit (the close button's top left): 14 pt in, and
 /// centred on the title bar — the strip's buttons share that centre line.
 pub const LIGHTS_AT: (f32, f32) = (14., (STRIP - LIGHT) / 2.);
+/// The three lights, side to side, in points.
+const LIGHTS_SPAN: f32 = 3. * LIGHT + 2. * 9.;
 /// Where the traffic lights end, and a little air: the strip's buttons start here.
-pub const LIGHTS: f32 = 78.;
+const LIGHTS: f32 = 78.;
 /// The strip's square buttons and the space between them.
 const BUTTON: f32 = 26.;
 const BUTTON_GAP: f32 = 2.;
+
+/// Where the traffic lights go with the window zoomed (`zoom.rs`): AppKit's
+/// lights keep their size and their place from the left, and stay centred on
+/// the title bar, which grows and shrinks with everything else.
+pub fn lights_at(zoom: f32) -> (f32, f32) {
+    (LIGHTS_AT.0, (STRIP * zoom - LIGHT) / 2.)
+}
+
+/// Where the strip's buttons start, in the window's (zoomed) points: after
+/// the lights — which don't zoom — and the same air as at actual size.
+pub fn lights_end(zoom: f32) -> f32 {
+    (LIGHTS_AT.0 + LIGHTS_SPAN) / zoom + (LIGHTS - LIGHTS_AT.0 - LIGHTS_SPAN)
+}
+
 /// Where the fixed buttons (hide, back, forward) end, whatever the sidebar does.
-pub const BUTTONS_END: f32 = LIGHTS + 3. * BUTTON + 2. * BUTTON_GAP;
+pub fn buttons_end(zoom: f32) -> f32 {
+    lights_end(zoom) + 3. * BUTTON + 2. * BUTTON_GAP
+}
 const ROW: f32 = 30.;
 const TEXT: f32 = 13.;
 /// Every row's mark sits in a box this wide, so every title starts at one x.
@@ -106,7 +124,7 @@ pub fn title_buttons(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement
     h_flex()
         .absolute()
         .top_0()
-        .left(px(LIGHTS))
+        .left(px(lights_end(crate::zoom::factor(shell.remembered.zoom.0))))
         .h(px(STRIP))
         .gap(px(BUTTON_GAP))
         .items_center()
@@ -132,7 +150,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let strip = h_flex()
         .h(px(STRIP))
         .flex_none()
-        .pl(px(BUTTONS_END + BUTTON_GAP))
+        .pl(px(buttons_end(crate::zoom::factor(shell.remembered.zoom.0)) + BUTTON_GAP))
         .items_center()
         .border_b_1()
         .border_color(p.hair)
@@ -902,7 +920,7 @@ impl Shell {
     /// the title bar's fixed buttons without it — its content going with the
     /// sidebar's edge as that slides, and stopping by the buttons.
     pub fn header_inset(&self, pad: f32, cx: &App) -> f32 {
-        (BUTTONS_END + 8. - self.sidebar_on_screen(cx)).max(pad)
+        (buttons_end(crate::zoom::factor(self.remembered.zoom.0)) + 8. - self.sidebar_on_screen(cx)).max(pad)
     }
 
     /// ⌘N: a new message to the PM.
