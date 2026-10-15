@@ -1209,10 +1209,7 @@ impl Paragraph {
                 let mut highlight = mark_highlight(style, node_cx, cx);
                 if let Some(link_mark) = style.link.clone() {
                     highlight.style.color = Some(node_cx.style.link());
-                    highlight.style.underline = Some(gpui::UnderlineStyle {
-                        thickness: gpui::px(1.),
-                        ..Default::default()
-                    });
+                    highlight.style.underline = Some(node_cx.style.link_underline()); // equipe: the style's underline
                     links.push((inner_range.clone(), link_mark));
                 }
                 node_highlights.push((inner_range, highlight));
@@ -2330,10 +2327,7 @@ impl Paragraph {
 
                     if let Some(mut link_mark) = style.link.clone() {
                         highlight.style.color = Some(node_cx.style.link());
-                        highlight.style.underline = Some(gpui::UnderlineStyle {
-                            thickness: gpui::px(1.),
-                            ..Default::default()
-                        });
+                        highlight.style.underline = Some(node_cx.style.link_underline()); // equipe: the style's underline
 
                         // convert link references, replace link
                         if let Some(identifier) = link_mark.identifier.as_ref() {
@@ -2449,10 +2443,7 @@ impl Paragraph {
                                 .clone(),
                         );
                         object_style.color = Some(node_cx.style.link());
-                        object_style.underline = Some(gpui::UnderlineStyle {
-                            thickness: px(1.),
-                            ..Default::default()
-                        });
+                        object_style.underline = Some(node_cx.style.link_underline()); // equipe: the style's underline
                     }
                 }
                 let rendered_node = node.clone();
@@ -2518,10 +2509,7 @@ impl Paragraph {
 
                     if let Some(mut link_mark) = style.link.clone() {
                         highlight.style.color = Some(node_cx.style.link());
-                        highlight.style.underline = Some(gpui::UnderlineStyle {
-                            thickness: gpui::px(1.),
-                            ..Default::default()
-                        });
+                        highlight.style.underline = Some(node_cx.style.link_underline()); // equipe: the style's underline
 
                         if let Some(identifier) = link_mark.identifier.as_ref()
                             && let Some(mark) = node_cx.link_refs.get(identifier)
@@ -3518,6 +3506,10 @@ impl BlockNode {
                 .w_full()
                 .min_w_0()
                 .pb(mb)
+                // equipe: the style's room between items.
+                .flex()
+                .flex_col()
+                .gap(node_cx.style.list_item_gap())
                 .children({
                     let mut items = Vec::with_capacity(children.len());
                     let mut item_index = 0;

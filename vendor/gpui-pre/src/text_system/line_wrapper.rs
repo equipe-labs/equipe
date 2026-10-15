@@ -522,6 +522,15 @@ impl LineWrapper {
         // Bengali (https://en.wikipedia.org/wiki/Bengali_(Unicode_block))
         matches!(c, '\u{0980}'..='\u{09FF}') ||
 
+        // equipe: Hangul wraps at spaces, as CSS `word-break: keep-all` does —
+        // Korean is written with spaces between words, and a word broken
+        // between two syllables reads as two words. (A word longer than the
+        // line still breaks where it must.) Kana and Han stay outside, so
+        // Japanese and Chinese still break between any two characters.
+        // Jamo, compatibility Jamo, Jamo Extended-A, syllables, Jamo Extended-B,
+        // half-width Hangul.
+        matches!(c, '\u{1100}'..='\u{11FF}' | '\u{3131}'..='\u{318E}' | '\u{A960}'..='\u{A97F}' | '\u{AC00}'..='\u{D7A3}' | '\u{D7B0}'..='\u{D7FF}' | '\u{FFA0}'..='\u{FFDC}') ||
+
         // Some other known special characters that should be treated as word characters,
         // e.g. `a-b`, `var_name`, `I'm`/`won’t`, '@mention`, `#hashtag`, `100%`, `3.1415`,
         // `2^3`, `a~b`, `a=1`, `Self::new`, etc. Trailing punctuation like `,`, `.`, `:`, `;`

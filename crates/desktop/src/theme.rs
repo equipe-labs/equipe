@@ -56,6 +56,10 @@ pub struct Palette {
     pub side_sel: Rgba,
     pub wash: Rgba,
     pub text: Rgba,
+    /// Reading text — replies, your messages: a shade softer than `text`,
+    /// which stays for titles and controls. Pure white on near-black glares
+    /// and makes long Korean text look heavy.
+    pub prose: Rgba,
     pub text2: Rgba,
     pub muted: Rgba,
     pub hair: Rgba,
@@ -91,8 +95,11 @@ impl Palette {
             side_sel: rgb(0x222227),
             wash: rgba(0xFFFFFF0E),
             text: rgb(0xEFEDE7),
+            prose: rgb(0xE4E2DC),
             text2: rgb(0xCFCCC4),
-            muted: rgb(0x7C7E85),
+            // At least 4.5:1 (WCAG AA, small text) on every surface it sits
+            // on, the selected sidebar row and the popover included.
+            muted: rgb(0x8A8C93),
             hair: rgba(0xE9E6DF24),
             accent: rgb(0xB4CDE6),
             accent_bg: rgba(0xB4CDE61A),
@@ -115,8 +122,9 @@ impl Palette {
             side_sel: rgb(0xDDDCD5),
             wash: rgba(0x0000000B),
             text: rgb(0x15161A),
+            prose: rgb(0x1F2024),
             text2: rgb(0x3A3C42),
-            muted: rgb(0x6A6C74),
+            muted: rgb(0x5E6068),
             hair: rgba(0x14141424),
             accent: rgb(0x2E5C8A),
             accent_bg: rgba(0x2E5C8A17),
@@ -124,9 +132,11 @@ impl Palette {
             raised: rgb(0xFFFFFF),
             primary: rgb(0x15161A),
             on_primary: rgb(0xF6F5F1),
-            amber: rgb(0xA8700F),
-            orange: rgb(0xB8551C),
-            red: rgb(0xC0392F),
+            // Darker than the dark appearance's, to be read as words (a
+            // status in the sidebar) at 4.5:1 on any surface.
+            amber: rgb(0x825600),
+            orange: rgb(0xA04610),
+            red: rgb(0xAD2E27),
             members: [0xA06814, 0xB0326E, 0x1E68AA, 0x28803C, 0x6446BE, 0x14807A, 0xB4501E, 0x6E7814].map(rgb),
         }
     }
@@ -155,10 +165,46 @@ pub fn look(role: &str, name: &str) -> (&'static str, usize) {
 }
 
 pub const SANS: &str = "Helvetica Neue";
-/// Korean body text is never below 13; reading text is 15/24.
+
+// ── type ──
+//
+// Three sizes carry the app: reading text 15, the interface 14, secondary 13;
+// meta (times, counts, "thought for 11s") 12. Korean is never below 12, and
+// wants more leading than Latin: reading text is 15 on 25 (1.65).
+
+/// Reading text: replies, your messages, the composer.
 pub const BODY: f32 = 15.;
+pub const BODY_LINE: f32 = 25.;
+/// The interface: rows, buttons, menus.
 pub const UI: f32 = 14.;
+/// Text at the interface size read as text (a ticket's description, an ask).
+pub const UI_PROSE_LINE: f32 = 23.;
+/// Secondary text: notes, tool rows, thoughts, hints.
 pub const SMALL: f32 = 13.;
+pub const SMALL_LINE: f32 = 20.;
+/// Meta: how long, when, how many.
+pub const META: f32 = 12.;
+pub const META_LINE: f32 = 18.;
+
+/// The conversation's column, the composer's with it.
+pub const COLUMN: f32 = 720.;
+/// The measure: a reply's text is no wider than this — about 40 Korean
+/// characters, or 75 Latin, at 15. Cards, the composer and the column are wider.
+pub const MEASURE: f32 = 600.;
+/// Between paragraphs: 0.7 of the body size.
+pub const PARAGRAPH_GAP: f32 = 11.;
+/// Between a list's items: tighter than paragraphs, so a list reads as one.
+pub const LIST_GAP: f32 = 4.;
+/// A heading's room: more above (beyond the paragraph gap) than below, so it
+/// belongs to what follows.
+pub const HEADING_ABOVE: f32 = 8.;
+pub const HEADING_BELOW: f32 = 4.;
+/// A link's underline: a hairline (one device pixel on a Retina screen), in
+/// the link's colour at this opacity.
+pub const LINK_UNDERLINE: f32 = 0.5;
+pub const LINK_UNDERLINE_ALPHA: f32 = 0.5;
+/// The room under the conversation's last line, over the composer.
+pub const TAIL_ROOM: f32 = 20.;
 
 /// Project chips take the project's order and these colours (T-54 §2.1).
 pub const PROJECT_HUES: [usize; 8] = [2, 6, 4, 7, 5, 1, 3, 0];
@@ -224,10 +270,42 @@ impl Palette {
     }
 }
 
+/// WCAG's contrast ratio of two colours (1 to 21), alpha ignored.
+#[cfg(test)]
+pub fn contrast(a: Rgba, b: Rgba) -> f32 {
+    let lum = |c: Rgba| {
+        let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+        0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
+    };
+    let (x, y) = (lum(a), lum(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Appearance, Palette};
+    use super::{Appearance, Palette, contrast};
     use gpui_kit::WindowAppearance;
+
+    /// Every colour text is drawn in, on every surface it is drawn on, reads
+    /// at WCAG AA for small text (4.5:1), in both appearances.
+    #[test]
+    fn text_colours_pass_aa_on_every_surface() {
+        for appearance in [WindowAppearance::Dark, WindowAppearance::Light] {
+            let p = Palette::new(appearance);
+            let surfaces = [("bg", p.bg), ("side", p.side), ("side_hover", p.side_hover), ("side_sel", p.side_sel), ("raised", p.raised), ("code_bg", p.code_bg), ("popover", p.popover())];
+            let inks = [("text", p.text), ("prose", p.prose), ("text2", p.text2), ("muted", p.muted), ("accent", p.accent), ("danger", p.danger()), ("amber", p.amber), ("orange", p.orange), ("red", p.red)];
+            for (surface, bg) in surfaces {
+                for (ink, fg) in inks {
+                    let ratio = contrast(fg, bg);
+                    assert!(ratio >= 4.5, "{ink} on {surface} ({appearance:?}): {ratio:.2}");
+                }
+            }
+            assert!(contrast(p.tip_muted(), p.tip_bg()) >= 4.5 && contrast(p.tip_text(), p.tip_bg()) >= 4.5);
+            assert!(contrast(p.on_primary, p.primary) >= 4.5);
+            // Reading text is softer than titles, and still far past AAA (7:1).
+            assert!(contrast(p.prose, p.bg) < contrast(p.text, p.bg) && contrast(p.prose, p.bg) >= 7.);
+        }
+    }
 
     #[test]
     fn a_picked_appearance_wins_over_the_macs_and_system_follows_it() {

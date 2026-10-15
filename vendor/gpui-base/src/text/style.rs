@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use gpui::{HighlightStyle, Hsla, Rems, StyleRefinement, rems};
+use gpui::{HighlightStyle, Hsla, Rems, StyleRefinement, UnderlineStyle, px, rems};
 
 use crate::ColorTokens;
 
@@ -25,6 +25,10 @@ pub struct TextViewStyle {
     table_head: StyleRefinement,
     table_cell: StyleRefinement,
     inline_code: HighlightStyle,
+    // equipe: a link's underline and the room between a list's items,
+    // which were fixed.
+    link_underline: UnderlineStyle,
+    list_item_gap: Rems,
     /// The table body background, or the theme surface when `None`. Only
     /// [`Self::on_text_color`] sets it, to let a table on an inverted surface
     /// show that surface.
@@ -48,6 +52,8 @@ impl PartialEq for TextViewStyle {
             && self.table_cell == other.table_cell
             && self.inline_code == other.inline_code
             && self.table_background == other.table_background
+            && self.link_underline == other.link_underline
+            && self.list_item_gap == other.list_item_gap
             && self.is_dark == other.is_dark
     }
 }
@@ -91,6 +97,11 @@ impl TextViewStyle {
                 ..Default::default()
             },
             table_background: None,
+            link_underline: UnderlineStyle {
+                thickness: px(1.),
+                ..Default::default()
+            },
+            list_item_gap: rems(0.),
             is_dark,
         }
     }
@@ -232,6 +243,28 @@ impl TextViewStyle {
     /// The color of borders and horizontal rules.
     pub fn border(&self) -> Hsla {
         self.border
+    }
+
+    /// Sets how links are underlined (without a color, in the link's).
+    pub fn with_link_underline(mut self, underline: UnderlineStyle) -> Self {
+        self.link_underline = underline;
+        self
+    }
+
+    /// Sets the room between a list's items. Defaults to none.
+    pub fn with_list_item_gap(mut self, gap: Rems) -> Self {
+        self.list_item_gap = gap;
+        self
+    }
+
+    /// How links are underlined.
+    pub fn link_underline(&self) -> UnderlineStyle {
+        self.link_underline
+    }
+
+    /// The room between a list's items.
+    pub fn list_item_gap(&self) -> Rems {
+        self.list_item_gap
     }
 
     /// The gap between paragraphs.

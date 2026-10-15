@@ -285,7 +285,7 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
         .text_color(if done { d.tones.added } else { p.text2 })
         .child(if done { "✓".to_owned() } else { (n + 1).to_string() });
     let shown = rules::mark_paths(ask, card.named.get(n).map(Vec::as_slice).unwrap_or_default());
-    let text = super::chat::markdown(p, ("turn-ask", hash(key, n)), &shown, 14., 22., if done { p.muted } else { p.text }, &d.handle);
+    let text = super::chat::markdown(p, ("turn-ask", hash(key, n)), &shown, crate::theme::UI, crate::theme::UI_PROSE_LINE, if done { p.muted } else { p.text }, &d.handle);
     let files = card.named.get(n).filter(|f| !f.is_empty()).map(|files| h_flex().flex_wrap().gap_1p5().children(files.iter().enumerate().map(|(k, f)| file_chip(p, f, hash(key, n << 8 | k)))));
     let answer: Option<AnyElement> = match (want, d.place) {
         (_, Place::Side) => None,

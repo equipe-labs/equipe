@@ -11,6 +11,7 @@ pub mod raster;
 pub mod stream;
 pub mod tools;
 pub mod view;
+mod wrap;
 
 use std::path::{Path, PathBuf};
 
