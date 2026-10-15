@@ -443,7 +443,7 @@ async fn attach(target: &Target, side: Option<&SshSide>) -> Result<Connected, Fa
                 }
             }
         }
-        (Endpoint::Ssh(_), None) => Err(Failure::Other("ssh isn't set up".into())),
+        (Endpoint::Ssh(_), None) => Err(Failure::Other(t!("failure.ssh_not_set_up").into())),
     }
 }
 

@@ -5,6 +5,7 @@
 //! commands. The same rules as the terminal console (`tui/app.rs` `submit`,
 //! `slash`); the daemon commands are the ones it sends.
 
+use equipe_core::i18n::label;
 use equipe_core::t;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -631,7 +632,9 @@ fn decide(model: &Model, verb: &str, rest: &str) -> Plan {
 fn set_mode(model: &Model, rest: &str) -> Plan {
     let words: Vec<&str> = rest.split_whitespace().collect();
     let usage = || {
-        let modes: Vec<String> = Mode::ALL.iter().map(|m| format!("{} ({})", m.label(), m.short())).collect();
+        // The word typed for each, and what it means in the person's language.
+        let lang = crate::i18n::lang();
+        let modes: Vec<String> = Mode::ALL.iter().zip(commands::MODES).map(|(m, word)| format!("{word} ({})", label::mode_short(lang, *m))).collect();
         t!("compose.mode_usage", modes = modes.join(" · "))
     };
     let squad = model.squad.clone();
@@ -639,7 +642,7 @@ fn set_mode(model: &Model, rest: &str) -> Plan {
         return Plan::say(t!("compose.mode_plan"));
     }
     match words.as_slice() {
-        [] => Plan::say(t!("compose.mode_current", mode = model.mode.label(), usage = usage())),
+        [] => Plan::say(t!("compose.mode_current", mode = label::mode(crate::i18n::lang(), model.mode), usage = usage())),
         [mode] => match Mode::parse(mode) {
             Some(mode) => Plan::send(Command::SetMode { squad, member: None, mode: Some(mode) }),
             None => Plan::say(usage()),

@@ -141,6 +141,11 @@ pub struct BrowserPanel {
 impl EventEmitter<PanelEvent> for BrowserPanel {}
 
 impl BrowserPanel {
+    /// The language changed: the address box's hint follows.
+    pub fn relocalize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.url.update(cx, |s, cx| s.set_placeholder(t!("browser.address_placeholder"), window, cx));
+    }
+
     pub fn new(width: Option<f32>, palette: Palette, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let url = cx.new(|cx| InputState::new(window, cx).placeholder(t!("browser.address_placeholder")));
         let prompt = cx.new(|cx| InputState::new(window, cx));

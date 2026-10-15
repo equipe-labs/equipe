@@ -798,8 +798,24 @@ fn install_screen(p: Palette) -> AnyElement {
         .into_any_element()
 }
 
+impl Shell {
+    /// The language changed: the words kept in the inputs outside the board
+    /// follow, as the board's do ([`views::board::BoardUi::relocalize`]).
+    fn relocalize_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(input) = &self.chat.find.input {
+            input.update(cx, |s, cx| s.set_placeholder(t!("chat.find_placeholder"), window, cx));
+        }
+        self.connect.input.update(cx, |s, cx| s.set_placeholder(t!("connect.host_placeholder"), window, cx));
+        self.ask.input.update(cx, |s, cx| s.set_placeholder(t!("connect.secret_placeholder"), window, cx));
+        self.browser.update(cx, |b, cx| b.relocalize(window, cx));
+    }
+}
+
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.board.words != crate::i18n::lang() {
+            self.relocalize_inputs(window, cx);
+        }
         self.board.relocalize(window, cx);
         self.board_prepare(window, cx);
         self.renders += 1;

@@ -65,8 +65,8 @@ pub fn style(p: Palette, look: &Look) -> TextViewStyle {
 /// it, the whole code of each cut fence, for its copy button.
 pub fn prepare(raw: &str, live: bool, expanded: &dyn Fn(usize) -> bool) -> (String, HashMap<String, String>) {
     let shown = if live { stream::hold_back(raw) } else { raw };
-    let more = |n: usize| t!("render.code_more", n = n);
-    let rows = |n: usize| t!("render.table_more_rows", n = n);
+    let more = |n: usize| t!("render.code_more", count = n);
+    let rows = |n: usize| t!("render.table_more_rows", count = n);
     let words = code::Words { more: &more, less: t!("render.code_less"), rows: &rows };
     let fences = code::prepare(shown, expanded, &words);
     (link_tickets(&fences.text), fences.full)

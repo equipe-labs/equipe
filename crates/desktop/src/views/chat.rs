@@ -528,7 +528,8 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
         }
         Block::Steps(lines) => steps(rows, key, lines, window, cx),
         Block::Note(text) => {
-            let chapter = text.starts_with("── ") || text.starts_with("─ worked");
+            // A ticket's heading (`── T-12 …`) or a turn's end (`─ worked …`, in any language).
+            let chapter = text.starts_with('─');
             let (markdown, full) = view::prepare(text, false, &|_| true);
             let state = rows.views.borrow_mut().get(view_key(key, 1), &markdown, cx);
             let look = Look { size: SMALL, line: 20., color: p.muted, live: false };
@@ -771,7 +772,7 @@ fn step(rows: &Rows, key: u64, at: u32, line: &ToolLine, reduce: bool) -> AnyEle
         .items_center()
         .when(line.edits, |l| l.text_color(p.text2))
         .child(div().w(px(14.)).flex_none().flex().justify_center().child(mark))
-        .child(div().w(px(52.)).flex_none().child(line.verb.clone()))
+        .child(div().w(px(52.)).flex_none().child(crate::convo::verb_word(&line.verb).to_owned()))
         .child(div().min_w_0().flex_1().overflow_hidden().child(SelectableText::new(("step", key << 8 | at as u64), line.text())))
         .children(line.exit.filter(|_| failed).map(|code| div().flex_none().px_1().rounded(px(4.)).bg(t.danger_bg).text_color(t.danger).child(t!("chat.exit_code", code = code))))
         .children(line.ms.filter(|_| line.status != Status::Running).map(|ms| div().flex_none().text_color(p.muted).child(tools::duration(ms))));
@@ -803,7 +804,7 @@ fn output_box(rows: &Rows, key: u64, at: u32, text: &str, skipped: u32, failed: 
         .text_size(px(12.))
         .line_height(px(18.))
         .text_color(if failed { t.danger } else { p.text2 })
-        .when(before > 0, |col| col.child(div().text_color(p.muted).child(t!("chat.output_before", n = before))))
+        .when(before > 0, |col| col.child(div().text_color(p.muted).child(t!("chat.output_before", count = before))))
         .child(SelectableText::new(("output", key << 8 | at as u64), shown.join("\n")))
         .when(more, |col| {
             col.child(
@@ -812,7 +813,7 @@ fn output_box(rows: &Rows, key: u64, at: u32, text: &str, skipped: u32, failed: 
                     .pt_1()
                     .text_color(p.accent)
                     .cursor_pointer()
-                    .child(if open { t!("chat.output_less").to_owned() } else { t!("chat.output_more", n = all.len()) })
+                    .child(if open { t!("chat.output_less").to_owned() } else { t!("chat.output_more", count = all.len()) })
                     .on_click(move |_, _, cx| {
                         handle.update(cx, |shell, cx| shell.chat_toggle(key, part, cx)).ok();
                     }),
@@ -887,7 +888,7 @@ fn diff_card(rows: &Rows, key: u64, at: u32, card: tools::DiffCard, path: Option
                     .text_size(px(12.))
                     .text_color(p.accent)
                     .cursor_pointer()
-                    .child(if open { t!("chat.diff_less").to_owned() } else { t!("chat.diff_more", n = hidden) })
+                    .child(if open { t!("chat.diff_less").to_owned() } else { t!("chat.diff_more", count = hidden) })
                     .on_click(move |_, _, cx| {
                         handle.update(cx, |shell, cx| shell.chat_toggle(key, part, cx)).ok();
                     }),

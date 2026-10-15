@@ -7,6 +7,7 @@
 //! `SSH_ASKPASS` pointing back at itself for the questions `ssh` asks
 //! (see `askpass.rs`). It never auto-accepts a host key and stores no password.
 
+use equipe_core::t;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -184,7 +185,7 @@ impl Launcher {
         match process.finish(false).await {
             Failure::Closed if fed.is_ok() => {
                 let kept = String::from_utf8_lossy(&out).trim().to_owned();
-                if kept.starts_with('/') { Ok(kept) } else { Err(Failure::Other("the other machine didn't say where it kept the file".into())) }
+                if kept.starts_with('/') { Ok(kept) } else { Err(Failure::Other(t!("failure.no_kept_path").into())) }
             }
             Failure::Closed => Err(Failure::Other(fed.err().unwrap_or_default())),
             failure => Err(failure),

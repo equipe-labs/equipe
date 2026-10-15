@@ -997,10 +997,10 @@ pub fn now_unix() -> u64 {
 /// A span of time, short: `45s`, `25m`, `3h`, `2d`.
 pub fn short_span(secs: u64) -> String {
     match secs {
-        0..=59 => format!("{secs}s"),
-        60..=3599 => format!("{}m", secs / 60),
-        3600..=86_399 => format!("{}h", secs / 3600),
-        _ => format!("{}d", secs / 86_400),
+        0..=59 => t!("time.span_secs", n = secs),
+        60..=3599 => t!("time.span_mins", n = secs / 60),
+        3600..=86_399 => t!("time.span_hours", n = secs / 3600),
+        _ => t!("time.span_days", n = secs / 86_400),
     }
 }
 
@@ -1419,9 +1419,9 @@ mod tests {
         assert_eq!(model.since.get(&2), Some(&1_000));
         model.unix = 1_000 + 25 * 60;
         assert_eq!(model.in_state_for(&model.tickets.iter().find(|t| t.id == 2).unwrap().clone()), Some(25 * 60));
-        assert_eq!(short_span(25 * 60), "25m");
-        assert_eq!(short_span(3 * 3600), "3h");
-        assert_eq!(short_span(2 * 86_400), "2d");
+        assert_eq!(short_span(25 * 60), "25분");
+        assert_eq!(short_span(3 * 3600), "3시간");
+        assert_eq!(short_span(2 * 86_400), "2일");
     }
 
     #[test]

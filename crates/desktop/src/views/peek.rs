@@ -147,7 +147,7 @@ fn head(shell: &Shell, t: &Ticket, wide: bool, cx: &mut Context<Shell>) -> AnyEl
         facts.push(div().child(t!("peek.since", span = short_span(since))).into_any_element());
     }
     if t.kind.in_home() {
-        facts.push(div().child(t!("board.kind_label", kind = t.kind.label())).into_any_element());
+        facts.push(div().child(t!("board.kind_label", kind = equipe_core::i18n::label::kind(crate::i18n::lang(), t.kind))).into_any_element());
     }
     v_flex()
         .gap_2()

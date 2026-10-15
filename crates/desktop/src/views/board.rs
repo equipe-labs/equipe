@@ -129,6 +129,9 @@ impl BoardUi {
         self.reply.update(cx, |s, cx| s.set_placeholder(t!("board.reply_placeholder"), window, cx));
         self.naming.update(cx, |s, cx| s.set_placeholder(t!("board.view_name_placeholder"), window, cx));
         self.slice_search.update(cx, |s, cx| s.set_placeholder(t!("header.find_project"), window, cx));
+        if let Some(diff) = &self.diff {
+            diff.comment.update(cx, |s, cx| s.set_placeholder(t!("diff.comment_placeholder"), window, cx));
+        }
     }
 
     pub fn new(window: &mut Window, cx: &mut Context<Shell>, fetched: tokio::sync::mpsc::UnboundedSender<Fetched>) -> Self {
@@ -1514,7 +1517,7 @@ fn meta(shell: &Shell, t: &Ticket) -> Meta {
         TicketStatus::InProgress => live_activity(model, t).map(|a| (a, p.text2)),
         TicketStatus::Waiting => board::first_need(t).map(|n| (n, p.accent)),
         TicketStatus::Proposed => Some((t!("board.proposed_by", who = t.created_by), p.muted)),
-        TicketStatus::Review | TicketStatus::Done if t.kind.in_home() => Some((t!("board.kind_label", kind = t.kind.label()), p.muted)),
+        TicketStatus::Review | TicketStatus::Done if t.kind.in_home() => Some((t!("board.kind_label", kind = equipe_core::i18n::label::kind(crate::i18n::lang(), t.kind)), p.muted)),
         TicketStatus::Review | TicketStatus::Done => shell.board.stat(t).map(|s| (s.short(), p.muted)),
         _ => None,
     };

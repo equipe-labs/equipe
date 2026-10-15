@@ -75,7 +75,8 @@ pub fn output_preview(output: &str, skipped: u32) -> (Vec<&str>, usize) {
 pub fn duration(ms: u64) -> String {
     if ms < 1000 {
         let tenths = (ms + 50) / 100;
-        return if tenths >= 10 { "1s".into() } else { format!("0.{}s", tenths.max(1)) };
+        let secs = if tenths >= 10 { "1".to_owned() } else { format!("0.{}", tenths.max(1)) };
+        return equipe_core::t!("time.secs", s = secs);
     }
     crate::convo::elapsed(std::time::Duration::from_millis(ms))
 }
@@ -108,10 +109,10 @@ mod tests {
 
     #[test]
     fn durations_read_short() {
-        assert_eq!(duration(30), "0.1s");
-        assert_eq!(duration(420), "0.4s");
-        assert_eq!(duration(980), "1s");
-        assert_eq!(duration(12_400), "12s");
-        assert_eq!(duration(65_000), "1m 05s");
+        assert_eq!(duration(30), "0.1초");
+        assert_eq!(duration(420), "0.4초");
+        assert_eq!(duration(980), "1초");
+        assert_eq!(duration(12_400), "12초");
+        assert_eq!(duration(65_000), "1분 05초");
     }
 }
