@@ -137,6 +137,16 @@ mod tests {
     }
 
     #[test]
+    fn bold_closed_against_korean_is_not_held() {
+        let whole = "참고로 backend가 **T-114(이 기기 지우기, 릴레이·데몬 쪽)**를 검토에";
+        assert_eq!(hold_back(whole), whole);
+        assert_eq!(hold_back("참고로 backend가 **T-114(이 기기"), "참고로 backend가 ");
+        assert_eq!(hold_back("참고로 **T-114(이 기기)**"), "참고로 **T-114(이 기기)**", "closed, though no particle yet");
+        assert_eq!(hold_back("이것은**(중요)**입니다"), "이것은**(중요)**입니다");
+        assert_eq!(hold_back("**[링크](https://x.y)**은 ~~T-2~~는 ~~T-"), "**[링크](https://x.y)**은 ~~T-2~~는 ");
+    }
+
+    #[test]
     fn only_the_last_line_is_looked_at() {
         assert_eq!(hold_back("**a\nnext **b"), "**a\nnext ");
         assert_eq!(hold_back("line one\n"), "line one\n");
