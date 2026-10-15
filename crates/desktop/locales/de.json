@@ -87,7 +87,7 @@
   "board.save": "Sichern",
   "board.save_view_as": "Aktuelle Liste als Ansicht sichern",
   "board.search_placeholder": "Suchen · project:web is:blocked",
-  "board.squad_folder": "Außerhalb der Projekte",
+  "board.squad_folder": "Gemeinsamer Squad-Ordner",
   "board.toast_accept": "T-{id} angenommen",
   "board.toast_accept_branch": "T-{id} angenommen · bleibt auf seinem Branch",
   "board.toast_accept_merge": "T-{id} angenommen · {way} in {project}",

@@ -87,7 +87,7 @@
   "board.save": "保存",
   "board.save_view_as": "表示中の内容をビューとして保存",
   "board.search_placeholder": "検索 · project:web is:blocked",
-  "board.squad_folder": "プロジェクト外の作業",
+  "board.squad_folder": "スクワッドの共有フォルダ",
   "board.toast_accept": "T-{id}を承認しました",
   "board.toast_accept_branch": "T-{id}を承認 · ブランチに残しました",
   "board.toast_accept_merge": "T-{id}を承認 · {way} → {project}",

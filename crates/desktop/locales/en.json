@@ -87,7 +87,7 @@
   "board.save": "Save",
   "board.save_view_as": "Save what is listed as a view",
   "board.search_placeholder": "Search · project:web is:blocked",
-  "board.squad_folder": "Outside any project",
+  "board.squad_folder": "Squad shared folder",
   "board.toast_accept": "T-{id} accepted",
   "board.toast_accept_branch": "T-{id} accepted · left on its branch",
   "board.toast_accept_merge": "T-{id} accepted · {way} into {project}",

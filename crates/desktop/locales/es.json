@@ -87,7 +87,7 @@
   "board.save": "Guardar",
   "board.save_view_as": "Guardar la lista actual como vista",
   "board.search_placeholder": "Buscar · project:web is:blocked",
-  "board.squad_folder": "Fuera de los proyectos",
+  "board.squad_folder": "Carpeta compartida del squad",
   "board.toast_accept": "T-{id} aceptado",
   "board.toast_accept_branch": "T-{id} aceptado · queda en su rama",
   "board.toast_accept_merge": "T-{id} aceptado · {way} en {project}",

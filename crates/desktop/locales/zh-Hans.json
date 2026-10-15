@@ -87,7 +87,7 @@
   "board.save": "保存",
   "board.save_view_as": "将当前列表存为视图",
   "board.search_placeholder": "搜索 · project:web is:blocked",
-  "board.squad_folder": "项目之外的工作",
+  "board.squad_folder": "小队共享文件夹",
   "board.toast_accept": "已接受 T-{id}",
   "board.toast_accept_branch": "已接受 T-{id} · 保留在其分支上",
   "board.toast_accept_merge": "已接受 T-{id} · {way} → {project}",

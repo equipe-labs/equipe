@@ -87,7 +87,7 @@
   "board.save": "儲存",
   "board.save_view_as": "將目前列出的內容儲存為檢視",
   "board.search_placeholder": "搜尋 · project:web is:blocked",
-  "board.squad_folder": "專案之外的工作",
+  "board.squad_folder": "小隊共用資料夾",
   "board.toast_accept": "已接受 T-{id}",
   "board.toast_accept_branch": "已接受 T-{id} · 留在分支上",
   "board.toast_accept_merge": "已接受 T-{id} · {way} → {project}",

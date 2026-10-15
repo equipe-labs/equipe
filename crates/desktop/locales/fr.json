@@ -87,7 +87,7 @@
   "board.save": "Enregistrer",
   "board.save_view_as": "Enregistrer la liste affichée comme vue",
   "board.search_placeholder": "Rechercher · project:web is:blocked",
-  "board.squad_folder": "Hors des projets",
+  "board.squad_folder": "Dossier partagé de l'escouade",
   "board.toast_accept": "T-{id} accepté",
   "board.toast_accept_branch": "T-{id} accepté · laissé sur sa branche",
   "board.toast_accept_merge": "T-{id} accepté · {way} dans {project}",

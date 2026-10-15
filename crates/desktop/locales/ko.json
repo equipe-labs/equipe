@@ -87,7 +87,7 @@
   "board.save": "저장",
   "board.save_view_as": "지금 보이는 대로 보기 저장",
   "board.search_placeholder": "찾기 · project:web is:blocked",
-  "board.squad_folder": "프로젝트 밖 작업",
+  "board.squad_folder": "스쿼드 공용 폴더",
   "board.toast_accept": "T-{id} 수락",
   "board.toast_accept_branch": "T-{id} 수락 · 브랜치에 둠",
   "board.toast_accept_merge": "T-{id} 수락 · {project}에 {way} 예정",
