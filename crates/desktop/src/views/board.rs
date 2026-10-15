@@ -1437,7 +1437,6 @@ struct Meta {
     flags: Vec<(String, Rgba)>,
     activity: Option<(String, Rgba)>,
     eta: Option<(String, Rgba)>,
-    who: Option<(&'static str, Rgba, String)>,
     time: Option<String>,
 }
 
@@ -1508,13 +1507,8 @@ fn meta(shell: &Shell, t: &Ticket) -> Meta {
             (eta_text(e.at, e.guessed), p.muted)
         }
     });
-    let who = board::who(t).map(|w| {
-        let member = model.members.iter().find(|m| m.name == w || m.role == w);
-        let (mark, hue) = member.map_or_else(|| look(w, w), |m| look(&m.role, &m.name));
-        (mark, p.member(hue), w.to_owned())
-    });
     let time = model.in_state_for(t).map(short_span);
-    Meta { flags, activity, eta, who, time }
+    Meta { flags, activity, eta, time }
 }
 
 fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Context<Shell>) -> AnyElement {
@@ -1543,31 +1537,56 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 this.board_pick(need, cx);
             }))
     };
+    // One grid for every row of every section: check · mark · T-n · project ·
+    // title · flags · detail · when · time.
+    let compact = shell.board.list_width < 720.;
+    let show_project = model.focus.is_none() && model.projects.len() > 1;
+    let (flags_w, detail_w, eta_w) = if compact { (72., 120., 44.) } else { (120., 176., 56.) };
+    let project_col = |t: Option<&Ticket>| {
+        let color = t.and_then(|t| hue_of(p, model, t));
+        let name = t.map(|t| model.ticket_project_name(t).unwrap_or_else(|| t!("board.squad_folder").into()));
+        h_flex()
+            .w(px(if compact { 10. } else { 84. }))
+            .flex_none()
+            .gap(px(6.))
+            .items_center()
+            .children(t.map(|_| dot(color.unwrap_or(p.muted), 6.)))
+            .when(!compact, |d| d.child(div().min_w_0().truncate().text_size(px(12.)).text_color(p.muted).child(name.unwrap_or_default())))
+    };
+    let cell = |w: f32| div().w(px(w)).flex_none().truncate().text_align(TextAlign::Right).text_size(px(12.));
     match need {
         Need::Permission(id) => {
             let Some(a) = model.approvals.get(id) else { return div().into_any_element() };
             let card = super::approvals::Card::of(a);
-            let (mark, hue) = look(model.members.iter().find(|m| m.session == a.session).map_or("", |m| m.role.as_str()), &a.member);
+            let hue = look(model.members.iter().find(|m| m.session == a.session).map_or("", |m| m.role.as_str()), &a.member).1;
+            let ticket = a.ticket.and_then(|t| model.tickets.iter().find(|x| x.id == t));
             base(SharedString::from(format!("ask-{id}")), cx)
-                .child(div().w(px(2.)).h(px(18.)).flex_none().rounded(px(1.)).bg(p.accent))
-                .child(div().w(px(16.)).flex_none())
+                .pl_2()
+                .child(div().w(px(14.)).flex_none())
                 .child(div().size(px(14.)).flex_none().flex().items_center().justify_center().text_size(px(12.)).text_color(p.accent).child("⚑"))
                 .child(div().w(px(44.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(a.ticket.map(|t| format!("T-{t}")).unwrap_or_default()))
-                .child(div().flex_none().text_color(p.text).child(t!("approvals.allow_question", what = card.noun)))
-                .child(div().flex_1().min_w_0().truncate().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(card.lines.first().cloned().unwrap_or_default()))
-                .child(div().w(px(18.)).flex_none().text_color(p.member(hue)).child(mark))
+                .when(show_project, |r| r.child(project_col(ticket)))
+                .child(
+                    h_flex()
+                        .flex_1()
+                        .min_w(px(120.))
+                        .gap_2()
+                        .overflow_hidden()
+                        .child(div().flex_none().text_color(p.text).child(t!("approvals.allow_question", what = card.noun)))
+                        .child(div().flex_1().min_w_0().truncate().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(card.lines.first().cloned().unwrap_or_default())),
+                )
+                .child(div().w(px(flags_w)).flex_none())
+                .child(cell(detail_w).text_color(p.member(hue)).child(a.member.clone()))
+                .child(cell(eta_w))
+                .child(cell(34.))
                 .into_any_element()
         }
         Need::Ticket(id) => {
             let Some(t) = model.tickets.iter().find(|t| t.id == id) else { return div().into_any_element() };
             let m = meta(shell, t);
-            let needs = model.section_of(t).is_some() && !t.status.is_closed() || t.not_on_main();
             let chosen = shell.board.view.chosen.contains(&id);
             let closed = t.status.is_closed();
             let live = model.is_live(t);
-            let compact = shell.board.list_width < 720.;
-            let show_project = model.focus.is_none() && model.projects.len() > 1 || t.kind.in_home() && t.project.is_none() && model.focus.is_none();
-            let project = model.ticket_project_name(t);
             let can = shell.can_act();
             let quick = |id: &'static str, label: &'static str, cx: &mut Context<Shell>, act: fn(&mut Shell, &mut Window, &mut Context<Shell>)| {
                 div()
@@ -1602,7 +1621,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
             }
             let has_actions = !actions.is_empty();
             base(SharedString::from(format!("ticket-{id}")), cx)
-                .child(div().w(px(2.)).h(px(18.)).flex_none().rounded(px(1.)).when(needs, |d| d.bg(p.accent)))
+                .pl_2()
                 .child(
                     div()
                         .id(SharedString::from(format!("check-{id}")))
@@ -1628,18 +1647,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                     d.child(div().absolute().top(px(-2.)).right(px(-3.)).child(icons::live_dot(p, shell.board.pulse)))
                 }))
                 .child(div().w(px(44.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
-                .when(show_project && compact, |r| r.child(div().w(px(10.)).flex_none().flex().justify_center().child(dot(hue_of(p, model, t).unwrap_or(p.muted), 6.))))
-                .when(show_project && !compact, |r| {
-                    r.child(
-                        h_flex()
-                            .w(px(84.))
-                            .flex_none()
-                            .gap(px(6.))
-                            .items_center()
-                            .child(dot(hue_of(p, model, t).unwrap_or(p.muted), 6.))
-                            .child(div().min_w_0().truncate().text_size(px(12.)).text_color(p.muted).child(project.unwrap_or_else(|| t!("board.squad_folder").into()))),
-                    )
-                })
+                .when(show_project, |r| r.child(project_col(Some(t))))
                 .child(
                     div()
                         .flex_1()
@@ -1649,19 +1657,24 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                         .text_color(if closed { p.muted } else { p.text })
                         .child(if depth > 0 { format!("↳ {}", t.title) } else { t.title.clone() }),
                 )
-                .children(m.flags.into_iter().map(|(text, color)| div().flex_none().px(px(6.)).h(px(18.)).flex().items_center().rounded(px(4.)).bg(p.wash).text_size(px(11.)).text_color(color).child(text)))
                 .child(
                     h_flex()
-                        .flex_shrink(1.)
-                        .min_w_0()
+                        .w(px(flags_w))
+                        .flex_none()
+                        .gap_1()
+                        .justify_end()
+                        .overflow_hidden()
+                        .children(m.flags.into_iter().map(|(text, color)| div().flex_none().px(px(6.)).h(px(18.)).flex().items_center().rounded(px(4.)).bg(p.wash).text_size(px(11.)).text_color(color).child(text))),
+                )
+                .child(
+                    h_flex()
+                        .flex_none()
                         .gap_2()
                         .items_center()
-                        .text_size(px(12.))
                         .when(has_actions, |d| d.group_hover(group.clone(), |s| s.opacity(0.)))
-                        .child(div().when(!compact, |d| d.w(px(176.)).flex_none()).when(compact, |d| d.max_w(px(150.)).flex_shrink(1.).min_w_0()).truncate().text_align(TextAlign::Right).text_color(m.activity.as_ref().map_or(p.muted, |a| a.1)).child(m.activity.map(|a| a.0).unwrap_or_default()))
-                        .when(!compact || m.eta.is_some(), |d| d.child(div().w(px(56.)).flex_none().truncate().text_align(TextAlign::Right).text_color(m.eta.as_ref().map_or(p.muted, |e| e.1)).child(m.eta.map(|e| e.0).unwrap_or_default())))
-                        .child(div().w(px(16.)).flex_none().text_size(px(12.)).text_align(TextAlign::Center).text_color(m.who.as_ref().map_or(p.muted, |w| if closed { p.muted } else { w.1 })).child(m.who.as_ref().map(|w| w.0).unwrap_or("")))
-                        .child(div().w(px(30.)).flex_none().text_align(TextAlign::Right).text_color(p.muted).child(m.time.unwrap_or_default())),
+                        .child(cell(detail_w).text_color(m.activity.as_ref().map_or(p.muted, |a| a.1)).child(m.activity.map(|a| a.0).unwrap_or_default()))
+                        .child(cell(eta_w).text_color(m.eta.as_ref().map_or(p.muted, |e| e.1)).child(m.eta.map(|e| e.0).unwrap_or_default()))
+                        .child(cell(34.).text_color(p.muted).child(m.time.unwrap_or_default())),
                 )
                 .when(has_actions, |r| r.child(h_flex().absolute().right(px(12.)).gap_1().invisible().group_hover(group.clone(), |s| s.visible()).children(actions)))
                 .into_any_element()
