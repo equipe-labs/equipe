@@ -122,6 +122,25 @@ The pairing **slot** is the first 32 hex chars of `SHA-256(pairing secret)`.
 `equipe devices` lists paired devices; `equipe devices remove <name>` forgets one and has the
 relay drop it (`device_remove`) — its socket is closed at once.
 
+### From a screen (the desktop app)
+
+A screen pairs a phone over the daemon's own protocol, so a window on another Mac pairs the
+phone with the daemon's machine, not its own. It sends `pair_start`, `pair_answer { approve }`,
+`pair_cancel`, `devices` and `unpair { device }` as commands; the gateway answers that screen
+alone with `pair_offer { url, seconds }`, `pair_asked { name, platform }`, `paired { name }`,
+`pair_ended { why, message }` (`why`: `refused`, `expired`, `busy`, `relay`, `unavailable`,
+`failed`) and `devices { devices, relay, connected }` events. The runtime never sees them, and a
+phone may not send them (they're dropped like any command a device may not send).
+
+The gateway carries them to the same local socket `equipe pair` uses (`~/.equipe/remote.sock`,
+one JSON object per line: `{"op":"pair"}`, `answer`, `cancel`, `devices`, `remove`), so the
+terminal and the app pair the one same way. A code belongs to the line that opened it: another
+line asking gets `{"error", "why":"busy"}` and can't close it; the same line asking again closes
+its old slot and opens a new one; the line closing (the screen leaving, Ctrl-C) closes it.
+Answers to `devices` and `remove` carry `"op"`; a device row is `{ id, name, platform, added,
+online, seen? }`, `seen` being when it last connected or left (kept in `remote.json`). The code
+reaches the screen only in `pair_offer` and is never logged or kept on either side.
+
 ## Demo pairing (store review)
 
 App Review and Google Play reviewers have no Mac to pair with. For them equipe-labs runs a

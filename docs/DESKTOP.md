@@ -254,6 +254,26 @@ are for it.
 Spike knobs (env): `EQUIPE_AGENTS` (3), `EQUIPE_RATE` lines/s per mock agent
 (200, `0` = idle), `EQUIPE_TICK_MS` UI poll interval (33), `EQUIPE_W`/`EQUIPE_H`.
 
+## Pairing a phone
+
+"휴대폰 연결…" (the app menu, the account menu at the sidebar's foot, or settings ▸ 스쿼드와
+기기 ▸ 휴대폰) opens a sheet with a QR code the equipe app scans — no terminal. The daemon
+does the pairing on its own machine, which over SSH is not this Mac: the sheet sends
+`pair_start` and draws what comes back (docs/remote-protocol.md, "From a screen"). The stages:
+a spinner while the daemon opens a code at the relay; the code (black on white with a quiet
+zone, drawn as whole-point rectangles so it scans in light and dark), three steps, its time
+left and "링크 복사"; the phone asking, with 거절 / 허용 (the person's yes is still what pairs
+it); "연결됨", and the sheet closes itself. A code that runs out is replaced up to three times,
+then the sheet offers a new one. Errors say what to do: the relay unreachable, another code
+open elsewhere, a daemon without its phone link, or one that never answers (older than the
+app: update it, or `equipe pair` meanwhile). The code lives only in the sheet's state while it
+is open; closing it cancels the code (or says no to a phone left asking).
+
+Settings lists the paired phones — connected now, or when last seen — with "연결 끊기",
+asked twice. The rules are `src/pair.rs`, the drawing `src/views/pair.rs`. The fake daemon
+answers pairing too (`FAKE_PAIR=ask|relay|silent`), and the snapshot script has `pair` and
+`pair:allow|deny|retry|close`.
+
 ## The browser panel
 
 ⌘⇧B (or the header's 브라우저) opens the shared Chrome the members browse in,

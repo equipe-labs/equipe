@@ -19,6 +19,7 @@ mod files;
 mod media;
 mod mem;
 mod notify;
+mod pair;
 mod ssh;
 #[cfg(feature = "snapshot")]
 mod snapshot;
@@ -72,6 +73,8 @@ actions!(equipe, [CheckForUpdates, Hide, HideOthers, ShowAll, Quit]);
 actions!(equipe, [ToggleSidebar, NewMessage, SearchAll]);
 // Settings (⌘,), from the app menu or anywhere.
 actions!(equipe, [OpenSettings]);
+// "휴대폰 연결…": a phone paired with the daemon's machine, by QR code.
+actions!(equipe, [PairPhone]);
 
 /// How long the daemon gets to answer before the window says it is connecting.
 const CONNECTING_AFTER: Duration = Duration::from_millis(400);
@@ -109,6 +112,11 @@ pub struct Shell {
     pub remembered: Remembered,
     pub connect: ConnectUi,
     pub ask: AskUi,
+    /// "휴대폰 연결": the sheet's state and the paired phones (`pair.rs`).
+    pub pairing: pair::Pairing,
+    /// The paired phone whose "연결 끊기" was pressed once, asking to be sure.
+    pub forgetting: Option<String>,
+    _pair_tick: Option<Task<()>>,
     /// Something said on a thread of ours (a failed fetch) for the flash line.
     notices: tokio::sync::mpsc::UnboundedSender<String>,
     connecting_shown: bool,
@@ -177,6 +185,9 @@ impl Shell {
             remembered,
             connect,
             ask,
+            pairing: pair::Pairing::default(),
+            forgetting: None,
+            _pair_tick: None,
             notices,
             connecting_shown: false,
             log_renders: std::env::var_os("EQUIPE_LOG_RENDER").is_some(),
@@ -413,6 +424,11 @@ impl Shell {
     fn attach(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
         self.model = Model::new(target.prefer.as_deref().unwrap_or(""));
         self.connecting_shown = false;
+        // Phones are the daemon's machine's: another machine has its own. A
+        // code open closes with the old connection.
+        let _ = self.pairing.close();
+        self.pairing.devices = None;
+        self.pairing.devices_asked = None;
         // Questions still open were for the connection being left.
         self.ask.queue.clear();
         let backoff = if target.endpoint.is_remote() { Backoff::remote() } else { Backoff::default() };
@@ -450,6 +466,25 @@ impl Shell {
                             this.browser.update(cx, |b, cx| b.on_event(event, window, cx));
                             continue;
                         }
+                        // Pairing a phone: the sheet's and settings', never the model's.
+                        if let daemon::Update::Event(
+                            event @ (Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. }),
+                        ) = &update
+                        {
+                            changed |= this.pairing.on_event(event, std::time::Instant::now());
+                            match event {
+                                // The list in settings shows it at once.
+                                Event::Paired { .. } => this.send_command(Command::Devices),
+                                // A phone waits for the person's yes: bring the window to them.
+                                Event::PairAsked { .. } if this.pairing.open => window.activate_window(),
+                                _ => {}
+                            }
+                            continue;
+                        }
+                        match &update {
+                            daemon::Update::Down(_) => this.pairing.disconnected(),
+                            _ => {}
+                        }
                         match &update {
                             // The daemon's own list, asked on every attach: a squad
                             // made since shows up, on this Mac or the far one.
@@ -468,7 +503,13 @@ impl Shell {
                             }
                             _ => {}
                         }
+                        let attached = matches!(update, daemon::Update::Attached(_));
                         changed |= this.model.apply(update, now);
+                        // Settings open on its list: the daemon (maybe another one) is asked again.
+                        if attached && this.screen == Screen::Settings {
+                            this.pairing.devices_asked = None;
+                            this.ask_devices(cx);
+                        }
                     }
                     // Told while the window is out of sight; in sight, the cards say it.
                     // Only the kinds the person wants (settings → 알림).
@@ -576,12 +617,14 @@ impl Shell {
     // ── questions from ssh ──
 
     pub fn overlay_open(&self) -> bool {
-        self.connect.open || !self.ask.queue.is_empty()
+        self.connect.open || !self.ask.queue.is_empty() || self.pairing.open
     }
 
     fn escape_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.ask.queue.is_empty() {
             self.answer_prompt(askpass::Answer::Cancel, window, cx);
+        } else if self.pairing.open {
+            self.close_pairing(window, cx);
         } else {
             self.close_chooser(window, cx);
         }
@@ -875,6 +918,7 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &NewMessage, window, cx| this.new_message(window, cx)))
             .on_action(cx.listener(|this, _: &SearchAll, window, cx| this.search_everything(window, cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.toggle_settings(window, cx)))
+            .on_action(cx.listener(|this, _: &PairPhone, window, cx| this.open_pairing(window, cx)))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                 if this.board.sidebar_drag.is_some() {
                     if e.pressed_button == Some(MouseButton::Left) {
@@ -915,7 +959,13 @@ impl Render for Shell {
         // strip; each screen's header is the title bar on the right.
         if self.screen == Screen::Settings {
             // Settings: its own list in the sidebar's place, the page beside it.
-            return root.relative().child(h_flex().flex_1().min_h_0().child(views::settings::render(self, cx))).children(self.connect.open.then(|| views::connect::chooser(self, cx))).children(views::connect::question(self, cx)).children(tips::layer(cx));
+            return root
+                .relative()
+                .child(h_flex().flex_1().min_h_0().child(views::settings::render(self, cx)))
+                .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
+                .children(views::pair::sheet(self, cx))
+                .children(views::connect::question(self, cx))
+                .children(tips::layer(cx));
         }
         let sidebar = self.sidebar(cx);
         let browser = (self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
@@ -924,6 +974,7 @@ impl Render for Shell {
             .children(views::composer::drop_overlay(self, cx))
             .children(views::composer::lightbox(self, cx))
             .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
+            .children(views::pair::sheet(self, cx))
             .children(views::connect::question(self, cx))
             .children(tips::layer(cx))
     }
@@ -956,6 +1007,7 @@ pub fn set_menus(cx: &mut App) {
     let can_update = CAN_UPDATE.load(std::sync::atomic::Ordering::Relaxed);
     cx.set_menus(vec![Menu::new("equipe").items([
         MenuItem::action(t!("main.menu_choose_target"), ChooseTarget),
+        MenuItem::action(t!("pair.menu_item"), PairPhone),
         MenuItem::action(t!("settings.menu_item"), OpenSettings),
         MenuItem::action(t!("main.menu_check_updates"), CheckForUpdates).disabled(!can_update),
         MenuItem::separator(),

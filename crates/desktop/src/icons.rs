@@ -11,7 +11,7 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     Chosen,
     [
-        ArrowLeft, ArrowRight, ArrowUp, Camera, Check, ChevronDown, ChevronRight, ChevronUp, Clock, Copy, Eraser, ExternalLink, Folder, Globe, Info, Keyboard, Laptop, Locate, Mic, Minimize2, Paperclip, Plus, RotateCcw, RotateCw, Search, Server, Settings, ShieldCheck, SquareSlash, Users, X
+        ArrowLeft, ArrowRight, ArrowUp, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleCheck, Clock, Copy, Eraser, ExternalLink, Folder, Globe, Info, Keyboard, Laptop, Locate, Mic, Minimize2, Paperclip, Plus, RotateCcw, RotateCw, Search, Server, Settings, ShieldCheck, Smartphone, SquareSlash, TriangleAlert, Users, X
     ]
 );
 
@@ -57,11 +57,17 @@ pub enum Icon {
     /// The team.
     Users,
     X,
+    /// A phone (the equipe app), paired or to pair.
+    Phone,
+    /// Done: a phone paired.
+    Done,
+    /// Something went wrong, and what to do.
+    Warning,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 32] = [
+    pub const ALL: [Icon; 35] = [
         Icon::ArrowLeft,
         Icon::ArrowRight,
         Icon::ArrowUp,
@@ -94,6 +100,9 @@ impl Icon {
         Icon::Slash,
         Icon::Users,
         Icon::X,
+        Icon::Phone,
+        Icon::Done,
+        Icon::Warning,
     ];
 
     pub fn path(self) -> &'static str {
@@ -130,6 +139,9 @@ impl Icon {
             Icon::Users => "icons/users.svg",
             Icon::Slash => "icons/square-slash.svg",
             Icon::X => "icons/x.svg",
+            Icon::Phone => "icons/smartphone.svg",
+            Icon::Done => "icons/circle-check.svg",
+            Icon::Warning => "icons/triangle-alert.svg",
         }
     }
 }

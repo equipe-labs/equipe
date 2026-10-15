@@ -410,9 +410,60 @@ fn squad(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let screen = Line::new(t!("settings.mac_screen"), t!("settings.mac_screen_desc")).words("desktop computer use /desktop").control(switch(shell, "desktop", !model.desktop_stopped, connected, |this, on, _, _| this.set_desktop_open(on), cx));
     vec![
         Section::new(t!("settings.section_connection"), vec![squad, machine, connection]).foot(t!("settings.connection_foot")),
+        phones(shell, connected, cx),
         Section::new(t!("settings.section_daemon"), vec![daemon_version, restart]),
         Section::new(t!("settings.section_squad"), vec![suggestions, screen]).foot(t!("settings.squad_foot")),
     ]
+}
+
+/// 휴대폰: pair one by QR code (the sheet), and the ones paired, each with
+/// when it was last there and "연결 끊기" — asked twice.
+fn phones(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Section {
+    let p = shell.palette;
+    let words = "phone iphone android mobile app pair qr device equipe 휴대폰 아이폰 기기 앱";
+    let pair = Line::new(t!("pair.settings_pair"), t!("pair.settings_pair_desc", host = shell.endpoint.label()))
+        .words(words)
+        .control(ui::button(p, "pair-phone", Kind::Primary, t!("pair.menu_item")).icon(Icon::Phone).disabled(!connected).on_click(cx.listener(|this, _, window, cx| this.open_pairing(window, cx))));
+    let mut lines = vec![pair];
+    let now = crate::state::now_unix();
+    match &shell.pairing.devices {
+        Some(list) if list.devices.is_empty() => lines.push(Line::new(t!("pair.no_devices"), t!("pair.no_devices_desc")).words(words)),
+        Some(list) => {
+            for (ix, device) in list.devices.iter().enumerate() {
+                let id = device.id.clone();
+                let asking = shell.forgetting.as_deref() == Some(device.id.as_str());
+                let label = h_flex().gap_2().items_center().child(icon(Icon::Phone, ICON_SM, p.text2)).child(device.name.clone()).when(device.online, |l| l.child(dot(p.accent, 6.)));
+                let control = if asking {
+                    let again = id.clone();
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(ui::button(p, ("forget-no", ix), Kind::Ghost, t!("pair.keep")).on_click(cx.listener(|this, _, _, cx| {
+                            this.forgetting = None;
+                            cx.notify();
+                        })))
+                        .child(ui::button(p, ("forget-yes", ix), Kind::Primary, t!("pair.forget_sure")).disabled(!connected).on_click(cx.listener(move |this, _, _, cx| this.forget_device(&again, cx))))
+                        .into_any_element()
+                } else {
+                    ui::button(p, ("forget", ix), Kind::Secondary, t!("pair.forget")).disabled(!connected).on_click(cx.listener(move |this, _, _, cx| this.forget_device(&id, cx))).into_any_element()
+                };
+                let desc = if asking { t!("pair.forget_desc").to_owned() } else { super::pair::device_line(device, now) };
+                lines.push(Line::new(device.name.clone(), desc).label_el(label).words(format!("{words} {}", device.platform)).warn(asking).control(control));
+            }
+        }
+        None if shell.pairing.devices_unknown(std::time::Instant::now()) => {
+            lines.push(Line::new(t!("pair.devices_unknown"), t!("pair.devices_unknown_desc", host = shell.endpoint.label())).words(words).warn(true));
+        }
+        None => lines.push(Line::new(t!("pair.devices_loading"), "").words(words)),
+    }
+    let foot = match &shell.pairing.devices {
+        Some(list) if !list.relay.is_empty() => {
+            let relay = list.relay.trim_start_matches("https://").trim_start_matches("http://").to_owned();
+            if list.connected { t!("pair.foot_connected", relay = relay) } else { t!("pair.foot", relay = relay) }
+        }
+        _ => t!("pair.foot", relay = "relay.equipe.im"),
+    };
+    Section::new(t!("pair.section"), lines).foot(foot)
 }
 
 fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
@@ -913,6 +964,9 @@ impl Shell {
     /// ⌘,, the gear: settings, at `category` (or where it was left).
     pub fn open_settings(&mut self, category: Option<Category>, window: &mut Window, cx: &mut Context<Self>) {
         crate::tips::hide(cx);
+        if category.unwrap_or(self.settings.category) == Category::Squad {
+            self.ask_devices(cx);
+        }
         if self.screen != Screen::Settings {
             self.settings.back_to = self.screen;
             self.screen = Screen::Settings;
@@ -949,6 +1003,9 @@ impl Shell {
     }
 
     pub fn settings_go(&mut self, category: Category, cx: &mut Context<Self>) {
+        if category == Category::Squad {
+            self.ask_devices(cx);
+        }
         if self.settings.category != category {
             self.settings.category = category;
             self.settings.turn += 1;

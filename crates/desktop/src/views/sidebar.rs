@@ -613,6 +613,14 @@ fn popup(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
                     }))
                     .into_any_element(),
             );
+            rows.push(
+                item("pair-phone".into(), t!("pair.menu_item").into(), false)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.board.popup = None;
+                        this.open_pairing(window, cx);
+                    }))
+                    .into_any_element(),
+            );
         }
     }
     Some(

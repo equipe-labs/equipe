@@ -171,6 +171,11 @@ fn label(p: Palette, text: &'static str) -> impl IntoElement {
 
 /// A box over the window: the window dims, the card settles in.
 fn modal(p: Palette, id: &'static str, card: impl IntoElement) -> AnyElement {
+    modal_w(p, id, 480., card)
+}
+
+/// [`modal`], `width` wide.
+pub fn modal_w(p: Palette, id: &'static str, width: f32, card: impl IntoElement) -> AnyElement {
     motion::fade(
         div()
             .absolute()
@@ -182,7 +187,7 @@ fn modal(p: Palette, id: &'static str, card: impl IntoElement) -> AnyElement {
             .bg(rgba(0x00000073))
             .child(motion::dialog(
                 v_flex()
-                    .w(px(480.))
+                    .w(px(width))
                     .max_h(px(640.))
                     .p(px(S6))
                     .gap_3()
