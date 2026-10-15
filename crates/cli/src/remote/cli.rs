@@ -134,7 +134,7 @@ pub async fn demo_reset(home: &std::path::Path, new_code: bool) -> Result<String
             return Err(why.to_owned());
         }
         let code = said["code"].as_str().map(|c| format!("\n{}", t!("pair.demo_new_code", code = c))).unwrap_or_default();
-        let forgot = if said["told_relay"] == true { t!("pair.demo_forgot", n = said["forgot"]) } else { t!("pair.demo_forgot_relay_offline", n = said["forgot"]) };
+        let forgot = if said["told_relay"] == true { t!("pair.demo_forgot", count = said["forgot"]) } else { t!("pair.demo_forgot_relay_offline", count = said["forgot"]) };
         return Ok(format!("{forgot}{code}"));
     }
     let mut config = super::load(home).ok_or(t!("pair.demo_nothing_to_reset"))?;
@@ -147,5 +147,5 @@ pub async fn demo_reset(home: &std::path::Path, new_code: bool) -> Result<String
     } else {
         String::new()
     };
-    Ok(format!("{}{code}", t!("pair.demo_not_running_forgot", n = forgot)))
+    Ok(format!("{}{code}", t!("pair.demo_not_running_forgot", count = forgot)))
 }

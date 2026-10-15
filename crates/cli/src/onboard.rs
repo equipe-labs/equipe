@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
+use equipe_core::i18n::label;
 use equipe_core::protocol::Mode;
 use equipe_core::t;
 use equipe_core::{runtime, squad_home, squads};
@@ -231,7 +232,7 @@ async fn onboard(home: &Path, repo: Option<Folder>) -> Result<Start, String> {
     let mut labels = vec![menu_item(&format!("{:<10}{}", "pm", t!("onboard.pm_item")), menu)];
     labels.extend(STARTERS.iter().map(|(id, _)| {
         let role = equipe_core::roles::role(id).expect("a built-in role");
-        menu_item(&format!("{id:<10}{}", role.summary), menu)
+        menu_item(&format!("{id:<10}{}", crate::i18n::role_summary(role)), menu)
     }));
     let ticked: Vec<bool> = std::iter::once(true).chain(STARTERS.iter().map(|(_, on)| *on)).collect();
     eprintln!("{}", e.note(2, t!("onboard.menu_keys")));
@@ -247,12 +248,13 @@ async fn onboard(home: &Path, repo: Option<Folder>) -> Result<Start, String> {
     // The answer in a line, not the whole menu again.
     eprintln!("{} {} {} {}", e.accent("✓"), e.bold(t!("onboard.team")), e.dim("·"), team.join(", "));
     // How much the squad does on its own: Auto unless the person says otherwise.
+    let lang = crate::i18n::lang();
     let modes: Vec<String> = Mode::ALL
         .iter()
         .map(|m| {
             // Up front, so a narrow terminal cuts the description, not the advice.
             let note = if *m == Mode::Auto { format!("{} · ", t!("onboard.recommended")) } else { String::new() };
-            menu_item(&format!("{:<13}{note}{}", m.label(), m.short()), menu)
+            menu_item(&format!("{}{note}{}", ui::pad(label::mode(lang, *m), 13), label::mode_short(lang, *m)), menu)
         })
         .collect();
     let auto = Mode::ALL.iter().position(|m| *m == Mode::Auto).unwrap_or(0);
@@ -266,7 +268,7 @@ async fn onboard(home: &Path, repo: Option<Folder>) -> Result<Start, String> {
         .map_err(|err| err.to_string())?
         .ok_or(t!("onboard.nothing_changed"))?;
     let mode = Mode::ALL[picked_mode];
-    eprintln!("{} {} {} {}", e.accent("✓"), e.bold(t!("onboard.mode")), e.dim("·"), mode.label());
+    eprintln!("{} {} {} {}", e.accent("✓"), e.bold(t!("onboard.mode")), e.dim("·"), label::mode(lang, mode));
     squads::create_without_project(home, &squad)?;
     equipe_core::journal::Journal::for_squad(home, &squad)
         .and_then(|j| j.set_mode(mode))

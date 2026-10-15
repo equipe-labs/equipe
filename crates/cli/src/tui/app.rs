@@ -17,6 +17,7 @@ use equipe_core::protocol::{
     Access, Approval, Command, Decision, Engine, Entry, Event, Member, Mode, SessionId, SessionInfo, SessionSpec,
     SessionState, Snapshot, Ticket, TicketId, TicketStatus, Transcript, new_session_id,
 };
+use equipe_core::i18n::label;
 use equipe_core::roles;
 use equipe_core::t;
 
@@ -413,7 +414,7 @@ impl Agent {
     /// The engine, and whether it edits: `claude code · edit`.
     pub fn engine_label(&self) -> String {
         let engine = self.engine.map_or("…", Engine::label);
-        if self.edit { format!("{engine} · edit") } else { engine.to_owned() }
+        if self.edit { t!("app.engine_edits", engine = engine) } else { engine.to_owned() }
     }
 
     pub fn is_pm(&self) -> bool {
@@ -491,7 +492,7 @@ impl Agent {
             let took = since.elapsed();
             if took >= Duration::from_secs(1) {
                 let at = clock_time();
-                self.transcript.push_local(Entry::Note { text: format!("─ worked {}{at}", elapsed(took)) });
+                self.transcript.push_local(Entry::Note { text: t!("app.worked", took = elapsed(took), at = at) });
             }
         }
     }
@@ -501,9 +502,9 @@ impl Agent {
 pub fn elapsed(took: Duration) -> String {
     let s = took.as_secs();
     match s {
-        0..=59 => format!("{s}s"),
-        60..=3599 => format!("{}m {:02}s", s / 60, s % 60),
-        _ => format!("{}h {:02}m", s / 3600, (s % 3600) / 60),
+        0..=59 => t!("app.elapsed_seconds", s = s),
+        60..=3599 => t!("app.elapsed_minutes", m = s / 60, s = format!("{:02}", s % 60)),
+        _ => t!("app.elapsed_hours", h = s / 3600, m = format!("{:02}", (s % 3600) / 60)),
     }
 }
 
@@ -2577,7 +2578,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                     Err(err) => self.flash = Some(err),
                 }
             }
-            ["add"] | ["remove"] => self.flash = Some("/squad add <folder> · /squad remove <project>".into()),
+            ["add"] | ["remove"] => self.flash = Some(t!("app.squad_add_remove_usage").into()),
             ["new"] => {
                 self.flash = Some(t!("app.squad_new_usage").into());
             }
@@ -2706,14 +2707,14 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             },
             ["max"] => {
                 let home = equipe_providers::credentials::equipe_home();
-                self.flash = Some(t!("app.browser_max", n = equipe_core::browser::at_once(&home)));
+                self.flash = Some(t!("app.browser_max", count = equipe_core::browser::at_once(&home)));
                 return Vec::new();
             }
             ["max", n] => {
                 let home = equipe_providers::credentials::equipe_home();
                 self.flash = Some(match n.parse::<usize>() {
                     Ok(max @ 1..=16) => match equipe_core::browser::set_at_once(&home, max) {
-                        Ok(()) => t!("app.browser_max_set", n = max),
+                        Ok(()) => t!("app.browser_max_set", count = max),
                         Err(err) => t!("app.couldnt_keep", err = err),
                     },
                     _ => t!("app.browser_max_range").into(),
@@ -2743,7 +2744,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             "stop" => false,
             "resume" => true,
             _ => {
-                let now = self.desktop.summary(Some(&self.squad)).unwrap_or_else(|| t!("app.nobody_on_screen").into());
+                let now = label::desktop(crate::i18n::lang(), &self.desktop, Some(&self.squad)).unwrap_or_else(|| t!("app.nobody_on_screen").into());
                 self.flash = Some(t!("app.desktop_usage", now = now));
                 return Vec::new();
             }
@@ -2898,7 +2899,8 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
     fn set_mode(&mut self, rest: &str) -> Vec<Command> {
         let words: Vec<&str> = rest.split_whitespace().collect();
         let usage = || {
-            let modes: Vec<String> = Mode::ALL.iter().map(|m| format!("{} ({})", m.label(), m.short())).collect();
+            let lang = crate::i18n::lang();
+            let modes: Vec<String> = Mode::ALL.iter().map(|m| format!("{} ({})", commands::mode_word(*m), label::mode_short(lang, *m))).collect();
             t!("app.modes_usage", modes = modes.join(" · "))
         };
         let squad = self.squad.clone();
@@ -2909,7 +2911,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
         }
         match words.as_slice() {
             [] => {
-                self.flash = Some(t!("app.squad_mode", mode = self.mode.label(), usage = usage()));
+                self.flash = Some(t!("app.squad_mode", mode = label::mode(crate::i18n::lang(), self.mode), usage = usage()));
                 Vec::new()
             }
             [mode] => match Mode::parse(mode) {
@@ -3017,7 +3019,7 @@ pub fn transcript_markdown(agent: &Agent, squad: &str) -> String {
             Entry::User { text } => out.push_str(&format!("**{}:** {text}\n\n", t!("app.md_you"))),
             Entry::Reply { text } => out.push_str(&format!("{text}\n\n")),
             Entry::Tool { tool, target, .. } => {
-                out.push_str(&format!("- {} {}\n", tool_verb(tool), target.as_deref().unwrap_or("")));
+                out.push_str(&format!("- {} {}\n", super::view::verb_word(tool_verb(tool)), target.as_deref().unwrap_or("")));
             }
             Entry::Note { text } => out.push_str(&format!("_{text}_\n\n")),
             Entry::Thread { project } => out.push_str(&format!("## {}\n\n", project.as_deref().unwrap_or(t!("app.md_whole_squad")))),

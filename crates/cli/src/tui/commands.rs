@@ -2,6 +2,7 @@
 //! offers as the person types `/…` or `@…`.
 
 use equipe_core::protocol::{Mode, TicketId};
+use equipe_core::i18n::label;
 use equipe_core::t;
 
 pub struct Spec {
@@ -10,7 +11,7 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-/// Every command, its `about` in the language in use — asked afresh each
+/// Every command, its `about` (and the words in its `args`) in the language in use — asked afresh each
 /// time, since the person may switch language while the console runs.
 pub fn commands() -> [Spec; 28] {
     [
@@ -24,11 +25,11 @@ pub fn commands() -> [Spec; 28] {
         Spec { name: "project", args: "[name|all]", about: t!("commands.project") },
         Spec { name: "accept", args: "T-n", about: t!("commands.accept") },
         Spec { name: "merge", args: "T-n", about: t!("commands.merge") },
-        Spec { name: "reopen", args: "T-n <what to change>", about: t!("commands.reopen") },
-        Spec { name: "resume", args: "T-n [what you did]", about: t!("commands.resume") },
+        Spec { name: "reopen", args: t!("commands.reopen_args"), about: t!("commands.reopen") },
+        Spec { name: "resume", args: t!("commands.resume_args"), about: t!("commands.resume") },
         Spec { name: "cancel", args: "T-n", about: t!("commands.cancel") },
         Spec { name: "board", args: "", about: t!("commands.board") },
-        Spec { name: "find", args: "<words>", about: t!("commands.find") },
+        Spec { name: "find", args: t!("commands.find_args"), about: t!("commands.find") },
         Spec { name: "tidy", args: "", about: t!("commands.tidy") },
         Spec { name: "add", args: "<role…> | custom <name> [--edits]", about: t!("commands.add") },
         Spec { name: "close", args: "", about: t!("commands.close") },
@@ -83,6 +84,11 @@ pub struct Context<'a> {
 }
 
 const MODES: [&str; 4] = ["read-only", "ask", "auto", "full"];
+
+/// The word that picks `mode` in `/mode`: `read-only`, `ask`, `auto`, `full`.
+pub fn mode_word(mode: Mode) -> &'static str {
+    MODES[Mode::ALL.iter().position(|m| *m == mode).unwrap_or(0)]
+}
 
 /// What could complete `text`, best first. Empty when nothing would, or when
 /// the text is already whole.
@@ -149,8 +155,8 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             choices.extend(ctx.members.iter().filter(|(m, _)| starts(m)).map(|(m, _)| {
                 let own = ctx.member_modes.iter().find(|(name, _)| name == m).map(|(_, mode)| *mode);
                 let now = match (own, ctx.mode) {
-                    (Some(mode), _) => t!("commands.mode_member_own", mode = mode.label()),
-                    (None, Some(mode)) => t!("commands.mode_member_squad", mode = mode.label()),
+                    (Some(mode), _) => t!("commands.mode_member_own", mode = label::mode(crate::i18n::lang(), mode)),
+                    (None, Some(mode)) => t!("commands.mode_member_squad", mode = label::mode(crate::i18n::lang(), mode)),
                     (None, None) => t!("commands.mode_member").to_owned(),
                 };
                 word(m, &now, " ")
@@ -162,7 +168,7 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             let mut choices: Vec<Choice> =
                 MODES.iter().filter(|w| starts(w)).map(|m| word(m, &mode_about(m, own, words[0]), "")).collect();
             if starts("squad") {
-                let squad = ctx.mode.map_or(String::new(), |m| format!(" ({})", m.label()));
+                let squad = ctx.mode.map_or(String::new(), |m| format!(" ({})", label::mode(crate::i18n::lang(), m)));
                 choices.push(word("squad", &t!("commands.back_on_squad_mode", squad = squad), ""));
             }
             choices
@@ -260,7 +266,8 @@ fn mode_about(word: &str, now: Option<Mode>, who: &str) -> String {
     let Some(mode) = Mode::parse(word) else {
         return String::new();
     };
-    if now == Some(mode) { t!("commands.mode_now_for", who = who, about = mode.short()) } else { mode.short().to_owned() }
+    let about = label::mode_short(crate::i18n::lang(), mode);
+    if now == Some(mode) { t!("commands.mode_now_for", who = who, about = about) } else { about.to_owned() }
 }
 
 /// Folders that complete a typed path — `~/Pro` → `~/Projects/` — not the
@@ -295,6 +302,13 @@ fn folders(typed: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_mode_is_named_by_the_word_that_picks_it() {
+        for mode in Mode::ALL {
+            assert_eq!(Mode::parse(mode_word(mode)), Some(mode));
+        }
+    }
 
     fn ctx() -> Context<'static> {
         Context {
