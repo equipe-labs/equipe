@@ -160,8 +160,10 @@ pub const BODY: f32 = 15.;
 pub const UI: f32 = 14.;
 pub const SMALL: f32 = 13.;
 
-/// Project chips take the project's order and these colours (T-54 §2.1).
-pub const PROJECT_HUES: [usize; 8] = [2, 6, 4, 7, 5, 1, 3, 0];
+/// Project chips take the project's order and these colours (T-54 §2.1) —
+/// blue, violet, teal, pink, green: never the amber of work under way or the
+/// orange of what waits on the person, which a project's dot would be read as.
+pub const PROJECT_HUES: [usize; 5] = [2, 4, 5, 1, 3];
 pub const MONO: &str = "Menlo";
 
 // ── one scale for everything ──
@@ -236,5 +238,19 @@ mod tests {
         assert!(Palette::new(Appearance::Dark.resolve(WindowAppearance::Light)).is_dark());
         assert!(Appearance::ALL.iter().all(|a| Appearance::parse(a.code()) == Some(*a)));
         assert_eq!(Appearance::parse("sepia"), None);
+    }
+
+    #[test]
+    fn no_projects_colour_reads_as_a_status() {
+        let hue = |c: gpui_kit::Rgba| gpui_kit::Hsla::from(c).h * 360.;
+        let apart = |a: f32, b: f32| (a - b).abs().min(360. - (a - b).abs());
+        for p in [Palette::new(WindowAppearance::Dark), Palette::new(WindowAppearance::Light)] {
+            for at in 0..12 {
+                let c = hue(p.member(super::PROJECT_HUES[at % super::PROJECT_HUES.len()]));
+                for status in [p.orange, p.amber] {
+                    assert!(apart(c, hue(status)) >= 40., "project {at}'s hue {c} is too near a status's {}", hue(status));
+                }
+            }
+        }
     }
 }
