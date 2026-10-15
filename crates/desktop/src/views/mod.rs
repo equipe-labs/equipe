@@ -6,5 +6,8 @@ pub mod browser;
 pub mod chat;
 pub mod composer;
 pub mod connect;
+pub mod diffview;
 pub mod header;
+pub mod icons;
+pub mod peek;
 pub mod sidebar;

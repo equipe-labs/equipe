@@ -1,20 +1,16 @@
-//! What waits for the person, in sight above the composer (T-62 §2.4): the
-//! oldest request for permission with its Allow once / Always / Decline, and
-//! under every conversation the card of work waiting for them. The queue and
-//! the card's text are plain code, tested without a window; the drawing is
-//! below them.
+//! Requests for permission: the queue, the card's words, and the card — above
+//! the composer for the oldest one, and in the peek for the one picked in
+//! 나에게. Allow once is Y or A, always ⇧A, decline N. The queue and the card's
+//! text are plain code, tested without a window; the drawing is below them.
 
 use equipe_core::t;
-use equipe_core::protocol::{Approval, Command, Decision, SessionId, Ticket, TicketId, TicketStatus};
+use equipe_core::protocol::{Approval, Command, Decision, SessionId};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::theme::{MONO, Palette, SMALL, look};
 use crate::{Screen, Shell};
-
-/// How many tickets the for-you card names before it counts the rest.
-const CARD_SHOWN: usize = 3;
 
 // ── the queue ──
 
@@ -58,6 +54,15 @@ impl Queue {
         self.items.iter().filter(|a| !self.answered.contains(&a.id))
     }
 
+    /// Every request still waiting, oldest first.
+    pub fn open_items(&self) -> impl Iterator<Item = &Approval> {
+        self.open()
+    }
+
+    pub fn get(&self, id: u64) -> Option<&Approval> {
+        self.open().find(|a| a.id == id)
+    }
+
     pub fn first(&self) -> Option<&Approval> {
         self.open().next()
     }
@@ -78,7 +83,13 @@ impl Queue {
     /// Answer the oldest request: the command to send. `Always` only where it
     /// can become a rule; elsewhere it is not an answer at all.
     pub fn answer(&mut self, squad: &str, decision: Decision) -> Option<Command> {
-        let approval = self.first()?;
+        let id = self.first()?.id;
+        self.answer_id(squad, id, decision)
+    }
+
+    /// Answer one request, picked by its id.
+    pub fn answer_id(&mut self, squad: &str, id: u64, decision: Decision) -> Option<Command> {
+        let approval = self.get(id)?;
         if decision == Decision::Always && always_rule(approval).is_none() {
             return None;
         }
@@ -88,12 +99,13 @@ impl Queue {
     }
 }
 
-/// The answer a key gives, as in the terminal console: y, a, n.
-pub fn decision_for(key: &str) -> Option<Decision> {
-    match key {
-        "y" => Some(Decision::Allow),
-        "a" => Some(Decision::Always),
-        "n" => Some(Decision::Deny),
+/// The answer a key gives, as everywhere a need is answered: Y or A allows
+/// once, ⇧A always, N declines.
+pub fn decision_for(key: &str, shift: bool) -> Option<Decision> {
+    match (key, shift) {
+        ("a", true) => Some(Decision::Always),
+        ("y" | "a", false) => Some(Decision::Allow),
+        ("n", false) => Some(Decision::Deny),
         _ => None,
     }
 }
@@ -181,26 +193,20 @@ impl Card {
     }
 }
 
-// ── the for-you card ──
-
-/// What a ticket on the card asks of the person, right-aligned.
-pub fn ask_of(ticket: &Ticket) -> String {
-    match ticket.status {
-        TicketStatus::Waiting => {
-            let needs = ticket.note.as_deref().map(equipe_core::board::waiting_needs).unwrap_or_default();
-            if needs.is_empty() { t!("approvals.ask_todo").into() } else { t!("approvals.ask_needs", needs = needs.join(", ")) }
-        }
-        _ => t!("approvals.ask_review", who = ticket.assignee.as_deref().or(ticket.owner.as_deref()).unwrap_or("—")),
-    }
-}
-
 // ── drawing ──
 
 impl Shell {
     /// Answer the oldest request.
     pub fn decide(&mut self, decision: Decision, cx: &mut Context<Self>) {
+        if let Some(id) = self.model.approvals.first().map(|a| a.id) {
+            self.decide_on(id, decision, cx);
+        }
+    }
+
+    /// Answer one request.
+    pub fn decide_on(&mut self, id: u64, decision: Decision, cx: &mut Context<Self>) {
         let squad = self.model.squad.clone();
-        if let Some(command) = self.model.approvals.answer(&squad, decision) {
+        if let Some(command) = self.model.approvals.answer_id(&squad, id, decision) {
             self.send_command(command);
             cx.notify();
         }
@@ -214,17 +220,17 @@ impl Shell {
     }
 
     /// The keys that answer: only on the conversation, with nothing typed — on
-    /// the board the same letters will act on tickets, and an "a" meant to
-    /// accept must never allow a command for good. True when the key was taken.
-    pub fn on_approval_key(&mut self, key: &str, plain: bool, cx: &mut Context<Self>) -> bool {
-        if !plain || self.screen != Screen::Chat || !self.composer.text(cx).is_empty() || self.model.approvals.first().is_none() {
+    /// the work screens the same letters act on what is picked. True when the
+    /// key was taken.
+    pub fn on_approval_key(&mut self, key: &str, shift: bool, cx: &mut Context<Self>) -> bool {
+        if self.screen != Screen::Chat || !self.composer.text(cx).is_empty() || self.model.approvals.first().is_none() {
             return false;
         }
-        if let Some(decision) = decision_for(key) {
+        if let Some(decision) = decision_for(key, shift) {
             self.decide(decision, cx);
             return true;
         }
-        if key == "o" && self.model.approvals.first().is_some_and(|a| a.preview.is_some()) {
+        if key == "o" && !shift && self.model.approvals.first().is_some_and(|a| a.preview.is_some()) {
             self.open_preview();
             return true;
         }
@@ -232,10 +238,10 @@ impl Shell {
     }
 }
 
-fn button(p: Palette, id: &'static str, label: &'static str, key: &'static str, primary: bool, on: impl Fn(&mut Window, &mut App) + 'static) -> impl IntoElement {
+fn button(p: Palette, id: impl Into<ElementId>, label: &'static str, key: &'static str, primary: bool, on: impl Fn(&mut Window, &mut App) + 'static) -> impl IntoElement {
     h_flex()
-        .id(id)
-        .h(px(30.))
+        .id(id.into())
+        .h(px(28.))
         .px_3()
         .gap_2()
         .items_center()
@@ -249,38 +255,45 @@ fn button(p: Palette, id: &'static str, label: &'static str, key: &'static str, 
         .child(div().text_size(px(12.)).opacity(0.6).child(key))
 }
 
-/// The oldest request, drawn as a card.
+/// The oldest request, drawn as a card above the composer.
 pub fn approval(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let id = shell.model.approvals.first()?.id;
+    Some(
+        div()
+            .w_full()
+            .mb_3()
+            .p_4()
+            .rounded(px(12.))
+            .bg(shell.palette.raised)
+            .border_1()
+            .border_l_2()
+            .border_color(shell.palette.hair)
+            .child(card(shell, id, true, cx)?)
+            .into_any_element(),
+    )
+}
+
+/// One request: who asks, what exactly, why, and the answers.
+pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
     let model = &shell.model;
-    let approval = model.approvals.first()?;
+    let approval = model.approvals.get(id)?;
     let card = Card::of(approval);
-    let (mark, hue) = look(
-        model.members.iter().find(|m| m.session == approval.session).map_or("", |m| m.role.as_str()),
-        &approval.member,
-    );
+    let (mark, hue) = look(model.members.iter().find(|m| m.session == approval.session).map_or("", |m| m.role.as_str()), &approval.member);
     let waiting = model.approvals.len();
-    let on_chat = shell.screen == Screen::Chat;
     let handle = cx.entity().downgrade();
     let for_decisions = handle.clone();
     let act = move |d: Decision| {
         let handle = for_decisions.clone();
         move |_: &mut Window, cx: &mut App| {
-            handle.update(cx, |shell, cx| shell.decide(d, cx)).ok();
+            handle.update(cx, |shell, cx| shell.decide_on(id, d, cx)).ok();
         }
     };
     let preview = approval.preview.clone();
     Some(
         v_flex()
             .w_full()
-            .mb_3()
-            .p_4()
             .gap_2()
-            .rounded(px(12.))
-            .bg(p.raised)
-            .border_1()
-            .border_l_2()
-            .border_color(p.hair)
             .child(
                 h_flex()
                     .gap_2()
@@ -290,8 +303,7 @@ pub fn approval(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                     .child(div().text_color(p.member(hue)).child(format!("{mark} {}", approval.member)))
                     .children(approval.ticket.map(|t| div().text_color(p.muted).child(format!("T-{t}"))))
                     .child(div().flex_1())
-                    .when(waiting > 1, |h| h.child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(t!("approvals.queue", waiting = waiting))))
-                    .when(waiting == 1 && on_chat, |h| h.child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child("Y / A / N"))),
+                    .when(queue_line && waiting > 1, |h| h.child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(t!("approvals.queue", waiting = waiting)))),
             )
             .child(div().text_size(px(15.)).text_color(p.text).child(t!("approvals.allow_question", what = card.noun)))
             .child(
@@ -313,7 +325,7 @@ pub fn approval(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .children(preview.map(|path| {
                 h_flex().gap_3().items_center().text_size(px(SMALL)).text_color(p.muted).child(div().min_w_0().child(t!("approvals.screen", path = path))).child(button(
                     p,
-                    "preview",
+                    ("preview", id),
                     t!("approvals.open_preview"),
                     "O",
                     false,
@@ -327,11 +339,12 @@ pub fn approval(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             }))
             .child(
                 h_flex()
+                    .flex_wrap()
                     .gap_2()
                     .items_center()
-                    .child(button(p, "allow", t!("approvals.allow_once"), "Y", true, act(Decision::Allow)))
-                    .when(card.always.is_some(), |h| h.child(button(p, "always", t!("approvals.always"), "A", false, act(Decision::Always))))
-                    .child(button(p, "deny", t!("approvals.deny"), "N", false, act(Decision::Deny)))
+                    .child(button(p, ("allow", id), t!("approvals.allow_once"), "A", true, act(Decision::Allow)))
+                    .when(card.always.is_some(), |h| h.child(button(p, ("always", id), t!("approvals.always"), "⇧A", false, act(Decision::Always))))
+                    .child(button(p, ("deny", id), t!("approvals.deny"), "N", false, act(Decision::Deny)))
                     .child(div().flex_1())
                     .child(div().text_size(px(12.)).text_color(p.muted).child(match &card.always {
                         Some(label) => t!("approvals.always_rule", label = label),
@@ -339,106 +352,14 @@ pub fn approval(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                         None => t!("approvals.once_only").to_owned(),
                     })),
             )
-            .when(!on_chat, |c| c.child(div().text_size(px(12.)).text_color(p.muted).child(t!("approvals.board_keys_hint"))))
             .into_any_element(),
     )
 }
 
-/// The card of what waits for the person, under any conversation: at most
-/// three rows, each a click from its ticket on the board.
-pub fn for_you(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
-    let p = shell.palette;
-    let model = &shell.model;
-    let waiting = model.for_you_here();
-    if waiting.is_empty() {
-        return None;
-    }
-    let all_reviews = waiting.iter().all(|t| t.status == TicketStatus::Review);
-    let heading = if all_reviews { t!("approvals.heading_reviews") } else { t!("approvals.heading_for_you") };
-    let rows = waiting.iter().take(CARD_SHOWN).map(|t| {
-        let id = t.id;
-        let is_wait = t.status == TicketStatus::Waiting;
-        let project = model.ticket_project_name(t);
-        let hue = project.as_ref().and_then(|n| model.project_names().iter().position(|x| x == n)).map(|ix| p.member(crate::theme::PROJECT_HUES[ix % 8]));
-        h_flex()
-            .id(("for-you", id as u64))
-            .h(px(32.))
-            .px_3()
-            .gap_3()
-            .items_center()
-            .text_size(px(SMALL))
-            .cursor_pointer()
-            .hover(move |s| s.bg(p.wash))
-            .on_click(cx.listener(move |this, _, _, cx| this.open_ticket(id, cx)))
-            .child(div().w(px(48.)).flex_none().font_family(MONO).text_color(p.accent).child(format!("T-{id}")))
-            // One line each, cut short with "…": a row is 32 high, and a long
-            // title or ask must never spill onto the rows below.
-            .child(div().w(px(96.)).flex_none().whitespace_nowrap().overflow_hidden().text_ellipsis().text_color(hue.unwrap_or(p.muted)).child(project.unwrap_or_default()))
-            .child(div().flex_1().min_w_0().whitespace_nowrap().overflow_hidden().text_ellipsis().child(t.title.clone()))
-            .child(div().flex_shrink_0().max_w(px(260.)).whitespace_nowrap().overflow_hidden().text_ellipsis().text_color(p.muted).child(ask_of(t)))
-            .when(is_wait, |r| r.child(resume(shell, p, id, cx)))
-    });
-    let more = waiting.len().saturating_sub(CARD_SHOWN);
-    Some(
-        v_flex()
-            .w_full()
-            .mb_3()
-            .py_2()
-            .rounded(px(12.))
-            .bg(p.raised)
-            .border_1()
-            .border_l_2()
-            .border_color(p.hair)
-            .child(div().px_3().pb_1().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(p.accent).child(format!("{heading} · {}", waiting.len())))
-            .children(rows)
-            .when(more > 0, |c| {
-                c.child(
-                    h_flex()
-                        .id("for-you-more")
-                        .h(px(32.))
-                        .px_3()
-                        .gap_3()
-                        .text_size(px(SMALL))
-                        .text_color(p.muted)
-                        .items_center()
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| this.show(Screen::Board, cx)))
-                        .child(format!("+{more}"))
-                        .child(t!("approvals.see_all_on_board")),
-                )
-            })
-            .into_any_element(),
-    )
-}
-
-/// "I did this — resume": the ticket goes back to its member. What was done
-/// can be told in `/resume T-n <what>`; the button sends it with no word.
-fn resume(shell: &Shell, p: Palette, id: TicketId, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
-    let _ = shell;
-    div()
-        .id(("resume", id as u64))
-        .flex_none()
-        .px_2()
-        .h(px(24.))
-        .flex()
-        .items_center()
-        .rounded(px(6.))
-        .border_1()
-        .border_color(p.hair)
-        .text_size(px(12.))
-        .hover(move |s| s.bg(p.wash))
-        .on_click(cx.listener(move |this, _, _, cx| {
-            cx.stop_propagation();
-            this.resume_ticket(id, cx);
-        }))
-        .child(t!("approvals.done_resume"))
-}
-
-impl Shell {
-    pub fn resume_ticket(&mut self, ticket: TicketId, cx: &mut Context<Self>) {
-        self.send_command(Command::Resume { squad: self.model.squad.clone(), ticket, note: String::new() });
-        cx.notify();
-    }
+/// The card of work waiting for the person above the composer gave way to
+/// 나에게 in the sidebar, which holds the same list with its keys: nothing here.
+pub fn for_you(_shell: &Shell, _cx: &mut Context<Shell>) -> Option<AnyElement> {
+    None
 }
 
 #[cfg(test)]
@@ -492,11 +413,20 @@ mod tests {
     }
 
     #[test]
-    fn keys_answer_as_in_the_terminal() {
-        assert_eq!(decision_for("y"), Some(Decision::Allow));
-        assert_eq!(decision_for("a"), Some(Decision::Always));
-        assert_eq!(decision_for("n"), Some(Decision::Deny));
-        assert_eq!(decision_for("x"), None);
+    fn keys_answer_as_every_need_is_answered() {
+        assert_eq!(decision_for("y", false), Some(Decision::Allow));
+        assert_eq!(decision_for("a", false), Some(Decision::Allow), "A is yes: once");
+        assert_eq!(decision_for("a", true), Some(Decision::Always), "⇧A: always");
+        assert_eq!(decision_for("n", false), Some(Decision::Deny));
+        assert_eq!(decision_for("x", false), None);
+    }
+
+    #[test]
+    fn a_request_is_answered_by_its_id_too() {
+        let mut q = queue(vec![approval(1, 2, "Bash", "ls"), approval(2, 3, "Bash", "pwd")]);
+        assert_eq!(q.answer_id("acme", 2, Decision::Deny), Some(Command::Decide { squad: "acme".into(), approval: 2, decision: Decision::Deny }));
+        assert_eq!(q.open_items().map(|a| a.id).collect::<Vec<_>>(), vec![1]);
+        assert!(q.get(2).is_none());
     }
 
     #[test]
