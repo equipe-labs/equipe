@@ -13,7 +13,13 @@
 //! cargo run -p equipe-desktop --example fake_daemon &
 //! cargo run -p equipe-desktop
 //! ```
-//! `FAKE_SECONDS` (default 4) is how long a reply streams.
+//! `FAKE_SECONDS` (default 4) is how long a reply streams; `FAKE_SAID` adds a
+//! last message of the person's to the PM's history (attachment tags and all).
+//!
+//! Pairing a phone: a code at once, and two phones paired already.
+//! `FAKE_PAIR=ask` has a phone ask 1.5 s after the code shows (`allow` pairs
+//! it); `relay` fails as an unreachable relay would; `silent` never answers,
+//! as a daemon older than the app.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -60,6 +66,58 @@ fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
 fn allowed() -> &'static std::sync::Mutex<Vec<String>> {
     static ALLOWED: std::sync::OnceLock<std::sync::Mutex<Vec<String>>> = std::sync::OnceLock::new();
     ALLOWED.get_or_init(|| std::sync::Mutex::new(vec!["Bash(npm install:*)".into(), "Bash(gh:*)".into(), "WebFetch(domain:vercel.com)".into()]))
+}
+
+/// The phones paired, as `devices` lists them.
+fn phones() -> &'static std::sync::Mutex<Vec<equipe_core::protocol::PairedDevice>> {
+    static PHONES: std::sync::OnceLock<std::sync::Mutex<Vec<equipe_core::protocol::PairedDevice>>> = std::sync::OnceLock::new();
+    PHONES.get_or_init(|| {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let phone = |id: &str, name: &str, platform: &str, online: bool, seen: Option<u64>| equipe_core::protocol::PairedDevice { id: id.into(), name: name.into(), platform: platform.into(), added: now - 9 * 86_400, online, seen };
+        std::sync::Mutex::new(vec![phone("a1", "Abel의 iPhone", "ios", true, Some(now - 60)), phone("b2", "iPad Pro", "ipados", false, Some(now - 3 * 3600))])
+    })
+}
+
+/// What the daemon would say to a pairing command.
+async fn pairing(command: &Command, events: &broadcast::Sender<Event>) {
+    use equipe_core::protocol::PairEnd;
+    let mode = std::env::var("FAKE_PAIR").unwrap_or_default();
+    if mode == "silent" {
+        return;
+    }
+    let devices = || Event::Devices { devices: phones().lock().unwrap().clone(), relay: "https://relay.equipe.im".into(), connected: true };
+    match command {
+        Command::Devices => drop(events.send(devices())),
+        Command::PairStart if mode == "relay" => {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            let _ = events.send(Event::PairEnded { why: PairEnd::Relay, message: "couldn't reach the relay: connection refused".into() });
+        }
+        Command::PairStart => {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            // Shaped as the daemon makes them; nothing in it opens anything.
+            let url = "equipe://pair?r=https%3A%2F%2Frelay.equipe.im&d=5f0c2a9e41d7b3c86e1f2a4b9d0c7e35&k=Qm9vdHN0cmFwLWZha2UtZGFlbW9uLXB1YmxpYy1rZXk&s=ZmFrZS1zZWNyZXQtZm9yLXNjcmVlbnNob3RzLW9ubHkh&n=studio";
+            let _ = events.send(Event::PairOffer { url: url.into(), seconds: 300 });
+            if mode == "ask" {
+                let events = events.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                    let _ = events.send(Event::PairAsked { name: "Abel의 iPhone 16".into(), platform: "ios".into() });
+                });
+            }
+        }
+        Command::PairAnswer { approve: true } => {
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+            phones().lock().unwrap().push(equipe_core::protocol::PairedDevice { id: "c3".into(), name: "Abel의 iPhone 16".into(), platform: "ios".into(), added: now, online: true, seen: Some(now) });
+            let _ = events.send(Event::Paired { name: "Abel의 iPhone 16".into() });
+        }
+        Command::PairAnswer { approve: false } => drop(events.send(Event::PairEnded { why: PairEnd::Refused, message: String::new() })),
+        Command::Unpair { device } => {
+            phones().lock().unwrap().retain(|d| d.id != *device);
+            let _ = events.send(devices());
+        }
+        _ => {}
+    }
 }
 
 fn asks() -> &'static std::sync::Mutex<Vec<Approval>> {
@@ -286,6 +344,10 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             Entry::Tool { tool: "Edit".into(), target: Some("/tmp/fake/site/a.rs".into()), outcome: None },
                             Entry::Reply { text: "고쳤습니다.".into() },
                         ];
+                        // `FAKE_SAID`: one more message of the person's, last — as one with
+                        // attachment tags comes back after a restart.
+                        let mut history = history;
+                        history.extend(std::env::var("FAKE_SAID").ok().filter(|s| !s.is_empty()).map(|text| Entry::User { text }));
                         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
                         let frontend = on(info(2, "frontend", vec![]), 47, "web", "상품 상세 페이지 이미지 갤러리", true, ("Edit", "src/gallery.tsx"), Some(Estimate { done_at: Some(now + 25 * 60), ..Default::default() }));
                         let backend = on(info(3, "backend", vec![]), 70, "api", "주문 API 페이지네이션", true, ("Bash", "cargo test -p api"), Some(Estimate { done_at: Some(now + 50 * 60), guessed: true, ..Default::default() }));
@@ -323,6 +385,17 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             });
                         let reply = match kept {
                             Ok(path) => Message::response(id, rpc::Uploaded { path }),
+                            Err(why) => Message::failure(id, -32000, why),
+                        };
+                        if writer.write_all(reply.to_line().as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                    // Read back as the daemon does: from its uploads only.
+                    (Some(rpc::READ_UPLOAD), Some(id)) => {
+                        let ask: rpc::ReadUpload = message.params_as().unwrap();
+                        let reply = match gateway::read_upload(&equipe_home(), &ask) {
+                            Ok(read) => Message::response(id, read),
                             Err(why) => Message::failure(id, -32000, why),
                         };
                         if writer.write_all(reply.to_line().as_bytes()).await.is_err() {
@@ -408,6 +481,10 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             }
                             Command::SetMode { squad, member, mode } => {
                                 let _ = events.send(Event::ModeChanged { squad, member, mode });
+                            }
+                            pair @ (Command::PairStart | Command::PairAnswer { .. } | Command::PairCancel | Command::Devices | Command::Unpair { .. }) => {
+                                let events = events.clone();
+                                tokio::spawn(async move { pairing(&pair, &events).await });
                             }
                             other => {
                                 if let Some(ticket) = on_ticket_command(&other) {

@@ -20,6 +20,7 @@ mod files;
 mod media;
 mod mem;
 mod notify;
+mod pair;
 mod ssh;
 #[cfg(feature = "snapshot")]
 mod snapshot;
@@ -33,6 +34,7 @@ mod i18n;
 mod icons;
 mod motion;
 mod relaunch;
+mod sent;
 mod render;
 mod settings;
 #[cfg(target_os = "macos")]
@@ -73,6 +75,8 @@ actions!(equipe, [CheckForUpdates, Hide, HideOthers, ShowAll, Quit]);
 actions!(equipe, [ToggleSidebar, NewMessage, SearchAll]);
 // Settings (⌘,), from the app menu or anywhere.
 actions!(equipe, [OpenSettings]);
+// "휴대폰 연결…": a phone paired with the daemon's machine, by QR code.
+actions!(equipe, [PairPhone]);
 
 /// How long the daemon gets to answer before the window says it is connecting.
 const CONNECTING_AFTER: Duration = Duration::from_millis(400);
@@ -110,6 +114,11 @@ pub struct Shell {
     pub remembered: Remembered,
     pub connect: ConnectUi,
     pub ask: AskUi,
+    /// "휴대폰 연결": the sheet's state and the paired phones (`pair.rs`).
+    pub pairing: pair::Pairing,
+    /// The paired phone whose "연결 끊기" was pressed once, asking to be sure.
+    pub forgetting: Option<String>,
+    _pair_tick: Option<Task<()>>,
     /// Something said on a thread of ours (a failed fetch) for the flash line.
     notices: tokio::sync::mpsc::UnboundedSender<String>,
     connecting_shown: bool,
@@ -178,6 +187,9 @@ impl Shell {
             remembered,
             connect,
             ask,
+            pairing: pair::Pairing::default(),
+            forgetting: None,
+            _pair_tick: None,
             notices,
             connecting_shown: false,
             log_renders: std::env::var_os("EQUIPE_LOG_RENDER").is_some(),
@@ -414,6 +426,14 @@ impl Shell {
     fn attach(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
         self.model = Model::new(target.prefer.as_deref().unwrap_or(""));
         self.connecting_shown = false;
+        // Phones are the daemon's machine's: another machine has its own. A
+        // code open closes with the old connection.
+        let _ = self.pairing.close();
+        self.pairing.devices = None;
+        self.pairing.devices_asked = None;
+        // Another machine: its files aren't the ones known.
+        self.chat.sent.borrow_mut().clear();
+        self.chat.gallery = None;
         // Questions still open were for the connection being left.
         self.ask.queue.clear();
         let backoff = if target.endpoint.is_remote() { Backoff::remote() } else { Backoff::default() };
@@ -451,6 +471,24 @@ impl Shell {
                             this.browser.update(cx, |b, cx| b.on_event(event, window, cx));
                             continue;
                         }
+                        // Pairing a phone: the sheet's and settings', never the model's.
+                        if let daemon::Update::Event(
+                            event @ (Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. }),
+                        ) = &update
+                        {
+                            changed |= this.pairing.on_event(event, std::time::Instant::now());
+                            match event {
+                                // The list in settings shows it at once.
+                                Event::Paired { .. } => this.send_command(Command::Devices),
+                                // A phone waits for the person's yes: bring the window to them.
+                                Event::PairAsked { .. } if this.pairing.open => window.activate_window(),
+                                _ => {}
+                            }
+                            continue;
+                        }
+                        if let daemon::Update::Down(_) = &update {
+                            this.pairing.disconnected();
+                        }
                         match &update {
                             // The daemon's own list, asked on every attach: a squad
                             // made since shows up, on this Mac or the far one.
@@ -467,9 +505,17 @@ impl Shell {
                                 this.composer.flash = Some(t!("main.remote_daemon_started").into());
                                 changed = true;
                             }
+                            // Back on the line: what a message attached that couldn't be had is asked again.
+                            daemon::Update::Attached(_) => this.chat.sent.borrow_mut().retry_gone(),
                             _ => {}
                         }
+                        let attached = matches!(update, daemon::Update::Attached(_));
                         changed |= this.model.apply(update, now);
+                        // Settings open on its list: the daemon (maybe another one) is asked again.
+                        if attached && this.screen == Screen::Settings {
+                            this.pairing.devices_asked = None;
+                            this.ask_devices(cx);
+                        }
                     }
                     // Told while the window is out of sight; in sight, the cards say it.
                     // Only the kinds the person wants (settings → 알림).
@@ -577,12 +623,14 @@ impl Shell {
     // ── questions from ssh ──
 
     pub fn overlay_open(&self) -> bool {
-        self.connect.open || !self.ask.queue.is_empty()
+        self.connect.open || !self.ask.queue.is_empty() || self.pairing.open
     }
 
     fn escape_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.ask.queue.is_empty() {
             self.answer_prompt(askpass::Answer::Cancel, window, cx);
+        } else if self.pairing.open {
+            self.close_pairing(window, cx);
         } else {
             self.close_chooser(window, cx);
         }
@@ -701,7 +749,7 @@ impl Shell {
             return install_screen(p);
         }
         match &self.model.conn {
-            Conn::Down { reason, had_snapshot: false, .. } => v_flex().flex_1().child(self.drag_strip(cx)).child(views::connect::guide_screen(self, &reason.guide(&self.endpoint), cx)).into_any_element(),
+            Conn::Down { reason, had_snapshot: false, .. } => v_flex().flex_1().child(self.drag_strip()).child(views::connect::guide_screen(self, &reason.guide(&self.endpoint), cx)).into_any_element(),
             Conn::Connecting => div()
                 .flex_1()
                 .flex()
@@ -729,41 +777,26 @@ impl Shell {
     }
 
     /// A strip to drag the window by, over a screen with no header of its
-    /// own; with the sidebar away, its buttons beside the traffic lights.
-    fn drag_strip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        h_flex()
-            .h(px(views::sidebar::STRIP))
-            .flex_none()
-            .w_full()
-            .items_center()
-            .window_control_area(WindowControlArea::Drag)
-            .when(self.board.sidebar_hidden, |s| s.pl(px(views::sidebar::LIGHTS)).child(views::sidebar::strip_buttons(self, false, cx)))
+    /// own: the title bar's height and hairline (its buttons float above).
+    fn drag_strip(&self) -> impl IntoElement + use<> {
+        div().h(px(views::sidebar::STRIP)).flex_none().w_full().border_b_1().border_color(self.palette.hair).window_control_area(WindowControlArea::Drag)
     }
 
-    /// The sidebar, sliding in or out for a moment after ⌘\.
-    fn sidebar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        const SLIDE: Duration = Duration::from_millis(180);
-        let hidden = self.board.sidebar_hidden;
-        let moving = self.board.sidebar_shown_at.filter(|at| at.elapsed() < SLIDE);
-        if hidden && moving.is_none() {
+    /// The sidebar, sliding in or out for a moment after ⌘\ — its width read
+    /// from the one clock the headers beside it read too, so they go in step.
+    fn sidebar(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.sidebar_sliding(cx) {
+            window.request_animation_frame();
+        }
+        let shown = self.sidebar_shown(cx);
+        if shown <= 0. {
             return None;
         }
         let side = views::sidebar::render(self, cx).into_any_element();
-        let Some(at) = moving else { return Some(side) };
-        let width = self.board.sidebar_width;
-        let id = ElementId::NamedInteger("sidebar-slide".into(), at.saturating_duration_since(self.started).as_nanos() as u64);
-        Some(
-            div()
-                .h_full()
-                .flex_none()
-                .overflow_hidden()
-                .child(side)
-                .with_animation(id, Animation::new(SLIDE).with_easing(ease_out_quint()), move |el, delta| {
-                    let shown = if hidden { 1. - delta } else { delta };
-                    el.w(px(width * shown))
-                })
-                .into_any_element(),
-        )
+        if shown >= 1. {
+            return Some(side);
+        }
+        Some(div().h_full().flex_none().overflow_hidden().w(px(self.board.sidebar_width * shown)).child(side).into_any_element())
     }
 
     /// Shown over the last state when the daemon goes away after we had it.
@@ -876,6 +909,7 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &NewMessage, window, cx| this.new_message(window, cx)))
             .on_action(cx.listener(|this, _: &SearchAll, window, cx| this.search_everything(window, cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.toggle_settings(window, cx)))
+            .on_action(cx.listener(|this, _: &PairPhone, window, cx| this.open_pairing(window, cx)))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                 if this.board.sidebar_drag.is_some() {
                     if e.pressed_button == Some(MouseButton::Left) {
@@ -916,15 +950,26 @@ impl Render for Shell {
         // strip; each screen's header is the title bar on the right.
         if self.screen == Screen::Settings {
             // Settings: its own list in the sidebar's place, the page beside it.
-            return root.relative().child(h_flex().flex_1().min_h_0().child(views::settings::render(self, cx))).children(self.connect.open.then(|| views::connect::chooser(self, cx))).children(views::connect::question(self, cx)).children(tips::layer(cx));
+            return root
+                .relative()
+                .child(h_flex().flex_1().min_h_0().child(views::settings::render(self, cx)))
+                .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
+                .children(views::pair::sheet(self, cx))
+                .children(views::connect::question(self, cx))
+                .children(tips::layer(cx));
         }
-        let sidebar = self.sidebar(cx);
+        let sidebar = self.sidebar(window, cx);
         let browser = (self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
         root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(div().flex_1().min_w_0().h_full().flex().flex_col().child(self.body(cx))).children(browser))
+            // The title bar's fixed buttons, by the traffic lights, over the
+            // sidebar or the header alike: the same place whatever slides.
+            .child(views::sidebar::title_buttons(self, cx))
             // Over everything: the chooser, then a question from ssh above it.
             .children(views::composer::drop_overlay(self, cx))
             .children(views::composer::lightbox(self, cx))
+            .children(views::attached::gallery(self, cx))
             .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
+            .children(views::pair::sheet(self, cx))
             .children(views::connect::question(self, cx))
             .children(tips::layer(cx))
     }
@@ -957,6 +1002,7 @@ pub fn set_menus(cx: &mut App) {
     let can_update = CAN_UPDATE.load(std::sync::atomic::Ordering::Relaxed);
     cx.set_menus(vec![Menu::new("equipe").items([
         MenuItem::action(t!("main.menu_choose_target"), ChooseTarget),
+        MenuItem::action(t!("pair.menu_item"), PairPhone),
         MenuItem::action(t!("settings.menu_item"), OpenSettings),
         MenuItem::action(t!("main.menu_check_updates"), CheckForUpdates).disabled(!can_update),
         MenuItem::separator(),
@@ -1032,7 +1078,7 @@ fn main() {
             titlebar: Some(TitlebarOptions {
                 title: Some("equipe".into()),
                 appears_transparent: true,
-                traffic_light_position: Some(point(px(14.), px(13.))),
+                traffic_light_position: Some(point(px(views::sidebar::LIGHTS_AT.0), px(views::sidebar::LIGHTS_AT.1))),
             }),
             ..Default::default()
         };

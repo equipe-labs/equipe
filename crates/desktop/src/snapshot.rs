@@ -12,7 +12,7 @@
 //! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in points) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `settings[:<category>]` (settings, at general · squad · team · permissions · projects · browser · keys · about) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
 //! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
-//! `browser` (the browser panel, ⌘⇧B) · `bpick:<n>` (its nth tab) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
+//! `browser` (the browser panel, ⌘⇧B) · `bpick:<n>` (its nth tab) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 
 use std::time::Duration;
@@ -161,6 +161,14 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     eprintln!("paste: images taken = {taken}");
                 }),
                 "retry" => shell.update(cx, |shell, cx| shell.retry(cx)),
+                // 휴대폰 연결: the sheet, and its buttons.
+                "pair" => shell.update(cx, |shell, cx| match arg.as_str() {
+                    "allow" => shell.answer_pairing(true, cx),
+                    "deny" => shell.answer_pairing(false, cx),
+                    "retry" => shell.retry_pairing(cx),
+                    "close" => shell.close_pairing(window, cx),
+                    _ => shell.open_pairing(window, cx),
+                }),
                 // The conversation's: light or dark whatever the system says,
                 // ⌘F with words, a row scrolled to.
                 "appearance" => shell.update(cx, |shell, cx| {

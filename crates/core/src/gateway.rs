@@ -97,6 +97,9 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
     let mut forwarder: Option<tokio::task::JoinHandle<()>> = None;
     // Set when the connection becomes a browser panel's stream.
     let mut stream: Option<(std::sync::Arc<crate::browser::Hub>, u8)> = None;
+    // Pairing a phone: this screen's line to the phone link, opened when it asks.
+    let mut pairing: Option<crate::pairing::Bridge> = None;
+    let mut lang: Option<crate::i18n::Lang> = None;
     while let Ok(Some(line)) = lines.next_line().await {
         let Ok(message) = Message::from_line(&line) else {
             continue;
@@ -108,8 +111,9 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
                     continue;
                 };
                 // The screen's language is what equipe says to the person in.
-                if let Some(lang) = params.lang.clone() {
-                    core.send(Command::Language { lang });
+                if let Some(code) = params.lang.clone() {
+                    lang = crate::i18n::Lang::parse(&code);
+                    core.send(Command::Language { lang: code });
                 }
                 let Some((snapshot, mut events)) = core.subscribe(&params.squad).await else {
                     break;
@@ -126,7 +130,19 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
             }
             (Some(rpc::COMMAND), _) => {
                 if let Some(command) = message.params_as::<Command>() {
-                    core.send(command);
+                    if let Command::Language { lang: code } = &command
+                        && let Some(now) = crate::i18n::Lang::parse(code)
+                    {
+                        lang = Some(now);
+                        if let Some(bridge) = &mut pairing {
+                            bridge.lang = now;
+                        }
+                    }
+                    if crate::pairing::is_pairing(&command) {
+                        pairing.get_or_insert_with(|| crate::pairing::Bridge::new(&home, lang)).send(&command, &out_tx).await;
+                    } else {
+                        core.send(command);
+                    }
                 }
             }
             (Some(rpc::TOOL), Some(id)) => {
@@ -167,6 +183,27 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
                     });
                 });
             }
+            (Some(rpc::READ_UPLOAD), Some(id)) => {
+                // Only a screen that said hello: what it may see was sent on this squad's behalf.
+                if forwarder.is_none() {
+                    let _ = out_tx.send(Message::failure(id, -32002, "say hello first"));
+                    continue;
+                }
+                let Some(ask) = message.params_as::<rpc::ReadUpload>() else {
+                    let _ = out_tx.send(Message::failure(id, -32602, "read_upload needs { path }"));
+                    continue;
+                };
+                let home = home.clone();
+                let out = out_tx.clone();
+                tokio::spawn(async move {
+                    let read = tokio::task::spawn_blocking(move || read_upload(&home, &ask)).await;
+                    let _ = out.send(match read {
+                        Ok(Ok(read)) => Message::response(id, read),
+                        Ok(Err(why)) => Message::failure(id, -32000, why),
+                        Err(_) => Message::failure(id, -32000, "the file couldn't be read"),
+                    });
+                });
+            }
             (Some(rpc::BUSY), Some(id)) => {
                 let _ = out_tx.send(Message::response(id, core.busy().await));
             }
@@ -200,6 +237,8 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
     if let Some(forwarder) = forwarder {
         forwarder.abort();
     }
+    // Its line to the phone link closes, and any code it had open with it.
+    drop(pairing);
     drop(out_tx);
     let writer = writer_task.await;
     if let (Some((hub, quality)), Ok(writer)) = (stream, writer) {
@@ -412,6 +451,54 @@ pub fn receive_upload(home: &Path, name: &str, kind: Option<rpc::UploadKind>, si
             Err(e.to_string())
         }
     }
+}
+
+/// The most `read_upload` gives back: a picture is at most 8 MB once a screen
+/// made it ready, a video's frames far less.
+pub const READ_UPLOAD_MAX: u64 = 12 << 20;
+
+/// `path`, when it is a file of this machine's uploads — and nothing else: no
+/// `..`, not a link, not in a folder under it, not reached through a link out
+/// of it. What a screen asks back is only what screens put there.
+pub fn upload_file(home: &Path, path: &Path) -> Result<PathBuf, String> {
+    use std::path::Component;
+    let refused = || "not an upload".to_owned();
+    if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir | Component::CurDir)) {
+        return Err(refused());
+    }
+    let meta = std::fs::symlink_metadata(path).map_err(|_| "the file is gone".to_owned())?;
+    if !meta.file_type().is_file() {
+        return Err(refused());
+    }
+    let dir = std::fs::canonicalize(uploads_dir(home)).map_err(|_| refused())?;
+    let real = std::fs::canonicalize(path).map_err(|_| refused())?;
+    if real.parent() != Some(dir.as_path()) {
+        return Err(refused());
+    }
+    Ok(real)
+}
+
+/// Answer a `read_upload`: the file's size, and its bytes unless only the
+/// size was asked; one bigger than [`READ_UPLOAD_MAX`] is refused.
+pub fn read_upload(home: &Path, ask: &rpc::ReadUpload) -> Result<rpc::UploadRead, String> {
+    use base64::Engine as _;
+    use io::Read as _;
+    let path = upload_file(home, &ask.path)?;
+    let mut file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+    let size = file.metadata().map_err(|e| e.to_string())?.len();
+    if ask.size_only {
+        return Ok(rpc::UploadRead { size, data: None });
+    }
+    let too_big = || format!("the file is bigger than {} MB", READ_UPLOAD_MAX >> 20);
+    if size > READ_UPLOAD_MAX {
+        return Err(too_big());
+    }
+    let mut bytes = Vec::new();
+    file.by_ref().take(READ_UPLOAD_MAX + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > READ_UPLOAD_MAX {
+        return Err(too_big());
+    }
+    Ok(rpc::UploadRead { size: bytes.len() as u64, data: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)) })
 }
 
 /// Where a split [`Client`] sends its commands.
@@ -642,6 +729,67 @@ mod upload_tests {
         // The same name twice: two files.
         let again = save_upload(&home, &rpc::Upload { name: "회의 메모.md".into(), data: "AA==".into(), kind: Some(K::File) }).unwrap();
         assert_ne!(again, path);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    fn read(home: &Path, path: &Path) -> Result<Vec<u8>, String> {
+        use base64::Engine as _;
+        let read = read_upload(home, &rpc::ReadUpload { path: path.to_owned(), size_only: false })?;
+        Ok(base64::engine::general_purpose::STANDARD.decode(read.data.unwrap()).unwrap())
+    }
+
+    #[test]
+    fn only_a_file_in_the_uploads_folder_is_read_back() {
+        use std::os::unix::fs::symlink;
+        let home = home("read");
+        let (_, shot) = create_upload(&home, "shot.png", None).unwrap();
+        std::fs::write(&shot, b"png bytes").unwrap();
+        assert_eq!(read(&home, &shot).unwrap(), b"png bytes");
+        let sized = read_upload(&home, &rpc::ReadUpload { path: shot.clone(), size_only: true }).unwrap();
+        assert_eq!((sized.size, sized.data), (9, None));
+
+        // Beside the uploads, outside them, and a way out through `..`.
+        let secret = home.join("credentials.json");
+        std::fs::write(&secret, b"{}").unwrap();
+        let uploads = uploads_dir(&home);
+        assert!(read(&home, &secret).is_err());
+        assert!(read(&home, &uploads.join("../credentials.json")).is_err());
+        assert!(read(&home, Path::new("uploads/x.png")).is_err(), "only absolute paths");
+        assert!(read(&home, Path::new("/etc/passwd")).is_err());
+        // A link in the uploads to a file outside, or to the folder above.
+        symlink(&secret, uploads.join("link.png")).unwrap();
+        assert!(read(&home, &uploads.join("link.png")).is_err());
+        symlink(&home, uploads.join("up")).unwrap();
+        assert!(read(&home, &uploads.join("up/credentials.json")).is_err());
+        // A folder under the uploads, the folder itself, a file that is gone.
+        std::fs::create_dir(uploads.join("sub")).unwrap();
+        std::fs::write(uploads.join("sub/a.png"), b"x").unwrap();
+        assert!(read(&home, &uploads.join("sub/a.png")).is_err());
+        assert!(read(&home, &uploads).is_err());
+        assert!(read(&home, &uploads.join("gone.png")).is_err());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn an_uploads_folder_reached_through_a_link_still_reads_its_own_files() {
+        let real = home("linked-real");
+        let (_, shot) = create_upload(&real, "a.png", None).unwrap();
+        std::fs::write(&shot, b"ok").unwrap();
+        let linked = home("linked");
+        std::os::unix::fs::symlink(&real, &linked).unwrap();
+        let through = uploads_dir(&linked).join(shot.file_name().unwrap());
+        assert_eq!(read(&linked, &through).unwrap(), b"ok");
+        std::fs::remove_file(linked).unwrap();
+        std::fs::remove_dir_all(real).unwrap();
+    }
+
+    #[test]
+    fn a_file_too_big_to_read_back_is_refused_but_its_size_is_told() {
+        let home = home("big");
+        let (file, big) = create_upload(&home, "big.png", None).unwrap();
+        file.set_len(READ_UPLOAD_MAX + 1).unwrap();
+        assert!(read(&home, &big).unwrap_err().contains("MB"));
+        assert_eq!(read_upload(&home, &rpc::ReadUpload { path: big, size_only: true }).unwrap().size, READ_UPLOAD_MAX + 1);
         std::fs::remove_dir_all(home).unwrap();
     }
 

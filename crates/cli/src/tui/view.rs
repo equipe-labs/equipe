@@ -1476,6 +1476,28 @@ fn tool_run(run: Vec<ToolLine>, expanded: bool, theme: Theme, width: usize) -> V
 
 /// The person's own message: `›` and bold text, on a faint wash of the
 /// background when the terminal told us its colour.
+/// What the person attached, named rather than spelled out: each tag of a
+/// message (`[image: /…/uploads/1792073093606-paste.png]`) as its kind and
+/// name — `[이미지] paste.png`. The member still gets the tag as it is.
+pub fn attachments_named(text: &str) -> String {
+    use equipe_core::protocol::tags::{TagKind, compact};
+    compact(text, |tag| {
+        let name = tag.name();
+        let named = match tag.kind {
+            TagKind::Image => t!("view.attached_image", name = name),
+            TagKind::Video => t!("view.attached_video", name = name),
+            TagKind::Audio => t!("view.attached_audio", name = name),
+            TagKind::Pdf => t!("view.attached_pdf", name = name),
+            TagKind::File => t!("view.attached_file", name = name),
+        };
+        match (&tag.duration, tag.pages) {
+            (Some(length), _) => format!("{named} · {length}"),
+            (None, Some(pages)) => format!("{named} · {}", t!("view.attached_pages", count = pages)),
+            _ => named,
+        }
+    })
+}
+
 fn user_message(text: &str, theme: Theme, width: usize) -> Vec<Line<'static>> {
     let Some(tint) = theme.tint() else {
         return wrapped(vec![Span::styled("› ", theme.accent())], text, theme.bold(), 2, width);
@@ -1657,7 +1679,7 @@ fn transcript_lines(agent: &Agent, looks: &Looks, theme: Theme, width: usize) ->
             Entry::User { text } => {
                 begin(Block::User, &mut lines, &mut last);
                 gap(&mut lines);
-                lines.extend(user_message(text, theme, width));
+                lines.extend(user_message(&attachments_named(text), theme, width));
                 lines.push(Line::raw(""));
             }
             Entry::Reply { text } => {
@@ -1724,13 +1746,13 @@ fn transcript_lines(agent: &Agent, looks: &Looks, theme: Theme, width: usize) ->
     let here = |about: &Option<String>| agent.ticket.is_some() || agent.lane.is_some() || agent.in_view(about.as_deref());
     for (memo, _) in agent.queued.iter().zip(&agent.queued_in).filter(|(_, about)| here(about)) {
         gap(&mut lines);
-        lines.extend(wrapped(vec![Span::styled("› ", theme.dim())], memo, theme.dim(), 2, width));
+        lines.extend(wrapped(vec![Span::styled("› ", theme.dim())], &attachments_named(memo), theme.dim(), 2, width));
         lines.push(Line::from(Span::styled(format!("  {}", t!("view.memo_note")), theme.dim())));
     }
     // Said while it works: read at its next step, the work carrying on.
     for text in &agent.steering {
         gap(&mut lines);
-        lines.extend(wrapped(vec![Span::styled("› ", theme.accent())], text, theme.dim(), 2, width));
+        lines.extend(wrapped(vec![Span::styled("› ", theme.accent())], &attachments_named(text), theme.dim(), 2, width));
         lines.push(Line::from(Span::styled(format!("  {}", t!("view.steering_note")), theme.dim())));
     }
     lines
@@ -2908,6 +2930,29 @@ mod tests {
 
     #[test]
     fn hangul_replies_wrap_inside_the_pane() {
+        let (mut app, id) = working();
+        app.on_event(Event::TextDelta { session: id, text: "\n\n에이전트가 파일을 고쳤어요 이제 리뷰해 주세요 브랜치에 커밋했어요".into() });
+        let shot = screen(&app, 72, 22);
+        assert!(shot.contains("에이전트가"), "{shot}");
+    }
+
+    #[test]
+    fn what_the_person_attached_shows_as_its_kind_and_name_not_its_path() {
+        let (mut app, id) = working();
+        app.on_event(Event::TurnEnded { session: id, outcome: TurnOutcome::Completed, usage: None });
+        let said = "pair 가 잘 안되는데 [image: /Users/abel/.equipe/uploads/1792073093606-paste.png] [pdf: /Users/abel/.equipe/uploads/1792073093607-spec.pdf · 2 pages]";
+        app.on_event(Event::UserMessage { session: id, text: said.into() });
+        let shot = screen(&app, 100, 24);
+        assert!(shot.contains("pair 가 잘 안되는데 [Image] paste.png [PDF]") && shot.contains("spec.pdf · 2 pages"), "{shot}");
+        assert!(!shot.contains("uploads"), "{shot}");
+        assert_eq!(app.agents[0].last_said().as_deref(), Some("pair 가 잘 안되는데 [Image] paste.png [PDF] spec.pdf · 2 pages"));
+        assert_eq!(attachments_named("[video: /u/1792073093606-a.mov · 0:20 · frames: /u/f.jpg@0:05]"), "[Video] a.mov · 0:20");
+        // What reaches the member is the tag as it was typed.
+        assert!(app.agents[0].transcript.entries().iter().any(|e| matches!(e, Entry::User { text } if text == said)));
+    }
+
+    #[test]
+    fn a_long_korean_reply_wraps_inside_the_pane_again() {
         let (mut app, id) = working();
         app.on_event(Event::TextDelta { session: id, text: "\n\n에이전트가 파일을 고쳤어요 이제 리뷰해 주세요 브랜치에 커밋했어요".into() });
         let shot = screen(&app, 72, 22);

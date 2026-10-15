@@ -432,7 +432,7 @@ impl Agent {
     /// What the person said last to it.
     pub fn last_said(&self) -> Option<String> {
         self.transcript.entries().iter().rev().find_map(|e| match e {
-            Entry::User { text } => Some(text.lines().next().unwrap_or_default().trim().to_owned()),
+            Entry::User { text } => Some(super::view::attachments_named(text).lines().next().unwrap_or_default().trim().to_owned()),
             _ => None,
         })
     }

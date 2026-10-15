@@ -161,6 +161,27 @@ impl Core {
         self.config.as_ref().is_some_and(|c| !c.devices.is_empty())
     }
 
+    /// Whether a code is open and still works.
+    pub fn pairing_under_way(&self, now: u64) -> bool {
+        self.pairing.as_ref().is_some_and(|p| p.expires > now)
+    }
+
+    /// The paired devices, for `equipe devices` and the screens: their id,
+    /// name, platform, when paired, whether connected now, when last seen.
+    pub fn device_list(&self) -> Vec<Value> {
+        self.config
+            .iter()
+            .flat_map(|c| c.devices.iter())
+            .map(|d| {
+                let mut row = json!({ "id": d.id, "name": d.name, "platform": d.platform, "added": d.added, "online": self.online.contains(&d.id) });
+                if d.seen > 0 {
+                    row["seen"] = json!(d.seen);
+                }
+                row
+            })
+            .collect()
+    }
+
     /// `equipe pair`: open a slot; the QR code's address, and what to tell the relay.
     pub fn begin_pairing(&mut self, now: u64) -> Result<(String, Vec<Action>), String> {
         let config = self.config.as_ref().ok_or(t!("remote.not_registered"))?;
@@ -275,7 +296,7 @@ impl Core {
         }
         if self.pairing.as_ref().is_some_and(|p| p.expires <= now) {
             let mut out = self.end_pairing();
-            out.push(Action::Local(json!({ "error": t!("remote.code_expired") })));
+            out.push(Action::Local(json!({ "error": t!("remote.code_expired"), "why": "expired" })));
             return out;
         }
         // A relay that doesn't say the slot opened: show the code after a moment anyway.
@@ -330,13 +351,19 @@ impl Core {
                 // A new connection counts its frames from 1.
                 self.seq_in.remove(&device);
                 self.seq_out.remove(&device);
+                // When it was last there, for the list of devices.
+                let seen = self.config.as_mut().and_then(|c| c.devices.iter_mut().find(|d| d.id == device)).map(|d| d.seen = now / 1000).is_some();
                 if frame["online"] == true {
                     self.online.insert(device);
                     vec![]
                 } else {
                     self.online.remove(&device);
                     self.following.retain(|(d, _)| *d != device);
-                    vec![Action::Close { device }]
+                    let mut out = vec![Action::Close { device }];
+                    if seen {
+                        out.push(Action::Save);
+                    }
+                    out
                 }
             }
             "push_result" if frame["ok"] != true => {
@@ -563,7 +590,7 @@ fn admit(config: &mut Config, request: Request, secret: &[u8; 32], slot: &str, n
     let body = json!({ "type": "paired", "device": id, "token": token, "name": name });
     let data = seal::seal(Kind::PairAnswer, &request.key, Some(&config.keys()), Some(secret), &config.id, body.to_string().as_bytes()).ok()?;
     config.devices.retain(|d| d.name != request.name || d.key != request.key);
-    config.devices.push(Device { id: id.clone(), name: request.name, platform: request.platform, key: request.key, added: now / 1000 });
+    config.devices.push(Device { id: id.clone(), name: request.name, platform: request.platform, key: request.key, added: now / 1000, seen: 0 });
     Some(vec![
         Action::Save,
         Action::Relay(json!({ "type": "device_add", "device": id, "token_hash": super::sha256_hex(token.as_bytes()) })),
@@ -767,6 +794,46 @@ pub(crate) mod tests {
         assert!(out.iter().any(|a| matches!(a, Action::Relay(f) if f["type"] == "device_remove")));
         assert!(core.on_relay(&phone.send(&c, None, json!({ "jsonrpc": "2.0", "id": 1, "method": "squads" }), now), now).is_empty());
         assert!(core.remove_device("nobody").is_err());
+    }
+
+    #[test]
+    fn the_list_says_which_device_is_there_and_when_one_was_last_seen() {
+        let (mut core, phone, now) = core_with_phone();
+        let list = core.device_list();
+        assert_eq!(list.len(), 1);
+        assert_eq!((list[0]["id"].as_str(), list[0]["online"].as_bool(), list[0].get("seen")), (Some(phone.id.as_str()), Some(true), Some(&json!(now / 1000))));
+        // It leaves: no longer there, its time kept with the devices.
+        let later = now + 90_000;
+        let out = core.on_relay(&json!({ "type": "presence", "device": phone.id, "online": false }), later);
+        assert!(out.contains(&Action::Save) && out.contains(&Action::Close { device: phone.id.clone() }));
+        let list = core.device_list();
+        assert_eq!((list[0]["online"].as_bool(), list[0]["seen"].as_u64()), (Some(false), Some(later / 1000)));
+        assert_eq!(core.config.as_ref().unwrap().devices[0].seen, later / 1000);
+        // A stranger's presence keeps nothing.
+        assert_eq!(core.on_relay(&json!({ "type": "presence", "device": "nobody", "online": false }), later), vec![Action::Close { device: "nobody".into() }]);
+        // A device never seen leaves `seen` out of its row, and out of the file.
+        let mut fresh = config();
+        fresh.devices.push(Device { id: "x".into(), name: "x".into(), platform: "ios".into(), key: String::new(), added: 1, seen: 0 });
+        assert!(Core::new(Some(fresh.clone())).device_list()[0].get("seen").is_none());
+        assert!(!serde_json::to_string(&fresh).unwrap().contains("seen"));
+    }
+
+    #[test]
+    fn a_phone_can_neither_pair_another_nor_forget_one() {
+        for command in [Command::PairStart, Command::PairAnswer { approve: true }, Command::PairCancel, Command::Devices, Command::Unpair { device: "x".into() }] {
+            assert_eq!(allowed(command.clone()), None, "{command:?} stays at the person's screens");
+        }
+    }
+
+    #[test]
+    fn a_code_under_way_is_known_and_one_run_out_says_so() {
+        let mut core = Core::new(Some(config()));
+        assert!(!core.pairing_under_way(1000));
+        core.begin_pairing(1000).unwrap();
+        assert!(core.pairing_under_way(1000) && !core.pairing_under_way(1000 + PAIRING_MS));
+        let out = core.tick(1000 + PAIRING_MS);
+        assert!(out.iter().any(|a| matches!(a, Action::Local(v) if v["why"] == "expired")), "{out:?}");
+        assert!(!core.pairing_under_way(1000));
     }
 
     /// A pairing request as the app sends it, for the code in `url`.

@@ -669,6 +669,11 @@ impl Shell {
                 };
                 let progress = |share: f32| drop(tx.send(Step::Share(share)));
                 let done = attach::deliver(&prepared, &store, &progress);
+                // Shown in the conversation as soon as it is sent, from what is here.
+                if let Ok(ready) = &done {
+                    let remote = matches!(store, attach::Store::Remote { .. });
+                    let _ = tx.send(Step::Seen(crate::sent::just_sent(&prepared, ready, remote)));
+                }
                 let _ = tx.send(Step::Done(done));
             })
             .detach();
@@ -683,6 +688,13 @@ impl Shell {
                                 true
                             }
                             Step::Share(share) => strip.progress(id, share),
+                            Step::Seen(seen) => {
+                                let mut sent = this.chat.sent.borrow_mut();
+                                for (path, shown) in seen {
+                                    sent.seed(&path, shown);
+                                }
+                                false
+                            }
                             Step::Done(done) => {
                                 strip.finish(id, done);
                                 this.save_drafts_soon(cx);
@@ -1029,6 +1041,10 @@ impl Shell {
     /// Esc, ↑↓←→, Tab, Enter, Backspace and 1–9, before the box's own
     /// bindings see them. True when the key was taken.
     pub fn on_composer_key(&mut self, key: &str, modifiers: &Modifiers, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        // A message's pictures shown big have the arrows and Esc, wherever the focus is.
+        if self.on_gallery_key(key, modifiers, cx) {
+            return true;
+        }
         if self.screen != Screen::Chat || !self.composer.is_focused(window, cx) {
             return false;
         }
@@ -1258,6 +1274,8 @@ impl Shell {
 enum Step {
     Shown(Box<attach::Prepared>),
     Share(f32),
+    /// What the conversation shows of it once sent, by its paths there.
+    Seen(Vec<(String, crate::sent::Shown)>),
     Done(Result<attach::Ready, String>),
 }
 
@@ -2015,7 +2033,7 @@ fn chip_detail(item: &attach::Item) -> String {
     }
 }
 
-fn kind_color(p: Palette, kind: Kind) -> Rgba {
+pub(crate) fn kind_color(p: Palette, kind: Kind) -> Rgba {
     match kind {
         Kind::Pdf => p.member(6),
         Kind::Text => p.member(3),
@@ -2168,7 +2186,11 @@ fn rail(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use
         div().flex_none().h(px(20.)).px_1p5().flex().items_center().rounded(px(R_SM)).bg(bg).text_size(px(11.)).text_color(fg).child(label)
     };
     let mut cards: Vec<AnyElement> = Vec::new();
+    // What a memo attached shows small beside its words, never as its tags.
+    let attached = super::attached::Ctx::of(shell, cx.entity().downgrade(), 300.);
     for (i, memo) in convo.queued.iter().enumerate().take(4) {
+        let parts = crate::sent::parts(memo);
+        let mini = super::attached::mini(&attached, 1 << 40 | i as u64, &parts.tags, cx);
         let (edit, drop_it, now) = (memo.clone(), memo.clone(), memo.clone());
         let card = h_flex()
             .h(px(36.))
@@ -2181,7 +2203,8 @@ fn rail(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use
             .border_1()
             .border_color(p.hair)
             .child(badge(t!("composer.rail_memo"), p.text2, p.wash))
-            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(SMALL)).text_color(p.text2).child(memo.lines().next().unwrap_or_default().to_owned()))
+            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(SMALL)).text_color(p.text2).child(parts.text.lines().next().unwrap_or_default().to_owned()))
+            .children(mini)
             .child(link(("memo-edit", i), t!("composer.rail_edit"), Rc::new(move |this, window, cx| this.edit_memo(edit.clone(), window, cx)), cx))
             .child(link(("memo-drop", i), t!("composer.rail_delete"), Rc::new(move |this, _, cx| {
                 this.unqueue(&drop_it);
@@ -2191,6 +2214,8 @@ fn rail(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use
         cards.push(motion::rise(card, ("memo-in", crate::render::hash_of(memo))).into_any_element());
     }
     for (i, steer) in convo.steering.iter().enumerate().take(3) {
+        let parts = crate::sent::parts(steer);
+        let mini = super::attached::mini(&attached, 1 << 41 | i as u64, &parts.tags, cx);
         let card = h_flex()
             .id(("steer", i))
             .h(px(36.))
@@ -2202,7 +2227,8 @@ fn rail(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use
             .border_dashed()
             .border_color(p.hair)
             .child(badge(t!("composer.rail_steer"), p.accent, p.accent_bg))
-            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(SMALL)).text_color(p.muted).child(steer.lines().next().unwrap_or_default().to_owned()))
+            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(SMALL)).text_color(p.muted).child(parts.text.lines().next().unwrap_or_default().to_owned()))
+            .children(mini)
             .child(div().flex_none().text_size(px(12.)).text_color(p.muted).child(t!("composer.rail_unread")));
         cards.push(motion::rise(card, ("steer-in", crate::render::hash_of(steer))).into_any_element());
     }

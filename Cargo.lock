@@ -2162,7 +2162,7 @@ dependencies = [
 
 [[package]]
 name = "equipe"
-version = "0.38.1"
+version = "0.39.0"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -2182,6 +2182,7 @@ dependencies = [
  "ratatui",
  "ratatui-image",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -2193,7 +2194,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-core"
-version = "0.38.1"
+version = "0.39.0"
 dependencies = [
  "base64 0.23.1",
  "equipe-protocol",
@@ -2209,7 +2210,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-desktop"
-version = "0.38.1"
+version = "0.39.0"
 dependencies = [
  "base64 0.23.1",
  "block2 0.6.2",
@@ -2230,6 +2231,7 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-core-media",
  "objc2-foundation 0.3.2",
+ "qrcode",
  "ropey",
  "serde",
  "serde_json",
@@ -2238,7 +2240,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-protocol"
-version = "0.38.1"
+version = "0.39.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2246,7 +2248,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-providers"
-version = "0.38.1"
+version = "0.39.0"
 dependencies = [
  "base64 0.23.1",
  "dirs 7.0.0",

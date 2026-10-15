@@ -127,7 +127,17 @@ impl Uploader {
             .upload(name, bytes, kind)
             .recv_timeout(Duration::from_secs(120))
         {
-            Ok(answer) => answer,
+            Ok(answer) => answer.and_then(|v| serde_json::from_value::<equipe_core::protocol::rpc::Uploaded>(v).map(|u| u.path).map_err(|_| t!("failure.answer_unreadable").into())),
+            Err(_) => Err(t!("daemon.upload_no_answer").into()),
+        }
+    }
+
+    /// A file a message attached, read back from the daemon's machine (its
+    /// size only, when `size_only`). Blocks: call it off the UI thread.
+    pub fn read(&self, path: &str, size_only: bool) -> Result<equipe_core::protocol::rpc::UploadRead, String> {
+        let door = self.0.lock().unwrap().clone().ok_or(t!("daemon.not_connected"))?;
+        match door.read_upload(path, size_only).recv_timeout(Duration::from_secs(60)) {
+            Ok(answer) => answer.and_then(|v| serde_json::from_value(v).map_err(|_| t!("failure.answer_unreadable").into())),
             Err(_) => Err(t!("daemon.upload_no_answer").into()),
         }
     }
@@ -532,6 +542,15 @@ mod tests {
                                 };
                                 writer.write_all(reply.to_line().as_bytes()).await.unwrap();
                             }
+                            (Some(rpc::READ_UPLOAD), Some(id)) => {
+                                let ask: rpc::ReadUpload = message.params_as().unwrap();
+                                let reply = if ask.path.starts_with("/up/") {
+                                    Message::response(id, rpc::UploadRead { size: 2, data: (!ask.size_only).then(|| "aGk=".to_owned()) })
+                                } else {
+                                    Message::failure(id, -32000, "not an upload")
+                                };
+                                writer.write_all(reply.to_line().as_bytes()).await.unwrap();
+                            }
                             _ => {}
                         }
                     }
@@ -608,6 +627,22 @@ mod tests {
         // The fake answers with the bytes' base64 in the path.
         assert_eq!(asked.0, Ok(std::path::PathBuf::from("/up/aGk=")));
         assert_eq!(asked.1, Err("only images can be uploaded".to_owned()));
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    #[tokio::test]
+    async fn an_attachment_is_read_back_from_the_daemons_uploads() {
+        let socket = socket();
+        let _fake = Fake::start(&socket, "daemon-1", vec![]);
+        let mut spawned = spawn(target(&socket), FAST);
+        attached_version(next_main(&mut spawned.updates).await);
+        let uploader = spawned.link.uploader();
+        let asked = tokio::task::spawn_blocking(move || (uploader.read("/up/a.png", false), uploader.read("/up/a.pdf", true), uploader.read("/etc/passwd", false)))
+            .await
+            .unwrap();
+        assert_eq!(asked.0, Ok(rpc::UploadRead { size: 2, data: Some("aGk=".into()) }));
+        assert_eq!(asked.1, Ok(rpc::UploadRead { size: 2, data: None }));
+        assert_eq!(asked.2, Err("not an upload".to_owned()));
         let _ = std::fs::remove_file(&socket);
     }
 

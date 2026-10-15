@@ -107,6 +107,7 @@
   "notice.refused": "✗ {why} Refusé : {action}",
   "notice.remembered": "✎ {name} a retenu pour l'équipe : {what} · /memory montre ce que sait l'équipe",
   "notice.restarted": "equipe a redémarré ; reprise de T-{id}.",
+  "pairing.unavailable": "Ce démon ne peut pas jumeler de téléphone pour l'instant — redémarrez-le avec `equipe daemon restart`.",
   "status.cancelled": "annulé",
   "status.done": "terminé",
   "status.in_progress": "en cours",

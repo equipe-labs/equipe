@@ -107,6 +107,7 @@
   "notice.refused": "✗ {why} Rechazado: {action}",
   "notice.remembered": "✎ {name} recordó para el equipo: {what} · /memory muestra lo que sabe el equipo",
   "notice.restarted": "equipe se reinició; retoma T-{id}.",
+  "pairing.unavailable": "Este daemon no puede vincular teléfonos ahora — reinícialo con `equipe daemon restart`.",
   "status.cancelled": "cancelado",
   "status.done": "hecho",
   "status.in_progress": "en curso",

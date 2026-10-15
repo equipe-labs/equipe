@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod rpc;
 pub mod stream;
+pub mod tags;
 pub mod transcript;
 
 pub use transcript::Transcript;
@@ -450,6 +451,57 @@ pub enum Command {
     /// answer of [`Decision::Always`]): that kind of thing asks again. Answered
     /// by [`Event::Allowed`].
     Disallow { squad: SquadName, rule: String },
+    /// Pair a phone (the equipe app) with the daemon's machine: a code opens
+    /// at the relay. Answered, to this screen only, by [`Event::PairOffer`]
+    /// (then [`Event::PairAsked`], [`Event::Paired`]) or [`Event::PairEnded`].
+    /// Asked again while a code is open, the old code closes and a new one opens.
+    PairStart,
+    /// The person's answer to [`Event::PairAsked`]: pair that phone, or not.
+    PairAnswer { approve: bool },
+    /// The person closed the pairing: the code stops working.
+    PairCancel,
+    /// The phones paired with the daemon's machine: answered by [`Event::Devices`].
+    Devices,
+    /// Forget a paired phone (its `id` in [`Event::Devices`]): it can't reach
+    /// the daemon again. Answered by [`Event::Devices`].
+    Unpair { device: String },
+}
+
+/// A phone paired with the daemon's machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairedDevice {
+    pub id: String,
+    pub name: String,
+    /// `ios`, `android`.
+    #[serde(default)]
+    pub platform: String,
+    /// When it was paired, Unix seconds.
+    #[serde(default)]
+    pub added: u64,
+    /// Connected through the relay right now.
+    #[serde(default)]
+    pub online: bool,
+    /// When it was last connected, Unix seconds, when the daemon knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen: Option<u64>,
+}
+
+/// Why a pairing ended without a phone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PairEnd {
+    /// The person said no to the phone that asked.
+    Refused,
+    /// The code ran out of time before a phone brought it.
+    Expired,
+    /// Another screen (or `equipe pair`) has a code open.
+    Busy,
+    /// The relay couldn't be reached.
+    Relay,
+    /// The daemon doesn't pair phones (its phone link isn't running).
+    Unavailable,
+    /// Something else; the words say what.
+    Failed,
 }
 
 /// Where a window goes on the screen, in points.
@@ -771,6 +823,30 @@ pub enum Event {
         message: String,
         next: Option<String>,
     },
+    /// A code to pair a phone with ([`Command::PairStart`]), for a QR code:
+    /// `seconds` it still works. A secret: shown only while the person looks,
+    /// never logged or kept.
+    PairOffer { url: String, seconds: u64 },
+    /// A phone brought the code and asks to pair: the person says yes or no
+    /// ([`Command::PairAnswer`]).
+    PairAsked { name: String, platform: String },
+    /// The phone `name` is paired.
+    Paired { name: String },
+    /// The pairing ended without a phone; `message` in the person's words.
+    PairEnded {
+        why: PairEnd,
+        #[serde(default)]
+        message: String,
+    },
+    /// The phones paired with the daemon's machine; `relay` is where they
+    /// reach it, `connected` whether the daemon is connected there now.
+    Devices {
+        devices: Vec<PairedDevice>,
+        #[serde(default)]
+        relay: String,
+        #[serde(default)]
+        connected: bool,
+    },
 }
 
 impl Event {
@@ -829,7 +905,13 @@ impl Event {
             | Event::BrowserTabs { .. }
             | Event::BrowserControl { .. }
             | Event::BrowserDialog { .. }
-            | Event::BrowserDialogClosed { .. } => None,
+            | Event::BrowserDialogClosed { .. }
+            // Pairing a phone: the daemon machine's, told only the screen that asked.
+            | Event::PairOffer { .. }
+            | Event::PairAsked { .. }
+            | Event::Paired { .. }
+            | Event::PairEnded { .. }
+            | Event::Devices { .. } => None,
         }
     }
 
@@ -1239,5 +1321,32 @@ mod tests {
     fn every_session_event_names_its_session() {
         assert_eq!(Event::NothingChanged { session: 4 }.session(), Some(4));
         assert_eq!(Event::Error { session: None, message: String::new(), next: None }.session(), None);
+    }
+
+    #[test]
+    fn pairing_a_phone_travels_as_json_and_names_no_squad_or_session() {
+        for command in [Command::PairStart, Command::PairAnswer { approve: true }, Command::PairCancel, Command::Devices, Command::Unpair { device: "ab12".into() }] {
+            let json = serde_json::to_string(&command).unwrap();
+            assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), command);
+        }
+        assert_eq!(serde_json::to_string(&Command::PairStart).unwrap(), r#"{"type":"pair_start"}"#);
+        let device = PairedDevice { id: "ab12".into(), name: "Abel's iPhone".into(), platform: "ios".into(), added: 1_760_000_000, online: false, seen: Some(1_760_000_100) };
+        let events = [
+            Event::PairOffer { url: "equipe://pair?r=x".into(), seconds: 300 },
+            Event::PairAsked { name: "Abel's iPhone".into(), platform: "ios".into() },
+            Event::Paired { name: "Abel's iPhone".into() },
+            Event::PairEnded { why: PairEnd::Expired, message: "The code ran out of time.".into() },
+            Event::Devices { devices: vec![device], relay: "https://relay.equipe.im".into(), connected: true },
+        ];
+        for event in events {
+            assert_eq!((event.squad(), event.session()), (None, None));
+            let json = serde_json::to_string(&event).unwrap();
+            assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event);
+        }
+        // A device the daemon has never seen leaves `seen` out; older lists parse.
+        let old: Event = serde_json::from_str(r#"{"type":"devices","devices":[{"id":"a","name":"p"}]}"#).unwrap();
+        let Event::Devices { devices, connected, .. } = old else { panic!() };
+        assert_eq!((devices[0].seen, devices[0].online, connected), (None, false, false));
+        assert_eq!(serde_json::to_value(PairEnd::Unavailable).unwrap(), "unavailable");
     }
 }

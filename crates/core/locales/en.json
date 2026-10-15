@@ -107,6 +107,7 @@
   "notice.refused": "✗ {why} Refused: {action}",
   "notice.remembered": "✎ {name} remembered for the squad: {what} · /memory shows what the squad knows",
   "notice.restarted": "equipe restarted; picking T-{id} up again.",
+  "pairing.unavailable": "This daemon isn't pairing phones right now — restart it with `equipe daemon restart`.",
   "status.cancelled": "cancelled",
   "status.done": "done",
   "status.in_progress": "in progress",

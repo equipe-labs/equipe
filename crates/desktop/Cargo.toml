@@ -49,6 +49,8 @@ tokio = { version = "1.53.2", features = ["rt", "macros", "sync", "time", "net",
 # Attached screenshots: decoded, shrunk and thumbnailed off the UI thread.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff"] }
 base64 = "0.23.1"
+# Pairing a phone: the code, drawn as a QR code (the one `equipe pair` prints).
+qrcode = { version = "0.14.1", default-features = false }
 # `equipe send-image` drops files in an inbox; the folder is watched, not polled.
 # (Renamed: this crate has a module of its own called `notify`.)
 fs-notify = { package = "notify", version = "8", default-features = false, features = ["macos_fsevent"] }

@@ -225,7 +225,7 @@ impl Convo {
     /// What the person said last in it, its first line.
     pub fn last_said(&self) -> Option<String> {
         self.transcript.entries().iter().rev().find_map(|e| match e {
-            Entry::User { text } => Some(text.lines().next().unwrap_or_default().trim().to_owned()),
+            Entry::User { text } => Some(crate::sent::summary(text).lines().next().unwrap_or_default().trim().to_owned()),
             _ => None,
         })
     }
@@ -423,7 +423,9 @@ impl Block {
     /// The words a search finds in it.
     pub fn searchable(&self) -> Option<String> {
         match self {
-            Block::User(t) | Block::Reply { text: t, .. } | Block::Note(t) | Block::Memo(t) | Block::Steering(t) => Some(t.clone()),
+            // Your words as shown: without the attachments' tags.
+            Block::User(t) | Block::Memo(t) | Block::Steering(t) => Some(crate::sent::parts(t).text),
+            Block::Reply { text: t, .. } | Block::Note(t) => Some(t.clone()),
             Block::News(lines) => Some(lines.iter().map(|n| n.text.clone()).collect::<Vec<_>>().join("\n")),
             Block::Worked(_) => None,
             Block::Steps(lines) => Some(lines.iter().map(|l| format!("{} {}", verb_word(&l.verb), l.targets.join(" "))).collect::<Vec<_>>().join("\n")),

@@ -11,7 +11,7 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     Chosen,
     [
-        ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CircleX, Clock, Copy, Eraser, ExternalLink, FileText, Folder, Globe, Inbox, Info, Keyboard, Laptop, Lightbulb, Locate, Maximize2, MessageSquare, Mic, Minimize2, Paperclip, Pencil, Plus, RotateCcw, RotateCw, Search, Server, Settings, ShieldCheck, SquareSlash, SquareTerminal, Ticket, Users, X
+        ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, FileText, Folder, Globe, Inbox, Info, Keyboard, Laptop, Lightbulb, Locate, Maximize2, MessageSquare, Mic, Minimize2, Paperclip, Pencil, Plus, RotateCcw, RotateCw, Search, Server, Settings, ShieldCheck, Smartphone, SquareSlash, SquareTerminal, Ticket, TriangleAlert, Users, X
     ]
 );
 
@@ -76,11 +76,17 @@ pub enum Icon {
     Ticket,
     /// Cancelled.
     XCircle,
+    /// A phone (the equipe app), paired or to pair.
+    Phone,
+    /// Done: a phone paired.
+    Done,
+    /// Something went wrong, and what to do.
+    Warning,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 44] = [
+    pub const ALL: [Icon; 47] = [
         Icon::ArrowLeft,
         Icon::ArrowRight,
         Icon::ArrowUp,
@@ -125,6 +131,9 @@ impl Icon {
         Icon::Ticket,
         Icon::XCircle,
         Icon::X,
+        Icon::Phone,
+        Icon::Done,
+        Icon::Warning,
     ];
 
     pub fn path(self) -> &'static str {
@@ -173,6 +182,9 @@ impl Icon {
             Icon::Ticket => "icons/ticket.svg",
             Icon::XCircle => "icons/circle-x.svg",
             Icon::X => "icons/x.svg",
+            Icon::Phone => "icons/smartphone.svg",
+            Icon::Done => "icons/circle-check.svg",
+            Icon::Warning => "icons/triangle-alert.svg",
         }
     }
 }

@@ -1180,18 +1180,22 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                 c.cursor_pointer().child(div().text_color(p.muted).child("×")).on_click(cx.listener(move |this, _, window, cx| this.board_toggle_word(&w, window, cx)))
             })
     };
+    let has_chips = !chips.is_empty() || !saved_chips.is_empty();
+    // The title row is the title bar: its height and hairline the sidebar's
+    // strip's, the chips (when any) a row of their own under it.
     v_flex()
         .flex_none()
-        .border_b_1()
-        .border_color(p.hair)
+        .when(has_chips, |v| v.border_b_1().border_color(p.hair))
         .child(
             h_flex()
-                .h(px(48.))
-                .px_4()
+                .h(px(super::header::HEIGHT))
+                .pr_4()
+                .pl(px(shell.header_inset(16., cx)))
                 .gap_3()
                 .items_center()
+                .border_b_1()
+                .border_color(p.hair)
                 .window_control_area(WindowControlArea::Drag)
-                .when(shell.board.sidebar_hidden, |h| h.pl(px(super::sidebar::LIGHTS)).child(super::sidebar::strip_buttons(shell, false, cx)))
                 .child(h_flex().gap_2().items_baseline().flex_none().child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(title)).child(div().text_size(px(SMALL)).text_color(p.muted).child(count.to_string())))
                 .child(super::header::slice_control(shell, "board", cx))
                 .child(
@@ -1257,8 +1261,8 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                 })
                 .children(popover(shell, cx)),
         )
-        .when(!chips.is_empty() || !saved_chips.is_empty(), |bar| {
-            let mut row = h_flex().px_4().pb_2().gap_1().flex_wrap();
+        .when(has_chips, |bar| {
+            let mut row = h_flex().px_4().py_2().gap_1().flex_wrap();
             for word in saved_chips {
                 row = row.child(chip(word, false, cx));
             }

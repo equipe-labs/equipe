@@ -51,6 +51,13 @@ pub struct Device {
     pub key: String,
     /// When it was paired, Unix seconds.
     pub added: u64,
+    /// When it last connected or left, Unix seconds; 0 when never seen.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub seen: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 pub fn config_path(home: &Path) -> PathBuf {
@@ -59,7 +66,8 @@ pub fn config_path(home: &Path) -> PathBuf {
 
 /// Where the daemon answers `equipe pair` and `equipe devices`.
 pub fn local_socket(home: &Path) -> PathBuf {
-    home.join("remote.sock")
+    // The gateway carries the screens' pairing here too (`equipe_core::pairing`).
+    equipe_core::pairing::socket_path(home)
 }
 
 pub fn load(home: &Path) -> Option<Config> {

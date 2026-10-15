@@ -266,8 +266,18 @@ enum DaemonAction {
     Run,
 }
 
+/// TLS for the relay's WebSocket (`equipe daemon`, `pair`, `demo serve`):
+/// rustls picks its crypto from the process when it isn't told, and a build
+/// with both ring and aws-lc-rs in it (the workspace's, with the desktop
+/// app's) can't choose — it panicked on the first `wss://` connect. Say it
+/// once, before anything opens a connection. reqwest names its own.
+fn install_tls() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
+    install_tls();
     let cli = Cli::parse();
     let app = App {
         store: CredentialStore::default_location(),
@@ -1127,7 +1137,8 @@ impl App {
                 Event::SubagentEnded { .. } => eprintln!("{}", e.dim(&format!("  ↳ {}", t!("main.handed_back")))),
                 Event::SubagentStep { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::Estimated { .. } | Event::MemoWithdrawn { .. } => {}
                 Event::ToolResult { .. } | Event::Thinking { .. } => {}
-                Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. } => {}
+                Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. }
+                | Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. } => {}
                 Event::TurnEnded { outcome, usage, .. } => {
                     printer.end(outcome, usage);
                     core.send(Cmd::Close { session: ID });
@@ -1300,5 +1311,18 @@ mod tests {
         assert!(update_by_homebrew(std::path::Path::new("/opt/homebrew/Cellar/equipe/0.1.0/bin/equipe")));
         assert!(update_by_homebrew(std::path::Path::new("/home/linuxbrew/.linuxbrew/bin/equipe")));
         assert!(!update_by_homebrew(std::path::Path::new("/Users/me/.local/bin/equipe")));
+    }
+
+    /// The tests are built with ring as well as aws-lc-rs (a dev-dependency),
+    /// as a workspace build is: rustls can't choose by itself, and a TLS
+    /// client config — what the relay's `wss://` connect makes — panics
+    /// unless one was installed.
+    #[test]
+    fn tls_is_ready_for_the_relay_with_two_crypto_providers_built_in() {
+        install_tls();
+        install_tls();
+        let config = rustls::ClientConfig::builder().with_root_certificates(rustls::RootCertStore::empty()).with_no_client_auth();
+        assert!(config.crypto_provider().cipher_suites.iter().any(|s| s.version() == &rustls::version::TLS13));
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
     }
 }
