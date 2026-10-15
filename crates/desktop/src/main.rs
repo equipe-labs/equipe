@@ -748,7 +748,7 @@ impl Shell {
             return install_screen(p);
         }
         match &self.model.conn {
-            Conn::Down { reason, had_snapshot: false, .. } => v_flex().flex_1().child(self.drag_strip(cx)).child(views::connect::guide_screen(self, &reason.guide(&self.endpoint), cx)).into_any_element(),
+            Conn::Down { reason, had_snapshot: false, .. } => v_flex().flex_1().child(self.drag_strip()).child(views::connect::guide_screen(self, &reason.guide(&self.endpoint), cx)).into_any_element(),
             Conn::Connecting => div()
                 .flex_1()
                 .flex()
@@ -776,41 +776,26 @@ impl Shell {
     }
 
     /// A strip to drag the window by, over a screen with no header of its
-    /// own; with the sidebar away, its buttons beside the traffic lights.
-    fn drag_strip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        h_flex()
-            .h(px(views::sidebar::STRIP))
-            .flex_none()
-            .w_full()
-            .items_center()
-            .window_control_area(WindowControlArea::Drag)
-            .when(self.board.sidebar_hidden, |s| s.pl(px(views::sidebar::LIGHTS)).child(views::sidebar::strip_buttons(self, false, cx)))
+    /// own: the title bar's height and hairline (its buttons float above).
+    fn drag_strip(&self) -> impl IntoElement + use<> {
+        div().h(px(views::sidebar::STRIP)).flex_none().w_full().border_b_1().border_color(self.palette.hair).window_control_area(WindowControlArea::Drag)
     }
 
-    /// The sidebar, sliding in or out for a moment after ⌘\.
-    fn sidebar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        const SLIDE: Duration = Duration::from_millis(180);
-        let hidden = self.board.sidebar_hidden;
-        let moving = self.board.sidebar_shown_at.filter(|at| at.elapsed() < SLIDE);
-        if hidden && moving.is_none() {
+    /// The sidebar, sliding in or out for a moment after ⌘\ — its width read
+    /// from the one clock the headers beside it read too, so they go in step.
+    fn sidebar(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.sidebar_sliding(cx) {
+            window.request_animation_frame();
+        }
+        let shown = self.sidebar_shown(cx);
+        if shown <= 0. {
             return None;
         }
         let side = views::sidebar::render(self, cx).into_any_element();
-        let Some(at) = moving else { return Some(side) };
-        let width = self.board.sidebar_width;
-        let id = ElementId::NamedInteger("sidebar-slide".into(), at.saturating_duration_since(self.started).as_nanos() as u64);
-        Some(
-            div()
-                .h_full()
-                .flex_none()
-                .overflow_hidden()
-                .child(side)
-                .with_animation(id, Animation::new(SLIDE).with_easing(ease_out_quint()), move |el, delta| {
-                    let shown = if hidden { 1. - delta } else { delta };
-                    el.w(px(width * shown))
-                })
-                .into_any_element(),
-        )
+        if shown >= 1. {
+            return Some(side);
+        }
+        Some(div().h_full().flex_none().overflow_hidden().w(px(self.board.sidebar_width * shown)).child(side).into_any_element())
     }
 
     /// Shown over the last state when the daemon goes away after we had it.
@@ -972,9 +957,12 @@ impl Render for Shell {
                 .children(views::connect::question(self, cx))
                 .children(tips::layer(cx));
         }
-        let sidebar = self.sidebar(cx);
+        let sidebar = self.sidebar(window, cx);
         let browser = (self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
         root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(div().flex_1().min_w_0().h_full().flex().flex_col().child(self.body(cx))).children(browser))
+            // The title bar's fixed buttons, by the traffic lights, over the
+            // sidebar or the header alike: the same place whatever slides.
+            .child(views::sidebar::title_buttons(self, cx))
             // Over everything: the chooser, then a question from ssh above it.
             .children(views::composer::drop_overlay(self, cx))
             .children(views::composer::lightbox(self, cx))
@@ -1089,7 +1077,7 @@ fn main() {
             titlebar: Some(TitlebarOptions {
                 title: Some("equipe".into()),
                 appears_transparent: true,
-                traffic_light_position: Some(point(px(14.), px(13.))),
+                traffic_light_position: Some(point(px(views::sidebar::LIGHTS_AT.0), px(views::sidebar::LIGHTS_AT.1))),
             }),
             ..Default::default()
         };

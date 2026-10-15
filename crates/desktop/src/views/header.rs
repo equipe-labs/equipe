@@ -1,8 +1,8 @@
 //! The conversation's header, which is the window's title bar on the right:
 //! the conversation's name with ⌄ (the team, to switch), a small chip for the
 //! project slice — opening a list with what works and what waits in each,
-//! ⌘0–9 — and the context fill. With the sidebar away, its buttons sit here,
-//! beside the traffic lights.
+//! ⌘0–9 — and the context fill. The title bar's fixed buttons float over its
+//! left with the sidebar away; its content slides beside them.
 
 use equipe_core::t;
 use gpui_kit::component::input::Input;
@@ -15,7 +15,8 @@ use crate::state::{Member, Model, Presence};
 use crate::theme::{PROJECT_HUES, Palette, SANS, SMALL, look};
 use crate::Shell;
 
-pub const HEIGHT: f32 = 48.;
+/// The title bar's one height, the sidebar's strip's too.
+pub const HEIGHT: f32 = super::sidebar::STRIP;
 /// Past this many projects the list offers a search.
 const SEARCH_FROM: usize = 7;
 
@@ -57,18 +58,17 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             .when(c >= 50, |d| d.font_weight(FontWeight::SEMIBOLD))
             .child(t!("header.context", c = c))
     });
-    let hidden = shell.board.sidebar_hidden;
     h_flex()
         .h(px(HEIGHT))
         .flex_none()
-        .px_3()
+        .pr_3()
+        .pl(px(shell.header_inset(12., cx)))
         .gap_2()
         .items_center()
         .border_b_1()
         .border_color(p.hair)
         .font_family(SANS)
         .window_control_area(WindowControlArea::Drag)
-        .when(hidden, |h| h.pl(px(super::sidebar::LIGHTS)).child(super::sidebar::strip_buttons(shell, false, cx)))
         .children(who)
         .child(slice_control(shell, "chat", cx))
         .child(div().flex_1())

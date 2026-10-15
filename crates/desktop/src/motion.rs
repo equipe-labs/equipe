@@ -23,10 +23,26 @@ pub const BASE: Duration = Duration::from_millis(160);
 /// Dialogs, the lightbox, cards and messages arriving.
 pub const SLOW: Duration = Duration::from_millis(200);
 
+/// The sidebar sliding in or out (⌘\), and the header's content beside it.
+pub const SLIDE: Duration = Duration::from_millis(180);
+
 /// The one curve: cubic ease-out — quick to start, soft to land.
 pub fn ease_out(t: f32) -> f32 {
     let t = t.clamp(0., 1.);
     1. - (1. - t).powi(3)
+}
+
+/// The slide's curve: quintic ease-out, the panel leaving at once and
+/// settling softly.
+pub fn slide(t: f32) -> f32 {
+    let t = t.clamp(0., 1.);
+    1. - (1. - t).powi(5)
+}
+
+/// Where in time the slide reaches `v`: a slide turned back midway starts
+/// from where the panel stands.
+pub fn slide_inverse(v: f32) -> f32 {
+    1. - (1. - v.clamp(0., 1.)).powf(0.2)
 }
 
 /// How far a popover or a tooltip travels toward its anchor.
@@ -288,8 +304,17 @@ impl Element for SmoothHeight {
 
 #[cfg(test)]
 mod tests {
-    use super::{Ease, FAST, ease_out};
+    use super::{Ease, FAST, ease_out, slide, slide_inverse};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_slide_turned_back_starts_where_it_stands() {
+        assert_eq!(slide(0.), 0.);
+        assert_eq!(slide(1.), 1.);
+        for v in [0., 0.1, 0.5, 0.9, 1.] {
+            assert!((slide(slide_inverse(v)) - v).abs() < 1e-4, "{v}");
+        }
+    }
 
     #[test]
     fn the_curve_eases_out_and_stays_in_range() {

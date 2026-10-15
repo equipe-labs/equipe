@@ -20,15 +20,26 @@ use super::header::project_color;
 use crate::board::{Menu, project_groups};
 use crate::state::{Conn, Member, Model, Need, Side, Status, Verb, short_span};
 use crate::theme::{Palette, SANS, UI};
-use crate::{Screen, Shell};
+use crate::{Screen, Shell, motion};
 
 pub const WIDTH: f32 = 260.;
 pub const MIN_WIDTH: f32 = 200.;
 pub const MAX_WIDTH: f32 = 420.;
-/// The strip by the traffic lights.
-pub const STRIP: f32 = 40.;
-/// Where the traffic lights end: the strip's own buttons start here.
+/// The title bar: the sidebar's strip and every screen's header are this one
+/// row, one height, one hairline under it.
+pub const STRIP: f32 = 44.;
+/// A traffic light, as AppKit draws it: 14 pt, 9 pt apart.
+const LIGHT: f32 = 14.;
+/// Where the traffic lights sit (the close button's top left): 14 pt in, and
+/// centred on the title bar — the strip's buttons share that centre line.
+pub const LIGHTS_AT: (f32, f32) = (14., (STRIP - LIGHT) / 2.);
+/// Where the traffic lights end, and a little air: the strip's buttons start here.
 pub const LIGHTS: f32 = 78.;
+/// The strip's square buttons and the space between them.
+const BUTTON: f32 = 26.;
+const BUTTON_GAP: f32 = 2.;
+/// Where the fixed buttons (hide, back, forward) end, whatever the sidebar does.
+pub const BUTTONS_END: f32 = LIGHTS + 3. * BUTTON + 2. * BUTTON_GAP;
 const ROW: f32 = 30.;
 const TEXT: f32 = 13.;
 /// Every row's mark sits in a box this wide, so every title starts at one x.
@@ -98,18 +109,21 @@ pub fn icon_button(p: Palette, id: impl Into<ElementId>, name: IconName, enabled
         .when_some(tip, |b, tip| b.tip(p, tip, None))
 }
 
-/// The strip's buttons: hide or show the sidebar, search, back, forward. On
-/// the sidebar's strip, and on the main header's when the sidebar is away.
-pub fn strip_buttons(shell: &Shell, with_search: bool, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+/// The title bar's fixed buttons — hide or show the sidebar, back, forward —
+/// in one layer over the window's top left, so they never move: not when the
+/// sidebar slides away, not from screen to screen. Only what is beside them moves.
+pub fn title_buttons(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
     let ui = &shell.board;
     let tip = if ui.sidebar_hidden { t!("sidebar.show_tip") } else { t!("sidebar.hide_tip") };
     h_flex()
-        .gap(px(2.))
+        .absolute()
+        .top_0()
+        .left(px(LIGHTS))
+        .h(px(STRIP))
+        .gap(px(BUTTON_GAP))
         .items_center()
-        .flex_none()
         .child(icon_button(p, "toggle-sidebar", IconName::PanelLeft, true, Some(tip.into())).on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))))
-        .when(with_search, |s| s.child(icon_button(p, "search", IconName::Search, true, Some(t!("sidebar.search_tip").into())).on_click(cx.listener(|this, _, window, cx| this.search_everything(window, cx)))))
         .child(icon_button(p, "back", IconName::ArrowLeft, ui.history_at > 0, Some(t!("sidebar.back").into())).on_click(cx.listener(|this, _, window, cx| this.go_back(window, cx))))
         .child(icon_button(p, "forward", IconName::ArrowRight, ui.history_at + 1 < ui.history.len(), Some(t!("sidebar.forward").into())).on_click(cx.listener(|this, _, window, cx| this.go_forward(window, cx))))
 }
@@ -124,7 +138,18 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let pm_on = shell.screen == Screen::Chat && model.side_open() == Some(Side::Pm);
     let needs = model.needs_you_count();
 
-    let strip = h_flex().h(px(STRIP)).flex_none().pl(px(LIGHTS)).pr_2().items_center().window_control_area(WindowControlArea::Drag).child(strip_buttons(shell, true, cx));
+    // The strip: the title bar's fixed buttons float over its left (see
+    // `title_buttons`); search, the sidebar's own, sits after them and leaves
+    // with the sidebar.
+    let strip = h_flex()
+        .h(px(STRIP))
+        .flex_none()
+        .pl(px(BUTTONS_END + BUTTON_GAP))
+        .items_center()
+        .border_b_1()
+        .border_color(p.hair)
+        .window_control_area(WindowControlArea::Drag)
+        .child(icon_button(p, "search", IconName::Search, true, Some(t!("sidebar.search_tip").into())).on_click(cx.listener(|this, _, window, cx| this.search_everything(window, cx))));
 
     let nav = |id: &'static str, name: IconName, label: String, badge: usize, on: bool| {
         row_shell(p, id, on)
@@ -649,9 +674,41 @@ fn popup(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
 impl Shell {
     /// ⌘\: the sidebar away, or back.
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        // Turned back mid-slide, it goes back from where it stands.
+        let now = std::time::Instant::now();
+        let shown = self.sidebar_shown(cx);
+        let gone = if self.board.sidebar_hidden { shown } else { 1. - shown };
+        let into = motion::SLIDE.mul_f32(motion::slide_inverse(gone));
         self.board.sidebar_hidden = !self.board.sidebar_hidden;
-        self.board.sidebar_shown_at = Some(std::time::Instant::now());
+        self.board.sidebar_shown_at = Some(now.checked_sub(into).unwrap_or(now));
         cx.notify();
+    }
+
+    /// Whether the sidebar is sliding now.
+    pub fn sidebar_sliding(&self, cx: &App) -> bool {
+        !cx.reduce_motion() && self.board.sidebar_shown_at.is_some_and(|at| at.elapsed() < motion::SLIDE)
+    }
+
+    /// How much of the sidebar shows, 0–1, through its slide after ⌘\.
+    pub fn sidebar_shown(&self, cx: &App) -> f32 {
+        let hidden = self.board.sidebar_hidden;
+        let Some(at) = self.board.sidebar_shown_at.filter(|_| self.sidebar_sliding(cx)) else {
+            return if hidden { 0. } else { 1. };
+        };
+        let t = motion::slide(at.elapsed().as_secs_f32() / motion::SLIDE.as_secs_f32());
+        if hidden { 1. - t } else { t }
+    }
+
+    /// The sidebar's width on screen now.
+    pub fn sidebar_on_screen(&self, cx: &App) -> f32 {
+        self.board.sidebar_width * self.sidebar_shown(cx)
+    }
+
+    /// A header's left padding: its own `pad` beside the sidebar, and room for
+    /// the title bar's fixed buttons without it — its content going with the
+    /// sidebar's edge as that slides, and stopping by the buttons.
+    pub fn header_inset(&self, pad: f32, cx: &App) -> f32 {
+        (BUTTONS_END + 8. - self.sidebar_on_screen(cx)).max(pad)
     }
 
     /// ⌘N: a new message to the PM.
