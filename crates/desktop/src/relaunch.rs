@@ -42,6 +42,50 @@ pub fn now() -> bool {
     }
 }
 
+/// The app's updates, for settings: whether there is an updater at all
+/// (a packaged app), whether it works on its own, check now, turn it on or off.
+pub fn can_update(cx: &gpui_kit::App) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        cx.try_global::<crate::update::Updates>().is_some_and(|u| u.0.is_some())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = cx;
+        false
+    }
+}
+
+pub fn automatic(cx: &gpui_kit::App) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        cx.try_global::<crate::update::Updates>().and_then(|u| u.0.clone()).is_some_and(|u| u.automatic())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = cx;
+        false
+    }
+}
+
+pub fn set_automatic(on: bool, cx: &gpui_kit::App) {
+    #[cfg(target_os = "macos")]
+    if let Some(updater) = cx.try_global::<crate::update::Updates>().and_then(|u| u.0.clone()) {
+        updater.set_automatic(on);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (on, cx);
+}
+
+pub fn check_now(cx: &gpui_kit::App) {
+    #[cfg(target_os = "macos")]
+    if let Some(updater) = cx.try_global::<crate::update::Updates>().and_then(|u| u.0.clone()) {
+        updater.check();
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = cx;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

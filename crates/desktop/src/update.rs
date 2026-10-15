@@ -126,4 +126,44 @@ impl Updater {
             let _: () = msg_send![self.controller, checkForUpdates: none];
         }
     }
+
+    /// Sparkle's own updater, under the controller.
+    fn updater(&self) -> *mut AnyObject {
+        // SAFETY: `-[SPUStandardUpdaterController updater]`, on the main thread.
+        unsafe { msg_send![self.controller, updater] }
+    }
+
+    /// Whether updates are looked for and downloaded on their own. Sparkle
+    /// keeps the answer in the app's defaults.
+    pub fn automatic(&self) -> bool {
+        let updater = self.updater();
+        if updater.is_null() {
+            return false;
+        }
+        // SAFETY: SPUUpdater's `automaticallyChecksForUpdates` and
+        // `automaticallyDownloadsUpdates` (BOOL properties).
+        unsafe {
+            let checks: Bool = msg_send![updater, automaticallyChecksForUpdates];
+            let downloads: Bool = msg_send![updater, automaticallyDownloadsUpdates];
+            checks.as_bool() && downloads.as_bool()
+        }
+    }
+
+    pub fn set_automatic(&self, on: bool) {
+        let updater = self.updater();
+        if updater.is_null() {
+            return;
+        }
+        // SAFETY: the setters of the same properties.
+        unsafe {
+            let _: () = msg_send![updater, setAutomaticallyChecksForUpdates: Bool::new(on)];
+            let _: () = msg_send![updater, setAutomaticallyDownloadsUpdates: Bool::new(on)];
+        }
+    }
 }
+
+/// The app's updater, for the app menu and settings; `None` when the app
+/// wasn't packaged with Sparkle.
+pub struct Updates(pub Option<std::rc::Rc<Updater>>);
+
+impl gpui_kit::Global for Updates {}

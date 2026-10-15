@@ -169,6 +169,130 @@ pub struct Remembered {
     pub sidebar_width: Option<f32>,
     /// The language picked in settings (`ko`, `en`, …); `None`: the Mac's.
     pub lang: Option<String>,
+    /// Light or dark, or as the Mac is.
+    pub appearance: Appearance,
+    /// What the window opens on.
+    pub start: Start,
+    /// What the person wants to be told of while the window is out of sight.
+    pub pings: Pings,
+}
+
+/// Light or dark, as the person picked in settings; the Mac's by default
+/// (`theme.rs` draws it).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Appearance {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl Appearance {
+    pub const ALL: [Appearance; 3] = [Appearance::System, Appearance::Light, Appearance::Dark];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Appearance::System => "system",
+            Appearance::Light => "light",
+            Appearance::Dark => "dark",
+        }
+    }
+
+    pub fn parse(code: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|a| a.code() == code)
+    }
+}
+
+/// What the person wants to be told of while the window is out of sight
+/// (settings → 알림): each kind on or off, and whether a notice makes a
+/// sound. Everything, by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pings {
+    pub approvals: bool,
+    pub reviews: bool,
+    pub waiting: bool,
+    pub failed: bool,
+    pub sound: bool,
+}
+
+impl Default for Pings {
+    fn default() -> Self {
+        Self { approvals: true, reviews: true, waiting: true, failed: true, sound: true }
+    }
+}
+
+/// The kinds of notice, as `desktop-target` names them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ping {
+    Approvals,
+    Reviews,
+    Waiting,
+    Failed,
+    Sound,
+}
+
+impl Ping {
+    pub const ALL: [Ping; 5] = [Ping::Approvals, Ping::Reviews, Ping::Waiting, Ping::Failed, Ping::Sound];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Ping::Approvals => "approvals",
+            Ping::Reviews => "reviews",
+            Ping::Waiting => "waiting",
+            Ping::Failed => "failed",
+            Ping::Sound => "sound",
+        }
+    }
+}
+
+impl Pings {
+    pub fn get(&self, ping: Ping) -> bool {
+        match ping {
+            Ping::Approvals => self.approvals,
+            Ping::Reviews => self.reviews,
+            Ping::Waiting => self.waiting,
+            Ping::Failed => self.failed,
+            Ping::Sound => self.sound,
+        }
+    }
+
+    pub fn set(&mut self, ping: Ping, on: bool) {
+        match ping {
+            Ping::Approvals => self.approvals = on,
+            Ping::Reviews => self.reviews = on,
+            Ping::Waiting => self.waiting = on,
+            Ping::Failed => self.failed = on,
+            Ping::Sound => self.sound = on,
+        }
+    }
+}
+
+/// What the window opens on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Start {
+    /// The PM's conversation.
+    #[default]
+    Pm,
+    /// 나에게: what waits for the person.
+    Inbox,
+    /// 모든 일.
+    All,
+}
+
+impl Start {
+    pub const ALL: [Start; 3] = [Start::Pm, Start::Inbox, Start::All];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Start::Pm => "pm",
+            Start::Inbox => "inbox",
+            Start::All => "all",
+        }
+    }
+
+    pub fn parse(code: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.code() == code)
+    }
 }
 
 impl Remembered {
@@ -200,6 +324,14 @@ impl Remembered {
                 out.sidebar_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
             } else if let Some(rest) = line.strip_prefix("lang ") {
                 out.lang = Some(rest.trim().to_owned()).filter(|l| !l.is_empty());
+            } else if let Some(rest) = line.strip_prefix("appearance ") {
+                out.appearance = Appearance::parse(rest.trim()).unwrap_or_default();
+            } else if let Some(rest) = line.strip_prefix("start ") {
+                out.start = Start::parse(rest.trim()).unwrap_or_default();
+            } else if let Some(rest) = line.strip_prefix("quiet ") {
+                if let Some(ping) = Ping::ALL.into_iter().find(|p| p.code() == rest.trim()) {
+                    out.pings.set(ping, false);
+                }
             } else if let Some(rest) = line.strip_prefix("board-split ") {
                 out.board_split = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("browser-width ") {
@@ -235,6 +367,15 @@ impl Remembered {
         if let Some(lang) = &self.lang {
             text.push_str(&format!("lang {lang}\n"));
         }
+        if self.appearance != Appearance::System {
+            text.push_str(&format!("appearance {}\n", self.appearance.code()));
+        }
+        if self.start != Start::Pm {
+            text.push_str(&format!("start {}\n", self.start.code()));
+        }
+        for ping in Ping::ALL.into_iter().filter(|p| !self.pings.get(*p)) {
+            text.push_str(&format!("quiet {}\n", ping.code()));
+        }
         for (project, way) in &self.merge_ways {
             text.push_str(&format!("merge {project} {way}\n"));
         }
@@ -253,6 +394,11 @@ impl Remembered {
     pub fn set_merge_way(&mut self, project: &str, way: &str) {
         self.merge_ways.retain(|(p, _)| p != project);
         self.merge_ways.push((project.to_owned(), way.to_owned()));
+    }
+
+    /// Ask again each time in `project`.
+    pub fn clear_merge_way(&mut self, project: &str) {
+        self.merge_ways.retain(|(p, _)| p != project);
     }
 
     /// Remember that `endpoint` is the one in use now.
@@ -398,6 +544,33 @@ mod tests {
         local.save(&dir);
         assert_eq!(Remembered::load(&dir).last, Some(Endpoint::this_mac()));
         assert_eq!(Remembered::load(&dir).recent.len(), 2, "this Mac isn't a host to remember");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_kept_on_this_mac_round_trip_and_defaults_are_not_written() {
+        let dir = std::env::temp_dir().join(format!("eq-prefs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let fresh = Remembered::load(&dir);
+        assert_eq!((fresh.appearance, fresh.start, fresh.pings), (Appearance::System, Start::Pm, Pings::default()), "the system's look, the PM, every notice");
+
+        let mut prefs = Remembered { appearance: Appearance::Dark, start: Start::Inbox, ..Remembered::default() };
+        prefs.pings.set(Ping::Failed, false);
+        prefs.pings.set(Ping::Sound, false);
+        prefs.set_merge_way("app", "push");
+        prefs.set_merge_way("site", "merge");
+        prefs.clear_merge_way("app");
+        prefs.save(&dir);
+        let loaded = Remembered::load(&dir);
+        assert_eq!((loaded.appearance, loaded.start), (Appearance::Dark, Start::Inbox));
+        assert!(!loaded.pings.failed && !loaded.pings.sound && loaded.pings.approvals && loaded.pings.reviews && loaded.pings.waiting);
+        assert_eq!((loaded.merge_way("app"), loaded.merge_way("site")), (None, Some("merge")), "back to asking each time");
+
+        Remembered::default().save(&dir);
+        assert_eq!(std::fs::read_to_string(Remembered::path(&dir)).unwrap(), "", "defaults take no lines");
+        for (text, look) in [("appearance light\n", Appearance::Light), ("appearance sepia\n", Appearance::System)] {
+            assert_eq!(Remembered::parse(text).appearance, look);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

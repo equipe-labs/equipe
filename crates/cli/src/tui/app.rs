@@ -3287,6 +3287,7 @@ mod tests {
             lane: None,
             work: None,
             mode: None,
+            effort: None,
         }
     }
 

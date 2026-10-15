@@ -39,7 +39,6 @@ const MARK_BOX: f32 = 16.;
 pub enum Popup {
     /// The squads and machines.
     Account,
-    Settings,
 }
 
 /// How a ticket's row marks where it stands.
@@ -334,6 +333,7 @@ fn selected_ticket(shell: &Shell) -> Option<TicketId> {
             Some(Need::Ticket(id)) => Some(id),
             _ => None,
         },
+        Screen::Settings => None,
     }
 }
 
@@ -568,10 +568,7 @@ fn footer(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElemen
                 .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(p.muted).child(shell.endpoint.label()))
                 .child(icon(IconName::ChevronsUpDown, 12., p.muted)),
         )
-        .child(icon_button(p, "settings", IconName::Settings, true, Some(t!("sidebar.settings").into())).on_click(cx.listener(|this, _, _, cx| {
-            this.board.popup = if this.board.popup == Some(Popup::Settings) { None } else { Some(Popup::Settings) };
-            cx.notify();
-        })))
+        .child(icon_button(p, "settings", IconName::Settings, true, None).tip(p, t!("sidebar.settings"), Some("⌘,")).on_click(cx.listener(|this, _, window, cx| this.open_settings(None, window, cx))))
 }
 
 /// The squads and machines, or settings, over the foot.
@@ -616,21 +613,6 @@ fn popup(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
                     }))
                     .into_any_element(),
             );
-        }
-        Popup::Settings => {
-            rows.push(label(t!("sidebar.language")));
-            let current = shell.remembered.lang.clone();
-            rows.push(item("lang-system".into(), t!("sidebar.language_system").into(), current.is_none()).on_click(cx.listener(|this, _, _, cx| this.set_language(None, cx))).into_any_element());
-            for lang in equipe_core::i18n::Lang::ALL {
-                let code = lang.code().to_owned();
-                let on = current.as_deref() == Some(lang.code());
-                rows.push(item(SharedString::from(format!("lang-{code}")), lang.native_name().to_owned(), on).on_click(cx.listener(move |this, _, _, cx| this.set_language(Some(code.clone()), cx))).into_any_element());
-            }
-            if shell.board.restart_for_language {
-                rows.push(div().h(px(1.)).my_1().bg(p.hair).into_any_element());
-                rows.push(div().px_2().py_1().text_size(px(12.)).text_color(p.muted).child(t!("sidebar.language_after_restart")).into_any_element());
-                rows.push(item("restart".into(), t!("sidebar.restart_now").into(), false).on_click(cx.listener(|this, _, _, cx| this.restart(cx))).into_any_element());
-            }
         }
     }
     Some(
@@ -700,16 +682,6 @@ impl Shell {
         }
     }
 
-    /// The language picked in settings: kept, and in use from the next start.
-    pub fn set_language(&mut self, code: Option<String>, cx: &mut Context<Self>) {
-        if self.remembered.lang != code {
-            self.remembered.lang = code;
-            self.remembered.save(&equipe_providers::credentials::equipe_home());
-            self.board.restart_for_language = true;
-        }
-        cx.notify();
-    }
-
     /// Start the app again: the same binary, then this one leaves.
     pub fn restart(&mut self, cx: &mut Context<Self>) {
         if let Ok(exe) = std::env::current_exe()
@@ -766,6 +738,7 @@ impl Shell {
                 (None, Some(session)) => self.select_member(session, window, cx),
                 (None, None) => self.open_side(Side::Pm, window, cx),
             },
+            Screen::Settings => self.open_settings(None, window, cx),
         }
         cx.notify();
     }

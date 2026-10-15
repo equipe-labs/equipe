@@ -11,7 +11,7 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     Chosen,
     [
-        ArrowLeft, ArrowRight, ArrowUp, Camera, Check, ChevronDown, ChevronRight, ChevronUp, Clock, Copy, Eraser, ExternalLink, Laptop, Locate, Mic, Minimize2, Paperclip, Plus, RotateCcw, RotateCw, Server, SquareSlash, X
+        ArrowLeft, ArrowRight, ArrowUp, Camera, Check, ChevronDown, ChevronRight, ChevronUp, Clock, Copy, Eraser, ExternalLink, Folder, Globe, Info, Keyboard, Laptop, Locate, Mic, Minimize2, Paperclip, Plus, RotateCcw, RotateCw, Search, Server, Settings, ShieldCheck, SquareSlash, Users, X
     ]
 );
 
@@ -35,6 +35,10 @@ pub enum Icon {
     Compact,
     External,
     File,
+    Folder,
+    Globe,
+    Info,
+    Keyboard,
     Laptop,
     /// Follow the conversation's browser.
     Locate,
@@ -43,15 +47,21 @@ pub enum Icon {
     Plus,
     Reload,
     Retry,
+    Search,
     Server,
+    Settings,
+    /// Permissions.
+    Shield,
     /// Commands.
     Slash,
+    /// The team.
+    Users,
     X,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 24] = [
+    pub const ALL: [Icon; 32] = [
         Icon::ArrowLeft,
         Icon::ArrowRight,
         Icon::ArrowUp,
@@ -66,6 +76,10 @@ impl Icon {
         Icon::Compact,
         Icon::External,
         Icon::File,
+        Icon::Folder,
+        Icon::Globe,
+        Icon::Info,
+        Icon::Keyboard,
         Icon::Laptop,
         Icon::Locate,
         Icon::Mic,
@@ -73,8 +87,12 @@ impl Icon {
         Icon::Plus,
         Icon::Reload,
         Icon::Retry,
+        Icon::Search,
         Icon::Server,
+        Icon::Settings,
+        Icon::Shield,
         Icon::Slash,
+        Icon::Users,
         Icon::X,
     ];
 
@@ -94,6 +112,10 @@ impl Icon {
             Icon::Compact => "icons/minimize-2.svg",
             Icon::External => "icons/external-link.svg",
             Icon::File => "icons/file.svg",
+            Icon::Folder => "icons/folder.svg",
+            Icon::Globe => "icons/globe.svg",
+            Icon::Info => "icons/info.svg",
+            Icon::Keyboard => "icons/keyboard.svg",
             Icon::Laptop => "icons/laptop.svg",
             Icon::Locate => "icons/locate.svg",
             Icon::Mic => "icons/mic.svg",
@@ -101,7 +123,11 @@ impl Icon {
             Icon::Plus => "icons/plus.svg",
             Icon::Reload => "icons/rotate-cw.svg",
             Icon::Retry => "icons/rotate-ccw.svg",
+            Icon::Search => "icons/search.svg",
             Icon::Server => "icons/server.svg",
+            Icon::Settings => "icons/settings.svg",
+            Icon::Shield => "icons/shield-check.svg",
+            Icon::Users => "icons/users.svg",
             Icon::Slash => "icons/square-slash.svg",
             Icon::X => "icons/x.svg",
         }
