@@ -1189,7 +1189,7 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
                 .rounded(px(3.))
                 .border_1()
                 .border_color(if chosen { p.accent } else { p.hair })
-                .when(chosen, |c| c.bg(p.accent).text_color(p.on_primary).text_size(px(10.)).child("✓"))
+                .when(chosen, |c| c.bg(p.accent).text_color(p.on_accent).text_size(px(10.)).child("✓"))
                 .when(!chosen, |c| c.invisible().group_hover(group.clone(), |s| s.visible()))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
