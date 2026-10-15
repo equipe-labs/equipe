@@ -1155,7 +1155,8 @@ impl App {
                 | Event::TicketChanged { .. }
                 | Event::ModeChanged { .. }
                 | Event::ApprovalRequested { .. }
-                | Event::ApprovalResolved { .. } => {}
+                | Event::ApprovalResolved { .. }
+                | Event::Allowed { .. } => {}
                 Event::Error { message, next, .. } => {
                     failure.get_or_insert(Failure { message, next });
                     // A session that never opened won't send anything more.

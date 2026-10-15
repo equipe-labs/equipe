@@ -190,7 +190,7 @@ impl Menu {
 }
 
 /// The efforts each engine takes.
-fn efforts(engine: Option<Engine>) -> &'static [&'static str] {
+pub(crate) fn efforts(engine: Option<Engine>) -> &'static [&'static str] {
     match engine {
         Some(Engine::Codex) => &["minimal", "low", "medium", "high"],
         _ => &["low", "medium", "high", "xhigh", "max"],
@@ -198,7 +198,7 @@ fn efforts(engine: Option<Engine>) -> &'static [&'static str] {
 }
 
 /// A model's name as the bar shows it: `claude-opus-5-5` → `opus 5.5`.
-fn short_model(model: &str) -> String {
+pub(crate) fn short_model(model: &str) -> String {
     let m = model.strip_prefix("claude-").unwrap_or(model);
     let mut parts: Vec<&str> = m.split('-').collect();
     // A trailing date (`20250929`) says nothing to the person.
@@ -249,8 +249,6 @@ pub struct Composer {
     pub drag_shown: bool,
     /// ⌘⇧V: the next paste goes into the box however long it is.
     inline_paste: bool,
-    /// The effort asked for each member, as the bar shows it.
-    efforts: std::collections::HashMap<SessionId, Option<String>>,
     /// The projects' files, for `@`.
     indexes: Vec<files::Index>,
     indexing: Vec<String>,
@@ -299,7 +297,6 @@ impl Composer {
             drag: None,
             drag_shown: false,
             inline_paste: false,
-            efforts: Default::default(),
             indexes: Vec::new(),
             indexing: Vec::new(),
             lightbox: None,
@@ -943,7 +940,7 @@ impl Shell {
             MenuKind::Effort => {
                 let Some(member) = member else { return };
                 title = Some(t!("composer.menu_effort", name = member.name));
-                let now = self.composer.efforts.get(&member.session).cloned().flatten();
+                let now = self.model.efforts.get(&member.session).cloned();
                 let mut rows = vec![Row::new(t!("composer.effort_default"), "", Act::Effort(None)).checked(now.is_none())];
                 rows.extend(efforts(member.engine).iter().map(|e| Row::new(*e, "", Act::Effort(Some((*e).to_owned()))).checked(now.as_deref() == Some(*e))));
                 rows
@@ -1010,7 +1007,10 @@ impl Shell {
                         Some(e) => t!("composer.effort_set", name = name, effort = e),
                         None => t!("composer.effort_reset", name = name),
                     });
-                    self.composer.efforts.insert(session, effort);
+                    match effort {
+                        Some(effort) => self.model.efforts.insert(session, effort),
+                        None => self.model.efforts.remove(&session),
+                    };
                 }
             }
             Act::Mode(mode) => self.send_command(Command::SetMode { squad: self.model.squad.clone(), member: None, mode: Some(mode) }),
@@ -1675,7 +1675,7 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let mode_pill = member.map(|_| picker("mode", t!("composer.aria_mode", mode = mode_word), mode_word.to_owned(), p.muted, MenuKind::Mode, Some((t!("composer.tip_mode"), "⌘⇧M")), cx));
     let model_pill = member.and_then(|m| m.model.clone()).map(|m| picker("model", t!("composer.aria_model", model = m.clone()), short_model(&m), p.text2, MenuKind::Model, Some((t!("composer.tip_model"), "⌘⇧I")), cx));
     let effort_pill = member.map(|m| {
-        let now = composer.efforts.get(&m.session).cloned().flatten();
+        let now = model.efforts.get(&m.session).cloned();
         let label = now.clone().unwrap_or_else(|| t!("composer.effort_short").to_owned());
         picker("effort", t!("composer.aria_effort", effort = label.clone()), label, if now.is_some() { p.text2 } else { p.muted }, MenuKind::Effort, Some((t!("composer.tip_effort"), "⌘⇧E")), cx)
     });

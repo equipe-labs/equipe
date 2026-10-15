@@ -488,6 +488,33 @@ pub mod label {
     }
 }
 
+/// A line of a conversation as the person reads it: the lines the transcript
+/// writes itself (`Stopped.`, a ticket's branch…) in `lang`; any other line
+/// — equipe's notices, already in the person's language — as it is.
+pub fn note(lang: Lang, text: &str) -> std::borrow::Cow<'_, str> {
+    use equipe_protocol::transcript::notes;
+    use std::borrow::Cow;
+    let words = core(lang);
+    let fixed = match text {
+        notes::STOPPED => Some("note.stopped"),
+        notes::ENDED_EARLY => Some("note.ended_early"),
+        notes::NOTHING_CHANGED => Some("note.nothing_changed"),
+        _ => None,
+    };
+    if let Some(key) = fixed {
+        return Cow::Borrowed(words.get(key));
+    }
+    if let Some(branch) = text.strip_prefix(notes::WORKING_ON).and_then(|rest| rest.strip_suffix(notes::WORKING_REST)) {
+        return Cow::Owned(words.fill("note.working_on", &[("branch", branch.to_owned())]));
+    }
+    if text.starts_with("── T-")
+        && let Some((head, branch)) = text.rsplit_once(notes::ON_BRANCH)
+    {
+        return Cow::Owned(words.fill("note.ticket_on_branch", &[("ticket", head.to_owned()), ("branch", branch.to_owned())]));
+    }
+    Cow::Borrowed(text)
+}
+
 /// Declare a front end's words, next to its `FILES` (each language's
 /// `locales/<code>.json`, `include_str!`-ed): `catalog()`, the words in the
 /// language in use — in tests always `$test`, what its tests read — `lang()`,
@@ -709,6 +736,20 @@ mod tests {
             assert_eq!(label::mode_summary(Lang::En, mode), mode.summary());
         }
         assert_eq!(label::kind(Lang::De, equipe_protocol::TicketKind::Task), "Aufgabe");
+    }
+
+    #[test]
+    fn the_transcripts_own_lines_read_in_the_persons_language_and_the_rest_as_they_are() {
+        use equipe_protocol::transcript::notes;
+        assert_eq!(note(Lang::En, notes::STOPPED), notes::STOPPED);
+        assert_eq!(note(Lang::Ko, notes::STOPPED), "멈췄습니다.");
+        let working = format!("{}equipe/try-1{}", notes::WORKING_ON, notes::WORKING_REST);
+        assert_eq!(note(Lang::En, &working), working, "English reads as it always did");
+        assert!(note(Lang::Fr, &working).contains("equipe/try-1"));
+        let ticket = format!("── T-4 · a — b{}equipe/t-4", notes::ON_BRANCH);
+        assert_eq!(note(Lang::En, &ticket), ticket);
+        assert_eq!(note(Lang::Ko, &ticket), "── T-4 · a — b — 브랜치 equipe/t-4");
+        assert_eq!(note(Lang::Ko, "✓ 허용함: ls"), "✓ 허용함: ls", "a notice is in the person's language already");
     }
 
     #[test]

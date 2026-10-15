@@ -878,6 +878,12 @@ impl Runtime {
                     self.answer(approval, decision, "");
                 }
             }
+            Command::Disallow { squad, rule } => {
+                let taken = self.journals.get(&squad).and_then(|j| j.disallow(&rule).ok()).unwrap_or(false);
+                if taken {
+                    self.publish_allowed(&squad);
+                }
+            }
         }
     }
 
@@ -3075,6 +3081,7 @@ there, end your turn, and carry on when they say they're done."
                     if let Some(journal) = self.journal(&squad) {
                         let _ = journal.allow(rule, "you");
                     }
+                    self.publish_allowed(&squad);
                 }
                 // Nothing sound to generalise to: allow it this once.
                 None => decision = Decision::Allow,
@@ -3114,6 +3121,12 @@ there, end your turn, and carry on when they say they're done."
         };
         self.audit(&squad, approval.ticket, "you", verb, &approval.action);
         self.publish(Event::ApprovalResolved { squad, approval: approval_id, decision });
+    }
+
+    /// Tell the screens the squad's "always allow" rules, all of them.
+    fn publish_allowed(&mut self, squad: &str) {
+        let rules = self.journal(squad).and_then(|j| j.allowed().ok()).unwrap_or_default();
+        self.publish(Event::Allowed { squad: squad.to_owned(), rules });
     }
 
     /// Note a permission decision on the ticket's record.
@@ -3705,6 +3718,7 @@ it back there once they have done it. End your turn now with a short line on wha
                         workspace: w.sandbox.as_ref().map(workspace_of),
                     }),
                     mode: s.mode,
+                    effort: s.effort.clone(),
                 }
             })
             .collect();
@@ -3719,6 +3733,8 @@ it back there once they have done it. End your turn now with a short line on wha
         approvals.sort_by_key(|a| a.id);
         let scale = self.journals.get(squad).map(Journal::scale);
         let suggestions_off = self.journals.get(squad).is_some_and(Journal::suggestions_off);
+        let allowed = self.journals.get(squad).and_then(|j| j.allowed().ok()).unwrap_or_default();
+        let browsers_shown = self.journals.get(squad).is_some_and(Journal::browsers_all_shown);
         Snapshot {
             squad: squad.to_owned(),
             projects,
@@ -3730,6 +3746,8 @@ it back there once they have done it. End your turn now with a short line on wha
             suggestions_off,
             plan: self.plan,
             desktop: self.desktop.state(),
+            allowed,
+            browsers_shown,
         }
     }
 

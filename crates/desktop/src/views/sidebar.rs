@@ -39,7 +39,6 @@ const MARK_BOX: f32 = 16.;
 pub enum Popup {
     /// The squads and machines.
     Account,
-    Settings,
 }
 
 /// How a ticket's row marks where it stands.
@@ -334,6 +333,7 @@ fn selected_ticket(shell: &Shell) -> Option<TicketId> {
             Some(Need::Ticket(id)) => Some(id),
             _ => None,
         },
+        Screen::Settings => None,
     }
 }
 
@@ -568,10 +568,7 @@ fn footer(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElemen
                 .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(p.muted).child(shell.endpoint.label()))
                 .child(icon(IconName::ChevronsUpDown, 12., p.muted)),
         )
-        .child(icon_button(p, "settings", IconName::Settings, true, Some(t!("sidebar.settings").into())).on_click(cx.listener(|this, _, _, cx| {
-            this.board.popup = if this.board.popup == Some(Popup::Settings) { None } else { Some(Popup::Settings) };
-            cx.notify();
-        })))
+        .child(icon_button(p, "settings", IconName::Settings, true, None).tip(p, t!("sidebar.settings"), Some("⌘,")).on_click(cx.listener(|this, _, window, cx| this.open_settings(None, window, cx))))
 }
 
 /// The squads and machines, or settings, over the foot.
@@ -616,19 +613,6 @@ fn popup(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
                     }))
                     .into_any_element(),
             );
-        }
-        Popup::Settings => {
-            // Each language in its own name; System first, with what it comes to now.
-            use equipe_core::i18n::{Front, Lang};
-            rows.push(label(t!("sidebar.language")));
-            let current = shell.board.language;
-            let system = t!("sidebar.language_system_now", name = Lang::resolve_auto(Front::App).native_name());
-            rows.push(item("lang-system".into(), system, current.is_none()).on_click(cx.listener(|this, _, _, cx| this.set_language(None, cx))).into_any_element());
-            for lang in Lang::ALL {
-                rows.push(item(SharedString::from(format!("lang-{}", lang.code())), lang.native_name().to_owned(), current == Some(lang)).on_click(cx.listener(move |this, _, _, cx| this.set_language(Some(lang), cx))).into_any_element());
-            }
-            rows.push(div().h(px(1.)).my_1().bg(p.hair).into_any_element());
-            rows.push(div().px_2().py_1().max_w(px(260.)).text_size(px(12.)).text_color(p.muted).child(t!("sidebar.language_note")).into_any_element());
         }
     }
     Some(
@@ -698,27 +682,6 @@ impl Shell {
         }
     }
 
-    /// The language picked in settings (`None`: System, the Mac's — the
-    /// language set for equipe alone in System Settings included): kept for
-    /// every screen, and shown at once, menus too. What equipe says in the
-    /// conversations follows.
-    pub fn set_language(&mut self, choice: Option<equipe_core::i18n::Lang>, cx: &mut Context<Self>) {
-        use equipe_core::i18n::{Front, Lang};
-        let home = equipe_providers::credentials::equipe_home();
-        if let Err(why) = equipe_core::i18n::save(&home, choice) {
-            eprintln!("equipe: the language wasn't kept: {why}");
-        }
-        self.board.language = choice;
-        let lang = Lang::resolve_in(&home, Front::App);
-        if lang != crate::i18n::lang() {
-            crate::i18n::set(lang);
-            crate::set_menus(cx);
-            self.send_command(equipe_core::protocol::Command::Language { lang: lang.code().to_owned() });
-        }
-        cx.refresh_windows();
-        cx.notify();
-    }
-
     // ── back and forward ──
 
     /// Where the window is now, for back and forward.
@@ -766,6 +729,7 @@ impl Shell {
                 (None, Some(session)) => self.select_member(session, window, cx),
                 (None, None) => self.open_side(Side::Pm, window, cx),
             },
+            Screen::Settings => self.open_settings(None, window, cx),
         }
         cx.notify();
     }

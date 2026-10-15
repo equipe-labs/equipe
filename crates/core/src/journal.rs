@@ -373,6 +373,11 @@ impl Journal {
         (value["all"].as_bool().unwrap_or(false), members)
     }
 
+    /// Whether every member's browser opens on screen.
+    pub fn browsers_all_shown(&self) -> bool {
+        self.shown_browsers().0
+    }
+
     /// Whether `member`'s browser opens on screen rather than hidden.
     pub fn browser_shown(&self, member: &str) -> bool {
         let (all, members) = self.shown_browsers();
@@ -493,6 +498,11 @@ impl Journal {
             params![rule, by, now()],
         )?;
         Ok(())
+    }
+
+    /// Take an "always allow" rule back. False when the squad had no such rule.
+    pub fn disallow(&self, rule: &str) -> Result<bool> {
+        Ok(self.conn.execute("DELETE FROM allowed WHERE rule = ?1", [rule])? > 0)
     }
 
     // ── projects ──
@@ -1172,6 +1182,20 @@ mod tests {
         assert_eq!(j.mode(), Mode::Ask);
         assert_eq!(j.open_sessions().unwrap()[0].mode, Some(Mode::Full));
         assert_eq!(j.allowed().unwrap(), ["Bash(npm install:*)"]);
+    }
+
+    #[test]
+    fn an_always_allow_rule_taken_back_is_gone_and_the_others_stay() {
+        let home = temp_home();
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        j.allow("Bash(npm install:*)", "you").unwrap();
+        j.allow("Bash(gh:*)", "you").unwrap();
+        assert!(j.disallow("Bash(npm install:*)").unwrap());
+        assert!(!j.disallow("Bash(npm install:*)").unwrap(), "only once");
+        assert_eq!(j.allowed().unwrap(), ["Bash(gh:*)"]);
+        assert!(!j.browsers_all_shown());
+        j.show_browser(None, true, &[]).unwrap();
+        assert!(j.browsers_all_shown());
     }
 
     #[test]

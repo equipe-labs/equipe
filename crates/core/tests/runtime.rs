@@ -355,6 +355,22 @@ async fn the_effort_asked_for_reaches_claude_code() {
 }
 
 #[tokio::test]
+async fn a_screen_attaching_sees_the_effort_each_member_thinks_at() {
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&repo])));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    handle.send(Command::SetEffort { session: 1, effort: Some("High".into()) });
+    until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("effort"))).await;
+    let effort = |snapshot: equipe_core::protocol::Snapshot| snapshot.sessions.iter().find(|s| s.session == 1).and_then(|s| s.effort.clone());
+    assert_eq!(effort(handle.snapshot("acme").await).as_deref(), Some("high"));
+    handle.send(Command::SetEffort { session: 1, effort: None });
+    until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("default effort"))).await;
+    assert_eq!(effort(handle.snapshot("acme").await), None, "back on the engine's default");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn said_while_it_works_it_reads_at_its_next_step_without_stopping() {
     // Claude Code reads a second message mid-turn, echoes it as it does, and carries on.
     let turn = r#"IFS= read -r more
@@ -1581,6 +1597,44 @@ async fn a_request_for_permission_waits_for_the_person_and_always_becomes_a_rule
     handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny });
     let no: serde_json::Value = serde_json::from_str(&other.await.unwrap().text).unwrap();
     assert_eq!((no["behavior"].as_str(), no["message"].as_str()), (Some("deny"), Some("The person declined.")));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_always_allow_rule_is_listed_for_screens_and_taken_back_asks_again() {
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::Ask) });
+    until(&mut events, |e| matches!(e, Event::ModeChanged { .. })).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
+    assert!(handle.snapshot("acme").await.allowed.is_empty());
+
+    let waiting = ask(&handle, "npm install react");
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Always });
+    waiting.await.unwrap();
+    let seen = until(&mut events, |e| matches!(e, Event::Allowed { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::Allowed { squad, rules }) if squad == "acme" && rules == &["Bash(npm install:*)"]), "{seen:#?}");
+    assert_eq!(handle.snapshot("acme").await.allowed, ["Bash(npm install:*)"], "a screen attaching now lists it");
+
+    // Another squad's word changes nothing here; a rule it never had, nothing at all.
+    handle.send(Command::Disallow { squad: "other".into(), rule: "Bash(npm install:*)".into() });
+    handle.send(Command::Disallow { squad: "acme".into(), rule: "Bash(npm install:*)".into() });
+    let seen = until(&mut events, |e| matches!(e, Event::Allowed { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::Allowed { squad, rules }) if squad == "acme" && rules.is_empty()), "{seen:#?}");
+    assert!(handle.snapshot("acme").await.allowed.is_empty());
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().allowed().unwrap(), Vec::<String>::new());
+
+    // Taken back, the same kind of thing asks again.
+    let _again = ask(&handle, "npm install lodash");
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    assert!(matches!(asked.last(), Some(Event::ApprovalRequested { approval, .. }) if approval.action == "npm install lodash"));
     handle.shutdown().await;
 }
 

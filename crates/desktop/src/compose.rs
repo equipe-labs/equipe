@@ -690,6 +690,7 @@ mod tests {
             queued: vec![],
             work: None,
             mode: None,
+            effort: None,
             queued_project: None,
             queued_in: vec![],
             steering: vec![],

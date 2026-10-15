@@ -51,10 +51,17 @@ fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
         queued: vec![],
         work: None,
         mode: None,
+        effort: None,
     }
 }
 
 /// Requests for permission still unanswered; a `decide` removes one. `FAKE_ASKS=0` starts with none.
+/// The squad's "always allow" rules, as settings lists them.
+fn allowed() -> &'static std::sync::Mutex<Vec<String>> {
+    static ALLOWED: std::sync::OnceLock<std::sync::Mutex<Vec<String>>> = std::sync::OnceLock::new();
+    ALLOWED.get_or_init(|| std::sync::Mutex::new(vec!["Bash(npm install:*)".into(), "Bash(gh:*)".into(), "WebFetch(domain:vercel.com)".into()]))
+}
+
 fn asks() -> &'static std::sync::Mutex<Vec<Approval>> {
     static ASKS: std::sync::OnceLock<std::sync::Mutex<Vec<Approval>>> = std::sync::OnceLock::new();
     ASKS.get_or_init(|| {
@@ -283,12 +290,19 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         let frontend = on(info(2, "frontend", vec![]), 47, "web", "상품 상세 페이지 이미지 갤러리", true, ("Edit", "src/gallery.tsx"), Some(Estimate { done_at: Some(now + 25 * 60), ..Default::default() }));
                         let backend = on(info(3, "backend", vec![]), 70, "api", "주문 API 페이지네이션", true, ("Bash", "cargo test -p api"), Some(Estimate { done_at: Some(now + 50 * 60), guessed: true, ..Default::default() }));
                         let designer = on(info(4, "designer", vec![]), 60, "app", "온보딩 세 화면 시안", false, ("Read", "brief.md"), Some(Estimate { done_at: Some(now.saturating_sub(12 * 60)), ..Default::default() }));
+                        // Settings have something to show: a member on its own mode and effort, rules kept.
+                        let mut designer = designer;
+                        designer.mode = Some(equipe_core::protocol::Mode::Ask);
+                        let mut backend = backend;
+                        backend.effort = Some("high".into());
                         let snapshot = Snapshot {
                             squad: params.squad,
                             projects: vec![repo("web"), repo("app"), repo("api")],
                             sessions: vec![info(1, "pm", history), frontend, backend, designer],
                             approvals: asks().lock().unwrap().clone(),
                             tickets: tickets().lock().unwrap().clone(),
+                            allowed: allowed().lock().unwrap().clone(),
+                            browsers_shown: true,
                             ..Default::default()
                         };
                         let hello = Hello { version: "fake".into(), snapshot };
@@ -383,6 +397,17 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             }
                             Command::Focus { project, .. } => {
                                 routes.lock().await.focus = project;
+                            }
+                            Command::Disallow { squad, rule } => {
+                                let rules = {
+                                    let mut kept = allowed().lock().unwrap();
+                                    kept.retain(|r| *r != rule);
+                                    kept.clone()
+                                };
+                                let _ = events.send(Event::Allowed { squad, rules });
+                            }
+                            Command::SetMode { squad, member, mode } => {
+                                let _ = events.send(Event::ModeChanged { squad, member, mode });
                             }
                             other => {
                                 if let Some(ticket) = on_ticket_command(&other) {

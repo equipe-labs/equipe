@@ -10,4 +10,5 @@ pub mod diffview;
 pub mod header;
 pub mod icons;
 pub mod peek;
+pub mod settings;
 pub mod sidebar;

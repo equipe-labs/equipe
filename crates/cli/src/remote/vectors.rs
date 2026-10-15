@@ -672,6 +672,7 @@ fn snapshot() -> Snapshot {
                 estimate: None,
                 work: None,
                 mode: None,
+                effort: None,
             },
             SessionInfo {
                 session: 4242,
@@ -694,6 +695,7 @@ fn snapshot() -> Snapshot {
                 estimate: None,
                 work: Some(WorkInfo { ticket: 38, project: "/Users/you/projects/api".into(), workspace: None }),
                 mode: None,
+                effort: None,
             },
         ],
         tickets: vec![ticket(TicketStatus::InProgress)],
@@ -703,6 +705,8 @@ fn snapshot() -> Snapshot {
         plan: None,
         suggestions_off: false,
         desktop: Default::default(),
+        allowed: vec![],
+        browsers_shown: false,
     }
 }
 

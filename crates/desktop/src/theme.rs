@@ -1,7 +1,50 @@
 //! The spec's colour tokens (T-54 §2.1) and the type sizes, light and dark.
-//! Dark and light follow the system appearance.
+//! Dark and light follow the system appearance, unless the person picked one
+//! in settings.
 
 use gpui_kit::*;
+
+/// Light or dark, as the person picked in settings (kept with the window's
+/// other choices, in `target.rs`); the Mac's by default.
+pub use crate::target::Appearance;
+
+impl Appearance {
+    /// What the window draws in, given what the Mac says.
+    pub fn resolve(self, system: WindowAppearance) -> WindowAppearance {
+        match self {
+            Appearance::System => system,
+            Appearance::Light => WindowAppearance::Light,
+            Appearance::Dark => WindowAppearance::Dark,
+        }
+    }
+
+    /// Make the app itself light or dark — the traffic lights, menus and
+    /// Sparkle's windows too — or hand it back to the Mac (`System`).
+    pub fn apply(self) {
+        #[cfg(target_os = "macos")]
+        {
+            use objc2::msg_send;
+            use objc2::runtime::{AnyClass, AnyObject};
+            use objc2_foundation::NSString;
+            let (Some(app_class), Some(appearance_class)) = (AnyClass::get(c"NSApplication"), AnyClass::get(c"NSAppearance")) else { return };
+            // SAFETY: AppKit's `+[NSApplication sharedApplication]`,
+            // `+[NSAppearance appearanceNamed:]` and `-[NSApplication setAppearance:]`
+            // (nil follows the system), on the main thread, where the app runs.
+            unsafe {
+                let app: *mut AnyObject = msg_send![app_class, sharedApplication];
+                if app.is_null() {
+                    return;
+                }
+                let look: *mut AnyObject = match self {
+                    Appearance::System => std::ptr::null_mut(),
+                    Appearance::Light => msg_send![appearance_class, appearanceNamed: &*NSString::from_str("NSAppearanceNameAqua")],
+                    Appearance::Dark => msg_send![appearance_class, appearanceNamed: &*NSString::from_str("NSAppearanceNameDarkAqua")],
+                };
+                let _: () = msg_send![app, setAppearance: look];
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct Palette {
@@ -178,5 +221,20 @@ impl Palette {
 
     pub fn danger_bg(&self) -> Rgba {
         if self.is_dark() { rgba(0xF0918A1F) } else { rgba(0xB3261E14) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Appearance, Palette};
+    use gpui_kit::WindowAppearance;
+
+    #[test]
+    fn a_picked_appearance_wins_over_the_macs_and_system_follows_it() {
+        assert_eq!(Appearance::System.resolve(WindowAppearance::Dark), WindowAppearance::Dark);
+        assert_eq!(Appearance::Light.resolve(WindowAppearance::VibrantDark), WindowAppearance::Light);
+        assert!(Palette::new(Appearance::Dark.resolve(WindowAppearance::Light)).is_dark());
+        assert!(Appearance::ALL.iter().all(|a| Appearance::parse(a.code()) == Some(*a)));
+        assert_eq!(Appearance::parse("sepia"), None);
     }
 }

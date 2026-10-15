@@ -972,6 +972,7 @@ mod tests {
             estimate: None,
             work: None,
             mode: None,
+            effort: None,
         }
     }
 

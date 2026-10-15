@@ -446,6 +446,10 @@ pub enum Command {
     /// The person switched their screen to `lang` (`ko`, `zh-Hant`): what equipe
     /// says to them from now on is in it, as when a screen says hello.
     Language { lang: String },
+    /// The person takes back one of the squad's "always allow" rules (an
+    /// answer of [`Decision::Always`]): that kind of thing asks again. Answered
+    /// by [`Event::Allowed`].
+    Disallow { squad: SquadName, rule: String },
 }
 
 /// Where a window goes on the screen, in points.
@@ -633,6 +637,9 @@ pub enum Event {
     ApprovalRequested { squad: SquadName, approval: Approval },
     /// It was answered — by the person, or by nobody in time (`Deny`).
     ApprovalResolved { squad: SquadName, approval: u64, decision: Decision },
+    /// The squad's "always allow" rules changed (one added by an answer of
+    /// [`Decision::Always`], one taken back): all of them, oldest first.
+    Allowed { squad: SquadName, rules: Vec<String> },
     /// The plan's usage windows — for every screen, whichever squad it follows.
     PlanUsage { usage: PlanUsage },
     /// Who has the Mac's screen and who waits for it changed — for every screen.
@@ -773,7 +780,8 @@ impl Event {
             Event::TicketChanged { squad, .. }
             | Event::ModeChanged { squad, .. }
             | Event::ApprovalRequested { squad, .. }
-            | Event::ApprovalResolved { squad, .. } => Some(squad),
+            | Event::ApprovalResolved { squad, .. }
+            | Event::Allowed { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } => squad.as_deref(),
             _ => None,
         }
@@ -814,6 +822,7 @@ impl Event {
             | Event::ModeChanged { .. }
             | Event::ApprovalRequested { .. }
             | Event::ApprovalResolved { .. }
+            | Event::Allowed { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
             // A browser's own: never part of a conversation.
@@ -974,6 +983,9 @@ pub struct SessionInfo {
     /// Its own mode, when it doesn't follow the squad's.
     #[serde(default)]
     pub mode: Option<Mode>,
+    /// How hard it thinks ([`Command::SetEffort`]); `None`: its engine's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 /// A member's current ticket, for a screen that attaches mid-work.
@@ -1014,6 +1026,13 @@ pub struct Snapshot {
     /// Who has the Mac's screen, across squads.
     #[serde(default)]
     pub desktop: DesktopState,
+    /// The squad's "always allow" rules, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed: Vec<String>,
+    /// Every member's browser opens on screen ([`Command::ShowBrowser`] for
+    /// everyone), rather than hidden.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub browsers_shown: bool,
 }
 
 #[cfg(test)]
@@ -1181,7 +1200,10 @@ mod tests {
                 estimate: None,
                 work: Some(WorkInfo { ticket: 1, project: "/repo".into(), workspace: None }),
                 mode: Some(Mode::Ask),
+                effort: Some("high".into()),
             }],
+            allowed: vec!["Bash(npm install:*)".into()],
+            browsers_shown: true,
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert_eq!(serde_json::from_str::<Snapshot>(&json).unwrap(), snapshot);
@@ -1192,6 +1214,25 @@ mod tests {
         // A screen from before members existed sends specs without a role.
         let spec: SessionSpec = serde_json::from_str(r#"{"engine":null,"model":null,"access":"read_only","cwd":"/r"}"#).unwrap();
         assert_eq!(spec.role, None);
+    }
+
+    #[test]
+    fn always_allow_rules_are_listed_and_taken_back_per_squad() {
+        let cmd = Command::Disallow { squad: "acme".into(), rule: "Bash(npm install:*)".into() };
+        assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "disallow", "squad": "acme", "rule": "Bash(npm install:*)" }));
+        let event = Event::Allowed { squad: "acme".into(), rules: vec!["Bash(gh:*)".into()] };
+        assert_eq!((event.squad(), event.session()), (Some("acme"), None));
+        let json = serde_json::to_string(&event).unwrap();
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event);
+    }
+
+    #[test]
+    fn a_snapshot_from_an_older_daemon_has_no_rules_and_browsers_hidden_and_says_nothing_new() {
+        let snapshot: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[]}"#).unwrap();
+        assert!(snapshot.allowed.is_empty() && !snapshot.browsers_shown);
+        // Nothing new is written when there is nothing to say: older screens read the same bytes.
+        let json = serde_json::to_value(&snapshot).unwrap();
+        assert!(json.get("allowed").is_none() && json.get("browsers_shown").is_none(), "{json}");
     }
 
     #[test]

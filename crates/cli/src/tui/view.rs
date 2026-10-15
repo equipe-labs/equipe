@@ -1678,7 +1678,7 @@ fn transcript_lines(agent: &Agent, looks: &Looks, theme: Theme, width: usize) ->
                     lines.push(mark_tickets(Line::from(spans).style(style), theme));
                 }
             }
-            Entry::Note { text } => match news_lines(text, looks, theme, width) {
+            Entry::Note { text } => match news_lines(&equipe_core::i18n::note(crate::i18n::lang(), text), looks, theme, width) {
                 Some(news) => {
                     begin(Block::News, &mut lines, &mut last);
                     lines.extend(news);

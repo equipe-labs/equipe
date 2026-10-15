@@ -230,10 +230,7 @@ impl Convo {
 
     /// Start a lane's conversation with what the member said about its project.
     pub fn open_lane(&mut self, main: &Convo) {
-        // Not the line that says other projects' parts were left out: it is
-        // about the member's conversation, not this one.
-        let said = main.shown().into_iter().filter(|e| !matches!(e.as_ref(), Entry::Note { text } if text.starts_with("· 다른 프로젝트")));
-        self.transcript = Transcript::from_entries(said.map(Cow::into_owned).collect());
+        self.transcript = Transcript::from_entries(main.shown().into_iter().map(Cow::into_owned).collect());
         self.lane = true;
     }
 
@@ -510,7 +507,7 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
             Entry::Note { text } => match (thought_of(text), worked_of(text)) {
                 (Some((n, secs)), _) => blocks.push(Block::Thought { n, secs, text: String::new() }),
                 (None, Some(worked)) => blocks.push(Block::Note(worked)),
-                (None, None) => blocks.push(Block::Note(text.clone())),
+                (None, None) => blocks.push(Block::Note(equipe_core::i18n::note(crate::i18n::lang(), text).into_owned())),
             },
             Entry::Error { message, next } => blocks.push(Block::Error { message: message.clone(), next: next.clone() }),
             Entry::Landed { branch, stat } => blocks.push(Block::Landed { branch: branch.clone(), stat: stat.clone() }),
