@@ -550,7 +550,7 @@ fn question_card(shell: &Shell, flow: Flow, t: &Ticket, project: &str, cx: &mut 
                         this.board.flow = Some(Flow::Way { ticket: id, remember: !remember });
                         cx.notify();
                     }))
-                    .child(div().size(px(14.)).flex().items_center().justify_center().rounded(px(3.)).border_1().border_color(p.accent).when(remember, |d| d.bg(p.accent).text_color(p.on_primary).text_size(px(10.)).child("✓")))
+                    .child(div().size(px(14.)).flex().items_center().justify_center().rounded(px(3.)).border_1().border_color(p.accent).when(remember, |d| d.bg(p.accent).text_color(p.on_accent).text_size(px(10.)).child("✓")))
                     .child(t!("peek.remember"))
                     .child(kbd(p, "Space")),
             )
