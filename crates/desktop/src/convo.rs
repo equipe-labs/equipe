@@ -614,69 +614,6 @@ pub fn ticket_ref(text: &str) -> Option<(usize, usize)> {
 /// The link target a ticket number carries in markdown.
 pub const TICKET_SCHEME: &str = "ticket:";
 
-/// Markdown with every ticket number outside code made a link: `T-8` becomes
-/// `[T-8](ticket:8)`, which a click turns into the ticket on the board.
-pub fn link_tickets(markdown: &str) -> String {
-    let mut out = String::with_capacity(markdown.len() + 16);
-    let mut fenced = false;
-    for (n, line) in markdown.split('\n').enumerate() {
-        if n > 0 {
-            out.push('\n');
-        }
-        if line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~") {
-            fenced = !fenced;
-            out.push_str(line);
-        } else if fenced || !line.contains("T-") {
-            out.push_str(line);
-        } else {
-            link_line(line, &mut out);
-        }
-    }
-    out
-}
-
-fn link_line(line: &str, out: &mut String) {
-    // Inline code is every second piece when split on backticks.
-    for (i, piece) in line.split('`').enumerate() {
-        if i > 0 {
-            out.push('`');
-        }
-        if i % 2 == 1 {
-            out.push_str(piece);
-            continue;
-        }
-        let mut rest = piece;
-        while let Some((at, len)) = ticket_ref(rest) {
-            let mut before = &rest[..at];
-            let mut after = &rest[at + len..];
-            let id = &rest[at..at + len];
-            // Not inside an existing link's text or target.
-            if before.ends_with('[') || before.ends_with("](") {
-                out.push_str(before);
-                out.push_str(id);
-                rest = after;
-                continue;
-            }
-            // `**T-8**` links as a whole: a link closing right before a Korean
-            // particle would otherwise leave the bold unclosed (CommonMark
-            // wants a letter, not a bracket, before a closing `**`).
-            let mut delim = "";
-            for d in ["**", "__", "~~", "*", "_"] {
-                if before.ends_with(d) && after.starts_with(d) {
-                    delim = d;
-                    break;
-                }
-            }
-            before = &before[..before.len() - delim.len()];
-            after = &after[delim.len()..];
-            out.push_str(before);
-            out.push_str(&format!("[{delim}{id}{delim}]({TICKET_SCHEME}{})", &id[2..]));
-            rest = after;
-        }
-        out.push_str(rest);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -918,16 +855,6 @@ mod tests {
         );
         assert_eq!(c.blocks()[0], Block::Error { message: "boom".into(), next: Some("equipe login".into()) });
         assert_eq!(c.blocks()[1], Block::Landed { branch: "b".into(), stat: " a | 1 +".into() });
-    }
-
-    #[test]
-    fn ticket_numbers_become_links_outside_code() {
-        assert_eq!(link_tickets("see T-8 and T-12."), "see [T-8](ticket:8) and [T-12](ticket:12).");
-        assert_eq!(link_tickets("**T-9**부터"), "[**T-9**](ticket:9)부터", "bold goes inside the link");
-        assert_eq!(link_tickets("run `T-8` now"), "run `T-8` now", "inline code stays");
-        assert_eq!(link_tickets("```\nT-8\n```\nT-9"), "```\nT-8\n```\n[T-9](ticket:9)", "fenced code stays");
-        assert_eq!(link_tickets("[T-8](ticket:8)"), "[T-8](ticket:8)", "already a link");
-        assert_eq!(link_tickets("MAT-8 and T-"), "MAT-8 and T-", "only whole words");
     }
 
     #[test]

@@ -1,11 +1,12 @@
 //! How a conversation's text is drawn: Markdown with highlighted code,
 //! file chips, math, diagrams and callouts (`view`, `plugins`), the rules
-//! behind them (`code`, `links`, `stream`, `tools`) and the pictures
+//! behind them (`code`, `links`, `prose`, `stream`, `tools`) and the pictures
 //! (`raster`). The rules have no UI types and are tested on their own.
 
 pub mod code;
 pub mod links;
 pub mod plugins;
+pub mod prose;
 pub mod raster;
 pub mod stream;
 pub mod tools;

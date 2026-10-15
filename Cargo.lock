@@ -2221,6 +2221,7 @@ dependencies = [
  "latex-rust",
  "libc",
  "mac-notification-sys",
+ "markdown",
  "mermaid-rs-renderer",
  "notify",
  "objc2 0.6.5",
