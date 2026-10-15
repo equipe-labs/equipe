@@ -65,41 +65,114 @@ pub enum Hit {
 }
 
 /// A line of the side list: what can be opened on the right — the PM (the
-/// one conversation to talk to), a ticket (its work), someone on the team —
-/// and the headings between.
+/// one conversation to talk to), a menu of the board (나에게, 작업 중, 모든 일),
+/// a ticket's work, someone on the team — and the headings between.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
     Heading(Group, usize),
     Pm,
+    Menu(BoardMenu),
     Ticket(TicketId),
     Member(usize),
 }
 
-/// The side list's groups, in their order.
+/// The side list's groups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Group {
-    /// To review, waiting on the person, or proposed.
-    ForYou,
-    Working,
-    ToDo,
-    Done,
     Team,
 }
 
 impl Group {
     pub fn label(self) -> &'static str {
         match self {
-            Group::ForYou => t!("app.group_for_you"),
-            Group::Working => t!("app.group_working"),
-            Group::ToDo => t!("app.group_todo"),
-            Group::Done => t!("app.group_done"),
             Group::Team => t!("app.group_team"),
         }
     }
 }
 
-/// How many finished tickets the side list keeps in sight.
-const DONE_SHOWN: usize = 5;
+/// What the board lists, as the desktop's menu: what waits for the person,
+/// work in progress, or everything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BoardMenu {
+    Inbox,
+    Working,
+    #[default]
+    All,
+}
+
+impl BoardMenu {
+    pub fn label(self) -> &'static str {
+        match self {
+            BoardMenu::Inbox => t!("app.menu_inbox"),
+            BoardMenu::Working => t!("app.menu_working"),
+            BoardMenu::All => t!("app.menu_all"),
+        }
+    }
+}
+
+/// The sections of what waits for the person, in their order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Section {
+    Permission,
+    Waiting,
+    Review,
+    Proposed,
+    NotOnMain,
+}
+
+impl Section {
+    pub const ALL: [Section; 5] = [Section::Permission, Section::Waiting, Section::Review, Section::Proposed, Section::NotOnMain];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Section::Permission => t!("app.section_permission"),
+            Section::Waiting => status_word(TicketStatus::Waiting),
+            Section::Review => status_word(TicketStatus::Review),
+            Section::Proposed => status_word(TicketStatus::Proposed),
+            Section::NotOnMain => t!("app.not_on_main"),
+        }
+    }
+}
+
+/// One thing waiting for the person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Need {
+    Permission(u64),
+    Ticket(TicketId),
+}
+
+/// What a status is called, everywhere: one word each.
+pub fn status_word(status: TicketStatus) -> &'static str {
+    match status {
+        TicketStatus::Waiting => t!("app.status_waiting"),
+        TicketStatus::Review => t!("app.status_review"),
+        TicketStatus::Proposed => t!("app.status_proposed"),
+        TicketStatus::Todo => t!("app.status_todo"),
+        TicketStatus::InProgress => t!("app.status_in_progress"),
+        TicketStatus::Done => t!("app.status_done"),
+        TicketStatus::Cancelled => t!("app.status_cancelled"),
+    }
+}
+
+/// What accepting code lands: merge and push, merge only, or leave it on its branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeWay {
+    Push,
+    Merge,
+    Branch,
+}
+
+impl MergeWay {
+    pub const ALL: [MergeWay; 3] = [MergeWay::Push, MergeWay::Merge, MergeWay::Branch];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MergeWay::Push => t!("app.way_push"),
+            MergeWay::Merge => t!("app.way_merge"),
+            MergeWay::Branch => t!("app.way_branch"),
+        }
+    }
+}
 
 /// What the right-hand pane shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -448,10 +521,12 @@ fn clock_time() -> String {
 /// What the person was asked after accepting work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Question {
-    /// Merge this ticket's branch into main?
-    Merge(TicketId),
-    /// Push main after merging this ticket — merging it either way?
-    Push(TicketId),
+    /// The first accept in a project: what accepting lands there from now on (1 2 3).
+    Way(TicketId),
+    /// ⇧A or m: how to land this one, this once (1 2 3).
+    Method(TicketId),
+    /// n on work under way or handed in: cancel it? (y)
+    Cancel(TicketId),
 }
 
 pub struct App {
@@ -468,11 +543,17 @@ pub struct App {
     pub pane: Pane,
     /// Lines the board is scrolled up from its top.
     pub board_scroll: usize,
-    /// The board as a tree of what waits for what (`g`), rather than by state.
-    pub board_graph: bool,
+    /// What the board lists: 나에게, 작업 중, 모든 일.
+    pub board_menu: BoardMenu,
+    /// The picked ticket's detail shows under the list (Space).
+    pub board_detail_open: bool,
+    /// What accepting lands in each project, as the person said this session.
+    pub merge_ways: HashMap<String, MergeWay>,
+    /// `g` was pressed on the board: the next key goes to a menu (i, l, b).
+    chord: bool,
     /// Words the board is narrowed to (`/find`, f), kept after Enter.
     pub board_query: Option<String>,
-    /// Long sections shown whole (e), not folded past a screenful.
+    /// Long sections and finished work shown whole (e).
     pub board_expanded: bool,
     /// How many rows the board's list takes, as the person dragged it.
     pub board_split: Option<u16>,
@@ -624,7 +705,10 @@ impl App {
             selected: 0,
             pane: Pane::Conversation,
             board_scroll: 0,
-            board_graph: false,
+            board_menu: BoardMenu::All,
+            board_detail_open: true,
+            merge_ways: HashMap::new(),
+            chord: false,
             board_query: None,
             board_expanded: false,
             board_split: None,
@@ -709,30 +793,10 @@ impl App {
         Some(self.lane_of(selected).unwrap_or(selected))
     }
 
-    /// The side list, in order: the PM first, then the tickets under the
-    /// project filter by where they stand, then the rest of the team.
+    /// The side list, in order: the PM, the board's menu (나에게, 작업 중,
+    /// 모든 일), then the rest of the team.
     pub fn side(&self) -> Vec<Side> {
-        let mut out = vec![Side::Pm];
-        let here: Vec<&Ticket> = self.tickets.iter().filter(|t| self.in_focus(t)).collect();
-        let mut group = |group: Group, mut tickets: Vec<&Ticket>| {
-            if tickets.is_empty() {
-                return;
-            }
-            out.push(Side::Heading(group, tickets.len()));
-            tickets.sort_by_key(|t| (t.status != TicketStatus::Review, t.id));
-            out.extend(tickets.into_iter().map(|t| Side::Ticket(t.id)));
-        };
-        let with = |statuses: &[TicketStatus]| here.iter().copied().filter(|t| statuses.contains(&t.status)).collect::<Vec<_>>();
-        group(Group::ForYou, with(&[TicketStatus::Review, TicketStatus::Waiting, TicketStatus::Proposed]));
-        group(Group::Working, with(&[TicketStatus::InProgress]));
-        group(Group::ToDo, with(&[TicketStatus::Todo]));
-        let mut done = with(&[TicketStatus::Done]);
-        done.sort_by_key(|t| std::cmp::Reverse(t.id));
-        done.truncate(DONE_SHOWN);
-        if !done.is_empty() {
-            out.push(Side::Heading(Group::Done, done.len()));
-            out.extend(done.into_iter().map(|t| Side::Ticket(t.id)));
-        }
+        let mut out = vec![Side::Pm, Side::Menu(BoardMenu::Inbox), Side::Menu(BoardMenu::Working), Side::Menu(BoardMenu::All)];
         let pm = self.pm_index();
         let team: Vec<usize> = self.display_order().into_iter().filter(|&i| Some(i) != pm).collect();
         if !team.is_empty() {
@@ -742,6 +806,50 @@ impl App {
         out
     }
 
+    /// How many things a menu line counts: what waits for the person, work in
+    /// progress, open work — under the project filter.
+    pub fn menu_count(&self, menu: BoardMenu) -> usize {
+        match menu {
+            BoardMenu::Inbox => self.needs_you_count(),
+            BoardMenu::Working => self.tickets.iter().filter(|t| t.status == TicketStatus::InProgress && self.in_focus(t)).count(),
+            BoardMenu::All => self.tickets.iter().filter(|t| !t.status.is_closed() && self.in_focus(t)).count(),
+        }
+    }
+
+    /// Everything waiting for the person, in one list, by section: requests
+    /// for permission, tickets put down for them, work handed in (what it
+    /// unblocks first), proposals, work accepted but not on main. The same
+    /// definition as the desktop's: the menu's count, 나에게 and the card read it.
+    pub fn needs_you(&self) -> Vec<(Section, Need)> {
+        let mut out: Vec<(Section, Need)> = self.approvals.iter().map(|a| (Section::Permission, Need::Permission(a.id))).collect();
+        for section in &Section::ALL[1..] {
+            let mut tickets: Vec<&Ticket> = self.tickets.iter().filter(|t| section_of(t) == Some(*section) && self.in_focus(t)).collect();
+            match section {
+                Section::Review => tickets.sort_by_key(|t| (std::cmp::Reverse(self.unblocks(t.id).len()), t.id)),
+                _ => tickets.sort_by_key(|t| t.id),
+            }
+            out.extend(tickets.into_iter().map(|t| (*section, Need::Ticket(t.id))));
+        }
+        out
+    }
+
+    pub fn needs_you_count(&self) -> usize {
+        self.needs_you().len()
+    }
+
+    /// Open tickets that wait for `id`.
+    pub fn unblocks(&self, id: TicketId) -> Vec<TicketId> {
+        self.tickets.iter().filter(|o| o.depends_on.contains(&id) && !o.status.is_closed()).map(|o| o.id).collect()
+    }
+
+    /// The first thing a ticket waits for that is not done yet.
+    pub fn blocked_by(&self, t: &Ticket) -> Option<TicketId> {
+        if t.status.is_closed() {
+            return None;
+        }
+        t.depends_on.iter().copied().find(|d| self.tickets.iter().find(|o| o.id == *d).is_none_or(|o| o.status != TicketStatus::Done))
+    }
+
     /// Where the PM is listed — or whoever comes first, without one.
     pub fn pm_index(&self) -> Option<usize> {
         self.agents.iter().position(Agent::is_pm).or_else(|| (!self.agents.is_empty()).then_some(0))
@@ -749,6 +857,9 @@ impl App {
 
     /// The side list's line now open on the right.
     pub fn side_open(&self) -> Side {
+        if self.pane == Pane::Board {
+            return Side::Menu(self.board_menu);
+        }
         match self.opened {
             Some(ticket) => Side::Ticket(ticket),
             None if Some(self.selected) == self.pm_index() => Side::Pm,
@@ -768,6 +879,15 @@ impl App {
         self.opened = None;
         match side {
             Side::Heading(..) => {}
+            Side::Menu(menu) => {
+                self.board_menu = menu;
+                self.board_selected = None;
+                self.board_scroll = 0;
+                self.pane = Pane::Board;
+                self.help_open = false;
+                self.usage_open = false;
+                return;
+            }
             Side::Pm => self.selected = self.pm_index().unwrap_or(0),
             Side::Member(at) => self.selected = at.min(self.agents.len().saturating_sub(1)),
             Side::Ticket(id) => {
@@ -855,7 +975,7 @@ impl App {
     }
 
     /// Whether a member waits for the person — a request for permission.
-    pub fn needs_you(&self, agent: &Agent) -> bool {
+    pub fn asks_you(&self, agent: &Agent) -> bool {
         self.approvals.iter().any(|a| a.session == agent.id)
     }
 
@@ -863,7 +983,7 @@ impl App {
     /// who is working, then the rest — each group in the order they joined.
     pub fn display_order(&self) -> Vec<usize> {
         let rank = |agent: &Agent| match agent.state {
-            _ if self.needs_you(agent) => 0,
+            _ if self.asks_you(agent) => 0,
             AgentState::Working => 1,
             AgentState::Starting | AgentState::Ready => 2,
             AgentState::Closing | AgentState::Closed | AgentState::Failed => 3,
@@ -1002,96 +1122,57 @@ impl App {
         out
     }
 
-    /// Whether open work goes in a lane per project — the squad home's last:
-    /// with no filter, and work in more than one of them.
-    pub fn lanes(&self) -> bool {
-        let home_work = self.tickets.iter().any(|t| !t.status.is_closed() && self.ticket_project(t).is_none());
-        self.focus.is_none() && self.projects.len() + usize::from(home_work) > 1
-    }
-
-    /// Open work as a tree of what waits for what: each ticket with how deep
-    /// it is. A ticket waiting on nothing still open is a root; one waiting on
-    /// several shows under the first.
-    pub fn dependency_tree(&self) -> Vec<(TicketId, usize)> {
-        let open: Vec<&Ticket> = self.tickets.iter().filter(|t| !t.status.is_closed() && self.in_focus(t)).collect();
-        let is_open = |id: TicketId| open.iter().any(|t| t.id == id);
-        let mut out: Vec<(TicketId, usize)> = Vec::new();
-        let mut stack: Vec<(TicketId, usize)> = open.iter().filter(|t| !t.depends_on.iter().any(|d| is_open(*d))).map(|t| (t.id, 0)).collect();
-        stack.sort_by_key(|(id, _)| std::cmp::Reverse(*id));
-        while let Some((id, depth)) = stack.pop() {
-            if out.iter().any(|(seen, _)| *seen == id) {
-                continue;
-            }
-            out.push((id, depth));
-            let mut next: Vec<TicketId> = open.iter().filter(|t| t.depends_on.contains(&id)).map(|t| t.id).collect();
-            next.sort_unstable_by(|a, b| b.cmp(a));
-            stack.extend(next.into_iter().map(|c| (c, depth + 1)));
-        }
-        // Anything left in a loop of waiting: listed, not lost.
-        for t in &open {
-            if !out.iter().any(|(id, _)| *id == t.id) {
-                out.push((t.id, 0));
-            }
-        }
-        out
-    }
-
     /// The words the board is narrowed to: being typed (`/find …`), or kept.
     pub fn board_query(&self) -> Option<String> {
         let typed = self.composer.text().strip_prefix("/find ").filter(|_| self.pane == Pane::Board).map(str::trim);
         typed.map(str::to_owned).or_else(|| self.board_query.clone()).map(|q| q.to_lowercase()).filter(|q| !q.is_empty())
     }
 
+    /// The board's tickets in the order they are listed: by the menu — what
+    /// waits for the person by section; work in progress; or everything by
+    /// status, the finished folded into one line until shown (e) or found.
     pub fn board_order(&self) -> Vec<TicketId> {
         if let Some(query) = self.board_query() {
-            // What matches, open work first, then done work, the latest first.
+            // What matches, open work first by status, then done work, the latest first.
             let hit = |t: &&Ticket| {
                 self.in_focus(t) && (t.title.to_lowercase().contains(&query) || t.body.to_lowercase().contains(&query) || format!("t-{}", t.id) == query)
             };
-            let mut open: Vec<TicketId> = self.tickets.iter().filter(hit).filter(|t| !t.status.is_closed()).map(|t| t.id).collect();
-            open.sort_unstable();
+            let mut open: Vec<&Ticket> = self.tickets.iter().filter(hit).filter(|t| !t.status.is_closed()).collect();
+            open.sort_by_key(|t| (status_rank(t.status), t.id));
             let mut closed: Vec<TicketId> = self.tickets.iter().filter(hit).filter(|t| t.status.is_closed()).map(|t| t.id).collect();
             closed.sort_unstable_by(|a, b| b.cmp(a));
-            open.extend(closed);
-            return open;
+            let mut out: Vec<TicketId> = open.into_iter().map(|t| t.id).collect();
+            out.extend(closed);
+            return out;
         }
-        if self.board_graph {
-            return self.dependency_tree().into_iter().map(|(id, _)| id).collect();
-        }
-        // Work not yet started folds past a screenful, unless shown whole (e).
-        let fold = |mut ids: Vec<TicketId>, status: TicketStatus| -> Vec<TicketId> {
-            if !self.board_expanded && matches!(status, TicketStatus::Todo | TicketStatus::Proposed) {
-                ids.truncate(SECTION_ROWS);
+        match self.board_menu {
+            BoardMenu::Inbox => self.needs_you().into_iter().filter_map(|(_, n)| if let Need::Ticket(id) = n { Some(id) } else { None }).collect(),
+            BoardMenu::Working => {
+                let mut ids: Vec<TicketId> = self.tickets.iter().filter(|t| t.status == TicketStatus::InProgress && self.in_focus(t)).map(|t| t.id).collect();
+                ids.sort_unstable();
+                ids
             }
-            ids
-        };
-        let group = |statuses: &[TicketStatus]| -> Vec<TicketId> {
-            self.tickets.iter().filter(|t| statuses.contains(&t.status) && self.in_focus(t)).map(|t| t.id).collect()
-        };
-        let mut order = group(&[TicketStatus::Review]);
-        order.extend(group(&[TicketStatus::Waiting]));
-        let open = [TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed];
-        if self.lanes() {
-            // A lane for each project, then the squad home's, its work in the same order.
-            for lane in self.projects.iter().map(Some).chain([None]) {
-                for status in open {
-                    let in_lane: Vec<TicketId> = group(&[status])
-                        .into_iter()
-                        .filter(|id| self.tickets.iter().find(|t| t.id == *id).and_then(|t| self.ticket_project(t)).as_ref() == lane)
-                        .collect();
-                    order.extend(fold(in_lane, status));
+            BoardMenu::All => {
+                // Work not yet started folds past a screenful, unless shown whole (e).
+                let fold = |mut ids: Vec<TicketId>, status: TicketStatus| -> Vec<TicketId> {
+                    if !self.board_expanded && matches!(status, TicketStatus::Todo | TicketStatus::Proposed) {
+                        ids.truncate(SECTION_ROWS);
+                    }
+                    ids
+                };
+                let group = |statuses: &[TicketStatus]| -> Vec<TicketId> { self.tickets.iter().filter(|t| statuses.contains(&t.status) && self.in_focus(t)).map(|t| t.id).collect() };
+                let mut order = Vec::new();
+                for status in [TicketStatus::Review, TicketStatus::Waiting, TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed] {
+                    order.extend(fold(group(&[status]), status));
                 }
-            }
-        } else {
-            for status in open {
-                order.extend(fold(group(&[status]), status));
+                if self.board_expanded {
+                    let mut done = group(&[TicketStatus::Done, TicketStatus::Cancelled]);
+                    done.reverse();
+                    order.extend(done);
+                }
+                order
             }
         }
-        let mut done = group(&[TicketStatus::Done, TicketStatus::Cancelled]);
-        done.reverse();
-        done.truncate(5);
-        order.extend(done);
-        order
     }
 
     /// The ticket picked on the board — the first listed until one is picked.
@@ -1192,31 +1273,51 @@ impl App {
         }
     }
 
-    /// The board's keys, while nothing is typed: ↑↓ pick a ticket; a accepts,
-    /// r asks for changes, m merges accepted work into main, d shows the diff,
-    /// Enter talks to whoever owns it.
-    fn on_board_key(&mut self, code: KeyCode) -> Option<Vec<Command>> {
+    /// The board's keys, while nothing is typed — the same as the desktop's:
+    /// a yes (accept and land it the project's way, "done", take a proposal),
+    /// A how, r in words, n no, d the diff, c talk, m merge; j/k move, Space
+    /// folds the ticket below, g i / g l / g b go to 나에게 / 작업 중 / 모든 일.
+    fn on_board_key(&mut self, code: KeyCode, shift: bool) -> Option<Vec<Command>> {
         let ticket = self.selected_ticket().cloned();
+        if std::mem::take(&mut self.chord) {
+            let menu = match code {
+                KeyCode::Char('i') => Some(BoardMenu::Inbox),
+                KeyCode::Char('l') => Some(BoardMenu::Working),
+                KeyCode::Char('b') => Some(BoardMenu::All),
+                _ => None,
+            };
+            if let Some(menu) = menu {
+                self.open(Side::Menu(menu));
+                return Some(Vec::new());
+            }
+        }
         match code {
             // Find: the board narrows as the words are typed.
-            KeyCode::Char('f') => {
+            KeyCode::Char('f') | KeyCode::Char('/') => {
                 self.composer.clear();
                 self.composer.insert_str("/find ");
             }
-            // Long sections whole, or folded again.
+            // Long sections and the finished, whole — or folded again.
             KeyCode::Char('e') => self.board_expanded = !self.board_expanded,
-            // What waits for what, as a tree; again for the board by state.
-            KeyCode::Char('g') => {
-                self.board_graph = !self.board_graph;
-                self.board_scroll = 0;
-            }
+            KeyCode::Char('g') => self.chord = true,
+            KeyCode::Char(' ') => self.board_detail_open = !self.board_detail_open,
             KeyCode::Up | KeyCode::Char('k') => self.move_ticket(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_ticket(1),
-            KeyCode::Char('a') => {
-                let ticket = ticket.filter(|t| !t.status.is_closed())?;
+            KeyCode::Char('A') => {
+                let ticket = ticket.filter(needs_way)?;
+                self.ask(Question::Method(ticket.id));
+            }
+            KeyCode::Char('a') if shift => {
+                let ticket = ticket.filter(needs_way)?;
+                self.ask(Question::Method(ticket.id));
+            }
+            KeyCode::Char('a') | KeyCode::Char('y') => {
+                let ticket = ticket.filter(|t| section_of(t).is_some())?;
                 let commands = self.accept(ticket.id);
-                // The next review comes up at once, so they go one after another.
-                self.next_review_after(ticket.id);
+                // The next one comes up at once, so they go one after another.
+                if self.question.is_none() {
+                    self.next_after(ticket.id);
+                }
                 return Some(commands);
             }
             KeyCode::Char('r') if ticket.as_ref().is_some_and(|t| t.status == TicketStatus::Waiting) => {
@@ -1229,15 +1330,24 @@ impl App {
                 self.composer.insert_str(&format!("/reopen T-{} ", ticket.id));
                 self.flash = Some(t!("app.reopen_prompt").into());
             }
+            KeyCode::Char('n') => {
+                let ticket = ticket.filter(|t| !t.status.is_closed())?;
+                if ticket.status == TicketStatus::Proposed {
+                    self.flash = Some(t!("app.dropped", id = ticket.id));
+                    self.next_after(ticket.id);
+                    return Some(vec![Command::Cancel { squad: self.squad.clone(), ticket: ticket.id }]);
+                }
+                self.ask(Question::Cancel(ticket.id));
+            }
             KeyCode::Char('m') => {
                 let ticket = ticket.filter(Ticket::not_on_main)?;
-                self.ask(Question::Push(ticket.id));
+                self.ask(Question::Method(ticket.id));
             }
             KeyCode::Char('d') => {
                 let ticket = ticket.filter(|t| t.branch.is_some())?;
                 self.view_diff = Some(ticket.id);
             }
-            KeyCode::Enter => {
+            KeyCode::Char('c') | KeyCode::Enter => {
                 let ticket = ticket?;
                 let who = ticket.assignee.as_ref().or(ticket.owner.as_ref())?.clone();
                 let at = self.agents.iter().position(|a| {
@@ -1251,19 +1361,13 @@ impl App {
         Some(Vec::new())
     }
 
-    /// Pick the review after `done` on the board — or before it, when it was the
-    /// last — leaving the selection where it is when no other waits.
-    fn next_review_after(&mut self, done: TicketId) {
-        // In the board's own order, as the person sees them.
-        let reviews: Vec<TicketId> = self.to_review_here().iter().map(|t| t.id).collect();
-        let list: Vec<TicketId> = self.board_order().into_iter().filter(|id| reviews.contains(id)).collect();
-        let at = list.iter().position(|&id| id == done);
-        let rest: Vec<TicketId> = list.into_iter().filter(|&id| id != done).collect();
-        let next = match at {
-            Some(at) => rest.get(at).or(rest.last()),
-            None => rest.first(),
-        };
-        if let Some(&next) = next {
+    /// After acting on `done`: the next ticket listed after it — the rest of
+    /// its section, then the next — or the one before it, at the end.
+    fn next_after(&mut self, done: TicketId) {
+        let list = self.board_order();
+        let Some(at) = list.iter().position(|&id| id == done) else { return };
+        let next = list[at + 1..].iter().chain(list[..at].iter().rev()).copied().find(|id| *id != done);
+        if let Some(next) = next {
             self.board_selected = Some(next);
             self.board_scroll = 0;
         }
@@ -1921,9 +2025,11 @@ impl App {
         if let (Some(approval), true, false, false, Pane::Conversation) =
             (self.approvals.first(), self.composer.is_empty(), ctrl, alt, self.pane)
         {
+            // As every need is answered: y or a allows once, A always, n declines.
             let decision = match key.code {
-                KeyCode::Char('y') => Some(Decision::Allow),
-                KeyCode::Char('a') => Some(Decision::Always),
+                KeyCode::Char('A') => Some(Decision::Always),
+                KeyCode::Char('a') if shift => Some(Decision::Always),
+                KeyCode::Char('y' | 'a') => Some(Decision::Allow),
                 KeyCode::Char('n') => Some(Decision::Deny),
                 _ => None,
             };
@@ -1940,7 +2046,7 @@ impl App {
         }
         // On the board, with nothing typed, single keys act on the picked ticket.
         if self.pane == Pane::Board && self.composer.is_empty() && !ctrl && !alt
-            && let Some(commands) = self.on_board_key(key.code)
+            && let Some(commands) = self.on_board_key(key.code, shift)
         {
             return commands;
         }
@@ -2015,6 +2121,10 @@ impl App {
 
     fn toggle_board(&mut self) {
         self.pane = if self.pane == Pane::Board { Pane::Conversation } else { Pane::Board };
+        // The board opens on what waits for the person, while anything does.
+        if self.pane == Pane::Board {
+            self.board_menu = if self.needs_you_count() > 0 { BoardMenu::Inbox } else { BoardMenu::All };
+        }
         self.board_scroll = 0;
     }
 
@@ -2042,8 +2152,8 @@ impl App {
     }
 
     fn cycle(&mut self, step: isize) {
-        // Tab walks the side list: the PM, the tickets, the team.
-        let lines: Vec<Side> = self.side().into_iter().filter(|s| !matches!(s, Side::Heading(..))).collect();
+        // Tab walks the conversations in the side list: the PM, the team.
+        let lines: Vec<Side> = self.side().into_iter().filter(|s| matches!(s, Side::Pm | Side::Member(_))).collect();
         let n = lines.len() as isize;
         if n > 0 {
             let at = lines.iter().position(|s| *s == self.side_open()).unwrap_or(0) as isize;
@@ -2618,43 +2728,99 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
         vec![Command::Desktop { open }]
     }
 
-    /// Accept a ticket; when it is code with a branch, ask whether to merge it
-    /// into main. Nothing merges unless the person says yes. A task's or action's
-    /// work goes into the squad's folder with the acceptance, unasked.
+    /// Yes to a ticket that waits for the person: accept it — and land code
+    /// the project's way, asked once per project (1 merge and push, 2 merge
+    /// only, 3 leave it on its branch) — resume it, take on a proposal, merge
+    /// what is not on main. A task's or action's work goes into the squad's
+    /// folder with the acceptance, unasked.
     fn accept(&mut self, ticket: TicketId) -> Vec<Command> {
-        let found = self.tickets.iter().find(|t| t.id == ticket);
-        if found.is_some_and(|t| !t.kind.in_home() && t.branch.is_some()) {
-            self.ask(Question::Merge(ticket));
-        } else if found.is_some_and(|t| t.kind.in_home()) {
-            self.flash = Some(t!("app.accepted_home", id = ticket));
-        } else {
-            self.flash = Some(t!("app.accepted", id = ticket));
+        let Some(t) = self.tickets.iter().find(|t| t.id == ticket).cloned() else {
+            return vec![Command::Accept { squad: self.squad.clone(), ticket }];
+        };
+        if needs_way(&t) {
+            let project = self.project_label(&t);
+            return match self.merge_ways.get(&project).copied() {
+                Some(way) => self.land(&t, way),
+                None => {
+                    self.ask(Question::Way(ticket));
+                    Vec::new()
+                }
+            };
         }
-        vec![Command::Accept { squad: self.squad.clone(), ticket }]
+        let squad = self.squad.clone();
+        match t.status {
+            TicketStatus::Waiting => {
+                self.flash = Some(t!("app.resumed", id = ticket));
+                vec![Command::Resume { squad, ticket, note: String::new() }]
+            }
+            _ if t.kind.in_home() => {
+                self.flash = Some(t!("app.accepted_home", id = ticket));
+                vec![Command::Accept { squad, ticket }]
+            }
+            _ => {
+                self.flash = Some(t!("app.accepted", id = ticket));
+                vec![Command::Accept { squad, ticket }]
+            }
+        }
+    }
+
+    /// The project a ticket lands in, by name.
+    fn project_label(&self, t: &Ticket) -> String {
+        self.ticket_project(t).map(|p| board::project_name(&p)).unwrap_or_default()
+    }
+
+    /// Land `t` the way chosen: accept it (unless it is accepted already) and merge, push, or neither.
+    fn land(&mut self, t: &Ticket, way: MergeWay) -> Vec<Command> {
+        let squad = self.squad.clone();
+        let mut commands = Vec::new();
+        if t.status == TicketStatus::Review {
+            commands.push(Command::Accept { squad: squad.clone(), ticket: t.id });
+        }
+        match way {
+            MergeWay::Push | MergeWay::Merge => {
+                commands.push(Command::Merge { squad, ticket: t.id, push: way == MergeWay::Push });
+                self.flash = Some(t!("app.landing", id = t.id, way = way.label()));
+            }
+            MergeWay::Branch => self.flash = Some(t!("app.stays_on_branch", id = t.id)),
+        }
+        commands
     }
 
     fn ask(&mut self, question: Question) {
+        let project = |app: &Self, id: TicketId| app.tickets.iter().find(|t| t.id == id).map(|t| app.project_label(t)).unwrap_or_default();
+        let ways = MergeWay::ALL.iter().enumerate().map(|(i, w)| format!("{} {}", i + 1, w.label())).collect::<Vec<_>>().join(" · ");
         self.flash = Some(match question {
-            Question::Merge(id) => t!("app.ask_merge", id = id),
-            Question::Push(id) => t!("app.ask_push", id = id),
+            Question::Way(id) => t!("app.ask_way", id = id, project = project(self, id), ways = ways),
+            Question::Method(id) => t!("app.ask_method", id = id, ways = ways),
+            Question::Cancel(id) => t!("app.ask_cancel", id = id),
         });
         self.question = Some(question);
     }
 
-    /// y or n to a question; `None` for any other key, which puts it away.
+    /// The answer to a question; `None` for any other key, which puts it away.
     fn answer(&mut self, question: Question, key: KeyCode) -> Option<Vec<Command>> {
-        let squad = self.squad.clone();
-        let commands = match (question, key) {
-            (Question::Merge(id), KeyCode::Char('y')) => {
-                self.ask(Question::Push(id));
-                Vec::new()
+        let way = match key {
+            KeyCode::Char(c @ '1'..='3') => Some(MergeWay::ALL[c as usize - '1' as usize]),
+            _ => None,
+        };
+        let commands = match (question, key, way) {
+            (Question::Way(id) | Question::Method(id), _, Some(way)) => {
+                let t = self.tickets.iter().find(|t| t.id == id).cloned()?;
+                if let Question::Way(_) = question {
+                    let project = self.project_label(&t);
+                    self.merge_ways.insert(project, way);
+                }
+                let commands = self.land(&t, way);
+                self.next_after(id);
+                commands
             }
-            (Question::Push(ticket), KeyCode::Char(c @ ('y' | 'n'))) => {
-                self.flash = Some(t!("app.merging", id = ticket));
-                vec![Command::Merge { squad, ticket, push: c == 'y' }]
+            (Question::Cancel(ticket), KeyCode::Char('y') | KeyCode::Enter, _) => {
+                self.flash = Some(t!("app.cancelled", id = ticket));
+                self.next_after(ticket);
+                vec![Command::Cancel { squad: self.squad.clone(), ticket }]
             }
-            (Question::Merge(id) | Question::Push(id), KeyCode::Char('n') | KeyCode::Esc) => {
-                self.flash = Some(t!("app.stays_on_branch", id = id));
+            (_, KeyCode::Char('n') | KeyCode::Esc, _) => {
+                self.flash = None;
                 Vec::new()
             }
             _ => return None,
@@ -2690,7 +2856,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
         match verb {
             "accept" => self.accept(ticket),
             "merge" => {
-                self.ask(Question::Push(ticket));
+                self.ask(Question::Method(ticket));
                 Vec::new()
             }
             "reopen" => vec![Command::Reopen { squad, ticket, note: note.trim().to_owned() }],
@@ -2795,6 +2961,27 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
 }
 
 /// A member's conversation as Markdown, for a file the person can search and copy.
+/// Whether a ticket waits for the person, and under which section.
+pub fn section_of(t: &Ticket) -> Option<Section> {
+    match t.status {
+        TicketStatus::Waiting => Some(Section::Waiting),
+        TicketStatus::Review => Some(Section::Review),
+        TicketStatus::Proposed => Some(Section::Proposed),
+        TicketStatus::Done if t.not_on_main() => Some(Section::NotOnMain),
+        _ => None,
+    }
+}
+
+/// Whether yes to this ticket lands code, so the project's way is asked for.
+pub fn needs_way(t: &Ticket) -> bool {
+    (t.status == TicketStatus::Review && !t.kind.in_home() && t.branch.is_some()) || t.not_on_main()
+}
+
+/// The order statuses are listed in, the person's calls first.
+pub fn status_rank(s: TicketStatus) -> usize {
+    [TicketStatus::Review, TicketStatus::Waiting, TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed, TicketStatus::Done, TicketStatus::Cancelled].iter().position(|x| *x == s).unwrap_or(6)
+}
+
 pub fn transcript_markdown(agent: &Agent, squad: &str) -> String {
     let mut out = format!("# {} · {squad}\n\n", agent.label());
     for entry in agent.transcript.entries() {
@@ -3750,28 +3937,25 @@ mod tests {
         let pm = app.agents.iter().find(|a| a.is_pm()).unwrap().id;
         let frontend = app.agents.iter().find(|a| a.label() == "frontend").unwrap().id;
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(9, TicketStatus::Todo) });
-        // The PM, what waits for the person, what is at work, what is to do, the team.
+        // The PM, the board's menu as the desktop's, then the team.
+        let at = app.agents.iter().position(|a| a.id == frontend).unwrap();
         assert_eq!(
             app.side(),
-            [
-                Side::Pm,
-                Side::Heading(Group::ForYou, 1),
-                Side::Ticket(1),
-                Side::Heading(Group::Working, 1),
-                Side::Ticket(2),
-                Side::Heading(Group::ToDo, 1),
-                Side::Ticket(9),
-                Side::Heading(Group::Team, 1),
-                Side::Member(app.agents.iter().position(|a| a.id == frontend).unwrap()),
-            ]
+            [Side::Pm, Side::Menu(BoardMenu::Inbox), Side::Menu(BoardMenu::Working), Side::Menu(BoardMenu::All), Side::Heading(Group::Team, 1), Side::Member(at)]
         );
-        // Tab walks it: from the PM to the first ticket, then the next.
+        assert_eq!(app.menu_count(BoardMenu::Inbox), 1, "the one review");
+        assert_eq!(app.menu_count(BoardMenu::Working), 1);
+        assert_eq!(app.menu_count(BoardMenu::All), 3);
+        // A menu line opens the board on it.
+        app.open(Side::Menu(BoardMenu::Working));
+        assert_eq!((app.pane, app.board_order()), (Pane::Board, vec![2]));
+        assert_eq!(app.side_open(), Side::Menu(BoardMenu::Working));
+        // Tab walks the conversations: from the PM to the team.
         app.open(Side::Pm);
         app.on_key(key(KeyCode::Tab), Instant::now());
-        assert_eq!(app.side_open(), Side::Ticket(1));
-        app.on_key(key(KeyCode::Tab), Instant::now());
-        assert_eq!(app.side_open(), Side::Ticket(2));
+        assert_eq!(app.side_open(), Side::Member(at));
         // A ticket at work: what is written steers that work.
+        app.open(Side::Ticket(2));
         assert_eq!(app.viewed().map(|a| a.id), Some(frontend));
         type_text(&mut app, "skip the footer");
         assert_eq!(enter(&mut app), vec![Command::Submit { session: frontend, text: "skip the footer".into() }]);
@@ -3844,26 +4028,44 @@ mod tests {
     }
 
     #[test]
-    fn g_on_the_board_shows_open_work_as_a_tree_of_what_waits_for_what() {
+    fn the_inbox_runs_permission_waiting_review_proposed_not_on_main_and_g_moves_between_menus() {
         let (mut app, _, _) = team();
         let mut add = |id: TicketId, status: TicketStatus, after: Vec<TicketId>| {
             let mut t = ticket(id, status);
             t.depends_on = after;
             app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t });
         };
-        add(1, TicketStatus::Done, vec![]);
-        add(2, TicketStatus::InProgress, vec![1]);
+        add(1, TicketStatus::Review, vec![]);
+        add(2, TicketStatus::Review, vec![]);
         add(3, TicketStatus::Todo, vec![2]);
-        add(4, TicketStatus::Todo, vec![3]);
-        add(5, TicketStatus::Todo, vec![]);
-        add(6, TicketStatus::Todo, vec![2]);
+        add(4, TicketStatus::Proposed, vec![]);
+        add(5, TicketStatus::Waiting, vec![]);
+        let mut merged_not = ticket(6, TicketStatus::Done);
+        merged_not.branch = Some("b".into());
+        merged_not.merged = Some(false);
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: merged_not });
+        app.approvals.push(approval(7));
+        let sections: Vec<Section> = app.needs_you().into_iter().map(|(s, _)| s).collect();
+        assert_eq!(sections, [Section::Permission, Section::Waiting, Section::Review, Section::Review, Section::Proposed, Section::NotOnMain]);
         app.pane = Pane::Board;
-        app.on_key(KeyEvent::from(KeyCode::Char('g')), Instant::now());
-        assert!(app.board_graph);
-        assert_eq!(app.dependency_tree(), vec![(2, 0), (3, 1), (4, 2), (6, 1), (5, 0)]);
-        assert_eq!(app.board_order(), vec![2, 3, 4, 6, 5]);
-        app.on_key(KeyEvent::from(KeyCode::Char('g')), Instant::now());
-        assert!(!app.board_graph);
+        app.board_menu = BoardMenu::Inbox;
+        // The review that unblocks work first.
+        assert_eq!(app.board_order(), vec![5, 2, 1, 4, 6]);
+        assert_eq!(app.blocked_by(&app.tickets.iter().find(|t| t.id == 3).unwrap().clone()), Some(2));
+        for c in ['g', 'b'] {
+            app.on_key(KeyEvent::from(KeyCode::Char(c)), Instant::now());
+        }
+        assert_eq!(app.board_menu, BoardMenu::All);
+        assert_eq!(app.board_order(), vec![1, 2, 5, 3, 4], "by status; the finished folded");
+        app.on_key(KeyEvent::from(KeyCode::Char('e')), Instant::now());
+        assert_eq!(app.board_order(), vec![1, 2, 5, 3, 4, 6], "e shows the finished too, every one");
+        for c in ['g', 'l'] {
+            app.on_key(KeyEvent::from(KeyCode::Char(c)), Instant::now());
+        }
+        assert_eq!(app.board_menu, BoardMenu::Working);
+        // Space folds the ticket below away.
+        app.on_key(KeyEvent::from(KeyCode::Char(' ')), Instant::now());
+        assert!(!app.board_detail_open);
     }
 
     #[test]
@@ -3901,7 +4103,7 @@ mod tests {
         assert_eq!(app.board_order(), vec![3, 1]);
         app.on_key(KeyEvent::from(KeyCode::Esc), Instant::now());
         assert_eq!(app.pane, Pane::Board);
-        assert_eq!(app.board_order(), vec![2, 3, 1]);
+        assert_eq!(app.board_order(), vec![2, 3], "the finished fold away again");
     }
 
     #[test]
@@ -3987,7 +4189,7 @@ mod tests {
     }
 
     #[test]
-    fn the_board_of_several_projects_has_a_lane_for_each_below_what_waits_for_the_person() {
+    fn the_board_of_several_projects_lists_by_status_across_them_and_a_filter_narrows_it() {
         let mut app = two_projects();
         let mut more = Vec::new();
         for (id, status, project) in [(3, TicketStatus::Todo, "/code/site"), (4, TicketStatus::Waiting, "/code/app"), (5, TicketStatus::Done, "/code/site"), (6, TicketStatus::Todo, "/code/app")] {
@@ -3998,9 +4200,8 @@ mod tests {
         for t in more {
             app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t });
         }
-        // What waits for the person, from every project; then site's lane, app's
-        // lane; then what's done.
-        assert_eq!(app.board_order(), vec![1, 4, 3, 2, 6, 5]);
+        // By status across projects — no lane per project — the finished folded.
+        assert_eq!(app.board_order(), vec![1, 4, 2, 3, 6]);
         app.focus = Some("/code/app".into());
         assert_eq!(app.board_order(), vec![4, 2, 6]);
     }
@@ -4171,43 +4372,43 @@ mod tests {
     }
 
     #[test]
-    fn accepting_asks_before_merging_and_only_a_yes_merges() {
+    fn accepting_asks_once_per_project_how_to_land_it_and_a_asks_again() {
         let (mut app, _, _) = team();
         for id in [6, 7, 8, 9] {
             let mut review = ticket(id, TicketStatus::Review);
             review.branch = Some(format!("equipe/frontend-t{id}"));
             app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: review });
         }
-        let accept = |id: TicketId| vec![Command::Accept { squad: "acme".into(), ticket: id }];
-        let merge = |id: TicketId, push: bool| vec![Command::Merge { squad: "acme".into(), ticket: id, push }];
+        let accept = |id: TicketId| Command::Accept { squad: "acme".into(), ticket: id };
+        let merge = |id: TicketId, push: bool| Command::Merge { squad: "acme".into(), ticket: id, push };
 
-        // n: accepted, nothing merged.
+        // The first accept in the project asks the way: nothing goes yet.
         type_text(&mut app, "/accept T-6");
-        assert_eq!(enter(&mut app), accept(6));
-        assert!(app.flash.as_deref().unwrap().contains("merge it into main now? y/n"), "{:?}", app.flash);
-        assert!(app.on_key(key(KeyCode::Char('n')), Instant::now()).is_empty());
-        assert!(app.flash.as_deref().unwrap().contains("/merge T-6"), "{:?}", app.flash);
-        assert_eq!(app.question, None);
-
-        // y, then whether to push.
-        type_text(&mut app, "/accept T-7");
-        enter(&mut app);
-        assert!(app.on_key(key(KeyCode::Char('y')), Instant::now()).is_empty());
-        assert!(app.flash.as_deref().unwrap().contains("push main to origin too? y/n"), "{:?}", app.flash);
-        assert_eq!(app.on_key(key(KeyCode::Char('n')), Instant::now()), merge(7, false));
-        type_text(&mut app, "/accept T-8");
-        enter(&mut app);
-        app.on_key(key(KeyCode::Char('y')), Instant::now());
-        assert_eq!(app.on_key(key(KeyCode::Char('y')), Instant::now()), merge(8, true));
-
-        // Esc at the push question merges nothing; typing something else puts it away.
-        type_text(&mut app, "/accept T-9");
-        enter(&mut app);
-        app.on_key(key(KeyCode::Char('y')), Instant::now());
+        assert!(enter(&mut app).is_empty());
+        assert!(app.flash.as_deref().unwrap().contains("1 merge + push · 2 merge only · 3 leave on branch"), "{:?}", app.flash);
+        // Esc: nothing at all.
         assert!(app.on_key(key(KeyCode::Esc), Instant::now()).is_empty());
         assert_eq!(app.question, None);
+        type_text(&mut app, "/accept T-6");
+        enter(&mut app);
+        assert_eq!(app.on_key(key(KeyCode::Char('3')), Instant::now()), vec![accept(6)], "left on its branch");
+        assert!(app.flash.as_deref().unwrap().contains("/merge T-6"), "{:?}", app.flash);
+
+        // Remembered for the project: the next accept lands the same way at once.
+        type_text(&mut app, "/accept T-7");
+        assert_eq!(enter(&mut app), vec![accept(7)]);
+        app.merge_ways.clear();
+        type_text(&mut app, "/accept T-8");
+        enter(&mut app);
+        assert_eq!(app.on_key(key(KeyCode::Char('1')), Instant::now()), vec![accept(8), merge(8, true)]);
+
+        // On the board, A asks how, this once.
+        app.pane = Pane::Board;
+        app.board_selected = Some(9);
+        assert!(app.on_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT), Instant::now()).is_empty());
+        assert_eq!(app.on_key(key(KeyCode::Char('2')), Instant::now()), vec![accept(9), merge(9, false)]);
         type_text(&mut app, "/merge T-9");
-        assert!(enter(&mut app).is_empty(), "/merge asks about pushing first");
+        assert!(enter(&mut app).is_empty(), "/merge asks how");
         type_text(&mut app, "hi");
         assert_eq!((app.question, app.composer.text()), (None, "hi"));
     }
@@ -4219,9 +4420,12 @@ mod tests {
         done.branch = Some("equipe/frontend-t3".into());
         done.merged = Some(false);
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: done.clone() });
-        app.pane = Pane::Board;
+        // Ctrl-B opens the board on 나에게, where it waits under 병합 안 됨.
+        app.on_key(ctrl('b'), Instant::now());
+        assert_eq!((app.pane, app.board_menu), (Pane::Board, BoardMenu::Inbox));
         assert!(app.on_key(key(KeyCode::Char('m')), Instant::now()).is_empty());
-        assert_eq!(app.on_key(key(KeyCode::Char('n')), Instant::now()), vec![Command::Merge { squad: "acme".into(), ticket: 3, push: false }]);
+        // 1 merge and push, 2 merge only, 3 leave it.
+        assert_eq!(app.on_key(key(KeyCode::Char('2')), Instant::now()), vec![Command::Merge { squad: "acme".into(), ticket: 3, push: false }]);
         // Once on main there is nothing to merge.
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: Ticket { merged: Some(true), ..done } });
         app.on_key(key(KeyCode::Char('m')), Instant::now());
@@ -4235,10 +4439,10 @@ mod tests {
         waiting.note = Some("Waiting on you:\n- [ ] GitHub token\n- [ ] PostHog secrets".into());
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: waiting });
         let flash = app.flash.clone().unwrap();
-        assert!(flash.contains("T-6 waits for you: GitHub token, PostHog secrets") && flash.contains("/resume T-6"), "{flash}");
+        assert!(flash.contains("T-6 your turn: GitHub token, PostHog secrets") && flash.contains("/resume T-6"), "{flash}");
         type_text(&mut app, "/resume");
         assert!(enter(&mut app).is_empty());
-        assert!(app.flash.as_deref().unwrap().contains("Waiting on you: T-6"), "{:?}", app.flash);
+        assert!(app.flash.as_deref().unwrap().contains("your turn: T-6"), "{:?}", app.flash);
         // A word on what was done is optional.
         type_text(&mut app, "/resume T-6");
         assert_eq!(enter(&mut app), vec![Command::Resume { squad: "acme".into(), ticket: 6, note: String::new() }]);
@@ -4294,8 +4498,13 @@ mod tests {
     fn a_request_for_permission_answers_to_y_a_and_n_unless_the_person_is_typing() {
         let (mut app, _, _) = team();
         app.on_event(Event::ApprovalRequested { squad: "acme".into(), approval: approval(7) });
+        // As every need: a is yes (once), A always, n no.
         assert_eq!(
             app.on_key(key(KeyCode::Char('a')), Instant::now()),
+            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Allow }]
+        );
+        assert_eq!(
+            app.on_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT), Instant::now()),
             vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always }]
         );
         assert_eq!(
@@ -4348,7 +4557,7 @@ mod tests {
         assert_eq!(app.display_order(), [1, 0], "working before ready");
         app.on_event(Event::ApprovalRequested { squad: "acme".into(), approval: approval(1) });
         assert_eq!(app.display_order(), [1, 0]);
-        assert!(app.needs_you(&app.agents[1]));
+        assert!(app.asks_you(&app.agents[1]));
         assert_eq!(app.selected().unwrap().id, pm);
         app.on_key(key(KeyCode::Tab), Instant::now());
         assert_eq!(app.selected().unwrap().id, frontend, "Tab wraps round the listed order");
