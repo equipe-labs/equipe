@@ -801,11 +801,13 @@ fn focus_of(id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> Focu
 
 /// The line that opens and closes a disclosure: a click or Enter/Space
 /// toggles `part` of row `key`; Tab, ↓ and ↑ move on; Esc puts the side
-/// panel away. A 1px accent ring while it has the keys.
+/// panel away. A 1px accent ring while it has the keys, after a key moved there.
 fn disclosure_head(rows: &Rows, id: (&'static str, u64), part: u32, key: u64, fill: bool, window: &mut Window, cx: &mut App) -> Stateful<Div> {
     let p = rows.p;
     let focus = focus_of(id, window, cx);
-    let focused = focus.is_focused(window);
+    // The ring only when the keys moved here, as the web's :focus-visible: a
+    // click keeps the focus, for ↓ and Enter after it, but draws no box.
+    let focused = focus.is_focused(window) && window.last_input_was_keyboard();
     let (click, keys) = (rows.handle.clone(), rows.handle.clone());
     let clicked = focus.clone();
     h_flex()
