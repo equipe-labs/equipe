@@ -790,7 +790,10 @@ fn disclosure_head(rows: &Rows, id: (&'static str, u64), part: u32, key: u64, fi
         .text_color(p.muted)
         .cursor_pointer()
         .hover(move |s| if fill { s.bg(p.wash) } else { s.text_color(p.text2) })
-        .when(focused, |d| d.child(div().absolute().top(px(-1.)).bottom(px(-1.)).left(px(-6.)).right(px(-6.)).rounded(px(R_SM)).border_1().border_color(p.accent)))
+        .when(focused, |d| {
+            let out = if fill { 0. } else { -6. };
+            d.child(div().absolute().top(px(if fill { 0. } else { -1. })).bottom(px(if fill { 0. } else { -1. })).left(px(out)).right(px(out)).rounded(px(R_SM)).border_1().border_color(p.accent))
+        })
         .on_click(move |_, window, cx| {
             clicked.focus(window, cx);
             click.update(cx, |shell, cx| shell.chat_toggle(key, part, cx)).ok();
