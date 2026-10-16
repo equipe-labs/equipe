@@ -170,6 +170,7 @@ mod tests {
             work: None,
             mode: None,
             effort: None,
+            subagents: Vec::new(),
         };
         let mut app = App::from_snapshot("/repo".into(), Snapshot { squad: "acme".into(), projects: vec!["/repo".into()], sessions: vec![info], ..Snapshot::default() }, &[]).0;
         let ticket: Ticket = serde_json::from_value(serde_json::json!({

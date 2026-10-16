@@ -1097,6 +1097,8 @@
   "sidebar.settings": "設定",
   "sidebar.show_tip": "サイドバーを表示 ⌘\\",
   "sidebar.squads": "スクワッド",
+  "sidebar.subagent_starting": "始めたところ",
+  "sidebar.subagents": "サブエージェント {n}",
   "sidebar.switch_project": "このプロジェクトに切り替え",
   "sidebar.talk": "話す",
   "sidebar.team": "チーム",

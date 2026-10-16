@@ -851,6 +851,7 @@ pub(crate) mod tests {
             queued_in: vec![],
             steering: vec![],
             steering_in: vec![],
+            subagents: vec![],
             lane: None,
             estimate: None,
             work: None,

@@ -1129,6 +1129,8 @@
   "sidebar.settings": "Settings",
   "sidebar.show_tip": "Show sidebar ⌘\\",
   "sidebar.squads": "Squads",
+  "sidebar.subagent_starting": "Just started",
+  "sidebar.subagents": "Subagents {n}",
   "sidebar.switch_project": "Switch to this project",
   "sidebar.talk": "Talk",
   "sidebar.team": "Team",

@@ -1129,6 +1129,8 @@
   "sidebar.settings": "Configuración",
   "sidebar.show_tip": "Mostrar barra lateral ⌘\\",
   "sidebar.squads": "Squads",
+  "sidebar.subagent_starting": "Recién empezado",
+  "sidebar.subagents": "Subagentes {n}",
   "sidebar.switch_project": "Cambiar a este proyecto",
   "sidebar.talk": "Hablar",
   "sidebar.team": "Equipo",

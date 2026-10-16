@@ -9,7 +9,7 @@
 //! `menu:<inbox|working|all|view0…>` (a sidebar item) · `cmenu:<attach|recent|to|model|effort|mode|context>` (a composer menu) · `bkey:<key>` (a work
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
-//! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `settings[:<category>]` (settings, at general · squad · team · permissions · projects · browser · keys · about) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
+//! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `popup:subagents:<member>` · `subagent:<member>` (its first subagent's row, clicked) · `settings[:<category>]` (settings, at general · squad · team · permissions · projects · browser · keys · about) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
 //! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `sdrag:<x1>,<y1>,<x2>,<y2>` (a selection dragged out) · `peekw:<px>` (the peek held that wide) · `quote:<open|copy|type:<words>|send|close|jump>` (asking about the words selected) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
@@ -358,9 +358,16 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 "popup" => shell.update(cx, |shell, cx| {
                     shell.board.popup = match arg.as_str() {
                         "account" => Some(crate::views::sidebar::Popup::Account),
-                        _ => None,
+                        // `popup:subagents:<member>`: all of a member's subagents, as "+N개 더" opens them.
+                        other => other.strip_prefix("subagents:").and_then(|name| shell.model.members.iter().find(|m| m.name == name)).map(|m| crate::views::sidebar::Popup::Subagents(m.session)),
                     };
                     cx.notify();
+                }),
+                "subagent" => shell.update(cx, |shell, cx| {
+                    let found = shell.model.members.iter().find(|m| m.name == arg).and_then(|m| shell.model.subagents_of(m.session).first().map(|(s, sub)| (m.session, *s, sub.id.clone())));
+                    if let Some((member, session, id)) = found {
+                        shell.open_subagent(member, session, &id, window, cx);
+                    }
                 }),
                 // Settings, at a category (`settings:team`), or where it was left.
                 "settings" => shell.update(cx, |shell, cx| shell.open_settings(crate::settings::Category::parse(&arg), window, cx)),

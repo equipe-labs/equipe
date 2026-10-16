@@ -20,11 +20,24 @@ use crate::state::Clock;
 /// How many targets a merged tool line names before it counts the rest.
 pub const TARGETS_SHOWN: usize = 3;
 
+/// A subagent the member handed work to, at it now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sub {
     pub id: String,
+    /// What it was handed: the delegation's task, its first 80 characters.
     pub what: String,
+    /// Its latest step, once it has taken one.
     pub step: Option<String>,
+    /// Since when it works (attached mid-way: as long ago as the daemon said).
+    pub since: Instant,
+}
+
+impl Sub {
+    /// Whether `target` — a delegation step's task — is what this one was handed.
+    pub fn handed(&self, target: &str) -> bool {
+        let first: String = target.chars().take(80).collect();
+        first == self.what || (!target.is_empty() && self.what.starts_with(target))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +102,11 @@ impl Convo {
         convo.desk = info.project.clone();
         convo.transcript = Transcript::from_entries(info.recent.clone());
         convo.queue = crate::queue::Queue::from_info(info);
+        convo.subagents = info
+            .subagents
+            .iter()
+            .map(|s| Sub { id: s.id.clone(), what: s.what.clone(), step: s.step.clone(), since: now.checked_sub(Duration::from_secs(s.secs)).unwrap_or(now) })
+            .collect();
         // Attached mid-turn: the clock starts now, not when the turn did.
         if info.state == equipe_core::protocol::SessionState::Working {
             convo.working_since = Some(now);
@@ -154,7 +172,9 @@ impl Convo {
             Event::WorkEnded { .. } => {
                 self.base = self.desk.clone();
             }
-            Event::SubagentStarted { id, what, .. } => self.subagents.push(Sub { id: id.clone(), what: what.clone(), step: None }),
+            // Told twice (attached as it started): it is the one already here.
+            Event::SubagentStarted { id, .. } if self.subagents.iter().any(|s| s.id == *id) => {}
+            Event::SubagentStarted { id, what, .. } => self.subagents.push(Sub { id: id.clone(), what: what.clone(), step: None, since: now }),
             Event::SubagentStep { id, step, .. } => {
                 if let Some(sub) = self.subagents.iter_mut().find(|s| s.id == *id) {
                     sub.step = Some(step.clone());
@@ -296,6 +316,7 @@ impl Convo {
                 *text = self.thought(*n).unwrap_or_default().to_owned();
             }
         }
+        self.mark_delegations(blocks);
         if !end_shown {
             return;
         }
@@ -313,6 +334,19 @@ impl Convo {
         }
         if let Some((_, text)) = &self.thinking {
             blocks.push(Block::Thinking(text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default().to_owned()));
+        }
+    }
+
+    /// A delegation whose subagent is still at it runs, wherever it is — one
+    /// sent to the background answered at once, but its work goes on. The
+    /// latest delegation of each task is its subagent's.
+    fn mark_delegations(&self, blocks: &mut [Block]) {
+        for sub in &self.subagents {
+            if let Some((at, line)) = delegation_of(blocks, sub)
+                && let Block::Steps(lines) = &mut blocks[at]
+            {
+                lines[line].status = Status::Running;
+            }
         }
     }
 
@@ -432,6 +466,15 @@ impl Convo {
         }
         out
     }
+}
+
+/// Where `sub` was handed its work in `blocks`: the block, and the line in
+/// it — the latest delegation of that task.
+pub fn delegation_of(blocks: &[Block], sub: &Sub) -> Option<(usize, usize)> {
+    blocks.iter().enumerate().rev().find_map(|(at, block)| match block {
+        Block::Steps(lines) => lines.iter().rposition(|l| l.verb == "delegate" && l.targets.first().is_some_and(|t| sub.handed(t))).map(|line| (at, line)),
+        _ => None,
+    })
 }
 
 /// The conversation as a project's slice shows it ([`Convo::sliced`]).
@@ -1337,10 +1380,66 @@ mod tests {
     #[test]
     fn subagents_come_and_go_with_their_steps() {
         let mut c = convo(false);
-        feed(&mut c, &[Event::SubagentStarted { session: 1, id: "a".into(), what: "look".into() }, Event::SubagentStep { session: 1, id: "a".into(), step: "Read x".into() }]);
-        assert_eq!(c.subagents, [Sub { id: "a".into(), what: "look".into(), step: Some("Read x".into()) }]);
-        feed(&mut c, &[Event::SubagentEnded { session: 1, id: "a".into() }]);
-        assert!(c.subagents.is_empty());
+        let start = Instant::now();
+        c.on_event(&Event::SubagentStarted { session: 1, id: "a".into(), what: "look".into() }, start, T);
+        c.on_event(&Event::SubagentStep { session: 1, id: "a".into(), step: "Read x".into() }, start + Duration::from_secs(5), T);
+        assert_eq!(c.subagents, [Sub { id: "a".into(), what: "look".into(), step: Some("Read x".into()), since: start }], "its clock runs from when it started");
+        // Told again (attached as it started): still one.
+        feed(&mut c, &[Event::SubagentStarted { session: 1, id: "a".into(), what: "look".into() }, Event::SubagentStarted { session: 1, id: "b".into(), what: "more".into() }]);
+        assert_eq!(c.subagents.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["a", "b"], "in the order they started");
+        feed(&mut c, &[Event::SubagentEnded { session: 1, id: "a".into() }, Event::SubagentStep { session: 1, id: "a".into(), step: "late".into() }]);
+        assert_eq!(c.subagents.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["b"], "a step after its end brings nothing back");
+        feed(&mut c, &[Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }]);
+        assert!(c.subagents.is_empty(), "the turn's end takes the rest with it");
+    }
+
+    #[test]
+    fn attaching_mid_turn_lists_the_subagents_at_work_with_their_clocks() {
+        let info: SessionInfo = serde_json::from_value(serde_json::json!({
+            "session": 2, "project": "/p", "member": {"role": "frontend", "name": "frontend"}, "engine": "claude", "model": null,
+            "access": "read_only", "workspace": null, "state": "working", "title": null, "tokens": 0,
+            "recent": [{"kind": "tool", "tool": "Agent", "target": "Read the logs"}],
+            "subagents": [{"id": "t1", "what": "Read the logs", "step": "Grep error", "secs": 90}]
+        }))
+        .unwrap();
+        let now = Instant::now();
+        let c = Convo::from_info(&info, now);
+        assert_eq!(c.subagents, [Sub { id: "t1".into(), what: "Read the logs".into(), step: Some("Grep error".into()), since: now - Duration::from_secs(90) }]);
+        let Block::Steps(lines) = &c.blocks()[0] else { panic!("{:?}", c.blocks()) };
+        assert_eq!((lines[0].verb.as_str(), lines[0].status), ("delegate", Status::Running));
+    }
+
+    #[test]
+    fn a_delegation_runs_while_its_subagent_does_even_answered_or_further_up() {
+        let mut c = convo(false);
+        feed(
+            &mut c,
+            &[
+                Event::UserMessage { session: 1, text: "go".into() },
+                tool("Agent", "Read the logs"),
+                Event::SubagentStarted { session: 1, id: "t1".into(), what: "Read the logs".into() },
+                // Sent to the background: answered at once, at work still.
+                Event::ToolResult { session: 1, tool: "Agent".into(), target: Some("Read the logs".into()), outcome: ToolOutcome { ok: true, exit: None, ms: Some(5), output: String::new(), skipped: 0, diff: None } },
+                Event::TextDelta { session: 1, text: "Meanwhile…".into() },
+                tool("Read", "/work/site/a.rs"),
+            ],
+        );
+        let blocks = c.blocks();
+        let sub = c.subagents[0].clone();
+        let (at, line) = delegation_of(&blocks, &sub).expect("its delegation");
+        assert_eq!(at, 1, "{blocks:?}");
+        let Block::Steps(lines) = &blocks[at] else { panic!() };
+        assert_eq!(lines[line].status, Status::Running);
+        feed(&mut c, &[Event::SubagentEnded { session: 1, id: "t1".into() }]);
+        let Block::Steps(lines) = &c.blocks()[1] else { panic!() };
+        assert_eq!(lines[0].status, Status::Done, "handed back: done");
+    }
+
+    #[test]
+    fn a_subagent_knows_its_task_cut_at_eighty_characters() {
+        let long = "a".repeat(100);
+        let sub = Sub { id: "x".into(), what: "a".repeat(80), step: None, since: Instant::now() };
+        assert!(sub.handed(&long) && !sub.handed("b") && !sub.handed(""));
     }
 
     #[test]

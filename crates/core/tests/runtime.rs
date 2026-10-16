@@ -1514,6 +1514,33 @@ async fn a_screen_attaching_mid_turn_sees_the_member_working() {
 }
 
 #[tokio::test]
+async fn a_screen_attaching_mid_turn_sees_the_subagents_at_work_and_none_once_the_turn_ends() {
+    // Two subagents handed work; one hands back, the other takes a step and keeps at it.
+    let turn = r#"cat <<'EOF'
+{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}
+{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Task","input":{"description":"Read the logs","prompt":"…"}},{"type":"tool_use","id":"toolu_2","name":"Agent","input":{"description":"Run the iOS tests","prompt":"…"}}]}}
+{"type":"assistant","parent_tool_use_id":"toolu_2","message":{"content":[{"type":"tool_use","id":"toolu_9","name":"Bash","input":{"command":"xcodebuild test"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"nothing odd"}]}}
+EOF
+exec sleep 30"#;
+    let claude = fake_claude(true, turn);
+    let cwd = scratch("cwd");
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), true));
+    add(&handle, &mut events, 3, member(&cwd, "pm")).await;
+    handle.send(Command::Submit { session: 3, text: "long job".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::SubagentEnded { .. })).await;
+
+    let snapshot = handle.snapshot("acme").await;
+    let subs: Vec<(&str, &str, Option<&str>)> = snapshot.sessions[0].subagents.iter().map(|s| (s.id.as_str(), s.what.as_str(), s.step.as_deref())).collect();
+    assert_eq!(subs, [("toolu_2", "Run the iOS tests", Some("Bash xcodebuild test"))]);
+
+    handle.send(Command::Interrupt { session: 3 });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(handle.snapshot("acme").await.sessions[0].subagents.is_empty(), "the turn's end takes them with it");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_member_who_left_is_not_resumed() {
     let claude = fake_claude(true, &answering("ok"));
     let cwd = scratch("cwd");

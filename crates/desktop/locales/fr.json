@@ -1129,6 +1129,8 @@
   "sidebar.settings": "Réglages",
   "sidebar.show_tip": "Afficher la barre latérale ⌘\\",
   "sidebar.squads": "Escouades",
+  "sidebar.subagent_starting": "Tout juste lancé",
+  "sidebar.subagents": "Sous-agents {n}",
   "sidebar.switch_project": "Passer à ce projet",
   "sidebar.talk": "Discuter",
   "sidebar.team": "Équipe",
