@@ -13,7 +13,7 @@
             "type": "accept"
           }
         },
-        "seq": 22,
+        "seq": 25,
         "squad": "home",
         "ts": 1760000000000
       }
@@ -30,7 +30,7 @@
             "type": "accept"
           }
         },
-        "seq": 21,
+        "seq": 24,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -83,7 +83,7 @@
             "type": "accept"
           }
         },
-        "seq": 13,
+        "seq": 16,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -180,6 +180,34 @@
           }
         },
         "seq": 9,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "apply engine proposal": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 7000001,
+            "squad": "acme",
+            "type": "apply_engine_proposal"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 7000001,
+            "squad": "acme",
+            "type": "apply_engine_proposal"
+          }
+        },
+        "seq": 13,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -330,6 +358,34 @@
         "ts": 1760000000000
       }
     },
+    "dismiss engine proposal": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 7000001,
+            "squad": "acme",
+            "type": "dismiss_engine_proposal"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 7000001,
+            "squad": "acme",
+            "type": "dismiss_engine_proposal"
+          }
+        },
+        "seq": 14,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "dismiss questions": {
       "daemon": {
         "command": {
@@ -399,6 +455,120 @@
         "ts": 1760000000000
       }
     },
+    "event: engine moves made": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "proposal": {
+              "applied": true,
+              "engine": "claude",
+              "id": 7000001,
+              "moves": [
+                {
+                  "from": "claude",
+                  "member": "backend",
+                  "role": "backend",
+                  "to": "codex",
+                  "was_model": "opus"
+                },
+                {
+                  "from": "claude",
+                  "member": "frontend",
+                  "role": "frontend",
+                  "to": "codex",
+                  "was_model": "sonnet"
+                }
+              ],
+              "proposed_at": 1760000000,
+              "resets_at": 1760007200,
+              "used_percent": 86,
+              "why": "shift",
+              "window": "five_hour"
+            },
+            "squad": "acme",
+            "type": "engine_proposed"
+          }
+        },
+        "seq": 17,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: engine proposal": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "proposal": {
+              "engine": "claude",
+              "id": 7000001,
+              "moves": [
+                {
+                  "from": "claude",
+                  "member": "backend",
+                  "role": "backend",
+                  "to": "codex",
+                  "was_model": "opus"
+                },
+                {
+                  "from": "claude",
+                  "member": "frontend",
+                  "role": "frontend",
+                  "to": "codex",
+                  "was_model": "sonnet"
+                }
+              ],
+              "proposed_at": 1760000000,
+              "resets_at": 1760007200,
+              "used_percent": 86,
+              "why": "shift",
+              "window": "five_hour"
+            },
+            "squad": "acme",
+            "type": "engine_proposed"
+          }
+        },
+        "seq": 16,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: engine proposal closed": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "applied": true,
+            "id": 7000001,
+            "squad": "acme",
+            "type": "engine_proposal_closed"
+          }
+        },
+        "seq": 18,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: engine switching changed": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "mode": "auto",
+            "squad": "acme",
+            "type": "engine_switching_changed"
+          }
+        },
+        "seq": 19,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "event: error": {
       "receives": {
         "rpc": {
@@ -411,7 +581,7 @@
             "type": "error"
           }
         },
-        "seq": 26,
+        "seq": 31,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -428,7 +598,7 @@
             "type": "message_queued"
           }
         },
-        "seq": 17,
+        "seq": 22,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -444,7 +614,32 @@
             "type": "notice"
           }
         },
-        "seq": 25,
+        "seq": 30,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: plan usage": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "engine": "codex",
+            "type": "plan_usage",
+            "usage": {
+              "five_hour": {
+                "resets_at": 1760007200,
+                "used_percent": 12
+              },
+              "seven_day": {
+                "resets_at": 1760345600,
+                "used_percent": 18
+              }
+            }
+          }
+        },
+        "seq": 15,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -563,7 +758,7 @@
             "type": "queue_sent"
           }
         },
-        "seq": 28,
+        "seq": 33,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -580,7 +775,7 @@
             "type": "steer_queued"
           }
         },
-        "seq": 27,
+        "seq": 32,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -596,7 +791,7 @@
             "type": "subagent_ended"
           }
         },
-        "seq": 22,
+        "seq": 27,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -613,7 +808,7 @@
             "what": "Compare the two login flows"
           }
         },
-        "seq": 20,
+        "seq": 25,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -630,7 +825,7 @@
             "type": "subagent_step"
           }
         },
-        "seq": 21,
+        "seq": 26,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -710,7 +905,7 @@
             "type": "text_delta"
           }
         },
-        "seq": 18,
+        "seq": 23,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -741,7 +936,7 @@
             "type": "ticket_changed"
           }
         },
-        "seq": 15,
+        "seq": 20,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -789,7 +984,7 @@
             "type": "tool_use"
           }
         },
-        "seq": 19,
+        "seq": 24,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -809,7 +1004,7 @@
             }
           }
         },
-        "seq": 23,
+        "seq": 28,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -826,7 +1021,7 @@
             "usage": null
           }
         },
-        "seq": 24,
+        "seq": 29,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -842,7 +1037,7 @@
             "type": "user_message"
           }
         },
-        "seq": 16,
+        "seq": 21,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -871,8 +1066,76 @@
                   "queue": [],
                   "stopped": false
                 },
+                "engine_proposals": [
+                  {
+                    "engine": "claude",
+                    "id": 7000001,
+                    "moves": [
+                      {
+                        "from": "claude",
+                        "member": "backend",
+                        "role": "backend",
+                        "to": "codex",
+                        "was_model": "opus"
+                      },
+                      {
+                        "from": "claude",
+                        "member": "frontend",
+                        "role": "frontend",
+                        "to": "codex",
+                        "was_model": "sonnet"
+                      }
+                    ],
+                    "proposed_at": 1760000000,
+                    "resets_at": 1760007200,
+                    "used_percent": 86,
+                    "why": "shift",
+                    "window": "five_hour"
+                  }
+                ],
                 "mode": "auto",
-                "plan": null,
+                "plan": {
+                  "five_hour": {
+                    "resets_at": 1760007200,
+                    "used_percent": 86
+                  },
+                  "seven_day": {
+                    "resets_at": 1760345600,
+                    "used_percent": 41
+                  }
+                },
+                "plans": [
+                  {
+                    "at": 1760000000,
+                    "engine": "claude",
+                    "plan_type": null,
+                    "usage": {
+                      "five_hour": {
+                        "resets_at": 1760007200,
+                        "used_percent": 86
+                      },
+                      "seven_day": {
+                        "resets_at": 1760345600,
+                        "used_percent": 41
+                      }
+                    }
+                  },
+                  {
+                    "at": 1760000000,
+                    "engine": "codex",
+                    "plan_type": null,
+                    "usage": {
+                      "five_hour": {
+                        "resets_at": 1760007200,
+                        "used_percent": 12
+                      },
+                      "seven_day": {
+                        "resets_at": 1760345600,
+                        "used_percent": 18
+                      }
+                    }
+                  }
+                ],
                 "projects": [
                   "/Users/you/projects/site",
                   "/Users/you/projects/api"
@@ -1125,7 +1388,7 @@
             "type": "interrupt"
           }
         },
-        "seq": 16,
+        "seq": 19,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1143,7 +1406,7 @@
             "type": "merge"
           }
         },
-        "seq": 20,
+        "seq": 23,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1235,6 +1498,55 @@
             },
             "squad": "acme",
             "type": "questions_asked"
+          }
+        },
+        "seq": 0,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "push: engine exhausted": {
+      "daemon_sends": {
+        "body": "acme",
+        "category": "engines",
+        "collapse": "engines-7000001",
+        "data": "<sealed daemon-to-device frame: data_opened>",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "title": "Claude reached its limit — hand backend·frontend's work to the other engine?",
+        "type": "push"
+      },
+      "data_opened": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "proposal": {
+              "engine": "claude",
+              "id": 7000001,
+              "moves": [
+                {
+                  "from": "claude",
+                  "member": "backend",
+                  "role": "backend",
+                  "to": "codex",
+                  "was_model": "opus"
+                },
+                {
+                  "from": "claude",
+                  "member": "frontend",
+                  "role": "frontend",
+                  "to": "codex",
+                  "was_model": "sonnet"
+                }
+              ],
+              "proposed_at": 1760000000,
+              "resets_at": 1760007200,
+              "used_percent": 100,
+              "why": "exhausted",
+              "window": "five_hour"
+            },
+            "squad": "acme",
+            "type": "engine_proposed"
           }
         },
         "seq": 0,
@@ -1383,7 +1695,7 @@
             "type": "reopen"
           }
         },
-        "seq": 14,
+        "seq": 17,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1417,7 +1729,7 @@
             "type": "send_now"
           }
         },
-        "seq": 19,
+        "seq": 22,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1479,7 +1791,7 @@
             "type": "submit"
           }
         },
-        "seq": 15,
+        "seq": 18,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1509,7 +1821,7 @@
             "type": "submit"
           }
         },
-        "seq": 17,
+        "seq": 20,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1539,7 +1851,35 @@
             "type": "submit"
           }
         },
-        "seq": 18,
+        "seq": 21,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "undo engine proposal": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 7000001,
+            "squad": "acme",
+            "type": "undo_engine_proposal"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 7000001,
+            "squad": "acme",
+            "type": "undo_engine_proposal"
+          }
+        },
+        "seq": 15,
         "squad": "acme",
         "ts": 1760000000000
       }

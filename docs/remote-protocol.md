@@ -108,6 +108,31 @@ never an agent: the phone approves with the command `approve_team_change` `{ "sq
 change became moot (its member left anyway). A push for a proposal carries the event with
 `reason` cut to 800 characters, category `team`.
 
+### Both engines' plans, and moving members between them
+
+`plan_usage` `{ "usage": { "five_hour", "seven_day" }, "engine"? }` says one engine's plan as last
+read — each window `{ "used_percent", "resets_at" }` or `null` — for every screen; without
+`engine` (an older daemon) it is Claude's. The snapshot keeps Claude's in `plan` and every
+engine's in `plans`: `[{ "engine", "usage", "plan_type"?, "at" }]`, `at` the Unix seconds it was
+read (older is less sure). How the squad moves members as a plan runs low is the snapshot's
+`engine_switching` — `"off"`, `"suggest"` (when absent) or `"auto"`, changed at a screen with
+`set_engine_switching` `{ "squad", "mode" }` and told as `engine_switching_changed`
+`{ "squad", "mode" }`.
+
+A card is `engine_proposed` `{ "squad", "proposal" }`, its `proposal` `{ "id", "why": "shift" |
+"drain" | "exhausted" | "step_down" | "return" | "setup", "engine"? (the plan it is about; none
+for the setup), "window"?: "five_hour" | "weekly", "used_percent", "resets_at", "moves": [{
+"member", "role", "from", "to", "model"?, "effort"?, "was_model"?, "done"? }], "applied"?,
+"proposed_at" }`. The snapshot lists the cards still showing in `engine_proposals` (absent when
+none). Sent again with the same `id` as each member moves (`done: true`). Not `applied`: the
+person makes the moves with `apply_engine_proposal` `{ "squad", "id" }` or leaves things as they
+are with `dismiss_engine_proposal` `{ "squad", "id" }`. `applied`: equipe made them on its own
+(`auto`); `undo_engine_proposal` `{ "squad", "id" }` takes them back and `dismiss_engine_proposal`
+closes the card. Either way every screen then gets `engine_proposal_closed` `{ "squad", "id",
+"applied" }`. Members move only between turns, at their next ticket. A push goes only for an
+engine out of its plan with its reset hours away (`why: "exhausted"`), category `engines`, once.
+`show_engine_setup` `{ "squad" }` proposes the recommended setup for both engines again.
+
 ### Conformance vectors
 
 `docs/remote-vectors/` holds frames sealed with fixed keys and fixed ephemeral keys, QR codes
@@ -284,13 +309,15 @@ The daemon follows a device like one more screen, with less reach than the termi
 
 - **may:** `hello`, `squads`, and the commands `submit`, `interrupt`, `send_now`, `accept`, `reopen`,
   `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `approve_team_change`,
-  `decline_team_change`, `focus`, `refresh`.
+  `decline_team_change`, `apply_engine_proposal`, `dismiss_engine_proposal`,
+  `undo_engine_proposal`, `focus`, `refresh`.
 - `submit` and `answer_questions` may say what the message is about: `about` — the project the
   phone shows, or `null` for the whole squad. Left out, the daemon takes the project in focus
   (the last `focus` any screen sent). Said while the member works, a message steers it
   (`steer_queued`, with its `project`); `send_now` stops the turn and sends what waits — the
   `texts` first, in that order — as one message (`queue_sent`, then the turn's end).
-- **may not:** `start`, `close`, `merge`, `set_mode`, `scale`, `show_browser` — nor the person's
+- **may not:** `start`, `close`, `merge`, `set_mode`, `scale`, `show_browser`,
+  `set_engine_switching`, `show_engine_setup` — nor the person's
   own hand on the board: `create_ticket`, `edit_ticket`, `edit_tickets`, `move_ticket`,
   `comment_ticket`, `ticket_history` (the phone answers what the board asks; planning stays at a
   screen for now).

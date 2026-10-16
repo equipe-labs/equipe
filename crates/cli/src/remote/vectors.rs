@@ -13,9 +13,10 @@ use std::path::{Path, PathBuf};
 
 use equipe_core::protocol::decide::{Answer, Choice, Question, QuestionSet};
 use equipe_core::protocol::rpc::{Hello, Message};
+use equipe_core::protocol::engines::{Move, Proposal, Switching, Why, Window};
 use equipe_core::protocol::team::{Change, TeamChange};
 use equipe_core::protocol::{
-    Access, Approval, Decision, Engine, Entry, Event, Member, Mode, SessionInfo, SessionState, Snapshot, SubagentInfo, Ticket, TicketKind, TicketStatus, TurnOutcome, Usage, WorkInfo,
+    Access, Approval, Decision, Engine, EnginePlan, Entry, Event, Member, Mode, PlanUsage, PlanWindow, SessionInfo, SessionState, Snapshot, SubagentInfo, Ticket, TicketKind, TicketStatus, TurnOutcome, Usage, WorkInfo,
 };
 use serde_json::{Value, json};
 
@@ -691,6 +692,44 @@ fn team_change() -> TeamChange {
     }
 }
 
+/// Claude's five hours at 86%: backend and frontend to Codex from their next ticket.
+fn engine_proposal(why: Why, applied: bool) -> Proposal {
+    let mv = |name: &str, model: &str| Move {
+        member: name.into(),
+        role: name.into(),
+        from: Engine::Claude,
+        to: Engine::Codex,
+        model: None,
+        effort: None,
+        was_model: Some(model.into()),
+        done: false,
+    };
+    Proposal {
+        id: 7_000_001,
+        why,
+        engine: Some(Engine::Claude),
+        window: Some(Window::FiveHour),
+        used_percent: if why == Why::Exhausted { 100 } else { 86 },
+        resets_at: (NOW / 1000) as i64 + 2 * 3600,
+        moves: vec![mv("backend", "opus"), mv("frontend", "sonnet")],
+        applied,
+        proposed_at: NOW / 1000,
+    }
+}
+
+fn plan(engine: Engine, five_hour: u8, week: u8) -> EnginePlan {
+    let at = (NOW / 1000) as i64;
+    EnginePlan {
+        engine,
+        usage: PlanUsage {
+            five_hour: Some(PlanWindow { used_percent: five_hour, resets_at: at + 2 * 3600 }),
+            seven_day: Some(PlanWindow { used_percent: week, resets_at: at + 4 * 24 * 3600 }),
+        },
+        plan_type: None,
+        at,
+    }
+}
+
 fn ticket(status: TicketStatus) -> Ticket {
     Ticket {
         id: 38,
@@ -778,7 +817,10 @@ fn snapshot() -> Snapshot {
         questions: vec![questions()],
         team_changes: vec![team_change()],
         scale: Some(0),
-        plan: None,
+        plan: Some(plan(Engine::Claude, 86, 41).usage),
+        plans: vec![plan(Engine::Claude, 86, 41), plan(Engine::Codex, 12, 18)],
+        engine_switching: Switching::Suggest,
+        engine_proposals: vec![engine_proposal(Why::Shift, false)],
         suggestions_off: false,
         desktop: Default::default(),
         allowed: vec![],
@@ -850,6 +892,16 @@ fn message_vectors() -> Value {
     tell(&mut core, &mut examples, "event: team change approved", Event::TeamChangeClosed { squad: SQUAD.into(), id: 6_000_001, approved: true, members: vec!["backend-2".into()] });
     tell(&mut core, &mut examples, "event: team change declined", Event::TeamChangeClosed { squad: SQUAD.into(), id: 6_000_001, approved: false, members: vec![] });
 
+    // Both engines' plans, and members moving between them: the person makes, leaves or undoes the moves.
+    tell(&mut core, &mut examples, "event: plan usage", Event::PlanUsage { usage: plan(Engine::Codex, 12, 18).usage, engine: Engine::Codex });
+    tell(&mut core, &mut examples, "event: engine proposal", Event::EngineProposed { squad: SQUAD.into(), proposal: engine_proposal(Why::Shift, false) });
+    ask(&mut core, &mut examples, "apply engine proposal", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "apply_engine_proposal", "squad": SQUAD, "id": 7_000_001 } }));
+    ask(&mut core, &mut examples, "dismiss engine proposal", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "dismiss_engine_proposal", "squad": SQUAD, "id": 7_000_001 } }));
+    tell(&mut core, &mut examples, "event: engine moves made", Event::EngineProposed { squad: SQUAD.into(), proposal: engine_proposal(Why::Shift, true) });
+    ask(&mut core, &mut examples, "undo engine proposal", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "undo_engine_proposal", "squad": SQUAD, "id": 7_000_001 } }));
+    tell(&mut core, &mut examples, "event: engine proposal closed", Event::EngineProposalClosed { squad: SQUAD.into(), id: 7_000_001, applied: true });
+    tell(&mut core, &mut examples, "event: engine switching changed", Event::EngineSwitchingChanged { squad: SQUAD.into(), mode: Switching::Auto });
+
     // Review.
     ask(&mut core, &mut examples, "accept", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "accept", "squad": SQUAD, "ticket": 38 } }));
     ask(&mut core, &mut examples, "reopen", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "reopen", "squad": SQUAD, "ticket": 38, "note": "에러 메시지를 한국어로" } }));
@@ -894,6 +946,7 @@ fn message_vectors() -> Value {
         ("push: waiting", Event::TicketChanged { squad: SQUAD.into(), ticket: ticket(TicketStatus::Waiting) }),
         ("push: decision", Event::QuestionsAsked { squad: SQUAD.into(), questions: questions() }),
         ("push: team change", Event::TeamChangeProposed { squad: SQUAD.into(), change: team_change() }),
+        ("push: engine exhausted", Event::EngineProposed { squad: SQUAD.into(), proposal: engine_proposal(Why::Exhausted, false) }),
     ] {
         let out = relay_frames(&core.on_squad_event(SQUAD, &event));
         let mut push = out[0].clone();

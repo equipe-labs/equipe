@@ -13,7 +13,7 @@ pub struct Spec {
 
 /// Every command, its `about` (and the words in its `args`) in the language in use — asked afresh each
 /// time, since the person may switch language while the console runs.
-pub fn commands() -> [Spec; 33] {
+pub fn commands() -> [Spec; 34] {
     [
         Spec { name: "usage", args: "", about: t!("commands.usage") },
         Spec { name: "compact", args: "[member]", about: t!("commands.compact") },
@@ -43,6 +43,7 @@ pub fn commands() -> [Spec; 33] {
         Spec { name: "send-apps", args: "[add|remove <app> · reset]", about: t!("commands.send_apps") },
         Spec { name: "desktop", args: "stop|resume", about: t!("commands.desktop") },
         Spec { name: "suggest", args: "[on|off]", about: t!("commands.suggest") },
+        Spec { name: "engines", args: "[auto|suggest|off|setup]", about: t!("commands.engines") },
         Spec { name: "export", args: "", about: t!("commands.export") },
         Spec { name: "mouse", args: "", about: t!("commands.mouse") },
         Spec { name: "lang", args: "[code|auto]", about: t!("commands.lang") },
@@ -255,6 +256,16 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             );
             choices
         }
+        ("engines", 1) => [
+            ("suggest", t!("engines.mode_suggest_about")),
+            ("auto", t!("engines.mode_auto_about")),
+            ("off", t!("engines.mode_off_about")),
+            ("setup", t!("commands.engines_setup")),
+        ]
+        .iter()
+        .filter(|(w, _)| starts(w))
+        .map(|(w, about)| word(w, about, ""))
+        .collect(),
         ("suggest", 1) => [("on", t!("commands.suggest_on")), ("off", t!("commands.suggest_off"))]
             .iter()
             .filter(|(w, _)| starts(w))

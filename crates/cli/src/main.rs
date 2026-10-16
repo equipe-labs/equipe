@@ -1325,6 +1325,9 @@ impl App {
                 | Event::QuestionsClosed { .. }
                 | Event::TeamChangeProposed { .. }
                 | Event::TeamChangeClosed { .. }
+                | Event::EngineProposed { .. }
+                | Event::EngineProposalClosed { .. }
+                | Event::EngineSwitchingChanged { .. }
                 | Event::Allowed { .. } => {}
                 Event::Error { message, next, .. } => {
                     failure.get_or_insert(Failure { message, next });

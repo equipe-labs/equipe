@@ -25,6 +25,7 @@ use super::commands;
 use super::composer::Composer;
 
 mod decide;
+pub mod engines;
 mod team;
 mod turn;
 pub use decide::Picking;
@@ -694,6 +695,8 @@ pub struct App {
     pub picking: HashMap<u64, Picking>,
     /// Changes to the team the PM proposed, waiting for the person, oldest first (`team`).
     pub team_changes: Vec<equipe_core::protocol::team::TeamChange>,
+    /// Both engines' plans, the squad's switching, and its cards (`engines`).
+    pub engines: engines::Engines,
     /// A waiting ticket's asks, being answered (`/answer`, r on the board).
     pub turn_form: Option<TurnForm>,
     /// Cards put away with Esc, as they were left, by ticket.
@@ -808,8 +811,10 @@ impl App {
     /// The squad as the daemon has it. `joining` are roles to bring in now (a
     /// new squad's starting team); a squad with nobody on it starts with its PM.
     pub fn from_snapshot(cwd: PathBuf, snapshot: Snapshot, joining: &[String]) -> (Self, Vec<Command>) {
+        let engines = engines::Engines::from(&snapshot);
         let (lanes, agents): (Vec<Agent>, Vec<Agent>) = snapshot.sessions.into_iter().map(Agent::from_info).partition(|a| a.lane.is_some());
         let mut app = Self {
+            engines,
             cwd,
             squad: snapshot.squad,
             projects: snapshot.projects,
@@ -1639,8 +1644,15 @@ impl App {
                 }
                 return Vec::new();
             }
-            Event::PlanUsage { usage } => {
-                self.plan = Some(usage);
+            Event::PlanUsage { usage, engine } => {
+                if engine == Engine::Claude {
+                    self.plan = Some(usage);
+                }
+                self.engines.read(engine, usage);
+                return Vec::new();
+            }
+            event @ (Event::EngineProposed { .. } | Event::EngineProposalClosed { .. } | Event::EngineSwitchingChanged { .. }) => {
+                self.on_engines_event(event);
                 return Vec::new();
             }
             Event::Desktop { desktop } => {
@@ -2214,6 +2226,10 @@ impl App {
         if let Some(commands) = self.on_team_key(key.code, ctrl, alt) {
             return commands;
         }
+        // Moving members between engines: y makes the moves, n leaves them, u undoes.
+        if let Some(commands) = self.on_engines_key(key.code, ctrl, alt) {
+            return commands;
+        }
         // Completion, while it offers something: ↑↓ pick, Tab takes, Enter takes
         // (and runs what is whole), Esc puts it away.
         let choices = if ctrl || alt { Vec::new() } else { self.choices() };
@@ -2652,6 +2668,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             "new" => self.new_ticket(rest),
             "title" => self.retitle(rest),
             "mode" => self.set_mode(rest),
+            "engines" => self.engines_command(rest),
             "lang" => self.set_lang(rest),
             "close" => match self.agents.get_mut(self.selected) {
                 Some(agent) if agent.is_open() => {
