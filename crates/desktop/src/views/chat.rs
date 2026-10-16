@@ -412,6 +412,15 @@ impl Chat {
     }
 }
 
+impl Chat {
+    /// The text views drawn for row `ix` of the conversation on screen
+    /// (`views/quote.rs` lights quoted words in them).
+    pub fn row_views(&self, ix: usize) -> Vec<Entity<TextViewState>> {
+        let row = self.serial << 24 | ix as u64;
+        self.views.borrow().map.iter().filter(|(key, _)| *key >> 2 == row).map(|(_, (state, _))| state.clone()).collect()
+    }
+}
+
 /// Where `query` (lower case) is in `text`, by byte ranges of `text`.
 fn occurrences(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
     if query.is_empty() {
@@ -670,7 +679,17 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     // Our own pill, not the kit's jump button: the kit's put a tooltip with the
     // same word on it, in its own white, over the conversation.
     let jump = (!following && answered.is_none()).then(|| jump_pill(p, shell.chat.scroller.clone()));
-    let scroller = div().flex_1().min_h_0().w_full().relative().children(pulse).children(jump).child(
+    // Words selected in it are offered to quote (`views/quote.rs`).
+    let scroller = div()
+        .flex_1()
+        .min_h_0()
+        .w_full()
+        .relative()
+        .on_mouse_down(MouseButton::Left, cx.listener(|shell, _, _, cx| shell.quote_pointer_down(cx)))
+        .on_mouse_up(MouseButton::Left, cx.listener(|shell, _, window, cx| shell.quote_pointer_up(window, cx)))
+        .children(pulse)
+        .children(jump)
+        .child(
         MessageScroller::new("conversation", shell.chat.scroller.clone(), move |ix, window, cx| row(&rows, ix, window, cx))
             .jump_button(false)
             .with_row_style(StyleRefinement::default().pb(px(8.)).pl(px(TEXT_INSET)).pr(px(TEXT_INSET)))
@@ -767,7 +786,7 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             let decided = crate::decide::decided(text).unwrap_or(crate::decide::Decided::Closed);
             super::decide::decided_row(p, rows.tones, rows.handle.clone(), key, &decided, rows.is_open(key, super::decide::PART_DECIDED, false), window, cx)
         }
-        Block::User(text) => user_row(rows, key, text, opened(PART_MORE), rows.project_of(ix), cx),
+        Block::User(text) => user_row(rows, ix, key, text, opened(PART_MORE), rows.project_of(ix), cx),
         Block::Reply { text, first, live, worked } => reply_row(rows, ix, key, text, *first, *live, worked.as_ref(), window, cx),
         Block::Steps(lines) => group(rows, key, lines, window, cx),
         Block::News(news) => news_rows(rows, key, news, window, cx),
@@ -1484,10 +1503,13 @@ fn keyed_button(p: Palette, id: (&'static str, u64), glyph: Icon, label: impl In
 /// wide as your words up to most of the column, no name over it; what it
 /// attached just above it, its start only when it is long ("더 보기"), and on
 /// hover a small row of actions beneath.
-fn user_row(rows: &Rows, key: u64, raw: &str, open: bool, project: Option<(String, Rgba)>, cx: &mut App) -> AnyElement {
+fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Option<(String, Rgba)>, cx: &mut App) -> AnyElement {
     let p = rows.p;
     let parts = crate::sent::parts(raw);
-    let text = parts.text.as_str();
+    // Asked about words of the conversation: the quote over the words.
+    let split = crate::quote::split(&parts.text);
+    let quoted = split.as_ref().map(|(quote, _)| super::quote::in_bubble(p, key, ix, quote, rows.handle.clone()));
+    let text = split.as_ref().map_or(parts.text.as_str(), |(_, rest)| rest.as_str());
     let long = text.lines().count() > USER_LINES || text.chars().count() > USER_LINES * 36;
     let clamped = long && !open;
     let look = Look { size: BODY, line: BODY_LINE, color: p.prose, live: false };
@@ -1498,7 +1520,7 @@ fn user_row(rows: &Rows, key: u64, raw: &str, open: bool, project: Option<(Strin
     let files = attached::attachments(&rows.attached, key, &parts.tags, parts.more, true, cx);
     let group: SharedString = format!("user-{key}").into();
     // What is copied is what is shown: the words (the tags only when there are none).
-    let copied = if text.is_empty() { raw.to_owned() } else { text.to_owned() };
+    let copied = if parts.text.is_empty() { raw.to_owned() } else { parts.text.clone() };
     let copy = tool_button(p, ("user-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(copied.clone())));
     let handle = rows.handle.clone();
     let more = long.then(|| {
@@ -1513,17 +1535,19 @@ fn user_row(rows: &Rows, key: u64, raw: &str, open: bool, project: Option<(Strin
                 handle.update(cx, |shell, cx| shell.chat_toggle(key, PART_MORE, cx)).ok();
             })
     });
-    let bubble = body.map(|body| {
+    let bubble = (body.is_some() || quoted.is_some()).then(|| {
         v_flex()
             .max_w(gpui_kit::relative(BUBBLE_SHARE))
             .px(px(BUBBLE_X))
             .py(px(BUBBLE_Y))
+            .gap(px(6.))
             .rounded(px(crate::theme::R_LG))
             .bg(p.wash)
             .text_size(px(BODY))
             .line_height(px(BODY_LINE))
             .text_color(p.prose)
-            .child(body)
+            .children(quoted)
+            .children(body)
             .children(more)
     });
     v_flex()

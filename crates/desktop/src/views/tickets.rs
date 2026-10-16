@@ -2269,31 +2269,48 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
 // ── the page: properties, record, comments ──
 
 /// The page's (and the peek's) properties, each a menu.
-pub fn properties(shell: &Shell, t: &Ticket, compact: bool, cx: &mut Context<Shell>) -> AnyElement {
+///
+/// `width` is the room the list has inside its box: wide enough, each label
+/// sits at the left of its value; narrow, over it (`peek::props_layout`).
+/// A value too long for its room ends in "…", whole in its tooltip.
+pub fn properties(shell: &Shell, t: &Ticket, compact: bool, width: f32, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let model = &shell.model;
     let id = t.id;
     let anchors = &shell.board.tk.anchors;
     let can = shell.can_act();
-    let row = |label: &'static str, value: AnyElement| {
-        h_flex()
+    let layout = super::peek::props_layout(width);
+    let room = match layout {
+        super::peek::Props::Columns { label } => width - label - 8.,
+        super::peek::Props::Stacked => width,
+    };
+    let row = |label: &'static str, value: AnyElement| match layout {
+        super::peek::Props::Columns { label: w } => h_flex()
+            .w_full()
             .min_h(px(30.))
             .gap_2()
             .items_center()
-            .child(div().w(px(if compact { 72. } else { 88. })).flex_none().text_size(px(12.)).text_color(p.muted).child(label))
+            .child(div().w(px(w)).flex_none().min_w_0().pl(px(6.)).truncate().text_size(px(12.)).text_color(p.muted).child(label))
             .child(div().flex_1().min_w_0().child(value))
+            .into_any_element(),
+        super::peek::Props::Stacked => v_flex()
+            .w_full()
+            .pt_1()
+            .child(div().pl(px(6.)).truncate().text_size(px(11.5)).line_height(px(16.)).text_color(p.muted).child(label))
+            .child(div().w_full().min_w_0().child(value))
+            .into_any_element(),
     };
     let prop = |kind: EditKind, lead: AnyElement, label: String, cx: &mut Context<Shell>| {
         let key = SharedString::from(format!("page-{}-{id}", kind_code(kind)));
-        anchored(
-            pill(p, key.clone(), can)
-                .when(can, |d| d.on_click(cx.listener(move |this, _, window, cx| this.open_edit_menu(kind, vec![id], SharedString::from(format!("page-{}-{id}", kind_code(kind))), false, window, cx))))
-                .child(lead)
-                .child(div().truncate().child(label)),
-            anchors,
-            key,
-        )
-        .into_any_element()
+        // Lead, padding and gap: what the words have left.
+        let cut = super::peek::words_width(&label) + 36. > room;
+        let pill = pill(p, key.clone(), can)
+            .min_w_0()
+            .max_w_full()
+            .when(can, |d| d.on_click(cx.listener(move |this, _, window, cx| this.open_edit_menu(kind, vec![id], SharedString::from(format!("page-{}-{id}", kind_code(kind))), false, window, cx))))
+            .child(lead)
+            .child(div().min_w_0().truncate().child(label.clone()));
+        anchored(if cut { pill.tip(p, label, None) } else { pill }, anchors, key).into_any_element()
     };
     let who = rules::who(t).map(str::to_owned);
     let project = model.ticket_project_name(t);
@@ -2353,8 +2370,10 @@ pub fn properties(shell: &Shell, t: &Ticket, compact: bool, cx: &mut Context<She
         pill(p, add_key.clone(), can)
             .text_color(p.muted)
             .when(can, |d| d.on_click(cx.listener(move |this, _, window, cx| this.open_edit_menu(EditKind::Depends, vec![id], SharedString::from(format!("page-deps-{id}")), false, window, cx))))
+            .min_w_0()
+            .max_w_full()
             .child(super::sidebar::icon(IconName::Plus, 12., p.muted))
-            .child(t!("tickets.add_dependency")),
+            .child(div().min_w_0().truncate().child(t!("tickets.add_dependency"))),
         anchors,
         add_key,
     );
@@ -2363,10 +2382,10 @@ pub fn properties(shell: &Shell, t: &Ticket, compact: bool, cx: &mut Context<She
         .gap_1()
         .children(rows)
         .child(div().h(px(1.)).my_2().bg(p.hair))
-        .child(div().text_size(px(12.)).text_color(p.muted).child(t!("tickets.prop_depends")))
+        .child(div().pl(px(6.)).text_size(px(12.)).text_color(p.muted).child(t!("tickets.prop_depends")))
         .children(deps)
         .child(add)
-        .when(!blocks.is_empty(), |c| c.child(div().mt_2().text_size(px(12.)).text_color(p.muted).child(t!("tickets.prop_blocks"))).children(blocks))
+        .when(!blocks.is_empty(), |c| c.child(div().mt_2().pl(px(6.)).text_size(px(12.)).text_color(p.muted).child(t!("tickets.prop_blocks"))).children(blocks))
         .when(!compact, |c| {
             c.child(div().h(px(1.)).my_2().bg(p.hair))
                 .children(t.branch.clone().filter(|_| !t.kind.in_home()).map(|b| row(t!("tickets.prop_branch"), div().font_family(MONO).text_size(px(11.5)).text_color(p.text2).truncate().child(b).into_any_element())))

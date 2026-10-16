@@ -39,6 +39,10 @@ pub fn panel(shell: &Shell, need: Need, cx: &mut Context<Shell>) -> AnyElement {
         Need::Browser(page) => super::browser::need_peek(shell, page, cx),
         Need::Ticket(id) => {
             let Some(t) = shell.model.tickets.iter().find(|t| t.id == id).cloned() else { return div().into_any_element() };
+            let width = shell.board.peek_width;
+            let pad = pad(width);
+            // The properties' box spans the peek, its rows inside its padding and edge.
+            let inside = width - 2. * pad - 2. * BOX_PAD - 2.;
             v_flex()
                 .size_full()
                 .child(
@@ -46,15 +50,17 @@ pub fn panel(shell: &Shell, need: Need, cx: &mut Context<Shell>) -> AnyElement {
                         .id("peek")
                         .flex_1()
                         .min_h_0()
+                        .w_full()
                         .overflow_y_scroll()
+                        .overflow_x_hidden()
                         .track_scroll(&shell.board.peek_scroll)
-                        .p_4()
+                        .p(px(pad))
                         .gap_4()
                         .child(head(shell, &t, false, cx))
-                        .child(div().px_1().py_1().rounded(px(8.)).border_1().border_color(p.hair).child(super::tickets::properties(shell, &t, true, cx)))
+                        .child(div().w_full().px(px(BOX_PAD)).py(px(6.)).rounded(px(8.)).border_1().border_color(p.hair).child(super::tickets::properties(shell, &t, true, inside, cx)))
                         .children(body(shell, &t, false, Place::Peek, cx)),
                 )
-                .child(foot(shell, &t, cx))
+                .child(foot(shell, &t, width, cx))
                 .into_any_element()
         }
     }
@@ -154,7 +160,7 @@ pub fn page(shell: &Shell, t: &Ticket, tab: Tab, cx: &mut Context<Shell>) -> imp
                 .child(
                     v_flex()
                         .id("page-props")
-                        .w(px(288.))
+                        .w(px(PAGE_PROPS))
                         .flex_none()
                         .h_full()
                         .overflow_y_scroll()
@@ -162,12 +168,56 @@ pub fn page(shell: &Shell, t: &Ticket, tab: Tab, cx: &mut Context<Shell>) -> imp
                         .py_5()
                         .border_l_1()
                         .border_color(p.hair)
-                        .child(super::tickets::properties(shell, t, false, cx)),
+                        .child(super::tickets::properties(shell, t, false, PAGE_PROPS - 32. - 1., cx)),
                 ),
         )
-        .child(foot(shell, t, cx))
+        .child(foot(shell, t, shell.board.list_width + 16., cx))
 }
 
+
+/// The page's column of properties.
+const PAGE_PROPS: f32 = 320.;
+/// The properties' box: its padding across.
+const BOX_PAD: f32 = 12.;
+/// A label beside its value takes this much, at most.
+const LABEL: f32 = 110.;
+/// What a value needs beside its label, at least.
+const VALUE_MIN: f32 = 170.;
+/// From this width the answers sit in one row; under it, the first on a row
+/// of its own and the rest two to a row.
+const FOOT_ONE_ROW: f32 = 480.;
+
+/// How a ticket's property list lays out in `width`, the room inside its box.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Props {
+    /// Each label at the left of its value, `label` wide.
+    Columns { label: f32 },
+    /// Each label over its value.
+    Stacked,
+}
+
+pub fn props_layout(width: f32) -> Props {
+    let label = (width * 0.36).clamp(84., LABEL);
+    if width - label - 8. >= VALUE_MIN { Props::Columns { label } } else { Props::Stacked }
+}
+
+/// The peek's padding: a little less when it is narrow.
+pub fn pad(width: f32) -> f32 {
+    if width < 360. { 12. } else { 16. }
+}
+
+/// About how wide `words` are at the properties' 12.5 points: for whether
+/// one is cut, and gets a tooltip.
+pub fn words_width(words: &str) -> f32 {
+    words.chars().map(|c| if c.is_ascii() { 7. } else { 12.5 }).sum()
+}
+
+/// How the answers at the foot lay out in `width`: `None`, in a row (it
+/// wraps if it must); `Some(n)`, the first alone when it is the main one, the
+/// rest `n` to a row, each as wide as the others.
+pub fn foot_columns(width: f32) -> Option<usize> {
+    (width < FOOT_ONE_ROW).then_some(2)
+}
 
 fn kicker(p: Palette, text: impl Into<SharedString>) -> Div {
     div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child(text.into())
@@ -444,35 +494,62 @@ fn activity(shell: &Shell, id: TicketId, turns: usize) -> AnyElement {
         .into_any_element()
 }
 
-/// The foot: the question open, the words box, and the answers.
-fn foot(shell: &Shell, t: &Ticket, cx: &mut Context<Shell>) -> AnyElement {
+/// An answer at the foot: `btn`'s look, its words ending in "…" (whole in
+/// a tooltip) when `fill` makes it share a row with others.
+fn action(p: Palette, id: &'static str, label: SharedString, key: Option<&'static str>, primary: bool, enabled: bool, fill: bool) -> Stateful<Div> {
+    let b = h_flex()
+        .id(id)
+        .h(px(28.))
+        .px_3()
+        .gap_2()
+        .items_center()
+        .rounded(px(6.))
+        .text_size(px(SMALL))
+        .whitespace_nowrap()
+        .when(fill, |b| b.flex_1().min_w_0().justify_center())
+        .when(!fill, |b| b.flex_none())
+        .when(enabled, |b| b.cursor_pointer())
+        .when(!enabled, |b| b.opacity(0.4))
+        .when(primary, |b| b.bg(p.primary).text_color(p.on_primary).font_weight(FontWeight::SEMIBOLD))
+        .when(!primary, |b| b.border_1().border_color(p.hair).when(enabled, |b| b.hover(move |s| s.bg(p.wash))))
+        .child(div().min_w_0().truncate().child(label.clone()))
+        .when_some(key, |b, key| b.child(div().flex_none().text_size(px(11.)).opacity(0.6).child(key)));
+    if fill { crate::tips::tip(b, p, label, key) } else { b }
+}
+
+/// The foot: the question open, the words box, and the answers — in a row,
+/// or, narrow, the main one alone and the rest two to a row, all as wide.
+fn foot(shell: &Shell, t: &Ticket, width: f32, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let model = &shell.model;
     let can = shell.can_act();
     let id = t.id;
     let project = model.ticket_project_name(t).unwrap_or_else(|| t!("board.squad_folder").into());
     let way = shell.merge_way_of(&project);
-    let mut buttons: Vec<AnyElement> = Vec::new();
-    let mut add = |b: Stateful<Div>| buttons.push(b.into_any_element());
+    let columns = foot_columns(width);
+    let fill = columns.is_some();
+    let btn = |p: Palette, id: &'static str, label: SharedString, key: Option<&'static str>, primary: bool, enabled: bool| action(p, id, label, key, primary, enabled, fill);
+    let mut buttons: Vec<(AnyElement, bool)> = Vec::new();
+    let mut add = |b: Stateful<Div>, primary: bool| buttons.push((b.into_any_element(), primary));
     match t.status {
         TicketStatus::Review => {
             let label = match (rules::needs_way(t), way) {
                 (true, Some(w)) => t!("peek.accept_way", way = w.label()),
                 _ => t!("peek.accept").to_owned(),
             };
-            add(btn(p, "p-yes", label, Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_yes(cx))));
-            add(btn(p, "p-reply", t!("peek.request_changes"), Some("R"), false, can).on_click(cx.listener(|this, _, w, cx| this.board_open_reply(w, cx))));
+            add(btn(p, "p-yes", label.into(), Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_yes(cx))), true);
+            add(btn(p, "p-reply", t!("peek.request_changes").into(), Some("R"), false, can).on_click(cx.listener(|this, _, w, cx| this.board_open_reply(w, cx))), false);
         }
         // A wait is answered on its card, above: A sends it, R goes to its first box.
         TicketStatus::Waiting if !t.asks().is_empty() => {}
         TicketStatus::Waiting => {
-            add(btn(p, "p-yes", t!("peek.did_it"), Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_yes(cx))));
-            add(btn(p, "p-reply", t!("peek.memo_and_go"), Some("R"), false, can).on_click(cx.listener(|this, _, w, cx| this.board_open_reply(w, cx))));
+            add(btn(p, "p-yes", t!("peek.did_it").into(), Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_yes(cx))), true);
+            add(btn(p, "p-reply", t!("peek.memo_and_go").into(), Some("R"), false, can).on_click(cx.listener(|this, _, w, cx| this.board_open_reply(w, cx))), false);
         }
         TicketStatus::Proposed => {
-            add(btn(p, "p-yes", t!("peek.take_proposal"), Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_yes(cx))));
-            add(btn(p, "p-no", t!("peek.drop"), Some("N"), false, can).on_click(cx.listener(|this, _, _, cx| this.board_no(cx))));
-            add(btn(p, "p-reply", t!("peek.reply_pm"), Some("R"), false, can).on_click(cx.listener(|this, _, w, cx| this.board_open_reply(w, cx))));
+            add(btn(p, "p-yes", t!("peek.take_proposal").into(), Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_yes(cx))), true);
+            add(btn(p, "p-no", t!("peek.drop").into(), Some("N"), false, can).on_click(cx.listener(|this, _, _, cx| this.board_no(cx))), false);
+            add(btn(p, "p-reply", t!("peek.reply_pm").into(), Some("R"), false, can).on_click(cx.listener(|this, _, w, cx| this.board_open_reply(w, cx))), false);
         }
         TicketStatus::Done if t.not_on_main() => {
             let label = match way {
@@ -480,21 +557,24 @@ fn foot(shell: &Shell, t: &Ticket, cx: &mut Context<Shell>) -> AnyElement {
                 Some(MergeWay::Merge) => t!("peek.merge_main"),
                 _ => t!("peek.merge_main_ask"),
             };
-            add(btn(p, "p-merge", label, Some("A"), true, can).on_click(cx.listener(move |this, _, _, cx| this.board_merge(id, cx))));
+            add(btn(p, "p-merge", label.into(), Some("A"), true, can).on_click(cx.listener(move |this, _, _, cx| this.board_merge(id, cx))), true);
             if t.waits_to_merge() {
-                add(btn(p, "p-keep", t!("peek.keep_on_branch"), None, false, can).on_click(cx.listener(move |this, _, _, cx| this.board_keep(id, cx))));
+                add(btn(p, "p-keep", t!("peek.keep_on_branch").into(), None, false, can).on_click(cx.listener(move |this, _, _, cx| this.board_keep(id, cx))), false);
             }
         }
         _ => {}
     }
     if rules::who(t).is_some() {
-        add(btn(p, "p-talk", t!("peek.talk"), Some("T"), false, true).on_click(cx.listener(|this, _, w, cx| this.board_talk(w, cx))));
+        add(btn(p, "p-talk", t!("peek.talk").into(), Some("T"), false, true).on_click(cx.listener(|this, _, w, cx| this.board_talk(w, cx))), false);
     }
     if matches!(t.status, TicketStatus::InProgress | TicketStatus::Todo | TicketStatus::Waiting | TicketStatus::Review) {
-        add(btn(p, "p-cancel", t!("peek.cancel_ticket"), Some("N"), false, can).on_click(cx.listener(move |this, _, _, cx| {
-            this.board.flow = Some(Flow::Cancel(id));
-            cx.notify();
-        })));
+        add(
+            btn(p, "p-cancel", t!("peek.cancel_ticket").into(), Some("N"), false, can).on_click(cx.listener(move |this, _, _, cx| {
+                this.board.flow = Some(Flow::Cancel(id));
+                cx.notify();
+            })),
+            false,
+        );
     }
     let question = shell.board.flow.filter(|f| match f {
         Flow::Reply(x) | Flow::Cancel(x) | Flow::Method(x) => *x == id,
@@ -504,14 +584,36 @@ fn foot(shell: &Shell, t: &Ticket, cx: &mut Context<Shell>) -> AnyElement {
     let card = question.map(|flow| question_card(shell, flow, t, &project, cx));
     v_flex()
         .flex_none()
-        .px_4()
+        .px(px(pad(width)))
         .py_3()
         .gap_3()
         .border_t_1()
         .border_color(p.hair)
         .children(card)
-        .when(question.is_none_or(|f| matches!(f, Flow::Reply(_))), |c| c.child(h_flex().flex_wrap().gap_2().children(buttons)))
+        .when(question.is_none_or(|f| matches!(f, Flow::Reply(_))) && !buttons.is_empty(), |c| c.child(answers(buttons, columns)))
         .into_any_element()
+}
+
+/// The answers laid out: in a row, or the main one alone and the rest `n`
+/// to a row, the last row's room kept so every button is as wide.
+fn answers(buttons: Vec<(AnyElement, bool)>, columns: Option<usize>) -> AnyElement {
+    let Some(n) = columns else {
+        return h_flex().flex_wrap().gap_2().children(buttons.into_iter().map(|(b, _)| b)).into_any_element();
+    };
+    let mut rest = buttons.into_iter().peekable();
+    let mut rows: Vec<AnyElement> = Vec::new();
+    if let Some((first, _)) = rest.next_if(|(_, primary)| *primary) {
+        rows.push(h_flex().w_full().child(first).into_any_element());
+    }
+    loop {
+        let row: Vec<AnyElement> = rest.by_ref().take(n).map(|(b, _)| b).collect();
+        if row.is_empty() {
+            break;
+        }
+        let room = n - row.len();
+        rows.push(h_flex().w_full().gap_2().children(row).children((0..room).map(|_| div().flex_1())).into_any_element());
+    }
+    v_flex().w_full().gap_2().children(rows).into_any_element()
 }
 
 fn question_card(shell: &Shell, flow: Flow, t: &Ticket, project: &str, cx: &mut Context<Shell>) -> AnyElement {
@@ -624,4 +726,55 @@ pub fn save_view_bar(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
             })))
             .into_any_element(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    // Not `super::*`: that brings GPUI's own `test` attribute in.
+    use super::{BOX_PAD, LABEL, PAGE_PROPS, Props, VALUE_MIN, foot_columns, pad, props_layout, words_width};
+
+    /// The properties' room inside the peek's box, at a peek `width`.
+    fn inside(width: f32) -> f32 {
+        width - 2. * pad(width) - 2. * BOX_PAD - 2.
+    }
+
+    #[test]
+    fn properties_sit_beside_their_labels_when_there_is_room() {
+        assert_eq!(props_layout(inside(320.)), Props::Stacked);
+        assert_eq!(props_layout(inside(380.)), Props::Columns { label: LABEL });
+        assert_eq!(props_layout(inside(480.)), Props::Columns { label: LABEL });
+        assert_eq!(props_layout(inside(640.)), Props::Columns { label: LABEL });
+        // The page's column has them beside too, the label a little narrower.
+        match props_layout(PAGE_PROPS - 33.) {
+            Props::Columns { label } => assert!((84. ..LABEL).contains(&label), "{label}"),
+            Props::Stacked => unreachable!("the page's properties stacked"),
+        }
+        // A value always keeps its least room beside its label.
+        for width in (200..700).step_by(10).map(|w| w as f32) {
+            if let Props::Columns { label } = props_layout(width) {
+                assert!(width - label - 8. >= VALUE_MIN, "{width}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_peek_pads_less_when_narrow() {
+        assert_eq!(pad(320.), 12.);
+        assert_eq!(pad(380.), 16.);
+        assert_eq!(pad(640.), 16.);
+    }
+
+    #[test]
+    fn the_answers_go_two_to_a_row_when_narrow() {
+        assert_eq!(foot_columns(320.), Some(2));
+        assert_eq!(foot_columns(420.), Some(2));
+        assert_eq!(foot_columns(480.), None);
+        assert_eq!(foot_columns(640.), None);
+    }
+
+    #[test]
+    fn wide_letters_count_wider() {
+        assert_eq!(words_width("abc"), 21.);
+        assert_eq!(words_width("진행"), 25.);
+    }
 }
