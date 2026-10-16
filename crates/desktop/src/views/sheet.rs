@@ -7,7 +7,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::connect::{button, modal_sized};
+use super::connect::{button, modal_w};
 use crate::sheet::{Button, Row};
 use crate::theme::{BODY, MONO, SMALL};
 use crate::Shell;
@@ -15,8 +15,9 @@ use crate::Shell;
 pub fn question(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
     let ask = shell.confirm.as_ref()?;
-    Some(modal_sized(
+    Some(modal_w(
         p,
+        "question",
         480.,
         v_flex()
             .gap_3()
@@ -42,8 +43,9 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         Button::Run(label, line) => button(p, "sheet-button", label, false).id(("sheet-button", ix)).on_click(cx.listener(move |this, _, window, cx| this.run_line(&line, window, cx))),
         Button::Open(label, path) => button(p, "sheet-button", label, false).id(("sheet-button", ix)).on_click(move |_, _, _| drop(std::process::Command::new("open").arg(&path).spawn())),
     });
-    Some(modal_sized(
+    Some(modal_w(
         p,
+        "sheet",
         680.,
         v_flex()
             .gap_3()
@@ -57,7 +59,7 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                     .gap_2()
                     .justify_end()
                     .children(buttons)
-                    .child(button(p, "sheet-close", "닫기", true).on_click(cx.listener(|this, _, window, cx| this.close_sheet(window, cx)))),
+                    .child(button(p, "sheet-close", "닫기", true).on_click(cx.listener(|this, _, window, cx| this.close_info(window, cx)))),
             ),
     ))
 }

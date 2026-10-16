@@ -757,7 +757,7 @@ impl Shell {
         } else if self.confirm.is_some() {
             self.answer_question(false, window, cx);
         } else {
-            self.close_sheet(window, cx);
+            self.close_info(window, cx);
         }
     }
 
@@ -1286,7 +1286,6 @@ fn help_menu() -> Menu {
     Menu::new("도움말").items([MenuItem::action("단축키와 명령", ShowHelp)])
 }
 
-}
 
 fn main() {
     // `ssh` starts this same binary to ask the person a question: answer it

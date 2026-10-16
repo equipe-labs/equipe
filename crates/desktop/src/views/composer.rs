@@ -23,7 +23,7 @@ use gpui_kit::*;
 
 use crate::attach::{self, Kind, Source, Stage, Strip};
 use crate::commands::Choice;
-use crate::compose::{self, Draft, Drafts, Effect, EnterGuard, History, Said};
+use crate::compose::{self, Draft, Drafts, EnterGuard, History, Said};
 use crate::state::{Model, Presence};
 use crate::icons::{Icon, icon};
 use crate::motion;

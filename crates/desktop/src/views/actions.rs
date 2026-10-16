@@ -198,7 +198,7 @@ impl Shell {
         cx.notify();
     }
 
-    pub fn close_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn close_info(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sheet = None;
         self.composer.focus(window, cx);
         cx.notify();
