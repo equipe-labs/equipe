@@ -10,7 +10,8 @@
 //! `equipe_core::board`'s rules), each kept in the ticket's record.
 //! `FAKE_EMPTY=1` starts with nothing waiting for the person;
 //! `FAKE_BUSY=1` adds four members at work in web and more finished today;
-//! `FAKE_SUBAGENTS=1` has frontend and backend hand work to subagents that come and go.
+//! `FAKE_SUBAGENTS=1` has frontend and backend hand work to subagents that come and go;
+//! `FAKE_WORKING=<n>` has only the first n of frontend and backend at work (`0`: nobody).
 //!
 //! ```text
 //! export EQUIPE_HOME=$(mktemp -d) EQUIPE_SQUAD=demo
@@ -396,6 +397,12 @@ fn close_questions(id: u64, answers: Option<Vec<Answer>>, events: &broadcast::Se
 /// sidebar shows, a team taller than its block.
 fn busy() -> bool {
     std::env::var("FAKE_BUSY").is_ok_and(|v| v == "1")
+}
+
+/// `FAKE_WORKING=<n>`: how many of frontend and backend are at work when a
+/// screen attaches (default both; `0`: nothing turns anywhere).
+fn working() -> u32 {
+    std::env::var("FAKE_WORKING").ok().and_then(|v| v.parse().ok()).unwrap_or(2)
 }
 
 /// The busy squad's extra members: (ticket, session, name, title).
@@ -903,8 +910,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             });
                         }
                         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-                        let frontend = on(info(2, "frontend", vec![]), 47, "web", "상품 상세 페이지 이미지 갤러리", true, ("Edit", "src/gallery.tsx"), Some(Estimate { done_at: Some(now + 25 * 60), ..Default::default() }));
-                        let backend = on(info(3, "backend", vec![]), 70, "api", "주문 API 페이지네이션", true, ("Bash", "cargo test -p api"), Some(Estimate { done_at: Some(now + 50 * 60), guessed: true, ..Default::default() }));
+                        let frontend = on(info(2, "frontend", vec![]), 47, "web", "상품 상세 페이지 이미지 갤러리", working() >= 1, ("Edit", "src/gallery.tsx"), Some(Estimate { done_at: Some(now + 25 * 60), ..Default::default() }));
+                        let backend = on(info(3, "backend", vec![]), 70, "api", "주문 API 페이지네이션", working() >= 2, ("Bash", "cargo test -p api"), Some(Estimate { done_at: Some(now + 50 * 60), guessed: true, ..Default::default() }));
                         let designer = on(info(4, "designer", vec![]), 60, "app", "온보딩 세 화면 시안", false, ("Read", "brief.md"), Some(Estimate { done_at: Some(now.saturating_sub(12 * 60)), ..Default::default() }));
                         // Settings have something to show: a member on its own mode and effort, rules kept.
                         let mut designer = designer;

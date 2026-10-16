@@ -8,6 +8,7 @@
 mod asklist;
 mod askpass;
 mod attach;
+mod beat;
 mod board;
 mod browse;
 mod commands;
@@ -26,6 +27,7 @@ mod media;
 mod mem;
 mod notify;
 mod pair;
+mod pane;
 mod queue;
 mod quote;
 mod sheet;
@@ -164,6 +166,8 @@ pub struct Shell {
     pub chat: Chat,
     pub composer: Composer,
     pub board: BoardUi,
+    /// The window's big parts, each drawn on its own (`pane.rs`).
+    pub panes: pane::Panes,
     /// The answer boxes of the cards tickets waiting for the person ask on.
     pub turn: views::yourturn::TurnUi,
     /// Members' questions: where the person is in each set, and its boxes.
@@ -206,7 +210,7 @@ pub struct Shell {
     /// The roles a squad just started joins with, once it is open and empty.
     pending_team: Option<Vec<String>>,
     connecting_shown: bool,
-    log_renders: bool,
+    pub(crate) log_renders: bool,
     renders: u64,
     started: std::time::Instant,
     // Dropping these ends the link's thread and the tasks that feed from it.
@@ -268,6 +272,7 @@ impl Shell {
             chat: Chat::new(cx),
             composer: Composer::new(window, cx),
             board: BoardUi::new(window, cx, fetched_tx),
+            panes: pane::Panes::new(cx),
             turn: Default::default(),
             decide: Default::default(),
             shots: Default::default(),
@@ -932,7 +937,8 @@ impl Shell {
         }
     }
 
-    fn body(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The screen beside the sidebar, drawn in its pane (`pane.rs`).
+    pub fn body(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette;
         let nothing_attached = matches!(self.model.conn, Conn::Down { had_snapshot: false, .. });
         // A Mac without equipe is told how to install; a far machine's missing
@@ -984,7 +990,8 @@ impl Shell {
         if shown <= 0. {
             return None;
         }
-        let side = views::sidebar::render(self, cx).into_any_element();
+        let width = self.board.sidebar_width;
+        let side = self.panes.sidebar.clone().cached(StyleRefinement::default().w(px(width)).h_full().flex_none()).into_any_element();
         if shown >= 1. {
             return Some(side);
         }
@@ -1163,7 +1170,7 @@ impl Render for Shell {
         }
         let sidebar = self.sidebar(window, cx);
         let browser = (self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
-        root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(div().flex_1().min_w_0().h_full().flex().flex_col().child(self.body(cx))).children(browser))
+        root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(self.panes.body.clone().cached(StyleRefinement::default().flex_1().min_w_0().h_full())).children(browser))
             // The title bar's fixed buttons, by the traffic lights, over the
             // sidebar or the header alike: the same place whatever slides.
             .child(views::sidebar::title_buttons(self, cx))

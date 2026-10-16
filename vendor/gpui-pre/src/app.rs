@@ -1275,20 +1275,22 @@ impl App {
         })
     }
 
+    // equipe: every entity the callback read, also those read before it in
+    // the frame (the shell a pane is drawn from was, by the window's root):
+    // a cached view is drawn again when one of them is notified
+    // (`Window::notified_entities`). Upstream kept only the ones new to the frame.
     pub(crate) fn detect_accessed_entities<R>(
         &mut self,
         callback: impl FnOnce(&mut App) -> R,
     ) -> (R, FxHashSet<EntityId>) {
-        let accessed_entities_start = self.entities.accessed_entities.get_mut().clone();
+        let before = mem::take(self.entities.accessed_entities.get_mut());
         let result = callback(self);
-        let entities_accessed_in_callback = self
-            .entities
+        let accessed = mem::replace(self.entities.accessed_entities.get_mut(), before);
+        self.entities
             .accessed_entities
             .get_mut()
-            .difference(&accessed_entities_start)
-            .copied()
-            .collect::<FxHashSet<EntityId>>();
-        (result, entities_accessed_in_callback)
+            .extend(accessed.iter().copied());
+        (result, accessed)
     }
 
     pub(crate) fn record_entities_accessed(
