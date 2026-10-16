@@ -220,7 +220,7 @@ over the same control connection; quote every path with single quotes
 | `/browser` (show / watch) | `ShowBrowser` / `WatchBrowser` commands | the same — already protocol. |
 | Approval preview (`Approval.preview`) | a file path on the daemon's Mac; open it | **done** (`Shell::open_file`) — `cat -- '<path>'` as a side command into a 0600 temp file in `/tmp/equipe-desktop-<uid>/`, then `open`. Fetched on click while the request is still open (the file goes once it is answered); a failure shows in the flash line. |
 | `/squad new\|add\|remove`, `/send-apps`, `/browser max`, `/browser signin` | `equipe squad …`, `equipe send-apps …`, `equipe browser --max [n]`, `equipe browser` run here (`sidecar.rs`; the code is `cli/src/settings.rs`, shared with the console). `new`/`add` are first run with `--dry-run`, the answer is asked about, then run for real | the same as `ssh` side commands (`EQUIPE_NO_OPEN=1 equipe …`, exit status carried in the output). Folders typed are the daemon machine's own; folder completion is off over SSH. Sign-in opens on the daemon machine's screen. |
-| Menu bar, ⌘K, `/usage`, `/help` | every menu item is a command line (`menu_commands!` in `main.rs`); ⌘K puts `/` in the box with completions open | the same; usage and plan limits come from `hello`/events |
+| Menu bar, ⌘⇧P, `/usage`, `/help` | every menu item is a command line (`menu_commands!` in `main.rs`); ⌘⇧P puts `/` in the box with completions open (⌘K stays the search over everything) | the same; usage and plan limits come from `hello`/events |
 | Copy to clipboard | the laptop's clipboard | the same — never the daemon's. |
 
 **Trying it.** `cargo run -p equipe-desktop --example remote_probe -- user@host[:port]

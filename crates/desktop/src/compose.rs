@@ -1149,8 +1149,7 @@ mod tests {
         assert_eq!(plan(&model, "/model haiku").commands, vec![Command::SetModel { session: 1, model: "haiku".into() }]);
         assert_eq!(plan(&model, "/desktop stop").commands, vec![Command::Desktop { open: false }]);
         assert_eq!(plan(&model, "/browser hide backend").commands, vec![Command::ShowBrowser { squad: "acme".into(), member: Some("backend".into()), show: false }]);
-        assert!(plan(&model, "/scale 3").commands.is_empty(), "the console dropped it; so did the app");
-        assert!(plan(&model, "/scale 3").flash.unwrap().contains("서브에이전트"));
+        assert_eq!(plan(&model, "/scale 3").commands, vec![Command::Scale { squad: "acme".into(), extra: 3 }]);
     }
 
     #[test]

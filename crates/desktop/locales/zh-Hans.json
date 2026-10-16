@@ -1171,5 +1171,9 @@
   "turn.sending": "正在发送…",
   "turn.sent_heading": "你发送的回答",
   "turn.waiting": "{name} 正在等你的回答 — 发送后会从中断处继续",
-  "update.new_version": "新版本"
+  "update.new_version": "新版本",
+  "header.screen_holder": "{name} 正在使用 Mac 屏幕",
+  "header.screen_waiting_one": "{name} 等待中",
+  "header.screen_waiting_more": "{name} 等 {n} 人等待中",
+  "header.screen_stopped": "已收回 Mac 屏幕 · /desktop resume"
 }

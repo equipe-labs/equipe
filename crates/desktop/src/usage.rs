@@ -110,6 +110,7 @@ mod tests {
             estimate: None,
             work: None,
             mode: None,
+            effort: None,
         };
         let mut m = Model::new("acme");
         m.apply(Update::Attached(Hello { version: "x".into(), snapshot: Snapshot { squad: "acme".into(), sessions: vec![session(1, "pm"), session(2, "frontend")], ..Default::default() } }), T0);

@@ -41,7 +41,7 @@ mod tests {
     #[test]
     fn a_conversation_is_saved_as_the_consoles_markdown() {
         let dir = std::env::temp_dir().join(format!("equipe-export-{}", std::process::id()));
-        let entries = vec![Entry::User { text: "안녕".into() }, Entry::Reply { text: "네.".into() }, Entry::Tool { tool: "Read".into(), target: Some("a.rs".into()) }];
+        let entries = vec![Entry::User { text: "안녕".into() }, Entry::Reply { text: "네.".into() }, Entry::Tool { tool: "Read".into(), target: Some("a.rs".into()), outcome: None }];
         let path = save(&dir, "acme", "pm", &entries).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(text, "# pm · acme\n\n**You:** 안녕\n\n네.\n\n- read a.rs\n");

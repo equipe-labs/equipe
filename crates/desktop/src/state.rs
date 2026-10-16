@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use equipe_core::protocol::rpc::{Hello, SquadEntry};
-use equipe_core::protocol::{Engine, Entry, Estimate, Event, HumanCheck, Mode, OffMain, PlanUsage, SessionId, SessionState, Ticket, TicketEntry, TicketId, TicketKind, TicketStatus, TurnOutcome};
+use equipe_core::protocol::{DesktopState, Engine, Entry, Estimate, Event, HumanCheck, Mode, OffMain, PlanUsage, SessionId, SessionState, Ticket, TicketEntry, TicketId, TicketKind, TicketStatus, TurnOutcome};
 
 use crate::convo::Convo;
 use crate::daemon::Update;
@@ -327,6 +327,8 @@ pub struct Model {
     pub browsers_shown: bool,
     /// The person took the Mac's screen back from the members.
     pub desktop_stopped: bool,
+    /// Who has the Mac's screen, and who waits for it.
+    pub desktop: DesktopState,
     /// What the person answered tickets that waited for them with, here or on
     /// another screen (`crate::yourturn`), for the cards that asked.
     pub answers: HashMap<TicketId, crate::yourturn::Answered>,
@@ -352,6 +354,22 @@ pub struct BrowserWait {
     pub member: String,
     pub site: String,
     pub check: HumanCheck,
+}
+
+/// The header's line about the Mac's screen; `None` when nobody is on it.
+pub fn screen_line(desktop: &DesktopState, here: &str) -> Option<String> {
+    let name = |m: &equipe_core::protocol::MemberRef| if m.squad == here { m.member.clone() } else { m.to_string() };
+    if desktop.stopped {
+        return Some(t!("header.screen_stopped").into());
+    }
+    let holder = desktop.holder.as_ref().map(|m| t!("header.screen_holder", name = name(m)));
+    let waiting = match desktop.queue.as_slice() {
+        [] => None,
+        [one] => Some(t!("header.screen_waiting_one", name = name(one))),
+        [first, rest @ ..] => Some(t!("header.screen_waiting_more", name = name(first), n = rest.len())),
+    };
+    let parts: Vec<String> = holder.into_iter().chain(waiting).collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 impl Model {
@@ -389,6 +407,7 @@ impl Model {
             suggestions_off: false,
             browsers_shown: false,
             desktop_stopped: false,
+            desktop: DesktopState::default(),
             answers: HashMap::new(),
             browser_waits: Vec::new(),
             histories: HashMap::new(),
@@ -689,6 +708,7 @@ impl Model {
         self.suggestions_off = snapshot.suggestions_off;
         self.browsers_shown = snapshot.browsers_shown;
         self.desktop_stopped = snapshot.desktop.stopped;
+        self.desktop = snapshot.desktop.clone();
         let (lanes, own): (Vec<&_>, Vec<&_>) = snapshot.sessions.iter().partition(|s| s.lane.is_some());
         self.lanes = lanes
             .iter()
@@ -817,7 +837,10 @@ impl Model {
                 }
             },
             Event::Allowed { squad, rules } if squad == self.squad => self.allowed = rules,
-            Event::Desktop { desktop } => self.desktop_stopped = desktop.stopped,
+            Event::Desktop { desktop } => {
+                self.desktop_stopped = desktop.stopped;
+                self.desktop = desktop;
+            }
             Event::LaneOpened { session, of, project } => self.open_lane(session, of, project),
             // A memo taken back: it leaves the conversation's waiting ones.
             Event::MemoWithdrawn { session, text } => {
@@ -1322,7 +1345,7 @@ fn percent((used, window): (u64, u64)) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use equipe_core::protocol::rpc::{Hello, SquadEntry};
+    use equipe_core::protocol::rpc::Hello;
     use equipe_core::protocol::{Access, Approval, Engine, Member as Who, SessionInfo, Snapshot, WorkInfo};
 
     const T0: Clock = Clock { hour: 14, minute: 2, second: 10 };
@@ -2020,4 +2043,21 @@ mod tests {
         assert_eq!(model.convo().unwrap().queued_in.len(), 2);
         assert_eq!(model.members[0].memos, 2);
     }
+
+    #[test]
+    fn the_screen_line_says_who_is_on_it() {
+        use equipe_core::protocol::MemberRef;
+        let m = |squad: &str, member: &str| MemberRef { squad: squad.into(), member: member.into() };
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        assert_eq!(screen_line(&model.desktop, "acme"), None);
+        let busy = DesktopState { holder: Some(m("acme", "frontend")), queue: vec![m("tax", "pm"), m("acme", "qa")], stopped: false };
+        assert!(model.apply(Update::Event(Event::Desktop { desktop: busy }), T0));
+        let line = screen_line(&model.desktop, "acme").unwrap();
+        assert!(line.contains("frontend") && line.contains("tax/pm"), "{line}");
+        assert!(!line.contains("acme"), "a member of this squad goes by name alone: {line}");
+        let stopped = DesktopState { stopped: true, ..Default::default() };
+        assert!(screen_line(&stopped, "acme").is_some());
+    }
+
 }

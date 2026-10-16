@@ -58,6 +58,20 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             .when(c >= 50, |d| d.font_weight(FontWeight::SEMIBOLD))
             .child(t!("header.context", c = c))
     });
+    // Who has the Mac's screen: mind it before asking a member for something there.
+    let screen = crate::state::screen_line(&model.desktop, &model.squad).map(|line| {
+        div()
+            .flex_none()
+            .px_2()
+            .h(px(22.))
+            .flex()
+            .items_center()
+            .rounded(px(11.))
+            .bg(p.wash)
+            .text_size(px(SMALL))
+            .text_color(if model.desktop.stopped { p.muted } else { p.text2 })
+            .child(line)
+    });
     h_flex()
         .h(px(HEIGHT))
         .flex_none()
@@ -72,6 +86,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .children(who)
         .child(slice_control(shell, "chat", cx))
         .child(div().flex_1())
+        .children(screen)
         .children(context)
         .child(browser_button(shell, cx))
 }
