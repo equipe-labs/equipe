@@ -682,7 +682,10 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                 rt.close_idle_browsers();
                 rt.let_helpers_go().await;
                 rt.tidy_check();
-                rt.settle_all_merged();
+                // Not `settle_all_merged` here: seven git commands for every
+                // done ticket off main, on this loop, took most of each minute
+                // with 33 of them, and screens timed out attaching. It runs
+                // after a merge; a sweep comes back off the loop.
             }
         }
     }
@@ -2909,6 +2912,7 @@ for one project goes to it as tickets for its owners, with that project — and 
 
     /// Every squad open, settled: work that reached main outside equipe stops
     /// asking to be merged.
+    #[allow(dead_code)] // the sweep comes back off the core loop
     fn settle_all_merged(&mut self) {
         let squads: Vec<String> = self.journals.keys().cloned().collect();
         for squad in squads {
