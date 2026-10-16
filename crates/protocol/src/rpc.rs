@@ -246,6 +246,21 @@ pub struct Busy {
     /// Who has the Mac's screen and who waits for it.
     #[serde(default)]
     pub desktop: crate::DesktopState,
+    /// The daemon didn't answer in time: what it has been on, and since
+    /// when. The rest is then unknown, and empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stalled: Option<Stall>,
+}
+
+/// A step of the daemon's core that hasn't ended.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stall {
+    /// What it is: `command merge`, `minute tick: settle merged`.
+    pub doing: String,
+    /// When it began, in unix seconds.
+    pub since: u64,
+    /// How long it has gone on, in seconds.
+    pub secs: u64,
 }
 
 impl Busy {

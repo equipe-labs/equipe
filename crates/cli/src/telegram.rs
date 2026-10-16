@@ -697,7 +697,7 @@ async fn deliver(api: &Api, chat: i64, bridge: &mut Bridge, outs: Vec<Out>) {
                 .map(|_| ()),
         };
         if let Err(err) = done {
-            eprintln!("telegram: {err}");
+            equipe_core::daemon_log!("telegram: {err}");
         }
     }
 }
@@ -728,7 +728,10 @@ fn on_update(config: &Config, bridge: &mut Bridge, update: &Value) -> (Vec<(Stri
 
 /// Follow `squad`: its snapshot into the bridge, its events into `events`.
 async fn follow(socket: &Path, version: &str, squad: &str, bridge: &mut Bridge, events: &mpsc::UnboundedSender<(String, Event)>) -> std::io::Result<(Commands, Vec<Out>)> {
-    let (client, hello) = Client::connect(socket, version, squad).await?;
+    // A daemon slow to answer holds up Telegram's bridge no longer than this.
+    let (client, hello) = tokio::time::timeout(std::time::Duration::from_secs(20), Client::connect(socket, version, squad))
+        .await
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "the daemon didn't answer"))??;
     let outs = bridge.attach(&hello.snapshot);
     let (commands, mut stream) = client.split();
     let events = events.clone();
@@ -754,7 +757,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
         if let Some(config) = load(&home)
             && let Err(why) = run(&home, &socket, &version, config).await
         {
-            eprintln!("telegram: {why}");
+            equipe_core::daemon_log!("telegram: {why}");
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
@@ -783,7 +786,7 @@ async fn run(home: &Path, socket: &Path, version: &str, config: Config) -> Resul
                 }
                 Ok(_) => {}
                 Err(err) => {
-                    eprintln!("telegram: {err}");
+                    equipe_core::daemon_log!("telegram: {err}");
                     tokio::time::sleep(Duration::from_secs(5)).await;
                 }
             }
@@ -821,7 +824,7 @@ async fn run(home: &Path, socket: &Path, version: &str, config: Config) -> Resul
                             deliver(&api, config.chat, &mut bridge, outs).await;
                         }
                         Err(err) => {
-                            eprintln!("telegram: following {}: {err}", squad.name);
+                            equipe_core::daemon_log!("telegram: following {}: {err}", squad.name);
                             break;
                         }
                     }

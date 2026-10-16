@@ -170,5 +170,8 @@
   "status.proposed": "提案",
   "status.review": "審查",
   "status.todo": "待辦",
-  "status.waiting": "輪到你"
+  "status.waiting": "輪到你",
+  "error.disk_full": "磁碟已滿：騰出空間之前，equipe 無法儲存對話和工單。通常是成員的建置資料夾（target/）佔滿了空間。",
+  "notice.disk_room": "磁碟又有空間了：equipe 恢復儲存對話和工單。",
+  "error.stuck": "常駐程式沒有回應：自 {since} 起一直停在 {doing}。請試試 `equipe daemon restart`。"
 }

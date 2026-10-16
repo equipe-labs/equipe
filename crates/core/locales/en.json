@@ -171,5 +171,8 @@
   "status.proposed": "proposed",
   "status.review": "review",
   "status.todo": "todo",
-  "status.waiting": "waiting"
+  "status.waiting": "waiting",
+  "error.disk_full": "The disk is full: equipe can't save conversations or tickets until there's room again. Members' build folders (target/) are the usual culprit.",
+  "notice.disk_room": "The disk has room again: equipe saves conversations and tickets as before.",
+  "error.stuck": "The daemon isn't answering: it has been on {doing} since {since}. Try `equipe daemon restart`."
 }

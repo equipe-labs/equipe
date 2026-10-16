@@ -44,6 +44,7 @@ use crate::roles::{self, Teammate};
 use crate::squad_home;
 use crate::squad_memory;
 use crate::steers;
+use crate::watchdog;
 use crate::worktree::{self, Sandbox};
 
 /// What equipe says to the person, in their language: `say!(self, "notice.model", model = m)`.
@@ -78,6 +79,20 @@ const ENGINE_QUESTION_TOOL: &str = "AskUserQuestion";
 pub const DESKTOP_SERVER: &str = "desktop";
 /// The tool name a member's own question shows under, among approvals.
 const CONFIRM: &str = "Confirm";
+
+/// How long `busy` waits for the loop before it answers with what the loop is on.
+pub const ANSWER_WAIT: Duration = Duration::from_secs(3);
+
+/// How long the loop waits on a server (a Codex sign-in, its models) or on
+/// `claude auth status` before it gives up: nothing else is done meanwhile.
+const SERVER_WAIT: Duration = Duration::from_secs(30);
+
+/// How often the sweep looks for done work that reached main outside equipe.
+const SETTLE_EVERY: Duration = Duration::from_secs(10 * 60);
+
+/// Below this much free space the disk counts as full; above `DISK_ROOM_AGAIN`, no longer.
+const DISK_FULL_BELOW: u64 = 256 << 20;
+const DISK_ROOM_AGAIN: u64 = 1 << 30;
 
 /// How long a member waits for the person to answer a request for permission
 /// before it is declined.
@@ -169,6 +184,8 @@ enum Request {
 #[derive(Clone)]
 pub struct Handle {
     requests: UnboundedSender<Request>,
+    /// What the loop is on, for an answer when it doesn't answer.
+    pulse: std::sync::Arc<watchdog::Pulse>,
 }
 
 impl Handle {
@@ -263,10 +280,19 @@ impl Handle {
     }
 
     /// Who is mid-turn, and how many requests wait for the person.
+    /// When the loop doesn't answer within [`ANSWER_WAIT`]: what it is on.
     pub async fn busy(&self) -> equipe_protocol::rpc::Busy {
         let (tx, rx) = oneshot::channel();
         let _ = self.requests.send(Request::Busy(tx));
-        rx.await.unwrap_or_default()
+        match tokio::time::timeout(ANSWER_WAIT, rx).await {
+            Ok(answer) => answer.unwrap_or_default(),
+            Err(_) => equipe_protocol::rpc::Busy { stalled: self.stall(), ..Default::default() },
+        }
+    }
+
+    /// The loop's step under way, however short; `None` between steps.
+    pub fn stall(&self) -> Option<equipe_protocol::rpc::Stall> {
+        self.pulse.stall(Duration::ZERO)
     }
 
     /// Stop running turns and the runtime. Open sessions stay journaled.
@@ -289,7 +315,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let mut runtime = Runtime {
         desktop: desktop::Desktop::new(mac),
         config,
-        client: reqwest::Client::new(),
+        // A server that never answers a connection must not hold anything up.
+        client: reqwest::Client::builder().connect_timeout(Duration::from_secs(15)).build().unwrap_or_default(),
         subscribers: vec![(None, evt_tx)],
         internal: internal_tx,
         sessions: HashMap::new(),
@@ -318,6 +345,11 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         plan: None,
         questions: HashMap::new(),
         team_changes: HashMap::new(),
+        merged_cache: Some(worktree::MergedCache::default()),
+        settle_again: false,
+        settled_at: None,
+        merging: std::collections::HashSet::new(),
+        disk_full: None,
     };
     let mut memos = Vec::new();
     if runtime.config.persist {
@@ -325,13 +357,25 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         runtime.prune();
         memos = runtime.resume_work();
     }
-    tokio::spawn(run(runtime, req_rx, internal_rx, host_rx));
-    let handle = Handle { requests: req_tx };
+    let pulse = watchdog::Pulse::new();
+    watchdog::watch(&pulse);
+    tokio::spawn(CORE_LOOP.scope((), run(runtime, req_rx, internal_rx, host_rx, pulse.clone())));
+    let handle = Handle { requests: req_tx, pulse };
     // Memos for a turn the restart ended go in first, as if just sent.
     for (session, text) in memos {
         handle.send(Command::Submit { session, text, about: None });
     }
     (handle, evt_rx)
+}
+
+tokio::task_local! {
+    /// Set for the core loop's task: what must never run on it can tell.
+    static CORE_LOOP: ();
+}
+
+/// Whether this runs on the core loop — the one task every screen waits on.
+pub(crate) fn on_core_loop() -> bool {
+    CORE_LOOP.try_with(|()| ()).is_ok()
 }
 
 /// The member a session is, as the screen's lease knows it.
@@ -510,6 +554,10 @@ struct TurnDone {
     ticket: Option<TicketId>,
 }
 
+/// How a merge went off the loop: main's name and, when a push was asked
+/// for, how that went — or why nothing was merged.
+type MergeResult = Result<(String, Option<Result<(), String>>), String>;
+
 enum Internal {
     Event(Box<Event>),
     Done(TurnDone),
@@ -517,6 +565,14 @@ enum Internal {
     ApprovalTimedOut(u64),
     /// A picture of a watched member's browser, or none to be had.
     Frame(SessionId, Option<(Vec<u8>, Option<String>)>),
+    /// The look at done work off main, worked out off the loop: the tickets
+    /// (by squad) whose branch has nothing left to bring, and what it remembers.
+    Settled { merged: Vec<(String, TicketId)>, cache: worktree::MergedCache },
+    /// A merge the person asked for, worked out off the loop: main's name and,
+    /// when a push was asked for, how it went — or why nothing was merged.
+    Merged { squad: String, ticket: TicketId, result: MergeResult },
+    /// The free space on equipe's disk, as just looked at.
+    Disk(Option<u64>, std::time::Instant),
 }
 
 /// A request for permission waiting for the person, and the engine waiting on it.
@@ -609,109 +665,215 @@ struct Runtime {
     questions: HashMap<String, Vec<equipe_protocol::decide::QuestionSet>>,
     /// Changes to the team the PM proposed, waiting for the person, by squad (`team`).
     team_changes: HashMap<String, Vec<equipe_protocol::team::TeamChange>>,
+    /// What the look at done work off main remembers; `None` while a look is
+    /// under way off the loop, and `settle_again` when another was asked meanwhile.
+    merged_cache: Option<worktree::MergedCache>,
+    settle_again: bool,
+    /// When the last sweep began.
+    settled_at: Option<std::time::Instant>,
+    /// Merges under way off the loop, by squad and ticket.
+    merging: std::collections::HashSet<(String, TicketId)>,
+    /// The disk is full, as last looked at or as a write said: the screens were told.
+    disk_full: Option<std::time::Instant>,
 }
 
-async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut internal: UnboundedReceiver<Internal>, mut host: UnboundedReceiver<browser::HostEvent>) {
+/// What woke the loop.
+enum Wake {
+    Request(Option<Request>),
+    Internal(Internal),
+    Host(browser::HostEvent),
+    Daily,
+    DesktopTick,
+    Frames,
+    Minute,
+}
+
+impl Wake {
+    /// What the loop is doing for it, as the watchdog tells it.
+    fn doing(&self) -> std::borrow::Cow<'static, str> {
+        use std::borrow::Cow::{Borrowed, Owned};
+        match self {
+            Wake::Request(Some(Request::Command(command))) => {
+                let name = serde_json::to_value(command).ok().and_then(|v| v["type"].as_str().map(str::to_owned));
+                Owned(format!("command {}", name.unwrap_or_else(|| "?".into())))
+            }
+            Wake::Request(Some(Request::Tool(call, _))) => Owned(format!("tool {} for {}/{}", call.name, call.squad, call.member)),
+            Wake::Request(Some(Request::Snapshot(..))) => Borrowed("snapshot"),
+            Wake::Request(Some(Request::Subscribe(..))) => Borrowed("hello (a screen's snapshot)"),
+            Wake::Request(Some(Request::DesktopGate(..))) => Borrowed("desktop gate"),
+            Wake::Request(Some(Request::DesktopTool(..))) => Borrowed("desktop tool"),
+            Wake::Request(Some(Request::Busy(_))) => Borrowed("busy"),
+            Wake::Request(Some(Request::PersonWindow(..))) => Borrowed("person's browser window"),
+            Wake::Request(Some(Request::BrowserHub(_))) => Borrowed("browser panel"),
+            Wake::Request(Some(Request::Desktop(_))) => Borrowed("desktop lease"),
+            Wake::Request(Some(Request::Shutdown(_))) | Wake::Request(None) => Borrowed("shutdown"),
+            Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
+            Wake::Internal(Internal::Done(_)) => Borrowed("a turn's end"),
+            Wake::Internal(Internal::ApprovalTimedOut(_)) => Borrowed("an approval timing out"),
+            Wake::Internal(Internal::Frame(..)) => Borrowed("a browser picture"),
+            Wake::Internal(Internal::Settled { .. }) => Borrowed("settling merged work"),
+            Wake::Internal(Internal::Merged { .. }) => Borrowed("a merge's end"),
+            Wake::Internal(Internal::Disk(..)) => Borrowed("the disk's free space"),
+            Wake::Host(_) => Borrowed("the browser host's news"),
+            Wake::Daily => Borrowed("daily prune"),
+            Wake::DesktopTick => Borrowed("desktop tick"),
+            Wake::Frames => Borrowed("browser pictures"),
+            Wake::Minute => Borrowed("minute tick"),
+        }
+    }
+}
+
+async fn run(
+    mut rt: Runtime,
+    mut requests: UnboundedReceiver<Request>,
+    mut internal: UnboundedReceiver<Internal>,
+    mut host: UnboundedReceiver<browser::HostEvent>,
+    pulse: std::sync::Arc<watchdog::Pulse>,
+) {
+    use tokio::time::MissedTickBehavior;
     let mut daily = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
     let mut minute = tokio::time::interval(Duration::from_secs(60));
     // A screen held by a member that stopped using it goes to the next in line.
     let mut desktop_tick = tokio::time::interval(Duration::from_secs(5));
     let mut frames = tokio::time::interval(FRAME_EVERY);
+    // A loop held up never catches up on the ticks it missed in a burst: that
+    // only holds it up again.
+    for tick in [&mut daily, &mut minute, &mut desktop_tick, &mut frames] {
+        tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    }
     daily.tick().await; // the first tick is immediate; pruning already ran at start
     loop {
-        tokio::select! {
-            request = requests.recv() => match request {
-                Some(Request::Command(command)) => rt.handle(command).await,
+        let wake = tokio::select! {
+            request = requests.recv() => Wake::Request(request),
+            Some(message) = internal.recv() => Wake::Internal(message),
+            Some(said) = host.recv() => Wake::Host(said),
+            _ = daily.tick(), if rt.config.persist => Wake::Daily,
+            _ = desktop_tick.tick() => Wake::DesktopTick,
+            _ = frames.tick() => Wake::Frames,
+            _ = minute.tick() => Wake::Minute,
+        };
+        pulse.begin(wake.doing());
+        let go_on = rt.wake(wake, &pulse).await;
+        pulse.end();
+        if !go_on {
+            return;
+        }
+    }
+}
+
+impl Runtime {
+    /// One turn of the loop. `false`: the runtime is done.
+    async fn wake(&mut self, wake: Wake, pulse: &watchdog::Pulse) -> bool {
+        match wake {
+            Wake::Request(request) => match request {
+                Some(Request::Command(command)) => self.handle(command).await,
                 Some(Request::Snapshot(squad, reply)) => {
-                    let _ = reply.send(rt.snapshot(&squad));
+                    let _ = reply.send(self.snapshot(&squad));
                 }
                 Some(Request::Subscribe(squad, reply)) => {
                     let (tx, rx) = mpsc::unbounded_channel();
                     // The shared Chrome's tabs as they stand, then what changes.
-                    for tabs in rt.tabs.values() {
+                    for tabs in self.tabs.values() {
                         if tabs.for_everyone() || tabs.squad() == Some(squad.as_str()) {
                             let _ = tx.send(tabs.clone());
                         }
                     }
                     // And the members' browsers in the person's hands.
-                    for (lane, why) in &rt.held {
+                    for (lane, why) in &self.held {
                         if lane.split_once('/').is_some_and(|(q, _)| q == squad) {
-                            let check = rt.checking.get(lane).map(|c| c.2);
+                            let check = self.checking.get(lane).map(|c| c.2);
                             let _ = tx.send(Event::BrowserControl { squad: Some(squad.clone()), lane: lane.clone(), by: Some("person".into()), why: why.clone(), check });
                         }
                     }
-                    rt.subscribers.push((Some(squad.clone()), tx));
-                    let _ = reply.send((rt.snapshot(&squad), rx));
+                    // A disk found full is told to each screen as it comes.
+                    if self.disk_full.is_some() {
+                        let _ = tx.send(Event::Error { session: None, message: say!(self, "error.disk_full"), next: None });
+                    }
+                    self.subscribers.push((Some(squad.clone()), tx));
+                    let _ = reply.send((self.snapshot(&squad), rx));
                 }
-                Some(Request::Tool(call, reply)) => rt.tool(call, reply).await,
+                Some(Request::Tool(call, reply)) => self.tool(call, reply).await,
                 Some(Request::PersonWindow(url, reply)) => {
-                    let _ = reply.send(rt.person_window(&url));
+                    let _ = reply.send(self.person_window(&url));
                 }
                 Some(Request::BrowserHub(reply)) => {
-                    let _ = reply.send(rt.hub.clone());
+                    let _ = reply.send(self.hub.clone());
                 }
-                Some(Request::DesktopGate(check, reply)) => rt.gate_desktop(*check, reply),
+                Some(Request::DesktopGate(check, reply)) => self.gate_desktop(*check, reply),
                 Some(Request::DesktopTool(call, reply)) => {
-                    let _ = reply.send(rt.desktop_allowed(&call));
+                    let _ = reply.send(self.desktop_allowed(&call));
                 }
                 Some(Request::Busy(reply)) => {
-                    let mut working: Vec<String> = rt
+                    let mut working: Vec<String> = self
                         .sessions
                         .values()
                         .filter(|s| s.is_working())
                         .map(|s| format!("{}/{}", s.squad.as_deref().unwrap_or("-"), s.name().unwrap_or("?")))
                         .collect();
                     working.sort();
-                    let _ = reply.send(equipe_protocol::rpc::Busy { working, approvals: rt.pending.len(), desktop: rt.desktop.state() });
+                    let busy = equipe_protocol::rpc::Busy { working, approvals: self.pending.len(), desktop: self.desktop.state(), stalled: None };
+                    let _ = reply.send(busy);
                 }
-                Some(Request::Desktop(request)) => rt.on_desktop(request),
+                Some(Request::Desktop(request)) => self.on_desktop(request),
                 Some(Request::Shutdown(reply)) => {
-                    rt.stop_all_turns();
+                    self.stop_all_turns();
                     let _ = reply.send(());
-                    return;
+                    return false;
                 }
-                None => break,
+                None => {
+                    self.stop_all_turns();
+                    return false;
+                }
             },
-            Some(message) = internal.recv() => match message {
+            Wake::Internal(message) => match message {
                 Internal::Event(event) => match *event {
                     // What the engine echoes as it reads the person's steers: each said as it was.
-                    Event::Steered { session, text } => rt.steered(session, &text),
-                    event => rt.publish(event),
+                    Event::Steered { session, text } => self.steered(session, &text),
+                    event => self.publish(event),
                 },
-                Internal::Done(done) => rt.on_turn_done(done).await,
-                Internal::ApprovalTimedOut(id) => rt.answer(id, Decision::Deny, "Nobody answered in time."),
+                Internal::Done(done) => self.on_turn_done(done).await,
+                Internal::ApprovalTimedOut(id) => self.answer(id, Decision::Deny, "Nobody answered in time."),
                 Internal::Frame(session, frame) => {
-                    rt.framing.remove(&session);
+                    self.framing.remove(&session);
                     if let Some((png, url)) = frame {
                         use base64::Engine as _;
                         let image = base64::engine::general_purpose::STANDARD.encode(png);
-                        rt.publish(Event::BrowserFrame { session, image, url });
+                        self.publish(Event::BrowserFrame { session, image, url });
                     }
                 }
+                Internal::Settled { merged, cache } => self.on_settled(merged, cache),
+                Internal::Merged { squad, ticket, result } => self.on_merged(&squad, ticket, result),
+                Internal::Disk(free, asked) => self.on_disk(free, asked),
             },
-            Some(said) = host.recv() => rt.on_host(said).await,
-            _ = daily.tick(), if rt.config.persist => rt.prune(),
-            _ = desktop_tick.tick() => {
-                if rt.desktop.expire() {
-                    rt.publish_desktop();
+            Wake::Host(said) => self.on_host(said).await,
+            Wake::Daily => self.prune(),
+            Wake::DesktopTick => {
+                if self.desktop.expire() {
+                    self.publish_desktop();
                 }
             }
-            _ = frames.tick() => rt.take_frames(),
-            _ = minute.tick() => {
-                rt.fold_idle_lanes();
-                rt.trim_builds();
-                rt.expire_estimates();
-                rt.close_idle_browsers();
-                rt.let_helpers_go().await;
-                rt.tidy_check();
-                // Not `settle_all_merged` here: seven git commands for every
-                // done ticket off main, on this loop, took most of each minute
-                // with 33 of them, and screens timed out attaching. It runs
-                // after a merge; a sweep comes back off the loop.
+            Wake::Frames => self.take_frames(),
+            Wake::Minute => {
+                pulse.step("minute tick: idle lanes");
+                self.fold_idle_lanes();
+                self.trim_builds();
+                self.expire_estimates();
+                pulse.step("minute tick: idle browsers");
+                self.close_idle_browsers();
+                pulse.step("minute tick: helpers");
+                self.let_helpers_go().await;
+                pulse.step("minute tick: stale tickets");
+                self.tidy_check();
+                // Work that reached main outside equipe: every ten minutes is soon
+                // enough (a merge or an accept looks at once), and off the loop.
+                if self.settled_at.is_none_or(|at| at.elapsed() >= SETTLE_EVERY) {
+                    self.settle_all_merged();
+                }
+                self.look_at_disk();
             }
         }
+        true
     }
-    rt.stop_all_turns();
 }
 
 impl Runtime {
@@ -741,6 +903,7 @@ impl Runtime {
             self.last_url.insert(key, url.clone());
         }
         let mut squad = squad.map(str::to_owned);
+        let mut no_room = false;
         if let Some(id) = event.session()
             && let Some(session) = self.sessions.get_mut(&id)
         {
@@ -778,7 +941,7 @@ impl Runtime {
             {
                 let title = session.title.clone();
                 if let Some(journal) = journal_for(&mut self.journals, &self.config.home, &name) {
-                    record(journal, id, &event, &finished, title.as_deref());
+                    no_room = !record(journal, id, &event, &finished, title.as_deref());
                 }
             }
         }
@@ -793,6 +956,57 @@ impl Runtime {
             Some(follows) if squad.as_ref() != Some(follows) && !everyone => !screen.is_closed(),
             _ => screen.send(event.clone()).is_ok(),
         });
+        if no_room {
+            self.disk_is_full();
+        }
+    }
+
+    // ── a full disk ──
+
+    /// How much room the disk has, looked at off the loop.
+    fn look_at_disk(&mut self) {
+        let (home, internal) = (self.config.home.clone(), self.internal.clone());
+        tokio::task::spawn_blocking(move || {
+            let asked = std::time::Instant::now();
+            let _ = internal.send(Internal::Disk(free_space(&home), asked));
+        });
+    }
+
+    fn on_disk(&mut self, free: Option<u64>, asked: std::time::Instant) {
+        let Some(free) = free else { return };
+        if free < DISK_FULL_BELOW {
+            self.disk_is_full();
+        } else if self.disk_full.is_some_and(|since| asked > since) && free > DISK_ROOM_AGAIN {
+            self.disk_full = None;
+            crate::daemon_log!("equipe: the disk has room again ({} MB free)", free >> 20);
+            let message = say!(self, "notice.disk_room");
+            for squad in self.followed_squads() {
+                self.squad_error(&squad, message.clone());
+            }
+        }
+    }
+
+    /// The disk is full: said once — to the log, and to every screen — and
+    /// the daemon goes on serving; what it couldn't save is lost, nothing more.
+    fn disk_is_full(&mut self) {
+        if self.disk_full.is_some() {
+            return;
+        }
+        self.disk_full = Some(std::time::Instant::now());
+        let free = free_space(&self.config.home).map_or_else(|| "?".to_owned(), |f| format!("{} MB", f >> 20));
+        crate::daemon_log!("equipe: the disk is full ({free} free): conversations and tickets aren't saved until there's room");
+        let message = say!(self, "error.disk_full");
+        for squad in self.followed_squads() {
+            self.squad_error(&squad, message.clone());
+        }
+    }
+
+    /// The squads screens follow now, and those with a journal open.
+    fn followed_squads(&self) -> Vec<String> {
+        let mut squads: Vec<String> = self.subscribers.iter().filter_map(|(s, _)| s.clone()).chain(self.journals.keys().cloned()).collect();
+        squads.sort();
+        squads.dedup();
+        squads
     }
 
     // ── the Mac's screen ──
@@ -1200,9 +1414,11 @@ impl Runtime {
                 };
                 if model.is_none() {
                     // Ask the backend what this account has rather than hardcoding an id.
-                    let catalog = match codex::list_models(&self.client, &cred, &self.config.client_version).await {
-                        Ok(models) => models,
-                        Err(err) => return fail(self, err.to_string(), Some("equipe status")),
+                    let asked = codex::list_models(&self.client, &cred, &self.config.client_version);
+                    let catalog = match tokio::time::timeout(SERVER_WAIT, asked).await {
+                        Ok(Ok(models)) => models,
+                        Ok(Err(err)) => return fail(self, err.to_string(), Some("equipe status")),
+                        Err(_) => return fail(self, format!("Codex didn't answer in {}s", SERVER_WAIT.as_secs()), Some("equipe status")),
                     };
                     model = match role {
                         Some(role) => roles::recommended_model(role.tier, engine, &catalog),
@@ -3014,13 +3230,17 @@ for one project goes to it as tickets for its owners, with that project — and 
             }
             None => self.close_ticket(squad, found, TicketStatus::Done),
         }
+        // Work already in main stops asking to be merged as soon as the sweep says so.
+        self.settle_all_merged();
         self.dispatch(squad).await;
     }
 
     /// The person merges a done ticket's branch into main — their gate, never a
     /// member's — and pushes main when they said so. A conflict merges nothing.
+    /// The merge and the push are worked out off the loop (a push talks to a
+    /// server); [`Runtime::on_merged`] takes it from there.
     fn merge(&mut self, squad: &str, ticket: TicketId, push: bool) {
-        let Some(mut found) = self.find_ticket(squad, ticket) else {
+        let Some(found) = self.find_ticket(squad, ticket) else {
             return;
         };
         if found.status != TicketStatus::Done {
@@ -3037,9 +3257,27 @@ for one project goes to it as tickets for its owners, with that project — and 
             let message = say!(self, "error.no_branch", id = ticket);
             return self.squad_error(squad, message);
         };
+        // Asked twice: the merge under way answers both.
+        if !self.merging.insert((squad.to_owned(), ticket)) {
+            return;
+        }
         let message = format!("equipe: merge T-{ticket} {}\n\nAccepted by the person; merged from {branch}.", found.title);
-        let main = match worktree::merge_into_main(&repo, &branch, &message) {
-            Ok(main) => main,
+        let (internal, squad) = (self.internal.clone(), squad.to_owned());
+        tokio::task::spawn_blocking(move || {
+            let result = worktree::merge_into_main(&repo, &branch, &message)
+                .map(|main| (main, push.then(|| worktree::push_main(&repo).map(|_| ()))));
+            let _ = internal.send(Internal::Merged { squad, ticket, result });
+        });
+    }
+
+    /// A merge the person asked for is through, or merged nothing.
+    fn on_merged(&mut self, squad: &str, ticket: TicketId, result: MergeResult) {
+        self.merging.remove(&(squad.to_owned(), ticket));
+        let Some(mut found) = self.find_ticket(squad, ticket) else {
+            return;
+        };
+        let (main, pushed) = match result {
+            Ok(merged) => merged,
             Err(err) => {
                 // Why it stays off main, for the screens to say.
                 found.off_main = Some(if err.contains(" conflicts with ") {
@@ -3058,17 +3296,16 @@ for one project goes to it as tickets for its owners, with that project — and 
         };
         let mut line = format!("You merged T-{ticket} · {} into {main}", found.title);
         let mut news = "news.merged";
-        if push {
-            match worktree::push_main(&repo) {
-                Ok(_) => {
-                    line.push_str(" and pushed it");
-                    news = "news.merged_pushed";
-                }
-                Err(err) => {
-                    let message = say!(self, "error.not_pushed", branch = main, err = err);
-                    self.squad_error(squad, message);
-                }
+        match pushed {
+            Some(Ok(())) => {
+                line.push_str(" and pushed it");
+                news = "news.merged_pushed";
             }
+            Some(Err(err)) => {
+                let message = say!(self, "error.not_pushed", branch = main, err = err);
+                self.squad_error(squad, message);
+            }
+            None => {}
         }
         let shown = self.said(news, &[("id", ticket.to_string()), ("title", found.title.clone()), ("branch", main.clone())]);
         found.merged = Some(true);
@@ -3079,7 +3316,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         }
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: found });
         // Work it was built on came along with it.
-        self.settle_merged(squad);
+        self.settle_all_merged();
         self.brief_pm(squad, format!("{line}."), Some(shown));
     }
 
@@ -3087,28 +3324,65 @@ for one project goes to it as tickets for its owners, with that project — and 
     /// bring there (it got in another way, or it changes nothing: `+0 −0`)
     /// are merged: nothing to ask the person. Their worktree went when they
     /// were accepted; their branch stays, as after any merge.
-    fn settle_merged(&mut self, squad: &str) {
-        for mut t in self.tickets(squad).into_iter().filter(Ticket::not_on_main) {
-            if merged_state(&t) != Some(true) {
-                continue;
+    ///
+    /// Every squad open is looked at, every minute and after a merge — off the
+    /// loop, a few git commands per repository, and a merge worked out only for
+    /// a branch that moved, or whose main did ([`worktree::MergedCache`]).
+    /// [`Runtime::on_settled`] takes the answer. One look at a time.
+    fn settle_all_merged(&mut self) {
+        self.settled_at = Some(std::time::Instant::now());
+        let Some(mut cache) = self.merged_cache.take() else {
+            self.settle_again = true;
+            return;
+        };
+        let squads: Vec<String> = self.journals.keys().cloned().collect();
+        // By project: the tickets on it (squad, ticket, branch).
+        type OnBranch = (String, TicketId, String);
+        let mut asked: Vec<(PathBuf, Vec<OnBranch>)> = Vec::new();
+        for squad in squads {
+            for t in self.tickets(&squad).into_iter().filter(|t| t.not_on_main() && !t.kind.in_home()) {
+                let (Some(project), Some(branch)) = (t.project.clone(), t.branch.clone()) else { continue };
+                match asked.iter_mut().find(|(p, _)| *p == project) {
+                    Some((_, tickets)) => tickets.push((squad.clone(), t.id, branch)),
+                    None => asked.push((project, vec![(squad.clone(), t.id, branch)])),
+                }
             }
+        }
+        if asked.is_empty() {
+            self.merged_cache = Some(cache);
+            return;
+        }
+        let internal = self.internal.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut merged = Vec::new();
+            for (project, tickets) in asked {
+                let branches: Vec<String> = tickets.iter().map(|(_, _, b)| b.clone()).collect();
+                for ((squad, id, _), told) in tickets.into_iter().zip(cache.merged(&project, &branches)) {
+                    if told == Some(true) {
+                        merged.push((squad, id));
+                    }
+                }
+            }
+            let _ = internal.send(Internal::Settled { merged, cache });
+        });
+    }
+
+    /// The look at done work off main is back: what has nothing left to bring
+    /// is merged — if it still waits to be.
+    fn on_settled(&mut self, merged: Vec<(String, TicketId)>, cache: worktree::MergedCache) {
+        self.merged_cache = Some(cache);
+        for (squad, id) in merged {
+            let Some(mut t) = self.find_ticket(&squad, id).filter(Ticket::not_on_main) else { continue };
             t.merged = Some(true);
             t.off_main = None;
-            if let Some(journal) = self.journal(squad) {
+            if let Some(journal) = self.journal(&squad) {
                 let _ = journal.save_ticket(&t);
                 let _ = journal.ticket_event(t.id, "equipe", "merged", "nothing left to merge: its work is in main");
             }
-            self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: t });
+            self.publish(Event::TicketChanged { squad, ticket: t });
         }
-    }
-
-    /// Every squad open, settled: work that reached main outside equipe stops
-    /// asking to be merged.
-    #[allow(dead_code)] // the sweep comes back off the core loop
-    fn settle_all_merged(&mut self) {
-        let squads: Vec<String> = self.journals.keys().cloned().collect();
-        for squad in squads {
-            self.settle_merged(&squad);
+        if std::mem::take(&mut self.settle_again) {
+            self.settle_all_merged();
         }
     }
 
@@ -4333,11 +4607,11 @@ it back there once they have done it.{again} End your turn now with a short line
             // A squad from before squad homes gets its home now.
             let home = squad_home::path(&self.config.home, &squad);
             if let Err(err) = squad_home::ensure(&self.config.home, &squad, journal.language().as_deref()) {
-                eprintln!("equipe: {squad}'s folder couldn't be made: {err}");
+                crate::daemon_log!("equipe: {squad}'s folder couldn't be made: {err}");
             }
             // Members of one role once each kept their own lessons; now they share them.
             if let Err(err) = journal::fold_member_memories(&self.config.home, &squad) {
-                eprintln!("equipe: {squad}'s members' memories couldn't be gathered: {err}");
+                crate::daemon_log!("equipe: {squad}'s members' memories couldn't be gathered: {err}");
             }
             let projects = journal.projects().unwrap_or_default();
             let tickets = journal.tickets().unwrap_or_default();
@@ -4586,7 +4860,7 @@ check what is already done in your worktree first."
         let home = self.config.home.clone();
         std::thread::spawn(move || {
             for line in worktree::trim_builds(&home, &busy, BUILD_CAP) {
-                eprintln!("equipe: {line}");
+                crate::daemon_log!("equipe: {line}");
             }
         });
     }
@@ -4649,7 +4923,7 @@ check what is already done in your worktree first."
         let home = self.config.home.clone();
         std::thread::spawn(move || {
             for line in worktree::tidy(&home, &in_use, &kept) {
-                eprintln!("equipe: {line}");
+                crate::daemon_log!("equipe: {line}");
             }
         });
     }
@@ -4968,14 +5242,17 @@ fn recent_history(history: &[responses::Message]) -> Vec<responses::Message> {
 
 /// Remove a ticket's worktree; keep its branch if it has commits, drop it if not.
 /// Returns the branch that remains.
-/// Whether a ticket's branch is in its project's main branch; `None` when that
-/// can't be told (no branch, no repository).
+/// Whether a ticket just accepted is on its project's main branch, as far as
+/// the loop tells without git: not yet (`Some(false)`) when it has a branch in
+/// a repository — the sweep ([`Runtime::settle_all_merged`]), off the loop,
+/// settles what has nothing left to bring; `None` when that can't be told (no
+/// branch, no repository).
 fn merged_state(ticket: &Ticket) -> Option<bool> {
-    if ticket.kind.in_home() {
+    if ticket.kind.in_home() || ticket.branch.is_none() {
         return None;
     }
-    let repo = worktree::repo_root(ticket.project.as_deref()?).ok()?;
-    worktree::is_merged(&repo, ticket.branch.as_deref()?).ok()
+    let project = ticket.project.as_deref()?;
+    project.ancestors().any(|dir| dir.join(".git").exists()).then_some(false)
 }
 
 /// The finished work a ticket builds on — what it depends on, and what that
@@ -5041,9 +5318,14 @@ async fn codex_credentials(client: &reqwest::Client, store: &CredentialStore, la
         .map_err(|err| (words.fill("error.codex_unreadable", &[("path", store.path("openai").display().to_string()), ("err", err.to_string())]), "equipe login codex"))?
         .filter(|c| c.method == AuthMethod::OauthSubscription)
         .ok_or((words.get("error.codex_signed_out").to_owned(), "equipe login codex"))?;
-    codex::ensure_fresh(client, store, cred)
-        .await
-        .map_err(|err| (words.fill("error.codex_not_refreshed", &[("err", err.to_string())]), "equipe login codex"))
+    // Asked from the loop: a sign-in server that never answers holds nothing up for long.
+    match tokio::time::timeout(SERVER_WAIT, codex::ensure_fresh(client, store, cred)).await {
+        Ok(fresh) => fresh.map_err(|err| (words.fill("error.codex_not_refreshed", &[("err", err.to_string())]), "equipe login codex")),
+        Err(_) => {
+            let err = format!("no answer in {}s", SERVER_WAIT.as_secs());
+            Err((words.fill("error.codex_not_refreshed", &[("err", err)]), "equipe login codex"))
+        }
+    }
 }
 
 /// The journal of `squad`, opened on first use.
@@ -5056,33 +5338,47 @@ fn journal_for<'a>(journals: &'a mut HashMap<String, Journal>, home: &Path, squa
 }
 
 /// Write what an event made final, and what it changed about the session.
-fn record(journal: &Journal, id: SessionId, event: &Event, finished: &[Entry], title: Option<&str>) {
+/// `false` when the disk had no room for it. Nothing else stops for a write
+/// that failed: the screens still get the event.
+fn record(journal: &Journal, id: SessionId, event: &Event, finished: &[Entry], title: Option<&str>) -> bool {
+    let mut room = true;
+    let mut saw = |result: journal::Result<()>| {
+        if let Err(err) = result
+            && journal::is_full(&err)
+        {
+            room = false;
+        }
+    };
     for entry in finished {
-        let _ = journal.append(id, entry);
+        saw(journal.append(id, entry));
     }
     match event {
         Event::UserMessage { .. } => {
             if let Some(title) = title {
-                let _ = journal.set_title_if_empty(id, title);
+                saw(journal.set_title_if_empty(id, title));
             }
         }
-        Event::ModelKnown { model, .. } => {
-            let _ = journal.set_model(id, model);
-        }
-        Event::TurnEnded { usage: Some(u), .. } => {
-            let _ = journal.add_tokens(id, u.total());
-        }
-        Event::BranchLanded { branch, .. } => {
-            let _ = journal.set_outcome(id, &format!("landed {branch}"));
-        }
-        Event::NothingChanged { .. } => {
-            let _ = journal.set_outcome(id, "no changes");
-        }
-        Event::SessionClosed { .. } => {
-            let _ = journal.close_session(id);
-        }
+        Event::ModelKnown { model, .. } => saw(journal.set_model(id, model)),
+        Event::TurnEnded { usage: Some(u), .. } => saw(journal.add_tokens(id, u.total())),
+        Event::BranchLanded { branch, .. } => saw(journal.set_outcome(id, &format!("landed {branch}"))),
+        Event::NothingChanged { .. } => saw(journal.set_outcome(id, "no changes")),
+        Event::SessionClosed { .. } => saw(journal.close_session(id)),
         _ => {}
     }
+    room
+}
+
+/// The space free on the disk `path` is on, for whoever isn't root.
+fn free_space(path: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: statvfs writes only the struct it is given, and `c` is a valid C string.
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+    #[allow(clippy::unnecessary_cast)]
+    Some(stat.f_bavail as u64 * stat.f_frsize as u64)
 }
 
 fn workspace_of(sandbox: &Sandbox) -> Workspace {
@@ -5241,6 +5537,21 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(debug_assertions)]
+    #[tokio::test]
+    #[should_panic(expected = "must not run on the core loop")]
+    async fn git_that_may_take_long_stops_a_debug_build_on_the_core_loop() {
+        CORE_LOOP.scope((), async { worktree::is_merged(Path::new("/nonexistent"), "equipe/x").ok() }).await;
+    }
+
+    #[tokio::test]
+    async fn off_the_core_loop_it_runs() {
+        assert!(!on_core_loop());
+        let told = tokio::task::spawn_blocking(|| worktree::is_merged(Path::new("/nonexistent"), "equipe/x")).await.unwrap();
+        assert!(told.is_err(), "no repository there");
+        assert!(CORE_LOOP.scope((), async { on_core_loop() }).await);
+    }
 
     #[test]
     fn the_pm_hears_about_stale_tickets_and_proposes_rather_than_cancels() {

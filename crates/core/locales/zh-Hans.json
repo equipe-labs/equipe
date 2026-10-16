@@ -170,5 +170,8 @@
   "status.proposed": "提议",
   "status.review": "审查",
   "status.todo": "待办",
-  "status.waiting": "轮到你"
+  "status.waiting": "轮到你",
+  "error.disk_full": "磁盘已满：腾出空间之前，equipe 无法保存对话和工单。通常是成员的构建文件夹（target/）占满了空间。",
+  "notice.disk_room": "磁盘又有空间了：equipe 恢复保存对话和工单。",
+  "error.stuck": "守护进程没有响应：自 {since} 起一直停在 {doing}。请试试 `equipe daemon restart`。"
 }

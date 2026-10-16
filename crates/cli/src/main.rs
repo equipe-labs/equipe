@@ -800,7 +800,11 @@ fn update_by_homebrew(exe: &std::path::Path) -> bool {
 async fn wait_until_idle(p: &ui::Painter) -> CmdResult {
     let mut said = None;
     loop {
-        let busy = equipe_core::gateway::busy(&daemon::socket()).await.map_err(|err| Failure::new(err.to_string()))?;
+        // A daemon that doesn't answer has nothing under way worth waiting for.
+        let Ok(busy) = tokio::time::timeout(daemon::ANSWER_WAIT, equipe_core::gateway::busy(&daemon::socket())).await else {
+            return Ok(());
+        };
+        let busy = busy.map_err(|err| Failure::new(err.to_string()))?;
         let Some(busy) = busy.filter(|b| !b.idle()) else {
             return Ok(());
         };
@@ -839,11 +843,15 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             Err(err) => Err(Failure::new(err.to_string())),
         },
         DaemonAction::Stop => match daemon::stop().await {
-            Ok(true) => {
+            Ok(daemon::Stopped::Asked) => {
                 println!("{}", p.ok_line(t!("main.daemon_stopped")));
                 Ok(())
             }
-            Ok(false) => {
+            Ok(daemon::Stopped::Ended(pid)) => {
+                println!("{}", p.ok_line(&t!("main.daemon_ended", pid = pid)));
+                Ok(())
+            }
+            Ok(daemon::Stopped::None) => {
                 println!("{}", p.note(0, t!("main.daemon_none")));
                 Ok(())
             }
@@ -853,7 +861,9 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             if when_idle {
                 wait_until_idle(&p).await?;
             }
-            let _ = daemon::stop().await;
+            if let Ok(daemon::Stopped::Ended(pid)) = daemon::stop().await {
+                println!("{}", p.note(0, &t!("main.daemon_ended", pid = pid)));
+            }
             daemon::ensure_running().await.map_err(|err| Failure::new(err.to_string()))?;
             println!("{}", p.ok_line(t!("main.daemon_restarted")));
             Ok(())
@@ -883,19 +893,33 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             Ok(())
         }
         DaemonAction::Status => {
-            if equipe_core::gateway::is_running(&daemon::socket()).await {
-                println!("{}", p.ok_line(t!("main.daemon_running")));
-                println!("{}", p.row(t!("main.row_socket"), &daemon::socket().display().to_string()));
-                let how = if daemon::service::installed() { t!("main.runs_as_service") } else { t!("main.runs_on_demand") };
-                println!("{}", p.row(t!("main.row_runs_as"), how));
-                if let Ok(Some(busy)) = equipe_core::gateway::busy(&daemon::socket()).await {
-                    let working = if busy.working.is_empty() { t!("main.nobody_working").to_owned() } else { busy.working.join(", ") };
-                    println!("{}", p.row(t!("main.row_working"), &working));
-                    println!("{}", p.row(t!("main.row_screen"), &equipe_core::i18n::label::desktop(crate::i18n::lang(), &busy.desktop, None).unwrap_or_else(|| t!("main.screen_free").into())));
+            // Never waits for good: a daemon that takes the connection but answers
+            // nothing is said to be so, with the way out.
+            let answer = daemon::ask().await;
+            let busy = match answer {
+                daemon::Answer::NotRunning => {
+                    println!("{}", p.note(0, t!("main.daemon_not_running")));
+                    return Ok(());
                 }
-            } else {
-                println!("{}", p.note(0, t!("main.daemon_not_running")));
+                daemon::Answer::Silent => {
+                    let secs = daemon::ANSWER_WAIT.as_secs();
+                    return Err(Failure::new(t!("main.daemon_silent", secs = secs)).next("equipe daemon restart"));
+                }
+                daemon::Answer::Busy(busy) => busy,
+            };
+            println!("{}", p.ok_line(t!("main.daemon_running")));
+            println!("{}", p.row(t!("main.row_socket"), &daemon::socket().display().to_string()));
+            let how = if daemon::service::installed() { t!("main.runs_as_service") } else { t!("main.runs_on_demand") };
+            println!("{}", p.row(t!("main.row_runs_as"), how));
+            if let Some(stall) = &busy.stalled {
+                let since = equipe_core::watchdog::clock(stall.since);
+                println!("{}", p.row(t!("main.row_stalled"), &t!("main.stalled_since", since = since, doing = stall.doing, secs = stall.secs)));
+                println!("{}", p.note(2, t!("main.stalled_hint")));
+                return Ok(());
             }
+            let working = if busy.working.is_empty() { t!("main.nobody_working").to_owned() } else { busy.working.join(", ") };
+            println!("{}", p.row(t!("main.row_working"), &working));
+            println!("{}", p.row(t!("main.row_screen"), &equipe_core::i18n::label::desktop(crate::i18n::lang(), &busy.desktop, None).unwrap_or_else(|| t!("main.screen_free").into())));
             Ok(())
         }
     }

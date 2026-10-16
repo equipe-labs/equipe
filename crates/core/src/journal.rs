@@ -20,6 +20,29 @@ use rusqlite::{Connection, OptionalExtension as _, params};
 pub use rusqlite::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Whether `err` says there is no room left: the disk is full (SQLite's
+/// "database or disk is full"), or a file couldn't be written for it.
+pub fn is_full(err: &Error) -> bool {
+    match err {
+        Error::SqliteFailure(e, message) => {
+            e.code == rusqlite::ErrorCode::DiskFull || message.as_deref().is_some_and(|m| m.contains("disk is full"))
+        }
+        Error::ToSqlConversionFailure(e) => {
+            e.downcast_ref::<std::io::Error>().is_some_and(|e| e.raw_os_error() == Some(libc::ENOSPC))
+        }
+        _ => false,
+    }
+}
+
+static NO_ROOM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// From now on, journals opened in this process can't grow — as on a full
+/// disk: for tests of what equipe does then.
+#[doc(hidden)]
+pub fn no_room_for_tests() {
+    NO_ROOM.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// How long conversations are kept before they are pruned to the record.
 pub const DEFAULT_RETENTION_DAYS: u64 = 90;
 
@@ -341,6 +364,10 @@ impl Journal {
         // when the column arrives.
         if conn.execute("ALTER TABLE tickets ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'", []).is_ok() {
             conn.execute("UPDATE tickets SET kind = 'task' WHERE project IS NULL", [])?;
+        }
+        if NO_ROOM.load(std::sync::atomic::Ordering::Relaxed) {
+            // No bigger than it is now: SQLite answers SQLITE_FULL, as on a full disk.
+            conn.query_row("PRAGMA max_page_count = 1", [], |_| Ok(()))?;
         }
         Ok(Self { conn, path: path.to_owned() })
     }
@@ -988,6 +1015,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_journal_with_no_room_says_so_and_still_reads() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        j.record_session(&record(1)).unwrap();
+        let pages: i64 = j.conn.query_row("PRAGMA max_page_count = 1", [], |r| r.get(0)).unwrap();
+        assert!(pages >= 1);
+        let err = j.append(1, &Entry::User { text: "x".repeat(200_000) }).unwrap_err();
+        assert!(is_full(&err), "{err:?}");
+        assert!(!is_full(&Error::QueryReturnedNoRows));
+        // What it holds is still there to read; a lock left behind would fail this.
+        assert_eq!(j.open_sessions().unwrap().len(), 1);
+        j.set_title_if_empty(1, "small enough to fit").unwrap();
     }
 
     fn record(id: SessionId) -> SessionRecord {
