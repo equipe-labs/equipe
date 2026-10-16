@@ -8,6 +8,7 @@ opens a frame. The protocol is in [`docs/remote-protocol.md`](../docs/remote-pro
 - `src/index.ts` — the Worker: `POST /v1/daemons` (rate-limited per IP) and routing to the daemon's object
 - `src/daemon.ts` — the per-daemon Durable Object: sockets (hibernatable), devices, pairing slots
 - `src/frames.ts` — frame types and validation
+- `src/budget.ts` — how much a device may send a minute (a phone's files go a piece at a time)
 - `src/push.ts` — APNs (ES256 provider token) and FCM HTTP v1 (service-account OAuth)
 
 ## Test

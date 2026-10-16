@@ -35,7 +35,7 @@ use crate::{Screen, Shell};
 /// How long the pointer rests on a link before its card shows.
 pub const OPEN_AFTER: Duration = Duration::from_millis(350);
 /// How long the card stays after the pointer left it (and its link).
-pub const CLOSE_AFTER: Duration = Duration::from_millis(150);
+pub const CLOSE_AFTER: Duration = Duration::from_millis(300);
 /// No card opens this soon after the conversation scrolled.
 pub const SCROLL_QUIET: Duration = Duration::from_millis(300);
 /// How long the card says what was done before it goes.
@@ -51,7 +51,7 @@ const SLACK: f32 = 2.;
 /// The size a card is taken to be before it was ever drawn.
 const GUESS: (f32, f32) = (WIDTH, 230.);
 /// The excerpt: this many lines, then it fades out.
-const EXCERPT_LINES: f32 = 5.;
+const EXCERPT_LINES: f32 = 8.;
 const EXCERPT_LINE: f32 = 19.;
 
 // ── the rules ──
@@ -133,18 +133,12 @@ pub fn place(anchor: Rect, card: (f32, f32), window: (f32, f32), prefer: Side) -
     }
 }
 
-/// The room between a link and its card, so the pointer crossing it on the
-/// way into the card doesn't count as leaving.
-fn bridge(anchor: Rect, card: Rect) -> Rect {
-    if card.y >= anchor.bottom() {
-        Rect::new(anchor.x, anchor.bottom(), anchor.w, card.y - anchor.bottom())
-    } else if card.bottom() <= anchor.y {
-        Rect::new(anchor.x, card.bottom(), anchor.w, anchor.y - card.bottom())
-    } else if card.x >= anchor.right() {
-        Rect::new(anchor.right(), anchor.y, card.x - anchor.right(), anchor.h)
-    } else {
-        Rect::new(card.right(), anchor.y, (anchor.x - card.right()).max(0.), anchor.h)
-    }
+/// The link, the card and the room between them: the way from one to the
+/// other, however slanted, doesn't count as leaving — nor do links under it
+/// as somewhere else to go.
+fn corridor(anchor: Rect, card: Rect) -> Rect {
+    let (x, y) = (anchor.x.min(card.x), anchor.y.min(card.y));
+    Rect::new(x, y, anchor.right().max(card.right()) - x, anchor.bottom().max(card.bottom()) - y)
 }
 
 /// A link the pointer is on: which ticket, where it is, where its card goes.
@@ -178,11 +172,13 @@ pub struct Hover {
     pub epoch: u64,
     scrolled: Option<Instant>,
     dragging: bool,
+    /// Where the pointer last was.
+    pointer: Option<(f32, f32)>,
 }
 
 impl Default for Hover {
     fn default() -> Self {
-        Self { phase: Phase::Idle, card: None, epoch: 0, scrolled: None, dragging: false }
+        Self { phase: Phase::Idle, card: None, epoch: 0, scrolled: None, dragging: false, pointer: None }
     }
 }
 
@@ -195,6 +191,8 @@ impl Hover {
         match self.phase {
             // A link on the card itself (in its excerpt) is not another card.
             Phase::Open { inside: true, .. } | Phase::Open { keys: true, .. } => false,
+            // On its way to the card: a link it passes over isn't where it's going.
+            Phase::Open { target: shown, .. } if shown.id != target.id && self.heading_in(shown) => false,
             Phase::Open { target: shown, left, .. } if shown.id == target.id => {
                 self.phase = Phase::Open { target: shown, inside: false, left: None, keys: false };
                 left.is_some()
@@ -215,6 +213,14 @@ impl Hover {
         }
     }
 
+    /// Whether the pointer is between `shown`'s link and its card.
+    fn heading_in(&self, shown: Target) -> bool {
+        match (self.card, self.pointer) {
+            (Some(card), Some((x, y))) => corridor(shown.anchor, card).grown(SLACK).contains(x, y),
+            _ => false,
+        }
+    }
+
     fn open(&mut self, target: Target, keys: bool) {
         self.phase = Phase::Open { target, inside: false, left: None, keys };
         self.epoch += 1;
@@ -230,13 +236,14 @@ impl Hover {
     /// being dragged). True when the card shows or goes, or a wait was dropped.
     pub fn moved(&mut self, x: f32, y: f32, pressed: bool, now: Instant) -> bool {
         self.dragging = pressed;
+        self.pointer = Some((x, y));
         let before = self.phase;
         match self.phase {
             Phase::Waiting { .. } if pressed => self.phase = Phase::Idle,
             Phase::Waiting { target, .. } if !target.anchor.grown(SLACK).contains(x, y) => self.phase = Phase::Idle,
             Phase::Open { target, keys, left, .. } => {
                 let inside = self.card.is_some_and(|c| c.contains(x, y));
-                let on = inside || target.anchor.grown(SLACK).contains(x, y) || self.card.is_some_and(|c| bridge(target.anchor, c).grown(SLACK).contains(x, y));
+                let on = inside || target.anchor.grown(SLACK).contains(x, y) || self.card.is_some_and(|c| corridor(target.anchor, c).grown(SLACK).contains(x, y));
                 let left = if on || keys { None } else { left.or(Some(now)) };
                 self.phase = Phase::Open { target, inside, left, keys };
             }
@@ -648,6 +655,11 @@ impl Render for TicketCard {
         };
         let root = div().absolute().top_0().left_0().size_full().child(listen);
         let Some(shell) = self.shell.upgrade() else { return root };
+        // Its undo counts the seconds down (`beat.rs`).
+        let shell_now = shell.read(cx);
+        if let Some(at) = shell_now.board.undo.latest().filter(|p| shell_now.screen != Screen::Board && self.acted.contains(&p.ticket)).map(|p| rules::Undo::next_count(p, Instant::now())) {
+            crate::beat::Beat::wake(cx.entity_id(), at, cx);
+        }
         let shell = shell.read(cx);
         let root = root.children(undo_toast(shell, &self.acted, &self.shell));
         let Some(target) = self.hover.shown() else {
@@ -698,18 +710,6 @@ impl Render for TicketCard {
         let card = div().relative().child(crate::motion::pop(card, ("ticket-card-in", self.hover.epoch), side == Side::Above));
         root.child(div().absolute().left(px(x)).top(px(y)).child(card))
     }
-}
-
-/// About how many lines `text` takes on the card: a wide (CJK) letter is two
-/// narrow ones, and a line holds about 50 narrow ones.
-fn wrapped_lines(text: &str) -> usize {
-    text.lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| {
-            let units: usize = l.chars().map(|c| if c.len_utf8() > 2 { 2 } else { 1 }).sum();
-            units.div_ceil(50).max(1)
-        })
-        .sum()
 }
 
 /// "T-999 · 찾을 수 없어요": a number the squad has no ticket for.
@@ -770,15 +770,12 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
     // What was said of it: the hand-in, what it asks, else what it is.
     let said = t.note.as_deref().filter(|n| !n.trim().is_empty() && !matches!(t.status, TicketStatus::Todo | TicketStatus::InProgress | TicketStatus::Proposed)).unwrap_or(&t.body);
     let excerpt = (!said.trim().is_empty()).then(|| {
-        let long = wrapped_lines(said) > EXCERPT_LINES as usize;
-        let fade_to = p.raised;
-        let clear: Hsla = Rgba { a: 0., ..fade_to }.into();
+        // All of it, scrolled on the card past its first lines.
         div()
-            .relative()
+            .id(("card-said-scroll", id as u64))
             .max_h(px(EXCERPT_LINES * EXCERPT_LINE))
-            .overflow_hidden()
+            .overflow_y_scroll()
             .child(super::chat::markdown(p, ("card-said", id as u64), said, 13., EXCERPT_LINE, p.text2, handle))
-            .when(long, |d| d.child(div().absolute().left_0().right_0().bottom_0().h(px(28.)).bg(linear_gradient(180., linear_color_stop(clear, 0.), linear_color_stop(Hsla::from(fade_to), 1.)))))
     });
     // Its size, what it waits on and holds up, how long it has stood so.
     let mut facts: Vec<AnyElement> = Vec::new();
@@ -1192,17 +1189,53 @@ mod tests {
     }
 
     #[test]
-    fn a_long_excerpt_is_told_by_its_wrapped_lines() {
-        assert_eq!(super::wrapped_lines("short\n\nline"), 2);
-        assert_eq!(super::wrapped_lines(&"가".repeat(30)), 2, "Korean is wide");
-        assert!(super::wrapped_lines("- [ ] App Review 연락처를 알려 주세요: 전화번호(국가번호 포함)와 이메일. 심사팀만 보고 공개되지 않습니다.\n- [ ] App Store Connect에서 EU DSA 상태를 trader(사업자)로 바꿔 주세요 — 앱 정보 › 디지털 서비스법.\nWaiting on you:") > 5);
-    }
-
-    #[test]
     fn the_card_says_what_was_done() {
         assert_eq!(done_words(Act::Accept, true, Some(MergeWay::Merge)), Some("수락했어요 · main에 합쳤어요"));
         assert_eq!(done_words(Act::Accept, false, None), Some("수락했어요"));
         assert_eq!(done_words(Act::Merge, true, Some(MergeWay::Push)), Some("main에 합치고 push했어요"));
         assert_eq!(done_words(Act::Open, false, None), None);
+    }
+    #[test]
+    fn on_the_way_to_the_card_other_links_underneath_dont_take_it_away() {
+        let t0 = Instant::now();
+        let mut h = Hover::default();
+        h.enter(target(5), t0);
+        h.tick(t0 + OPEN_AFTER);
+        // The card sits wider than its link and a little off to the right.
+        h.card = Some(Rect::new(100., 126., 380., 230.));
+        // Diagonally across, past the link's own width, over another T-n.
+        assert!(!h.moved(300., 118., false, t0 + Duration::from_millis(400)));
+        assert!(!h.enter(Target { id: 9, anchor: Rect::new(290., 112., 40., 14.), prefer: Side::Below }, t0 + Duration::from_millis(400)));
+        assert_eq!(h.shown().map(|t| t.id), Some(5), "still the card it was heading for");
+        assert!(!h.tick(t0 + Duration::from_millis(400) + CLOSE_AFTER), "the way in isn't leaving");
+        assert!(!h.moved(320., 200., false, t0 + Duration::from_millis(450)));
+        assert!(h.takes_keys());
+    }
+
+    #[test]
+    fn a_link_away_from_the_card_still_shows_its_own() {
+        let t0 = Instant::now();
+        let mut h = Hover::default();
+        h.enter(target(5), t0);
+        h.tick(t0 + OPEN_AFTER);
+        h.card = Some(Rect::new(100., 126., 380., 230.));
+        h.moved(600., 40., false, t0 + Duration::from_millis(400));
+        assert!(h.enter(Target { id: 9, anchor: Rect::new(590., 34., 40., 14.), prefer: Side::Below }, t0 + Duration::from_millis(400)));
+        assert_eq!(h.shown().map(|t| t.id), Some(9));
+    }
+
+    #[test]
+    fn resting_on_the_card_keeps_it_however_long() {
+        let t0 = Instant::now();
+        let mut h = Hover::default();
+        h.enter(target(5), t0);
+        h.tick(t0 + OPEN_AFTER);
+        h.card = Some(Rect::new(100., 126., 380., 230.));
+        h.moved(200., 200., false, t0 + Duration::from_millis(400));
+        assert!(!h.tick(t0 + Duration::from_secs(60)));
+        assert!(h.shown().is_some());
+        // A wheel on the card scrolls it; the card stays.
+        assert!(!h.scrolled(t0 + Duration::from_secs(61)));
+        assert!(h.shown().is_some());
     }
 }

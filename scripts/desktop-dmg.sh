@@ -11,7 +11,8 @@
 #     is signed ad hoc, and macOS warns on first open — the script says so.
 #   - Notary credentials (EQUIPE_NOTARY_PROFILE, a `notarytool store-credentials`
 #     profile; or EQUIPE_NOTARY_KEY/_KEY_ID/_ISSUER, an App Store Connect API
-#     key): notarizes the DMG and staples the ticket. Signed builds only.
+#     key): notarizes the app, then the DMG, and staples each its ticket.
+#     Signed builds only.
 #   - The update key's public half (SPARKLE_PUBLIC_ED_KEY, else
 #     crates/desktop/macos/sparkle-public-ed-key): bundles Sparkle so the app
 #     updates itself. With the private half too (SPARKLE_ED_PRIVATE_KEY, the
@@ -224,6 +225,30 @@ plutil -lint "$entitlements" >/dev/null
 sign --entitlements "$entitlements" "$app"
 codesign --verify --deep --strict "$app"
 
+# --- Notarize the app ------------------------------------------------------------
+
+# The app gets its own ticket stapled before it goes into the DMG: a copy
+# dragged to Applications then opens on a Mac that is offline, where Gatekeeper
+# can't look the ticket up. (Stapling the DMG covers only the DMG.) The DMG is
+# notarized again below, since it is a new file with its own signature.
+notarize_file() {
+  if [ "$notarize" = profile ]; then
+    xcrun notarytool submit "$1" --keychain-profile "$EQUIPE_NOTARY_PROFILE" --wait
+  else
+    xcrun notarytool submit "$1" --key "$EQUIPE_NOTARY_KEY" --key-id "$EQUIPE_NOTARY_KEY_ID" --issuer "$EQUIPE_NOTARY_ISSUER" --wait
+  fi | tee "$work/notary.log"
+  grep -q 'status: Accepted' "$work/notary.log" || die "notarization of $(basename "$1") wasn't accepted (xcrun notarytool log <id> says why)"
+}
+if [ -n "$notarize" ]; then
+  say "notarizing equipe.app (this waits for Apple)"
+  ditto -c -k --keepParent "$app" "$work/equipe-app.zip"
+  notarize_file "$work/equipe-app.zip"
+  rm "$work/equipe-app.zip"
+  xcrun stapler staple "$app"
+  xcrun stapler validate "$app"
+  spctl --assess --type exec -vv "$app"
+fi
+
 # --- DMG -------------------------------------------------------------------------
 
 stage="$work/dmg"
@@ -236,12 +261,8 @@ hdiutil create -quiet -volname "equipe $version" -srcfolder "$stage" -fs HFS+ -f
 [ -n "$identity" ] && codesign --force --timestamp --sign "$identity" "$dmg"
 
 if [ -n "$notarize" ]; then
-  say "notarizing (this waits for Apple)"
-  if [ "$notarize" = profile ]; then
-    xcrun notarytool submit "$dmg" --keychain-profile "$EQUIPE_NOTARY_PROFILE" --wait
-  else
-    xcrun notarytool submit "$dmg" --key "$EQUIPE_NOTARY_KEY" --key-id "$EQUIPE_NOTARY_KEY_ID" --issuer "$EQUIPE_NOTARY_ISSUER" --wait
-  fi
+  say "notarizing equipe.dmg (this waits for Apple)"
+  notarize_file "$dmg"
   xcrun stapler staple "$dmg"
   spctl --assess --type open --context context:primary-signature -v "$dmg"
 fi
@@ -287,13 +308,13 @@ fi
 echo
 say "built $dmg ($(du -h "$dmg" | cut -f1 | tr -d ' '), $(lipo -archs "$app/Contents/MacOS/equipe-desktop"))"
 if [ -n "$identity" ]; then
-  echo "    signed:     $identity, Hardened Runtime"
+  echo "    signed:     YES — $identity, Hardened Runtime"
 else
   echo "    signed:     NO — ad hoc only. macOS will refuse the first open from a download"
   echo "                (System Settings › Privacy & Security › Open Anyway). See docs/DESKTOP.md."
 fi
 if [ -n "$notarize" ]; then
-  echo "    notarized:  yes, ticket stapled"
+  echo "    notarized:  YES — tickets stapled to equipe.app and equipe.dmg"
 else
   echo "    notarized:  NO${identity:+ — set EQUIPE_NOTARY_PROFILE or EQUIPE_NOTARY_KEY/_KEY_ID/_ISSUER}"
 fi
