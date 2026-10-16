@@ -14,6 +14,7 @@ mod i18n;
 mod lang;
 mod onboard;
 mod remote;
+mod settings;
 mod telegram;
 mod tui;
 mod ui;
@@ -115,6 +116,23 @@ enum Command {
         #[arg(long)]
         squad: Option<String>,
     },
+    /// Start a squad, or change the folders one works on: `new <name> [folder]`, `add <folder>`, `remove <project>`
+    Squad {
+        words: Vec<String>,
+        /// The squad to change (default: the one this folder belongs to, else your first)
+        #[arg(long)]
+        squad: Option<String>,
+        /// Only check the folder and say what would happen
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Apps where a member's send waits for your yes: `add|remove <app>`, `reset`
+    SendApps {
+        words: Vec<String>,
+        /// The squad (default: the one this folder belongs to, else your first)
+        #[arg(long)]
+        squad: Option<String>,
+    },
     /// Serve a member's board tools over MCP (equipe starts this for its engines)
     #[command(hide = true)]
     Mcp {
@@ -137,6 +155,9 @@ enum Command {
         /// Forget every sign-in: members have no browser until you sign in again
         #[arg(long)]
         forget: bool,
+        /// How many browsers may be open at once (no number: show it)
+        #[arg(long, num_args = 0..=1)]
+        max: Option<Option<String>>,
     },
     /// Members working this Mac's desktop apps (experimental, macOS)
     Desktop {
@@ -462,7 +483,43 @@ async fn main() -> ExitCode {
                 Err(why) => Err(Failure::new(why)),
             }
         }
-        Command::Browser { url, forget } => sign_in(url, forget).await,
+        Command::Browser { max: Some(n), .. } => match settings::browser_max(&equipe_providers::credentials::equipe_home(), n.as_deref()) {
+            Ok(line) => {
+                println!("  {line}");
+                Ok(())
+            }
+            Err(why) => Err(Failure::new(why)),
+        },
+        Command::Browser { url, forget, .. } => sign_in(url, forget).await,
+        Command::Squad { words, squad, dry_run } => {
+            let home = equipe_providers::credentials::equipe_home();
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let current = home::squad_for(&home, &cwd, squad);
+            let words: Vec<&str> = words.iter().map(String::as_str).collect();
+            match settings::squad(&home, &cwd, current, &words, dry_run) {
+                Ok(lines) => {
+                    for line in lines {
+                        println!("  {line}");
+                    }
+                    Ok(())
+                }
+                Err(why) => Err(Failure::new(why)),
+            }
+        }
+        Command::SendApps { words, squad } => {
+            let home = equipe_providers::credentials::equipe_home();
+            let cwd = std::env::current_dir().unwrap_or_default();
+            match home::squad_for(&home, &cwd, squad) {
+                None => Err(Failure::new("No squad yet. Run equipe to start one.")),
+                Some(squad) => match settings::send_apps(&home, &squad, &words.join(" ")) {
+                    Ok(line) => {
+                        println!("  {line}");
+                        Ok(())
+                    }
+                    Err(why) => Err(Failure::new(why)),
+                },
+            }
+        }
         Command::Mcp { server, squad, member, role, home } => serve_mcp(&server, squad, member, role, home).await,
         Command::Desktop { action } => desktop::run(action.map(|a| match a {
             DesktopAction::Setup { sign } => desktop::Action::Setup { sign },

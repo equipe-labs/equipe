@@ -45,6 +45,16 @@ asks the next time you call `block_on_person`, so don't repeat it; \"not yet\" i
 it yourself and say what you chose. \"the person doesn't know\": find it out another way, or ask it differently. A \
 note under an item and their own words at the end (\"From the person:\") come first: follow them.";
 
+/// The roles a new squad may start with, besides the PM, and which are ticked.
+pub const STARTERS: [(&str, bool); 5] =
+    [("designer", true), ("frontend", true), ("backend", false), ("qa", false), ("data", false)];
+
+/// The team a squad started from a screen begins with: the PM, then the
+/// starters ticked by default.
+pub fn starting_team() -> Vec<String> {
+    std::iter::once(PM).chain(STARTERS.iter().filter(|(_, on)| *on).map(|(id, _)| *id)).map(str::to_owned).collect()
+}
+
 pub const ROLES: [Role; 7] = [
     Role {
         id: PM,

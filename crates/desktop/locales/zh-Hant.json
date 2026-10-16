@@ -1206,5 +1206,9 @@
   "turn.tip_your_call": "由 {name} 決定，並說明選了什麼",
   "turn.tip_yours": "交還給 {name} 自己做 — 需要你登入時會在瀏覽器裡叫你",
   "turn.waiting": "{name} 正在等你的回答 — 傳送後會從中斷處繼續",
-  "update.new_version": "新版本"
+  "update.new_version": "新版本",
+  "header.screen_holder": "{name} 正在使用 Mac 螢幕",
+  "header.screen_waiting_one": "{name} 等待中",
+  "header.screen_waiting_more": "{name} 等 {n} 人等待中",
+  "header.screen_stopped": "已收回 Mac 螢幕 · /desktop resume"
 }

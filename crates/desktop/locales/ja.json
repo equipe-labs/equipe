@@ -1206,5 +1206,9 @@
   "turn.tip_your_call": "{name} が決めて、何を選んだか伝えます",
   "turn.tip_yours": "{name} 自身にやってもらいます — ログインが要るときはブラウザで呼びます",
   "turn.waiting": "{name} が回答を待っています — 送ると中断したところから再開します",
-  "update.new_version": "新しいバージョン"
+  "update.new_version": "新しいバージョン",
+  "header.screen_holder": "{name}がMacの画面を使用中",
+  "header.screen_waiting_one": "{name}が待機中",
+  "header.screen_waiting_more": "{name}ほか{n}人が待機中",
+  "header.screen_stopped": "Macの画面を回収済み · /desktop resume"
 }

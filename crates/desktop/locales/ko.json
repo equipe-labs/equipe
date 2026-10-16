@@ -1206,5 +1206,9 @@
   "turn.tip_your_call": "{name}이(가) 정하고, 무엇을 골랐는지 알려 줘요",
   "turn.tip_yours": "{name}이(가) 직접 하게 맡겨요 — 내 로그인이 필요하면 브라우저로 불러요",
   "turn.waiting": "{name}이(가) 답을 기다려요 — 보내면 하던 자리에서 이어 갑니다",
-  "update.new_version": "새 버전"
+  "update.new_version": "새 버전",
+  "header.screen_holder": "{name}이(가) 맥 화면 사용 중",
+  "header.screen_waiting_one": "{name} 대기",
+  "header.screen_waiting_more": "{name} 외 {n}명 대기",
+  "header.screen_stopped": "맥 화면 회수됨 · /desktop resume"
 }
