@@ -26,6 +26,8 @@ opt-level = 2
 #   words between any two syllables (`LineWrapper::is_word_char`).
 # - gpui-pre: the content zoom (⌘+ / ⌘-) — `Window::set_content_zoom` scales
 #   the drawing and maps the viewport, input and IME positions (`zoom.rs`).
+# - gpui-pre: `EQUIPE_PERF=1|2|3` logs frame times (wall and main-thread CPU)
+#   and what asked for each frame (`window.rs` `equipe_perf`; docs/PERF-2026-10.md).
 # - gpui-base: a text view's link underline and the room between list items
 #   are the style's to set (`TextViewStyle`).
 [patch.crates-io]

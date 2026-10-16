@@ -354,6 +354,103 @@ thread_local! {
 /// restore the previous (still set) arena pointer, so `CURRENT_ELEMENT_ARENA`
 /// is `Some` from the outermost draw's start to its end.
 ///
+/// equipe: `EQUIPE_PERF=1` — once a second (while frames are drawn), how many
+/// were drawn and how long they took, on the clock and on the main thread's
+/// own CPU time (which a busy machine doesn't inflate), on stderr:
+/// `perf frames 58 p50 2.1ms p95 4.0ms max 9.8ms cpu p50 1.9ms p95 3.6ms max 9.1ms`.
+/// `EQUIPE_PERF=2`: each frame's, `perf frame <wall µs> <cpu µs>`.
+pub(crate) mod equipe_perf {
+    use std::cell::RefCell;
+    use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
+
+    fn level() -> u8 {
+        static LEVEL: OnceLock<u8> = OnceLock::new();
+        *LEVEL.get_or_init(|| std::env::var("EQUIPE_PERF").ok().and_then(|v| v.parse().ok()).unwrap_or(0))
+    }
+
+    /// The calling thread's CPU time.
+    #[cfg(target_os = "macos")]
+    fn cpu() -> Duration {
+        #[repr(C)]
+        struct Timespec {
+            sec: i64,
+            nsec: i64,
+        }
+        unsafe extern "C" {
+            fn clock_gettime(clock: u32, tp: *mut Timespec) -> i32;
+        }
+        const CLOCK_THREAD_CPUTIME_ID: u32 = 16;
+        let mut t = Timespec { sec: 0, nsec: 0 };
+        // SAFETY: `t` is a valid timespec for the call to fill.
+        unsafe { clock_gettime(CLOCK_THREAD_CPUTIME_ID, &mut t) };
+        Duration::new(t.sec as u64, t.nsec as u32)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn cpu() -> Duration {
+        Duration::ZERO
+    }
+
+    thread_local! {
+        static TIMES: RefCell<(Option<Instant>, Vec<Duration>, Vec<Duration>)> = const { RefCell::new((None, Vec::new(), Vec::new())) };
+        static WHY: RefCell<std::collections::HashMap<String, u32>> = RefCell::new(std::collections::HashMap::new());
+    }
+
+    /// `EQUIPE_PERF=3`: what asked for a frame (a notify, an animation
+    /// frame), counted and logged with each second's frame times.
+    pub(crate) fn note(what: impl FnOnce() -> String) {
+        if level() >= 3 {
+            let what = what();
+            WHY.with_borrow_mut(|why| *why.entry(what).or_default() += 1);
+        }
+    }
+
+    pub(super) fn frame<R>(f: impl FnOnce() -> R) -> R {
+        let level = level();
+        if level == 0 {
+            return f();
+        }
+        let (start, cpu_start) = (Instant::now(), cpu());
+        let result = f();
+        let (took, cpu_took) = (start.elapsed(), cpu().saturating_sub(cpu_start));
+        if level >= 2 {
+            eprintln!("perf frame {} {}", took.as_micros(), cpu_took.as_micros());
+        }
+        TIMES.with_borrow_mut(|(since, walls, cpus)| {
+            let since = since.get_or_insert(start);
+            walls.push(took);
+            cpus.push(cpu_took);
+            if start.duration_since(*since) >= Duration::from_secs(1) {
+                walls.sort();
+                cpus.sort();
+                let at = |v: &[Duration], q: f32| v[((v.len() - 1) as f32 * q).round() as usize].as_secs_f32() * 1000.;
+                eprintln!(
+                    "perf frames {} p50 {:.1}ms p95 {:.1}ms max {:.1}ms cpu p50 {:.1}ms p95 {:.1}ms max {:.1}ms",
+                    walls.len(),
+                    at(walls, 0.5),
+                    at(walls, 0.95),
+                    at(walls, 1.),
+                    at(cpus, 0.5),
+                    at(cpus, 0.95),
+                    at(cpus, 1.)
+                );
+                walls.clear();
+                cpus.clear();
+                *since = start;
+                WHY.with_borrow_mut(|why| {
+                    let mut all: Vec<_> = why.drain().collect();
+                    all.sort_by(|a, b| b.1.cmp(&a.1));
+                    for (what, n) in all.into_iter().take(10) {
+                        eprintln!("perf why {n} {what}");
+                    }
+                });
+            }
+        });
+        result
+    }
+}
+
 /// The `on_request_frame` callback uses this to defer draw requests that
 /// arrive re-entrantly while a draw is already on the stack (e.g. via nested
 /// message pumping in the Windows window procedure), instead of running a
@@ -1838,7 +1935,8 @@ impl Window {
 
                 let should_draw = invalidator.is_dirty() || force_render;
                 if should_draw {
-                    measure("frame duration", || {
+                    // equipe: `EQUIPE_PERF=1` logs each second's frame times.
+                    equipe_perf::frame(|| measure("frame duration", || {
                         handle
                             .update(&mut cx, |_, window, cx| {
                                 if force_render {
@@ -1851,7 +1949,7 @@ impl Window {
                                 arena_clear_needed.clear(cx);
                             })
                             .log_err();
-                    })
+                    }))
                 } else if needs_present {
                     handle
                         .update(&mut cx, |_, window, _| window.present())
@@ -2678,7 +2776,10 @@ impl Window {
     /// which automatically respects [`App::reduce_motion`]. When using this
     /// method directly for decorative motion, check [`App::reduce_motion`]
     /// and skip the frame request when it is set.
+    #[track_caller]
     pub fn request_animation_frame(&self) {
+        let at = std::panic::Location::caller();
+        equipe_perf::note(|| format!("raf {at}")); // equipe: `EQUIPE_PERF=3`
         let entity = self.current_view();
         self.on_next_frame(move |_, cx| cx.notify(entity));
     }

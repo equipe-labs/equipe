@@ -15,7 +15,7 @@
 //! `answer:<ticket>,<n>,<words>` / `aok:<ticket>,<n>` / `atick:<ticket>,<n>` / `apick:<ticket>,<n>,<done|yours|later|call|unknown>` / `anote:<ticket>,<n>,<words>` / `afree:<ticket>,<words>` / `asend:<ticket>` / `asent:<ticket>` (a waiting ticket's card: type in box n, its quick OK, tick thing n off, a pick, a note, the words to the member, send; open what was sent) ·
 //! `dkey:<key>` (a member's questions' card: `1`–`9`, `up`, `down`, `space`, `enter`, `cmd-enter`, `tab`, `left`, `escape`) · `dtype:<words>` (in its box for the person's own words) · `decided` (open the latest decided row) · `dpick:<id>` (a set in 나에게, peeking) ·
 //! `qopen` · `qtype:<n>,<words>` · `qsay:<n>,<words>` · `qsend` · `qesc` · `qenter` (a reply's list of questions as a form: open it, type in box n — past the items, the one for anything to add — tap a quick answer, send, cancel; ⏎ in the composer) ·
-//! `browser` (the browser panel, ⌘⇧B) · `bpick:<n>` (its nth tab) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
+//! `mark:<label>` (a line in the log) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `browser` (the browser panel, ⌘⇧B) · `bpick:<n>` (its nth tab) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 
 use std::time::Duration;
@@ -42,8 +42,31 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 cx.update(|cx| cx.quit());
                 return;
             }
+            // A line in the log the measurements are cut at (`docs/PERF-2026-10.md`).
+            if verb == "mark" {
+                eprintln!("perf mark {arg}");
+                continue;
+            }
+            // `scroll:<n>,<dy>`: n turns of the wheel, a frame apart, by dy points
+            // (up is positive), at the window's middle — as a trackpad sends them.
+            if verb == "scroll" {
+                let (n, dy) = arg.split_once(',').map(|(n, d)| (n.trim().parse().unwrap_or(60), d.trim().parse().unwrap_or(-40.))).unwrap_or((60, -40f32));
+                for _ in 0..n {
+                    let _ = cx.update_window(handle, |_, window, cx| {
+                        let size = window.viewport_size();
+                        let at = point(size.width * 0.45, size.height * 0.5);
+                        let wheel = ScrollWheelEvent { position: at, delta: ScrollDelta::Pixels(point(px(0.), px(dy))), modifiers: Modifiers::default(), touch_phase: TouchPhase::Moved };
+                        let wheel = window.input_from_platform(PlatformInput::ScrollWheel(wheel));
+                        window.dispatch_event(wheel, cx);
+                    });
+                    cx.background_executor().timer(Duration::from_millis(16)).await;
+                }
+                continue;
+            }
             let shell = shell.clone();
             let verb = verb.to_owned();
+            let started = std::time::Instant::now();
+            let timed = verb.clone();
             let _ = cx.update_window(handle, move |_, window, cx| match verb.as_str() {
                 "shot" => match window.render_to_image() {
                     Ok(image) => eprintln!("shot {arg}: {:?}", image.save(&arg)),
@@ -449,6 +472,7 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 }
                 other => eprintln!("script: no step {other}"),
             });
+            eprintln!("perf step {timed} {:?}", started.elapsed());
             // Let the window draw what the step did.
             cx.background_executor().timer(Duration::from_millis(60)).await;
         }

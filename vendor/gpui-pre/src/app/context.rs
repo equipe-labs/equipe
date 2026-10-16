@@ -218,7 +218,10 @@ impl<'a, T: 'static> Context<'a, T> {
     }
 
     /// Tell GPUI that this entity has changed and observers of it should be notified.
+    #[track_caller]
     pub fn notify(&mut self) {
+        let at = std::panic::Location::caller();
+        crate::window::equipe_perf::note(|| format!("notify {at}")); // equipe: `EQUIPE_PERF=3`
         self.app.notify(self.entity_state.entity_id);
     }
 
