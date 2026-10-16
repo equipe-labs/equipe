@@ -15,7 +15,7 @@ use equipe_core::protocol::decide::{Answer, Choice, Question, QuestionSet};
 use equipe_core::protocol::rpc::{Hello, Message};
 use equipe_core::protocol::team::{Change, TeamChange};
 use equipe_core::protocol::{
-    Access, Approval, Decision, Engine, Entry, Event, Member, Mode, SessionInfo, SessionState, Snapshot, Ticket, TicketKind, TicketStatus, TurnOutcome, Usage, WorkInfo,
+    Access, Approval, Decision, Engine, Entry, Event, Member, Mode, SessionInfo, SessionState, Snapshot, SubagentInfo, Ticket, TicketKind, TicketStatus, TurnOutcome, Usage, WorkInfo,
 };
 use serde_json::{Value, json};
 
@@ -743,6 +743,7 @@ fn snapshot() -> Snapshot {
                 work: None,
                 mode: None,
                 effort: None,
+                subagents: Vec::new(),
             },
             SessionInfo {
                 session: 4242,
@@ -767,6 +768,8 @@ fn snapshot() -> Snapshot {
                 work: Some(WorkInfo { ticket: 38, project: "/Users/you/projects/api".into(), workspace: None }),
                 mode: None,
                 effort: None,
+                // Handed side work, still at it: a screen attaching now lists it under its member.
+                subagents: vec![SubagentInfo { id: "toolu_01".into(), what: "Read the API's error logs".into(), step: Some("Grep TimeoutError".into()), secs: 48 }],
             },
         ],
         tickets: vec![ticket(TicketStatus::InProgress)],
@@ -862,6 +865,10 @@ fn message_vectors() -> Value {
     tell(&mut core, &mut examples, "event: message queued", Event::MessageQueued { session: pm, text: "그리고 테스트도".into(), project: None });
     tell(&mut core, &mut examples, "event: text delta", Event::TextDelta { session: pm, text: "보드를 보면".into() });
     tell(&mut core, &mut examples, "event: tool use", Event::ToolUse { session: pm, tool: "board".into(), target: None });
+    // Side work handed to a subagent: it starts, takes steps, hands back (the snapshot lists those still at it).
+    tell(&mut core, &mut examples, "event: subagent started", Event::SubagentStarted { session: pm, id: "toolu_02".into(), what: "Compare the two login flows".into() });
+    tell(&mut core, &mut examples, "event: subagent step", Event::SubagentStep { session: pm, id: "toolu_02".into(), step: "Read src/login.tsx".into() });
+    tell(&mut core, &mut examples, "event: subagent ended", Event::SubagentEnded { session: pm, id: "toolu_02".into() });
     tell(&mut core, &mut examples, "event: turn ended", Event::TurnEnded { session: pm, outcome: TurnOutcome::Completed, usage: Some(Usage { input_tokens: Some(1200), output_tokens: Some(340), ..Usage::default() }) });
     tell(&mut core, &mut examples, "event: turn interrupted", Event::TurnEnded { session: pm, outcome: TurnOutcome::Interrupted, usage: None });
     tell(&mut core, &mut examples, "event: notice", Event::Notice { session: pm, text: "↪ You → backend: 로그인 API 먼저".into() });

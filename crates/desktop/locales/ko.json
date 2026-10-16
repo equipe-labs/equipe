@@ -1090,6 +1090,8 @@
   "sidebar.settings": "설정",
   "sidebar.show_tip": "사이드바 보기 ⌘\\",
   "sidebar.squads": "스쿼드",
+  "sidebar.subagent_starting": "막 시작함",
+  "sidebar.subagents": "서브에이전트 {n}",
   "sidebar.switch_project": "이 프로젝트로 전환",
   "sidebar.talk": "대화하기",
   "sidebar.team": "팀",

@@ -1090,6 +1090,8 @@
   "sidebar.settings": "設定",
   "sidebar.show_tip": "顯示側邊欄 ⌘\\",
   "sidebar.squads": "小隊",
+  "sidebar.subagent_starting": "剛開始",
+  "sidebar.subagents": "子代理 {n}",
   "sidebar.switch_project": "切換到此專案",
   "sidebar.talk": "對話",
   "sidebar.team": "團隊",

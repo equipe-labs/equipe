@@ -984,6 +984,7 @@ mod tests {
             work: None,
             mode: None,
             effort: None,
+            subagents: Vec::new(),
         }
     }
 

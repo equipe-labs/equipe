@@ -470,6 +470,10 @@ struct Session {
     /// The words a message sent at once ([`Command::SendNow`]) goes to the
     /// engine as — each part with its project — in place of the message.
     send_now_prompt: Option<String>,
+    /// The subagents it handed work to this turn and that haven't handed
+    /// back — its id, what it was handed, its latest step, since when — for a
+    /// screen that attaches now.
+    subagents: Vec<(String, String, Option<String>, std::time::Instant)>,
     /// For the PM: what happened with the team since the PM's last turn. It
     /// travels with the PM's next message, so the PM keeps up without spending a
     /// turn on every exchange.
@@ -922,7 +926,16 @@ impl Runtime {
                         }
                     }
                 }
+                Event::SubagentStarted { id, what, .. } => session.subagents.push((id.clone(), what.clone(), None, std::time::Instant::now())),
+                Event::SubagentStep { id, step, .. } => {
+                    if let Some(sub) = session.subagents.iter_mut().find(|s| s.0 == *id) {
+                        sub.2 = Some(step.clone());
+                    }
+                }
+                Event::SubagentEnded { id, .. } => session.subagents.retain(|s| s.0 != *id),
                 Event::TurnEnded { usage, .. } => {
+                    // Whatever didn't hand back ended with the turn.
+                    session.subagents.clear();
                     session.last_turn = Some(std::time::Instant::now());
                     if let Some(u) = usage {
                         session.tokens += u.total();
@@ -1546,6 +1559,7 @@ impl Runtime {
                 steer_threads: Vec::new(),
                 taken_back: Vec::new(),
                 send_now_prompt: None,
+                subagents: Vec::new(),
                 answers_person: false,
                 effort: None,
                 briefing: Vec::new(),
@@ -2007,6 +2021,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             steer_threads: Vec::new(),
             taken_back: Vec::new(),
             send_now_prompt: None,
+            subagents: Vec::new(),
             answers_person: false,
             effort: None,
             briefing: Vec::new(),
@@ -4556,6 +4571,11 @@ it back there once they have done it.{again} End your turn now with a short line
                     }),
                     mode: s.mode,
                     effort: s.effort.clone(),
+                    subagents: s
+                        .subagents
+                        .iter()
+                        .map(|(id, what, step, since)| equipe_protocol::SubagentInfo { id: id.clone(), what: what.clone(), step: step.clone(), secs: since.elapsed().as_secs() })
+                        .collect(),
                 }
             })
             .collect();
@@ -4724,6 +4744,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         steer_threads: Vec::new(),
                         taken_back: Vec::new(),
                         send_now_prompt: None,
+                        subagents: Vec::new(),
                         briefing: journal.waiting(record.id, "briefing").unwrap_or_default(),
                         memory,
                         mode: record.mode,
