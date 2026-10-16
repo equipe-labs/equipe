@@ -4,6 +4,7 @@ pub mod actions;
 pub mod approvals;
 pub mod asklist;
 pub mod attached;
+pub mod bell;
 pub mod board;
 pub mod browser;
 pub mod chat;

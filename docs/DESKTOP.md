@@ -211,6 +211,7 @@ over the same control connection; quote every path with single quotes
 | Socket | `daemon::Target::from_env`: `<home>/equipe.sock` | `equipe attach --stdio` (above) |
 | Squad list and the squad to open | **done** — the `squads` request → `{squads: [{name, projects, home}], last}`, locally and remotely alike (`wire::connect`), on each attach | the same |
 | Image attach (paste, drop, file) | **done** (`attach.rs`, `views/composer.rs`) — ⌘V (clipboard picture or copied image files), drop on the window, and `equipe send-image`'s inbox (a file watch on `<home>/inbox`, this Mac's daemon only) put thumbnails above the box (≤ 5, ≤ 8 MB each, long side shrunk to 1568 px; decoding, shrinking and the upload run on the background pool). Local and SSH alike use the `upload` request (below); `[image: <path>] ` is appended to the message at send | the **`upload` request** `{name, data: base64}` → `{path}`; put `[image: <path>]` in `Submit`. Not `~/.equipe/inbox` (`equipe send-image`'s): a console open on that machine takes those into its own composer. |
+| Notifications and the Dock's number | **done** — from the events the window receives (`notify.rs`, "Notifications" below) | the same, on the person's Mac; the daemon's Mac shows none |
 | `/home` (open the folder) | `open <home>` (path from `squads` → `home`) | Nothing opens there. Show the path with a copy button. |
 | `/home changes`, `/home undo [n]` | `equipe home changes --squad <s>` / `equipe home undo <n> --squad <s>`, run here | the same as an `ssh` side command with `EQUIPE_NO_OPEN=1` in front. Show stdout's lines; exit ≠ 0 → stderr's last non-empty line is the reason. |
 | `/memory`, `/memory changes` | `equipe memory [changes] --squad <s>` | the same, `EQUIPE_NO_OPEN=1 equipe memory …`; `EQUIPE_NO_OPEN` keeps it from opening a Finder window on the far screen. |
@@ -420,6 +421,66 @@ members' pages as 0.47 did, for a before shot). The host's
 ops have a smoke test, a stand-in Cloudflare wall included:
 `npx -y -p playwright@1.64.0 node scripts/browser-host-smoke.cjs`.
 
+## Notifications
+
+While the window is out of sight — another app in front, the window hidden,
+minimised or on another Space — the app tells the person through macOS's
+notification centre (`UNUserNotificationCenter`, `notify/system.rs`); in
+sight, the sidebar and the cards say it and nothing pops up. What is told
+(`notify.rs`, all plain functions under test):
+
+| Kind | When | Switch (default) |
+|---|---|---|
+| 허락을 구할 때 | a member asks permission | on |
+| 검토할 일이 생겼을 때 | a ticket turns to review | on |
+| 내가 할 일이 남았을 때 | a ticket waits on the person, a member's question set, a browser page waiting for a human | on |
+| 작업이 실패했을 때 | a member's turn failed, or merging accepted work failed (conflict or otherwise) | on |
+| 답장이 왔을 때 | a turn ended with an answer in the conversation the person last wrote in (only the first answer after they wrote): "pm의 답장이 왔어요" and the answer's first line of prose, never a code block | on |
+| main에 머지됐을 때 | accepted work landed on main | off |
+| 업데이트가 준비됐을 때 | Sparkle downloaded a new version: "새 버전이 준비됐어요", with a 다시 시작 button | on |
+
+More than three things that wait, at once, become one notice ("acme에서 4건이
+…"); news (answers, merges, updates) is never folded in. A notice says who
+needs what, never a command, a secret or a file's content. Each carries a
+thread — the member's (`squad/<squad>/<member>`), else the squad's — so
+Notification Center keeps them together, and an 열기 button. A click (or the
+button) comes back through the delegate as a `Go` encoded in the notice's
+identifier (`member:4|<n>`), so it works even when the click starts the app:
+the window comes forward on that conversation, ticket, the board or the
+browser panel. 소리 turns the system sound off; **Dock 아이콘에 숫자 표시** puts
+나에게's count on the Dock icon, live (no permission needed).
+
+**Asking permission.** Nothing is asked at launch. The first time there is
+something to tell while the window is out of sight, or when the person turns a
+switch on, a sheet says what equipe will notify and that a notice never holds
+commands or contents (알림 켜기 / 나중에); 알림 켜기 asks macOS
+(`requestAuthorization`: alert, sound, badge). 나중에 is remembered (`notify
+later` in `desktop-target`); Settings ▸ 일반 ▸ 알림 still offers 알림 켜기.
+Settings shows what macOS allows (asked again whenever the window comes
+forward); turned off, it says so and **시스템 설정 열기** opens System Settings ▸
+Notifications on equipe (`…Notifications-Settings.extension?id=<bundle id>`).
+No usage description is needed for notifications.
+
+**Over SSH** the notices come from what the window hears, so a window onto
+another Mac's daemon notifies on the person's Mac, the same as locally. The
+daemon (and the `equipe attach --stdio` it runs over SSH) never shows a
+notification.
+
+**Dev builds.** The centre needs the app bundle — run as a bare binary it
+would abort ("bundleProxyForCurrentProcess is nil") — so `cargo run` logs once
+that notifications are off and goes on; settings says so. To see them, package
+a bundle with a bundle id of its own (so the installed app's permission isn't
+touched) and run its self-test, which needs no window and no daemon:
+
+```sh
+EQUIPE_DMG_ARCHS=aarch64 EQUIPE_BUNDLE_ID=im.equipe.desktop.dev scripts/desktop-dmg.sh
+open -n --stderr /tmp/notify.log target/desktop-dmg/equipe.app --args --notify-test
+```
+
+It says what macOS allows, asks if it never was, posts three notices (two in
+the PM's thread, and the update's), puts 3 on the Dock and waits two minutes for
+a click, each step in the log.
+
 ## Zoom (⌘+ ⌘- ⌘0)
 
 The window zooms as a browser (or Claude) does: 보기 ▸ 확대 (⌘+, also ⌘=),
@@ -503,9 +564,36 @@ the repository (the public key file is public by design).
 
 In the app (`src/update.rs`): when `Contents/Frameworks/Sparkle.framework` is
 there, the app `dlopen`s it and starts `SPUStandardUpdaterController`. Sparkle
-checks the feed once a day by itself and asks before installing; the app menu
-(equipe ▸ 업데이트 확인…) checks now. `cargo run` has no framework, so updates
-are off and the item is disabled. The menu also has 가리기 (⌘H), 기타 가리기
+checks the feed every hour by itself, and the app looks too right after launch
+and when the window comes back after 5 minutes; the app menu (equipe ▸
+업데이트 확인…) and Settings ▸ 업데이트와 정보 ▸ 지금 확인 check now. `cargo run`
+has no framework, so updates are off and the item is disabled.
+
+Where an update stands is `relaunch::Update`, moved by each of Sparkle's
+delegate calls (`didFindValidUpdate`, `willDownloadUpdate`,
+`failedToDownloadUpdate`, `userDidCancelDownload`, `willInstallUpdateOnQuit`,
+`didAbortWithError`, `didFinishUpdateCycleForUpdateCheck`), and shown the same
+way in the sidebar's pill and in settings: **새 버전 0.49.0 받는 중…** (quiet;
+Sparkle's delegate gives no download progress), **다시 시작해 업데이트 →**,
+**업데이트 받기 실패 · 다시 시도** (settings: the reason in plain words, 로그 보기,
+다시 시도), or **Applications 폴더로 옮겨 주세요** when the app was opened from the
+disk image or translocated from a download (Finder에서 보기). Found and
+downloaded each give one notice per version (업데이트가 준비됐을 때; told
+versions kept in `desktop-target` as `update-told`); clicking the downloaded
+one restarts into it.
+
+Every step and every error — domain, code, description, userInfo and the
+errors under it — goes to `~/Library/Logs/equipe/updates.log`, with where the
+app started from: the first thing to read when Sparkle says only "An error
+occurred while running the updater".
+
+The app never starts a Sparkle session against one in progress: its quiet
+check runs only when `sessionInProgress` is false and no update is found,
+downloading or waiting (`relaunch::may_check_quietly`); 지금 확인 with an update
+waiting installs it through the block Sparkle handed `willInstallUpdateOnQuit`
+(Sparkle 2.3+ allows calling it again after a cancelled quit) rather than
+checking again, and while Sparkle downloads on its own (`canCheckForUpdates`
+false) it is left to finish. The menu also has 가리기 (⌘H), 기타 가리기
 (⌥⌘H), 모두 보기 and 종료 (⌘Q).
 
 Knobs for testing: `EQUIPE_DMG_ARCHS=aarch64` (one arch, quicker),

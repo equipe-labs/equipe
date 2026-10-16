@@ -823,6 +823,13 @@ impl Model {
             {
                 self.revision += 1;
             }
+            // An answer: the shell tells it if it is to what the person last wrote.
+            if let Event::TurnEnded { outcome: TurnOutcome::Completed | TurnOutcome::Incomplete, .. } = &event
+                && let Some(line) = self.convos.get(&id).and_then(|c| crate::notify::reply_line(c.transcript.entries()))
+                && let Some(member) = self.members.iter().find(|m| m.session == id).or_else(|| self.lanes.iter().find(|l| l.session == id).and_then(|l| self.members.iter().find(|m| m.session == l.of)))
+            {
+                self.alerts.push(Alert::Reply { session: id, member: member.name.clone(), line });
+            }
         }
         self.on_member_event(event);
         self.keep_selection();
@@ -1018,6 +1025,9 @@ impl Model {
 
     fn on_ticket(&mut self, ticket: &Ticket) {
         let was = self.tickets.iter().find(|t| t.id == ticket.id).map(|t| t.status);
+        if let Some(alert) = self.tickets.iter().find(|t| t.id == ticket.id).and_then(|old| crate::notify::merge_alert(old, ticket, self.ticket_project_name(ticket))) {
+            self.alerts.push(alert);
+        }
         if was != Some(ticket.status) {
             self.since.insert(ticket.id, self.unix);
             if was.is_some() {
@@ -1661,6 +1671,31 @@ mod tests {
         assert!(model.take_alerts().is_empty(), "stopped by the person: nothing to say");
         model.apply(ended(equipe_core::protocol::TurnOutcome::Failed), T0);
         assert_eq!(model.take_alerts(), vec![Alert::Failed { session: 2, member: "backend".into() }]);
+    }
+
+    #[test]
+    fn an_answer_and_a_merge_are_news_for_the_shell_to_tell() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        let event = |e: Event| Update::Event(e);
+        model.apply(event(Event::UserMessage { session: 1, text: "어떻게 됐어?".into() }), T0);
+        model.apply(event(Event::TextDelta { session: 1, text: "**다 됐어요.** 테스트도\n통과".into() }), T0);
+        assert!(model.take_alerts().is_empty(), "not before the turn ends");
+        model.apply(event(Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }), T0);
+        assert_eq!(model.take_alerts(), vec![Alert::Reply { session: 1, member: "pm".into(), line: "다 됐어요. 테스트도".into() }]);
+        model.apply(event(Event::UserMessage { session: 1, text: "멈춰".into() }), T0);
+        model.apply(event(Event::TurnEnded { session: 1, outcome: TurnOutcome::Interrupted, usage: None }), T0);
+        assert!(model.take_alerts().is_empty(), "stopped, and nothing said since the person spoke");
+
+        let code = |status: &str, merged: Option<bool>| -> Ticket {
+            serde_json::from_value(serde_json::json!({"id": 4, "title": "로그인", "body": "", "status": status, "owner": "backend", "assignee": "backend", "project": null, "depends_on": [], "branch": "eq/t4", "merged": merged, "created_by": "pm", "note": null})).unwrap()
+        };
+        model.apply(event(Event::TicketChanged { squad: "acme".into(), ticket: code("done", Some(true)) }), T0);
+        assert!(model.take_alerts().is_empty(), "a ticket seen for the first time isn't news");
+        model.apply(event(Event::TicketChanged { squad: "acme".into(), ticket: code("review", None) }), T0);
+        model.take_alerts();
+        model.apply(event(Event::TicketChanged { squad: "acme".into(), ticket: code("done", Some(true)) }), T0);
+        assert!(matches!(&model.take_alerts()[..], [Alert::Merged { ticket: 4, .. }]));
     }
 
     #[test]

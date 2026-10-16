@@ -172,10 +172,10 @@ pub struct Shell {
     pub browser: Entity<BrowserPanel>,
     /// The ticket a `T-n` link asked the board to open.
     pub board_ticket: Option<u32>,
-    /// Where a click on a notification says to go: the notifier's threads send, we follow.
-    clicks: tokio::sync::mpsc::UnboundedSender<notify::Go>,
-    /// An update downloaded and waiting for a restart: its version.
-    pub update_ready: Option<String>,
+    /// Notifications: what macOS allows, the sheet asking, the reply awaited, the Dock's number.
+    pub bell: notify::Bell,
+    /// Where an update stands: being downloaded, waiting for a restart, failed.
+    pub update: relaunch::Update,
     /// Whose daemon this window is a window onto, and what it remembers of that.
     pub endpoint: Endpoint,
     pub remembered: Remembered,
@@ -266,8 +266,8 @@ impl Shell {
             settings: views::settings::SettingsUi::new(window, cx),
             browser,
             board_ticket: None,
-            clicks,
-            update_ready: relaunch::watch().borrow().clone(),
+            bell: Default::default(),
+            update: relaunch::current(),
             endpoint: endpoint.clone(),
             remembered,
             connect,
@@ -303,6 +303,8 @@ impl Shell {
         }
         shell.chat.follow = !shell.remembered.whole_conversation;
         shell.board.view.layout = if shell.remembered.tickets_board { tickets::Layout::Board } else { tickets::Layout::List };
+        // Where a click on a notification says to go: the delegate sends, we follow.
+        shell.start_bell(clicks, window, cx);
         shell._clicks = Some(cx.spawn_in(window, async move |this, cx| {
             while let Some(go) = clicked.recv().await {
                 if this.update_in(cx, |this, window, cx| this.go(go, window, cx)).is_err() {
@@ -314,9 +316,14 @@ impl Shell {
         let mut updates = relaunch::watch();
         shell._updates = Some(cx.spawn_in(window, async move |this, cx| {
             while updates.changed().await.is_ok() {
-                let version = updates.borrow_and_update().clone();
-                if this.update_in(cx, |this, _, cx| {
-                    this.update_ready = version;
+                let state = updates.borrow_and_update().clone();
+                if this.update_in(cx, |this, window, cx| {
+                    // Found and downloaded: each told once (and remembered across launches).
+                    if let Some(alert) = notify::update_alert(&state, &mut this.remembered.update_told) {
+                        this.remembered.save(&equipe_home());
+                        this.announce(vec![alert], window, cx);
+                    }
+                    this.update = state;
                     cx.notify();
                 })
                 .is_err()
@@ -519,6 +526,7 @@ impl Shell {
     }
 
     pub fn send_command(&self, command: Command) {
+        self.await_reply(&command);
         if let Some(link) = &self.link {
             link.send(command);
         }
@@ -664,13 +672,9 @@ impl Shell {
                     }
                     // Told while the window is out of sight; in sight, the cards say it.
                     // Only the kinds the person wants (settings → 알림).
-                    let pings = this.remembered.pings;
-                    let alerts: Vec<notify::Alert> = this.model.take_alerts().into_iter().filter(|a| pings.wants(a)).collect();
-                    if !alerts.is_empty() && !window.is_window_active() {
-                        for toast in notify::toasts(&alerts, &this.model.squad, true) {
-                            notify::send(toast, this.clicks.clone(), pings.sound);
-                        }
-                    }
+                    let alerts = this.model.take_alerts();
+                    this.announce(alerts, window, cx);
+                    this.sync_badge();
                     if let Some(flash) = this.model.take_flash() {
                         this.composer.flash = Some(flash);
                         changed = true;
@@ -768,7 +772,7 @@ impl Shell {
     // ── questions from ssh ──
 
     pub fn overlay_open(&self) -> bool {
-        self.connect.open || !self.ask.queue.is_empty() || self.pairing.open || self.confirm.is_some() || self.sheet.is_some()
+        self.connect.open || !self.ask.queue.is_empty() || self.pairing.open || self.confirm.is_some() || self.sheet.is_some() || self.bell.sheet
     }
 
     fn escape_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -776,6 +780,8 @@ impl Shell {
             self.answer_prompt(askpass::Answer::Cancel, window, cx);
         } else if self.pairing.open {
             self.close_pairing(window, cx);
+        } else if self.bell.sheet {
+            self.notify_later(window, cx);
         } else if self.connect.open {
             self.close_chooser(window, cx);
         } else if self.confirm.is_some() {
@@ -868,6 +874,13 @@ impl Shell {
             notify::Go::Ticket(ticket) => self.open_ticket(ticket, cx),
             notify::Go::Board => self.show(Screen::Board, cx),
             notify::Go::Browser(page) => self.reveal_browser(page, cx),
+            // Downloaded: the notice's click restarts into it; before, the window shows the pill.
+            notify::Go::Update => {
+                if self.update.ready().is_some() {
+                    self.relaunch_to_update(cx);
+                }
+            }
+            notify::Go::Relaunch => self.relaunch_to_update(cx),
         }
         window.activate_window();
         cx.activate(true);
@@ -1037,6 +1050,8 @@ impl Render for Shell {
         }
         self.board.relocalize(window, cx);
         self.board_prepare(window, cx);
+        // What the person did here (accepted, answered, a project in focus) changes 나에게 too.
+        self.sync_badge();
         self.renders += 1;
         if self.log_renders {
             let mb = mem::phys_footprint_bytes().map_or(0., |b| b as f64 / 1_048_576.);
@@ -1112,6 +1127,7 @@ impl Render for Shell {
                 .child(h_flex().flex_1().min_h_0().child(views::settings::render(self, cx)))
                 .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
                 .children(views::pair::sheet(self, cx))
+                .children(views::bell::sheet(self, cx))
                 .children(views::connect::question(self, cx))
                 .children(self.zoom_chip(window, cx))
                 .children(tips::layer(cx));
@@ -1130,6 +1146,7 @@ impl Render for Shell {
             .children(views::sheet::question(self, cx))
             .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
             .children(views::pair::sheet(self, cx))
+            .children(views::bell::sheet(self, cx))
             .children(views::connect::question(self, cx))
             .children(self.zoom_chip(window, cx))
             .child(views::ticket_card::layer(cx))
@@ -1327,6 +1344,11 @@ fn main() {
     // The language picked for every screen — this app's own pick from before
     // becomes that, once — else the Mac's, before any word is shown.
     i18n::migrate(&equipe_home());
+    // From the bundle: notices without a window or a daemon, to see macOS show them (docs/DESKTOP.md).
+    if std::env::args().any(|a| a == "--notify-test") {
+        views::bell::notify_test();
+        return;
+    }
     // Images a reply points at on the web come through this client.
     let http = std::sync::Arc::new(reqwest_client::ReqwestClient::user_agent("equipe-desktop").unwrap_or_else(|_| reqwest_client::ReqwestClient::new()));
     // The app's icons, then GPUI Kit's own (the sidebar's, the components').
@@ -1347,6 +1369,8 @@ fn main() {
     });
     app.run(|cx| {
         gpui_kit::init(cx);
+        // The notification centre's delegate, before a click can come back.
+        notify::start();
         tips::init(cx);
         cx.bind_keys(window_bindings());
         app_menu(cx);

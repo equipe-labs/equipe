@@ -176,6 +176,11 @@ pub struct Remembered {
     pub start: Start,
     /// What the person wants to be told of while the window is out of sight.
     pub pings: Pings,
+    /// The person said "나중에" when asked to let equipe notify: not asked
+    /// again on its own (settings still offers it).
+    pub notify_later: bool,
+    /// The update notices told already (`found <v>`, `ready <v>`): each once.
+    pub update_told: Vec<String>,
     /// The PM's conversation shows whole whatever project is in focus — as it
     /// did before it followed the project (settings ▸ 일반).
     pub whole_conversation: bool,
@@ -238,20 +243,32 @@ impl Appearance {
 }
 
 /// What the person wants to be told of while the window is out of sight
-/// (settings → 알림): each kind on or off, and whether a notice makes a
-/// sound. Everything, by default.
+/// (settings → 알림): each kind on or off, whether a notice makes a sound,
+/// whether the Dock's icon shows what waits. Everything but merges, by default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pings {
     pub approvals: bool,
     pub reviews: bool,
     pub waiting: bool,
     pub failed: bool,
+    /// The answer to what the person last wrote.
+    pub replies: bool,
+    /// Accepted work landing on main.
+    pub merged: bool,
+    /// A new version of the app, downloaded.
+    pub update: bool,
     pub sound: bool,
+    /// The number on the Dock's icon: 나에게's.
+    pub badge: bool,
 }
 
 impl Default for Pings {
     fn default() -> Self {
-        Self { approvals: true, reviews: true, waiting: true, failed: true, sound: true }
+        let mut pings = Self { approvals: false, reviews: false, waiting: false, failed: false, replies: false, merged: false, update: false, sound: false, badge: false };
+        for ping in Ping::ALL {
+            pings.set(ping, ping.default_on());
+        }
+        pings
     }
 }
 
@@ -262,11 +279,15 @@ pub enum Ping {
     Reviews,
     Waiting,
     Failed,
+    Replies,
+    Merged,
+    Update,
     Sound,
+    Badge,
 }
 
 impl Ping {
-    pub const ALL: [Ping; 5] = [Ping::Approvals, Ping::Reviews, Ping::Waiting, Ping::Failed, Ping::Sound];
+    pub const ALL: [Ping; 9] = [Ping::Approvals, Ping::Reviews, Ping::Waiting, Ping::Failed, Ping::Replies, Ping::Merged, Ping::Update, Ping::Sound, Ping::Badge];
 
     pub fn code(self) -> &'static str {
         match self {
@@ -274,8 +295,17 @@ impl Ping {
             Ping::Reviews => "reviews",
             Ping::Waiting => "waiting",
             Ping::Failed => "failed",
+            Ping::Replies => "replies",
+            Ping::Merged => "merged",
+            Ping::Update => "update",
             Ping::Sound => "sound",
+            Ping::Badge => "badge",
         }
+    }
+
+    /// On unless the person turns it off — all but merges, which they turn on.
+    pub fn default_on(self) -> bool {
+        self != Ping::Merged
     }
 }
 
@@ -286,7 +316,11 @@ impl Pings {
             Ping::Reviews => self.reviews,
             Ping::Waiting => self.waiting,
             Ping::Failed => self.failed,
+            Ping::Replies => self.replies,
+            Ping::Merged => self.merged,
+            Ping::Update => self.update,
             Ping::Sound => self.sound,
+            Ping::Badge => self.badge,
         }
     }
 
@@ -296,7 +330,11 @@ impl Pings {
             Ping::Reviews => self.reviews = on,
             Ping::Waiting => self.waiting = on,
             Ping::Failed => self.failed = on,
+            Ping::Replies => self.replies = on,
+            Ping::Merged => self.merged = on,
+            Ping::Update => self.update = on,
             Ping::Sound => self.sound = on,
+            Ping::Badge => self.badge = on,
         }
     }
 }
@@ -370,10 +408,14 @@ impl Remembered {
                 out.folded.insert(name.to_owned());
             } else if line.trim() == "tickets board" {
                 out.tickets_board = true;
-            } else if let Some(rest) = line.strip_prefix("quiet ") {
+            } else if let Some((on, rest)) = line.strip_prefix("quiet ").map(|r| (false, r)).or_else(|| line.strip_prefix("ping ").map(|r| (true, r))) {
                 if let Some(ping) = Ping::ALL.into_iter().find(|p| p.code() == rest.trim()) {
-                    out.pings.set(ping, false);
+                    out.pings.set(ping, on);
                 }
+            } else if line.trim() == "notify later" {
+                out.notify_later = true;
+            } else if let Some(rest) = line.strip_prefix("update-told ") {
+                out.update_told.push(rest.trim().to_owned());
             } else if let Some(rest) = line.strip_prefix("board-split ") {
                 out.board_split = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("browser-width ") {
@@ -427,8 +469,15 @@ impl Remembered {
         if self.tickets_board {
             text.push_str("tickets board\n");
         }
-        for ping in Ping::ALL.into_iter().filter(|p| !self.pings.get(*p)) {
-            text.push_str(&format!("quiet {}\n", ping.code()));
+        // Only what differs from the default: off as `quiet`, on as `ping`.
+        for ping in Ping::ALL.into_iter().filter(|p| self.pings.get(*p) != p.default_on()) {
+            text.push_str(&format!("{} {}\n", if self.pings.get(ping) { "ping" } else { "quiet" }, ping.code()));
+        }
+        if self.notify_later {
+            text.push_str("notify later\n");
+        }
+        for told in &self.update_told {
+            text.push_str(&format!("update-told {told}\n"));
         }
         for (project, way) in &self.merge_ways {
             text.push_str(&format!("merge {project} {way}\n"));
@@ -606,7 +655,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("eq-prefs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let fresh = Remembered::load(&dir);
-        assert_eq!((fresh.appearance, fresh.start, fresh.pings), (Appearance::System, Start::Pm, Pings::default()), "the system's look, the PM, every notice");
+        assert_eq!((fresh.appearance, fresh.start, fresh.pings), (Appearance::System, Start::Pm, Pings::default()), "the system's look, the PM, every notice but merges");
+        assert!(!fresh.notify_later);
 
         assert!(!fresh.whole_conversation, "the conversation follows the project by default");
         assert!(!fresh.tickets_board, "티켓 opens as a list");
@@ -626,6 +676,21 @@ mod tests {
         assert!(loaded.tickets_board, "the board, as last left");
         assert!(!loaded.pings.failed && !loaded.pings.sound && loaded.pings.approvals && loaded.pings.reviews && loaded.pings.waiting);
         assert_eq!((loaded.merge_way("app"), loaded.merge_way("site")), (None, Some("merge")), "back to asking each time");
+
+        // The kinds that are off by default are written when on, and the rest when off.
+        let mut prefs = Remembered { notify_later: true, update_told: vec!["ready 0.49.0".into()], ..Remembered::default() };
+        prefs.pings.set(Ping::Merged, true);
+        prefs.pings.set(Ping::Badge, false);
+        prefs.pings.set(Ping::Replies, false);
+        prefs.save(&dir);
+        let text = std::fs::read_to_string(Remembered::path(&dir)).unwrap();
+        assert_eq!(text, "quiet replies\nping merged\nquiet badge\nnotify later\nupdate-told ready 0.49.0\n");
+        let loaded = Remembered::load(&dir);
+        assert_eq!(loaded.pings, prefs.pings);
+        assert!(loaded.notify_later && loaded.pings.update && loaded.pings.sound);
+        assert_eq!(loaded.update_told, ["ready 0.49.0"]);
+        let old = Remembered::parse("quiet sound\n");
+        assert!(!old.pings.sound && !old.pings.merged && old.pings.replies && old.pings.badge, "an older file reads with the new kinds as by default");
 
         Remembered::default().save(&dir);
         assert_eq!(std::fs::read_to_string(Remembered::path(&dir)).unwrap(), "", "defaults take no lines");
