@@ -11,7 +11,7 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     Chosen,
     [
-        ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CornerDownRight, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, FileText, Folder, Globe, Hand, Inbox, Info, Keyboard, Laptop, Lightbulb, Locate, Lock, Maximize2, MessageSquare, Mic, Minimize2, Paperclip, Pencil, Plus, RotateCcw, RotateCw, Search, Server, Settings, ShieldCheck, Smartphone, SquareSlash, SquareTerminal, Ticket, TriangleAlert, Undo2, Users, X
+        ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CornerDownRight, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, FileText, Folder, Globe, Hand, Inbox, Info, Keyboard, Laptop, Lightbulb, Locate, Lock, Maximize2, MessageSquare, Mic, Minimize2, Paperclip, Pencil, Plug, Plus, RotateCcw, RotateCw, Search, Server, Settings, ShieldCheck, Smartphone, Sparkles, SquareSlash, SquareTerminal, Ticket, TriangleAlert, Undo2, Users, X
     ]
 );
 
@@ -92,11 +92,15 @@ pub enum Icon {
     Withdraw,
     /// Send what waits now.
     SendNow,
+    /// Settings' AI platforms.
+    Plug,
+    /// Codex's mark.
+    Sparkles,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 52] = [
+    pub const ALL: [Icon; 54] = [
         Icon::ArrowDown,
         Icon::ArrowLeft,
         Icon::ArrowRight,
@@ -149,6 +153,8 @@ impl Icon {
         Icon::Hand,
         Icon::Withdraw,
         Icon::SendNow,
+        Icon::Plug,
+        Icon::Sparkles,
     ];
 
     pub fn path(self) -> &'static str {
@@ -205,6 +211,8 @@ impl Icon {
             Icon::Hand => "icons/hand.svg",
             Icon::Withdraw => "icons/undo-2.svg",
             Icon::SendNow => "icons/corner-down-right.svg",
+            Icon::Plug => "icons/plug.svg",
+            Icon::Sparkles => "icons/sparkles.svg",
         }
     }
 }

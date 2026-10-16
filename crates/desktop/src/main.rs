@@ -12,6 +12,7 @@ mod board;
 mod browse;
 mod commands;
 mod diffs;
+mod engines;
 mod export;
 mod compose;
 mod activity;
@@ -187,6 +188,8 @@ pub struct Shell {
     pub ask: AskUi,
     /// "휴대폰 연결": the sheet's state and the paired phones (`pair.rs`).
     pub pairing: pair::Pairing,
+    /// The AI platforms, as settings shows them.
+    pub engines: engines::Engines,
     /// The paired phone whose "연결 끊기" was pressed once, asking to be sure.
     pub forgetting: Option<String>,
     /// The window's size, shown for a moment after it changes (`zoom.rs`).
@@ -278,6 +281,7 @@ impl Shell {
             connect,
             ask,
             pairing: pair::Pairing::default(),
+            engines: engines::Engines::default(),
             forgetting: None,
             zoom_hud: None,
             _pair_tick: None,
@@ -647,8 +651,21 @@ impl Shell {
                             }
                             continue;
                         }
+                        // The engines: settings' AI platforms, never the model's.
+                        if let daemon::Update::Event(event @ (Event::Engines { .. } | Event::SignIn { .. })) = &update {
+                            let effect = this.engines.on_event(event);
+                            changed |= effect.changed;
+                            // The code's page, in this Mac's browser, for the screen that asked.
+                            if let Some(url) = effect.open
+                                && !cfg!(feature = "snapshot")
+                            {
+                                cx.open_url(&url);
+                            }
+                            continue;
+                        }
                         if let daemon::Update::Down(_) = &update {
                             this.pairing.disconnected();
+                            this.engines.disconnected();
                         }
                         match &update {
                             // The daemon's own list, asked on every attach: a squad
@@ -677,9 +694,15 @@ impl Shell {
                         let attached = matches!(update, daemon::Update::Attached(_));
                         changed |= this.model.apply(update, now);
                         // Settings open on its list: the daemon (maybe another one) is asked again.
+                        if attached {
+                            this.engines.attached();
+                        }
                         if attached && this.screen == Screen::Settings {
                             this.pairing.devices_asked = None;
                             this.ask_devices(cx);
+                            if this.settings.category == settings::Category::Engines {
+                                this.ask_engines(cx);
+                            }
                         }
                         if attached {
                             this.start_team();

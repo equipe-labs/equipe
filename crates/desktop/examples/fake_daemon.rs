@@ -48,6 +48,8 @@
 //! `FAKE_BROWSER=handover`, the PM's browser handed to the person to sign in
 //! (its news line, as an English daemon wrote it, last in the PM's history).
 //!
+//! `FAKE_ENGINES`: settings' AI platforms in each state (`fake_daemon/engines.rs`).
+//!
 //! Pairing a phone: a code at once, and two phones paired already.
 //! `FAKE_PAIR=ask` has a phone ask 1.5 s after the code shows (`allow` pairs
 //! it); `relay` fails as an unreachable relay would; `silent` never answers,
@@ -746,6 +748,8 @@ mod history;
 
 #[path = "fake_daemon/team.rs"]
 mod team;
+#[path = "fake_daemon/engines.rs"]
+mod engines;
 
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
@@ -922,6 +926,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             tickets: tickets().lock().unwrap().clone(),
                             allowed: allowed().lock().unwrap().clone(),
                             browsers_shown: true,
+                            plan: engines::plan(),
                             ..Default::default()
                         };
                         team::on_hello(&events);
@@ -1106,7 +1111,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     let _ = events.send(Event::Notice { session: 1, text: "🖐 브라우저를 돌려줬습니다.".into() });
                                     turns.lock().await.insert(1, tokio::spawn(turn(1, events.clone(), seconds)));
                                 }
-                                if browser::on_command(&other, &events) || team::on_command(&other, &events) {
+                                if browser::on_command(&other, &events) || team::on_command(&other, &events) || engines::on_command(&other, &events) {
                                     continue;
                                 }
                                 if let Some(said) = on_board_command(&other) {

@@ -11,6 +11,8 @@ use crate::icons::Icon;
 pub enum Category {
     #[default]
     General,
+    /// The AI platforms members work on (`crate::engines`).
+    Engines,
     Squad,
     Team,
     Permissions,
@@ -21,12 +23,13 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 8] = [Category::General, Category::Squad, Category::Team, Category::Permissions, Category::Projects, Category::Browser, Category::Keys, Category::About];
+    pub const ALL: [Category; 9] = [Category::General, Category::Engines, Category::Squad, Category::Team, Category::Permissions, Category::Projects, Category::Browser, Category::Keys, Category::About];
 
     /// As the snapshot tool names it (`settings:team`).
     pub fn code(self) -> &'static str {
         match self {
             Category::General => "general",
+            Category::Engines => "engines",
             Category::Squad => "squad",
             Category::Team => "team",
             Category::Permissions => "permissions",
@@ -44,6 +47,7 @@ impl Category {
     pub fn label(self) -> &'static str {
         match self {
             Category::General => t!("settings.cat_general"),
+            Category::Engines => t!("settings.cat_engines"),
             Category::Squad => t!("settings.cat_squad"),
             Category::Team => t!("settings.cat_team"),
             Category::Permissions => t!("settings.cat_permissions"),
@@ -57,6 +61,7 @@ impl Category {
     pub fn icon(self) -> Icon {
         match self {
             Category::General => Icon::Settings,
+            Category::Engines => Icon::Plug,
             Category::Squad => Icon::Server,
             Category::Team => Icon::Users,
             Category::Permissions => Icon::Shield,
@@ -199,7 +204,7 @@ mod tests {
 
     #[test]
     fn categories_step_within_the_list_and_round_trip_their_codes() {
-        assert_eq!(Category::General.step(true), Category::Squad);
+        assert_eq!(Category::General.step(true), Category::Engines);
         assert_eq!(Category::General.step(false), Category::General);
         assert_eq!(Category::About.step(true), Category::About);
         assert!(Category::ALL.iter().all(|c| Category::parse(c.code()) == Some(*c)));
