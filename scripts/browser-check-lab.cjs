@@ -292,7 +292,13 @@ const OBSERVER = (who) => `
   const s = held.w.screen || {};
   const sy = click ? click.sy : 0;
   check(!!click && sy >= 0 && sy <= s.h, `the click's screen position is on the page's screen (screenY ${sy} of ${s.h})`);
-  check(back.w.visibility === 'visible' || back.w.visibility === 'hidden', `handed back: visibility=${back.w.visibility}`);
+  const win = held.t.win || {};
+  check(win.outerH > win.innerH && win.y >= 0 && win.y < s.h, `while the person drives it the page is in a real window on the screen (at y ${win.y}, ${win.outerH - win.innerH}px of toolbar)`);
+  check(win.innerW === 560 && win.innerH === 700, `laid out at the panel's box (${win.innerW}×${win.innerH})`);
+  check(down?.pressure === 0.5 && click?.pressure === 0, `pressed, the pointer's pressure is a mouse's (${down?.pressure}, then ${click?.pressure})`);
+  const again = await mcp('browser_evaluate', { function: '() => document.title' });
+  check(!again.isError, 'handed back, its member works in it again');
+  check(back.w.visibility === 'visible' && back.fps > 0, `parked again, it still runs and is pictured (${back.w.visibility}, ${back.fps} frames/s)`);
 
   host.stdin.end();
   await sleep(1500);
