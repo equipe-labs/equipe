@@ -167,7 +167,11 @@ pub struct BrowserPanel {
     marked: Option<String>,
     keys_down: std::collections::HashSet<String>,
     buttons: u32,
-    last_move: Instant,
+    /// The pointer's moves, paced, as the page is sent them.
+    pointer: browse::Pointer,
+    /// The page `pointer` is of: another tab picked, it starts over.
+    pointer_page: Option<u64>,
+    _move_wake: Option<Task<()>>,
     last_click: Option<Point<Pixels>>,
     _pump: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -253,7 +257,9 @@ impl BrowserPanel {
             marked: None,
             keys_down: Default::default(),
             buttons: 0,
-            last_move: Instant::now(),
+            pointer: browse::Pointer::new(MOVE_EVERY),
+            pointer_page: None,
+            _move_wake: None,
             last_click: None,
             _pump: None,
             _subscriptions: subscriptions,
@@ -743,6 +749,7 @@ impl BrowserPanel {
         let Some((x, y)) = self.to_page(e.position) else { return };
         self.hold();
         self.last_click = Some(e.position);
+        self.move_before_press((x, y), keys::modifier_bits(&e.modifiers));
         self.buttons |= keys::button_bit(e.button);
         self.send_input(InputEvent::Mouse {
             kind: "mousePressed".into(),
@@ -761,6 +768,7 @@ impl BrowserPanel {
             self.buttons &= !keys::button_bit(e.button);
             return;
         };
+        self.move_before_press((x, y), keys::modifier_bits(&e.modifiers));
         self.buttons &= !keys::button_bit(e.button);
         self.send_input(InputEvent::Mouse {
             kind: "mouseReleased".into(),
@@ -773,22 +781,68 @@ impl BrowserPanel {
         });
     }
 
-    fn mouse_move(&mut self, e: &MouseMoveEvent) {
-        if self.last_move.elapsed() < MOVE_EVERY {
+    /// A move to where a button goes down or up, if the page last saw the
+    /// pointer elsewhere (a move held back by the pace, or none yet).
+    fn move_before_press(&mut self, at: (f64, f64), modifiers: u32) {
+        self.pointer_on_selected();
+        if let Some(at) = self.pointer.pressed(at, Instant::now()) {
+            self._move_wake = None;
+            self.send_move(at, modifiers);
+        }
+    }
+
+    /// The pointer as the page on screen saw it: another tab picked, unknown.
+    fn pointer_on_selected(&mut self) {
+        let page = self.selected.as_ref().map(|(_, p)| *p);
+        if self.pointer_page != page {
+            self.pointer_page = page;
+            self.pointer.left();
+            self._move_wake = None;
+        }
+    }
+
+    fn send_move(&mut self, (x, y): (f64, f64), modifiers: u32) {
+        let button = match self.buttons {
+            0 => "none",
+            b if b & 1 != 0 => "left",
+            b if b & 2 != 0 => "right",
+            _ => "middle",
+        };
+        self.send_input(InputEvent::Mouse { kind: "mouseMoved".into(), x, y, button: button.into(), buttons: self.buttons, click_count: 0, modifiers });
+    }
+
+    fn mouse_move(&mut self, e: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let Some(at) = self.to_page(e.position) else {
+            self.pointer.left();
+            self._move_wake = None;
+            return;
+        };
+        self.pointer_on_selected();
+        // Moves never take a member's page: they go only once the person has
+        // it (직접 하기, a click, a key) — before that, the page never saw the
+        // pointer, and the press that takes it moves it there first.
+        if !self.drives_selected() {
+            self.pointer.left();
+            self._move_wake = None;
             return;
         }
-        let Some((x, y)) = self.to_page(e.position) else { return };
-        self.last_move = Instant::now();
-        // Moves alone don't take the page: only a press or a key does.
-        self.send_input(InputEvent::Mouse {
-            kind: "mouseMoved".into(),
-            x,
-            y,
-            button: e.pressed_button.map_or("none", keys::button_name).into(),
-            buttons: self.buttons,
-            click_count: 0,
-            modifiers: keys::modifier_bits(&e.modifiers),
-        });
+        // Paced
+        // at 60 a second; where the pointer stops always reaches the page.
+        let modifiers = keys::modifier_bits(&e.modifiers);
+        let now = Instant::now();
+        if let Some(at) = self.pointer.moved(at, now) {
+            self._move_wake = None;
+            self.send_move(at, modifiers);
+        } else if let Some(wait) = self.pointer.wait(now) {
+            self._move_wake = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                let _ = this.update(cx, |this, _| {
+                    if let Some(at) = this.pointer.due(Instant::now()) {
+                        this.send_move(at, modifiers);
+                    }
+                });
+            }));
+        }
     }
 
     fn scroll(&mut self, e: &ScrollWheelEvent) {
@@ -803,6 +857,11 @@ impl BrowserPanel {
             dy: -f64::from(f32::from(delta.y)) * k,
             modifiers: keys::modifier_bits(&e.modifiers),
         });
+    }
+
+    /// The person drives the tab on screen: their own, or a member's in their hands.
+    fn drives_selected(&self) -> bool {
+        self.lane_of_selected() == Some(MINE) || self.held()
     }
 
     fn held(&self) -> bool {
@@ -903,6 +962,54 @@ impl BrowserPanel {
         let width = (self.width * window.content_zoom()).max(720.);
         let bounds = ScreenBounds { left: (x + w - width).max(0.) as i32, top: y as i32, width: width as u32, height: h as u32 };
         self.command(Command::BrowserPopOut { page, bounds: Some(bounds) }, cx);
+    }
+
+    /// A "verify you are human" check that keeps coming back in the panel: the
+    /// member's real Chrome window, on the daemon's Mac — brought up and in
+    /// front, for the person at that Mac to do it there with their own mouse
+    /// (docs/BROWSER-CHECKS.md). The same browser and sign-ins: nothing moves
+    /// between browsers.
+    fn open_chrome_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.endpoint.as_ref().is_some_and(Endpoint::is_remote) {
+            // This window's place means nothing on the other Mac: Chrome keeps its own.
+            let Some((_, page)) = self.selected.clone() else { return };
+            self.command(Command::BrowserPopOut { page, bounds: None }, cx);
+        } else {
+            self.pop_out(window, cx);
+        }
+    }
+
+    /// The Mac the member's Chrome runs on, when it isn't this one.
+    fn chrome_elsewhere(&self) -> Option<String> {
+        self.endpoint.as_ref().filter(|e| e.is_remote()).map(Endpoint::label)
+    }
+
+    /// The banner's way out to the real Chrome window, for a check a person
+    /// answers by clicking (not a sign-in or a code, which the panel takes as well).
+    fn chrome_window_button(&self, check: HumanCheck, id: &'static str, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !matches!(check, HumanCheck::Challenge | HumanCheck::Captcha) {
+            return None;
+        }
+        let p = self.palette;
+        let (label, tip) = match self.chrome_elsewhere() {
+            Some(host) => (t!("browser.check_window_remote", host = host), t!("browser.check_window_remote_tip", host = host)),
+            None => (t!("browser.check_window").to_owned(), t!("browser.check_window_tip").to_owned()),
+        };
+        Some(
+            ui::button(p, id, Kind::Ghost, label)
+                .icon(Icon::External)
+                .tip(tip, None)
+                .on_click(cx.listener(|this, _, window, cx| this.open_chrome_window(window, cx)))
+                .into_any_element(),
+        )
+    }
+
+    /// Said under a check when the member's Chrome is on another Mac.
+    fn chrome_window_note(&self, check: HumanCheck) -> Option<String> {
+        if !matches!(check, HumanCheck::Challenge | HumanCheck::Captcha) {
+            return None;
+        }
+        self.chrome_elsewhere().map(|host| t!("browser.check_window_remote_note", host = host))
     }
 
     /// A page waiting for a person, from 나에게 or a notification: the panel
@@ -1221,7 +1328,7 @@ impl BrowserPanel {
             .on_mouse_up(MouseButton::Left, cx.listener(|this, e: &MouseUpEvent, _, _| this.mouse_up(e)))
             .on_mouse_up(MouseButton::Right, cx.listener(|this, e: &MouseUpEvent, _, _| this.mouse_up(e)))
             .on_mouse_up(MouseButton::Middle, cx.listener(|this, e: &MouseUpEvent, _, _| this.mouse_up(e)))
-            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, _| this.mouse_move(e)))
+            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| this.mouse_move(e, cx)))
             .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, _, _| this.scroll(e)))
             .child(
                 canvas(
@@ -1377,8 +1484,10 @@ impl BrowserPanel {
                                     .min_w_0()
                                     .gap(px(2.))
                                     .child(div().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("browser.check_title")))
-                                    .child(div().text_size(px(12.)).text_color(p.muted).child(detail)),
+                                    .child(div().text_size(px(12.)).text_color(p.muted).child(detail))
+                                    .when_some(self.chrome_window_note(*check), |c, note| c.child(div().text_size(px(12.)).text_color(p.muted).child(note))),
                             )
+                            .when_some(self.chrome_window_button(*check, "browser-check-window", cx), |row, b| row.child(b))
                             .child(ui::button(p, "browser-check-take", Kind::Primary, t!("browser.take")).icon(Icon::Hand).on_click(cx.listener(|this, _, window, cx| this.take(window, cx)))),
                         "browser-check-rise",
                     )
@@ -1406,7 +1515,8 @@ impl BrowserPanel {
                             .text_size(px(12.))
                             .text_color(p.text2)
                             .child(div().size(px(6.)).rounded_full().bg(p.amber))
-                            .child(t!("browser.check_on_it", name = name)),
+                            .child(t!("browser.check_on_it", name = name))
+                            .when_some(page.and_then(|pg| pg.check).and_then(|c| self.chrome_window_button(c, "browser-check-window-on-it", cx)), |row, b| row.child(b)),
                     )
                     .into_any_element(),
             ),

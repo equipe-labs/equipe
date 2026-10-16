@@ -331,6 +331,80 @@ impl Settle {
 /// way to try again.
 pub const STALL: Duration = Duration::from_secs(8);
 
+// ── the pointer ──
+
+/// The person's pointer as it goes to the page, in the page's CSS pixels: a
+/// move no more often than `every`, the last of a burst never lost (it goes
+/// once its time comes), and before a press, a move to the press's own point
+/// if the page last saw the pointer elsewhere — as a real mouse always moves
+/// to where it presses, and the page's hover follows it. Nothing here makes
+/// anything up: every point sent is one the person's pointer was at.
+#[derive(Debug, Clone)]
+pub struct Pointer {
+    every: Duration,
+    /// The last point the page was sent, and when.
+    sent: Option<((f64, f64), Instant)>,
+    /// A move held back by the pace, to go when its time comes.
+    held: Option<(f64, f64)>,
+}
+
+impl Pointer {
+    pub fn new(every: Duration) -> Self {
+        Self { every, sent: None, held: None }
+    }
+
+    /// The pointer moved to `at`: `Some` when the move goes now.
+    pub fn moved(&mut self, at: (f64, f64), now: Instant) -> Option<(f64, f64)> {
+        if self.sent.is_some_and(|(p, _)| p == at) {
+            self.held = None;
+            return None;
+        }
+        match self.sent {
+            Some((_, when)) if now.duration_since(when) < self.every => {
+                self.held = Some(at);
+                None
+            }
+            _ => {
+                self.held = None;
+                self.sent = Some((at, now));
+                Some(at)
+            }
+        }
+    }
+
+    /// How long until a held-back move may go.
+    pub fn wait(&self, now: Instant) -> Option<Duration> {
+        let (_, when) = self.sent?;
+        self.held.map(|_| self.every.saturating_sub(now.duration_since(when)))
+    }
+
+    /// The held-back move, if its time has come.
+    pub fn due(&mut self, now: Instant) -> Option<(f64, f64)> {
+        let at = self.held?;
+        if self.wait(now).is_some_and(|w| !w.is_zero()) {
+            return None;
+        }
+        self.held = None;
+        self.sent = Some((at, now));
+        Some(at)
+    }
+
+    /// A button goes down (or up) at `at`: the move to send first, if the page
+    /// last saw the pointer anywhere else. A press is never held back.
+    pub fn pressed(&mut self, at: (f64, f64), now: Instant) -> Option<(f64, f64)> {
+        self.held = None;
+        let there = self.sent.is_some_and(|(p, _)| p == at);
+        self.sent = Some((at, now));
+        (!there).then_some(at)
+    }
+
+    /// The pointer left the picture: where it was is no longer known.
+    pub fn left(&mut self) {
+        self.sent = None;
+        self.held = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,6 +532,44 @@ mod tests {
         quiet.on_page(None);
         quiet.on_control(false, None, None);
         assert_eq!(quiet.mode(None, true), Mode::Member { working: true });
+    }
+
+    #[test]
+    fn the_pointer_goes_at_a_pace_and_never_loses_where_it_stopped() {
+        let t0 = Instant::now();
+        let ms = |n| t0 + Duration::from_millis(n);
+        let mut p = Pointer::new(Duration::from_millis(16));
+        assert_eq!(p.moved((10., 10.), t0), Some((10., 10.)), "the first move at once");
+        assert_eq!(p.moved((10., 10.), ms(30)), None, "the same point again: nothing");
+        assert_eq!(p.moved((12., 10.), ms(40)), Some((12., 10.)));
+        // A burst within the pace: held back, only the latest kept.
+        assert_eq!(p.moved((13., 11.), ms(44)), None);
+        assert_eq!(p.moved((15., 12.), ms(50)), None);
+        assert_eq!(p.wait(ms(50)), Some(Duration::from_millis(6)));
+        assert_eq!(p.due(ms(52)), None, "not yet");
+        // The pointer stopped: where it stopped still goes, once its time comes.
+        assert_eq!(p.due(ms(56)), Some((15., 12.)));
+        assert_eq!(p.wait(ms(56)), None);
+        assert_eq!(p.due(ms(90)), None, "nothing more held");
+    }
+
+    #[test]
+    fn a_press_comes_after_a_move_to_its_own_point() {
+        let t0 = Instant::now();
+        let ms = |n| t0 + Duration::from_millis(n);
+        let mut p = Pointer::new(Duration::from_millis(16));
+        // Never moved over the picture (the window just came forward): a move there first.
+        assert_eq!(p.pressed((40., 30.), t0), Some((40., 30.)));
+        assert_eq!(p.pressed((40., 30.), ms(80)), None, "the release where it pressed: no move");
+        assert_eq!(p.moved((50., 30.), ms(100)), Some((50., 30.)));
+        // A move held back by the pace is not lost before the press: the press goes to it.
+        assert_eq!(p.moved((60., 31.), ms(105)), None);
+        assert_eq!(p.pressed((60., 31.), ms(106)), Some((60., 31.)), "moved there first, never held back");
+        assert_eq!(p.due(ms(200)), None, "the press took the held move's place");
+        assert_eq!(p.pressed((60., 31.), ms(180)), None);
+        // Out of the picture and back: where it is isn't known, so a move goes again.
+        p.left();
+        assert_eq!(p.pressed((60., 31.), ms(300)), Some((60., 31.)));
     }
 
     #[test]

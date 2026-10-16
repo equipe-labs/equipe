@@ -147,6 +147,14 @@ const freePort = () => new Promise((resolve) => {
   check(/한글a/.test(text), `what the person typed reached the page (${/"([^"]*)"/.exec(text)?.[1]})`);
   if (!/한글a/.test(text)) console.log(text);
 
+  // The pointer passing over a member's page (or a wheel) doesn't take it.
+  messages.length = 0;
+  for (const x of [10, 30, 60]) op({ op: 'input', page, ev: { t: 'mouse', type: 'mouseMoved', x, y: 20, button: 'none', buttons: 0, clickCount: 0 } });
+  op({ op: 'input', page, ev: { t: 'wheel', x: 60, y: 20, dx: 0, dy: 40 } });
+  await sleep(500);
+  const free = await mcp('browser_evaluate', { function: '() => document.title' });
+  check(!messages.some((m) => m.type === 'control') && !free.isError, 'a pointer passing over a member\'s page doesn\'t take it');
+
   // Out of sight, a member's screenshot still works — across sites, too.
   await mcp('browser_navigate', { url: `${other}/elsewhere` });
   const shot = await mcp('browser_take_screenshot', {});
@@ -192,8 +200,12 @@ const freePort = () => new Promise((resolve) => {
   // Touched, it stays the person's.
   op({ op: 'control', lane, by: 'person', why: 'check' });
   await until('held again', () => messages.find((m) => m.type === 'control' && m.lane === lane && m.by === 'person'));
+  // A pointer passing over it is no hand on it; a click is.
   op({ op: 'input', page, ev: { t: 'mouse', type: 'mouseMoved', x: 5, y: 5, button: 'none', buttons: 0, clickCount: 0 } });
-  await sleep(300);
+  op({ op: 'input', page, ev: { t: 'mouse', type: 'mousePressed', x: 5, y: 5, button: 'left', buttons: 1, clickCount: 1 } });
+  op({ op: 'input', page, ev: { t: 'mouse', type: 'mouseReleased', x: 5, y: 5, button: 'left', buttons: 0, clickCount: 1 } });
+  // (Its window comes up for the person meanwhile: input waits for it.)
+  await sleep(1500);
   messages.length = 0;
   op({ op: 'control', lane, by: null, ifUntouched: true });
   await sleep(800);
