@@ -10,7 +10,6 @@
 //! they did is lost.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::journal::squad_dir;
 
@@ -266,13 +265,11 @@ fn one_line(text: &str) -> String {
 
 /// git in the home, independent of the person's own git setup: no signing, no hooks.
 pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let mut command = crate::worktree::git_command(dir);
+    command
         .args(["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=false", "-c", "user.name=equipe", "-c", "user.email=equipe@localhost"])
-        .args(args)
-        .output()
-        .map_err(|err| format!("git: {err}"))?;
+        .args(args);
+    let out = crate::worktree::output_within(command, crate::worktree::GIT_TIMEOUT)?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {

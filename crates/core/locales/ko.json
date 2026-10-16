@@ -163,5 +163,8 @@
   "status.proposed": "제안",
   "status.review": "검토",
   "status.todo": "할 일",
-  "status.waiting": "내 차례"
+  "status.waiting": "내 차례",
+  "error.disk_full": "디스크가 가득 찼습니다. 공간이 생길 때까지 equipe가 대화와 티켓을 저장하지 못합니다. 보통 멤버들의 빌드 폴더(target/)가 원인입니다.",
+  "notice.disk_room": "디스크에 다시 공간이 생겼습니다. equipe가 대화와 티켓을 다시 저장합니다.",
+  "error.stuck": "데몬이 응답하지 않습니다. {since}부터 {doing} 처리에 머물러 있습니다. `equipe daemon restart`를 실행해 보세요."
 }

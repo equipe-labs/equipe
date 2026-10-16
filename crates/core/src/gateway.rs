@@ -10,6 +10,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use equipe_protocol::rpc::{self, Hello, HelloParams, Message, ToolCall, ToolResult};
 use equipe_protocol::{Command, Event};
@@ -38,12 +39,23 @@ pub async fn serve(config: runtime::Config, socket: &Path, version: &str) -> io:
 
     loop {
         tokio::select! {
-            accepted = listener.accept() => {
-                let (stream, _) = accepted?;
-                tokio::spawn(serve_client(stream, core.clone(), home.clone(), version.to_owned(), stop_tx.clone()));
-            }
+            accepted = listener.accept() => match accepted {
+                Ok((stream, _)) => {
+                    tokio::spawn(serve_client(stream, core.clone(), home.clone(), version.to_owned(), stop_tx.clone()));
+                }
+                // Out of file descriptors, say: the next screen may find one. The
+                // daemon — and the agents it runs — stays.
+                Err(err) => {
+                    crate::daemon_log!("equipe: couldn't take a connection: {err}");
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+            },
             Some(ack) = stop_rx.recv() => {
-                core.shutdown().await;
+                // A core that doesn't stop in time is left behind: the process ends anyway.
+                if tokio::time::timeout(SHUTDOWN_WAIT, core.shutdown()).await.is_err() {
+                    let doing = core.stall().map_or_else(|| "?".to_owned(), |s| s.doing);
+                    crate::daemon_log!("equipe: stopping without the core, which is still on {doing}");
+                }
                 let _ = std::fs::remove_file(socket);
                 let _ = ack.send(());
                 return Ok(());
@@ -51,6 +63,16 @@ pub async fn serve(config: runtime::Config, socket: &Path, version: &str) -> io:
         }
     }
 }
+
+/// How long a stop waits for the core to put its turns down.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(10);
+/// How long a hello waits for the core's snapshot before it says the daemon is stuck.
+const HELLO_WAIT: Duration = Duration::from_secs(30);
+/// A screen that takes longer than this to read one line is gone: it is let go.
+const WRITE_STALL: Duration = Duration::from_secs(30);
+/// Lines waiting for a screen that reads too slowly to keep up, at most; past
+/// this it is let go, and comes back with a fresh snapshot.
+const QUEUED_MAX: usize = 20_000;
 
 /// Bind the socket, replacing a stale file left by a daemon that died.
 async fn bind(socket: &Path) -> io::Result<UnixListener> {
@@ -78,20 +100,38 @@ async fn write_line(writer: &mut OwnedWriteHalf, message: &Message) -> io::Resul
     writer.write_all(message.to_line().as_bytes()).await
 }
 
+/// A screen's lines, out: replies and events as they come. A screen that
+/// stops reading (a stalled SSH link, a frozen app) is let go once one line
+/// waits on it for `stall`, or more than `most` lines pile up for it —
+/// rather than holding them, the pictures of a browser among them, for good.
+/// Hands the writer back for a browser panel's stream.
+async fn write_out<W>(mut writer: W, mut out: mpsc::UnboundedReceiver<Message>, stall: Duration, most: usize) -> W
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    while let Some(message) = out.recv().await {
+        if out.len() > most {
+            crate::daemon_log!("equipe: a screen fell {} lines behind; letting it go", out.len());
+            break;
+        }
+        match tokio::time::timeout(stall, writer.write_all(message.to_line().as_bytes())).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => break,
+            Err(_) => {
+                crate::daemon_log!("equipe: a screen read nothing for {}s; letting it go", stall.as_secs());
+                break;
+            }
+        }
+    }
+    writer
+}
+
 /// One screen's connection: answer requests, forward its events.
 async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: String, stop: UnboundedSender<oneshot::Sender<()>>) {
     let (reader, writer) = stream.into_split();
     // Replies and events share the write half; a task owns it.
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
-    let writer_task = tokio::spawn(async move {
-        let mut writer = writer;
-        while let Some(message) = out_rx.recv().await {
-            if write_line(&mut writer, &message).await.is_err() {
-                break;
-            }
-        }
-        writer
-    });
+    let (out_tx, out_rx) = mpsc::unbounded_channel::<Message>();
+    let writer_task = tokio::spawn(write_out(writer, out_rx, WRITE_STALL, QUEUED_MAX));
 
     let mut lines = BufReader::new(reader).lines();
     let mut forwarder: Option<tokio::task::JoinHandle<()>> = None;
@@ -100,7 +140,13 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
     // Pairing a phone: this screen's line to the phone link, opened when it asks.
     let mut pairing: Option<crate::pairing::Bridge> = None;
     let mut lang: Option<crate::i18n::Lang> = None;
-    while let Ok(Some(line)) = lines.next_line().await {
+    loop {
+        // A screen let go for reading too slowly is done with, whatever it sends.
+        let line = tokio::select! {
+            line = lines.next_line() => line,
+            () = out_tx.closed() => break,
+        };
+        let Ok(Some(line)) = line else { break };
         let Ok(message) = Message::from_line(&line) else {
             continue;
         };
@@ -115,8 +161,18 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
                     lang = crate::i18n::Lang::parse(&code);
                     core.send(Command::Language { lang: code });
                 }
-                let Some((snapshot, mut events)) = core.subscribe(&params.squad).await else {
-                    break;
+                let (snapshot, mut events) = match tokio::time::timeout(HELLO_WAIT, core.subscribe(&params.squad)).await {
+                    Ok(Some(subscribed)) => subscribed,
+                    Ok(None) => break,
+                    // The core is stuck: the screen hears what on, rather than nothing.
+                    Err(_) => {
+                        let words = crate::i18n::core(lang.unwrap_or(crate::i18n::Lang::En));
+                        let stall = core.stall().unwrap_or_default();
+                        let since = crate::watchdog::clock(stall.since);
+                        let said = words.fill("error.stuck", &[("doing", stall.doing), ("since", since)]);
+                        let _ = out_tx.send(Message::failure(id, -32003, said));
+                        continue;
+                    }
                 };
                 let _ = out_tx.send(Message::response(id, Hello { version: version.clone(), snapshot }));
                 let out = out_tx.clone();
@@ -715,6 +771,66 @@ pub async fn version(socket: &Path) -> io::Result<Option<rpc::Version>> {
 /// Whether a daemon answers at `socket`.
 pub async fn is_running(socket: &Path) -> bool {
     UnixStream::connect(socket).await.is_ok()
+}
+
+/// The process listening at `socket`, as the system tells it — to stop a
+/// daemon that no longer answers.
+pub async fn daemon_pid(socket: &Path) -> Option<u32> {
+    let stream = UnixStream::connect(socket).await.ok()?;
+    let pid = stream.peer_cred().ok()?.pid()?;
+    u32::try_from(pid).ok().filter(|p| *p > 1)
+}
+
+#[cfg(test)]
+mod writer_tests {
+    use super::*;
+
+    fn line(n: u64) -> Message {
+        Message::response(n, "x".repeat(1024))
+    }
+
+    #[tokio::test]
+    async fn a_screen_that_reads_nothing_is_let_go_after_the_stall() {
+        // A pipe of 64 bytes nobody reads: the first line can't even be written.
+        let (writer, _unread) = tokio::io::duplex(64);
+        let (tx, rx) = mpsc::unbounded_channel();
+        for n in 0..10 {
+            tx.send(line(n)).unwrap();
+        }
+        let started = std::time::Instant::now();
+        let task = tokio::spawn(write_out(writer, rx, Duration::from_millis(200), QUEUED_MAX));
+        tokio::time::timeout(Duration::from_secs(5), task).await.expect("let go, not waited on for good").unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(tx.is_closed(), "its line closes, so the connection does too");
+    }
+
+    #[tokio::test]
+    async fn a_screen_too_far_behind_is_let_go() {
+        let (writer, mut reader) = tokio::io::duplex(1 << 20);
+        let (tx, rx) = mpsc::unbounded_channel();
+        for n in 0..100 {
+            tx.send(line(n)).unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(5), write_out(writer, rx, WRITE_STALL, 10)).await.expect("let go");
+        assert!(tx.is_closed());
+        let mut got = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut got).await.unwrap();
+        assert!(got.is_empty(), "nothing of a backlog it would never catch up on");
+    }
+
+    #[tokio::test]
+    async fn a_screen_that_keeps_up_gets_every_line() {
+        let (writer, mut reader) = tokio::io::duplex(1 << 20);
+        let (tx, rx) = mpsc::unbounded_channel();
+        for n in 0..5 {
+            tx.send(line(n)).unwrap();
+        }
+        drop(tx);
+        write_out(writer, rx, WRITE_STALL, QUEUED_MAX).await;
+        let mut got = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut reader, &mut got).await.unwrap();
+        assert_eq!(got.lines().count(), 5);
+    }
 }
 
 #[cfg(test)]

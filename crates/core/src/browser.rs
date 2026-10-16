@@ -184,7 +184,12 @@ pub type SharedHost = std::sync::Arc<std::sync::Mutex<Host>>;
 /// only that member's tabs. See `assets/browser-host.cjs`.
 pub struct Host {
     child: std::process::Child,
-    stdin: std::process::ChildStdin,
+    /// Its requests, one line each, written by a thread of their own: a host
+    /// that stops reading must never hold up whoever asks — the daemon's loop
+    /// asks with the host's lock held, and a full pipe blocks a write for good.
+    requests: std::sync::mpsc::SyncSender<String>,
+    /// Requests dropped since the host last took one, for the log.
+    dropped: u64,
     /// Each lane's port, kept for the host's life: a lane closed and opened
     /// again is the same endpoint.
     lanes: std::collections::HashMap<String, u16>,
@@ -468,17 +473,33 @@ impl Host {
             read_host(stdout, &hub, &events);
             let _ = events.send(HostEvent::Exited);
         })?;
-        Ok(std::sync::Arc::new(std::sync::Mutex::new(Host { child, stdin, lanes: Default::default() })))
+        let (requests, lines) = std::sync::mpsc::sync_channel::<String>(HOST_QUEUE);
+        std::thread::Builder::new().name("equipe-browser-host-in".into()).spawn(move || write_host(stdin, lines))?;
+        Ok(std::sync::Arc::new(std::sync::Mutex::new(Host { child, requests, dropped: 0, lanes: Default::default() })))
     }
 
     pub fn alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }
 
+    /// Never waits: a request the host has no room for is dropped (it isn't
+    /// reading — it is stuck, or going), and the log says so once.
     fn send(&mut self, request: &Value) {
-        use std::io::Write as _;
-        let _ = writeln!(self.stdin, "{request}");
-        let _ = self.stdin.flush();
+        match self.requests.try_send(request.to_string()) {
+            Ok(()) => {
+                if self.dropped > 0 {
+                    crate::daemon_log!("equipe: the browser host reads again ({} requests were dropped)", self.dropped);
+                    self.dropped = 0;
+                }
+            }
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                if self.dropped == 0 {
+                    crate::daemon_log!("equipe: the browser host stopped reading its requests; dropping them until it does");
+                }
+                self.dropped += 1;
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {}
+        }
     }
 
     /// Open a tab in the host's Chrome for the person, at `url`, on screen.
@@ -489,6 +510,19 @@ impl Host {
     /// Any other request (`assets/browser-host.cjs` lists them).
     pub fn op(&mut self, request: &Value) {
         self.send(request);
+    }
+}
+
+/// Requests waiting for the browser host to read them, at most.
+const HOST_QUEUE: usize = 4096;
+
+/// The host's standard input: each request as a line, until the host or
+/// the [`Host`] goes.
+fn write_host(mut to: impl std::io::Write, lines: std::sync::mpsc::Receiver<String>) {
+    for line in lines {
+        if writeln!(to, "{line}").and_then(|()| to.flush()).is_err() {
+            return;
+        }
     }
 }
 
@@ -974,6 +1008,24 @@ pub fn sites(state: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_host_that_stops_reading_never_holds_up_whoever_asks() {
+        // A host that never reads its standard input: a full pipe in no time.
+        let mut child = std::process::Command::new("sleep").arg("30").stdin(std::process::Stdio::piped()).spawn().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let (requests, lines) = std::sync::mpsc::sync_channel::<String>(HOST_QUEUE);
+        std::thread::spawn(move || write_host(stdin, lines));
+        let mut host = Host { child, requests, dropped: 0, lanes: Default::default() };
+        let started = std::time::Instant::now();
+        let big = json!({ "op": "input", "page": 1, "ev": "x".repeat(16 * 1024) });
+        for _ in 0..2 * HOST_QUEUE {
+            host.op(&big);
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+        assert!(host.dropped > 0, "what it had no room for was dropped");
+        let _ = host.child.kill();
+    }
 
     #[test]
     fn a_conversation_beside_a_members_own_has_a_browser_of_its_own_in_its_colour() {

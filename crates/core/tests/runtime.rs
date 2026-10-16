@@ -83,6 +83,21 @@ fn calls(dir: &Path) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// The latest turn's arguments once its prompt is what `wanted` looks for: a
+/// turn starts a moment after the event that asks for it — longer on a busy
+/// machine. After ten seconds, the latest anyway, for the test to show.
+async fn latest_call(dir: &Path, wanted: impl Fn(&str) -> bool) -> Vec<String> {
+    for _ in 0..200 {
+        if let Some(call) = calls(dir).pop()
+            && arg(&call, "-p").is_some_and(&wanted)
+        {
+            return call;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    calls(dir).pop().unwrap()
+}
+
 /// The value following `flag` in one call's arguments.
 fn arg<'a>(call: &'a [String], flag: &str) -> Option<&'a str> {
     call.iter().position(|a| a == flag).and_then(|i| call.get(i + 1)).map(String::as_str)
@@ -654,8 +669,7 @@ async fn a_ticket_goes_to_its_owner_who_hands_it_in_and_the_person_accepts_it() 
     );
 
     // Its first turn is the ticket, in its worktree, allowed to edit.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let call = calls(&recorded).pop().unwrap();
+    let call = latest_call(&recorded, |p| p.starts_with("[equipe] You're on T-1")).await;
     let prompt = arg(&call, "-p").unwrap();
     assert!(prompt.starts_with("[equipe] You're on T-1: Landing hero"), "{prompt}");
     assert!(prompt.contains("A headline and one button."), "{prompt}");
@@ -717,8 +731,7 @@ async fn accepted_work_is_where_the_next_ticket_starts_and_lands_on_main_only_wh
     let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
     let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
     assert_eq!(std::fs::read_to_string(ws.path.join("HERO.md")).unwrap().trim(), "made by the squad");
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let prompt = arg(&calls(&recorded).pop().unwrap(), "-p").unwrap().to_owned();
+    let prompt = arg(&latest_call(&recorded, |p| p.contains("T-2")).await, "-p").unwrap().to_owned();
     assert!(prompt.contains("starts from the accepted work of T-1"), "{prompt}");
 
     // The person merges: main has it, and the board knows.
@@ -811,9 +824,16 @@ async fn work_not_on_main_says_why_can_be_kept_on_its_branch_and_settles_when_no
     let merged = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 3 && ticket.merged == Some(true))).await;
     assert_eq!(ticket_changed(&merged).pop().unwrap().off_main, None);
     assert!(repo.join("PAGE.md").exists() && !repo.join("NOTE.md").exists());
-    // T-1 had nothing left to bring: settled as merged — on the daemon's
-    // minute, or after a merge at the latest — and no longer asks.
-    let board = handle.snapshot("acme").await.tickets;
+    // T-1 had nothing left to bring: settled as merged — by the sweep off the
+    // daemon's loop, at its start or after a merge — and no longer asks.
+    let mut board = handle.snapshot("acme").await.tickets;
+    for _ in 0..100 {
+        if board.iter().any(|t| t.id == 1 && t.merged == Some(true)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        board = handle.snapshot("acme").await.tickets;
+    }
     let off: Vec<(u32, Option<bool>, Option<OffMain>)> = board.iter().map(|t| (t.id, t.merged, t.off_main.clone())).collect();
     assert_eq!(off, [(1, Some(true), None), (2, Some(false), two.off_main.clone()), (3, Some(true), None)]);
 }
@@ -917,8 +937,7 @@ async fn work_sent_back_returns_to_its_member_on_the_same_branch_and_conversatio
     handle.send(Command::Reopen { squad: "acme".into(), ticket: 1, note: "make the button blue".into() });
     let again = until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
     assert!(matches!(again.last(), Some(Event::WorkStarted { session: 2, workspace: Some(ws), .. }) if Some(&ws.branch) == branch.as_ref()));
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let call = calls(&recorded).pop().unwrap();
+    let call = latest_call(&recorded, |p| p.contains("The person sent it back")).await;
     let prompt = arg(&call, "-p").unwrap();
     assert!(prompt.contains("The person sent it back. Reopened: make the button blue"), "{prompt}");
     assert!(prompt.contains("save that lesson in your memory"), "a reopen is a lesson to keep: {prompt}");
@@ -1056,8 +1075,7 @@ async fn a_member_waiting_on_the_person_takes_its_next_ticket_and_comes_back_to_
         matches!(again.last(), Some(Event::WorkStarted { session: 2, workspace: Some(ws), .. }) if ws.path == first.path && ws.branch == branch),
         "{again:#?}"
     );
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let call = calls(&recorded).pop().unwrap();
+    let call = latest_call(&recorded, |p| p.contains("it is back")).await;
     let prompt = arg(&call, "-p").unwrap();
     assert!(prompt.contains("it is back. both are in .env.local"), "{prompt}");
     assert_eq!(arg(&call, "--resume"), Some("sess-1"), "it continues the ticket's conversation");
@@ -1085,8 +1103,7 @@ async fn what_the_person_leaves_open_stays_on_the_ticket_and_is_asked_again_next
     let resumed = ticket_changed(&back).into_iter().rfind(|t| t.id == 1).unwrap();
     assert_eq!(resumed.remaining, [needs[1]], "what was put off stays open on the ticket");
     assert!(resumed.asks.is_empty(), "not waiting: nothing asked now");
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let call = calls(&recorded).pop().unwrap();
+    let call = latest_call(&recorded, |p| p.contains("→ do it yourself")).await;
     let prompt = arg(&call, "-p").unwrap();
     assert!(prompt.contains("→ do it yourself") && prompt.contains("From the person: 급하지 않아요"), "{prompt}");
     assert!(prompt.contains(equipe_core::roles::ANSWERS_GUIDE), "what each answer means: {prompt}");
@@ -1998,8 +2015,7 @@ async fn a_task_with_no_project_runs_in_the_squads_folder_and_goes_in_when_accep
     assert!(ws.path.starts_with(home.join("worktrees/acme.home")), "{}", ws.path.display());
     assert!(ws.branch.starts_with("equipe/data-t1-"), "{}", ws.branch);
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let call = calls(&recorded).pop().unwrap();
+    let call = latest_call(&recorded, |p| p.contains("Kind: task")).await;
     let prompt = arg(&call, "-p").unwrap();
     assert!(prompt.contains("Kind: task") && prompt.contains("outputs/T-1"), "{prompt}");
     assert_eq!(arg(&call, "--permission-mode"), Some("acceptEdits"));
@@ -2284,8 +2300,7 @@ async fn a_squad_of_only_a_pm_researches_tax_deadlines_into_its_folder_and_memor
     .await;
     assert_eq!(made.text, "Created T-1 (task).");
     until(&mut events, |e| matches!(e, Event::WorkStarted { session: 1, ticket: 1, .. })).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let brief = arg(&calls(&recorded).pop().unwrap(), "-p").unwrap().to_owned();
+    let brief = arg(&latest_call(&recorded, |p| p.contains("give each fact its source")).await, "-p").unwrap().to_owned();
     assert!(brief.contains("give each fact its source") && brief.contains("unconfirmed"), "{brief}");
 
     // What recurs goes into the squad's memory; the work is handed in.

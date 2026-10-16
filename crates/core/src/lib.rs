@@ -29,7 +29,19 @@ pub mod squad_home;
 pub mod squad_memory;
 pub mod squads;
 pub mod store;
+pub mod watchdog;
 pub mod worktree;
+
+/// A line for the daemon's log — its standard error, `~/.equipe/daemon.log`.
+/// Unlike `eprintln!`, never a panic when it can't be written: a full disk is
+/// exactly when it can't, and a panic there stops the daemon.
+#[macro_export]
+macro_rules! daemon_log {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
 
 pub use equipe_protocol as protocol;
 
