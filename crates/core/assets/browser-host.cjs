@@ -500,6 +500,7 @@ const address = (text) => {
     const w = watches.get(pid);
     if (!w) return;
     watches.delete(pid);
+    clearTimeout(w.restTimer);
     w.cdp.send('Page.stopScreencast').catch(() => {});
     w.cdp.off('Page.screencastFrame', w.onFrame);
   };
@@ -539,9 +540,35 @@ const address = (text) => {
     };
     cdp.on('Page.screencastFrame', w.onFrame);
     watches.set(pid, w);
-    await cdp.send('Page.startScreencast', { format: 'jpeg', quality, maxWidth: maxW, maxHeight: maxH, everyNthFrame: 1, maxFramesInFlight: 1 }).catch(() => stopWatch(pid));
+    await cdp.send('Page.startScreencast', cast(w)).catch(() => stopWatch(pid));
   };
   const unwatch = ({ page }) => stopWatch(page);
+  // While the wheel turns, pictures at half the size: a quarter of the bytes,
+  // so more of them get through a slow line (docs/PERF-2026-10.md); the
+  // usual ones again once it has rested a moment.
+  const SCROLL_REST_MS = 300;
+  const cast = (w) => {
+    const k = w.light ? 0.5 : 1;
+    return { format: 'jpeg', quality: w.quality, maxWidth: Math.round(w.maxW * k), maxHeight: Math.round(w.maxH * k), everyNthFrame: 1, maxFramesInFlight: 1 };
+  };
+  const recast = async (pid, w) => {
+    if (watches.get(pid) !== w) return;
+    await w.cdp.send('Page.stopScreencast').catch(() => {});
+    await w.cdp.send('Page.startScreencast', cast(w)).catch(() => {});
+  };
+  const scrolling = (pid) => {
+    const w = watches.get(pid);
+    if (!w) return;
+    clearTimeout(w.restTimer);
+    w.restTimer = setTimeout(() => {
+      w.light = false;
+      pictures = pictures.then(() => recast(pid, w));
+    }, SCROLL_REST_MS);
+    if (!w.light) {
+      w.light = true;
+      pictures = pictures.then(() => recast(pid, w));
+    }
+  };
 
   // ── the size a page is laid out at ──
 
@@ -573,7 +600,7 @@ const address = (text) => {
     const w = watches.get(idOf(page));
     if (w) {
       await w.cdp.send('Page.stopScreencast').catch(() => {});
-      await w.cdp.send('Page.startScreencast', { format: 'jpeg', quality: w.quality, maxWidth: w.maxW, maxHeight: w.maxH, everyNthFrame: 1, maxFramesInFlight: 1 }).catch(() => {});
+      await w.cdp.send('Page.startScreencast', cast(w)).catch(() => {});
     }
   };
   const fit = async ({ page: pid, w, h, dpr }) => {
@@ -732,11 +759,26 @@ const address = (text) => {
   // unseen); the rest as they come.
   let inputs = Promise.resolve();
   let pictures = Promise.resolve();
+  // A wheel turn still waiting its go: the turns that come meanwhile add to it.
+  // Chrome takes a frame (~17 ms) to answer each, a trackpad sends 60–120 a
+  // second, so one by one they queued for seconds behind the picture
+  // (docs/PERF-2026-10.md); added up, the page goes as far, at once.
+  let wheel = null;
   readline.createInterface({ input: process.stdin }).on('line', (line) => {
     let request;
     try { request = JSON.parse(line); } catch { return; }
     const run = () => Promise.resolve(ops[request.op]?.(request)).catch((err) => console.error(`equipe browser host: ${request.op}: ${err && err.message}`));
-    if (request.op === 'input') inputs = inputs.then(run);
+    const ev = request.op === 'input' ? request.ev : null;
+    if (ev?.t === 'wheel') scrolling(request.page);
+    if (ev?.t === 'wheel' && wheel && wheel.page === request.page && (wheel.ev.modifiers || 0) === (ev.modifiers || 0)) {
+      wheel.ev.dx = (wheel.ev.dx || 0) + (ev.dx || 0);
+      wheel.ev.dy = (wheel.ev.dy || 0) + (ev.dy || 0);
+      wheel.ev.x = ev.x;
+      wheel.ev.y = ev.y;
+      return;
+    }
+    if (request.op === 'input') wheel = ev?.t === 'wheel' ? request : null;
+    if (request.op === 'input') inputs = inputs.then(() => { if (wheel === request) wheel = null; return run(); });
     else if (['watch', 'unwatch', 'fit'].includes(request.op)) pictures = pictures.then(run);
     else run();
   });

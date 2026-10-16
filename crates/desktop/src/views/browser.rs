@@ -168,6 +168,10 @@ pub struct BrowserPanel {
     keys_down: std::collections::HashSet<String>,
     buttons: u32,
     last_move: Instant,
+    /// Wheel turns not sent yet, when the last went, and the send to come.
+    wheel: Option<InputEvent>,
+    last_wheel: Instant,
+    _wheel_flush: Option<Task<()>>,
     last_click: Option<Point<Pixels>>,
     _pump: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -254,6 +258,9 @@ impl BrowserPanel {
             keys_down: Default::default(),
             buttons: 0,
             last_move: Instant::now(),
+            wheel: None,
+            last_wheel: Instant::now(),
+            _wheel_flush: None,
             last_click: None,
             _pump: None,
             _subscriptions: subscriptions,
@@ -791,18 +798,45 @@ impl BrowserPanel {
         });
     }
 
-    fn scroll(&mut self, e: &ScrollWheelEvent) {
+    /// A turn of the wheel: sent at once, then — as a trackpad sends 60–120
+    /// a second — the turns that follow added up and sent a frame apart.
+    fn scroll(&mut self, e: &ScrollWheelEvent, cx: &mut Context<Self>) {
         let Some((x, y)) = self.to_page(e.position) else { return };
         let delta = e.delta.pixel_delta(px(20.));
         let k = self.css_per_point();
         self.hold();
-        self.send_input(InputEvent::Wheel {
-            x,
-            y,
-            dx: -f64::from(f32::from(delta.x)) * k,
-            dy: -f64::from(f32::from(delta.y)) * k,
-            modifiers: keys::modifier_bits(&e.modifiers),
-        });
+        let (dx, dy, modifiers) = (-f64::from(f32::from(delta.x)) * k, -f64::from(f32::from(delta.y)) * k, keys::modifier_bits(&e.modifiers));
+        match &mut self.wheel {
+            Some(InputEvent::Wheel { x: at_x, y: at_y, dx: sum_x, dy: sum_y, modifiers: held }) if *held == modifiers => {
+                (*at_x, *at_y) = (x, y);
+                *sum_x += dx;
+                *sum_y += dy;
+            }
+            _ => {
+                self.flush_wheel();
+                self.wheel = Some(InputEvent::Wheel { x, y, dx, dy, modifiers });
+            }
+        }
+        let since = self.last_wheel.elapsed();
+        if since >= MOVE_EVERY {
+            self.flush_wheel();
+        } else if self._wheel_flush.is_none() {
+            let wait = MOVE_EVERY - since;
+            self._wheel_flush = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                let _ = this.update(cx, |this, _| {
+                    this._wheel_flush = None;
+                    this.flush_wheel();
+                });
+            }));
+        }
+    }
+
+    fn flush_wheel(&mut self) {
+        if let Some(wheel) = self.wheel.take() {
+            self.last_wheel = Instant::now();
+            self.send_input(wheel);
+        }
     }
 
     fn held(&self) -> bool {
@@ -1222,7 +1256,7 @@ impl BrowserPanel {
             .on_mouse_up(MouseButton::Right, cx.listener(|this, e: &MouseUpEvent, _, _| this.mouse_up(e)))
             .on_mouse_up(MouseButton::Middle, cx.listener(|this, e: &MouseUpEvent, _, _| this.mouse_up(e)))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, _| this.mouse_move(e)))
-            .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, _, _| this.scroll(e)))
+            .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, _, cx| this.scroll(e, cx)))
             .child(
                 canvas(
                     move |bounds, _, _| bounds,
