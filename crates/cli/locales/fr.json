@@ -842,5 +842,12 @@
   "commands.new": "Mettre un ticket à vous au tableau (⇧N sur le tableau)",
   "commands.new_args": "<titre>",
   "commands.title": "Modifier le titre d'un ticket (⇧E sur le tableau)",
-  "commands.title_args": "T-n <titre>"
+  "commands.title_args": "T-n <titre>",
+  "main.daemon_silent": "Le démon accepte les connexions mais n'a rien répondu en {secs} s : il est bloqué.",
+  "main.daemon_ended": "Le démon ne s'est pas arrêté quand on le lui a demandé ; il a été terminé (pid {pid}).",
+  "main.row_stalled": "ne répond pas",
+  "main.stalled_since": "depuis {since} — sur {doing} ({secs} s)",
+  "main.stalled_hint": "Les écrans attendent pendant ce temps. Si cela dure, lancez `equipe daemon restart` ; ~/.equipe/daemon.log en dit plus.",
+  "daemon.no_pid": "Le démon ne répond pas, et son processus est introuvable pour le terminer.",
+  "attach.no_answer": "le démon accepte les connexions mais ne répond pas — essayez `equipe daemon restart` sur cette machine"
 }

@@ -842,5 +842,12 @@
   "commands.new": "Ein eigenes Ticket aufs Board setzen (⇧N im Board)",
   "commands.new_args": "<Titel>",
   "commands.title": "Den Titel eines Tickets ändern (⇧E im Board)",
-  "commands.title_args": "T-n <Titel>"
+  "commands.title_args": "T-n <Titel>",
+  "main.daemon_silent": "Der Daemon nimmt Verbindungen an, hat aber {secs} s lang nichts geantwortet: Er hängt.",
+  "main.daemon_ended": "Der Daemon hat auf die Bitte nicht angehalten und wurde beendet (pid {pid}).",
+  "main.row_stalled": "antwortet nicht",
+  "main.stalled_since": "seit {since} — bei {doing} ({secs} s)",
+  "main.stalled_hint": "Die Bildschirme warten so lange. Bleibt es so, führe `equipe daemon restart` aus; mehr steht in ~/.equipe/daemon.log.",
+  "daemon.no_pid": "Der Daemon antwortet nicht, und sein Prozess war zum Beenden nicht zu finden.",
+  "attach.no_answer": "der Daemon nimmt Verbindungen an, antwortet aber nicht — versuche `equipe daemon restart` auf diesem Rechner"
 }

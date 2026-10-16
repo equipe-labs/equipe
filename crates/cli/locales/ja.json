@@ -835,5 +835,12 @@
   "commands.new": "自分のチケットをボードに追加（ボードで ⇧N）",
   "commands.new_args": "<タイトル>",
   "commands.title": "チケットのタイトルを変更（ボードで ⇧E）",
-  "commands.title_args": "T-n <タイトル>"
+  "commands.title_args": "T-n <タイトル>",
+  "main.daemon_silent": "デーモンは接続を受け付けますが、{secs} 秒間なにも応答しません。止まっています。",
+  "main.daemon_ended": "デーモンが停止の要求に応じなかったため、終了させました (pid {pid})。",
+  "main.row_stalled": "応答なし",
+  "main.stalled_since": "{since} から — {doing} の処理中 ({secs} 秒)",
+  "main.stalled_hint": "その間、画面は待ちます。続くようなら `equipe daemon restart` を実行してください。詳しくは ~/.equipe/daemon.log に。",
+  "daemon.no_pid": "デーモンが応答せず、終了させるプロセスも見つかりませんでした。",
+  "attach.no_answer": "デーモンは接続を受け付けますが応答しません — このマシンで `equipe daemon restart` を試してください"
 }

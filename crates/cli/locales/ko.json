@@ -835,5 +835,12 @@
   "commands.new": "내 티켓을 보드에 올리기 (보드에서 ⇧N)",
   "commands.new_args": "<제목>",
   "commands.title": "티켓 제목 고치기 (보드에서 ⇧E)",
-  "commands.title_args": "T-n <제목>"
+  "commands.title_args": "T-n <제목>",
+  "main.daemon_silent": "데몬이 연결은 받지만 {secs}초 동안 아무 응답이 없어요. 멈춘 상태예요.",
+  "main.daemon_ended": "데몬이 요청에 멈추지 않아 종료했어요 (pid {pid}).",
+  "main.row_stalled": "응답 없음",
+  "main.stalled_since": "{since}부터 — {doing} 처리 중 ({secs}초째)",
+  "main.stalled_hint": "그동안 화면은 기다려요. 계속되면 `equipe daemon restart`를 실행하세요. 자세한 내용은 ~/.equipe/daemon.log에 있어요.",
+  "daemon.no_pid": "데몬이 응답하지 않는데, 종료할 프로세스를 찾지 못했어요.",
+  "attach.no_answer": "데몬이 연결은 받지만 응답하지 않아요 — 이 기기에서 `equipe daemon restart`를 실행해 보세요"
 }

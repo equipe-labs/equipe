@@ -835,5 +835,12 @@
   "commands.new": "把你自己的工單放上看板（看板中 ⇧N）",
   "commands.new_args": "<標題>",
   "commands.title": "修改工單標題（看板中 ⇧E）",
-  "commands.title_args": "T-n <標題>"
+  "commands.title_args": "T-n <標題>",
+  "main.daemon_silent": "常駐程式接受連線，但 {secs} 秒內沒有任何回應：它卡住了。",
+  "main.daemon_ended": "常駐程式沒有依要求停止，已將其結束（pid {pid}）。",
+  "main.row_stalled": "無回應",
+  "main.stalled_since": "自 {since} 起 — 正在處理 {doing}（{secs} 秒）",
+  "main.stalled_hint": "在此期間各個畫面都在等待。如果一直如此，請執行 `equipe daemon restart`；詳情見 ~/.equipe/daemon.log。",
+  "daemon.no_pid": "常駐程式沒有回應，也找不到可以結束的程序。",
+  "attach.no_answer": "常駐程式接受連線但沒有回應 — 請在這台機器上試試 `equipe daemon restart`"
 }

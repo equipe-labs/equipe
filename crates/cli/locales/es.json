@@ -842,5 +842,12 @@
   "commands.new": "Pon un ticket tuyo en el tablero (⇧N en el tablero)",
   "commands.new_args": "<título>",
   "commands.title": "Cambiar el título de un ticket (⇧E en el tablero)",
-  "commands.title_args": "T-n <título>"
+  "commands.title_args": "T-n <título>",
+  "main.daemon_silent": "El daemon acepta conexiones pero no respondió nada en {secs} s: está atascado.",
+  "main.daemon_ended": "El daemon no se detuvo al pedírselo, así que se terminó (pid {pid}).",
+  "main.row_stalled": "sin respuesta",
+  "main.stalled_since": "desde las {since} — en {doing} ({secs} s)",
+  "main.stalled_hint": "Mientras tanto las pantallas esperan. Si sigue así, ejecuta `equipe daemon restart`; ~/.equipe/daemon.log tiene más detalles.",
+  "daemon.no_pid": "El daemon no responde y no se encontró su proceso para terminarlo.",
+  "attach.no_answer": "el daemon acepta conexiones pero no responde — prueba `equipe daemon restart` en esta máquina"
 }

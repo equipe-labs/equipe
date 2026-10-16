@@ -842,5 +842,12 @@
   "commands.new": "Put a ticket of your own on the board (⇧N on the board)",
   "commands.new_args": "<title>",
   "commands.title": "Change a ticket's title (⇧E on the board)",
-  "commands.title_args": "T-n <title>"
+  "commands.title_args": "T-n <title>",
+  "main.daemon_silent": "The daemon takes connections but answered nothing in {secs}s: it is stuck.",
+  "main.daemon_ended": "The daemon didn't stop when asked, so it was ended (pid {pid}).",
+  "main.row_stalled": "not answering",
+  "main.stalled_since": "since {since} — on {doing} ({secs}s)",
+  "main.stalled_hint": "Screens wait meanwhile. If it stays, run `equipe daemon restart`; ~/.equipe/daemon.log says more.",
+  "daemon.no_pid": "The daemon doesn't answer, and its process couldn't be found to end it.",
+  "attach.no_answer": "the daemon takes connections but doesn't answer — try `equipe daemon restart` on this machine"
 }

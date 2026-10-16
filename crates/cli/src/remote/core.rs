@@ -26,6 +26,11 @@ const PUSH_LABEL: usize = 60;
 /// the relay's longest (10 minutes).
 const STANDING_REFRESH_MS: u64 = 4 * 60 * 1000;
 const STANDING_SLOT_MS: u64 = 10 * 60 * 1000;
+/// The largest frame the relay takes (`relay/src/frames.ts`, `MAX_FRAME_BYTES`).
+pub const RELAY_FRAME_MAX: usize = 1024 * 1024;
+/// About the most a message to a phone can say and still fit in one frame:
+/// sealed (32 + 16 bytes), base64 (4/3), wrapped with its device and clock.
+const RELAY_PLAIN_MAX: usize = (RELAY_FRAME_MAX - 512) / 4 * 3 - 48 - 256;
 /// How many phones a demo daemon keeps; past that the oldest is forgotten.
 pub const DEMO_DEVICES: usize = 200;
 
@@ -89,6 +94,18 @@ pub struct Core {
     /// Ticket statuses per squad, to push only on a change.
     tickets: BTreeMap<String, HashMap<TicketId, TicketStatus>>,
     following: HashSet<(String, String)>,
+    /// What was too large for the relay, already said in the log.
+    too_large: HashSet<String>,
+    /// How often the relay said each thing went wrong.
+    relay_errors: HashMap<String, u64>,
+}
+
+/// 1, 10, 100…
+fn tenfold(mut n: u64) -> bool {
+    while n >= 10 && n.is_multiple_of(10) {
+        n /= 10;
+    }
+    n == 1
 }
 
 /// The pairing slot for a secret: what the relay knows it by.
@@ -356,7 +373,18 @@ impl Core {
         }
         let aad = format!("{}:{device}", config.id);
         let data = seal::seal(Kind::ToDevice, &to, Some(&config.keys()), None, &aad, plain.to_string().as_bytes()).ok()?;
-        Some(Action::Relay(json!({ "type": "send", "device": device, "data": data })))
+        let frame = json!({ "type": "send", "device": device, "data": data });
+        // The relay drops a frame past its limit and says only "frame is too
+        // large": dropped here instead, said once for what it was.
+        let size = frame.to_string().len();
+        if size > RELAY_FRAME_MAX {
+            let what = rpc.method.clone().unwrap_or_else(|| "an answer".into());
+            if self.too_large.insert(what.clone()) {
+                equipe_core::daemon_log!("remote: a {what} for a phone came to {} KB, more than the relay carries; not sent", size >> 10);
+            }
+            return None;
+        }
+        Some(Action::Relay(frame))
     }
 
     /// A frame from the relay.
@@ -393,11 +421,17 @@ impl Core {
             }
             "device_unpaired" => self.on_unpaired(frame["device"].as_str().unwrap_or_default()),
             "push_result" if frame["ok"] != true => {
-                eprintln!("remote: push to {} failed: {}", frame["device"], frame["error"]);
+                equipe_core::daemon_log!("remote: push to {} failed: {}", frame["device"], frame["error"]);
                 vec![]
             }
             "error" => {
-                eprintln!("remote: the relay said {}", frame["message"]);
+                // Said once, then at every tenfold: a loop shows, without filling the log.
+                let message = frame["message"].to_string();
+                let n = self.relay_errors.entry(message.clone()).or_insert(0);
+                *n += 1;
+                if tenfold(*n) {
+                    equipe_core::daemon_log!("remote: the relay said {message} ({n}×)");
+                }
                 vec![]
             }
             _ => vec![],
@@ -495,7 +529,23 @@ impl Core {
     pub fn opened(&mut self, device: &str, squad: &str, id: &Value, hello: Result<Hello, String>) -> Vec<Action> {
         let Some(id) = id.as_u64() else { return vec![] };
         let message = match hello {
-            Ok(hello) => Message::response(id, hello),
+            Ok(mut hello) => {
+                // A squad's snapshot can outgrow what the relay carries: its
+                // conversations go with less of their past until it fits —
+                // never not at all, or the phone asks again, and again.
+                for keep in [None, Some(50), Some(10), Some(0)] {
+                    if let Some(keep) = keep {
+                        for session in &mut hello.snapshot.sessions {
+                            let cut = session.recent.len().saturating_sub(keep);
+                            session.recent.drain(..cut);
+                        }
+                    }
+                    if Message::response(id, &hello).to_line().len() <= RELAY_PLAIN_MAX {
+                        break;
+                    }
+                }
+                Message::response(id, hello)
+            }
             Err(why) => {
                 self.following.remove(&(device.to_owned(), squad.to_owned()));
                 Message::failure(id, -32000, why)
@@ -734,6 +784,57 @@ pub(crate) mod tests {
         let out = core.answer_pairing(false, 1);
         assert!(out.contains(&Action::Local(json!({ "refused": "x" }))));
         assert!(core.config.unwrap().devices.is_empty());
+    }
+
+    #[test]
+    fn a_snapshot_too_large_for_the_relay_goes_with_less_of_the_past_and_a_huge_event_not_at_all() {
+        use equipe_core::protocol::{Access, Engine, Entry, SessionInfo, SessionState};
+        let (mut core, phone, _) = core_with_phone();
+        let c = core.config.clone().unwrap();
+        // Eight conversations of 200 long lines each: megabytes, as a busy squad's.
+        let line = "x".repeat(2_000);
+        let session = |id| SessionInfo {
+            session: id,
+            project: "/p".into(),
+            member: None,
+            engine: Engine::Claude,
+            model: None,
+            access: Access::ReadOnly,
+            workspace: None,
+            state: SessionState::Ready,
+            title: None,
+            tokens: 0,
+            context: None,
+            recent: (0..200).map(|_| Entry::Reply { text: line.clone() }).collect(),
+            queued: vec![],
+            queued_project: None,
+            queued_in: vec![],
+            steering: vec![],
+            lane: None,
+            estimate: None,
+            work: None,
+            mode: None,
+            effort: None,
+        };
+        let snapshot = Snapshot { squad: "acme".into(), sessions: (1..=8).map(session).collect(), ..Snapshot::default() };
+        assert!(serde_json::to_string(&snapshot).unwrap().len() > 2 * RELAY_FRAME_MAX);
+        let answered = core.opened(&phone.id, "acme", &json!(2), Ok(Hello { version: "v".into(), snapshot }));
+        let [Action::Relay(frame)] = &answered[..] else { panic!("{answered:?}") };
+        assert!(frame.to_string().len() <= RELAY_FRAME_MAX, "fits the relay");
+        let got = phone.open(&c, &answered[0]);
+        let sessions = got["rpc"]["result"]["snapshot"]["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), 8, "every conversation still there");
+        let kept = sessions[0]["recent"].as_array().unwrap().len();
+        assert!(kept > 0 && kept < 200, "its latest lines: {kept}");
+        // An event bigger than any frame is dropped, not sent for the relay to refuse.
+        let huge = Event::TextDelta { session: 1, text: "y".repeat(2 * RELAY_FRAME_MAX) };
+        assert!(core.on_event(&phone.id, "acme", &huge).is_empty());
+        assert_eq!(core.on_event(&phone.id, "acme", &Event::TextDelta { session: 1, text: "ok".into() }).len(), 1);
+    }
+
+    #[test]
+    fn the_relay_saying_the_same_thing_again_and_again_is_logged_at_each_tenfold() {
+        assert_eq!((1..=1000).filter(|n| tenfold(*n)).collect::<Vec<_>>(), [1, 10, 100, 1000]);
     }
 
     #[test]

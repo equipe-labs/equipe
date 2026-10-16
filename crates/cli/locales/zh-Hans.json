@@ -835,5 +835,12 @@
   "commands.new": "把你自己的工单放上看板（看板中 ⇧N）",
   "commands.new_args": "<标题>",
   "commands.title": "修改工单标题（看板中 ⇧E）",
-  "commands.title_args": "T-n <标题>"
+  "commands.title_args": "T-n <标题>",
+  "main.daemon_silent": "守护进程接受连接，但 {secs} 秒内没有任何响应：它卡住了。",
+  "main.daemon_ended": "守护进程没有按请求停止，已将其结束（pid {pid}）。",
+  "main.row_stalled": "无响应",
+  "main.stalled_since": "自 {since} 起 — 正在处理 {doing}（{secs} 秒）",
+  "main.stalled_hint": "在此期间各个界面都在等待。如果一直如此，请运行 `equipe daemon restart`；详情见 ~/.equipe/daemon.log。",
+  "daemon.no_pid": "守护进程没有响应，也找不到可以结束的进程。",
+  "attach.no_answer": "守护进程接受连接但没有响应 — 请在这台机器上试试 `equipe daemon restart`"
 }
