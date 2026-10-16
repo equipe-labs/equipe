@@ -16,6 +16,7 @@
 //! `answer:<ticket>,<n>,<words>` / `aok:<ticket>,<n>` / `atick:<ticket>,<n>` / `apick:<ticket>,<n>,<done|yours|later|call|unknown>` / `anote:<ticket>,<n>,<words>` / `afree:<ticket>,<words>` / `asend:<ticket>` / `asent:<ticket>` (a waiting ticket's card: type in box n, its quick OK, tick thing n off, a pick, a note, the words to the member, send; open what was sent) ·
 //! `dkey:<key>` (a member's questions' card: `1`–`9`, `up`, `down`, `space`, `enter`, `cmd-enter`, `tab`, `left`, `escape`) · `dtype:<words>` (in its box for the person's own words) · `decided` (open the latest decided row) · `dpick:<id>` (a set in 나에게, peeking) · `tpick:<id>` (a change to the team in 나에게, peeking) · `tyes` / `tno` (approve or decline the oldest change to the team) ·
 //! `qopen` · `qtype:<n>,<words>` · `qsay:<n>,<words>` · `qsend` · `qesc` · `qenter` (a reply's list of questions as a form: open it, type in box n — past the items, the one for anything to add — tap a quick answer, send, cancel; ⏎ in the composer) ·
+//! `design[:<overview|colors|type|spacing|radius|shadow|motion|assets|guidelines>]` (디자인 시스템, at a section) · `dsource:<squad|project:name>` (another system) · `ddraft` (its draft, or back) · `dchanges` (what changed, opened or closed) · `dlight:<n>` / `dlight:off` (asset n big) · `dplay:<token>` (a motion token played, as under the pointer) · `dask` (ask the designer for one) · `dtoc:<n>` (the guidelines' nth heading) ·
 //! `mark:<label>` (a line in the log) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `browser` (the browser panel, ⌘⇧B) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 
@@ -209,6 +210,35 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     eprintln!("paste: images taken = {taken}");
                 }),
                 "retry" => shell.update(cx, |shell, cx| shell.retry(cx)),
+                // 디자인 시스템: the screen at a section, another system, its draft, what changed, an asset big.
+                "design" => shell.update(cx, |shell, cx| {
+                    shell.open_design(cx);
+                    if let Some(section) = crate::design::Section::parse(&arg) {
+                        shell.design_section(section, cx);
+                    }
+                }),
+                "dsource" => shell.update(cx, |shell, cx| shell.design_pick_source(&arg, cx)),
+                "ddraft" => shell.update(cx, |shell, cx| shell.design_toggle_draft(cx)),
+                "dchanges" => shell.update(cx, |shell, cx| {
+                    shell.design.changes_open = !shell.design.changes_open;
+                    cx.notify();
+                }),
+                "dlight" => shell.update(cx, |shell, cx| shell.design_lightbox(arg.parse().ok(), cx)),
+                "dplay" => shell.update(cx, |shell, cx| {
+                    shell.design.plays += 1;
+                    shell.design.playing = Some((arg.clone(), shell.design.plays));
+                    cx.notify();
+                }),
+                "dask" => shell.update(cx, |shell, cx| shell.design_ask_designer(window, cx)),
+                "dtoc" => shell.update(cx, |shell, cx| {
+                    let n: usize = arg.parse().unwrap_or(0);
+                    let section = shell.design.current().and_then(|s| s.guidelines.as_deref()).map(crate::design::headings).and_then(|h| h.get(n).map(|h| h.section));
+                    if let Some(section) = section {
+                        shell.design.toc_at = n;
+                        shell.design.scroll.scroll_to_item(section);
+                        cx.notify();
+                    }
+                }),
                 // 휴대폰 연결: the sheet, and its buttons.
                 "pair" => shell.update(cx, |shell, cx| match arg.as_str() {
                     "allow" => shell.answer_pairing(true, cx),

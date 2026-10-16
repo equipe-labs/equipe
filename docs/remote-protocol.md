@@ -69,6 +69,7 @@ Plaintext is UTF-8 JSON:
 | `{ "id", "method": "squads" }` (no `squad`) | `result`: `[{ "name", "projects": [<project names>] }]` |
 | `{ "id", "method": "hello", "params": { "version", "squad" } }`, `squad` set too | `result`: `{ "version", "snapshot" }`; from then on the squad's `event`s, with `squad` set. A device may follow several squads; a second `hello` for one replaces the first. Error `-32602` "no such squad"; `-32000` when the daemon couldn't follow it |
 | `{ "method": "command", "params": <Command> }` — a notification, no `id` | none: what it did shows in events. Dropped without a word when it isn't one a device may send, its squad isn't the frame's, or the frame's squad isn't followed |
+| `{ "id", "method": "read_image", "params": { "squad", "path", "max"? } }`, `squad` set too | `result`: `{ "mime", "size", "width"?, "height"?, "data", "scaled"? }` — a picture the squad shows (a decision's option, a hand-in, a design system's asset), no bigger than 720 px on its longer side and small enough for one frame. Error `-32002` when the squad isn't the frame's or isn't followed, `-32000` when the squad doesn't show that path or it isn't a picture inside a member's worktree, the squad's folder or a design folder |
 | anything else with an `id` | error `-32601` "not something a device may ask" |
 
 A frame that doesn't open, is off by more than 5 minutes, repeats a `seq` or doesn't parse is
@@ -107,6 +108,21 @@ never an agent: the phone approves with the command `approve_team_change` `{ "sq
 "members"? }` — `members`: who joined, or left — also sent with `approved: false` when the
 change became moot (its member left anyway). A push for a proposal carries the event with
 `reason` cut to 800 characters, category `team`.
+
+### The design system
+
+The squad's design system (`docs/DESIGN-SYSTEM.md`) is asked for with the command `design`
+`{ "squad" }`. Every screen following the squad then gets the event `design`
+`{ "squad", "systems": [ … ], "folder" }` — and again whenever one of the folders changes, for as
+long as any screen follows the squad. `systems` lists the squad's own first (no `project`), then each
+project's that has one (`project`: its name), then the drafts tickets in review hand in (`draft`:
+`{ "ticket", "title" }`) — empty when there is none yet, `folder` being where the squad's would be.
+Each system is `{ "project"?, "dir", "draft"?, "modes"?: ["light", "dark"], "tokens"?: [{ "name",
+"type", "value", "modes"?: { "<mode>": <value> }, "description"?, "alias"? }], "problems"?: [<line>],
+"guidelines"?: "<markdown>", "assets"?: [{ "path", "name", "kind": "logo" | "icon" | "illustration" |
+"component" | "other", "size" }], "stamp" }`. Token values are DTCG's JSON with every alias resolved
+(`value` in the first mode, `modes` every mode's when they differ). An asset's picture is read with
+`read_image` by its `path`. A phone may send `design`; nothing in it changes anything.
 
 ### Conformance vectors
 
@@ -284,7 +300,7 @@ The daemon follows a device like one more screen, with less reach than the termi
 
 - **may:** `hello`, `squads`, and the commands `submit`, `interrupt`, `send_now`, `accept`, `reopen`,
   `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `approve_team_change`,
-  `decline_team_change`, `focus`, `refresh`.
+  `decline_team_change`, `focus`, `refresh`, `design`; and `read_image`.
 - `submit` and `answer_questions` may say what the message is about: `about` — the project the
   phone shows, or `null` for the whole squad. Left out, the daemon takes the project in focus
   (the last `focus` any screen sent). Said while the member works, a message steers it

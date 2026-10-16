@@ -48,6 +48,11 @@
 //! `FAKE_BROWSER=handover`, the PM's browser handed to the person to sign in
 //! (its news line, as an English daemon wrote it, last in the PM's history).
 //!
+//! `FAKE_DESIGN=1`: the squad's design system and the web project's own,
+//! modelled on T-144's brand guideline; `draft`: T-144 in review with its
+//! draft; `empty`: none yet (`fake_daemon/design.rs`). Pictures come through
+//! `read_image`, as from the daemon.
+//!
 //! Pairing a phone: a code at once, and two phones paired already.
 //! `FAKE_PAIR=ask` has a phone ask 1.5 s after the code shows (`allow` pairs
 //! it); `relay` fails as an unreachable relay would; `silent` never answers,
@@ -267,6 +272,7 @@ fn board() -> Vec<Ticket> {
         let mut task = ticket(63, "review", "app", "designer", "경쟁 앱 온보딩 조사", "", &[], None, Some("다섯 개 앱의 온보딩을 정리했습니다. `research/onboarding.md`"));
         task.kind = equipe_core::protocol::TicketKind::Task;
         out.push(task);
+        out.extend(design::ticket());
         let mut done = ticket(51, "done", "web", "frontend", "푸터 링크 정리", "", &[], Some("equipe/t-51-footer"), Some("링크를 정리했습니다."));
         done.merged = Some(false);
         out.push(done);
@@ -749,6 +755,8 @@ mod history;
 
 #[path = "fake_daemon/team.rs"]
 mod team;
+#[path = "fake_daemon/design.rs"]
+mod design;
 
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
@@ -780,6 +788,7 @@ async fn main() {
     let _ = std::fs::remove_file(&socket);
     let listener = UnixListener::bind(&socket).expect("bind the fake daemon's socket");
     seed_repos();
+    design::seed();
     eprintln!("fake daemon on {}", socket.display());
     let seconds: f32 = std::env::var("FAKE_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(4.);
     let (events, _) = broadcast::channel::<Event>(1024);
@@ -965,6 +974,17 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             return;
                         }
                     }
+                    // A design system's picture, checked as the daemon checks it.
+                    (Some(rpc::READ_IMAGE), Some(id)) => {
+                        let ask: rpc::ReadImage = message.params_as().unwrap();
+                        let reply = match design::read_image(&ask) {
+                            Ok(read) => Message::response(id, read),
+                            Err(why) => Message::failure(id, -32000, why),
+                        };
+                        if writer.write_all(reply.to_line().as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
                     // Read back as the daemon does: from its uploads only.
                     (Some(rpc::READ_UPLOAD), Some(id)) => {
                         let ask: rpc::ReadUpload = message.params_as().unwrap();
@@ -1109,7 +1129,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     let _ = events.send(Event::Notice { session: 1, text: "🖐 브라우저를 돌려줬습니다.".into() });
                                     turns.lock().await.insert(1, tokio::spawn(turn(1, events.clone(), seconds)));
                                 }
-                                if browser::on_command(&other, &events) || team::on_command(&other, &events) {
+                                if browser::on_command(&other, &events) || team::on_command(&other, &events) || design::on_command(&other, &events) {
                                     continue;
                                 }
                                 if let Some(said) = on_board_command(&other) {

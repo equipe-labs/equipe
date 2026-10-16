@@ -409,7 +409,7 @@ fn name_button(shell: &Shell, token: &Token, cx: &mut Context<Shell>) -> AnyElem
 }
 
 /// A contrast grade, as a small badge: AAA, AA, 큰 글자, or 미달 — with the ratio.
-fn grade_badge(p: Palette, ratio: f64, against: Color, surface: bool, id: SharedString) -> AnyElement {
+fn grade_badge(p: Palette, ratio: f64, what: String, id: SharedString) -> AnyElement {
     let tones = crate::render::tones(&p);
     let grade = contrast::grade(ratio);
     let (label, fg, bg) = match grade {
@@ -418,7 +418,6 @@ fn grade_badge(p: Palette, ratio: f64, against: Color, surface: bool, id: Shared
         Grade::Large => (t!("design.grade_large").to_owned(), p.amber, Rgba { a: 0.14, ..p.amber }),
         Grade::Fail => (t!("design.grade_fail").to_owned(), p.danger(), p.danger_bg()),
     };
-    let what = if surface { t!("design.contrast_text", hex = against.hex(), ratio = format!("{ratio:.2}")) } else { t!("design.contrast_bg", hex = against.hex(), ratio = format!("{ratio:.2}")) };
     h_flex()
         .id(id)
         .flex_none()
@@ -442,7 +441,7 @@ fn grade_badge(p: Palette, ratio: f64, against: Color, surface: bool, id: Shared
 fn overview(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let (light_bg, dark_bg) = ds::backgrounds(system);
-    let logos: Vec<(usize, &equipe_core::protocol::design::Asset)> = system.assets.iter().enumerate().filter(|(_, a)| a.kind == AssetKind::Logo).take(3).collect();
+    let logos: Vec<(usize, &equipe_core::protocol::design::Asset)> = ds::DesignUi::logos(system).into_iter().take(3).map(|i| (i, &system.assets[i])).collect();
     let mut col = v_flex().gap_8();
     if !system.problems.is_empty() {
         col = col.child(problems(p, &system.problems));
@@ -460,7 +459,7 @@ fn overview(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> An
         }
         col = col.child(v_flex().child(heading(p, t!("design.logos").into(), None)).child(row));
     }
-    let leads = ds::primary_colors(system, 8);
+    let leads = ds::primary_colors(system, 7);
     if !leads.is_empty() {
         let mut row = h_flex().gap_3().flex_wrap();
         for token in leads {
@@ -492,7 +491,7 @@ fn overview(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> An
                 .on_click(cx.listener(move |this, _, _, cx| this.design_section(section, cx))),
         );
     }
-    col = col.child(v_flex().child(heading(p, t!("design.contents").into(), None)).child(cards));
+    col = col.child(v_flex().child(heading(p, t!("design.at_a_glance").into(), None)).child(cards));
     col.into_any_element()
 }
 
@@ -672,7 +671,16 @@ fn swatch(shell: &Shell, system: &DesignSystem, token: &Token, cx: &mut Context<
         let dark = mode.as_deref().map_or_else(|| ds::is_dark(contrast::background(&system.tokens, None, Color::WHITE)), |m| m.to_ascii_lowercase().contains("dark"));
         let surface = contrast::is_surface(token);
         let base = if dark { Color::rgb(0x0A0A0C) } else { Color::WHITE };
+        let on = contrast::drawn_on(&system.tokens, token).and_then(|t| values::color(t.value_in(mode.as_deref())).map(|c| (t.leaf().to_owned(), c)));
         let against = if surface { contrast::text(&system.tokens, mode.as_deref(), if dark { Color::rgb(0xEFEDE7) } else { Color::rgb(0x15161A) }) } else { contrast::background(&system.tokens, mode.as_deref(), base) };
+        let what = |ratio: f64| {
+            let ratio = format!("{ratio:.2}");
+            match &on {
+                Some((name, c)) => t!("design.contrast_on", name = name, hex = c.hex(), ratio = ratio),
+                None if surface => t!("design.contrast_text", hex = against.hex(), ratio = ratio),
+                None => t!("design.contrast_bg", hex = against.hex(), ratio = ratio),
+            }
+        };
         let ratio = contrast::measure(&system.tokens, token, mode.as_deref(), dark);
         let label = match mode.as_deref() {
             Some(m) if m.eq_ignore_ascii_case("light") => t!("design.mode_light").to_owned(),
@@ -680,14 +688,14 @@ fn swatch(shell: &Shell, system: &DesignSystem, token: &Token, cx: &mut Context<
             Some(m) => m.to_owned(),
             None => String::new(),
         };
-        let same_as_bg = !surface && contrast::background(&system.tokens, mode.as_deref(), base) == contrast::over(*c, base);
+        let same_as_bg = !surface && on.is_none() && contrast::background(&system.tokens, mode.as_deref(), base) == contrast::over(*c, base);
         rows = rows.child(
             h_flex()
                 .gap_1p5()
                 .items_center()
                 .when(!label.is_empty(), |r| r.child(div().w(px(30.)).flex_none().text_size(px(10.5)).text_color(p.muted).child(label)))
                 .child(div().flex_1().font_family(MONO).text_size(px(11.5)).text_color(p.text2).child(c.hex()))
-                .children(ratio.filter(|_| !same_as_bg).map(|r| grade_badge(p, r, against, surface, SharedString::from(format!("design-grade-{}-{}", token.name, mode.as_deref().unwrap_or("")))))),
+                .children(ratio.filter(|_| !same_as_bg).map(|r| grade_badge(p, r, what(r), SharedString::from(format!("design-grade-{}-{}", token.name, mode.as_deref().unwrap_or("")))))),
         );
     }
     let changed = shell.design_changed(&token.name);
@@ -743,7 +751,9 @@ fn typography(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> 
     let english = "The quick brown fox jumps over the lazy dog — 0123456789";
     let english_lang = crate::i18n::lang().code() == "en";
     let mut col = v_flex().child(heading(p, t!("design.section_typography").into(), Some(t!("design.type_note").into())));
-    let tokens = ds::tokens_in(system, Section::Typography);
+    // Type styles first, then sizes, then the families and weights they are made of.
+    let mut tokens = ds::tokens_in(system, Section::Typography);
+    tokens.sort_by_key(|t| ["typography", "dimension", "fontFamily", "fontWeight"].iter().position(|k| *k == t.kind).unwrap_or(4));
     for (group, list) in ds::groups(&tokens) {
         col = col.child(group_label(p, &group));
         for token in list {
@@ -855,9 +865,9 @@ fn radius(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyE
 
 fn shadows(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
-    let (light_bg, dark_bg) = ds::backgrounds(system);
-    let stage = if p.is_dark() { dark_bg } else { light_bg };
-    let mut grid = h_flex().gap_6().flex_wrap().items_start().p_6().rounded(px(R_LG)).bg(color(stage)).border_1().border_color(p.hair);
+    // Shadows read on light: the system's own light background, whatever the window's.
+    let (light_bg, _) = ds::backgrounds(system);
+    let mut grid = h_flex().gap_4().flex_wrap().items_start();
     for token in ds::tokens_in(system, Section::Shadow) {
         let layers: Vec<BoxShadow> = values::shadows(&token.value)
             .unwrap_or_default()
@@ -867,9 +877,9 @@ fn shadows(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> Any
             .collect();
         grid = grid.child(
             v_flex()
-                .w(px(176.))
-                .gap_3()
-                .child(div().w_full().h(px(104.)).rounded(px(R_LG)).bg(if p.is_dark() { rgb(0x1B1C20) } else { rgb(0xFFFFFF) }).shadow(layers))
+                .w(px(232.))
+                .gap_2()
+                .child(div().w_full().p(px(28.)).rounded(px(R_LG)).bg(color(light_bg)).border_1().border_color(p.hair).child(div().w_full().h(px(96.)).rounded(px(R_LG)).bg(rgb(0xFFFFFF)).shadow(layers)))
                 .child(specimen_meta(shell, token, cx)),
         );
     }
@@ -949,7 +959,6 @@ fn motion_section(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>)
                         .child(div().absolute().left(px(DOT / 2.)).right(px(DOT / 2.)).top(px(15.5)).h(px(1.)).bg(p.hair))
                         .child(dot),
                 )
-                .child(div().text_size(px(META)).text_color(p.muted).child(if playing.is_some() { String::new() } else { t!("design.hover_to_play").to_owned() }))
                 .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                     if *hovered {
                         this.design.plays += 1;
@@ -1035,6 +1044,12 @@ fn assets(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyE
                     .child(icon(glyph, ICON_SM, p.text2))
                     .tip(p, label, None)
             };
+            // A logo for one background is shown on that one's checkerboard.
+            let stage_dark = match ds::logo_sides(&asset.name) {
+                (true, false) => false,
+                (false, true) => true,
+                _ => p.is_dark(),
+            };
             let tile = div()
                 .id(SharedString::from(format!("design-asset-{ix}")))
                 .group(group.clone())
@@ -1044,7 +1059,7 @@ fn assets(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyE
                 .rounded_t(px(R_LG))
                 .overflow_hidden()
                 .cursor_pointer()
-                .child(img(checkerboard(p.is_dark())).absolute().inset_0().size_full().object_fit(ObjectFit::Cover))
+                .child(img(checkerboard(stage_dark)).absolute().inset_0().size_full().object_fit(ObjectFit::Cover))
                 .child(div().absolute().inset_0().p_5().flex().items_center().justify_center().child(picture(shell, &path, p.muted)))
                 .child(
                     h_flex()
@@ -1108,7 +1123,11 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
     let remote = shell.endpoint.is_remote();
     let name = asset.name.rsplit('/').next().unwrap_or(&asset.name).to_owned();
-    let dark_stage = p.is_dark();
+    let dark_stage = match ds::logo_sides(&asset.name) {
+        (true, false) => false,
+        (false, true) => true,
+        _ => p.is_dark(),
+    };
     let round = |b: Stateful<Div>, glyph: Icon, label: String, keys: Option<&'static str>| {
         b.size(px(CONTROL)).flex().items_center().justify_center().rounded_full().cursor_pointer().hover(|s| s.bg(rgba(0xFFFFFF1F))).child(icon(glyph, ICON, rgb(0xFFFFFF))).tip(p, label, keys)
     };
@@ -1243,9 +1262,7 @@ fn changes_popover(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement>
     let list = v_flex().id("design-changes-list").max_h(px(360.)).overflow_y_scroll().children(changes.iter().take(80).map(row));
     let panel = v_flex()
         .id("design-changes-panel")
-        .absolute()
-        .top(px(super::header::HEIGHT + 6.))
-        .right(px(16.))
+        .relative()
         .w(px(360.))
         .p_3()
         .gap_2()
@@ -1257,7 +1274,8 @@ fn changes_popover(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement>
         .child(div().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("design.changed_since")))
         .child(list)
         .child(h_flex().justify_end().child(ui::button(p, "design-seen", ui::Kind::Secondary, t!("design.mark_seen")).icon(Icon::Check).on_click(cx.listener(|this, _, _, cx| this.design_mark_seen(cx)))));
-    Some(motion::pop(panel, "design-changes-in", false).into_any_element())
+    // Placed by its frame, so the pop's travel (which moves `top`) is its own.
+    Some(div().absolute().top(px(super::header::HEIGHT + 6.)).right(px(16.)).child(motion::pop(panel, "design-changes-in", false)).into_any_element())
 }
 
 // ── what the screen does ──
@@ -1402,7 +1420,7 @@ impl Shell {
         cx.notify();
     }
 
-    fn design_pick_source(&mut self, key: &str, cx: &mut Context<Self>) {
+    pub fn design_pick_source(&mut self, key: &str, cx: &mut Context<Self>) {
         if self.design.source != key {
             self.design_end_look();
             self.design.source = key.to_owned();
@@ -1417,7 +1435,7 @@ impl Shell {
         cx.notify();
     }
 
-    fn design_toggle_draft(&mut self, cx: &mut Context<Self>) {
+    pub fn design_toggle_draft(&mut self, cx: &mut Context<Self>) {
         self.design.draft = !self.design.draft;
         self.design.lightbox = None;
         if let Some(system) = self.design.current()

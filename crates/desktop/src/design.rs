@@ -200,9 +200,11 @@ pub fn is_dark(c: values::Color) -> bool {
 pub fn primary_colors(system: &DesignSystem, n: usize) -> Vec<&Token> {
     const ORDER: [&str; 9] = ["brand", "primary", "accent", "dot", "bg", "background", "surface", "text", "fg"];
     let colors: Vec<&Token> = system.tokens.iter().filter(|t| t.kind == "color").collect();
+    // By its own name (`color.accent`), or a group's plain one (`brand.primary`).
     let rank = |t: &Token| {
-        let name = t.name.to_ascii_lowercase();
-        ORDER.iter().position(|w| name.split(['.', '-', '_']).any(|p| p == *w)).unwrap_or(ORDER.len())
+        let leaf = t.leaf().to_ascii_lowercase();
+        let group = t.group().rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        ORDER.iter().position(|w| leaf == *w || (group == *w && ["default", "base", "main", "500"].contains(&leaf.as_str()))).unwrap_or(ORDER.len())
     };
     let mut ranked: Vec<(usize, usize, &Token)> = colors.iter().enumerate().map(|(i, t)| (rank(t), i, *t)).filter(|(r, _, _)| *r < ORDER.len()).collect();
     ranked.sort_by_key(|(r, i, _)| (*r, *i));
@@ -498,6 +500,16 @@ impl DesignUi {
         ix.sort_by_key(|i| (system.assets[*i].kind != AssetKind::Logo, *i));
         ix
     }
+
+    /// The logos to lead with: the plain ones (`mark.svg`) before their variants.
+    pub fn logos(system: &DesignSystem) -> Vec<usize> {
+        let mut ix: Vec<usize> = (0..system.assets.len()).filter(|i| system.assets[*i].kind == AssetKind::Logo).collect();
+        ix.sort_by_key(|i| {
+            let name = system.assets[*i].name.rsplit('/').next().unwrap_or_default().to_owned();
+            (name.matches('-').count(), name.len(), name)
+        });
+        ix
+    }
 }
 
 /// A system's key without a draft's part: the source it belongs to.
@@ -622,6 +634,12 @@ mod tests {
         assert_eq!(logo_sides("assets/logo/mark.svg"), (true, true));
         let s = system(None, None, vec![token("color.text", "color", json!("#111")), token("color.ok", "color", json!("#0A0")), token("color.accent", "color", json!("#1D4ED8")), token("brand.dot", "color", json!("#3F6FF5"))]);
         let names: Vec<&str> = primary_colors(&s, 3).iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, ["brand.dot", "color.accent", "color.text"]);
+        assert_eq!(names, ["color.accent", "brand.dot", "color.text"]);
+        let mut with_logos = system(None, None, vec![]);
+        with_logos.assets = ["assets/logo/mark-mono-on-dark.svg", "assets/logo/mark.svg", "assets/icons/x.svg", "assets/logo/wordmark.svg"]
+            .iter()
+            .map(|n| equipe_core::protocol::design::Asset { path: format!("/d/{n}"), name: (*n).into(), kind: if n.contains("logo") { AssetKind::Logo } else { AssetKind::Icon }, size: 1 })
+            .collect();
+        assert_eq!(DesignUi::logos(&with_logos), [1, 3, 0], "plain ones first");
     }
 }

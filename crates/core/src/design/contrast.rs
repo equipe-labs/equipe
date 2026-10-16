@@ -108,12 +108,25 @@ pub fn is_surface(token: &Token) -> bool {
     score(token, &SURFACES) > 0
 }
 
-/// What `token` is measured against in `mode`, and the ratio: a surface
-/// with the text on it, anything else on the background.
+/// The colour an `on…` colour is drawn on: `onAccent`, `on-primary`,
+/// `on_accent` are words on `accent`, `primary`.
+pub fn drawn_on<'a>(tokens: &'a [Token], token: &Token) -> Option<&'a Token> {
+    let leaf = token.leaf();
+    let rest = leaf.strip_prefix("on").filter(|r| r.starts_with(|c: char| c.is_ascii_uppercase() || c == '-' || c == '_'))?;
+    let rest = rest.trim_start_matches(['-', '_']).to_ascii_lowercase();
+    tokens.iter().filter(|t| t.kind == "color" && t.leaf().to_ascii_lowercase() == rest).min_by_key(|t| usize::from(t.group() != token.group()))
+}
+
+/// What `token` is measured against in `mode`, and the ratio: an `on…`
+/// colour on what it names, a surface with the text on it, anything else on
+/// the background.
 pub fn measure(tokens: &[Token], token: &Token, mode: Option<&str>, dark: bool) -> Option<f64> {
     let own = color(token.value_in(mode))?;
     let (base, ink) = if dark { (Color::rgb(0x0A0A0C), Color::rgb(0xEFEDE7)) } else { (Color::WHITE, Color::rgb(0x15161A)) };
     let bg = background(tokens, mode, base);
+    if let Some(under) = drawn_on(tokens, token).and_then(|t| color(t.value_in(mode))) {
+        return Some(ratio(own, over(under, bg)));
+    }
     if is_surface(token) {
         Some(ratio(text(tokens, mode, ink), over(own, bg)))
     } else {
@@ -188,6 +201,12 @@ mod tests {
         assert!((accent - 6.14).abs() < 0.01, "on the background: {accent}");
         let surface = measure(&tokens, &tokens[0], Some("dark"), true).unwrap();
         assert!((surface - 15.31).abs() < 0.01, "a surface, with the text on it: {surface}");
+        let on_accent = t("color.onAccent", "#FFFFFF", "#0B1226");
+        let with_on: Vec<Token> = tokens.iter().cloned().chain([on_accent.clone()]).collect();
+        assert_eq!(drawn_on(&with_on, &on_accent).map(|t| t.name.as_str()), Some("color.accent"));
+        let on = measure(&with_on, &on_accent, Some("dark"), true).unwrap();
+        assert!((on - 8.70).abs() < 0.01, "on the accent, as the designer measured it: {on}");
+        assert!(drawn_on(&with_on, &tokens[0]).is_none() && drawn_on(&with_on, &t("color.ontology", "#000", "#000")).is_none());
         let nested = Token { name: "color.background.default".into(), ..t("x", "#101010", "#101010") };
         assert_eq!(background(std::slice::from_ref(&nested), None, Color::WHITE), c(0x101010));
         assert_eq!(background(&[], Some("dark"), c(0x0A0A0C)), c(0x0A0A0C), "none named: the fallback");
