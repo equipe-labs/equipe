@@ -121,6 +121,13 @@
   "news.stale.one": "── {count} ticket lleva una semana sin moverse: el PM propondrá ordenarlo ──",
   "news.stale.other": "── {count} tickets llevan una semana sin moverse: el PM propondrá ordenarlos ──",
   "news.taken_on": "Aceptaste la propuesta T-{id} · {title}.",
+  "news.team_added": "{names} se unió al equipo",
+  "news.team_declined": "Rechazaste el cambio de equipo · {what}",
+  "news.team_not_added": "No se pudo añadir {role} al equipo",
+  "news.team_removed": "{name} dejó el equipo",
+  "news.team_what_add.one": "añadir {role}",
+  "news.team_what_add.other": "añadir {count} {role}",
+  "news.team_what_remove": "dejar ir a {name}",
   "news.waiting": "T-{id} te espera: {name} necesita algo que solo tú puedes hacer · {title}.",
   "news.you_told": "↪ Tú → {name}: {text}",
   "note.ended_early": "El motor terminó antes de tiempo.",
@@ -135,6 +142,7 @@
   "notice.browser_given_back": "🖐 Devolviste el navegador.",
   "notice.browser_in_panel": "🖥 El navegador de {name} se abre en tu panel de navegador: {why}",
   "notice.browser_on_screen": "🖥 El navegador de {name} aparece en la pantalla de este Mac: {why}",
+  "notice.browser_tab_closed": "🖐 Pestaña del navegador cerrada: {url}",
   "notice.browser_taken": "🖐 Tomaste este navegador; sus herramientas de navegador te esperan.",
   "notice.declined": "✗ Rechazaste: {action}",
   "notice.declined_why": "✗ {why} Rechazado: {action}",
@@ -163,5 +171,8 @@
   "status.proposed": "propuesto",
   "status.review": "en revisión",
   "status.todo": "por hacer",
-  "status.waiting": "esperándote"
+  "status.waiting": "esperándote",
+  "error.disk_full": "El disco está lleno: equipe no puede guardar conversaciones ni tickets hasta que haya espacio. Suelen ser las carpetas de compilación de los miembros (target/).",
+  "notice.disk_room": "El disco vuelve a tener espacio: equipe guarda conversaciones y tickets como antes.",
+  "error.stuck": "El daemon no responde: lleva en {doing} desde las {since}. Prueba `equipe daemon restart`."
 }

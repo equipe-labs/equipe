@@ -103,6 +103,26 @@ pub(crate) type LinkClickHandlerFn =
 /// may hold a `ScrollHandle`.
 pub(crate) type RevealHandlerFn = dyn Fn(Bounds<Pixels>, &mut Window, &mut App);
 
+// equipe: the link the pointer came onto, for a card that shows what it
+// points at. One hook for the whole app: every text view's links report to it.
+pub(crate) type LinkHoverFn = dyn Fn(&SharedString, Bounds<Pixels>, &mut Window, &mut App);
+
+struct LinkHoverHook(Rc<LinkHoverFn>);
+
+impl Global for LinkHoverHook {}
+
+/// equipe: told the link's url and where its text is (the row of it under the
+/// pointer) each time the pointer comes onto a link, a button not held.
+pub fn on_link_hover(cx: &mut App, hook: impl Fn(&SharedString, Bounds<Pixels>, &mut Window, &mut App) + 'static) {
+    cx.set_global(LinkHoverHook(Rc::new(hook)));
+}
+
+pub(crate) fn handle_link_hover(url: &SharedString, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+    if let Some(hook) = cx.try_global::<LinkHoverHook>().map(|h| h.0.clone()) {
+        hook(url, bounds, window, cx);
+    }
+}
+
 pub(crate) fn handle_link_click(
     handler: &Option<Arc<LinkClickHandlerFn>>,
     url: SharedString,

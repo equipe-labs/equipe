@@ -10,19 +10,79 @@
 //! reopened, and checked out again from its branch if it comes back later;
 //! `equipe try --edit` uses one for a single turn.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
+use std::time::Duration;
 
 pub type Result<T> = std::result::Result<T, String>;
 
+/// The longest one of equipe's local git commands may take before it is
+/// stopped: each takes milliseconds on a healthy machine, and the daemon must
+/// never wait on one for good (a full disk, a lock, a prompt nobody sees).
+pub const GIT_TIMEOUT: Duration = Duration::from_secs(60);
+/// A push talks to a server, which may be slow.
+const PUSH_TIMEOUT: Duration = Duration::from_secs(180);
+
+static GIT: OnceLock<PathBuf> = OnceLock::new();
+
+/// Run this git instead of the one on `PATH` — for tests that need a slow or
+/// a failing one. Set once per process.
+#[doc(hidden)]
+pub fn use_git(program: PathBuf) {
+    let _ = GIT.set(program);
+}
+
+/// A git command for `dir`.
+pub(crate) fn git_command(dir: &Path) -> Command {
+    let mut command = Command::new(GIT.get().map_or(Path::new("git"), PathBuf::as_path));
+    command.arg("-C").arg(dir);
+    // Nobody is at the daemon's terminal: a prompt for credentials fails rather than waits.
+    command.env("GIT_TERMINAL_PROMPT", "0");
+    command
+}
+
+/// What `command` printed, once it ends — or an error once `timeout` passes,
+/// the command and whatever it started killed. Its standard input is empty.
+pub(crate) fn output_within(mut command: Command, timeout: Duration) -> Result<Output> {
+    use std::os::unix::process::CommandExt as _;
+    let program = command.get_program().to_string_lossy().into_owned();
+    // A group of its own, so a timeout stops what it started too (a push's ssh).
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
+    let child = command.spawn().map_err(|err| format!("couldn't run {program}: {err}"))?;
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(out) => out.map_err(|err| format!("couldn't run {program}: {err}")),
+        Err(_) => {
+            let _ = Command::new("kill").args(["-KILL", &format!("-{pid}")]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+            let args: Vec<String> = command.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+            Err(format!("{program} {} took more than {}s and was stopped", args.join(" "), timeout.as_secs()))
+        }
+    }
+}
+
+/// For what may take long — a merge worked out per ticket, a push — and so
+/// must run off the daemon's core loop (`spawn_blocking`): there it would hold
+/// up every screen (docs/INCIDENT-2026-10-16-daemon-hang.md). A debug build
+/// stops at once when it is called there.
+fn off_the_loop(what: &str) {
+    debug_assert!(!crate::runtime::on_core_loop(), "{what} runs git and must not run on the core loop: spawn_blocking it");
+}
+
 /// Run git in `dir` and return trimmed stdout, or stderr as the error.
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .map_err(|err| format!("couldn't run git: {err}"))?;
+    git_within(dir, args, GIT_TIMEOUT)
+}
+
+fn git_within(dir: &Path, args: &[&str], timeout: Duration) -> Result<String> {
+    let mut command = git_command(dir);
+    command.args(args);
+    let out = output_within(command, timeout)?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
     } else {
@@ -143,6 +203,7 @@ pub fn main_branch(repo: &Path) -> Result<String> {
 /// main already, or merging it would change nothing there (`+0 −0` — its
 /// changes landed another way, or it made none).
 pub fn is_merged(repo: &Path, branch: &str) -> Result<bool> {
+    off_the_loop("is_merged");
     let main = main_branch(repo)?;
     Ok(is_ancestor(repo, branch, &main) || adds_nothing(repo, branch, &main))
 }
@@ -157,6 +218,63 @@ fn adds_nothing(repo: &Path, branch: &str, into: &str) -> bool {
         .is_ok_and(|out| out.lines().next().is_some_and(|merged| merged.trim() == tree))
 }
 
+/// The tip of each of a repository's branches, by name (`main`, `equipe/x-1`).
+fn branch_tips(repo: &Path) -> Result<HashMap<String, String>> {
+    let out = git(repo, &["for-each-ref", "--format=%(objectname) %(refname:short)", "refs/heads/"])?;
+    Ok(out.lines().filter_map(|l| l.split_once(' ')).map(|(sha, name)| (name.to_owned(), sha.to_owned())).collect())
+}
+
+/// [`is_merged`] for many branches, each answer remembered for as long as
+/// neither the branch nor main moves: asked every minute, it runs a few git
+/// commands per repository, and works a merge out only for a branch that moved.
+#[derive(Default)]
+pub struct MergedCache {
+    /// By repository and branch: the branch's tip and main's when it was
+    /// told, and whether it was merged then.
+    told: HashMap<(PathBuf, String), (String, String, bool)>,
+}
+
+impl MergedCache {
+    /// For each of `branches` of the repository `project` is in: whether it
+    /// has nothing left to bring to main; `None` when that can't be told.
+    pub fn merged(&mut self, project: &Path, branches: &[String]) -> Vec<Option<bool>> {
+        off_the_loop("MergedCache::merged");
+        let known = repo_root(project).and_then(|repo| Ok((main_branch(&repo)?, branch_tips(&repo)?, repo)));
+        let Ok((main, tips, repo)) = known else {
+            return vec![None; branches.len()];
+        };
+        let Some(main_tip) = tips.get(&main).cloned() else {
+            return vec![None; branches.len()];
+        };
+        self.told.retain(|(r, b), _| *r != repo || tips.contains_key(b));
+        branches
+            .iter()
+            .map(|branch| {
+                let tip = tips.get(branch)?;
+                let key = (repo.clone(), branch.clone());
+                if let Some((t, m, merged)) = self.told.get(&key)
+                    && t == tip
+                    && *m == main_tip
+                {
+                    return Some(*merged);
+                }
+                let merged = is_ancestor(&repo, branch, &main) || adds_nothing(&repo, branch, &main);
+                self.told.insert(key, (tip.clone(), main_tip.clone(), merged));
+                Some(merged)
+            })
+            .collect()
+    }
+
+    /// How many answers it keeps.
+    pub fn len(&self) -> usize {
+        self.told.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.told.is_empty()
+    }
+}
+
 /// Merge `branch` into the main branch with a merge commit, never touching a
 /// conflict: the merge is worked out apart from any checkout, and only a clean
 /// one moves the branch. A checkout that has main checked out follows along
@@ -169,12 +287,9 @@ pub fn merge_into_main(repo: &Path, branch: &str, message: &str) -> Result<Strin
         return Ok(main);
     }
     let tip = git(repo, &["rev-parse", &format!("refs/heads/{main}")])?;
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["merge-tree", "--write-tree", "--name-only", "--no-messages", &tip, branch])
-        .output()
-        .map_err(|err| format!("couldn't run git: {err}"))?;
+    let mut command = git_command(repo);
+    command.args(["merge-tree", "--write-tree", "--name-only", "--no-messages", &tip, branch]);
+    let out = output_within(command, GIT_TIMEOUT)?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut lines = stdout.lines();
     let tree = lines.next().unwrap_or("").trim().to_owned();
@@ -202,8 +317,9 @@ pub fn merge_into_main(repo: &Path, branch: &str, message: &str) -> Result<Strin
 
 /// Push the main branch to `origin`.
 pub fn push_main(repo: &Path) -> Result<String> {
+    off_the_loop("push_main");
     let main = main_branch(repo)?;
-    git(repo, &["push", "-q", "origin", &main])?;
+    git_within(repo, &["push", "-q", "origin", &main], PUSH_TIMEOUT)?;
     Ok(main)
 }
 
@@ -456,6 +572,44 @@ mod tests {
         let again = resume(&repo, &home, "t5-again", &sandbox.branch, &sandbox.base).unwrap();
         assert_eq!(std::fs::read_to_string(again.path.join("A.md")).unwrap(), "a");
         assert_eq!(again.branch, "equipe/frontend-t5");
+    }
+
+    #[test]
+    fn a_command_that_never_ends_is_stopped_at_its_time_with_what_it_started() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30 & sleep 30"]);
+        let started = std::time::Instant::now();
+        let err = output_within(command, Duration::from_millis(300)).unwrap_err();
+        assert!(err.contains("took more than"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+        let mut quick = Command::new("echo");
+        quick.arg("hi");
+        assert_eq!(String::from_utf8_lossy(&output_within(quick, Duration::from_secs(10)).unwrap().stdout), "hi\n");
+    }
+
+    #[test]
+    fn the_merged_sweep_answers_anew_when_main_or_a_branch_moves() {
+        let repo = repo();
+        let home = scratch("sweep-home");
+        let made = |id: &str, file: &str| {
+            let s = create(&repo, &home, id, "dev").unwrap();
+            std::fs::write(s.path.join(file), "x\n").unwrap();
+            s.commit_all(id).unwrap();
+            s.remove_worktree().unwrap();
+            s.branch
+        };
+        let (one, two) = (made("t1", "A.md"), made("t2", "B.md"));
+        let mut cache = MergedCache::default();
+        let both = [one.clone(), two.clone(), "equipe/gone".to_owned()];
+        assert_eq!(cache.merged(&repo, &both), [Some(false), Some(false), None]);
+        assert_eq!(cache.len(), 2);
+        // Main takes one: both are asked again (main moved), and the answers change.
+        merge_into_main(&repo, &one, "merge t1").unwrap();
+        assert_eq!(cache.merged(&repo, &both), [Some(true), Some(false), None]);
+        // Nothing moved: the remembered answers, the same.
+        assert_eq!(cache.merged(&repo, &both), [Some(true), Some(false), None]);
+        // Outside a repository: nothing can be told.
+        assert_eq!(cache.merged(&scratch("not-a-repo"), &both[..1]), [None]);
     }
 
     #[test]

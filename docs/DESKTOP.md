@@ -211,6 +211,7 @@ over the same control connection; quote every path with single quotes
 | Socket | `daemon::Target::from_env`: `<home>/equipe.sock` | `equipe attach --stdio` (above) |
 | Squad list and the squad to open | **done** — the `squads` request → `{squads: [{name, projects, home}], last}`, locally and remotely alike (`wire::connect`), on each attach | the same |
 | Image attach (paste, drop, file) | **done** (`attach.rs`, `views/composer.rs`) — ⌘V (clipboard picture or copied image files), drop on the window, and `equipe send-image`'s inbox (a file watch on `<home>/inbox`, this Mac's daemon only) put thumbnails above the box (≤ 5, ≤ 8 MB each, long side shrunk to 1568 px; decoding, shrinking and the upload run on the background pool). Local and SSH alike use the `upload` request (below); `[image: <path>] ` is appended to the message at send | the **`upload` request** `{name, data: base64}` → `{path}`; put `[image: <path>]` in `Submit`. Not `~/.equipe/inbox` (`equipe send-image`'s): a console open on that machine takes those into its own composer. |
+| Notifications and the Dock's number | **done** — from the events the window receives (`notify.rs`, "Notifications" below) | the same, on the person's Mac; the daemon's Mac shows none |
 | `/home` (open the folder) | `open <home>` (path from `squads` → `home`) | Nothing opens there. Show the path with a copy button. |
 | `/home changes`, `/home undo [n]` | `equipe home changes --squad <s>` / `equipe home undo <n> --squad <s>`, run here | the same as an `ssh` side command with `EQUIPE_NO_OPEN=1` in front. Show stdout's lines; exit ≠ 0 → stderr's last non-empty line is the reason. |
 | `/memory`, `/memory changes` | `equipe memory [changes] --squad <s>` | the same, `EQUIPE_NO_OPEN=1 equipe memory …`; `EQUIPE_NO_OPEN` keeps it from opening a Finder window on the far screen. |
@@ -219,7 +220,8 @@ over the same control connection; quote every path with single quotes
 | Browser sign-in (`/browser signin`) | `equipe browser [url]`: a Chrome window on this screen; members then use the saved sign-ins | `equipe browser [url]` as an `ssh` side command: the window opens on **the daemon's machine's** screen, where the members' browser lives. Tell the person to reach it with Screen Sharing (`open vnc://<host>`); the command ends when they close the window. Needs the daemon machine's GUI session (see "Daemon off"). |
 | `/browser` (show / watch) | `ShowBrowser` / `WatchBrowser` commands | the same — already protocol. |
 | Approval preview (`Approval.preview`) | a file path on the daemon's Mac; open it | **done** (`Shell::open_file`) — `cat -- '<path>'` as a side command into a 0600 temp file in `/tmp/equipe-desktop-<uid>/`, then `open`. Fetched on click while the request is still open (the file goes once it is answered); a failure shows in the flash line. |
-| Folder completion, `/squad add`, `/squad new` | lists folders on this disk | not offered remotely yet: point the person to the console on the daemon's machine (`ssh <host>`, `equipe`). |
+| `/squad new\|add\|remove`, `/send-apps`, `/browser max`, `/browser signin` | `equipe squad …`, `equipe send-apps …`, `equipe browser --max [n]`, `equipe browser` run here (`sidecar.rs`; the code is `cli/src/settings.rs`, shared with the console). `new`/`add` are first run with `--dry-run`, the answer is asked about, then run for real | the same as `ssh` side commands (`EQUIPE_NO_OPEN=1 equipe …`, exit status carried in the output). Folders typed are the daemon machine's own; folder completion is off over SSH. Sign-in opens on the daemon machine's screen. |
+| Menu bar, ⌘⇧P, `/usage`, `/help` | every menu item is a command line (`menu_commands!` in `main.rs`); ⌘⇧P puts `/` in the box with completions open (⌘K stays the search over everything) | the same; usage and plan limits come from `hello`/events |
 | Copy to clipboard | the laptop's clipboard | the same — never the daemon's. |
 
 **Trying it.** `cargo run -p equipe-desktop --example remote_probe -- user@host[:port]
@@ -331,9 +333,45 @@ signed in once, so the person sees exactly what the members see.
   `Input.imeSetComposition`, commits as `insertText`, editing keys carry the
   Mac's editing commands. Touching a member's page takes it (its browser tools
   answer "The person is using this browser…" meanwhile); 돌려주기, Esc or two
-  idle minutes give it back. A member's `show_my_browser` opens the panel on
-  its browser in the person's hands instead of raising a window when a panel is
-  attached; handing back tells the member "The person finished in the browser."
+  idle minutes give it back.
+- **A member hands the person its browser** (`show_my_browser`: sign in, a
+  code, something only they can do). The app says in its `hello` that it has a
+  browser panel (`browser_panel`); while any such screen is attached — on this
+  Mac or another over SSH, its panel open or not — the daemon never raises a
+  Chrome window: the browser goes into the person's hands and every attached
+  screen opens the panel on the tab its member works in, already driving,
+  with a strip over the page in the member's own words and **다 했어요 — pm에게
+  돌려주기**. The window on the daemon's Mac comes up only with no app attached
+  (the terminal alone), or when the person asks for it (Chrome에서 열기; over
+  SSH it reads "<host> 화면에서 열기"). On the daemon's own Mac the panel is
+  preferred too: it is where the person already is, it says what to do, and
+  it hands back. Handing back starts the member's turn again ("The person
+  finished in your browser (you asked: …)") — nobody types "됐어". The panel
+  opens once per hand-over (closing it sticks across reconnects), the window
+  isn't pulled forward — out of sight, a notification ("pm이 브라우저에서
+  로그인을 기다려요") opens it there — and 나에게 lists it under 내 차례 until
+  it comes back. In the conversation the news line is a row: "pm이 브라우저를
+  넘겼어요" with 브라우저 열기 / 돌려주기 on the latest (old lines, the English
+  "comes up on this Mac's screen" included, read as rows too). A phone away
+  gets a push saying to do it in the app on the Mac.
+- **What a hold stops** (`crates/core/assets/gate.js`, tested in
+  `browser::tests` through Node). A hold equipe made for a page that waits for
+  a person, nobody's hand on it yet, never stops its member closing that tab,
+  going elsewhere in it, or using its other tabs — the daemon then lets the
+  hold go (banner and 나에게 with it). Only the person's own hand (직접 하기, a
+  click or a key on the page — moves and the wheel never take it) makes a tab
+  theirs, and only that tab: the member's other tabs, and closing them, stay
+  its own. A refusal says why and since when ("The person is using this tab
+  since 12:47 — ask them in words, or wait"); a refused close asks the person
+  in the panel ("pm이(가) 이 탭을 닫으려 해요 · 계속 쓰기 / 닫기").
+- **Closing.** Every tab has a ✕ (on hover; always on the one picked), ⌘W
+  closes the picked tab, a right-click offers 탭 닫기 / 다른 탭 닫기 / Chrome에서
+  열기, and the check banner and bar have 탭 닫기 / 확인 그만하고 탭 닫기. A
+  member's tab while it is at work asks once ("pm이(가) 쓰는 중이에요.
+  닫을까요?"); its member is told the person closed it. Taking a browser and
+  giving it back each say so for a moment ("브라우저를 직접 쓰고 있어요 — pm은(는)
+  기다려요 …", "pm에게 돌려줬어요"); what equipe tells the member then is a
+  notice in the conversation, never a message in the person's name.
 - JS dialogs show as a card over the page; what a picture can't do (passkeys,
   permission prompts, a `<select>`'s list, file choosers) goes through
   Chrome에서 열기.
@@ -345,10 +383,14 @@ signed in once, so the person sees exactly what the members see.
   tabs it held — so an id from an old browser never names a new tab (the bug
   where one member's tab showed another's Cloudflare wall).
 - **Size.** The panel sends its picture box (CSS px and scale) with `watch`,
-  once it has held still for 250 ms; a page the person drives (their own tab,
-  a member's in their hands) is laid out at it (`Emulation.setDeviceMetricsOverride`),
-  so it fills the box, crisp. A member's page its member drives keeps its own
-  size and is fitted, its shape kept, on a neutral ground.
+  once it has held still for 250 ms; the page it watches is laid out at it
+  (`Emulation.setDeviceMetricsOverride`) whoever drives it — a member's too, so
+  its page reads at the panel's size instead of its wide window shrunk into a
+  strip — at the largest box when several screens watch (`browser::Hub::fit`).
+  A member's step under way is never resized under it: the size waits for the
+  step to finish. Nobody watching (`unfit`), its own size comes back; a page
+  out in a real window keeps the window's. A frame of another size is fitted,
+  its shape kept, on a neutral ground.
 - **Who has it.** The control bar says who drives and what (`frontend ·
   App Store Connect에서 작업 중`), with one button: 직접 하기 / 돌려주기. The
   person driving shows as an accent outline and `내가 쓰는 중 · Esc로 돌려주기`;
@@ -369,12 +411,75 @@ signed in once, so the person sees exactly what the members see.
   so in place of the picture.
 
 Snapshot steps: `browser`, `bopen:<url>`, `bpick:<n>`, `btake`, `bgive`,
-`breveal:<page>`, `bclick:<fx>,<fy>`, `bkeys:<text>`, `bime:ㅎ|하|한`. The fake
+`breveal:<page>`, `bclick:<fx>,<fy>`, `bkeys:<text>`, `bime:ㅎ|하|한`, `bclose:<n>`, `bwheel`. The fake
 daemon has a browser with `FAKE_BROWSER=1` (frontend on an App Store
 Connect–like page, backend paused at a "Just a moment…" wall that a click
-passes, a tab of the person's own; `FAKE_BROWSER=empty` for none). The host's
+passes, a tab of the person's own; `FAKE_BROWSER=empty` for none;
+`FAKE_BROWSER=handover`, the PM's browser handed over at Apple's sign-in, its
+old English news line in the PM's conversation; `FAKE_FIT=driving` draws
+members' pages as 0.47 did, for a before shot). The host's
 ops have a smoke test, a stand-in Cloudflare wall included:
 `npx -y -p playwright@1.64.0 node scripts/browser-host-smoke.cjs`.
+
+## Notifications
+
+While the window is out of sight — another app in front, the window hidden,
+minimised or on another Space — the app tells the person through macOS's
+notification centre (`UNUserNotificationCenter`, `notify/system.rs`); in
+sight, the sidebar and the cards say it and nothing pops up. What is told
+(`notify.rs`, all plain functions under test):
+
+| Kind | When | Switch (default) |
+|---|---|---|
+| 허락을 구할 때 | a member asks permission | on |
+| 검토할 일이 생겼을 때 | a ticket turns to review | on |
+| 내가 할 일이 남았을 때 | a ticket waits on the person, a member's question set, a browser page waiting for a human | on |
+| 작업이 실패했을 때 | a member's turn failed, or merging accepted work failed (conflict or otherwise) | on |
+| 답장이 왔을 때 | a turn ended with an answer in the conversation the person last wrote in (only the first answer after they wrote): "pm의 답장이 왔어요" and the answer's first line of prose, never a code block | on |
+| main에 머지됐을 때 | accepted work landed on main | off |
+| 업데이트가 준비됐을 때 | Sparkle downloaded a new version: "새 버전이 준비됐어요", with a 다시 시작 button | on |
+
+More than three things that wait, at once, become one notice ("acme에서 4건이
+…"); news (answers, merges, updates) is never folded in. A notice says who
+needs what, never a command, a secret or a file's content. Each carries a
+thread — the member's (`squad/<squad>/<member>`), else the squad's — so
+Notification Center keeps them together, and an 열기 button. A click (or the
+button) comes back through the delegate as a `Go` encoded in the notice's
+identifier (`member:4|<n>`), so it works even when the click starts the app:
+the window comes forward on that conversation, ticket, the board or the
+browser panel. 소리 turns the system sound off; **Dock 아이콘에 숫자 표시** puts
+나에게's count on the Dock icon, live (no permission needed).
+
+**Asking permission.** Nothing is asked at launch. The first time there is
+something to tell while the window is out of sight, or when the person turns a
+switch on, a sheet says what equipe will notify and that a notice never holds
+commands or contents (알림 켜기 / 나중에); 알림 켜기 asks macOS
+(`requestAuthorization`: alert, sound, badge). 나중에 is remembered (`notify
+later` in `desktop-target`); Settings ▸ 일반 ▸ 알림 still offers 알림 켜기.
+Settings shows what macOS allows (asked again whenever the window comes
+forward); turned off, it says so and **시스템 설정 열기** opens System Settings ▸
+Notifications on equipe (`…Notifications-Settings.extension?id=<bundle id>`).
+No usage description is needed for notifications.
+
+**Over SSH** the notices come from what the window hears, so a window onto
+another Mac's daemon notifies on the person's Mac, the same as locally. The
+daemon (and the `equipe attach --stdio` it runs over SSH) never shows a
+notification.
+
+**Dev builds.** The centre needs the app bundle — run as a bare binary it
+would abort ("bundleProxyForCurrentProcess is nil") — so `cargo run` logs once
+that notifications are off and goes on; settings says so. To see them, package
+a bundle with a bundle id of its own (so the installed app's permission isn't
+touched) and run its self-test, which needs no window and no daemon:
+
+```sh
+EQUIPE_DMG_ARCHS=aarch64 EQUIPE_BUNDLE_ID=im.equipe.desktop.dev scripts/desktop-dmg.sh
+open -n --stderr /tmp/notify.log target/desktop-dmg/equipe.app --args --notify-test
+```
+
+It says what macOS allows, asks if it never was, posts three notices (two in
+the PM's thread, and the update's), puts 3 on the Dock and waits two minutes for
+a click, each step in the log.
 
 ## Zoom (⌘+ ⌘- ⌘0)
 
@@ -459,9 +564,36 @@ the repository (the public key file is public by design).
 
 In the app (`src/update.rs`): when `Contents/Frameworks/Sparkle.framework` is
 there, the app `dlopen`s it and starts `SPUStandardUpdaterController`. Sparkle
-checks the feed once a day by itself and asks before installing; the app menu
-(equipe ▸ 업데이트 확인…) checks now. `cargo run` has no framework, so updates
-are off and the item is disabled. The menu also has 가리기 (⌘H), 기타 가리기
+checks the feed every hour by itself, and the app looks too right after launch
+and when the window comes back after 5 minutes; the app menu (equipe ▸
+업데이트 확인…) and Settings ▸ 업데이트와 정보 ▸ 지금 확인 check now. `cargo run`
+has no framework, so updates are off and the item is disabled.
+
+Where an update stands is `relaunch::Update`, moved by each of Sparkle's
+delegate calls (`didFindValidUpdate`, `willDownloadUpdate`,
+`failedToDownloadUpdate`, `userDidCancelDownload`, `willInstallUpdateOnQuit`,
+`didAbortWithError`, `didFinishUpdateCycleForUpdateCheck`), and shown the same
+way in the sidebar's pill and in settings: **새 버전 0.49.0 받는 중…** (quiet;
+Sparkle's delegate gives no download progress), **다시 시작해 업데이트 →**,
+**업데이트 받기 실패 · 다시 시도** (settings: the reason in plain words, 로그 보기,
+다시 시도), or **Applications 폴더로 옮겨 주세요** when the app was opened from the
+disk image or translocated from a download (Finder에서 보기). Found and
+downloaded each give one notice per version (업데이트가 준비됐을 때; told
+versions kept in `desktop-target` as `update-told`); clicking the downloaded
+one restarts into it.
+
+Every step and every error — domain, code, description, userInfo and the
+errors under it — goes to `~/Library/Logs/equipe/updates.log`, with where the
+app started from: the first thing to read when Sparkle says only "An error
+occurred while running the updater".
+
+The app never starts a Sparkle session against one in progress: its quiet
+check runs only when `sessionInProgress` is false and no update is found,
+downloading or waiting (`relaunch::may_check_quietly`); 지금 확인 with an update
+waiting installs it through the block Sparkle handed `willInstallUpdateOnQuit`
+(Sparkle 2.3+ allows calling it again after a cancelled quit) rather than
+checking again, and while Sparkle downloads on its own (`canCheckForUpdates`
+false) it is left to finish. The menu also has 가리기 (⌘H), 기타 가리기
 (⌥⌘H), 모두 보기 and 종료 (⌘Q).
 
 Knobs for testing: `EQUIPE_DMG_ARCHS=aarch64` (one arch, quicker),

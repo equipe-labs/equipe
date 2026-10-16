@@ -17,6 +17,7 @@ pub mod decide;
 pub mod rpc;
 pub mod stream;
 pub mod tags;
+pub mod team;
 pub mod transcript;
 
 pub use transcript::Transcript;
@@ -515,6 +516,16 @@ pub struct SessionSpec {
     pub squad: Option<SquadName>,
 }
 
+/// What a message is about, as a screen says it: left out, not said
+/// (`None`); `null`, the whole squad (`Some(None)`); a name, that project.
+mod about {
+    use serde::{Deserialize, Deserializer};
+
+    pub fn read<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
+        Option::<String>::deserialize(d).map(Some)
+    }
+}
+
 /// Screen → core: "do this".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -524,10 +535,25 @@ pub enum Command {
     /// Send the person's message. One turn runs at a time per session: a
     /// message sent while a turn runs waits as a memo ([`Event::MessageQueued`])
     /// and is delivered when the turn ends — or at once, if the turn is stopped.
-    Submit { session: SessionId, text: String },
+    ///
+    /// `about`: the project shown on the screen that sent it (`null`: the
+    /// whole squad) — what the message is about, whatever another screen
+    /// looks at. Left out (an older screen), the project in focus
+    /// ([`Command::Focus`]).
+    Submit {
+        session: SessionId,
+        text: String,
+        #[serde(default, deserialize_with = "about::read", skip_serializing_if = "Option::is_none")]
+        about: Option<Option<String>>,
+    },
     /// A message for after the turn running now (a memo): it doesn't steer
     /// the work under way. With no turn running, the same as `Submit`.
-    SubmitLater { session: SessionId, text: String },
+    SubmitLater {
+        session: SessionId,
+        text: String,
+        #[serde(default, deserialize_with = "about::read", skip_serializing_if = "Option::is_none")]
+        about: Option<Option<String>>,
+    },
     /// Stop the turn in progress (Esc). Answered by a `TurnEnded` with
     /// [`TurnOutcome::Interrupted`].
     Interrupt { session: SessionId },
@@ -589,10 +615,24 @@ pub enum Command {
     /// The person's answers to a member's questions ([`Event::QuestionsAsked`]),
     /// one per question in order — an empty one skips it. They go to the member
     /// as its next message. Answered by [`Event::QuestionsClosed`].
-    AnswerQuestions { squad: SquadName, id: u64, answers: Vec<decide::Answer> },
+    /// `about` as [`Command::Submit`]'s.
+    AnswerQuestions {
+        squad: SquadName,
+        id: u64,
+        answers: Vec<decide::Answer>,
+        #[serde(default, deserialize_with = "about::read", skip_serializing_if = "Option::is_none")]
+        about: Option<Option<String>>,
+    },
     /// The person closes a member's questions without answering: the member is
     /// told to go on without them.
     DismissQuestions { squad: SquadName, id: u64 },
+    /// The person approves a change to the team the PM proposed
+    /// ([`Event::TeamChangeProposed`]): the members join as `/add` brings
+    /// them in, or the member leaves as `/close` lets it go. Only ever the
+    /// person's: no agent sends it. Answered by [`Event::TeamChangeClosed`].
+    ApproveTeamChange { squad: SquadName, id: u64 },
+    /// The person says no to it: nothing changes, and the PM is told.
+    DeclineTeamChange { squad: SquadName, id: u64 },
     /// How many extra members of a role equipe may bring in when several of
     /// its tickets are ready at once; 0 brings in none.
     Scale { squad: SquadName, extra: usize },
@@ -621,9 +661,20 @@ pub enum Command {
     /// turned off; kept for the squad.
     Suggestions { squad: SquadName, on: bool },
     /// Take back a memo left while the member works ([`Event::MessageQueued`])
-    /// before it is delivered: the first one with this text. Answered by
-    /// [`Event::MemoWithdrawn`]; nothing when it was delivered already.
+    /// before it is delivered — or a steer ([`Event::SteerQueued`]) it hasn't
+    /// read yet: the first one with this text. Answered by
+    /// [`Event::MemoWithdrawn`]; nothing when it was delivered (or read) already.
     Unqueue { session: SessionId, text: String },
+    /// Send what waits for a member at work now: its turn stops (as
+    /// [`Command::Interrupt`]) and the steers it hasn't read and the memos
+    /// left — `texts` first, in that order, then any others — go to it at
+    /// once, together, as one message. Answered by [`Event::QueueSent`], then
+    /// the turn's end and the message.
+    SendNow {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        texts: Vec<String>,
+    },
     /// How hard a member thinks from its next turn: Claude Code's `--effort`
     /// (`low` · `medium` · `high` · `xhigh` · `max`), Codex's reasoning effort
     /// (`minimal` · `low` · `medium` · `high`). `None`: the engine's default.
@@ -928,6 +979,19 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         answers: Option<Vec<decide::Answer>>,
     },
+    /// The PM proposes a change to the team (`propose_team_change`): it waits
+    /// for the person's [`Command::ApproveTeamChange`] or
+    /// [`Command::DeclineTeamChange`].
+    TeamChangeProposed { squad: SquadName, change: team::TeamChange },
+    /// No longer waiting: approved (`members`: who joined, or left), declined,
+    /// or moot (its member left anyway; `approved: false`).
+    TeamChangeClosed {
+        squad: SquadName,
+        id: u64,
+        approved: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        members: Vec<String>,
+    },
     /// The squad's "always allow" rules changed (one added by an answer of
     /// [`Decision::Always`], one taken back): all of them, oldest first.
     Allowed { squad: SquadName, rules: Vec<String> },
@@ -949,8 +1013,12 @@ pub enum Event {
         #[serde(default)]
         project: Option<String>,
     },
-    /// A memo left while it works was taken back before it was delivered.
+    /// A memo left while it works — or a steer it hadn't read — was taken
+    /// back before it was delivered.
     MemoWithdrawn { session: SessionId, text: String },
+    /// What waited for the member ([`Command::SendNow`]) goes to it now, as
+    /// one message, in this order: none of it waits any more.
+    QueueSent { session: SessionId, texts: Vec<String> },
     /// A line from equipe for this session's conversation — e.g. the PM being
     /// told that the person spoke to a member directly.
     Notice { session: SessionId, text: String },
@@ -1024,6 +1092,10 @@ pub enum Event {
     },
     /// The page's question was answered (here or elsewhere), or it went away.
     BrowserDialogClosed { page: u64 },
+    /// A member asked to do something to a tab the person is on, and was
+    /// refused for it — `action` `close`: the screen offers to let it, at
+    /// one click (closing the tab), or keep using it.
+    BrowserWants { squad: Option<SquadName>, lane: String, page: u64, action: String },
     /// The member handed `what` to a subagent, which works alongside it.
     SubagentStarted { session: SessionId, id: String, what: String },
     /// A subagent's latest step.
@@ -1039,7 +1111,14 @@ pub enum Event {
     Suggestion { session: SessionId, text: String },
     /// A message the person sent while the member works: it reads it at its
     /// next step, without stopping (steering).
-    SteerQueued { session: SessionId, text: String },
+    SteerQueued {
+        session: SessionId,
+        text: String,
+        /// The project the person was looking at when they said it (`None`:
+        /// the whole squad): it shows in that project's conversation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
     /// The member read a steering message, at this point of its turn.
     Steered { session: SessionId, text: String },
     /// When the member expects its work done, and what it ships live — as it
@@ -1104,8 +1183,10 @@ impl Event {
             | Event::ApprovalResolved { squad, .. }
             | Event::QuestionsAsked { squad, .. }
             | Event::QuestionsClosed { squad, .. }
+            | Event::TeamChangeProposed { squad, .. }
+            | Event::TeamChangeClosed { squad, .. }
             | Event::Allowed { squad, .. } => Some(squad),
-            Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } => squad.as_deref(),
+            Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             _ => None,
         }
     }
@@ -1117,6 +1198,7 @@ impl Event {
             | Event::UserMessage { session, .. }
             | Event::MessageQueued { session, .. }
             | Event::MemoWithdrawn { session, .. }
+            | Event::QueueSent { session, .. }
             | Event::Notice { session, .. }
             | Event::TextDelta { session, .. }
             | Event::ToolUse { session, .. }
@@ -1148,6 +1230,8 @@ impl Event {
             | Event::ApprovalResolved { .. }
             | Event::QuestionsAsked { .. }
             | Event::QuestionsClosed { .. }
+            | Event::TeamChangeProposed { .. }
+            | Event::TeamChangeClosed { .. }
             | Event::Allowed { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
@@ -1156,6 +1240,7 @@ impl Event {
             | Event::BrowserControl { .. }
             | Event::BrowserDialog { .. }
             | Event::BrowserDialogClosed { .. }
+            | Event::BrowserWants { .. }
             // Pairing a phone: the daemon machine's, told only the screen that asked.
             | Event::PairOffer { .. }
             | Event::PairAsked { .. }
@@ -1303,6 +1388,9 @@ pub struct SessionInfo {
     /// Messages sent while it works that it hasn't read yet (steering).
     #[serde(default)]
     pub steering: Vec<String>,
+    /// The project each of those was said about (`None`: the whole squad).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steering_in: Vec<Option<String>>,
     /// Set when this is a lane of another member's session: its conversation
     /// about one project, running beside the others.
     #[serde(default)]
@@ -1350,6 +1438,9 @@ pub struct Snapshot {
     /// Members' questions waiting for the person, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub questions: Vec<decide::QuestionSet>,
+    /// Changes to the team the PM proposed, waiting for the person, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub team_changes: Vec<team::TeamChange>,
     /// How many extra members of a role equipe may bring in when its work waits.
     #[serde(default)]
     pub scale: Option<usize>,
@@ -1526,7 +1617,7 @@ mod tests {
 
     #[test]
     fn commands_serialize_with_a_type_tag() {
-        let cmd = Command::Submit { session: 1, text: "hi".into() };
+        let cmd = Command::Submit { session: 1, text: "hi".into(), about: None };
         assert_eq!(
             serde_json::to_value(&cmd).unwrap(),
             json!({ "type": "submit", "session": 1, "text": "hi" })
@@ -1610,6 +1701,22 @@ mod tests {
                 }],
                 asked_at: 1,
             }],
+            team_changes: vec![team::TeamChange {
+                id: 5,
+                change: team::Change::Add,
+                role: "mobile".into(),
+                count: 1,
+                member: None,
+                engine: None,
+                model: None,
+                effort: None,
+                reason: "T-1 waits".into(),
+                unblocks: vec![1],
+                by: "pm".into(),
+                session: 9,
+                proposed_at: 2,
+                busy_on: None,
+            }],
             scale: Some(2),
             suggestions_off: false,
             plan: None,
@@ -1631,6 +1738,7 @@ mod tests {
                 queued_project: None,
                 queued_in: vec![None],
                 steering: Vec::new(),
+                steering_in: vec![],
                 lane: None,
                 estimate: None,
                 work: Some(WorkInfo { ticket: 1, project: "/repo".into(), workspace: None }),
@@ -1647,7 +1755,7 @@ mod tests {
     #[test]
     fn questions_are_asked_answered_and_closed_as_json_and_older_snapshots_have_none() {
         let answers = vec![decide::Answer { picked: vec![0], other: None }, decide::Answer::skipped()];
-        let cmd = Command::AnswerQuestions { squad: "acme".into(), id: 7, answers: answers.clone() };
+        let cmd = Command::AnswerQuestions { squad: "acme".into(), id: 7, answers: answers.clone(), about: None };
         assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "answer_questions", "squad": "acme", "id": 7, "answers": [{ "picked": [0] }, {}] }));
         let dismiss = Command::DismissQuestions { squad: "acme".into(), id: 7 };
         assert_eq!(serde_json::to_value(&dismiss).unwrap(), json!({ "type": "dismiss_questions", "squad": "acme", "id": 7 }));
@@ -1669,6 +1777,50 @@ mod tests {
         let old: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[]}"#).unwrap();
         assert!(old.questions.is_empty());
         assert!(serde_json::to_value(&old).unwrap().get("questions").is_none(), "none: the wire as before");
+    }
+
+    #[test]
+    fn team_changes_are_proposed_approved_or_declined_as_json_and_older_snapshots_have_none() {
+        let approve = Command::ApproveTeamChange { squad: "acme".into(), id: 7 };
+        assert_eq!(serde_json::to_value(&approve).unwrap(), json!({ "type": "approve_team_change", "squad": "acme", "id": 7 }));
+        let decline = Command::DeclineTeamChange { squad: "acme".into(), id: 7 };
+        assert_eq!(serde_json::to_value(&decline).unwrap(), json!({ "type": "decline_team_change", "squad": "acme", "id": 7 }));
+        for command in [approve, decline] {
+            assert_eq!(serde_json::from_str::<Command>(&serde_json::to_string(&command).unwrap()).unwrap(), command);
+        }
+        let change = team::TeamChange {
+            id: 7,
+            change: team::Change::Remove,
+            role: "qa".into(),
+            count: 1,
+            member: Some("qa-2".into()),
+            engine: None,
+            model: None,
+            effort: None,
+            reason: "idle".into(),
+            unblocks: vec![],
+            by: "pm".into(),
+            session: 1,
+            proposed_at: 3,
+            busy_on: Some(4),
+        };
+        let events = [
+            Event::TeamChangeProposed { squad: "acme".into(), change },
+            Event::TeamChangeClosed { squad: "acme".into(), id: 7, approved: true, members: vec!["qa-2".into()] },
+            Event::TeamChangeClosed { squad: "acme".into(), id: 7, approved: false, members: vec![] },
+        ];
+        for event in events {
+            assert_eq!((event.squad(), event.session(), event.for_everyone()), (Some("acme"), None, false));
+            let json = serde_json::to_string(&event).unwrap();
+            assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event, "{json}");
+        }
+        assert_eq!(
+            serde_json::to_value(Event::TeamChangeClosed { squad: "a".into(), id: 1, approved: false, members: vec![] }).unwrap(),
+            json!({ "type": "team_change_closed", "squad": "a", "id": 1, "approved": false })
+        );
+        let old: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[]}"#).unwrap();
+        assert!(old.team_changes.is_empty());
+        assert!(serde_json::to_value(&old).unwrap().get("team_changes").is_none(), "none: the wire as before");
     }
 
     #[test]

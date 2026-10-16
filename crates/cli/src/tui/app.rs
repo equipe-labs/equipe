@@ -25,8 +25,10 @@ use super::commands;
 use super::composer::Composer;
 
 mod decide;
+mod team;
 mod turn;
 pub use decide::Picking;
+pub use team::describe as describe_team_change;
 pub use turn::{TurnForm, Typing};
 
 /// How long a turn goes on before equipe's guess at its end shows.
@@ -330,6 +332,8 @@ pub struct Agent {
     pub suggestion: Option<String>,
     /// What the person said while it works, not read yet (steering).
     pub steering: Vec<String>,
+    /// The project each of those was said about (`None`: the whole squad).
+    pub steering_in: Vec<Option<String>>,
     /// Set for a lane: another member's conversation about one project,
     /// running beside its others. Lanes aren't listed; they show when their
     /// member is talked to about their project.
@@ -371,6 +375,7 @@ impl Agent {
             suggestion: None,
             showing: None,
             steering: Vec::new(),
+            steering_in: vec![],
             lane: None,
             estimate: None,
         }
@@ -398,7 +403,13 @@ impl Agent {
         for part in scope::slice(&lines, project, self.state == AgentState::Working) {
             match part {
                 Part::Here(range) => out.extend(lines[range].iter().map(|(entry, _)| entry.clone())),
-                Part::Elsewhere { said, .. } => out.push(Cow::Owned(Entry::Note { text: format!("{FOLDED}{said}") })),
+                Part::Elsewhere { said, kept, .. } => {
+                    out.push(Cow::Owned(Entry::Note { text: format!("{FOLDED}{said}") }));
+                    // The project's own news within it, after the fold.
+                    for range in kept {
+                        out.extend(lines[range].iter().map(|(entry, _)| entry.clone()));
+                    }
+                }
             }
         }
         out
@@ -478,6 +489,7 @@ impl Agent {
             subagents: Vec::new(),
             suggestion: None,
             showing: None,
+            steering_in: if info.steering_in.len() == info.steering.len() { info.steering_in } else { vec![None; info.steering.len()] },
             steering: info.steering,
             lane: info.lane,
             estimate: info.estimate,
@@ -535,6 +547,16 @@ impl Agent {
             }
         }
         (self.queued, self.queued_in) = (queued, queued_in);
+    }
+
+    /// A steer it read or that was taken back: no longer waiting.
+    fn unsteer(&mut self, text: &str) {
+        if let Some(at) = self.steering.iter().position(|t| t == text) {
+            self.steering.remove(at);
+            if at < self.steering_in.len() {
+                self.steering_in.remove(at);
+            }
+        }
     }
 
     pub fn in_view(&self, project: Option<&str>) -> bool {
@@ -670,6 +692,8 @@ pub struct App {
     pub questions: Vec<equipe_core::protocol::decide::QuestionSet>,
     /// Where the person is in each set, by its id.
     pub picking: HashMap<u64, Picking>,
+    /// Changes to the team the PM proposed, waiting for the person, oldest first (`team`).
+    pub team_changes: Vec<equipe_core::protocol::team::TeamChange>,
     /// A waiting ticket's asks, being answered (`/answer`, r on the board).
     pub turn_form: Option<TurnForm>,
     /// Cards put away with Esc, as they were left, by ticket.
@@ -818,6 +842,7 @@ impl App {
             approvals: snapshot.approvals,
             questions: snapshot.questions,
             picking: HashMap::new(),
+            team_changes: snapshot.team_changes,
             turn_form: None,
             turn_drafts: HashMap::new(),
             page: 10,
@@ -1640,6 +1665,10 @@ impl App {
                 self.on_questions(event);
                 return Vec::new();
             }
+            event @ (Event::TeamChangeProposed { .. } | Event::TeamChangeClosed { .. }) => {
+                self.on_team_change(event);
+                return Vec::new();
+            }
             Event::ModeChanged { member: None, mode: Some(mode), .. } => {
                 self.mode = mode;
                 return Vec::new();
@@ -1723,7 +1752,7 @@ impl App {
                 agent.desk = project;
                 if let Some(text) = agent.pending.take() {
                     agent.start_working();
-                    commands.push(Command::Submit { session: id, text });
+                    commands.push(Command::Submit { session: id, text, about: None });
                 }
             }
             Event::UserMessage { .. } => {
@@ -1736,13 +1765,35 @@ impl App {
                 // conversation; another project's wait for the next turn's end.
                 agent.deliver_memos();
             }
-            Event::SteerQueued { text, .. } => agent.steering.push(text),
-            Event::Estimated { estimate, .. } => agent.estimate = estimate,
-            Event::Steered { text, .. } => {
-                if let Some(at) = agent.steering.iter().position(|t| *t == text) {
-                    agent.steering.remove(at);
+            Event::SteerQueued { text, project, .. } => {
+                agent.steering.push(text);
+                agent.steering_in.push(project);
+            }
+            // Taken back (a memo first, else a steer not read), or sent at once.
+            Event::MemoWithdrawn { text, .. } => {
+                if let Some(at) = agent.queued.iter().position(|t| *t == text) {
+                    agent.queued.remove(at);
+                    if at < agent.queued_in.len() {
+                        agent.queued_in.remove(at);
+                    }
+                } else {
+                    agent.unsteer(&text);
                 }
             }
+            Event::QueueSent { texts, .. } => {
+                for text in texts {
+                    if let Some(at) = agent.queued.iter().position(|t| *t == text) {
+                        agent.queued.remove(at);
+                        if at < agent.queued_in.len() {
+                            agent.queued_in.remove(at);
+                        }
+                    } else {
+                        agent.unsteer(&text);
+                    }
+                }
+            }
+            Event::Estimated { estimate, .. } => agent.estimate = estimate,
+            Event::Steered { text, .. } => agent.unsteer(&text),
             Event::Suggestion { text, .. } => {
                 // Too late once it is at work again, or a memo is on its way.
                 if agent.state != AgentState::Working && agent.queued.is_empty() {
@@ -1781,6 +1832,7 @@ impl App {
                 agent.subagents.clear();
                 // Unread, it comes back as a memo, delivered now.
                 agent.steering.clear();
+                agent.steering_in.clear();
                 if agent.state == AgentState::Working {
                     agent.state = AgentState::Ready;
                 }
@@ -2158,6 +2210,10 @@ impl App {
         if let Some(commands) = self.on_decide_key(key.code, ctrl, alt) {
             return commands;
         }
+        // A change to the team the PM proposed, in its conversation: y approves, n says no.
+        if let Some(commands) = self.on_team_key(key.code, ctrl, alt) {
+            return commands;
+        }
         // Completion, while it offers something: ↑↓ pick, Tab takes, Enter takes
         // (and runs what is whole), Esc puts it away.
         let choices = if ctrl || alt { Vec::new() } else { self.choices() };
@@ -2442,13 +2498,15 @@ impl App {
             Some(agent) => (agent.state, None),
             None => return Vec::new(),
         };
+        // What it is about: the project this screen shows, whatever another looks at.
+        let said_about = Some(self.focus.as_deref().map(equipe_core::board::project_name));
         let Some(agent) = self.agents.get_mut(target) else {
             return Vec::new();
         };
         let name = agent.label();
         if let (AgentState::Ready, Some(project)) = (state, &about) {
             self.flash = Some(t!("app.answers_beside", name = name, project = project));
-            return vec![Command::Submit { session: agent.id, text }];
+            return vec![Command::Submit { session: agent.id, text, about: said_about.clone() }];
         }
         match state {
             // The message shows once the daemon echoes it, the same on every screen.
@@ -2456,17 +2514,17 @@ impl App {
                 if away {
                     self.flash = Some(t!("app.sent_to", name = name));
                 }
-                vec![Command::Submit { session: agent.id, text }]
+                vec![Command::Submit { session: agent.id, text, about: said_about.clone() }]
             }
             AgentState::Working if later || agent.engine != Some(Engine::Claude) => {
                 // A memo: the core holds it until the turn ends.
                 self.flash = Some(t!("app.left_memo", name = name));
-                vec![Command::SubmitLater { session: agent.id, text }]
+                vec![Command::SubmitLater { session: agent.id, text, about: said_about.clone() }]
             }
             AgentState::Working => {
                 // Steering: read at its next step, the work carrying on.
                 self.flash = Some(t!("app.reads_next_step", name = name));
-                vec![Command::Submit { session: agent.id, text }]
+                vec![Command::Submit { session: agent.id, text, about: said_about.clone() }]
             }
             AgentState::Starting => {
                 // Sent as soon as the session is up.
@@ -2508,6 +2566,37 @@ impl App {
         }
     }
 
+    /// `/unqueue`: the last message waiting for the member in view — a steer
+    /// it hasn't read, else a memo — taken back into the box.
+    fn unqueue_last(&mut self) -> Vec<Command> {
+        let Some(agent) = self.agents.get(self.selected) else {
+            return Vec::new();
+        };
+        let Some(text) = agent.steering.last().or(agent.queued.last()).cloned() else {
+            self.flash = Some(t!("app.nothing_waiting").into());
+            return Vec::new();
+        };
+        let session = agent.id;
+        self.composer.insert_str(&text);
+        self.flash = Some(t!("app.unqueued").into());
+        vec![Command::Unqueue { session, text }]
+    }
+
+    /// `/now`: the member's turn stops and everything waiting goes to it at
+    /// once, as one message — the steers, then the memos.
+    fn send_waiting_now(&mut self) -> Vec<Command> {
+        let Some(agent) = self.agents.get(self.selected) else {
+            return Vec::new();
+        };
+        let texts: Vec<String> = agent.steering.iter().chain(&agent.queued).cloned().collect();
+        if texts.is_empty() {
+            self.flash = Some(t!("app.nothing_waiting").into());
+            return Vec::new();
+        }
+        self.flash = Some(t!("app.sent_now").into());
+        vec![Command::SendNow { session: agent.id, texts }]
+    }
+
     fn slash(&mut self, command: &str) -> Vec<Command> {
         let (name, rest) = command.split_once(' ').unwrap_or((command, ""));
         let rest = rest.trim();
@@ -2533,6 +2622,7 @@ impl App {
                     text: "Look the board over for tickets that have gone stale, overlap or no longer fit, and propose \
 what to do with each — close, merge into another, or keep, and why. Don't cancel anything yourself; I'll decide."
                         .into(),
+                    about: None,
                 }],
                 None => {
                     self.flash = Some(t!("app.no_pm").into());
@@ -2540,6 +2630,8 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 }
             },
             "accept" | "merge" | "reopen" | "resume" | "cancel" => self.decide(name, rest),
+            "unqueue" => self.unqueue_last(),
+            "now" => self.send_waiting_now(),
             "answer" => {
                 match board::parse_ticket_id(rest.trim()).filter(|_| !rest.trim().is_empty()) {
                     Some(id) => {
@@ -3270,32 +3362,7 @@ pub fn transcript_markdown(agent: &Agent, squad: &str) -> String {
     out
 }
 
-/// How a tool use reads in one word.
-pub fn tool_verb(name: &str) -> &str {
-    match name {
-        "Read" => "read",
-        "Edit" | "MultiEdit" | "NotebookEdit" => "edit",
-        "Write" => "write",
-        "Bash" => "run",
-        "Glob" | "Grep" => "search",
-        "WebFetch" | "WebSearch" => "fetch",
-        // A subagent the member handed side work to.
-        "Agent" | "Task" => "delegate",
-        other => match other.strip_prefix("mcp__equipe__") {
-            // equipe's own board tools read as what they do.
-            Some("board") => "board",
-            Some("create_ticket") => "ticket",
-            Some("update_ticket") => "ticket",
-            Some("comment") => "comment",
-            Some("submit_for_review") => "hand in",
-            Some("block_on_person") => "wait on you",
-            Some("ask_person") => "ask you",
-            // The member's browser: every step reads as browsing.
-            _ if other.starts_with("mcp__browser__") => "browse",
-            _ => other,
-        },
-    }
-}
+pub use equipe_core::protocol::transcript::tool_verb;
 
 /// An upload arriving from iTerm2 as typed input: a status line (`ok` or
 /// `abort`), then base64 lines, then an empty line.
@@ -3551,6 +3618,7 @@ mod tests {
             queued_project: None,
             queued_in: Vec::new(),
             steering: Vec::new(),
+            steering_in: vec![],
             estimate: None,
             lane: None,
             work: None,
@@ -3652,7 +3720,7 @@ mod tests {
     fn enter_sends_and_the_echo_shows_the_message() {
         let (mut app, id) = ready();
         type_text(&mut app, "hello");
-        assert_eq!(enter(&mut app), vec![Command::Submit { session: id, text: "hello".into() }]);
+        assert_eq!(enter(&mut app), vec![Command::Submit { session: id, text: "hello".into(), about: Some(None) }]);
         app.on_event(Event::UserMessage { session: id, text: "hello".into() });
         assert_eq!(app.agents[0].state, AgentState::Working);
         assert_eq!(app.agents[0].transcript.entries(), &[Entry::User { text: "hello".into() }]);
@@ -3663,7 +3731,7 @@ mod tests {
         let (mut app, id) = ready();
         app.on_paste("fix this\nTypeError: x is undefined\n");
         assert_eq!(app.composer.line_count(), 3);
-        assert_eq!(enter(&mut app), vec![Command::Submit { session: id, text: "fix this\nTypeError: x is undefined".into() }]);
+        assert_eq!(enter(&mut app), vec![Command::Submit { session: id, text: "fix this\nTypeError: x is undefined".into(), about: Some(None) }]);
     }
 
     #[test]
@@ -3688,7 +3756,7 @@ mod tests {
         let id = *id;
         type_text(&mut app, "early");
         assert!(enter(&mut app).is_empty());
-        assert_eq!(app.on_event(started(id, member("pm", "pm"))), vec![Command::Submit { session: id, text: "early".into() }]);
+        assert_eq!(app.on_event(started(id, member("pm", "pm"))), vec![Command::Submit { session: id, text: "early".into(), about: None }]);
     }
 
     #[test]
@@ -3815,7 +3883,7 @@ mod tests {
     fn a_mention_sends_to_that_member_without_leaving_the_pm() {
         let (mut app, _, frontend) = team();
         type_text(&mut app, "@frontend make the header sticky");
-        assert_eq!(enter(&mut app), vec![Command::Submit { session: frontend, text: "make the header sticky".into() }]);
+        assert_eq!(enter(&mut app), vec![Command::Submit { session: frontend, text: "make the header sticky".into(), about: Some(None) }]);
         assert_eq!(app.selected().unwrap().label(), "pm");
     }
 
@@ -3842,7 +3910,7 @@ mod tests {
         let (mut app, pm, _) = team();
         app.on_event(Event::UserMessage { session: pm, text: "plan it".into() });
         type_text(&mut app, "also the pricing page");
-        assert_eq!(enter(&mut app), vec![Command::Submit { session: pm, text: "also the pricing page".into() }]);
+        assert_eq!(enter(&mut app), vec![Command::Submit { session: pm, text: "also the pricing page".into(), about: Some(None) }]);
         assert!(app.flash.as_deref().unwrap().contains("memo"));
         app.on_event(Event::MessageQueued { session: pm, text: "also the pricing page".into(), project: None });
         assert_eq!(app.agents[0].queued, ["also the pricing page"]);
@@ -4276,12 +4344,12 @@ mod tests {
         app.open(Side::Ticket(2));
         assert_eq!(app.viewed().map(|a| a.id), Some(frontend));
         type_text(&mut app, "skip the footer");
-        assert_eq!(enter(&mut app), vec![Command::Submit { session: frontend, text: "skip the footer".into() }]);
+        assert_eq!(enter(&mut app), vec![Command::Submit { session: frontend, text: "skip the footer".into(), about: Some(None) }]);
         // A ticket nobody is on: its board card, and the PM hears about it.
         app.open(Side::Ticket(9));
         assert!(app.viewed().is_none());
         type_text(&mut app, "who takes this?");
-        assert_eq!(enter(&mut app), vec![Command::Submit { session: pm, text: "About T-9: who takes this?".into() }]);
+        assert_eq!(enter(&mut app), vec![Command::Submit { session: pm, text: "About T-9: who takes this?".into(), about: Some(None) }]);
     }
 
     #[test]
@@ -4478,7 +4546,7 @@ mod tests {
         let (mut app, pm, _) = team();
         type_text(&mut app, "/tidy");
         let sent = enter(&mut app);
-        assert!(matches!(&sent[..], [Command::Submit { session, text }] if *session == pm && text.contains("stale") && text.contains("Don't cancel")), "{sent:?}");
+        assert!(matches!(&sent[..], [Command::Submit { session, text, .. }] if *session == pm && text.contains("stale") && text.contains("Don't cancel")), "{sent:?}");
     }
 
     #[test]

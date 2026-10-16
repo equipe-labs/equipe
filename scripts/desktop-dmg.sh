@@ -24,7 +24,9 @@
 # equipe-desktop binaries, built elsewhere — CI builds each arch on its own
 # machine at once — to package instead of building), EQUIPE_APPCAST_URL / EQUIPE_DMG_URL (where
 # the app looks for updates and where the appcast says this DMG is; default the
-# GitHub release of this version).
+# GitHub release of this version), EQUIPE_BUNDLE_ID (im.equipe.desktop; another
+# one for a local test build, so its notification permission and defaults are
+# its own and not the installed app's).
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -36,7 +38,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 [ "$(uname -s)" = Darwin ] || die "the desktop app is packaged on macOS"
 
 repo="equipe-labs/equipe"
-bundle_id="im.equipe.desktop"
+bundle_id="${EQUIPE_BUNDLE_ID:-im.equipe.desktop}"
 min_macos="12.0" # Sparkle 2.10's floor
 sparkle_version="2.10.0"
 sparkle_sha256="c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c"
@@ -79,7 +81,8 @@ say "equipe desktop $version ($archs)"
 binaries=()
 # shellcheck disable=SC2206 # one path per word
 [ -n "${EQUIPE_DMG_PREBUILT:-}" ] && binaries=($EQUIPE_DMG_PREBUILT) && archs=""
-for path in "${binaries[@]}"; do
+# (Bash 3.2, the Mac's, calls an empty array unbound under `set -u`.)
+for path in ${binaries[@]+"${binaries[@]}"}; do
   [ -f "$path" ] || die "no prebuilt $path"
 done
 for arch in $archs; do

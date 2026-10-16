@@ -61,15 +61,17 @@ markdown = "=1.0.0"
 ropey = "=2.0.0-beta.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# Notifications while the window is out of sight; a click comes back to us.
-mac-notification-sys = "0.6.15"
+# Notifications while the window is out of sight, through macOS's
+# UNUserNotificationCenter (src/notify/system.rs): the same crate and features
+# GPUI already builds.
+objc2-user-notifications = "0.3"
 # Talks to Sparkle (updates) in the packaged app — see src/update.rs.
 objc2 = "0.6"
 # Sparkle's "install now" block, kept until the person asks for it.
 block2 = "0.6"
 # Attachments: a video's frames (AVFoundation), a PDF's first page and page
 # count (CoreGraphics) — read on this Mac, off the UI thread (src/media.rs).
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSArray", "NSValue", "NSError", "NSDictionary"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSArray", "NSValue", "NSError", "NSDictionary", "NSBundle", "NSSet"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFURL", "CFString", "CFCGTypes"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "CGPDFDocument", "CGPDFPage", "CGAffineTransform", "CGGeometry"] }
 objc2-core-media = { version = "0.3", default-features = false, features = ["std", "CMTime", "CMTimeRange"] }

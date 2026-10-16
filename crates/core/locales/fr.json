@@ -121,6 +121,13 @@
   "news.stale.one": "── {count} ticket n'a pas bougé depuis une semaine : le PM proposera de le ranger ──",
   "news.stale.other": "── {count} tickets n'ont pas bougé depuis une semaine : le PM proposera de les ranger ──",
   "news.taken_on": "Vous avez retenu la proposition T-{id} · {title}.",
+  "news.team_added": "{names} a rejoint l’équipe",
+  "news.team_declined": "Vous avez refusé le changement d’équipe · {what}",
+  "news.team_not_added": "Impossible d’ajouter {role} à l’équipe",
+  "news.team_removed": "{name} a quitté l’équipe",
+  "news.team_what_add.one": "ajouter {role}",
+  "news.team_what_add.other": "ajouter {count} {role}",
+  "news.team_what_remove": "laisser partir {name}",
   "news.waiting": "T-{id} vous attend : {name} a besoin de quelque chose que vous seul pouvez faire · {title}.",
   "news.you_told": "↪ Vous → {name} : {text}",
   "note.ended_early": "Le moteur s'est arrêté plus tôt.",
@@ -135,6 +142,7 @@
   "notice.browser_given_back": "🖐 Vous avez rendu le navigateur.",
   "notice.browser_in_panel": "🖥 Le navigateur de {name} s'ouvre dans votre panneau de navigateur : {why}",
   "notice.browser_on_screen": "🖥 Le navigateur de {name} apparaît sur l'écran de ce Mac : {why}",
+  "notice.browser_tab_closed": "🖐 Onglet du navigateur fermé : {url}",
   "notice.browser_taken": "🖐 Vous avez pris ce navigateur en main ; ses outils de navigateur vous attendent.",
   "notice.declined": "✗ Vous avez refusé : {action}",
   "notice.declined_why": "✗ {why} Refusé : {action}",
@@ -163,5 +171,8 @@
   "status.proposed": "proposé",
   "status.review": "en revue",
   "status.todo": "à faire",
-  "status.waiting": "en attente de vous"
+  "status.waiting": "en attente de vous",
+  "error.disk_full": "Le disque est plein : equipe ne peut plus enregistrer les conversations ni les tickets tant qu'il n'y a pas de place. Les dossiers de compilation des membres (target/) en sont souvent la cause.",
+  "notice.disk_room": "Le disque a de nouveau de la place : equipe enregistre à nouveau les conversations et les tickets.",
+  "error.stuck": "Le démon ne répond pas : il est sur {doing} depuis {since}. Essayez `equipe daemon restart`."
 }

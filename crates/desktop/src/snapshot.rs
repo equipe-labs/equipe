@@ -5,7 +5,7 @@
 //! `EQUIPE_SCRIPT="wait:1500;say:안녕;wait:800;shot:/tmp/a.png"` — steps split on `;`:
 //! `wait:<ms>` · `shot:<png>` · `say:<text>` (type it in the box and send) ·
 //! `memo:<text>` (send it as a memo, as Tab does) · `type:<text>` (type, don't send) · `key:<y|a|n|o>` (answer a request) · `esc` (stop the member) · `up`/`down`
-//! (history) · `project:<name|all>` · `shead:<project>` / `sfold:<project>` (a sidebar header's name, its chevron; empty: the shared folder) · `select:<member>` · `board` · `chat` ·
+//! (history; ↑ on an empty box reaches the bubbles waiting) · `pwithdraw` (take the last waiting bubble back) · `pnow` (send what waits now) · `project:<name|all>` · `shead:<project>` / `sfold:<project>` (a sidebar header's name, its chevron; empty: the shared folder) · `select:<member>` · `board` · `chat` ·
 //! `menu:<inbox|working|all|view0…>` (a sidebar item) · `cmenu:<attach|recent|to|model|effort|mode|context>` (a composer menu) · `bkey:<key>` (a work
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
@@ -14,9 +14,9 @@
 //! `sdrag:<x1>,<y1>,<x2>,<y2>` (a selection dragged out) · `peekw:<px>` (the peek held that wide) · `quote:<open|copy|type:<words>|send|close|jump>` (asking about the words selected) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
 //! `answer:<ticket>,<n>,<words>` / `aok:<ticket>,<n>` / `atick:<ticket>,<n>` / `apick:<ticket>,<n>,<done|yours|later|call|unknown>` / `anote:<ticket>,<n>,<words>` / `afree:<ticket>,<words>` / `asend:<ticket>` / `asent:<ticket>` (a waiting ticket's card: type in box n, its quick OK, tick thing n off, a pick, a note, the words to the member, send; open what was sent) ·
-//! `dkey:<key>` (a member's questions' card: `1`–`9`, `up`, `down`, `space`, `enter`, `cmd-enter`, `tab`, `left`, `escape`) · `dtype:<words>` (in its box for the person's own words) · `decided` (open the latest decided row) · `dpick:<id>` (a set in 나에게, peeking) ·
+//! `dkey:<key>` (a member's questions' card: `1`–`9`, `up`, `down`, `space`, `enter`, `cmd-enter`, `tab`, `left`, `escape`) · `dtype:<words>` (in its box for the person's own words) · `decided` (open the latest decided row) · `dpick:<id>` (a set in 나에게, peeking) · `tpick:<id>` (a change to the team in 나에게, peeking) · `tyes` / `tno` (approve or decline the oldest change to the team) ·
 //! `qopen` · `qtype:<n>,<words>` · `qsay:<n>,<words>` · `qsend` · `qesc` · `qenter` (a reply's list of questions as a form: open it, type in box n — past the items, the one for anything to add — tap a quick answer, send, cancel; ⏎ in the composer) ·
-//! `browser` (the browser panel, ⌘⇧B) · `bpick:<n>` (its nth tab) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
+//! `browser` (the browser panel, ⌘⇧B) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 
 use std::time::Duration;
@@ -144,6 +144,14 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     let taken = shell.on_composer_key(&arg, &Modifiers::default(), window, cx);
                     eprintln!("ckey {arg}: taken = {taken}");
                 }),
+                // What waits for the member: the last bubble taken back, or all of it sent now.
+                "pwithdraw" => shell.update(cx, |shell, cx| {
+                    let last = shell.chat.blocks.iter().rev().find_map(|b| if let crate::convo::Block::Pending { text, .. } = b { Some(text.clone()) } else { None });
+                    if let Some(text) = last {
+                        shell.withdraw_pending(text, window, cx);
+                    }
+                }),
+                "pnow" => shell.update(cx, |shell, cx| shell.send_pending_now(cx)),
                 "light" => shell.update(cx, |shell, cx| {
                     let id = shell.composer.strip.items().get(arg.parse::<usize>().unwrap_or(0)).map(|i| i.id);
                     shell.show_big(id, cx);
@@ -165,6 +173,8 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     let appearance = if arg == "light" { WindowAppearance::Light } else { WindowAppearance::Dark };
                     shell.palette = crate::theme::Palette::new(appearance);
                     shell.palette.apply_to_kit(appearance, cx);
+                    // As the app does on a change of appearance: the browser panel too.
+                    shell.sync_browser(window, cx);
                     cx.notify();
                 }),
                 "undrag" => shell.update(cx, |shell, cx| {
@@ -247,6 +257,16 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     shell.board.view.peek = true;
                     shell.board_pick(crate::state::Need::Questions(arg.parse().unwrap_or(0)), cx);
                 }),
+                // A change to the team the PM proposed: picked in 나에게 (peeking), or answered.
+                "tpick" => shell.update(cx, |shell, cx| {
+                    shell.board.view.peek = true;
+                    shell.board_pick(crate::state::Need::Team(arg.parse().unwrap_or(0)), cx);
+                }),
+                "tyes" | "tno" => shell.update(cx, |shell, cx| {
+                    if let Some(id) = shell.model.team.first().map(|c| c.id) {
+                        shell.team_decide(id, verb == "tyes", cx);
+                    }
+                }),
                 // A reply's list of questions answered in place.
                 "qopen" => shell.update(cx, |shell, cx| shell.asklist_open(None, window, cx)),
                 "qtype" => shell.update(cx, |shell, cx| {
@@ -273,6 +293,15 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     panel.update(cx, |b, cx| b.pick(arg.parse().unwrap_or(1), window, cx));
                 }
                 // The control bar's button: 직접 하기 (`btake`) or 돌려주기 (`bgive`).
+                // The nth tab's ✕, as the person presses it; a wheel over the page.
+                "bclose" => {
+                    let panel = shell.read(cx).browser.clone();
+                    panel.update(cx, |b, cx| b.close_nth(arg.parse().unwrap_or(1), cx));
+                }
+                "bwheel" => {
+                    let panel = shell.read(cx).browser.clone();
+                    panel.update(cx, |b, cx| b.wheel(cx));
+                }
                 "btake" | "bgive" => {
                     let panel = shell.read(cx).browser.clone();
                     panel.update(cx, |b, cx| b.hand(verb == "btake", window, cx));
@@ -335,6 +364,17 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 }),
                 // Settings, at a category (`settings:team`), or where it was left.
                 "settings" => shell.update(cx, |shell, cx| shell.open_settings(crate::settings::Category::parse(&arg), window, cx)),
+                // Notifications as macOS would have them (`bell:notasked|denied|allowed`), or the sheet asking (`bell:sheet`).
+                "bell" => shell.update(cx, |shell, cx| {
+                    match arg.as_str() {
+                        "sheet" => shell.bell.sheet = true,
+                        "notasked" => shell.bell.permission = crate::notify::Permission::NotAsked,
+                        "denied" => shell.bell.permission = crate::notify::Permission::Denied,
+                        "allowed" => shell.bell.permission = crate::notify::Permission::Allowed,
+                        _ => {}
+                    }
+                    cx.notify();
+                }),
                 // Words in settings' search.
                 "ssearch" => shell.update(cx, |shell, cx| {
                     shell.settings.search.update(cx, |s, cx| s.set_value(arg.clone(), window, cx));

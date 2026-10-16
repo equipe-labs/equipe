@@ -8,8 +8,8 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use equipe_core::protocol::rpc::Hello;
-use equipe_core::protocol::{Engine, Entry, Estimate, Event, HumanCheck, Mode, OffMain, SessionId, SessionState, Ticket, TicketEntry, TicketId, TicketKind, TicketStatus, TurnOutcome};
+use equipe_core::protocol::rpc::{Hello, SquadEntry};
+use equipe_core::protocol::{DesktopState, Engine, Entry, Estimate, Event, HumanCheck, Mode, OffMain, PlanUsage, SessionId, SessionState, Ticket, TicketEntry, TicketId, TicketKind, TicketStatus, TurnOutcome};
 
 use crate::convo::Convo;
 use crate::daemon::Update;
@@ -180,6 +180,8 @@ pub enum Need {
     Permission(u64),
     /// A set of questions (`crate::decide`), by its id.
     Questions(u64),
+    /// A change to the team the PM proposed (`crate::team`), by its id.
+    Team(u64),
     Ticket(TicketId),
     /// A member's browser page waiting for the person's own hand (a human
     /// check, a sign-in), by its page id ([`BrowserWait`]).
@@ -249,6 +251,17 @@ pub enum Conn {
     },
 }
 
+/// What a member's turns have used, for `/usage`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Spent {
+    /// Everything its turns processed, cached history included.
+    pub tokens: u64,
+    /// Of `seen.0` tokens, `seen.1` came from the prompt cache.
+    pub seen: (u64, u64),
+    /// (used, window) tokens of its context, once known.
+    pub context: Option<(u64, u64)>,
+}
+
 type CardHint = (Vec<u64>, Vec<(TicketId, TicketStatus, Option<String>)>, Option<String>);
 
 #[derive(Debug, Clone)]
@@ -263,10 +276,22 @@ pub struct Model {
     pub projects: Vec<PathBuf>,
     /// The squad's mode, for completion's sake.
     pub mode: Mode,
+    /// The Claude plan's usage windows, as last reported.
+    pub plan: Option<PlanUsage>,
+    /// The daemon is on another machine (SSH): its folders aren't on this disk.
+    pub remote: bool,
+    /// Whether a guess at the next message is offered after an answer (`/suggest`).
+    pub suggestions: bool,
+    /// What each member's turns have used.
+    pub spent: HashMap<SessionId, Spent>,
+    /// The daemon machine's squads: where each one's folder is.
+    pub squad_list: Vec<SquadEntry>,
     /// Open permission requests, oldest first.
     pub approvals: Queue,
     /// Members' questions waiting for the person, oldest first.
     pub asked: crate::decide::Asked,
+    /// Changes to the team the PM proposed, waiting for the person, oldest first.
+    pub team: crate::team::Proposals,
     /// Things that need the person and have not been announced yet: the shell
     /// takes them and tells the person if the window is out of sight.
     alerts: Vec<Alert>,
@@ -306,6 +331,8 @@ pub struct Model {
     pub browsers_shown: bool,
     /// The person took the Mac's screen back from the members.
     pub desktop_stopped: bool,
+    /// Who has the Mac's screen, and who waits for it.
+    pub desktop: DesktopState,
     /// What the person answered tickets that waited for them with, here or on
     /// another screen (`crate::yourturn`), for the cards that asked.
     pub answers: HashMap<TicketId, crate::yourturn::Answered>,
@@ -313,6 +340,12 @@ pub struct Model {
     /// human" check, a sign-in, a code: in 나에게 until they pass or the
     /// browser is handed back.
     pub browser_waits: Vec<BrowserWait>,
+    /// Members' browsers handed to the person (`show_my_browser`), by lane,
+    /// with what to do there: waiting for their tabs to be told, then in
+    /// `browser_waits`, until handed back.
+    browser_asked: HashMap<String, String>,
+    /// Each member's browser's tabs as last told, by lane.
+    browser_tabs: HashMap<String, LaneTabs>,
     /// Tickets' records, as the daemon last sent them (a ticket page asks).
     pub histories: HashMap<TicketId, Vec<TicketEntry>>,
     /// Bumped whenever a ticket or a record changes, so the screens draw again.
@@ -322,7 +355,8 @@ pub struct Model {
 }
 
 /// A member's browser page that waits for the person. No member decides it,
-/// and none can do it.
+/// and none can do it: a page that asks for a person (`check`), or a browser
+/// its member handed them, saying what to do (`why`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowserWait {
     pub page: u64,
@@ -330,7 +364,34 @@ pub struct BrowserWait {
     pub session: Option<SessionId>,
     pub member: String,
     pub site: String,
-    pub check: HumanCheck,
+    pub check: Option<HumanCheck>,
+    /// Its member handed it over, for this — in its own words.
+    pub why: Option<String>,
+}
+
+/// A member's browser's tabs, as last told.
+#[derive(Debug, Clone, Default)]
+struct LaneTabs {
+    session: Option<SessionId>,
+    member: Option<String>,
+    pages: Vec<equipe_core::protocol::BrowserPage>,
+    agent_page: Option<u64>,
+}
+
+/// The header's line about the Mac's screen; `None` when nobody is on it.
+pub fn screen_line(desktop: &DesktopState, here: &str) -> Option<String> {
+    let name = |m: &equipe_core::protocol::MemberRef| if m.squad == here { m.member.clone() } else { m.to_string() };
+    if desktop.stopped {
+        return Some(t!("header.screen_stopped").into());
+    }
+    let holder = desktop.holder.as_ref().map(|m| t!("header.screen_holder", name = name(m)));
+    let waiting = match desktop.queue.as_slice() {
+        [] => None,
+        [one] => Some(t!("header.screen_waiting_one", name = name(one))),
+        [first, rest @ ..] => Some(t!("header.screen_waiting_more", name = name(first), n = rest.len())),
+    };
+    let parts: Vec<String> = holder.into_iter().chain(waiting).collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 impl Model {
@@ -343,8 +404,14 @@ impl Model {
             tickets: Vec::new(),
             projects: Vec::new(),
             mode: Mode::default(),
+            plan: None,
+            remote: false,
+            suggestions: true,
+            spent: HashMap::new(),
+            squad_list: Vec::new(),
             approvals: Queue::default(),
             asked: Default::default(),
+            team: Default::default(),
             alerts: Vec::new(),
             flash: None,
             convos: HashMap::new(),
@@ -363,8 +430,11 @@ impl Model {
             suggestions_off: false,
             browsers_shown: false,
             desktop_stopped: false,
+            desktop: DesktopState::default(),
             answers: HashMap::new(),
             browser_waits: Vec::new(),
+            browser_asked: HashMap::new(),
+            browser_tabs: HashMap::new(),
             histories: HashMap::new(),
             board_rev: 0,
             squad_errors: 0,
@@ -582,6 +652,7 @@ impl Model {
                 // Answers sent into a dead link never came back as resolved.
                 self.approvals.forget_answers();
                 self.asked.forget_sent();
+                self.team.forget_sent();
                 let next = match &self.conn {
                     // Already down: only the reason may have moved on, and it
                     // is not shown while the banner is up.
@@ -595,8 +666,13 @@ impl Model {
                 self.conn = next;
                 changed
             }
-            // The shell reads these two itself: the squad list and the bridge's greeting.
-            Update::Squads(_) | Update::Bridge(_) => false,
+            // The shell reads the bridge's greeting itself; the squad list is kept for
+            // `/home` (where the folder is) and `/squad` (what to switch to).
+            Update::Squads(list) => {
+                self.squad_list = list.squads;
+                false
+            }
+            Update::Bridge(_) => false,
             Update::Event(event) => {
                 let before = (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint());
                 self.on_event(event, now);
@@ -624,6 +700,8 @@ impl Model {
     fn load(&mut self, hello: Hello) {
         // The daemon tells its browser's tabs again right after.
         self.browser_waits.clear();
+        self.browser_asked.clear();
+        self.browser_tabs.clear();
         let version = hello.version;
         let snapshot = hello.snapshot;
         self.squad = snapshot.squad;
@@ -638,8 +716,17 @@ impl Model {
         self.tickets = snapshot.tickets.clone();
         self.projects = snapshot.projects.clone();
         self.mode = snapshot.mode;
+        self.plan = snapshot.plan;
+        self.suggestions = !snapshot.suggestions_off;
+        self.spent = snapshot
+            .sessions
+            .iter()
+            .filter(|s| s.lane.is_none())
+            .map(|s| (s.session, Spent { tokens: s.tokens, seen: (0, 0), context: s.context }))
+            .collect();
         self.approvals.load(snapshot.approvals.clone());
         self.asked.load(snapshot.questions.clone());
+        self.team.load(snapshot.team_changes.clone());
         if let Some(note) = crate::notify::stale_daemon(&version, env!("CARGO_PKG_VERSION")) {
             self.flash = Some(note);
         }
@@ -650,6 +737,7 @@ impl Model {
         self.suggestions_off = snapshot.suggestions_off;
         self.browsers_shown = snapshot.browsers_shown;
         self.desktop_stopped = snapshot.desktop.stopped;
+        self.desktop = snapshot.desktop.clone();
         let (lanes, own): (Vec<&_>, Vec<&_>) = snapshot.sessions.iter().partition(|s| s.lane.is_some());
         self.lanes = lanes
             .iter()
@@ -707,6 +795,19 @@ impl Model {
     }
 
     fn on_event(&mut self, event: Event, now: Clock) {
+        match &event {
+            Event::PlanUsage { usage } => self.plan = Some(*usage),
+            Event::TurnEnded { session, usage: Some(u), .. } if !self.lanes.iter().any(|l| l.session == *session) => {
+                let spent = self.spent.entry(*session).or_default();
+                spent.tokens += u.total();
+                spent.seen.0 += u.total();
+                spent.seen.1 += u.cache_tokens.unwrap_or(0);
+                if let (Some(used), Some(window)) = (u.context_tokens, u.context_window) {
+                    spent.context = Some((used, window));
+                }
+            }
+            _ => {}
+        }
         // The conversation first: what the selected one shows decides redraws.
         if let Some(id) = event.session() {
             if let Event::SessionStarted { squad, member, project, .. } = &event {
@@ -721,6 +822,13 @@ impl Model {
                 && self.selected == Some(id)
             {
                 self.revision += 1;
+            }
+            // An answer: the shell tells it if it is to what the person last wrote.
+            if let Event::TurnEnded { outcome: TurnOutcome::Completed | TurnOutcome::Incomplete, .. } = &event
+                && let Some(line) = self.convos.get(&id).and_then(|c| crate::notify::reply_line(c.transcript.entries()))
+                && let Some(member) = self.members.iter().find(|m| m.session == id).or_else(|| self.lanes.iter().find(|l| l.session == id).and_then(|l| self.members.iter().find(|m| m.session == l.of)))
+            {
+                self.alerts.push(Alert::Reply { session: id, member: member.name.clone(), line });
             }
         }
         self.on_member_event(event);
@@ -753,6 +861,15 @@ impl Model {
             Event::QuestionsClosed { squad, id, .. } if squad == self.squad => {
                 self.asked.close(id);
             }
+            // A change to the team waits for the person: announced as a decision is.
+            Event::TeamChangeProposed { squad, change } if squad == self.squad => {
+                let session = self.members.iter().find(|m| m.name == change.by).map_or(change.session, |m| m.session);
+                let member = change.by.clone();
+                if self.team.push(change) {
+                    self.alerts.push(Alert::Decision { session, member, count: 1 });
+                }
+            }
+            Event::TeamChangeClosed { squad, id, .. } if squad == self.squad => self.team.close(id),
             Event::ModeChanged { squad, member, mode } if squad == self.squad => match member {
                 None => self.mode = mode.unwrap_or_default(),
                 Some(name) => {
@@ -765,21 +882,16 @@ impl Model {
                 }
             },
             Event::Allowed { squad, rules } if squad == self.squad => self.allowed = rules,
-            Event::Desktop { desktop } => self.desktop_stopped = desktop.stopped,
+            Event::Desktop { desktop } => {
+                self.desktop_stopped = desktop.stopped;
+                self.desktop = desktop;
+            }
             Event::LaneOpened { session, of, project } => self.open_lane(session, of, project),
-            // A memo taken back: it leaves the conversation's waiting ones.
-            Event::MemoWithdrawn { session, text } => {
-                if let Some(convo) = self.convos.get_mut(&session)
-                    && let Some(at) = convo.queued.iter().position(|q| *q == text)
-                {
-                    convo.queued.remove(at);
-                    if at < convo.queued_in.len() {
-                        convo.queued_in.remove(at);
-                    }
-                    self.revision += 1;
-                }
-                if let Some(member) = self.members.iter_mut().find(|m| m.session == session) {
-                    member.memos = member.memos.saturating_sub(1);
+            // Taken back, or sent at once: the member's count follows its conversation's.
+            Event::MemoWithdrawn { session, .. } | Event::QueueSent { session, .. } => {
+                let memos = self.convos.get(&session).map(|c| c.queue.memo_count());
+                if let (Some(member), Some(memos)) = (self.members.iter_mut().find(|m| m.session == session), memos) {
+                    member.memos = memos;
                 }
             }
             Event::SessionClosed { session } if self.lanes.iter().any(|l| l.session == session) => self.fold_lane(session),
@@ -905,6 +1017,9 @@ impl Model {
 
     fn on_ticket(&mut self, ticket: &Ticket) {
         let was = self.tickets.iter().find(|t| t.id == ticket.id).map(|t| t.status);
+        if let Some(alert) = self.tickets.iter().find(|t| t.id == ticket.id).and_then(|old| crate::notify::merge_alert(old, ticket, self.ticket_project_name(ticket))) {
+            self.alerts.push(alert);
+        }
         if was != Some(ticket.status) {
             self.since.insert(ticket.id, self.unix);
             if was.is_some() {
@@ -968,7 +1083,7 @@ impl Model {
     /// What the cards above the composer show, for change detection.
     fn card_hint(&self) -> CardHint {
         (
-            self.approvals.ids().into_iter().chain(self.asked.ids()).collect(),
+            self.approvals.ids().into_iter().chain(self.asked.ids()).chain(self.team.ids()).collect(),
             self.for_you_here().iter().map(|t| (t.id, t.status, t.note.clone())).collect(),
             self.flash.clone(),
         )
@@ -980,8 +1095,9 @@ impl Model {
     }
 
     /// One of the daemon's browser events (the panel's, told here too): a
-    /// member's page that starts waiting for the person goes into 나에게 and
-    /// is announced; one that passed, or a browser handed back, leaves.
+    /// member's page that starts waiting for the person, or a browser its
+    /// member hands them, goes into 나에게 and is announced; one that passed,
+    /// or a browser handed back, leaves.
     pub fn on_browser(&mut self, event: &Event) -> bool {
         let before = self.browser_waits.clone();
         match event {
@@ -989,30 +1105,75 @@ impl Model {
                 if lane.is_empty() || squad.as_deref().is_some_and(|s| s != self.squad) {
                     return false;
                 }
-                let waiting = pages.iter().filter(|p| p.check.is_some()).min_by_key(|p| Some(p.id) != *agent_page);
-                let kept = waiting.and_then(|p| self.browser_waits.iter().find(|w| w.lane == *lane && w.page == p.id).cloned());
-                self.browser_waits.retain(|w| w.lane != *lane);
-                if let Some(page) = waiting {
-                    let name = session
-                        .and_then(|s| self.members.iter().find(|m| m.session == s).or_else(|| self.lanes.iter().find(|l| l.session == s).and_then(|l| self.members.iter().find(|m| m.session == l.of))))
-                        .map(|m| m.name.clone())
-                        .or_else(|| member.as_deref().map(|m| m.split_once(" (").map_or(m, |(n, _)| n).to_owned()))
-                        .unwrap_or_else(|| lane.rsplit('/').next().unwrap_or(lane).to_owned());
-                    let site = crate::browse::site(&page.url).unwrap_or_default();
-                    let wait = BrowserWait { page: page.id, lane: lane.clone(), session: *session, member: name, site, check: page.check.unwrap_or(HumanCheck::Challenge) };
-                    if kept.is_none() {
-                        self.alerts.push(Alert::Browser { page: wait.page, session: wait.session, member: wait.member.clone(), site: wait.site.clone() });
-                    }
-                    self.browser_waits.push(wait);
+                if pages.is_empty() {
+                    self.browser_tabs.remove(lane);
+                } else {
+                    self.browser_tabs.insert(lane.clone(), LaneTabs { session: *session, member: member.clone(), pages: pages.clone(), agent_page: *agent_page });
                 }
+                // Handed over by its member: that says what waits, below.
+                if !self.browser_asked.contains_key(lane) {
+                    let waiting = pages.iter().filter(|p| p.check.is_some()).min_by_key(|p| Some(p.id) != *agent_page);
+                    let kept = waiting.and_then(|p| self.browser_waits.iter().find(|w| w.lane == *lane && w.page == p.id).cloned());
+                    self.browser_waits.retain(|w| w.lane != *lane);
+                    if let Some(page) = waiting {
+                        let name = self.lane_member(lane);
+                        let site = crate::browse::site(&page.url).unwrap_or_default();
+                        let wait = BrowserWait { page: page.id, lane: lane.clone(), session: *session, member: name, site, check: page.check, why: None };
+                        if kept.is_none() {
+                            self.alerts.push(Alert::Browser { page: wait.page, session: wait.session, member: wait.member.clone(), site: wait.site.clone(), check: wait.check, why: None });
+                        }
+                        self.browser_waits.push(wait);
+                    }
+                }
+            }
+            // A member hands the person its browser, saying what for.
+            Event::BrowserControl { squad, lane, by: Some(_), why: Some(why), .. } if squad.as_deref().is_none_or(|s| s == self.squad) && !lane.is_empty() => {
+                self.browser_asked.insert(lane.clone(), why.clone());
             }
             // Handed back to its member: not the person's to do any more.
             Event::BrowserControl { squad, lane, by: None, .. } if squad.as_deref().is_none_or(|s| s == self.squad) => {
+                self.browser_asked.remove(lane);
                 self.browser_waits.retain(|w| w.lane != *lane);
             }
             _ => {}
         }
+        self.settle_handed();
         before != self.browser_waits
+    }
+
+    /// The browsers handed to the person whose tabs are known: in 나에게, on
+    /// the tab its member works in, announced the first time.
+    fn settle_handed(&mut self) {
+        let mut asked: Vec<(String, String)> = self.browser_asked.iter().map(|(l, w)| (l.clone(), w.clone())).collect();
+        asked.sort();
+        for (lane, why) in asked {
+            let Some(tabs) = self.browser_tabs.get(&lane) else { continue };
+            let Some(page) = tabs.agent_page.and_then(|a| tabs.pages.iter().find(|p| p.id == a)).or(tabs.pages.last()).cloned() else { continue };
+            let session = tabs.session;
+            let site = crate::browse::site(&page.url).unwrap_or_default();
+            let had = self.browser_waits.iter().any(|w| w.lane == lane && w.why.is_some());
+            let member = self.lane_member(&lane);
+            self.browser_waits.retain(|w| w.lane != lane);
+            let wait = BrowserWait { page: page.id, lane, session, member, site, check: page.check, why: Some(why.clone()) };
+            if !had {
+                self.alerts.push(Alert::Browser { page: wait.page, session: wait.session, member: wait.member.clone(), site: wait.site.clone(), check: wait.check, why: Some(why) });
+            }
+            self.browser_waits.push(wait);
+        }
+    }
+
+    /// Whose a member's browser is, by name: its conversation's member, else
+    /// the host's label (`pm (site)`), else the lane's key.
+    fn lane_member(&self, lane: &str) -> String {
+        let tabs = self.browser_tabs.get(lane);
+        tabs.and_then(|t| t.session)
+            .and_then(|s| self.members.iter().find(|m| m.session == s).or_else(|| self.lanes.iter().find(|l| l.session == s).and_then(|l| self.members.iter().find(|m| m.session == l.of))))
+            .map(|m| m.name.clone())
+            .or_else(|| tabs.and_then(|t| t.member.as_deref()).map(|m| m.split_once(" (").map_or(m, |(n, _)| n).to_owned()))
+            .unwrap_or_else(|| {
+                let key = lane.rsplit('/').next().unwrap_or(lane);
+                key.split_once('@').map_or(key, |(n, _)| n).to_owned()
+            })
     }
 
     pub fn take_alerts(&mut self) -> Vec<Alert> {
@@ -1044,6 +1205,7 @@ impl Model {
     pub fn needs_you(&self) -> Vec<(Section, Need)> {
         let mut out: Vec<(Section, Need)> = self.approvals.open_items().map(|a| (Section::Permission, Need::Permission(a.id))).collect();
         out.extend(self.asked.open().map(|s| (Section::Decide, Need::Questions(s.id))));
+        out.extend(self.team.open().map(|c| (Section::Decide, Need::Team(c.id))));
         // A page that waits for the person's own hand: their turn, first.
         out.extend(self.browser_waits.iter().map(|w| (Section::Waiting, Need::Browser(w.page))));
         for section in &Section::TICKETS {
@@ -1271,7 +1433,7 @@ fn percent((used, window): (u64, u64)) -> Option<u8> {
 mod tests {
     use super::*;
     use equipe_core::protocol::rpc::Hello;
-    use equipe_core::protocol::{Access, Approval, Engine, Member as Who, SessionInfo, Snapshot, WorkInfo};
+    use equipe_core::protocol::{Access, Approval, Command, Engine, Member as Who, SessionInfo, Snapshot, WorkInfo};
 
     const T0: Clock = Clock { hour: 14, minute: 2, second: 10 };
     const T1: Clock = Clock { hour: 14, minute: 3, second: 12 };
@@ -1313,6 +1475,45 @@ mod tests {
         assert!(!model.on_browser(&other));
     }
 
+    #[test]
+    fn a_browser_its_member_hands_over_is_the_persons_to_do_until_it_comes_back() {
+        use equipe_core::protocol::{BrowserPage, HumanCheck};
+        let mut model = Model::new("acme");
+        let why = "Umbriles Inc. 계정 소유자 Apple ID로 App Store Connect에 로그인해 주세요";
+        let tabs = |url: &str, check: Option<HumanCheck>| Event::BrowserTabs {
+            squad: Some("acme".into()),
+            lane: "acme/pm".into(),
+            session: None,
+            member: Some("pm".into()),
+            color: None,
+            pages: vec![BrowserPage { id: 7_000_001, url: url.into(), title: "App Store Connect".into(), check, ..Default::default() }],
+            agent_page: Some(7_000_001),
+        };
+        let handed = Event::BrowserControl { squad: Some("acme".into()), lane: "acme/pm".into(), by: Some("person".into()), why: Some(why.into()), check: None };
+        // Handed over before its tabs are told (the lane just opened): waits for them.
+        assert!(!model.on_browser(&handed));
+        assert!(model.needs_you().is_empty() && model.take_alerts().is_empty());
+        assert!(model.on_browser(&tabs("https://appstoreconnect.apple.com/", None)));
+        assert!(model.needs_you().contains(&(Section::Waiting, Need::Browser(7_000_001))), "in 나에게");
+        let wait = &model.browser_waits[0];
+        assert_eq!((wait.member.as_str(), wait.why.as_deref(), wait.check), ("pm", Some(why), None));
+        assert!(matches!(&model.take_alerts()[..], [Alert::Browser { page: 7_000_001, why: Some(_), .. }]), "announced once");
+        // On to Apple's sign-in: the same hand-over, now known to be a sign-in — not announced again.
+        model.on_browser(&tabs("https://idmsa.apple.com/appleauth/auth/signin", Some(HumanCheck::SignIn)));
+        assert_eq!(model.browser_waits.len(), 1);
+        assert_eq!((model.browser_waits[0].check, model.browser_waits[0].site.as_str()), (Some(HumanCheck::SignIn), "idmsa.apple.com"));
+        assert!(model.take_alerts().is_empty());
+        // The host saying the person has it (no words this time) changes nothing.
+        assert!(!model.on_browser(&Event::BrowserControl { squad: Some("acme".into()), lane: "acme/pm".into(), by: Some("person".into()), why: None, check: None }));
+        // Signed in, the page waits no more — but it is still theirs until handed back.
+        model.on_browser(&tabs("https://appstoreconnect.apple.com/apps", None));
+        assert_eq!(model.needs_you().len(), 1);
+        assert!(model.on_browser(&Event::BrowserControl { squad: Some("acme".into()), lane: "acme/pm".into(), by: None, why: None, check: None }));
+        assert!(model.needs_you().is_empty(), "handed back: gone from 나에게");
+        model.on_browser(&tabs("https://appstoreconnect.apple.com/apps", None));
+        assert!(model.needs_you().is_empty(), "and it stays gone");
+    }
+
     fn session(id: SessionId, role: &str, name: &str, state: SessionState) -> SessionInfo {
         SessionInfo {
             session: id,
@@ -1331,6 +1532,7 @@ mod tests {
             queued_project: None,
             queued_in: vec![],
             steering: vec![],
+            steering_in: vec![],
             lane: None,
             estimate: None,
             work: None,
@@ -1462,6 +1664,31 @@ mod tests {
         assert!(model.take_alerts().is_empty(), "stopped by the person: nothing to say");
         model.apply(ended(equipe_core::protocol::TurnOutcome::Failed), T0);
         assert_eq!(model.take_alerts(), vec![Alert::Failed { session: 2, member: "backend".into() }]);
+    }
+
+    #[test]
+    fn an_answer_and_a_merge_are_news_for_the_shell_to_tell() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        let event = |e: Event| Update::Event(e);
+        model.apply(event(Event::UserMessage { session: 1, text: "어떻게 됐어?".into() }), T0);
+        model.apply(event(Event::TextDelta { session: 1, text: "**다 됐어요.** 테스트도\n통과".into() }), T0);
+        assert!(model.take_alerts().is_empty(), "not before the turn ends");
+        model.apply(event(Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }), T0);
+        assert_eq!(model.take_alerts(), vec![Alert::Reply { session: 1, member: "pm".into(), line: "다 됐어요. 테스트도".into() }]);
+        model.apply(event(Event::UserMessage { session: 1, text: "멈춰".into() }), T0);
+        model.apply(event(Event::TurnEnded { session: 1, outcome: TurnOutcome::Interrupted, usage: None }), T0);
+        assert!(model.take_alerts().is_empty(), "stopped, and nothing said since the person spoke");
+
+        let code = |status: &str, merged: Option<bool>| -> Ticket {
+            serde_json::from_value(serde_json::json!({"id": 4, "title": "로그인", "body": "", "status": status, "owner": "backend", "assignee": "backend", "project": null, "depends_on": [], "branch": "eq/t4", "merged": merged, "created_by": "pm", "note": null})).unwrap()
+        };
+        model.apply(event(Event::TicketChanged { squad: "acme".into(), ticket: code("done", Some(true)) }), T0);
+        assert!(model.take_alerts().is_empty(), "a ticket seen for the first time isn't news");
+        model.apply(event(Event::TicketChanged { squad: "acme".into(), ticket: code("review", None) }), T0);
+        model.take_alerts();
+        model.apply(event(Event::TicketChanged { squad: "acme".into(), ticket: code("done", Some(true)) }), T0);
+        assert!(matches!(&model.take_alerts()[..], [Alert::Merged { ticket: 4, .. }]));
     }
 
     #[test]
@@ -1686,7 +1913,7 @@ mod tests {
         assert!(model.open(Side::Ticket(7)));
         assert_eq!((model.viewed(), model.side_open()), (Some(2), Some(Side::Ticket(7))));
         let plan = crate::compose::plan(&model, "skip the footer", false);
-        assert_eq!(plan.commands, vec![equipe_core::protocol::Command::Submit { session: 2, text: "skip the footer".into() }]);
+        assert_eq!(plan.commands, vec![equipe_core::protocol::Command::Submit { session: 2, text: "skip the footer".into(), about: Some(None) }]);
         // A ticket with no work to show: the board's to show.
         assert!(!model.open(Side::Ticket(8)));
         assert_eq!(model.opened, None);
@@ -1835,6 +2062,43 @@ mod tests {
     }
 
     #[test]
+    fn a_change_to_the_team_waits_to_be_decided_and_goes_once_decided_anywhere() {
+        use equipe_core::protocol::team::{Change, TeamChange};
+        let mut model = needs_model();
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "mobile", "mobile", SessionState::Working)]), T0);
+        model.take_alerts();
+        let change = TeamChange {
+            id: 70,
+            change: Change::Add,
+            role: "mobile".into(),
+            count: 1,
+            member: None,
+            engine: None,
+            model: None,
+            effort: None,
+            reason: "T-7 waits".into(),
+            unblocks: vec![7],
+            by: "pm".into(),
+            session: 1,
+            proposed_at: 1,
+            busy_on: None,
+        };
+        assert!(model.apply(Update::Event(Event::TeamChangeProposed { squad: "acme".into(), change: change.clone() }), T0), "the card shows: a redraw");
+        assert_eq!(model.take_alerts(), vec![Alert::Decision { session: 1, member: "pm".into(), count: 1 }]);
+        model.apply(Update::Event(Event::TeamChangeProposed { squad: "other".into(), change: TeamChange { id: 71, ..change.clone() } }), T0);
+        model.apply(Update::Event(Event::TeamChangeProposed { squad: "acme".into(), change: change.clone() }), T0);
+        assert!(model.take_alerts().is_empty(), "another squad's, or the same again: nothing");
+        let decide: Vec<Need> = model.needs_you().into_iter().filter(|(s, _)| *s == Section::Decide).map(|(_, n)| n).collect();
+        assert_eq!(decide, [Need::Team(70)], "결정 필요");
+        // Approved here: the person's command, and hidden at once; decided anywhere: gone, live.
+        assert_eq!(model.team.decide("acme", 70, true), Some(Command::ApproveTeamChange { squad: "acme".into(), id: 70 }));
+        assert!(!model.needs_you().iter().any(|(_, n)| *n == Need::Team(70)));
+        model.team.forget_sent();
+        assert!(model.apply(Update::Event(Event::TeamChangeClosed { squad: "acme".into(), id: 70, approved: true, members: vec!["mobile-2".into()] }), T0));
+        assert!(model.team.ids().is_empty());
+    }
+
+    #[test]
     fn what_needs_you_is_one_list_in_one_order() {
         let model = needs_model();
         let sections: Vec<Section> = model.needs_you().iter().map(|(s, _)| *s).collect();
@@ -1964,8 +2228,28 @@ mod tests {
         }
         assert_eq!(model.members[0].memos, 3);
         assert!(model.apply(Update::Event(Event::MemoWithdrawn { session: 1, text: "a".into() }), T0));
-        assert_eq!(model.convo().unwrap().queued, ["b", "a"], "only the first with that text");
-        assert_eq!(model.convo().unwrap().queued_in.len(), 2);
+        assert_eq!(model.convo().unwrap().queue.texts(), ["b", "a"], "only the first with that text");
         assert_eq!(model.members[0].memos, 2);
+        // Sent at once: none waits.
+        model.apply(Update::Event(Event::QueueSent { session: 1, texts: vec!["b".into(), "a".into()] }), T0);
+        assert!(model.convo().unwrap().queue.is_empty());
+        assert_eq!(model.members[0].memos, 0);
     }
+
+    #[test]
+    fn the_screen_line_says_who_is_on_it() {
+        use equipe_core::protocol::MemberRef;
+        let m = |squad: &str, member: &str| MemberRef { squad: squad.into(), member: member.into() };
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        assert_eq!(screen_line(&model.desktop, "acme"), None);
+        let busy = DesktopState { holder: Some(m("acme", "frontend")), queue: vec![m("tax", "pm"), m("acme", "qa")], stopped: false };
+        assert!(model.apply(Update::Event(Event::Desktop { desktop: busy }), T0));
+        let line = screen_line(&model.desktop, "acme").unwrap();
+        assert!(line.contains("frontend") && line.contains("tax/pm"), "{line}");
+        assert!(!line.contains("acme"), "a member of this squad goes by name alone: {line}");
+        let stopped = DesktopState { stopped: true, ..Default::default() };
+        assert!(screen_line(&stopped, "acme").is_some());
+    }
+
 }

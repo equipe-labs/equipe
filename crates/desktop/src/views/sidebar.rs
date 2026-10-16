@@ -440,28 +440,22 @@ fn arrive(row: Stateful<Div>, id: ElementId, arrives: bool) -> AnyElement {
 /// A live ticket, as a session: its mark (a spinner, or the orange dot for
 /// the person's turn), its title fading out, how long it has been so — and,
 /// on the pointer, a quick yes for what waits. The number, the whole title,
-/// where it stands and who is on it are in the tooltip.
+/// where it stands and who is on it are on its card (`ticket_card`).
 fn ticket_row(shell: &Shell, t: &Ticket, live: Live, on: bool, arrives: bool, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let model = &shell.model;
     let id = t.id;
     let group = SharedString::from(format!("tk-{id}"));
-    let who = model.member_on(id).map(|m| m.name.clone()).or_else(|| crate::board::who(t).map(str::to_owned));
-    let state = match live {
-        Live::YourTurn if t.status != TicketStatus::Waiting => t!("state.section_permission"),
-        _ => crate::state::state_word(t),
-    };
-    let tip = format!("T-{id} · {}", t.title);
-    let detail = [Some(state.to_owned()), who].into_iter().flatten().collect::<Vec<_>>().join(" · ");
     let time = model.in_state_for(t).map(short_span);
     let yes = t.status == TicketStatus::Waiting && shell.can_act();
     let mark = match live {
         Live::Working => Mark::Spinner,
         Live::YourTurn => Mark::Waits,
     };
-    let row = row_shell(p, ("ticket", id as usize), on)
+    // Its card on the pointer, beside the sidebar: the number, where it
+    // stands, who is on it, what it asks.
+    let row = super::ticket_card::hover_link(row_shell(p, ("ticket", id as usize), on), id, super::ticket_card::Side::Right)
         .group(group.clone())
-        .tip_at(p, tip, Some(&detail), gpui_kit::base::Placement::Right)
         .on_click(cx.listener(move |this, _, window, cx| this.open_ticket_row(id, window, cx)))
         .child(mark_element(p, mark, shell.board.spin))
         .child(fading_title(p, t.title.clone(), on, false))
@@ -738,31 +732,46 @@ impl SideMotion {
     }
 }
 
-/// An update downloaded in the background, ready: one full-width button puts
-/// it in and starts the app again (as Claude's "Relaunch to update").
+/// Where an update stands, in one pill above the foot: a new version being
+/// downloaded (quiet), downloaded and ready — one full-width button puts it
+/// in and starts the app again (as Claude's "Relaunch to update") — or
+/// failed, to try again (or to move the app where it can update itself).
 fn relaunch(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
-    let version = shell.update_ready.as_deref()?;
-    Some(
-        h_flex()
-            .id("relaunch")
-            .h(px(34.))
-            .flex_none()
-            .mx_3()
-            .mb_1()
-            .px_3()
-            .rounded(px(8.))
-            .items_center()
-            .justify_between()
+    use crate::relaunch::{Update, Why};
+    let words = crate::relaunch::pill(&shell.update)?;
+    let pill = h_flex().id("relaunch").h(px(34.)).flex_none().mx_3().mb_1().px_3().rounded(px(8.)).items_center().justify_between().text_size(px(TEXT));
+    Some(match &shell.update {
+        Update::Ready(_) => pill
             .bg(p.primary)
             .text_color(p.on_primary)
-            .text_size(px(TEXT))
             .font_weight(FontWeight::SEMIBOLD)
             .cursor_pointer()
             .hover(|s| s.opacity(0.9))
             .on_click(cx.listener(|this, _, _, cx| this.relaunch_to_update(cx)))
-            .child(crate::relaunch::label(version))
+            .child(words)
             .child("→"),
-    )
+        // Downloading: said quietly, nothing to press.
+        Update::Found(_) | Update::Downloading(_) => pill.border_1().border_color(p.hair).text_color(p.muted).child(div().min_w_0().truncate().child(words)),
+        // The app can't replace itself where it is: show it in Finder.
+        Update::Failed { why: Why::Move | Why::Permission, .. } => pill
+            .border_1()
+            .border_color(p.hair)
+            .text_color(p.text)
+            .cursor_pointer()
+            .hover(|s| s.bg(p.wash))
+            .on_click(|_, _, _| crate::relaunch::reveal())
+            .child(div().min_w_0().truncate().child(words))
+            .child("→"),
+        _ => pill
+            .border_1()
+            .border_color(p.hair)
+            .text_color(p.text)
+            .cursor_pointer()
+            .hover(|s| s.bg(p.wash))
+            .on_click(|_, _, cx| crate::relaunch::check_now(cx))
+            .child(div().min_w_0().truncate().child(words))
+            .child("↻"),
+    })
 }
 
 /// The foot, one row: the squad and machine with the connection's dot (a

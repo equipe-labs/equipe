@@ -1,8 +1,10 @@
 //! One module per screen, so each ticket edits its own file.
 
+pub mod actions;
 pub mod approvals;
 pub mod asklist;
 pub mod attached;
+pub mod bell;
 pub mod board;
 pub mod browser;
 pub mod chat;
@@ -16,6 +18,9 @@ pub mod pair;
 pub mod peek;
 pub mod quote;
 pub mod settings;
+pub mod sheet;
 pub mod sidebar;
+pub mod team;
+pub mod ticket_card;
 pub mod tickets;
 pub mod yourturn;

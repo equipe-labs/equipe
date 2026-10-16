@@ -54,15 +54,19 @@ pub fn parse_auth_status(json: &str) -> Result<AuthStatus> {
         .map_err(|_| Error::Protocol("`claude auth status --json` returned something unexpected".into()))
 }
 
+/// How long `claude auth status` may take.
+const AUTH_STATUS_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// Ask the installed Claude Code whether it is signed in.
 /// `Ok(None)` means the binary isn't installed (or not on PATH).
 pub async fn auth_status(binary: &str) -> Result<Option<AuthStatus>> {
-    let output = match Command::new(binary)
-        .args(["auth", "status", "--json"])
-        .stdin(Stdio::null())
-        .output()
-        .await
-    {
+    let asked = Command::new(binary).args(["auth", "status", "--json"]).stdin(Stdio::null()).kill_on_drop(true).output();
+    // A sign-in check that never answers must not hold up whoever asked (the daemon's loop).
+    let Ok(output) = tokio::time::timeout(AUTH_STATUS_WAIT, asked).await else {
+        let secs = AUTH_STATUS_WAIT.as_secs();
+        return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("`{binary} auth status` didn't answer in {secs}s")).into());
+    };
+    let output = match output {
         Ok(output) => output,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err.into()),
@@ -696,6 +700,7 @@ fn board_target(name: &str, input: Option<&Value>) -> Option<String> {
             });
             needs.into_iter().collect()
         }
+        "propose_team_change" => [text("change"), text("name").or_else(|| text("role"))].into_iter().flatten().collect(),
         _ => Vec::new(),
     };
     (!parts.is_empty()).then(|| parts.join(" · "))

@@ -46,7 +46,7 @@ enum Input {
 pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Input>();
     if let Err(err) = listen(&home, input_tx.clone()) {
-        eprintln!("remote: {err}");
+        equipe_core::daemon_log!("remote: {err}");
         return;
     }
     let mut core = Core::new(super::load(&home));
@@ -80,7 +80,10 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                         if followed.get(&squad).is_some_and(|h| !h.is_finished()) {
                             continue;
                         }
-                        match Client::connect(&socket, &version, &squad).await {
+                        // A daemon slow to answer holds up the phones' link no longer than this.
+                        let connected = tokio::time::timeout(Duration::from_secs(20), Client::connect(&socket, &version, &squad)).await;
+                        let connected = connected.unwrap_or_else(|_| Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "the daemon didn't answer")));
+                        match connected {
                             Ok((client, hello)) => {
                                 core.attach(&hello.snapshot);
                                 let (_, mut events) = client.split();
@@ -94,7 +97,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                                     }
                                 }));
                             }
-                            Err(err) => eprintln!("remote: following {squad}: {err}"),
+                            Err(err) => equipe_core::daemon_log!("remote: following {squad}: {err}"),
                         }
                     }
                 }
@@ -254,7 +257,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                     if let Some(config) = &core.config
                         && let Err(err) = super::save(&home, config)
                     {
-                        eprintln!("remote: couldn't keep the devices: {err}");
+                        equipe_core::daemon_log!("remote: couldn't keep the devices: {err}");
                     }
                 }
             }
@@ -273,7 +276,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                     }
                 }
                 Err(err) => {
-                    eprintln!("remote: {err}");
+                    equipe_core::daemon_log!("remote: {err}");
                     retry_at = tokio::time::Instant::now() + backoff;
                     backoff = (backoff * 2).min(Duration::from_secs(60));
                     if let Some(conn) = &pair_conn {
@@ -377,7 +380,7 @@ pub async fn serve_demo(home: PathBuf, version: String) -> Result<(), String> {
                         if let Some(config) = &core.config
                             && let Err(err) = super::save(&home, config)
                         {
-                            eprintln!("demo: couldn't keep the devices: {err}");
+                            equipe_core::daemon_log!("demo: couldn't keep the devices: {err}");
                         }
                     }
                     Action::Close { .. } | Action::Local(_) => {}
@@ -396,10 +399,10 @@ pub async fn serve_demo(home: PathBuf, version: String) -> Result<(), String> {
                     }
                     relay = Some(sender);
                     backoff = Duration::from_secs(2);
-                    eprintln!("demo: connected to the relay at {}", config.relay);
+                    equipe_core::daemon_log!("demo: connected to the relay at {}", config.relay);
                 }
                 Err(err) => {
-                    eprintln!("demo: {err}");
+                    equipe_core::daemon_log!("demo: {err}");
                     retry_at = tokio::time::Instant::now() + backoff;
                     backoff = (backoff * 2).min(Duration::from_secs(60));
                 }

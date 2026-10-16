@@ -26,6 +26,11 @@ const PUSH_LABEL: usize = 60;
 /// the relay's longest (10 minutes).
 const STANDING_REFRESH_MS: u64 = 4 * 60 * 1000;
 const STANDING_SLOT_MS: u64 = 10 * 60 * 1000;
+/// The largest frame the relay takes (`relay/src/frames.ts`, `MAX_FRAME_BYTES`).
+pub const RELAY_FRAME_MAX: usize = 1024 * 1024;
+/// About the most a message to a phone can say and still fit in one frame:
+/// sealed (32 + 16 bytes), base64 (4/3), wrapped with its device and clock.
+const RELAY_PLAIN_MAX: usize = (RELAY_FRAME_MAX - 512) / 4 * 3 - 48 - 256;
 /// How many phones a demo daemon keeps; past that the oldest is forgotten.
 pub const DEMO_DEVICES: usize = 200;
 
@@ -89,6 +94,20 @@ pub struct Core {
     /// Ticket statuses per squad, to push only on a change.
     tickets: BTreeMap<String, HashMap<TicketId, TicketStatus>>,
     following: HashSet<(String, String)>,
+    /// Members' browsers handed to the person, by lane: pushed once each.
+    handed: HashSet<String>,
+    /// What was too large for the relay, already said in the log.
+    too_large: HashSet<String>,
+    /// How often the relay said each thing went wrong.
+    relay_errors: HashMap<String, u64>,
+}
+
+/// 1, 10, 100…
+fn tenfold(mut n: u64) -> bool {
+    while n >= 10 && n.is_multiple_of(10) {
+        n /= 10;
+    }
+    n == 1
 }
 
 /// The pairing slot for a secret: what the relay knows it by.
@@ -113,7 +132,8 @@ pub fn pairing_url(relay: &str, id: &str, public: &str, secret: &[u8], name: &st
 
 /// The commands a phone may send, as it may send them: from a phone a request
 /// is allowed once, never always; a member's questions are the person's to
-/// answer or close from anywhere; starting, closing, merging and changing
+/// answer or close from anywhere, and so is a change to the team the PM
+/// proposed to approve or decline; starting, closing, merging and changing
 /// modes stay at the console — and so does writing, editing and rearranging
 /// tickets (the phone answers what the board asks; it doesn't plan it yet).
 pub fn allowed(command: Command) -> Option<Command> {
@@ -121,6 +141,7 @@ pub fn allowed(command: Command) -> Option<Command> {
         Command::Decide { squad, approval, decision: Decision::Always } => Some(Command::Decide { squad, approval, decision: Decision::Allow }),
         c @ (Command::Submit { .. }
         | Command::Interrupt { .. }
+        | Command::SendNow { .. }
         | Command::Accept { .. }
         | Command::Reopen { .. }
         | Command::Resume { .. }
@@ -128,6 +149,8 @@ pub fn allowed(command: Command) -> Option<Command> {
         | Command::Decide { .. }
         | Command::AnswerQuestions { .. }
         | Command::DismissQuestions { .. }
+        | Command::ApproveTeamChange { .. }
+        | Command::DeclineTeamChange { .. }
         | Command::Focus { .. }
         | Command::Refresh { .. }) => Some(c),
         _ => None,
@@ -147,6 +170,8 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::Decide { squad, .. }
         | Command::AnswerQuestions { squad, .. }
         | Command::DismissQuestions { squad, .. }
+        | Command::ApproveTeamChange { squad, .. }
+        | Command::DeclineTeamChange { squad, .. }
         | Command::Scale { squad, .. }
         | Command::Focus { squad, .. }
         | Command::ShowBrowser { squad, .. } => Some(squad),
@@ -356,7 +381,18 @@ impl Core {
         }
         let aad = format!("{}:{device}", config.id);
         let data = seal::seal(Kind::ToDevice, &to, Some(&config.keys()), None, &aad, plain.to_string().as_bytes()).ok()?;
-        Some(Action::Relay(json!({ "type": "send", "device": device, "data": data })))
+        let frame = json!({ "type": "send", "device": device, "data": data });
+        // The relay drops a frame past its limit and says only "frame is too
+        // large": dropped here instead, said once for what it was.
+        let size = frame.to_string().len();
+        if size > RELAY_FRAME_MAX {
+            let what = rpc.method.clone().unwrap_or_else(|| "an answer".into());
+            if self.too_large.insert(what.clone()) {
+                equipe_core::daemon_log!("remote: a {what} for a phone came to {} KB, more than the relay carries; not sent", size >> 10);
+            }
+            return None;
+        }
+        Some(Action::Relay(frame))
     }
 
     /// A frame from the relay.
@@ -393,11 +429,17 @@ impl Core {
             }
             "device_unpaired" => self.on_unpaired(frame["device"].as_str().unwrap_or_default()),
             "push_result" if frame["ok"] != true => {
-                eprintln!("remote: push to {} failed: {}", frame["device"], frame["error"]);
+                equipe_core::daemon_log!("remote: push to {} failed: {}", frame["device"], frame["error"]);
                 vec![]
             }
             "error" => {
-                eprintln!("remote: the relay said {}", frame["message"]);
+                // Said once, then at every tenfold: a loop shows, without filling the log.
+                let message = frame["message"].to_string();
+                let n = self.relay_errors.entry(message.clone()).or_insert(0);
+                *n += 1;
+                if tenfold(*n) {
+                    equipe_core::daemon_log!("remote: the relay said {message} ({n}×)");
+                }
                 vec![]
             }
             _ => vec![],
@@ -495,7 +537,23 @@ impl Core {
     pub fn opened(&mut self, device: &str, squad: &str, id: &Value, hello: Result<Hello, String>) -> Vec<Action> {
         let Some(id) = id.as_u64() else { return vec![] };
         let message = match hello {
-            Ok(hello) => Message::response(id, hello),
+            Ok(mut hello) => {
+                // A squad's snapshot can outgrow what the relay carries: its
+                // conversations go with less of their past until it fits —
+                // never not at all, or the phone asks again, and again.
+                for keep in [None, Some(50), Some(10), Some(0)] {
+                    if let Some(keep) = keep {
+                        for session in &mut hello.snapshot.sessions {
+                            let cut = session.recent.len().saturating_sub(keep);
+                            session.recent.drain(..cut);
+                        }
+                    }
+                    if Message::response(id, &hello).to_line().len() <= RELAY_PLAIN_MAX {
+                        break;
+                    }
+                }
+                Message::response(id, hello)
+            }
             Err(why) => {
                 self.following.remove(&(device.to_owned(), squad.to_owned()));
                 Message::failure(id, -32000, why)
@@ -569,6 +627,17 @@ impl Core {
                     Event::QuestionsAsked { squad: squad.to_owned(), questions: short },
                 )
             }
+            Event::TeamChangeProposed { change, .. } => {
+                let mut short = change.clone();
+                short.reason = short.reason.chars().take(PUSH_ACTION).collect();
+                let title = match change.change {
+                    equipe_core::protocol::team::Change::Add => t!("remote.push_team_add", member = change.by, role = change.role, count = change.count),
+                    equipe_core::protocol::team::Change::Remove => {
+                        t!("remote.push_team_remove", member = change.by, name = change.member.clone().unwrap_or_else(|| change.role.clone()))
+                    }
+                };
+                (title, squad.to_owned(), "team", format!("team-{}", change.id), Event::TeamChangeProposed { squad: squad.to_owned(), change: short })
+            }
             Event::TicketChanged { ticket, .. } => {
                 // A demo phone's board is its own.
                 let board = only.map_or_else(|| squad.to_owned(), |device| format!("{squad}/{device}"));
@@ -586,6 +655,27 @@ impl Core {
                 short.body = String::new();
                 short.note = short.note.map(|n| n.chars().take(PUSH_ACTION).collect());
                 (title, format!("T-{} · {squad}", ticket.id), category, format!("ticket-{}", ticket.id), Event::TicketChanged { squad: squad.to_owned(), ticket: short })
+            }
+            // A member handed the person its browser (to sign in, a code, a
+            // human check): the phone can't drive it — the push says where to.
+            Event::BrowserControl { lane, by, why, check, .. } => {
+                let key = format!("{}/{lane}", only.unwrap_or_default());
+                if by.is_none() {
+                    self.handed.remove(&key);
+                    return vec![];
+                }
+                if (why.is_none() && check.is_none()) || !self.handed.insert(key) {
+                    return vec![];
+                }
+                let member = lane.split_once('/').map_or(lane.as_str(), |(_, key)| key);
+                let member = member.split_once('@').map_or(member, |(name, _)| name);
+                (
+                    t!("remote.push_browser", member = member),
+                    t!("remote.push_browser_body", squad = squad),
+                    "browser",
+                    format!("browser-{lane}"),
+                    event.clone(),
+                )
             }
             _ => return vec![],
         };
@@ -737,6 +827,58 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_snapshot_too_large_for_the_relay_goes_with_less_of_the_past_and_a_huge_event_not_at_all() {
+        use equipe_core::protocol::{Access, Engine, Entry, SessionInfo, SessionState};
+        let (mut core, phone, _) = core_with_phone();
+        let c = core.config.clone().unwrap();
+        // Eight conversations of 200 long lines each: megabytes, as a busy squad's.
+        let line = "x".repeat(2_000);
+        let session = |id| SessionInfo {
+            session: id,
+            project: "/p".into(),
+            member: None,
+            engine: Engine::Claude,
+            model: None,
+            access: Access::ReadOnly,
+            workspace: None,
+            state: SessionState::Ready,
+            title: None,
+            tokens: 0,
+            context: None,
+            recent: (0..200).map(|_| Entry::Reply { text: line.clone() }).collect(),
+            queued: vec![],
+            queued_project: None,
+            queued_in: vec![],
+            steering: vec![],
+            steering_in: vec![],
+            lane: None,
+            estimate: None,
+            work: None,
+            mode: None,
+            effort: None,
+        };
+        let snapshot = Snapshot { squad: "acme".into(), sessions: (1..=8).map(session).collect(), ..Snapshot::default() };
+        assert!(serde_json::to_string(&snapshot).unwrap().len() > 2 * RELAY_FRAME_MAX);
+        let answered = core.opened(&phone.id, "acme", &json!(2), Ok(Hello { version: "v".into(), snapshot }));
+        let [Action::Relay(frame)] = &answered[..] else { panic!("{answered:?}") };
+        assert!(frame.to_string().len() <= RELAY_FRAME_MAX, "fits the relay");
+        let got = phone.open(&c, &answered[0]);
+        let sessions = got["rpc"]["result"]["snapshot"]["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), 8, "every conversation still there");
+        let kept = sessions[0]["recent"].as_array().unwrap().len();
+        assert!(kept > 0 && kept < 200, "its latest lines: {kept}");
+        // An event bigger than any frame is dropped, not sent for the relay to refuse.
+        let huge = Event::TextDelta { session: 1, text: "y".repeat(2 * RELAY_FRAME_MAX) };
+        assert!(core.on_event(&phone.id, "acme", &huge).is_empty());
+        assert_eq!(core.on_event(&phone.id, "acme", &Event::TextDelta { session: 1, text: "ok".into() }).len(), 1);
+    }
+
+    #[test]
+    fn the_relay_saying_the_same_thing_again_and_again_is_logged_at_each_tenfold() {
+        assert_eq!((1..=1000).filter(|n| tenfold(*n)).collect::<Vec<_>>(), [1, 10, 100, 1000]);
+    }
+
+    #[test]
     fn the_code_shows_once_the_relay_has_the_slot_open() {
         let mut core = Core::new(Some(config()));
         let (url, _) = core.begin_pairing(1000).unwrap();
@@ -784,10 +926,18 @@ pub(crate) mod tests {
         let answer = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "answer_questions", "squad": "acme", "id": 5, "answers": [{ "picked": [1] }, {}] } });
         let out = core.on_relay(&phone.send(&c, Some("acme"), answer, now), now);
         let answers = vec![equipe_core::protocol::decide::Answer { picked: vec![1], other: None }, Default::default()];
-        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::AnswerQuestions { squad: "acme".into(), id: 5, answers } }]);
+        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::AnswerQuestions { squad: "acme".into(), id: 5, answers, about: None } }]);
         let dismiss = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "dismiss_questions", "squad": "acme", "id": 5 } });
         assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), dismiss, now), now)[..], [Action::Command { command: Command::DismissQuestions { .. }, .. }]));
         let elsewhere = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "dismiss_questions", "squad": "zeta", "id": 5 } });
+        assert!(core.on_relay(&phone.send(&c, Some("acme"), elsewhere, now), now).is_empty(), "only the frame's squad");
+        // A change to the team the PM proposed: the person's to approve or decline from a phone too.
+        let approve = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "approve_team_change", "squad": "acme", "id": 6 } });
+        let out = core.on_relay(&phone.send(&c, Some("acme"), approve, now), now);
+        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::ApproveTeamChange { squad: "acme".into(), id: 6 } }]);
+        let decline = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decline_team_change", "squad": "acme", "id": 6 } });
+        assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), decline, now), now)[..], [Action::Command { command: Command::DeclineTeamChange { .. }, .. }]));
+        let elsewhere = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "approve_team_change", "squad": "zeta", "id": 6 } });
         assert!(core.on_relay(&phone.send(&c, Some("acme"), elsewhere, now), now).is_empty(), "only the frame's squad");
         // Merging stays at the console; another squad than the frame's is refused.
         let merge = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "merge", "squad": "acme", "ticket": 1, "push": true } });
@@ -856,6 +1006,23 @@ pub(crate) mod tests {
         let questions = &opened["rpc"]["params"]["questions"]["questions"];
         assert_eq!(questions[0]["question"].as_str().unwrap().chars().count(), 200);
         assert_eq!((questions[0]["options"][0]["label"].as_str(), questions[0]["options"][0].get("description")), (Some("Postgres"), None));
+        // A member hands the person its browser: who, and that it's the Mac's app to do it in — what for travels sealed.
+        let why = "Umbriles Inc. 계정 소유자 Apple ID로 로그인해 주세요";
+        let handed = Event::BrowserControl { squad: Some("acme".into()), lane: "acme/pm".into(), by: Some("person".into()), why: Some(why.into()), check: None };
+        let out = core.on_squad_event("acme", &handed);
+        let Action::Relay(push) = &out[0] else { panic!("{out:?}") };
+        assert_eq!((push["title"].as_str(), push["category"].as_str()), (Some("pm is waiting for you in its browser"), Some("browser")));
+        assert!(push["body"].as_str().unwrap().contains("equipe app on your Mac") && push["body"].as_str().unwrap().contains("acme"), "{push}");
+        assert!(!push.to_string().contains("Umbriles"), "what for travels sealed only");
+        assert_eq!(phone.open(&c, &out[0])["rpc"]["params"]["why"].as_str(), Some(why));
+        assert!(core.on_squad_event("acme", &handed).is_empty(), "told again (a screen attached): pushed once");
+        let taken = Event::BrowserControl { squad: Some("acme".into()), lane: "acme/qa".into(), by: Some("person".into()), why: None, check: None };
+        assert!(core.on_squad_event("acme", &taken).is_empty(), "the person taking it themselves is no news");
+        let back = Event::BrowserControl { squad: Some("acme".into()), lane: "acme/pm".into(), by: None, why: None, check: None };
+        assert!(core.on_squad_event("acme", &back).is_empty());
+        let check = Event::BrowserControl { squad: Some("acme".into()), lane: "acme/pm@site".into(), by: Some("person".into()), why: None, check: Some(equipe_core::protocol::HumanCheck::SignIn) };
+        assert!(matches!(&core.on_squad_event("acme", &check)[..], [Action::Relay(p)] if p["title"] == "pm is waiting for you in its browser"));
+        assert_eq!(core.on_squad_event("acme", &handed).len(), 1, "handed over again after it came back");
     }
 
     #[test]

@@ -14,6 +14,7 @@ mod i18n;
 mod lang;
 mod onboard;
 mod remote;
+mod settings;
 mod telegram;
 mod tui;
 mod ui;
@@ -115,6 +116,23 @@ enum Command {
         #[arg(long)]
         squad: Option<String>,
     },
+    /// Start a squad, or change the folders one works on: `new <name> [folder]`, `add <folder>`, `remove <project>`
+    Squad {
+        words: Vec<String>,
+        /// The squad to change (default: the one this folder belongs to, else your first)
+        #[arg(long)]
+        squad: Option<String>,
+        /// Only check the folder and say what would happen
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Apps where a member's send waits for your yes: `add|remove <app>`, `reset`
+    SendApps {
+        words: Vec<String>,
+        /// The squad (default: the one this folder belongs to, else your first)
+        #[arg(long)]
+        squad: Option<String>,
+    },
     /// Serve a member's board tools over MCP (equipe starts this for its engines)
     #[command(hide = true)]
     Mcp {
@@ -137,6 +155,9 @@ enum Command {
         /// Forget every sign-in: members have no browser until you sign in again
         #[arg(long)]
         forget: bool,
+        /// How many browsers may be open at once (no number: show it)
+        #[arg(long, num_args = 0..=1)]
+        max: Option<Option<String>>,
     },
     /// Members working this Mac's desktop apps (experimental, macOS)
     Desktop {
@@ -462,7 +483,43 @@ async fn main() -> ExitCode {
                 Err(why) => Err(Failure::new(why)),
             }
         }
-        Command::Browser { url, forget } => sign_in(url, forget).await,
+        Command::Browser { max: Some(n), .. } => match settings::browser_max(&equipe_providers::credentials::equipe_home(), n.as_deref()) {
+            Ok(line) => {
+                println!("  {line}");
+                Ok(())
+            }
+            Err(why) => Err(Failure::new(why)),
+        },
+        Command::Browser { url, forget, .. } => sign_in(url, forget).await,
+        Command::Squad { words, squad, dry_run } => {
+            let home = equipe_providers::credentials::equipe_home();
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let current = home::squad_for(&home, &cwd, squad);
+            let words: Vec<&str> = words.iter().map(String::as_str).collect();
+            match settings::squad(&home, &cwd, current, &words, dry_run) {
+                Ok(lines) => {
+                    for line in lines {
+                        println!("  {line}");
+                    }
+                    Ok(())
+                }
+                Err(why) => Err(Failure::new(why)),
+            }
+        }
+        Command::SendApps { words, squad } => {
+            let home = equipe_providers::credentials::equipe_home();
+            let cwd = std::env::current_dir().unwrap_or_default();
+            match home::squad_for(&home, &cwd, squad) {
+                None => Err(Failure::new("No squad yet. Run equipe to start one.")),
+                Some(squad) => match settings::send_apps(&home, &squad, &words.join(" ")) {
+                    Ok(line) => {
+                        println!("  {line}");
+                        Ok(())
+                    }
+                    Err(why) => Err(Failure::new(why)),
+                },
+            }
+        }
         Command::Mcp { server, squad, member, role, home } => serve_mcp(&server, squad, member, role, home).await,
         Command::Desktop { action } => desktop::run(action.map(|a| match a {
             DesktopAction::Setup { sign } => desktop::Action::Setup { sign },
@@ -743,7 +800,11 @@ fn update_by_homebrew(exe: &std::path::Path) -> bool {
 async fn wait_until_idle(p: &ui::Painter) -> CmdResult {
     let mut said = None;
     loop {
-        let busy = equipe_core::gateway::busy(&daemon::socket()).await.map_err(|err| Failure::new(err.to_string()))?;
+        // A daemon that doesn't answer has nothing under way worth waiting for.
+        let Ok(busy) = tokio::time::timeout(daemon::ANSWER_WAIT, equipe_core::gateway::busy(&daemon::socket())).await else {
+            return Ok(());
+        };
+        let busy = busy.map_err(|err| Failure::new(err.to_string()))?;
         let Some(busy) = busy.filter(|b| !b.idle()) else {
             return Ok(());
         };
@@ -782,11 +843,15 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             Err(err) => Err(Failure::new(err.to_string())),
         },
         DaemonAction::Stop => match daemon::stop().await {
-            Ok(true) => {
+            Ok(daemon::Stopped::Asked) => {
                 println!("{}", p.ok_line(t!("main.daemon_stopped")));
                 Ok(())
             }
-            Ok(false) => {
+            Ok(daemon::Stopped::Ended(pid)) => {
+                println!("{}", p.ok_line(&t!("main.daemon_ended", pid = pid)));
+                Ok(())
+            }
+            Ok(daemon::Stopped::None) => {
                 println!("{}", p.note(0, t!("main.daemon_none")));
                 Ok(())
             }
@@ -796,7 +861,9 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             if when_idle {
                 wait_until_idle(&p).await?;
             }
-            let _ = daemon::stop().await;
+            if let Ok(daemon::Stopped::Ended(pid)) = daemon::stop().await {
+                println!("{}", p.note(0, &t!("main.daemon_ended", pid = pid)));
+            }
             daemon::ensure_running().await.map_err(|err| Failure::new(err.to_string()))?;
             println!("{}", p.ok_line(t!("main.daemon_restarted")));
             Ok(())
@@ -826,19 +893,33 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             Ok(())
         }
         DaemonAction::Status => {
-            if equipe_core::gateway::is_running(&daemon::socket()).await {
-                println!("{}", p.ok_line(t!("main.daemon_running")));
-                println!("{}", p.row(t!("main.row_socket"), &daemon::socket().display().to_string()));
-                let how = if daemon::service::installed() { t!("main.runs_as_service") } else { t!("main.runs_on_demand") };
-                println!("{}", p.row(t!("main.row_runs_as"), how));
-                if let Ok(Some(busy)) = equipe_core::gateway::busy(&daemon::socket()).await {
-                    let working = if busy.working.is_empty() { t!("main.nobody_working").to_owned() } else { busy.working.join(", ") };
-                    println!("{}", p.row(t!("main.row_working"), &working));
-                    println!("{}", p.row(t!("main.row_screen"), &equipe_core::i18n::label::desktop(crate::i18n::lang(), &busy.desktop, None).unwrap_or_else(|| t!("main.screen_free").into())));
+            // Never waits for good: a daemon that takes the connection but answers
+            // nothing is said to be so, with the way out.
+            let answer = daemon::ask().await;
+            let busy = match answer {
+                daemon::Answer::NotRunning => {
+                    println!("{}", p.note(0, t!("main.daemon_not_running")));
+                    return Ok(());
                 }
-            } else {
-                println!("{}", p.note(0, t!("main.daemon_not_running")));
+                daemon::Answer::Silent => {
+                    let secs = daemon::ANSWER_WAIT.as_secs();
+                    return Err(Failure::new(t!("main.daemon_silent", secs = secs)).next("equipe daemon restart"));
+                }
+                daemon::Answer::Busy(busy) => busy,
+            };
+            println!("{}", p.ok_line(t!("main.daemon_running")));
+            println!("{}", p.row(t!("main.row_socket"), &daemon::socket().display().to_string()));
+            let how = if daemon::service::installed() { t!("main.runs_as_service") } else { t!("main.runs_on_demand") };
+            println!("{}", p.row(t!("main.row_runs_as"), how));
+            if let Some(stall) = &busy.stalled {
+                let since = equipe_core::watchdog::clock(stall.since);
+                println!("{}", p.row(t!("main.row_stalled"), &t!("main.stalled_since", since = since, doing = stall.doing, secs = stall.secs)));
+                println!("{}", p.note(2, t!("main.stalled_hint")));
+                return Ok(());
             }
+            let working = if busy.working.is_empty() { t!("main.nobody_working").to_owned() } else { busy.working.join(", ") };
+            println!("{}", p.row(t!("main.row_working"), &working));
+            println!("{}", p.row(t!("main.row_screen"), &equipe_core::i18n::label::desktop(crate::i18n::lang(), &busy.desktop, None).unwrap_or_else(|| t!("main.screen_free").into())));
             Ok(())
         }
     }
@@ -1198,7 +1279,7 @@ impl App {
                         }
                         None => eprintln!("{}\n", e.dim(&format!("{}{model}", engine.label()))),
                     }
-                    core.send(Cmd::Submit { session: ID, text: prompt.to_owned() });
+                    core.send(Cmd::Submit { session: ID, text: prompt.to_owned(), about: None });
                 }
                 Event::TextDelta { text, .. } => printer.text(&text),
                 Event::ToolUse { tool, target, .. } => printer.tool(&tool, target),
@@ -1206,9 +1287,10 @@ impl App {
                 // Work handed to a subagent shows as it starts and as it hands back.
                 Event::SubagentStarted { what, .. } => eprintln!("{}", e.dim(&format!("  ↳ {what}"))),
                 Event::SubagentEnded { .. } => eprintln!("{}", e.dim(&format!("  ↳ {}", t!("main.handed_back")))),
-                Event::SubagentStep { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::Estimated { .. } | Event::MemoWithdrawn { .. } => {}
+                Event::SubagentStep { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::Estimated { .. } | Event::MemoWithdrawn { .. } | Event::QueueSent { .. } => {}
                 Event::ToolResult { .. } | Event::Thinking { .. } => {}
                 Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. }
+                | Event::BrowserWants { .. }
                 | Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. } => {}
                 Event::TurnEnded { outcome, usage, .. } => {
                     printer.end(outcome, usage);
@@ -1241,6 +1323,8 @@ impl App {
                 | Event::ApprovalResolved { .. }
                 | Event::QuestionsAsked { .. }
                 | Event::QuestionsClosed { .. }
+                | Event::TeamChangeProposed { .. }
+                | Event::TeamChangeClosed { .. }
                 | Event::Allowed { .. } => {}
                 Event::Error { message, next, .. } => {
                     failure.get_or_insert(Failure { message, next });

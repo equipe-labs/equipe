@@ -164,6 +164,7 @@ mod tests {
             queued_project: None,
             queued_in: Vec::new(),
             steering: Vec::new(),
+            steering_in: vec![],
             estimate: None,
             lane: None,
             work: None,

@@ -2162,7 +2162,7 @@ dependencies = [
 
 [[package]]
 name = "equipe"
-version = "0.49.0"
+version = "0.51.0"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -2195,12 +2195,13 @@ dependencies = [
 
 [[package]]
 name = "equipe-core"
-version = "0.49.0"
+version = "0.51.0"
 dependencies = [
  "base64 0.23.1",
  "equipe-desktop-control",
  "equipe-protocol",
  "equipe-providers",
+ "libc",
  "reqwest",
  "rusqlite",
  "serde",
@@ -2212,7 +2213,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-desktop"
-version = "0.49.0"
+version = "0.51.0"
 dependencies = [
  "base64 0.23.1",
  "block2 0.6.2",
@@ -2223,7 +2224,6 @@ dependencies = [
  "image",
  "latex-rust",
  "libc",
- "mac-notification-sys",
  "markdown",
  "mermaid-rs-renderer",
  "notify",
@@ -2233,6 +2233,7 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-core-media",
  "objc2-foundation 0.3.2",
+ "objc2-user-notifications",
  "qrcode",
  "ropey",
  "serde",
@@ -2242,7 +2243,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-desktop-control"
-version = "0.49.0"
+version = "0.51.0"
 dependencies = [
  "base64 0.23.1",
  "block2 0.6.2",
@@ -2258,7 +2259,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-protocol"
-version = "0.49.0"
+version = "0.51.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2266,7 +2267,7 @@ dependencies = [
 
 [[package]]
 name = "equipe-providers"
-version = "0.49.0"
+version = "0.51.0"
 dependencies = [
  "base64 0.23.1",
  "dirs 7.0.0",

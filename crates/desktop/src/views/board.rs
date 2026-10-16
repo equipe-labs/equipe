@@ -449,7 +449,7 @@ impl Shell {
         self.composer.flash = Some(text.into());
     }
 
-    fn project_of(&self, t: &Ticket) -> String {
+    pub(crate) fn project_of(&self, t: &Ticket) -> String {
         self.model.ticket_project_name(t).unwrap_or_else(|| t!("board.squad_folder").into())
     }
 
@@ -490,6 +490,12 @@ impl Shell {
             }
             // Answered on its card, in the peek.
             Need::Questions(_) => {}
+            // A change to the team: Y approves it, as its card's button does.
+            Need::Team(id) => {
+                let before = board::items(&self.board_rows());
+                self.team_decide(id, true, cx);
+                self.advance_from(&before, need, cx);
+            }
             // A page waiting for the person: the panel, on it, in their hands.
             Need::Browser(page) => self.reveal_browser(page, cx),
         }
@@ -511,7 +517,7 @@ impl Shell {
                     self.board_yes(cx);
                 }
             }
-            Some(Need::Questions(_) | Need::Browser(_)) | None => {}
+            Some(Need::Questions(_) | Need::Team(_) | Need::Browser(_)) | None => {}
         }
     }
 
@@ -563,7 +569,7 @@ impl Shell {
         self.land(&t, Some(way), cx);
     }
 
-    fn land(&mut self, t: &Ticket, way: Option<MergeWay>, cx: &mut Context<Self>) {
+    pub(crate) fn land(&mut self, t: &Ticket, way: Option<MergeWay>, cx: &mut Context<Self>) {
         self.land_with(t, way, "", cx);
     }
 
@@ -597,7 +603,7 @@ impl Shell {
 
     /// Act on a ticket in five seconds, unless taken back (U); out of the
     /// list at once, and on to the next thing.
-    fn hold(&mut self, id: TicketId, text: String, commands: Vec<Command>, cx: &mut Context<Self>) {
+    pub(crate) fn hold(&mut self, id: TicketId, text: String, commands: Vec<Command>, cx: &mut Context<Self>) {
         let before = board::items(&self.board_rows());
         self.model.act_on(id);
         self.board.undo.push(id, text, commands, Instant::now());
@@ -712,6 +718,12 @@ impl Shell {
                     }
                 }
             }
+            // A change to the team: N says no to it.
+            Some(Need::Team(id)) => {
+                let before = board::items(&self.board_rows());
+                self.team_decide(id, false, cx);
+                self.advance_from(&before, Need::Team(id), cx);
+            }
             // Closed on its card (✕), where what it closes is in sight.
             Some(Need::Questions(_) | Need::Browser(_)) | None => {}
         }
@@ -809,7 +821,7 @@ impl Shell {
                 // A proposal's answer goes to the PM; work under way, to its member.
                 let to = if t.status == TicketStatus::Proposed { self.model.pm() } else { self.model.member_on(id).map(|m| m.session).or(self.model.pm()) };
                 if let Some(session) = to {
-                    self.send_command(Command::Submit { session, text: format!("T-{id}: {note}") });
+                    self.send_command(Command::Submit { session, text: format!("T-{id}: {note}"), about: Some(t.project.as_deref().map(equipe_core::board::project_name)) });
                     self.say(t!("board.replied", id = id));
                 }
                 self.board.flow = None;
@@ -823,6 +835,7 @@ impl Shell {
     pub fn board_talk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let session = match self.picked_need() {
             Some(Need::Permission(id)) => self.model.approvals.get(id).map(|a| a.session),
+            Some(Need::Team(id)) => self.model.team.get(id).map(|c| c.session),
             Some(Need::Questions(id)) => {
                 let member = self.model.asked.get(id).map(|s| s.member.clone());
                 self.model.members.iter().find(|m| m.presence != Presence::Closed && Some(&m.name) == member.as_ref()).map(|m| m.session)
@@ -1779,6 +1792,21 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .child(cell(34.))
                 .into_any_element()
         }
+        Need::Team(id) => {
+            let Some((title, name, color)) = super::team::row_text(shell, id) else { return div().into_any_element() };
+            base(SharedString::from(format!("team-{id}")), cx)
+                .pl_2()
+                .child(div().w(px(14.)).flex_none())
+                .child(super::team::mark(p))
+                .child(div().w(px(44.)).flex_none())
+                .when(show_project, |r| r.child(project_col(None)))
+                .child(div().flex_1().min_w(px(120.)).truncate().text_color(p.text).child(title))
+                .child(div().w(px(flags_w)).flex_none())
+                .child(cell(detail_w).text_color(color).child(name))
+                .child(cell(eta_w))
+                .child(cell(34.))
+                .into_any_element()
+        }
         Need::Questions(id) => {
             let Some((title, ticket_id, name, color)) = super::decide::row_text(shell, id) else { return div().into_any_element() };
             let ticket = ticket_id.and_then(|t| model.tickets.iter().find(|x| x.id == t));
@@ -1879,10 +1907,13 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                         .justify_end()
                         .overflow_hidden()
                         .children(m.flags.into_iter().enumerate().map(|(i, (text, color, tip))| {
+                            // What it waits on: that ticket's card, not a tooltip.
+                            let dep = text.strip_prefix("⛔ T-").and_then(|n| n.parse().ok());
                             let chip = div().id(("flag", i)).flex_none().px(px(6.)).h(px(18.)).flex().items_center().rounded(px(4.)).bg(p.wash).text_size(px(11.)).text_color(color).child(text);
-                            match tip {
-                                Some(tip) => chip.tip(p, tip, None).into_any_element(),
-                                None => chip.into_any_element(),
+                            match (dep, tip) {
+                                (Some(dep), _) => super::ticket_card::hover_link(chip, dep, super::ticket_card::Side::Below).into_any_element(),
+                                (None, Some(tip)) => chip.tip(p, tip, None).into_any_element(),
+                                (None, None) => chip.into_any_element(),
                             }
                         })),
                 )

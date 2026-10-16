@@ -88,6 +88,12 @@ pub struct HelloParams {
     /// ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
+    /// The screen shows members' browsers in a panel of its own (the desktop
+    /// app, on this Mac or another): a member handing the person its browser
+    /// opens there, rather than as a window on the daemon's Mac, which nobody
+    /// may be looking at. An older screen, or one without a panel: `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub browser_panel: bool,
 }
 
 /// A member calling one of its board tools.
@@ -240,6 +246,21 @@ pub struct Busy {
     /// Who has the Mac's screen and who waits for it.
     #[serde(default)]
     pub desktop: crate::DesktopState,
+    /// The daemon didn't answer in time: what it has been on, and since
+    /// when. The rest is then unknown, and empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stalled: Option<Stall>,
+}
+
+/// A step of the daemon's core that hasn't ended.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stall {
+    /// What it is: `command merge`, `minute tick: settle merged`.
+    pub doing: String,
+    /// When it began, in unix seconds.
+    pub since: u64,
+    /// How long it has gone on, in seconds.
+    pub secs: u64,
 }
 
 impl Busy {
@@ -310,7 +331,7 @@ mod tests {
 
     #[test]
     fn a_command_travels_as_a_one_line_notification() {
-        let cmd = Command::Submit { session: 3, text: "two\nlines".into() };
+        let cmd = Command::Submit { session: 3, text: "two\nlines".into(), about: None };
         let line = Message::command(&cmd).to_line();
         assert_eq!(line.matches('\n').count(), 1, "exactly the trailing newline: {line:?}");
         let back = Message::from_line(&line).unwrap();
@@ -321,7 +342,7 @@ mod tests {
 
     #[test]
     fn requests_and_responses_pair_by_id() {
-        let req = Message::request(7, HELLO, HelloParams { version: "1".into(), squad: "acme".into(), lang: None });
+        let req = Message::request(7, HELLO, HelloParams { version: "1".into(), squad: "acme".into(), lang: None, browser_panel: false });
         let res = Message::response(7, Hello { version: "1".into(), snapshot: Default::default() });
         assert_eq!(req.id, res.id);
         assert!(res.result_as::<Hello>().is_some());

@@ -121,6 +121,13 @@
   "news.stale.one": "── {count} Ticket hat sich seit einer Woche nicht bewegt: der PM schlägt vor, es aufzuräumen ──",
   "news.stale.other": "── {count} Tickets haben sich seit einer Woche nicht bewegt: der PM schlägt vor, sie aufzuräumen ──",
   "news.taken_on": "Du hast den Vorschlag T-{id} übernommen · {title}.",
+  "news.team_added": "{names} ist dem Team beigetreten",
+  "news.team_declined": "Teamänderung abgelehnt · {what}",
+  "news.team_not_added": "{role} konnte nicht ins Team aufgenommen werden",
+  "news.team_removed": "{name} hat das Team verlassen",
+  "news.team_what_add.one": "{role} hinzufügen",
+  "news.team_what_add.other": "{count} × {role} hinzufügen",
+  "news.team_what_remove": "{name} entlassen",
   "news.waiting": "T-{id} wartet auf dich – {name} braucht etwas, das nur du tun kannst · {title}.",
   "news.you_told": "↪ Du → {name}: {text}",
   "note.ended_early": "Die Engine hat früh aufgehört.",
@@ -135,6 +142,7 @@
   "notice.browser_given_back": "🖐 Du hast den Browser zurückgegeben.",
   "notice.browser_in_panel": "🖥 Der Browser von {name} öffnet sich in deinem Browser-Panel: {why}",
   "notice.browser_on_screen": "🖥 Der Browser von {name} erscheint auf dem Bildschirm dieses Mac: {why}",
+  "notice.browser_tab_closed": "🖐 Browser-Tab geschlossen: {url}",
   "notice.browser_taken": "🖐 Du hast diesen Browser übernommen; seine Browser-Werkzeuge warten auf dich.",
   "notice.declined": "✗ Du hast abgelehnt: {action}",
   "notice.declined_why": "✗ {why} Abgelehnt: {action}",
@@ -163,5 +171,8 @@
   "status.proposed": "vorgeschlagen",
   "status.review": "im Review",
   "status.todo": "offen",
-  "status.waiting": "wartet auf dich"
+  "status.waiting": "wartet auf dich",
+  "error.disk_full": "Die Festplatte ist voll: equipe kann Gespräche und Tickets erst wieder speichern, wenn Platz frei ist. Meist sind es die Build-Ordner der Mitglieder (target/).",
+  "notice.disk_room": "Auf der Festplatte ist wieder Platz: equipe speichert Gespräche und Tickets wie zuvor.",
+  "error.stuck": "Der Daemon antwortet nicht: Er hängt seit {since} an {doing}. Versuche `equipe daemon restart`."
 }
