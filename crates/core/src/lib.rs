@@ -30,6 +30,7 @@ pub mod runtime;
 pub mod squad_home;
 pub mod squad_memory;
 pub mod squads;
+pub mod switching;
 pub mod steers;
 pub mod store;
 pub mod team;

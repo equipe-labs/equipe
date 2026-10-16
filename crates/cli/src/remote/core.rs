@@ -147,7 +147,8 @@ pub fn pairing_url(relay: &str, id: &str, public: &str, secret: &[u8], name: &st
 /// The commands a phone may send, as it may send them: from a phone a request
 /// is allowed once, never always; a member's questions are the person's to
 /// answer or close from anywhere, and so is a change to the team the PM
-/// proposed to approve or decline; starting, closing, merging and changing
+/// proposed to approve or decline, and moves between engines to make, leave
+/// or undo; starting, closing, merging and changing
 /// modes stay at the console — and so does writing, editing and rearranging
 /// tickets (the phone answers what the board asks; it doesn't plan it yet).
 /// A phone may ask where the engines stand, but never sign one in or out: a
@@ -168,6 +169,9 @@ pub fn allowed(command: Command) -> Option<Command> {
         | Command::DismissQuestions { .. }
         | Command::ApproveTeamChange { .. }
         | Command::DeclineTeamChange { .. }
+        | Command::ApplyEngineProposal { .. }
+        | Command::DismissEngineProposal { .. }
+        | Command::UndoEngineProposal { .. }
         | Command::Focus { .. }
         | Command::Refresh { .. }
         | Command::Engines) => Some(c),
@@ -190,6 +194,11 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::DismissQuestions { squad, .. }
         | Command::ApproveTeamChange { squad, .. }
         | Command::DeclineTeamChange { squad, .. }
+        | Command::SetEngineSwitching { squad, .. }
+        | Command::ApplyEngineProposal { squad, .. }
+        | Command::DismissEngineProposal { squad, .. }
+        | Command::UndoEngineProposal { squad, .. }
+        | Command::ShowEngineSetup { squad }
         | Command::Scale { squad, .. }
         | Command::Focus { squad, .. }
         | Command::ShowBrowser { squad, .. } => Some(squad),
@@ -697,6 +706,14 @@ impl Core {
                     }
                 };
                 (title, squad.to_owned(), "team", format!("team-{}", change.id), Event::TeamChangeProposed { squad: squad.to_owned(), change: short })
+            }
+            // An engine out of its plan, hours from its reset: the one move between
+            // engines worth a push — once, not again as each member moves.
+            Event::EngineProposed { proposal, .. } if proposal.why == equipe_core::protocol::engines::Why::Exhausted && proposal.moves.iter().all(|m| !m.done) => {
+                let engine = proposal.engine.map_or("", |e| if e == equipe_core::protocol::Engine::Claude { "Claude" } else { "Codex" });
+                let names = proposal.moves.iter().map(|m| m.member.as_str()).collect::<Vec<_>>().join("·");
+                let title = if proposal.applied { t!("remote.push_engine_hand_over", engine = engine, names = names) } else { t!("remote.push_engine_hand_over_ask", engine = engine, names = names) };
+                (title, squad.to_owned(), "engines", format!("engines-{}", proposal.id), event.clone())
             }
             Event::TicketChanged { ticket, .. } => {
                 // A demo phone's board is its own.

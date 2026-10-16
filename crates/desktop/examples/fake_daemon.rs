@@ -47,6 +47,11 @@
 //! `FAKE_TEAM=1`: the PM proposes one more frontend, for the person to
 //! approve on a card (`fake_daemon/team.rs`; `remove`, `elsewhere`).
 //!
+//! `FAKE_USAGE=healthy|claude86|claude_out|both_low`: both engines' plans,
+//! and the card for moving members between them (`fake_daemon/engines.rs`;
+//! `FAKE_SWITCHING=auto|off`, `FAKE_SETUP=1`); `FAKE_ENGINES_MIXED=1` puts
+//! backend on Codex.
+//!
 //! `FAKE_BROWSER=1`: the shared Chrome's tabs and a picture stream for the
 //! browser panel (`fake_daemon/browser.rs`); `FAKE_BROWSER=empty`, no tabs;
 //! `FAKE_BROWSER=handover`, the PM's browser handed to the person to sign in
@@ -777,6 +782,9 @@ mod engines;
 #[path = "fake_daemon/disk.rs"]
 mod disk;
 
+#[path = "fake_daemon/switching.rs"]
+mod switching;
+
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
 /// What waits for each member at work: its words and project, in order.
@@ -949,7 +957,12 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 sessions.push(member);
                             }
                         }
+                        switching::mix(&mut sessions);
                         let snapshot = Snapshot {
+                            plans: switching::plans(),
+                            plan: switching::claude().or_else(engines::plan),
+                            engine_switching: switching::switching(),
+                            engine_proposals: switching::proposals(),
                             squad: params.squad,
                             projects: vec![repo("web"), repo("app"), repo("api")],
                             sessions,
@@ -960,7 +973,6 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             allowed: allowed().lock().unwrap().clone(),
                             browsers_shown: true,
                             disk: disk::status(),
-                            plan: engines::plan(),
                             ..Default::default()
                         };
                         team::on_hello(&events);
@@ -1156,7 +1168,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     let _ = events.send(Event::Notice { session: 1, text: "🖐 브라우저를 돌려줬습니다.".into() });
                                     turns.lock().await.insert(1, tokio::spawn(turn(1, events.clone(), seconds)));
                                 }
-                                if browser::on_command(&other, &events) || team::on_command(&other, &events) || disk::on_command(&other, &events) || engines::on_command(&other, &events) {
+                                if browser::on_command(&other, &events) || team::on_command(&other, &events) || disk::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) {
                                     continue;
                                 }
                                 if let Some(said) = on_board_command(&other) {

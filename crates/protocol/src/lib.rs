@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 pub mod asks;
 pub mod decide;
 pub mod disk;
+pub mod engines;
 pub mod rpc;
 pub mod stream;
 pub mod tags;
@@ -750,6 +751,20 @@ pub enum Command {
     /// login is the person's own: equipe never touches it. Answered by
     /// [`Event::Engines`].
     SignOut { engine: Engine },
+    /// How the squad moves members between engines as their plans run low
+    /// ([`engines::Switching`]). Answered by [`Event::EngineSwitchingChanged`].
+    SetEngineSwitching { squad: SquadName, mode: engines::Switching },
+    /// The person makes the moves a card proposes ([`Event::EngineProposed`]):
+    /// each at its member's next ticket boundary. Only ever the person's.
+    ApplyEngineProposal { squad: SquadName, id: u64 },
+    /// The person leaves things as they are — or, for moves already made,
+    /// closes the card that told of them.
+    DismissEngineProposal { squad: SquadName, id: u64 },
+    /// The person takes back moves equipe made on its own: each member goes
+    /// back to the engine and model it ran on, at its next ticket boundary.
+    UndoEngineProposal { squad: SquadName, id: u64 },
+    /// Propose the squad's recommended setup for both engines again.
+    ShowEngineSetup { squad: SquadName },
 }
 
 /// Where an engine stands on the daemon's machine ([`Event::Engines`]).
@@ -1339,6 +1354,19 @@ pub enum Event {
     },
     /// A sign-in to `engine` moved on ([`Command::SignIn`]).
     SignIn { engine: Engine, step: SignInStep },
+    /// Moves between engines equipe proposes — or made on its own and tells
+    /// of (`applied`), for the person to keep or undo.
+    EngineProposed { squad: SquadName, proposal: engines::Proposal },
+    /// The card is done with: made (`applied`: the moves happen at each
+    /// member's next ticket boundary), left as it was, undone, or moot.
+    EngineProposalClosed {
+        squad: SquadName,
+        id: u64,
+        #[serde(default)]
+        applied: bool,
+    },
+    /// How the squad moves members between engines changed.
+    EngineSwitchingChanged { squad: SquadName, mode: engines::Switching },
 }
 
 impl Event {
@@ -1354,7 +1382,10 @@ impl Event {
             | Event::QuestionsClosed { squad, .. }
             | Event::TeamChangeProposed { squad, .. }
             | Event::TeamChangeClosed { squad, .. }
-            | Event::Allowed { squad, .. } => Some(squad),
+            | Event::Allowed { squad, .. }
+            | Event::EngineProposed { squad, .. }
+            | Event::EngineProposalClosed { squad, .. }
+            | Event::EngineSwitchingChanged { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             _ => None,
         }
@@ -1402,6 +1433,9 @@ impl Event {
             | Event::TeamChangeProposed { .. }
             | Event::TeamChangeClosed { .. }
             | Event::Allowed { .. }
+            | Event::EngineProposed { .. }
+            | Event::EngineProposalClosed { .. }
+            | Event::EngineSwitchingChanged { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
             // A browser's own: never part of a conversation.
@@ -1652,6 +1686,13 @@ pub struct Snapshot {
     /// Every engine's plan usage, as last read: Claude's (as `plan`) and Codex's.
     #[serde(default)]
     pub plans: Vec<EnginePlan>,
+    /// How the squad moves members between engines.
+    #[serde(default, skip_serializing_if = "engines::Switching::is_default")]
+    pub engine_switching: engines::Switching,
+    /// Moves between engines waiting for the person, or made and not yet
+    /// seen, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub engine_proposals: Vec<engines::Proposal>,
     /// Who has the Mac's screen, across squads.
     #[serde(default)]
     pub desktop: DesktopState,
@@ -1969,6 +2010,8 @@ mod tests {
             suggestions_off: false,
             plan: None,
             plans: vec![EnginePlan { engine: Engine::Codex, usage: PlanUsage::default(), plan_type: None, at: 7 }],
+            engine_switching: engines::Switching::Auto,
+            engine_proposals: Vec::new(),
             desktop: DesktopState::default(),
             sessions: vec![SessionInfo {
                 session: 9,
@@ -2110,6 +2153,56 @@ mod tests {
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(json["subagents"], json!([{ "id": "toolu_1", "what": "Read the logs", "secs": 3 }]));
         assert_eq!(serde_json::from_value::<SessionInfo>(json).unwrap(), info);
+    }
+
+    #[test]
+    fn a_plans_usage_names_its_engine_and_an_older_daemons_is_claudes() {
+        let window = Some(PlanWindow { used_percent: 86, resets_at: 1_760_007_200 });
+        let event = Event::PlanUsage { usage: PlanUsage { five_hour: window, seven_day: None }, engine: Engine::Codex };
+        assert!(event.for_everyone() && event.squad().is_none() && event.session().is_none());
+        let wire = serde_json::to_value(&event).unwrap();
+        assert_eq!(wire["engine"], json!("codex"));
+        assert_eq!(serde_json::from_value::<Event>(wire).unwrap(), event);
+        let old: Event = serde_json::from_value(json!({ "type": "plan_usage", "usage": { "five_hour": null, "seven_day": null } })).unwrap();
+        assert!(matches!(old, Event::PlanUsage { engine: Engine::Claude, .. }));
+        let plan = EnginePlan { engine: Engine::Codex, usage: PlanUsage { five_hour: window, seven_day: None }, plan_type: Some("pro".into()), at: 1_760_000_000 };
+        let snapshot = Snapshot { squad: "acme".into(), plans: vec![plan.clone()], ..Default::default() };
+        let back: Snapshot = serde_json::from_str(&serde_json::to_string(&snapshot).unwrap()).unwrap();
+        assert_eq!(back.plans, vec![plan]);
+        let bare: EnginePlan = serde_json::from_value(json!({ "engine": "claude", "usage": { "five_hour": null, "seven_day": null } })).unwrap();
+        assert_eq!((bare.plan_type, bare.at), (None, 0));
+    }
+
+    #[test]
+    fn moves_between_engines_are_proposed_and_answered_as_json_and_older_snapshots_have_none() {
+        use engines::{Proposal, Switching, Why};
+        let commands = [
+            Command::SetEngineSwitching { squad: "acme".into(), mode: Switching::Auto },
+            Command::ApplyEngineProposal { squad: "acme".into(), id: 3 },
+            Command::DismissEngineProposal { squad: "acme".into(), id: 3 },
+            Command::UndoEngineProposal { squad: "acme".into(), id: 3 },
+            Command::ShowEngineSetup { squad: "acme".into() },
+        ];
+        for command in commands {
+            let text = serde_json::to_string(&command).unwrap();
+            assert_eq!(serde_json::from_str::<Command>(&text).unwrap(), command, "{text}");
+        }
+        assert_eq!(serde_json::to_value(Command::SetEngineSwitching { squad: "a".into(), mode: Switching::Off }).unwrap(), json!({ "type": "set_engine_switching", "squad": "a", "mode": "off" }));
+        let proposal = Proposal { id: 3, why: Why::Setup, engine: None, window: None, used_percent: 0, resets_at: 0, moves: vec![], applied: false, proposed_at: 1 };
+        let events = [
+            Event::EngineProposed { squad: "acme".into(), proposal },
+            Event::EngineProposalClosed { squad: "acme".into(), id: 3, applied: true },
+            Event::EngineSwitchingChanged { squad: "acme".into(), mode: Switching::Suggest },
+        ];
+        for event in events {
+            assert_eq!((event.squad(), event.session(), event.for_everyone()), (Some("acme"), None, false));
+            let json = serde_json::to_string(&event).unwrap();
+            assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event, "{json}");
+        }
+        let old: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[]}"#).unwrap();
+        assert_eq!((old.engine_switching, old.engine_proposals.len(), old.plans.len()), (Switching::Suggest, 0, 0));
+        let wire = serde_json::to_value(&old).unwrap();
+        assert!(wire.get("engine_switching").is_none() && wire.get("engine_proposals").is_none(), "{wire}");
     }
 
     #[test]

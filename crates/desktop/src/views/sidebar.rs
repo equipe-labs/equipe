@@ -248,6 +248,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .text_color(p.text)
         .child(strip)
         .child(body)
+        .children(super::switching::meters(shell, cx))
         .children(team_block(shell, cx))
         .children(relaunch(p, shell, cx))
         .child(footer(p, shell, cx))
@@ -774,6 +775,7 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, cx: &mut Co
         .on_click(cx.listener(move |this, _, window, cx| this.select_member(session, window, cx)))
         .child(mark_element(p, mark, if mark == Mark::Spinner { shell.spin(cx) } else { 0. }))
         .child(div().flex_none().max_w(px(120.)).truncate().text_size(px(TEXT)).text_color(if on { p.text } else { p.text2 }).child(member.name.clone()))
+        .children(member.engine.map(|e| super::switching::badge(p, e)))
         .child(fading_title(p, state.words(), on, true).text_size(px(12.)).when(state.waits(), |d| d.text_color(p.orange)).group_hover(group.clone(), |s| s.invisible()))
         // No room for its subagents' rows: how many, which opens them all.
         .children(folded.map(|n| {

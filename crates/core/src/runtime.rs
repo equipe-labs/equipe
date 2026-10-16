@@ -61,6 +61,7 @@ macro_rules! say {
 
 mod decide;
 mod room;
+mod engines;
 mod team;
 mod tickets;
 
@@ -193,6 +194,8 @@ enum Request {
     PersonWindow(String, oneshot::Sender<bool>),
     BrowserHub(oneshot::Sender<std::sync::Arc<browser::Hub>>),
     Desktop(DesktopRequest),
+    /// An engine's plan, read outside a turn.
+    Usage(Engine, equipe_protocol::PlanUsage),
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -326,6 +329,13 @@ impl Handle {
         self.pulse.stall(Duration::ZERO)
     }
 
+    /// An engine's plan usage read outside a turn (a poll of Codex's limits,
+    /// say): told every screen as [`Event::PlanUsage`], and weighed for
+    /// moving members between engines at once.
+    pub fn usage_read(&self, engine: Engine, usage: equipe_protocol::PlanUsage) {
+        let _ = self.requests.send(Request::Usage(engine, usage));
+    }
+
     /// Stop running turns and the runtime. Open sessions stay journaled.
     pub async fn shutdown(&self) {
         let (tx, rx) = oneshot::channel();
@@ -389,6 +399,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         sign_ins: HashMap::new(),
         next_sign_in: 1,
         codex_binary: crate::engines::codex_binary(),
+        engines: Default::default(),
     };
     let mut memos = Vec::new();
     if runtime.config.persist {
@@ -753,6 +764,8 @@ struct Runtime {
     next_sign_in: u64,
     /// The `codex` the person's Codex sign-in runs.
     codex_binary: String,
+    /// Both engines' plans, and members moving between them (`engines`).
+    engines: engines::Engines,
 }
 
 /// What woke the loop.
@@ -784,6 +797,7 @@ impl Wake {
             Wake::Request(Some(Request::PersonWindow(..))) => Borrowed("person's browser window"),
             Wake::Request(Some(Request::BrowserHub(_))) => Borrowed("browser panel"),
             Wake::Request(Some(Request::Desktop(_))) => Borrowed("desktop lease"),
+            Wake::Request(Some(Request::Usage(..))) => Borrowed("an engine's plan usage"),
             Wake::Request(Some(Request::Shutdown(_))) | Wake::Request(None) => Borrowed("shutdown"),
             Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
             Wake::Internal(Internal::Done(_)) => Borrowed("a turn's end"),
@@ -906,6 +920,12 @@ impl Runtime {
                 Some(Request::Desktop(request)) => self.on_desktop(request),
                 Some(Request::Disk(reply)) => self.disk_report(Some(reply), false),
                 Some(Request::DiskClean(ids, reply)) => self.disk_clean(ids, Some(reply)),
+                Some(Request::Usage(engine, usage)) => {
+                    self.publish(Event::PlanUsage { usage, engine });
+                    for squad in self.squads_with_members() {
+                        self.apply_engine_moves(&squad).await;
+                    }
+                }
                 Some(Request::Shutdown(reply)) => {
                     self.stop_all_turns();
                     let _ = reply.send(());
@@ -978,6 +998,8 @@ impl Runtime {
                 self.let_helpers_go().await;
                 pulse.step("minute tick: stale tickets");
                 self.tidy_check();
+                pulse.step("minute tick: engines");
+                self.engines_tick().await;
                 // Work that reached main outside equipe: every ten minutes is soon
                 // enough (a merge or an accept looks at once), and off the loop.
                 if self.settled_at.is_none_or(|at| at.elapsed() >= SETTLE_EVERY) {
@@ -1081,6 +1103,7 @@ impl Runtime {
                 Some(kept) => *kept = plan,
                 None => self.plans.push(plan),
             }
+            self.on_plan(*engine, *usage);
         }
         let everyone = event.for_everyone();
         self.subscribers.retain(|(follows, screen)| match follows {
@@ -1364,6 +1387,11 @@ impl Runtime {
                 }
             }
             Command::SignOut { engine } => self.sign_out(engine),
+            Command::SetEngineSwitching { squad, mode } => self.set_engine_switching(&squad, mode).await,
+            Command::ApplyEngineProposal { squad, id } => self.apply_engine_proposal(&squad, id).await,
+            Command::DismissEngineProposal { squad, id } => self.dismiss_engine_proposal(&squad, id),
+            Command::UndoEngineProposal { squad, id } => self.undo_engine_proposal(&squad, id).await,
+            Command::ShowEngineSetup { squad } => self.show_engine_setup(&squad),
         }
     }
 
@@ -1706,7 +1734,9 @@ impl Runtime {
         let member = match (&squad, spec.role.as_deref()) {
             (Some(squad), Some(role)) => {
                 let role = if role == "po" { roles::PM } else { role };
-                Some(Member { role: role.to_owned(), name: self.free_name(squad, role) })
+                // A member moving engines keeps its name.
+                let name = self.engines.name_for(id).filter(|n| self.member_id(squad, n).is_none()).unwrap_or_else(|| self.free_name(squad, role));
+                Some(Member { role: role.to_owned(), name })
             }
             _ => None,
         };
@@ -2361,6 +2391,11 @@ for one project goes to it as tickets for its owners, with that project — and 
         // A desk conversation grown too large, or gone cold, starts afresh.
         let prompt = match self.refresh_desk(id) {
             Some(handoff) => format!("{handoff}\n\n{prompt}"),
+            None => prompt,
+        };
+        // A member that just moved engines: equipe's brief of where it was.
+        let prompt = match self.engines.brief_for(id) {
+            Some(brief) => format!("{brief}\n\n{prompt}"),
             None => prompt,
         };
         // The squad's memory as its files say now — the person's edits in Finder
@@ -3119,6 +3154,8 @@ for one project goes to it as tickets for its owners, with that project — and 
 
     /// Hand every ready ticket to a free member who owns it.
     async fn dispatch(&mut self, squad: &str) {
+        // A member moving engines moves before it picks up its next ticket.
+        self.apply_engine_moves(squad).await;
         let tickets = self.tickets(squad);
         let single_project = self.projects(squad).len() == 1;
         // Members equipe once brought in for a rush finish what they hold and take nothing new.
@@ -3127,7 +3164,8 @@ for one project goes to it as tickets for its owners, with that project — and 
             .sessions
             .iter()
             .filter(|(id, s)| s.squad.as_deref() == Some(squad) && s.lane.is_none() && !helpers.contains(id))
-            .filter_map(|(_, s)| s.member.as_ref().map(|m| (m.name.clone(), m.role.clone(), s.is_free())))
+            // An engine out of its plan, or waited for, takes no new ticket.
+            .filter_map(|(_, s)| s.member.as_ref().map(|m| (m.name.clone(), m.role.clone(), s.is_free() && !self.engines.held(squad, s.engine))))
             .collect();
         let candidates: Vec<Candidate> =
             members.iter().map(|(name, role, free)| Candidate { name, role, free: *free }).collect();
@@ -4974,6 +5012,8 @@ it back there once they have done it.{again} End your turn now with a short line
             suggestions_off,
             plan: self.plan,
             plans: self.plans.clone(),
+            engine_switching: self.journals.get(squad).map(Journal::engine_switching).unwrap_or_default(),
+            engine_proposals: self.engines.proposals(squad),
             desktop: self.desktop.state(),
             allowed,
             browsers_shown,

@@ -529,6 +529,24 @@ impl Journal {
         self.set_meta("suggestions", if on { "on" } else { "off" })
     }
 
+    /// How the squad moves members between engines as their plans run low.
+    pub fn engine_switching(&self) -> equipe_protocol::engines::Switching {
+        self.meta("engine_switching").and_then(|v| equipe_protocol::engines::Switching::parse(&v)).unwrap_or_default()
+    }
+
+    pub fn set_engine_switching(&self, mode: equipe_protocol::engines::Switching) -> Result<()> {
+        self.set_meta("engine_switching", mode.code())
+    }
+
+    /// What engine switching keeps for the squad (`runtime/engines.rs`), as JSON.
+    pub fn engines_record(&self) -> Option<String> {
+        self.meta("engines")
+    }
+
+    pub fn set_engines_record(&self, json: &str) -> Result<()> {
+        self.set_meta("engines", json)
+    }
+
     /// The members equipe brought in to help, which it lets go when idle.
     pub fn helpers(&self) -> Vec<SessionId> {
         self.meta("helpers").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()

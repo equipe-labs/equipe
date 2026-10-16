@@ -14,6 +14,7 @@ pub mod decide;
 pub mod diffview;
 pub mod disk;
 pub mod engines;
+pub mod switching;
 pub mod header;
 pub mod icons;
 pub mod pair;

@@ -267,6 +267,11 @@ pub fn turn_params(request: &TurnRequest<'_>, cwd: &Path, thread: &str) -> Value
         "approvalPolicy": approval_policy(request.access),
         "sandboxPolicy": sandbox_policy(request.access, request.writable),
         "summary": "auto",
+        // Standard speed for a member, whatever the person's own Codex is set
+        // to (Fast, `service_tier = "priority"`, spends the plan 2–2.5× as
+        // fast for ~1.5× the speed: worth it to someone waiting, not to a
+        // member working in the background). Their own config is left alone.
+        "serviceTierForTurn": "default",
     });
     if let Some(model) = request.model {
         params["model"] = json!(model);
@@ -1338,6 +1343,8 @@ mod tests {
         assert_eq!(turn["input"][0]["text"], "hi");
         assert_eq!(turn["effort"], "high");
         assert_eq!(turn["sandboxPolicy"]["type"], "workspaceWrite");
+        // A member works at standard speed, whatever Fast the person's own Codex is set to.
+        assert_eq!(turn["serviceTierForTurn"], "default");
         let plain = start_params(&TurnRequest { prompt: "hi", ..Default::default() }, Path::new("/r"), None);
         assert!(plain["config"].get("mcp_servers").is_none(), "without servers of equipe's, the person's own");
         assert!(plain.get("model").is_none() && plain.get("developerInstructions").is_none());

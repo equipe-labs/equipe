@@ -620,6 +620,18 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 None => Plan::say(t!("compose.model_no_member", name = words[0])),
             }
         }
+        "engines" => match rest {
+            "" => Plan::say(t!("engines.now", mode = crate::switching::mode_word(model.engines.mode), about = crate::switching::mode_about(model.engines.mode))),
+            "setup" => Plan::send(Command::ShowEngineSetup { squad }),
+            word => match equipe_core::protocol::engines::Switching::parse(word) {
+                Some(mode) => Plan {
+                    commands: vec![Command::SetEngineSwitching { squad, mode }],
+                    flash: Some(t!("engines.set", mode = crate::switching::mode_word(mode), about = crate::switching::mode_about(mode))),
+                    ..Plan::default()
+                },
+                None => Plan::say(t!("engines.cmd_usage")),
+            },
+        },
         "desktop" => match rest {
             "stop" => Plan { commands: vec![Command::Desktop { open: false }], flash: Some(t!("compose.desktop_stopped").into()), ..Plan::default() },
             "resume" => Plan { commands: vec![Command::Desktop { open: true }], flash: Some(t!("compose.desktop_resumed").into()), ..Plan::default() },
@@ -1285,6 +1297,19 @@ mod tests {
         assert!(plan(&model, "/add wizard").flash.unwrap().contains("wizard"));
         let nowhere = Model::new("empty");
         assert!(plan(&nowhere, "/add qa").flash.unwrap().contains("프로젝트가 없습니다"));
+    }
+
+    #[test]
+    fn engines_sets_how_members_move_between_engines_and_shows_the_setup_again() {
+        use equipe_core::protocol::engines::Switching;
+        let model = team();
+        let auto = plan(&model, "/engines auto");
+        assert_eq!(auto.commands, vec![Command::SetEngineSwitching { squad: "acme".into(), mode: Switching::Auto }]);
+        assert!(auto.flash.unwrap().contains("자동"));
+        assert_eq!(plan(&model, "/engines off").commands, vec![Command::SetEngineSwitching { squad: "acme".into(), mode: Switching::Off }]);
+        assert_eq!(plan(&model, "/engines setup").commands, vec![Command::ShowEngineSetup { squad: "acme".into() }]);
+        assert!(plan(&model, "/engines").flash.unwrap().contains("제안"), "suggest unless the person chose");
+        assert!(plan(&model, "/engines sometimes").commands.is_empty());
     }
 
     #[test]

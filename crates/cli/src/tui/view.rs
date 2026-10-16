@@ -19,7 +19,7 @@ use ratatui::widgets::Paragraph;
 
 use equipe_core::board::project_name;
 use equipe_core::i18n::label;
-use equipe_core::protocol::{Entry, Estimate, Priority, SessionId, TicketId, TicketStatus};
+use equipe_core::protocol::{Engine, Entry, Estimate, Priority, SessionId, TicketId, TicketStatus};
 
 use super::app::{Agent, AgentState, App, BoardMenu, BoardRule, Divider, Hit, Live, Pane, Section, Side, Spot, TextView, elapsed, needs_way, relative, section_of, status_word, tool_verb};
 use super::markdown;
@@ -27,6 +27,7 @@ use crate::ui;
 use equipe_core::t;
 
 mod decide;
+mod engines;
 mod team;
 mod turn;
 
@@ -380,6 +381,9 @@ fn rows(app: &App, theme: Theme, screen: Rect) -> Rows {
     }
     if asking.is_empty() {
         asking = team::lines(app, theme, area.width.saturating_sub(2) as usize);
+    }
+    if asking.is_empty() {
+        asking = engines::lines(app, theme, area.width.saturating_sub(2) as usize);
     }
     let asking_height = if asking.is_empty() { 0 } else { asking.len() as u16 + 1 };
     let (composer_rows, _) = app.composer.layout(area.width.saturating_sub(2) as usize);
@@ -923,17 +927,24 @@ fn render_usage(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let width = (area.width as usize).saturating_sub(1);
     let heading = |h: &str| Line::from(Span::styled(h.to_owned(), theme.accent().add_modifier(Modifier::BOLD)));
     let row = |k: &str, what: String| wrapped(vec![Span::styled(format!("  {}", pad(&ui::fit(k, 13), 14)), theme.bold())], &what, theme.dim(), 16, width);
-    let mut lines = vec![heading(t!("view.usage_plan"))];
-    match app.plan {
-        Some(plan) => {
-            for (label, window) in [(t!("view.window_five_hour"), plan.five_hour), (t!("view.window_week"), plan.seven_day)] {
-                if let Some(w) = window {
-                    lines.extend(row(label, t!("view.window_used", percent = w.used_percent, when = local_time(w.resets_at))));
+    let mut lines = Vec::new();
+    for engine in [Engine::Claude, Engine::Codex] {
+        lines.push(heading(&t!("engines.plan_heading", engine = super::app::engines::engine_name(engine).to_uppercase())));
+        match app.engines.plan(engine) {
+            Some(plan) => {
+                for (label, window) in [(t!("view.window_five_hour"), plan.usage.five_hour), (t!("view.window_week"), plan.usage.seven_day)] {
+                    if let Some(w) = window {
+                        lines.extend(row(label, t!("view.window_used", percent = w.used_percent, when = local_time(w.resets_at))));
+                    }
                 }
             }
+            None if engine == Engine::Claude => lines.extend(row("—", t!("view.plan_not_reported").into())),
+            None => lines.extend(row("—", t!("engines.codex_not_read").into())),
         }
-        None => lines.extend(row("—", t!("view.plan_not_reported").into())),
+        lines.push(Line::raw(""));
     }
+    let mode = app.engines.mode;
+    lines.extend(row(t!("engines.switching"), format!("{} — {} · /engines", super::app::engines::mode_word(mode), super::app::engines::mode_about(mode))));
     lines.push(Line::raw(""));
     lines.push(heading(t!("view.usage_members")));
     for agent in app.agents.iter().filter(|a| a.is_open()) {
@@ -2867,16 +2878,9 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     if draft_lines > 1 {
         facts.push((t!("view.draft_lines", n = draft_lines), theme.dim()));
     }
-    // What counts on a subscription: how much of the plan's windows is used.
-    // Tokens and context are on /usage.
-    if let Some(plan) = app.plan {
-        for (label, window) in [(t!("view.window_5h"), plan.five_hour), (t!("view.window_week"), plan.seven_day)] {
-            if let Some(w) = window {
-                let style = if w.used_percent >= 80 { theme.accent().add_modifier(Modifier::BOLD) } else { theme.dim() };
-                facts.push((format!("{label} {}%", w.used_percent), style));
-            }
-        }
-    }
+    // What counts on a subscription: how much of each engine's plan is used —
+    // named by engine once both are read. Tokens and context are on /usage.
+    facts.extend(engines::footer(app, theme));
     let left_width: usize = left.iter().map(|s| s.width()).sum();
     // Facts first; the key hints — key in bold, what it does dim — go when space runs short.
     let mut right: Vec<Vec<Span<'static>>> = facts.into_iter().map(|(text, style)| vec![Span::styled(text, style)]).collect();
