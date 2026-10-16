@@ -11,12 +11,14 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     Chosen,
     [
-        ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, FileText, Folder, Globe, Hand, Inbox, Info, Keyboard, Laptop, Lightbulb, Locate, Lock, Maximize2, MessageSquare, Mic, Minimize2, Paperclip, Pencil, Plus, RotateCcw, RotateCw, Search, Server, Settings, ShieldCheck, Smartphone, SquareSlash, SquareTerminal, Ticket, TriangleAlert, Users, X
+        ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, FileText, Folder, Globe, Hand, Inbox, Info, Keyboard, Laptop, Lightbulb, Locate, Lock, Maximize2, MessageSquare, Mic, Minimize2, Paperclip, Pencil, Plus, RotateCcw, RotateCw, Search, Server, Settings, ShieldCheck, Smartphone, SquareSlash, SquareTerminal, Ticket, TriangleAlert, Users, X
     ]
 );
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
+    /// To the latest.
+    ArrowDown,
     ArrowLeft,
     ArrowRight,
     /// Send.
@@ -90,7 +92,8 @@ pub enum Icon {
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 49] = [
+    pub const ALL: [Icon; 50] = [
+        Icon::ArrowDown,
         Icon::ArrowLeft,
         Icon::ArrowRight,
         Icon::ArrowUp,
@@ -144,6 +147,7 @@ impl Icon {
 
     pub fn path(self) -> &'static str {
         match self {
+            Icon::ArrowDown => "icons/arrow-down.svg",
             Icon::ArrowLeft => "icons/arrow-left.svg",
             Icon::ArrowRight => "icons/arrow-right.svg",
             Icon::ArrowUp => "icons/arrow-up.svg",

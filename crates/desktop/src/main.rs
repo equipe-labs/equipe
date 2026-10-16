@@ -1170,12 +1170,39 @@ fn main() {
     // Images a reply points at on the web come through this client.
     let http = std::sync::Arc::new(reqwest_client::ReqwestClient::user_agent("equipe-desktop").unwrap_or_else(|_| reqwest_client::ReqwestClient::new()));
     // The app's icons, then GPUI Kit's own (the sidebar's, the components').
-    gpui_kit::application().with_http_client(http).with_assets(icons::AppAssets).run(|cx| {
+    let app = gpui_kit::application().with_http_client(http).with_assets(icons::AppAssets);
+    // The window closed (⌘W, the red button) leaves the app in the Dock, as a
+    // Mac app does: a click on its icon then opens the window again. Without
+    // this the click did nothing and the app looked dead.
+    app.on_reopen(|cx| {
+        match cx.windows().first() {
+            Some(window) => {
+                let _ = window.update(cx, |_, window, _| window.activate_window());
+            }
+            None => {
+                open_main_window(cx);
+            }
+        }
+        cx.activate(true);
+    });
+    app.run(|cx| {
         gpui_kit::init(cx);
         tips::init(cx);
         cx.bind_keys(window_bindings());
         app_menu(cx);
         views::composer::bind_keys(cx);
+        #[allow(unused_variables)]
+        let (handle, shell) = open_main_window(cx);
+        cx.activate(true);
+        #[cfg(feature = "snapshot")]
+        snapshot::run(handle, shell, cx);
+    });
+}
+
+/// The app's one window, with the conversation in it: at launch, and again
+/// from the Dock after it was closed.
+fn open_main_window(cx: &mut App) -> (AnyWindowHandle, Entity<Shell>) {
+    {
         let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -1189,12 +1216,8 @@ fn main() {
         };
         let (handle, shell) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Shell::new(window, cx))).expect("failed to open window");
         answer_zoom(handle, shell.clone(), cx);
-        cx.activate(true);
-        #[cfg(feature = "snapshot")]
-        snapshot::run(handle, shell, cx);
-        #[cfg(not(feature = "snapshot"))]
-        let _ = (handle, shell);
-    });
+        (handle, shell)
+    }
 }
 
 #[cfg(test)]
