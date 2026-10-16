@@ -222,6 +222,8 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
     let handle = cx.entity().downgrade();
     let mut out: Vec<AnyElement> = Vec::new();
     let md = |key: &'static str, text: &str| super::chat::markdown(p, (key, t.id as u64), text, crate::theme::UI, crate::theme::UI_PROSE_LINE, p.text2, &handle).into_any_element();
+    // What the person left open when they last answered it: a quiet line.
+    out.extend(super::yourturn::remaining(p, t));
     match t.status {
         TicketStatus::Waiting => {
             match super::yourturn::Card::of(shell, t.id, cx).filter(|c| !c.asks.is_empty()) {

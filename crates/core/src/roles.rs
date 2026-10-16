@@ -34,6 +34,17 @@ pub struct Role {
 
 pub const PM: &str = "pm";
 
+/// What the person's answers to a `block_on_person` mean, item by item — told
+/// to a member whose ticket comes back with them.
+pub const ANSWERS_GUIDE: &str = "The person's answers come item by item. Words are the answer; \"done ✓\": they \
+did it. \"do it yourself\": they handed that item back to you — do it yourself, don't ask it again as it was: in your \
+browser, signed in as them where they are; where a step needs their sign-in, a code or a CAPTCHA, `show_my_browser` \
+brings your window to them for just that step; only if it truly can't be done without them, call `block_on_person` \
+again saying exactly why. \"later\": go on without it — it stays open on the ticket and is asked again after your own \
+asks the next time you call `block_on_person`, so don't repeat it; \"not yet\" is the same. \"your call\": decide \
+it yourself and say what you chose. \"the person doesn't know\": find it out another way, or ask it differently. A \
+note under an item and their own words at the end (\"From the person:\") come first: follow them.";
+
 pub const ROLES: [Role; 7] = [
     Role {
         id: PM,
@@ -259,7 +270,9 @@ it meets its acceptance criteria. When you can't go on without something only th
 account, a setting, an answer or a decision — `block_on_person` puts the ticket down with what they need to do, and \
 you take other work until they have; don't keep a ticket open just to wait. Give each thing you ask its own item in \
 `needs`, a complete sentence that stands alone (never several joined into one), and name a file or folder by its \
-path in backticks (`outputs/shots/`), so the person can open it from the card they answer on.",
+path in backticks (`outputs/shots/`), so the person can open it from the card they answer on. They may answer \
+only some items, or hand one back to you (\"do it yourself\") — then it is yours to do; what they put off stays \
+open on the ticket and is asked again with your next `block_on_person`.",
         (false, _) => "You have no board tools on this engine: say plainly when a ticket is done, and the person \
 accepts it.",
     };
@@ -535,8 +548,11 @@ mod tests {
     fn a_member_asks_the_person_one_whole_sentence_an_item_and_files_by_path() {
         let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "ios", role: "mobile" }];
         let text = charter(role("mobile").unwrap(), "ios", &ctx(&team, &[], true));
-        for part in ["its own item in", "complete sentence", "never several joined into one", "path in backticks"] {
+        for part in ["its own item in", "complete sentence", "never several joined into one", "path in backticks", "\"do it yourself\") — then it is yours to do", "asked again with your next"] {
             assert!(text.contains(part), "{part}: {text}");
+        }
+        for part in ["\"do it yourself\"", "`show_my_browser`", "saying exactly why", "\"later\": go on without it", "\"your call\"", "doesn't know", "From the person:"] {
+            assert!(ANSWERS_GUIDE.contains(part), "{part}");
         }
         let schema = crate::board::tools(false).into_iter().find(|t| t["name"] == crate::board::BLOCK_ON_PERSON).unwrap();
         let needs = schema["inputSchema"]["properties"]["needs"]["description"].as_str().unwrap();

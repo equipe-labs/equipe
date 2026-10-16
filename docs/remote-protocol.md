@@ -276,3 +276,13 @@ The daemon follows a device like one more screen, with less reach than the termi
 - `decide` with `always` counts as `allow`: from a phone a request is allowed once.
 
 The app asks for Face ID / fingerprint before it sends a `decide`.
+
+### Answering a waiting ticket
+
+A `waiting` ticket carries what it asks as `asks` (one string an item). `resume`'s `note` is
+the person's words — or, to answer item by item as the desktop card and the terminal do, the
+message `equipe_protocol::asks::answer_message` writes (every ask numbered, each with words,
+`done ✓`, `do it yourself …`, `later …`, `your call …`, `the person doesn't know …` or
+`— (not yet …)`, a `Note:` under it, `From the person:` last). The daemon reads that message
+back: what it leaves open (not yet, or later) stays on the ticket as `remaining` — additive,
+left out when empty — and is asked again the next time the member waits on the person.

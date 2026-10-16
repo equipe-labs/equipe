@@ -2588,6 +2588,8 @@ for one project goes to it as tickets for its owners, with that project — and 
             WorkEnd::Waiting => {
                 ticket.status = TicketStatus::Waiting;
                 ticket.note = summary.clone();
+                // Asked again in the note, with the rest.
+                ticket.remaining.clear();
                 (name.as_str(), "waiting", format!("T-{} waits for you — {name} needs something only you can do", ticket.id), "news.waiting")
             }
             WorkEnd::Accepted if matches!(landed, Some(Err(_))) => {
@@ -2988,6 +2990,8 @@ for one project goes to it as tickets for its owners, with that project — and 
     /// `ticket`, waiting, back to `todo` for the member that put it down,
     /// saved and announced. What was done (`note`) is what the member goes on from.
     fn resumed(&mut self, squad: &str, mut ticket: Ticket, by: &str, note: &str) -> Ticket {
+        // What the answers leave open — not yet, or later — stays on the ticket.
+        ticket.remaining = crate::protocol::asks::still_open(&ticket.asks(), note);
         let note = match note.trim() {
             "" => "Resumed: the person did what you were waiting for.".to_owned(),
             note => format!("Resumed: {note}"),
@@ -3778,6 +3782,7 @@ there, end your turn, and carry on when they say they're done."
                     created_by: member.clone(),
                     note: None,
                     asks: vec![],
+                    remaining: Vec::new(),
                     updated_at: None,
                     priority: Default::default(), rank: 0,
                 };
@@ -3885,10 +3890,15 @@ End your turn now with a short summary.",
                 ))
             }
             board::BLOCK_ON_PERSON => {
-                let needs = board::arg_strs(&args, "needs");
-                if needs.is_empty() {
+                let asked = board::arg_strs(&args, "needs");
+                if asked.is_empty() {
                     return Err("List what the person has to do, one thing per item.".into());
                 }
+                // What the person left open last time (not yet, later) is asked again with these.
+                let on = self.sessions.get(&id).and_then(|s| s.work.as_ref()).map(|w| w.ticket);
+                let open = on.and_then(|t| self.journal(&squad).and_then(|j| j.ticket(t).ok().flatten())).map(|t| t.remaining).unwrap_or_default();
+                let needs = crate::protocol::asks::with_open(&asked, &open);
+                let again = needs.len() - asked.len();
                 let note = board::waiting_note(&needs, board::arg_str(&args, "why"));
                 let session = self.sessions.get_mut(&id).ok_or("You're not on the squad.")?;
                 let work = session.work.as_mut().ok_or("You're not on a ticket — there is nothing to put down.")?;
@@ -3896,9 +3906,14 @@ End your turn now with a short summary.",
                     return Err(format!("T-{} is already handed in.", work.ticket));
                 }
                 work.waiting = Some(note);
+                let again = if again > 0 {
+                    format!(" The person left {again} thing(s) open last time; they are asked again after yours.")
+                } else {
+                    String::new()
+                };
                 Ok(format!(
                     "T-{} waits for the person when this turn ends; your changes are kept in your worktree and you get \
-it back there once they have done it. End your turn now with a short line on what you need.",
+it back there once they have done it.{again} End your turn now with a short line on what you need.",
                     work.ticket
                 ))
             }
@@ -4517,6 +4532,10 @@ Keep a short log of what you did, step by step, and hand it in as your summary."
             "You put this ticket down to wait for the person; it is back. {note}\nCarry on from where you left off — \
 check what is already done in your worktree first.\n"
         ));
+        if crate::protocol::asks::read(note).is_some_and(|r| r.whole) {
+            out.push_str(crate::roles::ANSWERS_GUIDE);
+            out.push('\n');
+        }
     } else if let Some(note) = reopened {
         out.push_str(&format!(
             "The person sent it back. {note}\nWhat they asked for says something about how they want work done: save that \

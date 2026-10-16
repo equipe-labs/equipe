@@ -13,7 +13,7 @@ pub struct Spec {
 
 /// Every command, its `about` (and the words in its `args`) in the language in use — asked afresh each
 /// time, since the person may switch language while the console runs.
-pub fn commands() -> [Spec; 30] {
+pub fn commands() -> [Spec; 31] {
     [
         Spec { name: "usage", args: "", about: t!("commands.usage") },
         Spec { name: "compact", args: "[member]", about: t!("commands.compact") },
@@ -27,6 +27,7 @@ pub fn commands() -> [Spec; 30] {
         Spec { name: "merge", args: "T-n", about: t!("commands.merge") },
         Spec { name: "reopen", args: t!("commands.reopen_args"), about: t!("commands.reopen") },
         Spec { name: "resume", args: t!("commands.resume_args"), about: t!("commands.resume") },
+        Spec { name: "answer", args: "T-n", about: t!("commands.answer") },
         Spec { name: "cancel", args: "T-n", about: t!("commands.cancel") },
         Spec { name: "board", args: "", about: t!("commands.board") },
         Spec { name: "new", args: t!("commands.new_args"), about: t!("commands.new") },
@@ -150,6 +151,7 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
         // What to change follows the number.
         ("reopen", 1) => tickets(&ctx.reopenable, " "),
         ("resume", 1) => tickets(&ctx.waiting, " "),
+        ("answer", 1) => tickets(&ctx.waiting, ""),
         // Each mode says what it lets members do, and which one is on now.
         ("mode", 1) => {
             let mut choices: Vec<Choice> =
