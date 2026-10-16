@@ -15,7 +15,8 @@ use equipe_core::t;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use equipe_core::protocol::{Ticket, TicketId, TicketStatus};
+use equipe_core::protocol::{SessionId, Ticket, TicketId, TicketStatus};
+use crate::convo::Sub;
 use crate::tips::TipExt as _;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -72,12 +73,20 @@ const MARK_BOX: f32 = 16.;
 pub const TEAM_ROW: f32 = 28.;
 /// The team block shows this many rows; past that it scrolls inside.
 pub const TEAM_SHOWN: usize = 6;
+/// A subagent's row under its member, shorter.
+pub const SUB_ROW: f32 = 22.;
+/// A member shows this many of its subagents as rows, then "+N개 더".
+pub const SUBS_SHOWN: usize = 3;
+/// The subagents' rows always have room for this many, however many members.
+const SUB_ROOM: usize = 6;
 
 /// A small menu out of the sidebar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Popup {
     /// The squads and machines.
     Account,
+    /// Every subagent of a member at work, as "+N개 더" opens them.
+    Subagents(SessionId),
 }
 
 /// The small mark at a row's left edge: how it stands, and nothing else.
@@ -440,28 +449,22 @@ fn arrive(row: Stateful<Div>, id: ElementId, arrives: bool) -> AnyElement {
 /// A live ticket, as a session: its mark (a spinner, or the orange dot for
 /// the person's turn), its title fading out, how long it has been so — and,
 /// on the pointer, a quick yes for what waits. The number, the whole title,
-/// where it stands and who is on it are in the tooltip.
+/// where it stands and who is on it are on its card (`ticket_card`).
 fn ticket_row(shell: &Shell, t: &Ticket, live: Live, on: bool, arrives: bool, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let model = &shell.model;
     let id = t.id;
     let group = SharedString::from(format!("tk-{id}"));
-    let who = model.member_on(id).map(|m| m.name.clone()).or_else(|| crate::board::who(t).map(str::to_owned));
-    let state = match live {
-        Live::YourTurn if t.status != TicketStatus::Waiting => t!("state.section_permission"),
-        _ => crate::state::state_word(t),
-    };
-    let tip = format!("T-{id} · {}", t.title);
-    let detail = [Some(state.to_owned()), who].into_iter().flatten().collect::<Vec<_>>().join(" · ");
     let time = model.in_state_for(t).map(short_span);
     let yes = t.status == TicketStatus::Waiting && shell.can_act();
     let mark = match live {
         Live::Working => Mark::Spinner,
         Live::YourTurn => Mark::Waits,
     };
-    let row = row_shell(p, ("ticket", id as usize), on)
+    // Its card on the pointer, beside the sidebar: the number, where it
+    // stands, who is on it, what it asks.
+    let row = super::ticket_card::hover_link(row_shell(p, ("ticket", id as usize), on), id, super::ticket_card::Side::Right)
         .group(group.clone())
-        .tip_at(p, tip, Some(&detail), gpui_kit::base::Placement::Right)
         .on_click(cx.listener(move |this, _, window, cx| this.open_ticket_row(id, window, cx)))
         .child(mark_element(p, mark, shell.board.spin))
         .child(fading_title(p, t.title.clone(), on, false))
@@ -543,7 +546,11 @@ fn done_row(shell: &Shell, after_rows: bool, cx: &mut Context<Shell>) -> AnyElem
 
 /// The team, pinned above the foot so it never scrolls away: a compact row
 /// each — its mark, its name, a few words of where it stands — six in sight,
-/// the rest scrolling inside. A click opens its conversation.
+/// the rest scrolling inside. A click opens its conversation. Under a member
+/// at work, the subagents it handed work to, a short row each, easing in as
+/// they start and out as they hand back (`SubMotion`); three at most, then
+/// "+N개 더" — fewer when the block would outgrow its height, the members'
+/// rows staying in sight.
 fn team_block(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
     let model = &shell.model;
@@ -551,7 +558,35 @@ fn team_block(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     if members.is_empty() {
         return None;
     }
-    let rows: Vec<AnyElement> = members.iter().map(|m| member_row(shell, m, cx)).collect();
+    let subs: Vec<Vec<(SessionId, &Sub)>> = members.iter().map(|m| model.subagents_of(m.session)).collect();
+    let cap = subs_cap(members.len(), &subs.iter().map(Vec::len).collect::<Vec<_>>());
+    let now = Instant::now();
+    let shown: Vec<SubShown> = members
+        .iter()
+        .zip(&subs)
+        .flat_map(|(m, subs)| subs.iter().take(cap).map(|(_, s)| SubShown { member: m.session, id: s.id.clone(), what: s.what.clone() }))
+        .collect();
+    let live: Vec<&str> = subs.iter().flatten().map(|(_, s)| s.id.as_str()).collect();
+    let (arriving, leaving) = {
+        let mut motion = shell.board.sub_motion.borrow_mut();
+        motion.note(&shown, &live, now, !cx.reduce_motion());
+        (motion.arriving(now), motion.leaving(now))
+    };
+    let child_rows = subs.iter().map(|s| sub_rows(s.len(), cap)).sum::<usize>() + leaving.len();
+    let mut rows: Vec<AnyElement> = Vec::new();
+    for (m, subs) in members.iter().zip(&subs) {
+        let folded = (cap == 0).then_some(subs.len()).filter(|n| *n > 0);
+        rows.push(member_row(shell, m, folded, cx));
+        for (session, sub) in subs.iter().take(cap) {
+            rows.push(sub_row(shell, m.session, *session, sub, arriving.contains(&sub.id), cx));
+        }
+        for gone in leaving.iter().filter(|g| g.member == m.session) {
+            rows.push(sub_leaving_row(p, gone));
+        }
+        if cap > 0 && subs.len() > cap {
+            rows.push(sub_more_row(p, m.session, subs.len() - cap, cx));
+        }
+    }
     Some(
         v_flex()
             .flex_none()
@@ -573,14 +608,104 @@ fn team_block(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                     .child(t!("sidebar.team"))
                     .child(div().text_color(p.muted).font_weight(FontWeight::NORMAL).child(members.len().to_string())),
             )
-            .child(v_flex().id("team-list").max_h(px(team_height(members.len()))).overflow_y_scroll().children(rows))
+            .child(v_flex().id("team-list").max_h(px(team_height(members.len(), child_rows))).overflow_y_scroll().children(rows))
             .into_any_element(),
     )
 }
 
-/// How tall the team's list is: a row each, six at most in sight.
-pub fn team_height(members: usize) -> f32 {
-    members.min(TEAM_SHOWN) as f32 * TEAM_ROW
+/// How tall the team's list may be: a row each, six members at most in
+/// sight, and its subagents' rows below them, as far as they have room
+/// ([`child_room`]); past that it scrolls inside.
+pub fn team_height(members: usize, child_rows: usize) -> f32 {
+    members.min(TEAM_SHOWN) as f32 * TEAM_ROW + (child_rows as f32 * SUB_ROW).min(child_room(members))
+}
+
+/// The height the subagents' rows may take: what six members' rows leave,
+/// and never less than a few rows'.
+fn child_room(members: usize) -> f32 {
+    (TEAM_SHOWN.saturating_sub(members) as f32 * TEAM_ROW).max(SUB_ROOM as f32 * SUB_ROW)
+}
+
+/// How many rows `n` subagents take with `cap` shown: those, and "+N개 더"
+/// for the rest. At `cap` 0 none: the member's row counts them.
+pub fn sub_rows(n: usize, cap: usize) -> usize {
+    if cap == 0 || n == 0 { 0 } else { n.min(cap) + usize::from(n > cap) }
+}
+
+/// How many of each member's subagents show as rows: three at most, fewer
+/// when their rows would outgrow [`child_room`] — the members' rows stay in
+/// sight, their subagents give way first, down to none (a count on the
+/// member's row).
+pub fn subs_cap(members: usize, counts: &[usize]) -> usize {
+    let room = child_room(members);
+    (0..=SUBS_SHOWN).rev().find(|&cap| counts.iter().map(|&n| sub_rows(n, cap)).sum::<usize>() as f32 * SUB_ROW <= room).unwrap_or(0)
+}
+
+/// A subagent at work, under its member: a small spinner, what it was
+/// handed (fading out), how long it has been at it; its latest step on the
+/// pointer. A click opens the member's conversation at the step that
+/// handed it the work.
+fn sub_row(shell: &Shell, member: SessionId, session: SessionId, sub: &Sub, arrives: bool, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let id = sub.id.clone();
+    let step = sub.step.clone().unwrap_or_else(|| t!("sidebar.subagent_starting").to_owned());
+    let row = sub_shell(p, SharedString::from(format!("sub-{}", sub.id)))
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.side_hover))
+        .tip_at(p, sub.what.clone(), Some(&step), gpui_kit::base::Placement::Right)
+        .on_click(cx.listener(move |this, _, window, cx| this.open_subagent(member, session, &id, window, cx)))
+        .child(sub_mark(p, shell.board.spin))
+        .child(fading_title(p, sub.what.clone(), false, false).text_size(px(12.)))
+        .child(div().flex_none().text_size(px(11.)).text_color(p.muted).child(short_span(sub.since.elapsed().as_secs())));
+    if arrives {
+        let key = ElementId::Name(SharedString::from(format!("sub-in-{}", sub.id)));
+        row.with_animation(key, Animation::new(motion::BASE).with_easing(motion::ease_out), |el, t| el.h(px(SUB_ROW * t)).opacity(t)).into_any_element()
+    } else {
+        row.into_any_element()
+    }
+}
+
+/// A subagent's row frame: shorter than its member's, its mark under the
+/// member's name.
+fn sub_shell(p: Palette, id: SharedString) -> Stateful<Div> {
+    h_flex()
+        .id(id)
+        .h(px(SUB_ROW))
+        .flex_none()
+        .mx_2()
+        .pl(px(8. + MARK_BOX + 8.))
+        .pr_2()
+        .gap(px(6.))
+        .items_center()
+        .rounded(px(6.))
+        .overflow_hidden()
+        .text_color(p.text2)
+}
+
+/// A subagent's mark: a small spinner, quieter than its member's.
+fn sub_mark(p: Palette, turn: f32) -> AnyElement {
+    div().w(px(12.)).h(px(12.)).flex_none().flex().items_center().justify_center().child(icon(IconName::LoaderCircle, 10., p.muted).rotate(radians(turn))).into_any_element()
+}
+
+/// A subagent that just handed back, closing up as it fades.
+fn sub_leaving_row(p: Palette, gone: &SubLeaving) -> AnyElement {
+    sub_shell(p, SharedString::from(format!("sub-gone-{}", gone.id)))
+        .child(div().w(px(12.)).h(px(12.)).flex_none().flex().items_center().justify_center().child(icon(IconName::Check, 10., p.muted)))
+        .child(fading_title(p, gone.what.clone(), false, true).text_size(px(12.)))
+        .with_animation(ElementId::Name(SharedString::from(format!("sub-out-{}", gone.id))), Animation::new(motion::BASE).with_easing(motion::ease_out), |el, t| el.h(px(SUB_ROW * (1. - t))).opacity(1. - t))
+        .into_any_element()
+}
+
+/// "+N개 더": the rest of a member's subagents, all of them in a popover.
+fn sub_more_row(p: Palette, member: SessionId, more: usize, cx: &mut Context<Shell>) -> AnyElement {
+    sub_shell(p, SharedString::from(format!("sub-more-{member}")))
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.side_hover))
+        .on_click(cx.listener(move |this, _, _, cx| this.toggle_subagents(member, cx)))
+        .child(div().w(px(12.)).flex_none())
+        .child(div().text_size(px(11.5)).text_color(p.muted).child(t!("sidebar.more", n = more)))
+        .child(icon(IconName::ChevronRight, 10., p.muted))
+        .into_any_element()
 }
 
 /// Where a member stands, in the team block's few words.
@@ -628,7 +753,7 @@ impl TeamState {
 /// Someone on the team, compact: a spinner at work, the orange dot when it
 /// waits on the person, else its colour; the name; where it stands, muted —
 /// and, on the pointer, "대화하기". A click opens its conversation.
-fn member_row(shell: &Shell, member: &Member, cx: &mut Context<Shell>) -> AnyElement {
+fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let (_, hue) = crate::theme::look(&member.role, &member.name);
     let side = if Model::is_pm(member) { Side::Pm } else { Side::Member(member.session) };
@@ -650,6 +775,24 @@ fn member_row(shell: &Shell, member: &Member, cx: &mut Context<Shell>) -> AnyEle
         .child(mark_element(p, mark, shell.board.spin))
         .child(div().flex_none().max_w(px(120.)).truncate().text_size(px(TEXT)).text_color(if on { p.text } else { p.text2 }).child(member.name.clone()))
         .child(fading_title(p, state.words(), on, true).text_size(px(12.)).when(state.waits(), |d| d.text_color(p.orange)).group_hover(group.clone(), |s| s.invisible()))
+        // No room for its subagents' rows: how many, which opens them all.
+        .children(folded.map(|n| {
+            h_flex()
+                .id(("sub-count", session))
+                .flex_none()
+                .gap(px(3.))
+                .items_center()
+                .text_size(px(11.))
+                .text_color(p.muted)
+                .group_hover(group.clone(), |s| s.invisible())
+                .tip_at(p, t!("sidebar.subagents", n = n), None, gpui_kit::base::Placement::Right)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.toggle_subagents(session, cx);
+                }))
+                .child(sub_mark(p, shell.board.spin))
+                .child(n.to_string())
+        }))
         .child(
             div()
                 .absolute()
@@ -738,31 +881,111 @@ impl SideMotion {
     }
 }
 
-/// An update downloaded in the background, ready: one full-width button puts
-/// it in and starts the app again (as Claude's "Relaunch to update").
+/// A subagent's row as drawn: whose, which, what it was handed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubShown {
+    pub member: SessionId,
+    pub id: String,
+    pub what: String,
+}
+
+/// A subagent that handed back, its row still closing up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubLeaving {
+    pub member: SessionId,
+    pub id: String,
+    pub what: String,
+    pub since: Instant,
+}
+
+/// The team block's subagent rows at the last draw: one that starts eases
+/// in, one that hands back eases out, so the block grows and shrinks rather
+/// than jumps. A row no longer shown while its subagent works on (another
+/// took its place) just goes.
+#[derive(Debug, Default)]
+pub struct SubMotion {
+    last: Option<Vec<SubShown>>,
+    arrived: HashMap<String, Instant>,
+    leaving: Vec<SubLeaving>,
+}
+
+impl SubMotion {
+    /// Take in the rows drawn now and the subagents at work (`live`, shown
+    /// or not). The first draw eases nothing in; without `animate`, nothing moves.
+    pub fn note(&mut self, shown: &[SubShown], live: &[&str], now: Instant, animate: bool) {
+        let window = motion::BASE;
+        self.arrived.retain(|_, at| now.saturating_duration_since(*at) < window);
+        self.leaving.retain(|l| now.saturating_duration_since(l.since) < window && !live.contains(&l.id.as_str()));
+        if let Some(last) = self.last.as_ref().filter(|_| animate) {
+            for s in shown {
+                if !last.iter().any(|o| o.id == s.id) {
+                    self.arrived.entry(s.id.clone()).or_insert(now);
+                }
+            }
+            for o in last {
+                if !live.contains(&o.id.as_str()) && !self.leaving.iter().any(|l| l.id == o.id) {
+                    self.leaving.push(SubLeaving { member: o.member, id: o.id.clone(), what: o.what.clone(), since: now });
+                }
+            }
+        }
+        if !animate {
+            self.arrived.clear();
+            self.leaving.clear();
+        }
+        self.last = Some(shown.to_vec());
+    }
+
+    /// The subagents whose rows ease in now.
+    pub fn arriving(&self, now: Instant) -> Vec<String> {
+        self.arrived.iter().filter(|(_, at)| now.saturating_duration_since(**at) < motion::BASE).map(|(id, _)| id.clone()).collect()
+    }
+
+    /// The rows easing out now.
+    pub fn leaving(&self, now: Instant) -> Vec<SubLeaving> {
+        self.leaving.iter().filter(|l| now.saturating_duration_since(l.since) < motion::BASE).cloned().collect()
+    }
+}
+
+/// Where an update stands, in one pill above the foot: a new version being
+/// downloaded (quiet), downloaded and ready — one full-width button puts it
+/// in and starts the app again (as Claude's "Relaunch to update") — or
+/// failed, to try again (or to move the app where it can update itself).
 fn relaunch(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
-    let version = shell.update_ready.as_deref()?;
-    Some(
-        h_flex()
-            .id("relaunch")
-            .h(px(34.))
-            .flex_none()
-            .mx_3()
-            .mb_1()
-            .px_3()
-            .rounded(px(8.))
-            .items_center()
-            .justify_between()
+    use crate::relaunch::{Update, Why};
+    let words = crate::relaunch::pill(&shell.update)?;
+    let pill = h_flex().id("relaunch").h(px(34.)).flex_none().mx_3().mb_1().px_3().rounded(px(8.)).items_center().justify_between().text_size(px(TEXT));
+    Some(match &shell.update {
+        Update::Ready(_) => pill
             .bg(p.primary)
             .text_color(p.on_primary)
-            .text_size(px(TEXT))
             .font_weight(FontWeight::SEMIBOLD)
             .cursor_pointer()
             .hover(|s| s.opacity(0.9))
             .on_click(cx.listener(|this, _, _, cx| this.relaunch_to_update(cx)))
-            .child(crate::relaunch::label(version))
+            .child(words)
             .child("→"),
-    )
+        // Downloading: said quietly, nothing to press.
+        Update::Found(_) | Update::Downloading(_) => pill.border_1().border_color(p.hair).text_color(p.muted).child(div().min_w_0().truncate().child(words)),
+        // The app can't replace itself where it is: show it in Finder.
+        Update::Failed { why: Why::Move | Why::Permission, .. } => pill
+            .border_1()
+            .border_color(p.hair)
+            .text_color(p.text)
+            .cursor_pointer()
+            .hover(|s| s.bg(p.wash))
+            .on_click(|_, _, _| crate::relaunch::reveal())
+            .child(div().min_w_0().truncate().child(words))
+            .child("→"),
+        _ => pill
+            .border_1()
+            .border_color(p.hair)
+            .text_color(p.text)
+            .cursor_pointer()
+            .hover(|s| s.bg(p.wash))
+            .on_click(|_, _, cx| crate::relaunch::check_now(cx))
+            .child(div().min_w_0().truncate().child(words))
+            .child("↻"),
+    })
 }
 
 /// The foot, one row: the squad and machine with the connection's dot (a
@@ -811,6 +1034,9 @@ fn footer(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElemen
 /// The squads and machines, or settings, over the foot.
 fn popup(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let which = shell.board.popup?;
+    if let Popup::Subagents(member) = which {
+        return subagents_popover(shell, member, cx);
+    }
     let item = |id: SharedString, label: String, on: bool| {
         h_flex()
             .id(id)
@@ -859,6 +1085,7 @@ fn popup(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
                     .into_any_element(),
             );
         }
+        Popup::Subagents(_) => {}
     }
     Some(
         deferred(
@@ -883,7 +1110,94 @@ fn popup(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
     )
 }
 
+/// All of a member's subagents at work, over the team block: each what it
+/// was handed, its latest step under it, how long it has been at it. A click
+/// goes to where it was handed the work; a click outside closes it.
+fn subagents_popover(shell: &Shell, member: SessionId, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let p = shell.palette;
+    let model = &shell.model;
+    let name = model.members.iter().find(|m| m.session == member)?.name.clone();
+    let subs = model.subagents_of(member);
+    if subs.is_empty() {
+        return None;
+    }
+    let rows = subs.iter().map(|(session, sub)| {
+        let (session, id) = (*session, sub.id.clone());
+        let step = sub.step.clone().unwrap_or_else(|| t!("sidebar.subagent_starting").to_owned());
+        h_flex()
+            .id(SharedString::from(format!("sub-pop-{}", sub.id)))
+            .px_2()
+            .py(px(5.))
+            .gap(px(8.))
+            .items_start()
+            .rounded(px(6.))
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.side_hover))
+            .on_click(cx.listener(move |this, _, window, cx| this.open_subagent(member, session, &id, window, cx)))
+            .child(div().pt(px(3.)).child(sub_mark(p, shell.board.spin)))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().text_size(px(12.5)).text_color(p.text).truncate().child(sub.what.clone()))
+                    .child(div().text_size(px(11.5)).text_color(p.muted).truncate().child(step)),
+            )
+            .child(div().flex_none().pt(px(1.)).text_size(px(11.)).text_color(p.muted).child(short_span(sub.since.elapsed().as_secs())))
+    }).collect::<Vec<_>>();
+    let surface = v_flex()
+        .id("sub-popover")
+        .relative()
+        .w(px((shell.board.sidebar_width - 16.).max(220.)))
+        .max_h(px(360.))
+        .overflow_y_scroll()
+        .p_1()
+        .rounded(px(10.))
+        .bg(p.raised)
+        .border_1()
+        .border_color(p.hair)
+        .occlude()
+        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+            this.board.popup = None;
+            cx.notify();
+        }))
+        .child(
+            h_flex()
+                .px_2()
+                .pt_1()
+                .pb(px(4.))
+                .gap_1()
+                .text_size(px(11.))
+                .text_color(p.muted)
+                .child(div().font_weight(FontWeight::MEDIUM).text_color(p.text2).child(name))
+                .child("·")
+                .child(t!("sidebar.subagents", n = subs.len())),
+        )
+        .children(rows);
+    Some(deferred(div().absolute().bottom(px(50.)).left(px(8.)).child(motion::pop(surface, ("sub-popover-in", member), true))).into_any_element())
+}
+
 impl Shell {
+    /// "+N개 더" under a member: all its subagents, or away again.
+    pub fn toggle_subagents(&mut self, member: SessionId, cx: &mut Context<Self>) {
+        let which = Popup::Subagents(member);
+        self.board.popup = if self.board.popup == Some(which) { None } else { Some(which) };
+        cx.notify();
+    }
+
+    /// A subagent's row: its member's conversation, at the step that handed
+    /// it the work (`session`: the conversation it works for — the member's
+    /// own, or a lane's, which opens as the member's does).
+    pub fn open_subagent(&mut self, member: SessionId, session: SessionId, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.board.popup = None;
+        self.select_member(member, window, cx);
+        self.chat_sync(cx);
+        let sub = self.model.convos.get(&session).and_then(|c| c.subagents.iter().find(|s| s.id == id)).cloned();
+        if let Some(row) = sub.and_then(|s| self.chat.open_delegation(&s, cx)) {
+            self.chat.scroll_to(row, cx);
+        }
+        cx.notify();
+    }
+
     /// ⌘\: the sidebar away, or back.
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         // Turned back mid-slide, it goes back from where it stands.
@@ -1043,7 +1357,7 @@ pub fn spin(step: u32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Leaving, SideMotion, Shown, TEAM_ROW, TeamState, spin, team_height};
+    use super::{Leaving, SUB_ROW, SUBS_SHOWN, SideMotion, Shown, SubLeaving, SubMotion, SubShown, TEAM_ROW, TeamState, spin, sub_rows, subs_cap, team_height};
     use crate::board::Live;
     use crate::state::{Member, Model, Presence, Verb};
     use equipe_core::protocol::Ticket;
@@ -1084,11 +1398,67 @@ mod tests {
 
     #[test]
     fn the_team_block_shows_six_rows_then_scrolls_inside() {
-        assert_eq!(team_height(0), 0.);
-        assert_eq!(team_height(4), 4. * TEAM_ROW);
-        assert_eq!(team_height(6), 6. * TEAM_ROW);
-        assert_eq!(team_height(9), 6. * TEAM_ROW, "past six, the block keeps its height and scrolls");
+        assert_eq!(team_height(0, 0), 0.);
+        assert_eq!(team_height(4, 0), 4. * TEAM_ROW);
+        assert_eq!(team_height(6, 0), 6. * TEAM_ROW);
+        assert_eq!(team_height(9, 0), 6. * TEAM_ROW, "past six, the block keeps its height and scrolls");
         const { assert!(TEAM_ROW <= 28.) };
+    }
+
+    #[test]
+    fn the_team_block_grows_by_its_subagents_rows_as_far_as_they_have_room() {
+        // Two members and three subagent rows: all in sight.
+        assert_eq!(team_height(2, 3), 2. * TEAM_ROW + 3. * SUB_ROW);
+        // Six members leave no room of their own: still six rows', then it scrolls.
+        assert_eq!(team_height(6, 9), 6. * TEAM_ROW + 6. * SUB_ROW);
+        assert_eq!(team_height(9, 2), 6. * TEAM_ROW + 2. * SUB_ROW);
+    }
+
+    #[test]
+    fn three_subagents_show_under_a_member_then_more_and_fewer_when_the_block_is_full() {
+        assert_eq!((sub_rows(0, 3), sub_rows(2, 3), sub_rows(3, 3), sub_rows(5, 3)), (0, 2, 3, 4), "three, then a row for the rest");
+        assert_eq!(sub_rows(5, 0), 0, "none: the member's row counts them");
+        // Two members, room for six rows: three each at most, then fewer.
+        assert_eq!(subs_cap(2, &[2, 5]), SUBS_SHOWN, "2 and 3+more: six rows");
+        assert_eq!(subs_cap(2, &[5, 5]), 2, "2+more twice");
+        // Four members (room for six rows too): fewer each, the members' rows staying.
+        assert_eq!(subs_cap(4, &[1, 1]), 3);
+        assert_eq!(subs_cap(4, &[5, 0, 5, 0]), 2);
+        assert_eq!(subs_cap(4, &[5, 5, 5, 0]), 1, "1+more three times");
+        // Five members at it with subagents: no room for rows, counts on the members'.
+        assert_eq!(subs_cap(6, &[2, 2, 2, 2, 2, 0]), 0);
+        // Whatever the cap, the rows fit the room the members leave.
+        for counts in [[3usize, 3, 3, 3], [9, 0, 0, 1], [1, 1, 1, 1]] {
+            let cap = subs_cap(4, &counts);
+            let rows: usize = counts.iter().map(|&n| sub_rows(n, cap)).sum();
+            assert!(rows as f32 * SUB_ROW <= team_height(4, rows) - 4. * TEAM_ROW, "{counts:?}");
+        }
+    }
+
+    fn sub(member: u64, id: &str) -> SubShown {
+        SubShown { member, id: id.into(), what: format!("task {id}") }
+    }
+
+    #[test]
+    fn subagent_rows_ease_in_as_they_start_and_out_as_they_hand_back() {
+        let t0 = Instant::now();
+        let mut m = SubMotion::default();
+        m.note(&[sub(2, "a")], &["a"], t0, true);
+        assert!(m.arriving(t0).is_empty(), "the window opening eases nothing in");
+        // b starts; a hands back.
+        let t1 = t0 + Duration::from_millis(500);
+        m.note(&[sub(2, "b")], &["b"], t1, true);
+        assert_eq!(m.arriving(t1), ["b"]);
+        assert_eq!(m.leaving(t1).into_iter().map(|l: SubLeaving| (l.member, l.id)).collect::<Vec<_>>(), [(2, "a".to_owned())]);
+        // c starts past the cap: no row of its own, nothing eases. b's row gives way to
+        // another member's while b works on: it just goes, it didn't hand back.
+        let t2 = t1 + crate::motion::BASE;
+        m.note(&[sub(3, "d")], &["b", "c", "d"], t2, true);
+        assert_eq!(m.arriving(t2), ["d"]);
+        assert!(m.leaving(t2).is_empty(), "{:?}", m.leaving(t2));
+        // Reduce motion: nothing moves.
+        m.note(&[], &[], t2 + Duration::from_millis(10), false);
+        assert!(m.arriving(t2).is_empty() && m.leaving(t2 + Duration::from_millis(10)).is_empty());
     }
 
     fn shown(id: u32, key: &str, live: Live) -> Shown {

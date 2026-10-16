@@ -13,8 +13,10 @@
 //! in — until the person picks another tab.
 //!
 //! The page is a stream of pictures (`crate::stream`), only ever of the tab
-//! picked (`browse::Picture`). A page the person drives is laid out at the
-//! picture's size; a member's page at its own size is fitted, its shape kept.
+//! picked (`browse::Picture`). The page shown is laid out at the picture's
+//! size — whoever drives it, a member too — so it reads at the panel's size
+//! (the daemon takes the largest of the panels watching it, and waits for a
+//! member's step under way); a frame of another size is fitted, its shape kept.
 //! The person's mouse and keys go back to the page, mapped through the
 //! picture's frame. Touching a member's page (or 직접 하기) takes it into the
 //! person's hands (its tools wait); 돌려주기, Esc, or two idle minutes give it
@@ -33,6 +35,7 @@ use equipe_core::protocol::stream::{self, Fit, FrameHeader, InputEvent, StreamIn
 use equipe_core::protocol::{BrowserNavAction, BrowserPage, Command, Event, HumanCheck, ScreenBounds, SessionId};
 use equipe_core::t;
 use gpui_kit::component::input::{Input, InputEvent as FieldEvent, InputState};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -58,6 +61,20 @@ const MIN_WIDTH: f32 = 360.;
 const CHAT_MIN: f32 = 420.;
 /// Mouse moves go no more often than this (60 a second).
 const MOVE_EVERY: Duration = Duration::from_millis(16);
+/// How long the word that the person took or gave back a browser stays; and
+/// the hint for a wheel over a page they don't drive.
+const TOAST_FOR: Duration = Duration::from_secs(4);
+const HINT_FOR: Duration = Duration::from_millis(1800);
+
+fn hash_text(text: &str) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
+
+/// How far a banner over the page floats in from the picture's top and sides.
+const BANNER_INSET: f32 = 12.;
 /// The line down this long before the panel says so (a reconnect is quick).
 const DOWN_AFTER: Duration = Duration::from_millis(1500);
 
@@ -139,6 +156,17 @@ pub struct BrowserPanel {
     focus_next: bool,
     /// A page picked from 나에게 or a notification, shown at the next draw.
     pending_reveal: Option<(String, u64)>,
+    /// Members' browsers handed to the person, opened for once each.
+    handovers: browse::Handovers,
+    /// A member was refused closing the tab the person is on: offered to them.
+    wants: Option<(String, u64)>,
+    /// Closing tabs of a member at work, asked once first: its lane and the tabs.
+    confirm_close: Option<(String, Vec<u64>)>,
+    /// A word over the page for a moment — the person took a member's browser,
+    /// gave it back, or scrolled one they don't drive — and until when.
+    toast: Option<(String, Instant)>,
+    toast_next: Option<(String, Duration)>,
+    _toast_wake: Option<Task<()>>,
     // The picture.
     picture: Picture<Arc<RenderImage>>,
     previous: Option<Arc<RenderImage>>,
@@ -167,7 +195,11 @@ pub struct BrowserPanel {
     marked: Option<String>,
     keys_down: std::collections::HashSet<String>,
     buttons: u32,
-    last_move: Instant,
+    /// The pointer's moves, paced, as the page is sent them.
+    pointer: browse::Pointer,
+    /// The page `pointer` is of: another tab picked, it starts over.
+    pointer_page: Option<u64>,
+    _move_wake: Option<Task<()>>,
     /// Wheel turns not sent yet, when the last went, and the send to come.
     wheel: Option<InputEvent>,
     last_wheel: Instant,
@@ -239,6 +271,12 @@ impl BrowserPanel {
             gone: None,
             focus_next: false,
             pending_reveal: None,
+            handovers: browse::Handovers::default(),
+            wants: None,
+            confirm_close: None,
+            toast: None,
+            toast_next: None,
+            _toast_wake: None,
             picture: Picture::default(),
             previous: None,
             placed: Rc::default(),
@@ -257,7 +295,9 @@ impl BrowserPanel {
             marked: None,
             keys_down: Default::default(),
             buttons: 0,
-            last_move: Instant::now(),
+            pointer: browse::Pointer::new(MOVE_EVERY),
+            pointer_page: None,
+            _move_wake: None,
             wheel: None,
             last_wheel: Instant::now(),
             _wheel_flush: None,
@@ -377,6 +417,18 @@ impl BrowserPanel {
                     self.follow = false;
                     self.select(MINE.to_owned(), new.id, window, cx);
                 }
+                // Handed over before its tabs were told: shown, in their hands, now.
+                if let Some((lane, page)) = self.handovers.on_tabs(lane, self.lane_page(lane)) {
+                    self.drive(lane, page, window, cx);
+                }
+                let alive = |page: u64| self.lanes.values().any(|l| l.pages.iter().any(|p| p.id == page));
+                if self.wants.as_ref().is_some_and(|(_, page)| !alive(*page)) {
+                    self.wants = None;
+                }
+                if let Some((lane, pages)) = self.confirm_close.take() {
+                    let left: Vec<u64> = pages.into_iter().filter(|p| alive(*p)).collect();
+                    self.confirm_close = (!left.is_empty()).then_some((lane, left));
+                }
                 let moved = before != Some(*agent_page);
                 // The tab picked closed: the next one in its lane — or, the whole
                 // browser gone without the person closing it, say so.
@@ -408,18 +460,21 @@ impl BrowserPanel {
                 if squad.as_deref().is_some_and(|s| s != self.squad) {
                     return;
                 }
+                // Back to its member by itself (two idle minutes, a check that passed) while the person had it: said.
+                if by.is_none() && self.hands.get(lane).is_some_and(|h| h.held && h.touched) {
+                    self.toast_next = Some((t!("browser.gave_toast", name = self.member_name(lane)), TOAST_FOR));
+                }
                 self.hands.entry(lane.clone()).or_default().on_control(by.is_some(), why.clone(), *check);
-                // A member asks the person in: the panel opens on its browser.
-                if why.is_some() {
-                    self.follow = false;
-                    self.open = true;
-                    self.shown = true;
-                    cx.emit(PanelEvent::Opened);
-                    self.ensure_link(window, cx);
-                    if let Some(page) = self.lanes.get(lane).and_then(|l| l.agent_page.or(l.pages.last().map(|p| p.id))) {
-                        self.select(lane.clone(), page, window, cx);
+                // A member hands the person its browser, or a page of it waits for
+                // them: every screen opens the panel on it, in their hands — once.
+                let page = self.lane_page(lane);
+                if let Some(open) = self.handovers.on_control(lane, by.is_some(), why.as_deref(), *check, page) {
+                    // What a member asked the person to do comes first: a page that
+                    // waits for a person elsewhere doesn't take the panel from it.
+                    let asked_elsewhere = self.selected.as_ref().is_some_and(|(l, _)| l != lane && self.hands.get(l).is_some_and(|h| h.held && h.asked.is_some()));
+                    if why.is_some() || !asked_elsewhere {
+                        self.hand_over(open, window, cx);
                     }
-                    window.activate_window();
                 }
                 cx.notify();
             }
@@ -440,6 +495,14 @@ impl BrowserPanel {
             }
             Event::BrowserDialogClosed { page } => {
                 self.dialogs.retain(|d| d.page != *page);
+                cx.notify();
+            }
+            // A member wants to close the tab the person is on: one click lets it.
+            Event::BrowserWants { squad, lane, page, action } if action == "close" => {
+                if squad.as_deref().is_some_and(|s| s != self.squad) {
+                    return;
+                }
+                self.wants = Some((lane.clone(), *page));
                 cx.notify();
             }
             _ => {}
@@ -691,13 +754,23 @@ impl BrowserPanel {
     /// The person touched the page: it is theirs until handed back.
     fn hold(&mut self) {
         if let Some(lane) = self.lane_of_selected().filter(|l| !l.is_empty()).map(str::to_owned) {
+            self.took(&lane);
             self.hands.entry(lane).or_default().take();
+        }
+    }
+
+    /// Into the person's hands just now: said, for a moment, over the page.
+    fn took(&mut self, lane: &str) {
+        if !self.hands.get(lane).is_some_and(|h| h.held && h.touched) {
+            let name = self.member_name(lane);
+            self.toast_next = Some((t!("browser.took_toast", name = name), TOAST_FOR));
         }
     }
 
     /// 직접 하기: the member's browser into the person's hands, its keys to the page.
     fn take(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(lane) = self.lane_of_selected().filter(|l| !l.is_empty()).map(str::to_owned) {
+            self.took(&lane);
             self.hands.entry(lane.clone()).or_default().take();
             self.command(Command::BrowserControl { lane, take: true }, cx);
         }
@@ -707,7 +780,9 @@ impl BrowserPanel {
 
     fn give_back(&mut self, cx: &mut Context<Self>) {
         if let Some(lane) = self.lane_of_selected().filter(|l| !l.is_empty()).map(str::to_owned) {
+            self.toast_next = Some((t!("browser.gave_toast", name = self.member_name(&lane)), TOAST_FOR));
             self.hands.entry(lane.clone()).or_default().give_back();
+            self.handovers.given_back(&lane);
             self.command(Command::BrowserControl { lane, take: false }, cx);
             cx.notify();
         }
@@ -750,6 +825,7 @@ impl BrowserPanel {
         let Some((x, y)) = self.to_page(e.position) else { return };
         self.hold();
         self.last_click = Some(e.position);
+        self.move_before_press((x, y), keys::modifier_bits(&e.modifiers));
         self.buttons |= keys::button_bit(e.button);
         self.send_input(InputEvent::Mouse {
             kind: "mousePressed".into(),
@@ -768,6 +844,7 @@ impl BrowserPanel {
             self.buttons &= !keys::button_bit(e.button);
             return;
         };
+        self.move_before_press((x, y), keys::modifier_bits(&e.modifiers));
         self.buttons &= !keys::button_bit(e.button);
         self.send_input(InputEvent::Mouse {
             kind: "mouseReleased".into(),
@@ -780,31 +857,85 @@ impl BrowserPanel {
         });
     }
 
-    fn mouse_move(&mut self, e: &MouseMoveEvent) {
-        if self.last_move.elapsed() < MOVE_EVERY {
+    /// A move to where a button goes down or up, if the page last saw the
+    /// pointer elsewhere (a move held back by the pace, or none yet).
+    fn move_before_press(&mut self, at: (f64, f64), modifiers: u32) {
+        self.pointer_on_selected();
+        if let Some(at) = self.pointer.pressed(at, Instant::now()) {
+            self._move_wake = None;
+            self.send_move(at, modifiers);
+        }
+    }
+
+    /// The pointer as the page on screen saw it: another tab picked, unknown.
+    fn pointer_on_selected(&mut self) {
+        let page = self.selected.as_ref().map(|(_, p)| *p);
+        if self.pointer_page != page {
+            self.pointer_page = page;
+            self.pointer.left();
+            self._move_wake = None;
+        }
+    }
+
+    fn send_move(&mut self, (x, y): (f64, f64), modifiers: u32) {
+        let button = match self.buttons {
+            0 => "none",
+            b if b & 1 != 0 => "left",
+            b if b & 2 != 0 => "right",
+            _ => "middle",
+        };
+        self.send_input(InputEvent::Mouse { kind: "mouseMoved".into(), x, y, button: button.into(), buttons: self.buttons, click_count: 0, modifiers });
+    }
+
+    fn mouse_move(&mut self, e: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let Some(at) = self.to_page(e.position) else {
+            self.pointer.left();
+            self._move_wake = None;
+            return;
+        };
+        self.pointer_on_selected();
+        // Moves never take a member's page: they go only once the person has
+        // it (직접 하기, a click, a key) — before that, the page never saw the
+        // pointer, and the press that takes it moves it there first.
+        if !self.drives_selected() {
+            self.pointer.left();
+            self._move_wake = None;
             return;
         }
-        let Some((x, y)) = self.to_page(e.position) else { return };
-        self.last_move = Instant::now();
-        // Moves alone don't take the page: only a press or a key does.
-        self.send_input(InputEvent::Mouse {
-            kind: "mouseMoved".into(),
-            x,
-            y,
-            button: e.pressed_button.map_or("none", keys::button_name).into(),
-            buttons: self.buttons,
-            click_count: 0,
-            modifiers: keys::modifier_bits(&e.modifiers),
-        });
+        // Paced
+        // at 60 a second; where the pointer stops always reaches the page.
+        let modifiers = keys::modifier_bits(&e.modifiers);
+        let now = Instant::now();
+        if let Some(at) = self.pointer.moved(at, now) {
+            self._move_wake = None;
+            self.send_move(at, modifiers);
+        } else if let Some(wait) = self.pointer.wait(now) {
+            self._move_wake = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                let _ = this.update(cx, |this, _| {
+                    if let Some(at) = this.pointer.due(Instant::now()) {
+                        this.send_move(at, modifiers);
+                    }
+                });
+            }));
+        }
     }
 
     /// A turn of the wheel: sent at once, then — as a trackpad sends 60–120
     /// a second — the turns that follow added up and sent a frame apart.
     fn scroll(&mut self, e: &ScrollWheelEvent, cx: &mut Context<Self>) {
         let Some((x, y)) = self.to_page(e.position) else { return };
+        // A member's page it drives: the wheel doesn't take it (only a click or a
+        // key does), and goes nowhere — a word says how to.
+        if !browse::wheel_goes(self.lane_of_selected().is_some_and(|l| l != MINE), self.held()) {
+            if self.toast.as_ref().is_none_or(|(text, _)| *text != t!("browser.wheel_hint")) {
+                self.toast_next = Some((t!("browser.wheel_hint").to_owned(), HINT_FOR));
+                cx.notify();
+            }
+            return;
+        }
         let delta = e.delta.pixel_delta(px(20.));
         let k = self.css_per_point();
-        self.hold();
         let (dx, dy, modifiers) = (-f64::from(f32::from(delta.x)) * k, -f64::from(f32::from(delta.y)) * k, keys::modifier_bits(&e.modifiers));
         match &mut self.wheel {
             Some(InputEvent::Wheel { x: at_x, y: at_y, dx: sum_x, dy: sum_y, modifiers: held }) if *held == modifiers => {
@@ -839,6 +970,11 @@ impl BrowserPanel {
         }
     }
 
+    /// The person drives the tab on screen: their own, or a member's in their hands.
+    fn drives_selected(&self) -> bool {
+        self.lane_of_selected() == Some(MINE) || self.held()
+    }
+
     fn held(&self) -> bool {
         self.lane_of_selected().filter(|l| !l.is_empty()).is_some_and(|l| self.hands.get(l).is_some_and(|h| h.held))
     }
@@ -854,6 +990,11 @@ impl BrowserPanel {
         }
         if m.platform && !m.control && !m.alt {
             match (stroke.key.as_str(), m.shift) {
+                ("w", false) => {
+                    self.close_selected(cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 ("v", false) => {
                     if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
                         self.hold();
@@ -937,6 +1078,159 @@ impl BrowserPanel {
         let width = (self.width * window.content_zoom()).max(720.);
         let bounds = ScreenBounds { left: (x + w - width).max(0.) as i32, top: y as i32, width: width as u32, height: h as u32 };
         self.command(Command::BrowserPopOut { page, bounds: Some(bounds) }, cx);
+    }
+
+    /// A "verify you are human" check that keeps coming back in the panel: the
+    /// member's real Chrome window, on the daemon's Mac — brought up and in
+    /// front, for the person at that Mac to do it there with their own mouse
+    /// (docs/BROWSER-CHECKS.md). The same browser and sign-ins: nothing moves
+    /// between browsers.
+    fn open_chrome_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.endpoint.as_ref().is_some_and(Endpoint::is_remote) {
+            // This window's place means nothing on the other Mac: Chrome keeps its own.
+            let Some((_, page)) = self.selected.clone() else { return };
+            self.command(Command::BrowserPopOut { page, bounds: None }, cx);
+        } else {
+            self.pop_out(window, cx);
+        }
+    }
+
+    /// The Mac the member's Chrome runs on, when it isn't this one.
+    fn chrome_elsewhere(&self) -> Option<String> {
+        self.endpoint.as_ref().filter(|e| e.is_remote()).map(Endpoint::label)
+    }
+
+    /// The banner's way out to the real Chrome window, for a check a person
+    /// answers by clicking (not a sign-in or a code, which the panel takes as well).
+    fn chrome_window_button(&self, check: HumanCheck, id: &'static str, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !matches!(check, HumanCheck::Challenge | HumanCheck::Captcha) {
+            return None;
+        }
+        let p = self.palette;
+        let (label, tip) = match self.chrome_elsewhere() {
+            Some(host) => (t!("browser.check_window_remote", host = host), t!("browser.check_window_remote_tip", host = host)),
+            None => (t!("browser.check_window").to_owned(), t!("browser.check_window_tip").to_owned()),
+        };
+        Some(
+            ui::button(p, id, Kind::Ghost, label).field()
+                .icon(Icon::External)
+                .tip(tip, None)
+                .on_click(cx.listener(|this, _, window, cx| this.open_chrome_window(window, cx)))
+                .into_any_element(),
+        )
+    }
+
+    /// Said under a check when the member's Chrome is on another Mac.
+    fn chrome_window_note(&self, check: HumanCheck) -> Option<String> {
+        if !matches!(check, HumanCheck::Challenge | HumanCheck::Captcha) {
+            return None;
+        }
+        self.chrome_elsewhere().map(|host| t!("browser.check_window_remote_note", host = host))
+    }
+
+    /// A member's browser handed to the person: the panel opens beside the
+    /// conversation on the tab its member works in, in the person's hands
+    /// (the daemon put it there), its keys to the page — unless the person is
+    /// typing elsewhere in the window right now. The window isn't pulled to
+    /// the front: out of sight, a notification says so.
+    fn hand_over(&mut self, open: browse::Open, window: &mut Window, cx: &mut Context<Self>) {
+        self.follow = false;
+        self.open = true;
+        self.shown = true;
+        self.gone = None;
+        cx.emit(PanelEvent::Opened);
+        self.ensure_link(window, cx);
+        if let browse::Open::Now(lane, page) = open {
+            self.drive(lane, page, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// On `page` of `lane`, the person driving.
+    fn drive(&mut self, lane: String, page: u64, window: &mut Window, cx: &mut Context<Self>) {
+        // Handed over by its member: the person drives it, the strip says what for.
+        // A page that waits for a person keeps its banner (직접 하기) until they act:
+        // a hold that came from detection alone never stops its member.
+        let hand = self.hands.entry(lane.clone()).or_default();
+        if hand.asked.is_some() {
+            hand.take();
+        }
+        self.select(lane, page, window, cx);
+        if !window.is_window_active() || self.focus.is_focused(window) {
+            self.focus_next = true;
+        }
+    }
+
+    /// The tab a member's browser shows: where its member works, else its last.
+    fn lane_page(&self, lane: &str) -> Option<u64> {
+        let l = self.lanes.get(lane)?;
+        l.agent_page.filter(|a| l.pages.iter().any(|p| p.id == *a)).or(l.pages.last().map(|p| p.id))
+    }
+
+    /// Whether a member's browser is in the person's hands now.
+    pub fn held_by_person(&self, lane: &str) -> bool {
+        self.hands.get(lane).is_some_and(|h| h.held)
+    }
+
+    /// A member's browser by its lane (from the conversation's row): the panel
+    /// opens on it, in the person's hands — or, its tabs gone, opens as it was.
+    pub fn reveal_lane(&mut self, lane: &str, cx: &mut Context<Self>) {
+        match self.lane_page(lane) {
+            Some(page) => self.reveal(page, cx),
+            None => {
+                self.open = true;
+                self.shown = true;
+                cx.notify();
+            }
+        }
+    }
+
+    /// Close `pages` of `lane` — the person's own at once; a member's at work,
+    /// asked once first ("pm이 쓰는 중이에요. 닫을까요?"), its member told.
+    fn close_tabs(&mut self, lane: &str, pages: Vec<u64>, cx: &mut Context<Self>) {
+        if pages.is_empty() {
+            return;
+        }
+        if browse::close_asks(lane != MINE, self.working(lane)) {
+            self.confirm_close = Some((lane.to_owned(), pages));
+            cx.notify();
+            return;
+        }
+        self.close_now(pages, cx);
+    }
+
+    fn close_now(&mut self, pages: Vec<u64>, cx: &mut Context<Self>) {
+        self.confirm_close = None;
+        for page in pages {
+            if self.wants.as_ref().is_some_and(|(_, p)| *p == page) {
+                self.wants = None;
+            }
+            self.closing = Some(page);
+            self.command(Command::BrowserCloseTab { page }, cx);
+        }
+        cx.notify();
+    }
+
+    /// The tab picked, closed (⌘W, 확인 그만하고 탭 닫기).
+    fn close_selected(&mut self, cx: &mut Context<Self>) {
+        if let Some((lane, page)) = self.selected.clone() {
+            self.close_tabs(&lane, vec![page], cx);
+        }
+    }
+
+    /// The other tabs of the same browser as `page`.
+    fn close_others(&mut self, lane: &str, page: u64, cx: &mut Context<Self>) {
+        let others: Vec<u64> = self.lanes.get(lane).map(|l| l.pages.iter().map(|p| p.id).filter(|p| *p != page).collect()).unwrap_or_default();
+        self.close_tabs(lane, others, cx);
+    }
+
+    /// 돌려주기 from outside the panel (the conversation's row): back to its member.
+    pub fn give_back_lane(&mut self, lane: &str, cx: &mut Context<Self>) {
+        self.toast_next = Some((t!("browser.gave_toast", name = self.member_name(lane)), TOAST_FOR));
+        self.hands.entry(lane.to_owned()).or_default().give_back();
+        self.handovers.given_back(lane);
+        self.command(Command::BrowserControl { lane: lane.to_owned(), take: false }, cx);
+        cx.notify();
     }
 
     /// A page waiting for a person, from 나에게 or a notification: the panel
@@ -1045,7 +1339,6 @@ impl BrowserPanel {
                 let on = self.selected.as_ref() == Some(&(lane.clone(), page.id));
                 let (lane_id, page_id) = (lane.clone(), page.id);
                 let title = browse::tab_title(page);
-                let mine = lane == MINE;
                 let group = SharedString::from(format!("tab-{}", page.id));
                 let waits = page.check.is_some();
                 if on {
@@ -1060,7 +1353,7 @@ impl BrowserPanel {
                         .max_w(px(184.))
                         .h(px(CONTROL))
                         .pl(px(8.))
-                        .pr(px(if mine { 4. } else { 10. }))
+                        .pr(px(4.))
                         .gap(px(6.))
                         .items_center()
                         .rounded(px(R_MD))
@@ -1081,8 +1374,10 @@ impl BrowserPanel {
                         .child(div().min_w_0().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
                         .when(page.loading, |t| t.child({ use gpui_kit::component::Sizable as _; gpui_kit::component::spinner::Spinner::new().with_size(px(11.)) }.color(Hsla::from(p.muted))))
                         .when(waits && !page.loading, |t| t.child(div().size(px(6.)).flex_none().rounded_full().bg(p.amber)))
-                        .when(mine, |t| {
-                            t.child(
+                        // Every tab closes from here — a member's too: on hover, and always on the one picked.
+                        .child({
+                            let lane_close = lane.clone();
+                            tip(
                                 div()
                                     .id(SharedString::from(format!("close-{}", page.id)))
                                     .size(px(18.))
@@ -1095,11 +1390,37 @@ impl BrowserPanel {
                                     .hover(move |s| s.bg(p.wash))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         cx.stop_propagation();
-                                        this.closing = Some(page_id);
-                                        this.command(Command::BrowserCloseTab { page: page_id }, cx);
+                                        this.close_tabs(&lane_close, vec![page_id], cx);
                                     }))
                                     .child(icon(Icon::X, 12., p.muted)),
+                                p,
+                                t!("browser.close_tab"),
+                                on.then_some("⌘W"),
                             )
+                        })
+                        .context_menu({
+                            let (panel, lane_menu) = (cx.entity().downgrade(), lane.clone());
+                            move |menu, _, _| {
+                                let act = |what: u8| {
+                                    let (panel, lane) = (panel.clone(), lane_menu.clone());
+                                    move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                        panel
+                                            .update(cx, |this, cx| match what {
+                                                0 => this.close_tabs(&lane, vec![page_id], cx),
+                                                1 => this.close_others(&lane, page_id, cx),
+                                                _ => {
+                                                    this.selected = Some((lane.clone(), page_id));
+                                                    this.pop_out(window, cx);
+                                                }
+                                            })
+                                            .ok();
+                                    }
+                                };
+                                menu.item(PopupMenuItem::new(t!("browser.close_tab")).on_click(act(0)))
+                                    .item(PopupMenuItem::new(t!("browser.close_others")).on_click(act(1)))
+                                    .separator()
+                                    .item(PopupMenuItem::new(t!("browser.open_in_chrome")).on_click(act(2)))
+                            }
                         }),
                 );
             }
@@ -1211,14 +1532,21 @@ impl BrowserPanel {
                 t!("browser.follow_tip"),
                 None,
             ))
-            .child(if wider {
-                ui::button(p, "browser-pop-out", Kind::Ghost, t!("browser.open_in_chrome"))
-                    .icon(Icon::External)
-                    .tip(t!("browser.open_in_chrome_tip"), None)
-                    .disabled(none)
-                    .on_click(cx.listener(|this, _, window, cx| this.pop_out(window, cx)))
-            } else {
-                ui::icon_button(p, "browser-pop-out", Icon::External, t!("browser.open_in_chrome"), None).disabled(none).on_click(cx.listener(|this, _, window, cx| this.pop_out(window, cx)))
+            .child({
+                // The real window comes up on the daemon's Mac: on another one, say which.
+                let (label, tip_text) = match &self.endpoint {
+                    Some(Endpoint::Ssh(far)) => (t!("browser.open_on_host", host = far.host), t!("browser.open_on_host_tip", host = far.host)),
+                    _ => (t!("browser.open_in_chrome").to_owned(), t!("browser.open_in_chrome_tip").to_owned()),
+                };
+                if wider {
+                    ui::button(p, "browser-pop-out", Kind::Ghost, label)
+                        .icon(Icon::External)
+                        .tip(tip_text, None)
+                        .disabled(none)
+                        .on_click(cx.listener(|this, _, window, cx| this.pop_out(window, cx)))
+                } else {
+                    ui::icon_button(p, "browser-pop-out", Icon::External, label, None).disabled(none).on_click(cx.listener(|this, _, window, cx| this.pop_out(window, cx)))
+                }
             })
     }
 
@@ -1255,7 +1583,7 @@ impl BrowserPanel {
             .on_mouse_up(MouseButton::Left, cx.listener(|this, e: &MouseUpEvent, _, _| this.mouse_up(e)))
             .on_mouse_up(MouseButton::Right, cx.listener(|this, e: &MouseUpEvent, _, _| this.mouse_up(e)))
             .on_mouse_up(MouseButton::Middle, cx.listener(|this, e: &MouseUpEvent, _, _| this.mouse_up(e)))
-            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, _| this.mouse_move(e)))
+            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| this.mouse_move(e, cx)))
             .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, _, cx| this.scroll(e, cx)))
             .child(
                 canvas(
@@ -1294,6 +1622,83 @@ impl BrowserPanel {
             .children(cover)
             .children(banner)
             .children(dialog.map(|d| self.dialog_card(d, cx)))
+            .children(self.close_card(cx))
+            .children(self.toast_pill())
+    }
+
+    /// The word over the page, bottom centre, in the app's toast style.
+    fn toast_pill(&self) -> Option<AnyElement> {
+        let (text, until) = self.toast.as_ref()?;
+        if *until <= Instant::now() {
+            return None;
+        }
+        let p = self.palette;
+        let lift = if self.confirm_close.is_some() || self.wants.is_some() { 84. } else { 20. };
+        Some(
+            h_flex()
+                .absolute()
+                .bottom(px(lift))
+                .left(px(BANNER_INSET))
+                .right(px(BANNER_INSET))
+                .justify_center()
+                .child(motion::rise(
+                    h_flex()
+                        .id("browser-toast")
+                        .max_w(px(460.))
+                        .min_h(px(40.))
+                        .px_4()
+                        .py_2()
+                        .items_center()
+                        .rounded(px(10.))
+                        .bg(p.primary)
+                        .text_color(p.on_primary)
+                        .shadow_lg()
+                        .text_size(px(SMALL))
+                        .child(div().min_w_0().child(text.clone())),
+                    ("browser-toast-rise", hash_text(text)),
+                ))
+                .into_any_element(),
+        )
+    }
+
+    /// Over the page: a member's tabs to close while it works, asked once; or a
+    /// member refused closing the tab the person is on, theirs to allow.
+    fn close_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let p = self.palette;
+        let (id, title, yes, no): (&'static str, String, SharedString, SharedString) = if let Some((lane, _)) = &self.confirm_close {
+            ("browser-confirm-close", t!("browser.confirm_close", name = self.member_name(lane)), t!("browser.close").into(), t!("browser.cancel").into())
+        } else if let Some((lane, _)) = &self.wants {
+            ("browser-wants-close", t!("browser.wants_close", name = self.member_name(lane)), t!("browser.close").into(), t!("browser.keep_using").into())
+        } else {
+            return None;
+        };
+        let card = h_flex()
+            .id(id)
+            .p_3()
+            .gap_3()
+            .items_center()
+            .rounded(px(R_LG))
+            .bg(p.popover())
+            .border_1()
+            .border_color(p.hair)
+            .shadow(motion::float_shadow(if p.is_dark() { 0.5 } else { 0.14 }))
+            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+            .child(div().size(px(28.)).flex_none().rounded_full().bg(p.wash).flex().items_center().justify_center().child(icon(Icon::X, ICON_SM, p.text2)))
+            .child(div().flex_1().min_w_0().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
+            .child(ui::button(p, "browser-close-no", Kind::Ghost, no).field().on_click(cx.listener(|this, _, _, cx| {
+                this.confirm_close = None;
+                this.wants = None;
+                cx.notify();
+            })))
+            .child(ui::button(p, "browser-close-yes", Kind::Primary, yes).field().on_click(cx.listener(|this, _, _, cx| {
+                let pages = match (this.confirm_close.take(), this.wants.take()) {
+                    (Some((_, pages)), _) => pages,
+                    (None, Some((_, page))) => vec![page],
+                    _ => Vec::new(),
+                };
+                this.close_now(pages, cx);
+            })));
+        Some(div().absolute().bottom(px(BANNER_INSET)).left(px(BANNER_INSET)).right(px(BANNER_INSET)).child(motion::rise(card, "browser-close-rise")).into_any_element())
     }
 
     /// What covers the picture when there is none to show: what the panel is
@@ -1376,13 +1781,13 @@ impl BrowserPanel {
         let lane = self.lane_of_selected()?.to_owned();
         let name = self.member_name(&lane);
         let site = page.and_then(|pg| browse::site(&pg.url)).unwrap_or_default();
+        // The card rises into place inside a frame 12 points in from the top
+        // and both sides of the picture: the rise moves the card, never the
+        // frame (it animates `top`, which would otherwise undo the inset).
+        let float = |card: AnyElement| div().absolute().top(px(BANNER_INSET)).left(px(BANNER_INSET)).right(px(BANNER_INSET)).child(card).into_any_element();
         let shell = |id: &'static str| {
             h_flex()
                 .id(id)
-                .absolute()
-                .top(px(12.))
-                .left(px(12.))
-                .right(px(12.))
                 .p_3()
                 .gap_3()
                 .items_center()
@@ -1401,7 +1806,7 @@ impl BrowserPanel {
                     HumanCheck::SignIn => t!("browser.check_sign_in", site = site, name = name),
                     HumanCheck::TwoFactor => t!("browser.check_code", site = site, name = name),
                 };
-                Some(
+                Some(float(
                     motion::rise(
                         shell("browser-check")
                             .child(div().size(px(28.)).flex_none().rounded_full().bg(p.amber.alpha(0.16)).flex().items_center().justify_center().child(icon(Icon::Hand, ICON_SM, p.amber)))
@@ -1411,19 +1816,22 @@ impl BrowserPanel {
                                     .min_w_0()
                                     .gap(px(2.))
                                     .child(div().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("browser.check_title")))
-                                    .child(div().text_size(px(12.)).text_color(p.muted).child(detail)),
+                                    .child(div().text_size(px(12.)).text_color(p.muted).child(detail))
+                                    .when_some(self.chrome_window_note(*check), |c, note| c.child(div().text_size(px(12.)).text_color(p.muted).child(note))),
                             )
-                            .child(ui::button(p, "browser-check-take", Kind::Primary, t!("browser.take")).icon(Icon::Hand).on_click(cx.listener(|this, _, window, cx| this.take(window, cx)))),
+                            .child(ui::button(p, "browser-check-close", Kind::Ghost, t!("browser.close_tab")).field().tip(t!("browser.close_check_tip", name = name), Some("⌘W")).on_click(cx.listener(|this, _, _, cx| this.close_selected(cx))))
+                            .when_some(self.chrome_window_button(*check, "browser-check-window", cx), |row, b| row.child(b))
+                            .child(ui::button(p, "browser-check-take", Kind::Primary, t!("browser.take")).icon(Icon::Hand).field().on_click(cx.listener(|this, _, window, cx| this.take(window, cx)))),
                         "browser-check-rise",
                     )
                     .into_any_element(),
-                )
+                ))
             }
             // On it: a quiet line at the top, out of the way of the check itself.
             Mode::Waiting { touched: true, .. } => Some(
                 h_flex()
                     .absolute()
-                    .top(px(8.))
+                    .top(px(BANNER_INSET))
                     .left_0()
                     .right_0()
                     .justify_center()
@@ -1440,11 +1848,12 @@ impl BrowserPanel {
                             .text_size(px(12.))
                             .text_color(p.text2)
                             .child(div().size(px(6.)).rounded_full().bg(p.amber))
-                            .child(t!("browser.check_on_it", name = name)),
+                            .child(t!("browser.check_on_it", name = name))
+                            .when_some(page.and_then(|pg| pg.check).and_then(|c| self.chrome_window_button(c, "browser-check-window-on-it", cx)), |row, b| row.child(b)),
                     )
                     .into_any_element(),
             ),
-            Mode::Passed => Some(
+            Mode::Passed => Some(float(
                 motion::rise(
                     shell("browser-passed")
                         .child(div().size(px(28.)).flex_none().rounded_full().bg(p.accent_bg).flex().items_center().justify_center().child(icon(Icon::Done, ICON_SM, p.accent)))
@@ -1456,14 +1865,59 @@ impl BrowserPanel {
                                 .child(div().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("browser.passed_title")))
                                 .child(div().text_size(px(12.)).text_color(p.muted).child(t!("browser.passed_body", name = name))),
                         )
-                        .child(ui::button(p, "browser-passed-keep", Kind::Ghost, t!("browser.keep")).on_click(cx.listener(|this, _, _, cx| this.keep(cx))))
-                        .child(ui::button(p, "browser-passed-back", Kind::Primary, t!("browser.give_back_short")).on_click(cx.listener(|this, _, _, cx| this.give_back(cx)))),
+                        .child(ui::button(p, "browser-passed-keep", Kind::Ghost, t!("browser.keep")).field().on_click(cx.listener(|this, _, _, cx| this.keep(cx))))
+                        .child(ui::button(p, "browser-passed-back", Kind::Primary, t!("browser.give_back_short")).field().on_click(cx.listener(|this, _, _, cx| this.give_back(cx)))),
                     "browser-passed-rise",
                 )
                 .into_any_element(),
-            ),
+            )),
             _ => None,
         }
+    }
+
+    /// Over the page, not on it: a member handed the person its browser —
+    /// who, what it asked in its own words, and the one button that says
+    /// it's done and gives it back (its member carries on by itself).
+    fn handed_strip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let Some(Mode::Asked(why)) = self.mode() else { return None };
+        let p = self.palette;
+        let lane = self.lane_of_selected()?.to_owned();
+        let name = self.member_name(&lane);
+        Some(
+            motion::rise(
+                h_flex()
+                    .id("browser-handed")
+                    .mx_2()
+                    .mb_2()
+                    .p_3()
+                    .gap_3()
+                    .items_start()
+                    .rounded(px(R_LG))
+                    .bg(p.accent_bg)
+                    .border_1()
+                    .border_color(p.accent.alpha(0.35))
+                    .child(div().size(px(28.)).flex_none().rounded_full().bg(p.accent.alpha(0.16)).flex().items_center().justify_center().child(icon(Icon::Globe, ICON_SM, p.accent)))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(4.))
+                            .child(div().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("browser.handed_title", name = name)))
+                            .child(div().text_size(px(SMALL)).line_height(px(19.)).text_color(p.text2).child(why))
+                            .child(
+                                h_flex()
+                                    .pt_1()
+                                    .gap_2()
+                                    .items_center()
+                                    .flex_wrap()
+                                    .child(ui::button(p, "browser-handed-done", Kind::Primary, t!("browser.done_give_back", name = name)).icon(Icon::Check).field().on_click(cx.listener(|this, _, _, cx| this.give_back(cx))))
+                                    .child(div().text_size(px(12.)).text_color(p.muted).child(t!("browser.handed_then", name = name))),
+                            ),
+                    ),
+                "browser-handed-rise",
+            )
+            .into_any_element(),
+        )
     }
 
     fn dialog_card(&self, d: Dialog, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -1543,9 +1997,12 @@ impl BrowserPanel {
             Mode::Asked(why) => bar
                 .child(dot(color))
                 .child(line(t!("browser.status_asked", name = name, why = why), p.text))
-                .child(back(Kind::Primary, t!("browser.done_give_back", name = name))),
+                .child(back(Kind::Secondary, t!("browser.give_back", name = name))),
             Mode::Waiting { touched, .. } => {
-                let b = bar.child(dot(p.amber)).child(line(t!("browser.bar_waiting", name = name), p.text2));
+                let b = bar
+                    .child(dot(p.amber))
+                    .child(line(t!("browser.bar_waiting", name = name), p.text2))
+                    .child(ui::button(p, "browser-bar-close", Kind::Ghost, t!("browser.close_check")).tip(t!("browser.close_check_tip", name = name), Some("⌘W")).on_click(cx.listener(|this, _, _, cx| this.close_selected(cx))));
                 if touched { b.child(back(Kind::Secondary, t!("browser.give_back", name = name))) } else { b.child(take()) }
             }
             Mode::Passed => bar
@@ -1587,6 +2044,20 @@ fn skeleton(p: Palette, what: &'static str) -> impl IntoElement {
 
 impl Render for BrowserPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Opened from outside (a conversation's row): its line, if it has none yet.
+        self.ensure_link(window, cx);
+        if let Some((text, show_for)) = self.toast_next.take() {
+            self.toast = Some((text, Instant::now() + show_for));
+            self._toast_wake = Some(cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor().timer(show_for + Duration::from_millis(20)).await;
+                let _ = this.update(cx, |this, cx| {
+                    if this.toast.as_ref().is_some_and(|(_, until)| *until <= Instant::now()) {
+                        this.toast = None;
+                        cx.notify();
+                    }
+                });
+            }));
+        }
         // A page waiting for the person, picked from 나에게: on screen, in their hands.
         if let Some((lane, page)) = self.pending_reveal.take() {
             self.ensure_link(window, cx);
@@ -1632,6 +2103,7 @@ impl Render for BrowserPanel {
                     .bg(p.bg)
                     .child(self.tab_strip(cx))
                     .child(self.toolbar(window, cx))
+                    .children(self.handed_strip(cx))
                     .child(self.viewport(cx))
                     .child(self.control_bar(cx)),
             )
@@ -1653,6 +2125,21 @@ impl BrowserPanel {
             self.follow = false;
             self.select(lane, page, window, cx);
         }
+    }
+
+    /// The nth tab's ✕ (from 1, in the strip's order).
+    pub fn close_nth(&mut self, n: usize, cx: &mut Context<Self>) {
+        let all: Vec<(String, u64)> = self.ordered().into_iter().flat_map(|lane| self.lanes.get(&lane).map(|l| l.pages.iter().map(|p| (lane.clone(), p.id)).collect::<Vec<_>>()).unwrap_or_default()).collect();
+        if let Some((lane, page)) = n.checked_sub(1).and_then(|i| all.get(i)).cloned() {
+            self.close_tabs(&lane, vec![page], cx);
+        }
+    }
+
+    /// A wheel over the middle of the page.
+    pub fn wheel(&mut self, cx: &mut Context<Self>) {
+        let Some((rect, _)) = *self.placed.borrow() else { return };
+        let e = ScrollWheelEvent { position: rect.center(), delta: ScrollDelta::Pixels(point(px(0.), px(-40.))), ..Default::default() };
+        self.scroll(&e, cx);
     }
 
     /// 직접 하기, or 돌려주기, as the bar's button.
@@ -1760,14 +2247,20 @@ pub fn need_row(shell: &crate::Shell, page: u64) -> Option<(String, String, Rgba
     let wait = shell.model.browser_waits.iter().find(|w| w.page == page)?;
     let member = wait.session.and_then(|s| shell.model.members.iter().find(|m| m.session == s || shell.model.lanes.iter().any(|l| l.session == s && l.of == m.session)));
     let color = member.map_or(shell.palette.muted, |m| shell.palette.member(crate::theme::look(&m.role, &m.name).1));
-    Some((need_words(wait.check, &wait.site), wait.member.clone(), color))
+    Some((need_words(wait), wait.member.clone(), color))
 }
 
-fn need_words(check: HumanCheck, site: &str) -> String {
-    match check {
-        HumanCheck::Challenge | HumanCheck::Captcha => t!("browser.need_human", site = site),
-        HumanCheck::SignIn => t!("browser.need_sign_in", site = site),
-        HumanCheck::TwoFactor => t!("browser.need_code", site = site),
+/// What waits, in a few words: what its member asked, else what the page asks.
+fn need_words(wait: &crate::state::BrowserWait) -> String {
+    let site = wait.site.as_str();
+    // Handed over: where — a sign-in said as one; what for is in the peek.
+    if wait.why.is_some() && wait.check != Some(HumanCheck::SignIn) {
+        return t!("browser.need_handed", site = site);
+    }
+    match wait.check {
+        Some(HumanCheck::Challenge | HumanCheck::Captcha) | None => t!("browser.need_human", site = site),
+        Some(HumanCheck::SignIn) => t!("browser.need_sign_in", site = site),
+        Some(HumanCheck::TwoFactor) => t!("browser.need_code", site = site),
     }
 }
 
@@ -1780,11 +2273,14 @@ pub fn need_mark(p: Palette) -> AnyElement {
 pub fn need_peek(shell: &crate::Shell, page: u64, cx: &mut Context<crate::Shell>) -> AnyElement {
     let p = shell.palette;
     let Some(wait) = shell.model.browser_waits.iter().find(|w| w.page == page).cloned() else { return div().into_any_element() };
-    let detail = match wait.check {
-        HumanCheck::Challenge | HumanCheck::Captcha => t!("browser.check_human", site = wait.site, name = wait.member),
-        HumanCheck::SignIn => t!("browser.check_sign_in", site = wait.site, name = wait.member),
-        HumanCheck::TwoFactor => t!("browser.check_code", site = wait.site, name = wait.member),
+    // Handed over: its member's own words say what to do; a page's check, equipe's.
+    let (title, detail, why) = match (&wait.why, wait.check) {
+        (Some(asked), _) => (t!("browser.handed_title", name = wait.member), asked.clone(), t!("browser.handed_why", name = wait.member)),
+        (None, Some(HumanCheck::SignIn)) => (t!("browser.check_title").to_owned(), t!("browser.check_sign_in", site = wait.site, name = wait.member), t!("browser.need_why").to_owned()),
+        (None, Some(HumanCheck::TwoFactor)) => (t!("browser.check_title").to_owned(), t!("browser.check_code", site = wait.site, name = wait.member), t!("browser.need_why").to_owned()),
+        (None, _) => (t!("browser.check_title").to_owned(), t!("browser.check_human", site = wait.site, name = wait.member), t!("browser.need_why").to_owned()),
     };
+    let open = if wait.why.is_some() { t!("browser.open_handed") } else { t!("browser.need_open") };
     v_flex()
         .id("peek")
         .size_full()
@@ -1792,11 +2288,11 @@ pub fn need_peek(shell: &crate::Shell, page: u64, cx: &mut Context<crate::Shell>
         .p_4()
         .gap_3()
         .child(div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child(t!("state.status_waiting")))
-        .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("browser.check_title")))
-        .child(div().text_size(px(12.)).text_color(p.muted).child(need_words(wait.check, &wait.site)))
+        .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
+        .child(div().text_size(px(12.)).text_color(p.muted).child(wait.site.clone()))
         .child(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.text2).child(detail))
-        .child(div().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("browser.need_why")))
-        .child(h_flex().pt_1().child(ui::button(p, "browser-need-take", Kind::Primary, t!("browser.need_open")).icon(Icon::Hand).on_click(cx.listener(move |shell, _, _, cx| shell.reveal_browser(page, cx)))))
+        .child(div().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(why))
+        .child(h_flex().pt_1().child(ui::button(p, "browser-need-take", Kind::Primary, open).icon(Icon::Globe).on_click(cx.listener(move |shell, _, _, cx| shell.reveal_browser(page, cx)))))
         .into_any_element()
 }
 
@@ -1807,6 +2303,21 @@ impl crate::Shell {
     pub fn reveal_browser(&mut self, page: u64, cx: &mut Context<Self>) {
         self.show(crate::Screen::Chat, cx);
         self.browser.update(cx, |b, cx| b.reveal(page, cx));
+        cx.notify();
+    }
+
+    /// 브라우저 열기 on a conversation's hand-over row: the panel beside it,
+    /// on that member's browser, in the person's hands.
+    pub fn reveal_handed(&mut self, lane: &str, cx: &mut Context<Self>) {
+        self.show(crate::Screen::Chat, cx);
+        self.browser.update(cx, |b, cx| b.reveal_lane(lane, cx));
+        cx.notify();
+    }
+
+    /// 돌려주기 on a conversation's hand-over row: back to its member, which
+    /// carries on.
+    pub fn give_back_handed(&mut self, lane: &str, cx: &mut Context<Self>) {
+        self.browser.update(cx, |b, cx| b.give_back_lane(lane, cx));
         cx.notify();
     }
 }

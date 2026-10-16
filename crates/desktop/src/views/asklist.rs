@@ -76,7 +76,7 @@ impl Shell {
         let blocks = &self.chat.blocks;
         let ix = blocks.iter().rposition(|b| matches!(b, Block::Reply { .. }))?;
         let Block::Reply { text, live: false, .. } = &blocks[ix] else { return None };
-        if blocks[ix + 1..].iter().any(|b| matches!(b, Block::User(_) | Block::Memo(_) | Block::Steering(_) | Block::Thinking(_))) {
+        if blocks[ix + 1..].iter().any(|b| matches!(b, Block::User(_) | Block::Pending { .. } | Block::Thinking(_))) {
             return None;
         }
         let hash = render::hash_of(text);

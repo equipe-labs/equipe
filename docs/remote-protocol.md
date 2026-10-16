@@ -94,6 +94,20 @@ closes them unanswered with `dismiss_questions` `{ "squad", "id" }`. Either way 
 member gets the answers as the person's next message, which shows in its conversation as a
 `user_message` starting `Answers to your question`.
 
+### A change to the team
+
+The PM proposes adding members of a role, or letting one go, as a `team_change_proposed`
+event: `change` is `{ "id", "change": "add" | "remove", "role", "count"? (1 when absent),
+"member"? (who leaves), "engine"?, "model"?, "effort"?, "reason", "unblocks"?: [<ticket>…],
+"by", "session", "proposed_at", "busy_on"? (the ticket a member let go is on) }`. The snapshot
+lists the ones still waiting in `team_changes` (absent when none). Only the person decides —
+never an agent: the phone approves with the command `approve_team_change` `{ "squad", "id" }`
+(the daemon then does what `/add` or `/close` does) or says no with `decline_team_change`
+`{ "squad", "id" }`. Every screen then gets `team_change_closed` `{ "squad", "id", "approved",
+"members"? }` — `members`: who joined, or left — also sent with `approved: false` when the
+change became moot (its member left anyway). A push for a proposal carries the event with
+`reason` cut to 800 characters, category `team`.
+
 ### Conformance vectors
 
 `docs/remote-vectors/` holds frames sealed with fixed keys and fixed ephemeral keys, QR codes
@@ -268,8 +282,14 @@ its secrets. Without them configured, a push answers `push_result` `ok: false`.
 
 The daemon follows a device like one more screen, with less reach than the terminal:
 
-- **may:** `hello`, `squads`, and the commands `submit`, `interrupt`, `accept`, `reopen`,
-  `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `focus`, `refresh`.
+- **may:** `hello`, `squads`, and the commands `submit`, `interrupt`, `send_now`, `accept`, `reopen`,
+  `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `approve_team_change`,
+  `decline_team_change`, `focus`, `refresh`.
+- `submit` and `answer_questions` may say what the message is about: `about` — the project the
+  phone shows, or `null` for the whole squad. Left out, the daemon takes the project in focus
+  (the last `focus` any screen sent). Said while the member works, a message steers it
+  (`steer_queued`, with its `project`); `send_now` stops the turn and sends what waits — the
+  `texts` first, in that order — as one message (`queue_sent`, then the turn's end).
 - **may not:** `start`, `close`, `merge`, `set_mode`, `scale`, `show_browser` — nor the person's
   own hand on the board: `create_ticket`, `edit_ticket`, `edit_tickets`, `move_ticket`,
   `comment_ticket`, `ticket_history` (the phone answers what the board asks; planning stays at a

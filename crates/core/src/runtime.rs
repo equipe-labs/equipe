@@ -43,6 +43,8 @@ use crate::permissions;
 use crate::roles::{self, Teammate};
 use crate::squad_home;
 use crate::squad_memory;
+use crate::steers;
+use crate::watchdog;
 use crate::worktree::{self, Sandbox};
 
 /// What equipe says to the person, in their language: `say!(self, "notice.model", model = m)`.
@@ -57,6 +59,7 @@ macro_rules! say {
 }
 
 mod decide;
+mod team;
 mod tickets;
 
 /// How many recent lines a snapshot carries per session.
@@ -76,6 +79,20 @@ const ENGINE_QUESTION_TOOL: &str = "AskUserQuestion";
 pub const DESKTOP_SERVER: &str = "desktop";
 /// The tool name a member's own question shows under, among approvals.
 const CONFIRM: &str = "Confirm";
+
+/// How long `busy` waits for the loop before it answers with what the loop is on.
+pub const ANSWER_WAIT: Duration = Duration::from_secs(3);
+
+/// How long the loop waits on a server (a Codex sign-in, its models) or on
+/// `claude auth status` before it gives up: nothing else is done meanwhile.
+const SERVER_WAIT: Duration = Duration::from_secs(30);
+
+/// How often the sweep looks for done work that reached main outside equipe.
+const SETTLE_EVERY: Duration = Duration::from_secs(10 * 60);
+
+/// Below this much free space the disk counts as full; above `DISK_ROOM_AGAIN`, no longer.
+const DISK_FULL_BELOW: u64 = 256 << 20;
+const DISK_ROOM_AGAIN: u64 = 1 << 30;
 
 /// How long a member waits for the person to answer a request for permission
 /// before it is declined.
@@ -167,6 +184,8 @@ enum Request {
 #[derive(Clone)]
 pub struct Handle {
     requests: UnboundedSender<Request>,
+    /// What the loop is on, for an answer when it doesn't answer.
+    pulse: std::sync::Arc<watchdog::Pulse>,
 }
 
 impl Handle {
@@ -261,10 +280,19 @@ impl Handle {
     }
 
     /// Who is mid-turn, and how many requests wait for the person.
+    /// When the loop doesn't answer within [`ANSWER_WAIT`]: what it is on.
     pub async fn busy(&self) -> equipe_protocol::rpc::Busy {
         let (tx, rx) = oneshot::channel();
         let _ = self.requests.send(Request::Busy(tx));
-        rx.await.unwrap_or_default()
+        match tokio::time::timeout(ANSWER_WAIT, rx).await {
+            Ok(answer) => answer.unwrap_or_default(),
+            Err(_) => equipe_protocol::rpc::Busy { stalled: self.stall(), ..Default::default() },
+        }
+    }
+
+    /// The loop's step under way, however short; `None` between steps.
+    pub fn stall(&self) -> Option<equipe_protocol::rpc::Stall> {
+        self.pulse.stall(Duration::ZERO)
     }
 
     /// Stop running turns and the runtime. Open sessions stay journaled.
@@ -287,7 +315,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let mut runtime = Runtime {
         desktop: desktop::Desktop::new(mac),
         config,
-        client: reqwest::Client::new(),
+        // A server that never answers a connection must not hold anything up.
+        client: reqwest::Client::builder().connect_timeout(Duration::from_secs(15)).build().unwrap_or_default(),
         subscribers: vec![(None, evt_tx)],
         internal: internal_tx,
         sessions: HashMap::new(),
@@ -296,6 +325,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         pending: HashMap::new(),
         next_approval: 1,
         focus: HashMap::new(),
+        said_about: None,
         builds_trimmed: None,
         browsers: HashMap::new(),
         host: None,
@@ -314,6 +344,12 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         show_url: HashMap::new(),
         plan: None,
         questions: HashMap::new(),
+        team_changes: HashMap::new(),
+        merged_cache: Some(worktree::MergedCache::default()),
+        settle_again: false,
+        settled_at: None,
+        merging: std::collections::HashSet::new(),
+        disk_full: None,
     };
     let mut memos = Vec::new();
     if runtime.config.persist {
@@ -321,13 +357,25 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         runtime.prune();
         memos = runtime.resume_work();
     }
-    tokio::spawn(run(runtime, req_rx, internal_rx, host_rx));
-    let handle = Handle { requests: req_tx };
+    let pulse = watchdog::Pulse::new();
+    watchdog::watch(&pulse);
+    tokio::spawn(CORE_LOOP.scope((), run(runtime, req_rx, internal_rx, host_rx, pulse.clone())));
+    let handle = Handle { requests: req_tx, pulse };
     // Memos for a turn the restart ended go in first, as if just sent.
     for (session, text) in memos {
-        handle.send(Command::Submit { session, text });
+        handle.send(Command::Submit { session, text, about: None });
     }
     (handle, evt_rx)
+}
+
+tokio::task_local! {
+    /// Set for the core loop's task: what must never run on it can tell.
+    static CORE_LOOP: ();
+}
+
+/// Whether this runs on the core loop — the one task every screen waits on.
+pub(crate) fn on_core_loop() -> bool {
+    CORE_LOOP.try_with(|()| ()).is_ok()
 }
 
 /// The member a session is, as the screen's lease knows it.
@@ -414,6 +462,18 @@ struct Session {
     steer: Option<mpsc::UnboundedSender<String>>,
     /// What was sent that way and not read yet; at the turn's end, memos.
     steering: Vec<String>,
+    /// For each of those, the project the person was looking at (`None`: the whole squad).
+    steer_threads: Vec<Option<String>>,
+    /// Steers taken back after they went into the turn: not shown when the
+    /// engine echoes them, as it reads them with the word to disregard them.
+    taken_back: Vec<String>,
+    /// The words a message sent at once ([`Command::SendNow`]) goes to the
+    /// engine as — each part with its project — in place of the message.
+    send_now_prompt: Option<String>,
+    /// The subagents it handed work to this turn and that haven't handed
+    /// back — its id, what it was handed, its latest step, since when — for a
+    /// screen that attaches now.
+    subagents: Vec<(String, String, Option<String>, std::time::Instant)>,
     /// For the PM: what happened with the team since the PM's last turn. It
     /// travels with the PM's next message, so the PM keeps up without spending a
     /// turn on every exchange.
@@ -498,6 +558,10 @@ struct TurnDone {
     ticket: Option<TicketId>,
 }
 
+/// How a merge went off the loop: main's name and, when a push was asked
+/// for, how that went — or why nothing was merged.
+type MergeResult = Result<(String, Option<Result<(), String>>), String>;
+
 enum Internal {
     Event(Box<Event>),
     Done(TurnDone),
@@ -505,6 +569,14 @@ enum Internal {
     ApprovalTimedOut(u64),
     /// A picture of a watched member's browser, or none to be had.
     Frame(SessionId, Option<(Vec<u8>, Option<String>)>),
+    /// The look at done work off main, worked out off the loop: the tickets
+    /// (by squad) whose branch has nothing left to bring, and what it remembers.
+    Settled { merged: Vec<(String, TicketId)>, cache: worktree::MergedCache },
+    /// A merge the person asked for, worked out off the loop: main's name and,
+    /// when a push was asked for, how it went — or why nothing was merged.
+    Merged { squad: String, ticket: TicketId, result: MergeResult },
+    /// The free space on equipe's disk, as just looked at.
+    Disk(Option<u64>, std::time::Instant),
 }
 
 /// A request for permission waiting for the person, and the engine waiting on it.
@@ -550,6 +622,10 @@ struct Runtime {
     next_approval: u64,
     /// The project each squad's person is looking at, by name.
     focus: HashMap<String, String>,
+    /// While a message of the person's is handled: the project the screen
+    /// that sent it shows (`Some(None)`: the whole squad) — it, not the
+    /// focus another screen set last, says what the message is about.
+    said_about: Option<Option<String>>,
     /// When members' build caches were last looked at.
     builds_trimmed: Option<std::time::Instant>,
     /// Members' browsers, kept between turns: by squad and member.
@@ -591,102 +667,217 @@ struct Runtime {
     desktop: desktop::Desktop,
     /// Members' questions waiting for the person, by squad (`decide`).
     questions: HashMap<String, Vec<equipe_protocol::decide::QuestionSet>>,
+    /// Changes to the team the PM proposed, waiting for the person, by squad (`team`).
+    team_changes: HashMap<String, Vec<equipe_protocol::team::TeamChange>>,
+    /// What the look at done work off main remembers; `None` while a look is
+    /// under way off the loop, and `settle_again` when another was asked meanwhile.
+    merged_cache: Option<worktree::MergedCache>,
+    settle_again: bool,
+    /// When the last sweep began.
+    settled_at: Option<std::time::Instant>,
+    /// Merges under way off the loop, by squad and ticket.
+    merging: std::collections::HashSet<(String, TicketId)>,
+    /// The disk is full, as last looked at or as a write said: the screens were told.
+    disk_full: Option<std::time::Instant>,
 }
 
-async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut internal: UnboundedReceiver<Internal>, mut host: UnboundedReceiver<browser::HostEvent>) {
+/// What woke the loop.
+enum Wake {
+    Request(Option<Request>),
+    Internal(Internal),
+    Host(browser::HostEvent),
+    Daily,
+    DesktopTick,
+    Frames,
+    Minute,
+}
+
+impl Wake {
+    /// What the loop is doing for it, as the watchdog tells it.
+    fn doing(&self) -> std::borrow::Cow<'static, str> {
+        use std::borrow::Cow::{Borrowed, Owned};
+        match self {
+            Wake::Request(Some(Request::Command(command))) => {
+                let name = serde_json::to_value(command).ok().and_then(|v| v["type"].as_str().map(str::to_owned));
+                Owned(format!("command {}", name.unwrap_or_else(|| "?".into())))
+            }
+            Wake::Request(Some(Request::Tool(call, _))) => Owned(format!("tool {} for {}/{}", call.name, call.squad, call.member)),
+            Wake::Request(Some(Request::Snapshot(..))) => Borrowed("snapshot"),
+            Wake::Request(Some(Request::Subscribe(..))) => Borrowed("hello (a screen's snapshot)"),
+            Wake::Request(Some(Request::DesktopGate(..))) => Borrowed("desktop gate"),
+            Wake::Request(Some(Request::DesktopTool(..))) => Borrowed("desktop tool"),
+            Wake::Request(Some(Request::Busy(_))) => Borrowed("busy"),
+            Wake::Request(Some(Request::PersonWindow(..))) => Borrowed("person's browser window"),
+            Wake::Request(Some(Request::BrowserHub(_))) => Borrowed("browser panel"),
+            Wake::Request(Some(Request::Desktop(_))) => Borrowed("desktop lease"),
+            Wake::Request(Some(Request::Shutdown(_))) | Wake::Request(None) => Borrowed("shutdown"),
+            Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
+            Wake::Internal(Internal::Done(_)) => Borrowed("a turn's end"),
+            Wake::Internal(Internal::ApprovalTimedOut(_)) => Borrowed("an approval timing out"),
+            Wake::Internal(Internal::Frame(..)) => Borrowed("a browser picture"),
+            Wake::Internal(Internal::Settled { .. }) => Borrowed("settling merged work"),
+            Wake::Internal(Internal::Merged { .. }) => Borrowed("a merge's end"),
+            Wake::Internal(Internal::Disk(..)) => Borrowed("the disk's free space"),
+            Wake::Host(_) => Borrowed("the browser host's news"),
+            Wake::Daily => Borrowed("daily prune"),
+            Wake::DesktopTick => Borrowed("desktop tick"),
+            Wake::Frames => Borrowed("browser pictures"),
+            Wake::Minute => Borrowed("minute tick"),
+        }
+    }
+}
+
+async fn run(
+    mut rt: Runtime,
+    mut requests: UnboundedReceiver<Request>,
+    mut internal: UnboundedReceiver<Internal>,
+    mut host: UnboundedReceiver<browser::HostEvent>,
+    pulse: std::sync::Arc<watchdog::Pulse>,
+) {
+    use tokio::time::MissedTickBehavior;
     let mut daily = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
     let mut minute = tokio::time::interval(Duration::from_secs(60));
     // A screen held by a member that stopped using it goes to the next in line.
     let mut desktop_tick = tokio::time::interval(Duration::from_secs(5));
     let mut frames = tokio::time::interval(FRAME_EVERY);
+    // A loop held up never catches up on the ticks it missed in a burst: that
+    // only holds it up again.
+    for tick in [&mut daily, &mut minute, &mut desktop_tick, &mut frames] {
+        tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    }
     daily.tick().await; // the first tick is immediate; pruning already ran at start
     loop {
-        tokio::select! {
-            request = requests.recv() => match request {
-                Some(Request::Command(command)) => rt.handle(command).await,
+        let wake = tokio::select! {
+            request = requests.recv() => Wake::Request(request),
+            Some(message) = internal.recv() => Wake::Internal(message),
+            Some(said) = host.recv() => Wake::Host(said),
+            _ = daily.tick(), if rt.config.persist => Wake::Daily,
+            _ = desktop_tick.tick() => Wake::DesktopTick,
+            _ = frames.tick() => Wake::Frames,
+            _ = minute.tick() => Wake::Minute,
+        };
+        pulse.begin(wake.doing());
+        let go_on = rt.wake(wake, &pulse).await;
+        pulse.end();
+        if !go_on {
+            return;
+        }
+    }
+}
+
+impl Runtime {
+    /// One turn of the loop. `false`: the runtime is done.
+    async fn wake(&mut self, wake: Wake, pulse: &watchdog::Pulse) -> bool {
+        match wake {
+            Wake::Request(request) => match request {
+                Some(Request::Command(command)) => self.handle(command).await,
                 Some(Request::Snapshot(squad, reply)) => {
-                    let _ = reply.send(rt.snapshot(&squad));
+                    let _ = reply.send(self.snapshot(&squad));
                 }
                 Some(Request::Subscribe(squad, reply)) => {
                     let (tx, rx) = mpsc::unbounded_channel();
                     // The shared Chrome's tabs as they stand, then what changes.
-                    for tabs in rt.tabs.values() {
+                    for tabs in self.tabs.values() {
                         if tabs.for_everyone() || tabs.squad() == Some(squad.as_str()) {
                             let _ = tx.send(tabs.clone());
                         }
                     }
                     // And the members' browsers in the person's hands.
-                    for (lane, why) in &rt.held {
+                    for (lane, why) in &self.held {
                         if lane.split_once('/').is_some_and(|(q, _)| q == squad) {
-                            let check = rt.checking.get(lane).map(|c| c.2);
+                            let check = self.checking.get(lane).map(|c| c.2);
                             let _ = tx.send(Event::BrowserControl { squad: Some(squad.clone()), lane: lane.clone(), by: Some("person".into()), why: why.clone(), check });
                         }
                     }
-                    rt.subscribers.push((Some(squad.clone()), tx));
-                    let _ = reply.send((rt.snapshot(&squad), rx));
+                    // A disk found full is told to each screen as it comes.
+                    if self.disk_full.is_some() {
+                        let _ = tx.send(Event::Error { session: None, message: say!(self, "error.disk_full"), next: None });
+                    }
+                    self.subscribers.push((Some(squad.clone()), tx));
+                    let _ = reply.send((self.snapshot(&squad), rx));
                 }
-                Some(Request::Tool(call, reply)) => rt.tool(call, reply).await,
+                Some(Request::Tool(call, reply)) => self.tool(call, reply).await,
                 Some(Request::PersonWindow(url, reply)) => {
-                    let _ = reply.send(rt.person_window(&url));
+                    let _ = reply.send(self.person_window(&url));
                 }
                 Some(Request::BrowserHub(reply)) => {
-                    let _ = reply.send(rt.hub.clone());
+                    let _ = reply.send(self.hub.clone());
                 }
-                Some(Request::DesktopGate(check, reply)) => rt.gate_desktop(*check, reply),
+                Some(Request::DesktopGate(check, reply)) => self.gate_desktop(*check, reply),
                 Some(Request::DesktopTool(call, reply)) => {
-                    let _ = reply.send(rt.desktop_allowed(&call));
+                    let _ = reply.send(self.desktop_allowed(&call));
                 }
                 Some(Request::Busy(reply)) => {
-                    let mut working: Vec<String> = rt
+                    let mut working: Vec<String> = self
                         .sessions
                         .values()
                         .filter(|s| s.is_working())
                         .map(|s| format!("{}/{}", s.squad.as_deref().unwrap_or("-"), s.name().unwrap_or("?")))
                         .collect();
                     working.sort();
-                    let _ = reply.send(equipe_protocol::rpc::Busy { working, approvals: rt.pending.len(), desktop: rt.desktop.state() });
+                    let busy = equipe_protocol::rpc::Busy { working, approvals: self.pending.len(), desktop: self.desktop.state(), stalled: None };
+                    let _ = reply.send(busy);
                 }
-                Some(Request::Desktop(request)) => rt.on_desktop(request),
+                Some(Request::Desktop(request)) => self.on_desktop(request),
                 Some(Request::Shutdown(reply)) => {
-                    rt.stop_all_turns();
+                    self.stop_all_turns();
                     let _ = reply.send(());
-                    return;
+                    return false;
                 }
-                None => break,
+                None => {
+                    self.stop_all_turns();
+                    return false;
+                }
             },
-            Some(message) = internal.recv() => match message {
-                Internal::Event(event) => rt.publish(*event),
-                Internal::Done(done) => rt.on_turn_done(done).await,
-                Internal::ApprovalTimedOut(id) => rt.answer(id, Decision::Deny, "Nobody answered in time."),
+            Wake::Internal(message) => match message {
+                Internal::Event(event) => match *event {
+                    // What the engine echoes as it reads the person's steers: each said as it was.
+                    Event::Steered { session, text } => self.steered(session, &text),
+                    event => self.publish(event),
+                },
+                Internal::Done(done) => self.on_turn_done(done).await,
+                Internal::ApprovalTimedOut(id) => self.answer(id, Decision::Deny, "Nobody answered in time."),
                 Internal::Frame(session, frame) => {
-                    rt.framing.remove(&session);
+                    self.framing.remove(&session);
                     if let Some((png, url)) = frame {
                         use base64::Engine as _;
                         let image = base64::engine::general_purpose::STANDARD.encode(png);
-                        rt.publish(Event::BrowserFrame { session, image, url });
+                        self.publish(Event::BrowserFrame { session, image, url });
                     }
                 }
+                Internal::Settled { merged, cache } => self.on_settled(merged, cache),
+                Internal::Merged { squad, ticket, result } => self.on_merged(&squad, ticket, result),
+                Internal::Disk(free, asked) => self.on_disk(free, asked),
             },
-            Some(said) = host.recv() => rt.on_host(said).await,
-            _ = daily.tick(), if rt.config.persist => rt.prune(),
-            _ = desktop_tick.tick() => {
-                if rt.desktop.expire() {
-                    rt.publish_desktop();
+            Wake::Host(said) => self.on_host(said).await,
+            Wake::Daily => self.prune(),
+            Wake::DesktopTick => {
+                if self.desktop.expire() {
+                    self.publish_desktop();
                 }
             }
-            _ = frames.tick() => rt.take_frames(),
-            _ = minute.tick() => {
-                rt.fold_idle_lanes();
-                rt.trim_builds();
-                rt.expire_estimates();
-                rt.close_idle_browsers();
-                rt.let_helpers_go().await;
-                rt.tidy_check();
-                rt.settle_all_merged();
+            Wake::Frames => self.take_frames(),
+            Wake::Minute => {
+                pulse.step("minute tick: idle lanes");
+                self.fold_idle_lanes();
+                self.trim_builds();
+                self.expire_estimates();
+                pulse.step("minute tick: idle browsers");
+                self.close_idle_browsers();
+                pulse.step("minute tick: helpers");
+                self.let_helpers_go().await;
+                pulse.step("minute tick: stale tickets");
+                self.tidy_check();
+                // Work that reached main outside equipe: every ten minutes is soon
+                // enough (a merge or an accept looks at once), and off the loop.
+                if self.settled_at.is_none_or(|at| at.elapsed() >= SETTLE_EVERY) {
+                    self.settle_all_merged();
+                }
+                self.look_at_disk();
             }
         }
+        true
     }
-    rt.stop_all_turns();
 }
 
 impl Runtime {
@@ -716,6 +907,7 @@ impl Runtime {
             self.last_url.insert(key, url.clone());
         }
         let mut squad = squad.map(str::to_owned);
+        let mut no_room = false;
         if let Some(id) = event.session()
             && let Some(session) = self.sessions.get_mut(&id)
         {
@@ -729,9 +921,21 @@ impl Runtime {
                 Event::Steered { text, .. } => {
                     if let Some(at) = session.steering.iter().position(|t| t == text) {
                         session.steering.remove(at);
+                        if at < session.steer_threads.len() {
+                            session.steer_threads.remove(at);
+                        }
                     }
                 }
+                Event::SubagentStarted { id, what, .. } => session.subagents.push((id.clone(), what.clone(), None, std::time::Instant::now())),
+                Event::SubagentStep { id, step, .. } => {
+                    if let Some(sub) = session.subagents.iter_mut().find(|s| s.0 == *id) {
+                        sub.2 = Some(step.clone());
+                    }
+                }
+                Event::SubagentEnded { id, .. } => session.subagents.retain(|s| s.0 != *id),
                 Event::TurnEnded { usage, .. } => {
+                    // Whatever didn't hand back ended with the turn.
+                    session.subagents.clear();
                     session.last_turn = Some(std::time::Instant::now());
                     if let Some(u) = usage {
                         session.tokens += u.total();
@@ -750,7 +954,7 @@ impl Runtime {
             {
                 let title = session.title.clone();
                 if let Some(journal) = journal_for(&mut self.journals, &self.config.home, &name) {
-                    record(journal, id, &event, &finished, title.as_deref());
+                    no_room = !record(journal, id, &event, &finished, title.as_deref());
                 }
             }
         }
@@ -765,6 +969,57 @@ impl Runtime {
             Some(follows) if squad.as_ref() != Some(follows) && !everyone => !screen.is_closed(),
             _ => screen.send(event.clone()).is_ok(),
         });
+        if no_room {
+            self.disk_is_full();
+        }
+    }
+
+    // ── a full disk ──
+
+    /// How much room the disk has, looked at off the loop.
+    fn look_at_disk(&mut self) {
+        let (home, internal) = (self.config.home.clone(), self.internal.clone());
+        tokio::task::spawn_blocking(move || {
+            let asked = std::time::Instant::now();
+            let _ = internal.send(Internal::Disk(free_space(&home), asked));
+        });
+    }
+
+    fn on_disk(&mut self, free: Option<u64>, asked: std::time::Instant) {
+        let Some(free) = free else { return };
+        if free < DISK_FULL_BELOW {
+            self.disk_is_full();
+        } else if self.disk_full.is_some_and(|since| asked > since) && free > DISK_ROOM_AGAIN {
+            self.disk_full = None;
+            crate::daemon_log!("equipe: the disk has room again ({} MB free)", free >> 20);
+            let message = say!(self, "notice.disk_room");
+            for squad in self.followed_squads() {
+                self.squad_error(&squad, message.clone());
+            }
+        }
+    }
+
+    /// The disk is full: said once — to the log, and to every screen — and
+    /// the daemon goes on serving; what it couldn't save is lost, nothing more.
+    fn disk_is_full(&mut self) {
+        if self.disk_full.is_some() {
+            return;
+        }
+        self.disk_full = Some(std::time::Instant::now());
+        let free = free_space(&self.config.home).map_or_else(|| "?".to_owned(), |f| format!("{} MB", f >> 20));
+        crate::daemon_log!("equipe: the disk is full ({free} free): conversations and tickets aren't saved until there's room");
+        let message = say!(self, "error.disk_full");
+        for squad in self.followed_squads() {
+            self.squad_error(&squad, message.clone());
+        }
+    }
+
+    /// The squads screens follow now, and those with a journal open.
+    fn followed_squads(&self) -> Vec<String> {
+        let mut squads: Vec<String> = self.subscribers.iter().filter_map(|(s, _)| s.clone()).chain(self.journals.keys().cloned()).collect();
+        squads.sort();
+        squads.dedup();
+        squads
     }
 
     // ── the Mac's screen ──
@@ -811,16 +1066,20 @@ impl Runtime {
     async fn handle(&mut self, command: Command) {
         match command {
             Command::Start { session, spec } => self.start(session, spec).await,
-            Command::Submit { session, text } => {
+            Command::Submit { session, text, about } => {
+                self.said_about = about;
                 let session = self.route(session);
-                self.submit(session, text).await
+                self.submit(session, text).await;
+                self.said_about = None;
             }
-            Command::SubmitLater { session, text } => {
+            Command::SubmitLater { session, text, about } => {
+                self.said_about = about;
                 let session = self.route(session);
                 match self.sessions.get(&session) {
                     Some(s) if s.is_working() => self.leave_memo(session, text),
                     _ => self.submit(session, text).await,
                 }
+                self.said_about = None;
             }
             Command::Interrupt { session } => self.interrupt(session).await,
             Command::Close { session } => self.close(session).await,
@@ -872,6 +1131,7 @@ impl Runtime {
             }
             Command::BrowserCloseTab { page } => {
                 self.hub.op(&json!({ "op": "closetab", "page": page }));
+                self.closed_by_person(page).await;
             }
             Command::BrowserControl { lane, take } => {
                 self.hub.op(&json!({ "op": "control", "lane": lane, "by": take.then_some("person") }));
@@ -915,6 +1175,7 @@ impl Runtime {
                 }
             }
             Command::Unqueue { session, text } => self.unqueue(session, &text),
+            Command::SendNow { session, texts } => self.send_now(session, texts).await,
             Command::SetEffort { session, effort } => {
                 let effort = effort.map(|e| e.trim().to_ascii_lowercase()).filter(|e| !e.is_empty());
                 if let Some(s) = self.sessions.get_mut(&session) {
@@ -939,8 +1200,14 @@ impl Runtime {
                     self.answer(approval, decision, "");
                 }
             }
-            Command::AnswerQuestions { squad, id, answers } => self.answer_questions(&squad, id, answers).await,
+            Command::AnswerQuestions { squad, id, answers, about } => {
+                self.said_about = about;
+                self.answer_questions(&squad, id, answers).await;
+                self.said_about = None;
+            }
             Command::DismissQuestions { squad, id } => self.dismiss_questions(&squad, id).await,
+            Command::ApproveTeamChange { squad, id } => self.approve_team_change(&squad, id).await,
+            Command::DeclineTeamChange { squad, id } => self.decline_team_change(&squad, id),
             Command::Disallow { squad, rule } => {
                 let taken = self.journals.get(&squad).and_then(|j| j.disallow(&rule).ok()).unwrap_or(false);
                 if taken {
@@ -965,8 +1232,10 @@ impl Runtime {
         };
         let threads: Vec<String> = session.memo_threads.iter().map(|p| p.clone().unwrap_or_default()).collect();
         let steering = session.steering.clone();
+        let steer_threads: Vec<String> = session.steer_threads.iter().map(|p| p.clone().unwrap_or_default()).collect();
         if let Some(journal) = self.journal(&squad) {
             let _ = journal.set_waiting(id, "steer", &steering);
+            let _ = journal.set_waiting(id, "steer-threads", &steer_threads);
             let _ = journal.set_waiting(id, "memo", &queued);
             let _ = journal.set_waiting(id, "memo-threads", &threads);
             let _ = journal.set_waiting(id, "briefing", &briefing);
@@ -1158,9 +1427,11 @@ impl Runtime {
                 };
                 if model.is_none() {
                     // Ask the backend what this account has rather than hardcoding an id.
-                    let catalog = match codex::list_models(&self.client, &cred, &self.config.client_version).await {
-                        Ok(models) => models,
-                        Err(err) => return fail(self, err.to_string(), Some("equipe status")),
+                    let asked = codex::list_models(&self.client, &cred, &self.config.client_version);
+                    let catalog = match tokio::time::timeout(SERVER_WAIT, asked).await {
+                        Ok(Ok(models)) => models,
+                        Ok(Err(err)) => return fail(self, err.to_string(), Some("equipe status")),
+                        Err(_) => return fail(self, format!("Codex didn't answer in {}s", SERVER_WAIT.as_secs()), Some("equipe status")),
                     };
                     model = match role {
                         Some(role) => roles::recommended_model(role.tier, engine, &catalog),
@@ -1285,6 +1556,10 @@ impl Runtime {
                 memo_thread: None,
                 steer: None,
                 steering: Vec::new(),
+                steer_threads: Vec::new(),
+                taken_back: Vec::new(),
+                send_now_prompt: None,
+                subagents: Vec::new(),
                 answers_person: false,
                 effort: None,
                 briefing: Vec::new(),
@@ -1334,13 +1609,20 @@ impl Runtime {
             // Said while it works: it reads it at its next step and carries on,
             // steered (what is said mid-work is mostly a correction); an engine
             // that can't take it mid-turn gets it as a memo.
-            if let Some(steer) = session.steer.clone()
-                && steer.send(text.clone()).is_ok()
-            {
-                session.steering.push(text.clone());
-                self.save_waiting(id);
-                self.tell_the_pm(id, |name| format!("The person told {name}, mid-work: {text}"), Some(&text));
-                return self.publish(Event::SteerQueued { session: id, text });
+            if let Some(steer) = session.steer.clone() {
+                // Each steer says which project it is about, as a message does:
+                // several read together at one step may be about different ones.
+                let project = self.looking_at(id);
+                let said = self.steer_words(id, &text, project.as_deref());
+                if steer.send(said).is_ok() {
+                    if let Some(session) = self.sessions.get_mut(&id) {
+                        session.steering.push(text.clone());
+                        session.steer_threads.push(project.clone());
+                    }
+                    self.save_waiting(id);
+                    self.tell_the_pm(id, |name| format!("The person told {name}, mid-work: {text}"), Some(&text));
+                    return self.publish(Event::SteerQueued { session: id, text, project });
+                }
             }
             return self.leave_memo(id, text);
         }
@@ -1350,38 +1632,168 @@ impl Runtime {
     /// A memo: it waits for the turn to end rather than cutting in, and belongs
     /// with the project the person is looking at now.
     fn leave_memo(&mut self, id: SessionId, text: String) {
+        let project = self.looking_at(id);
+        self.leave_memo_about(id, text, project);
+    }
+
+    /// A memo about `project` (`None`: the whole squad).
+    fn leave_memo_about(&mut self, id: SessionId, text: String, project: Option<String>) {
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
-        {
-            let looking_at = match &session.work {
-                Some(work) => Some(crate::board::project_name(&work.project)),
-                None => session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned(),
-            };
-            session.queued.push(text.clone());
-            session.memo_threads.push(looking_at.clone());
-            let project = looking_at;
-            self.save_waiting(id);
-            self.publish(Event::MessageQueued { session: id, text, project });
+        session.queued.push(text.clone());
+        session.memo_threads.push(project.clone());
+        self.save_waiting(id);
+        self.publish(Event::MessageQueued { session: id, text, project });
+    }
+
+    /// The project what is said to `id` now is about: its ticket's, at work
+    /// on one; else the one the person looks at (`None`: the whole squad).
+    fn looking_at(&self, id: SessionId) -> Option<String> {
+        let session = self.sessions.get(&id)?;
+        match &session.work {
+            Some(work) => Some(crate::board::project_name(&work.project)),
+            None => self.said_about.clone().unwrap_or_else(|| session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned()),
+        }
+    }
+
+    /// A steer as it goes into the turn: with the project it is about first,
+    /// as a message is sent — at the PM's desk, of a squad with several
+    /// projects, the whole squad's said too.
+    fn steer_words(&mut self, id: SessionId, text: &str, project: Option<&str>) -> String {
+        let desk = self.sessions.get(&id).filter(|s| s.is_pm() && s.work.is_none()).and_then(|s| s.squad.clone());
+        let whole = project.is_none() && desk.is_some_and(|squad| self.projects(&squad).len() > 1);
+        steers::words(text, project, whole)
+    }
+
+    /// The engine read what the person said while it works: `raw` as it
+    /// echoes it — one steer, or several read at once — each shown as it was
+    /// said, in the conversation of the project it was about. A steer taken
+    /// back, and the word that it was, are not shown.
+    fn steered(&mut self, id: SessionId, raw: &str) {
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        // Each with the project it was said about; `None`: not one equipe knows of.
+        let mut read: Vec<(String, Option<Option<String>>)> = Vec::new();
+        for part in steers::read(raw, &session.steering) {
+            if part.starts_with(steers::TAKEN_BACK) {
+                continue;
+            }
+            if let Some(at) = session.taken_back.iter().position(|t| *t == part) {
+                session.taken_back.remove(at);
+                continue;
+            }
+            let about = session.steering.iter().position(|t| *t == part).map(|at| session.steer_threads.get(at).cloned().flatten());
+            read.push((part, about));
+        }
+        // At the PM's desk the line goes where it was said about, and the
+        // turn goes on about its own after it.
+        let marks = session.is_pm() && session.work.is_none();
+        for (text, about) in read {
+            let now = self.sessions.get(&id).and_then(|s| scope::current(s.transcript.entries())).flatten();
+            let about = about.unwrap_or_else(|| now.clone());
+            let elsewhere = marks && about != now;
+            if elsewhere {
+                self.publish(Event::Thread { session: id, project: about });
+            }
+            self.publish(Event::Steered { session: id, text });
+            if elsewhere {
+                self.publish(Event::Thread { session: id, project: now });
+            }
+        }
+        self.save_waiting(id);
+    }
+
+    /// The session holding what waits with `held` for `id`: its own, or its lane's.
+    fn holder(&self, id: SessionId, held: impl Fn(&Session) -> bool) -> Option<SessionId> {
+        match self.sessions.get(&id) {
+            Some(s) if held(s) => Some(id),
+            _ => self.sessions.iter().find(|(_, s)| s.lane.as_ref().is_some_and(|(of, _)| *of == id) && held(s)).map(|(lane, _)| *lane),
+        }
+    }
+
+    /// Send what waits for `id` now ([`Command::SendNow`]): its turn stops
+    /// and the steers not read and the memos — `first` in its order, then
+    /// the rest — go to it together, as one message about their project
+    /// (each part with its own, when they are about several).
+    async fn send_now(&mut self, id: SessionId, first: Vec<String>) {
+        let waits = |s: &Session| !s.steering.is_empty() || !s.queued.is_empty();
+        let Some(id) = self.holder(id, waits) else {
+            return;
+        };
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        // Everything waiting, steers first as they were said, then memos.
+        let mut waiting: Vec<(String, Option<String>)> = Vec::new();
+        let steer_threads = std::mem::take(&mut session.steer_threads);
+        for (i, text) in std::mem::take(&mut session.steering).into_iter().enumerate() {
+            waiting.push((text, steer_threads.get(i).cloned().flatten()));
+        }
+        let memo_threads = std::mem::take(&mut session.memo_threads);
+        for (i, text) in std::mem::take(&mut session.queued).into_iter().enumerate() {
+            waiting.push((text, memo_threads.get(i).cloned().flatten()));
+        }
+        let items = steers::order(waiting, &first);
+        session.steer = None;
+        let texts: Vec<String> = items.iter().map(|(t, _)| t.clone()).collect();
+        if texts.is_empty() {
+            return;
+        }
+        let about: Vec<Option<String>> = items.iter().map(|(_, a)| a.clone()).collect();
+        let one = about.iter().all(|a| *a == about[0]);
+        let text = texts.join("\n\n");
+        // About several projects: each part says its own to the engine.
+        let prompt = (!one).then(|| items.iter().map(|(t, a)| steers::part(t, a.as_deref())).collect::<Vec<_>>().join("\n\n"));
+        self.save_waiting(id);
+        self.publish(Event::QueueSent { session: id, texts: texts.clone() });
+        let project = if one { about[0].clone() } else { None };
+        let stopped = self.stop_turn(id);
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        session.queued.insert(0, text);
+        session.memo_threads.insert(0, project);
+        session.send_now_prompt = prompt;
+        // A turn that finished already ends as it lands, delivering this first.
+        let landing = !stopped && session.turn.is_some();
+        if !landing {
+            // The turn's end, as Esc's: its work handed in, what waits delivered —
+            // this message first.
+            self.after_turn(id).await;
+        }
+        // What went into the stopped turn unread is in the message now: an
+        // echo of it still on its way is not shown twice.
+        if let Some(session) = self.sessions.get_mut(&id) {
+            session.taken_back.extend(texts);
         }
     }
 
     /// Take back a memo not delivered yet: the first one with `text`, in the
     /// session it was left in (a lane's, when the member had one).
     fn unqueue(&mut self, id: SessionId, text: &str) {
-        let held = |s: &Session| s.queued.iter().any(|q| q == text);
-        let id = match self.sessions.get(&id) {
-            Some(s) if held(s) => id,
-            _ => match self.sessions.iter().find(|(_, s)| s.lane.as_ref().is_some_and(|(of, _)| *of == id) && held(s)) {
-                Some((lane, _)) => *lane,
-                None => return,
-            },
+        let held = |s: &Session| s.queued.iter().any(|q| q == text) || s.steering.iter().any(|q| q == text);
+        let Some(id) = self.holder(id, held) else {
+            return;
         };
         let Some(session) = self.sessions.get_mut(&id) else { return };
-        let Some(at) = session.queued.iter().position(|q| q == text) else { return };
-        session.queued.remove(at);
-        if at < session.memo_threads.len() {
-            session.memo_threads.remove(at);
+        if let Some(at) = session.queued.iter().position(|q| q == text) {
+            session.queued.remove(at);
+            if at < session.memo_threads.len() {
+                session.memo_threads.remove(at);
+            }
+        } else if let Some(at) = session.steering.iter().position(|q| q == text) {
+            // A steer is in the turn already, unread: the engine is told to
+            // disregard it, and its echo isn't shown.
+            session.steering.remove(at);
+            if at < session.steer_threads.len() {
+                session.steer_threads.remove(at);
+            }
+            session.taken_back.push(text.to_owned());
+            if let Some(steer) = session.steer.clone() {
+                let _ = steer.send(steers::taken_back(text));
+            }
         }
         self.save_waiting(id);
         self.publish(Event::MemoWithdrawn { session: id, text: text.to_owned() });
@@ -1399,12 +1811,16 @@ impl Runtime {
         if !self.ensure_codex(id).await {
             return;
         }
-        // The project the message is about: the one the person looks at — a
-        // memo's, the one it was left in. None: the whole squad.
-        let about = memo_thread.flatten().or_else(|| {
-            let squad = self.sessions.get(&id)?.squad.clone()?;
-            self.focus.get(&squad).cloned()
-        });
+        // The project the message is about: the one the person looks at on
+        // the screen they sent it from (else the one in focus) — a memo's,
+        // the one it was left in. None: the whole squad.
+        let about = match memo_thread {
+            Some(left_in) => left_in,
+            None => self.said_about.clone().unwrap_or_else(|| {
+                let squad = self.sessions.get(&id).and_then(|s| s.squad.clone());
+                squad.and_then(|squad| self.focus.get(&squad).cloned())
+            }),
+        };
         // In the PM's conversation the message, its reply and its steps are
         // about that project: a marker says so where it changes.
         if let Some(session) = self.sessions.get(&id)
@@ -1435,6 +1851,8 @@ impl Runtime {
             return;
         };
         session.prompts.push(text.clone());
+        // A message sent at once about several projects: each part says its own.
+        let text = session.send_now_prompt.take().unwrap_or(text);
         // What the PM missed travels with its next message; the person sees only theirs.
         let mut prompt = match std::mem::take(&mut session.briefing) {
             briefing if briefing.is_empty() => text,
@@ -1600,6 +2018,10 @@ for one project goes to it as tickets for its owners, with that project — and 
             memo_thread: None,
             steer: None,
             steering: Vec::new(),
+            steer_threads: Vec::new(),
+            taken_back: Vec::new(),
+            send_now_prompt: None,
+            subagents: Vec::new(),
             answers_person: false,
             effort: None,
             briefing: Vec::new(),
@@ -2188,10 +2610,12 @@ for one project goes to it as tickets for its owners, with that project — and 
         // Said while it worked but not read before the turn ended: delivered now, with the memos.
         let unread = self.sessions.get_mut(&id).map(|s| {
             s.steer = None;
-            std::mem::take(&mut s.steering)
+            s.taken_back.clear();
+            let threads = std::mem::take(&mut s.steer_threads);
+            std::mem::take(&mut s.steering).into_iter().enumerate().map(|(i, t)| (t, threads.get(i).cloned().flatten())).collect::<Vec<_>>()
         });
-        for text in unread.unwrap_or_default() {
-            self.leave_memo(id, text);
+        for (text, project) in unread.unwrap_or_default() {
+            self.leave_memo_about(id, text, project);
         }
         let Some(session) = self.sessions.get(&id) else {
             return;
@@ -2298,6 +2722,8 @@ for one project goes to it as tickets for its owners, with that project — and 
         }
         if let (Some(squad), Some(name)) = (&squad, leaving) {
             self.drop_questions(squad, |set| set.member == name);
+            // Letting it go no longer waits on the person: it left.
+            self.drop_team_changes(squad, |c| c.member.as_deref() == Some(name.as_str()));
         }
         if let Some(sandbox) = self.sessions.get(&id).and_then(|s| s.sandbox.clone()) {
             self.land_plain_session(id, &sandbox);
@@ -2819,13 +3245,17 @@ for one project goes to it as tickets for its owners, with that project — and 
             }
             None => self.close_ticket(squad, found, TicketStatus::Done),
         }
+        // Work already in main stops asking to be merged as soon as the sweep says so.
+        self.settle_all_merged();
         self.dispatch(squad).await;
     }
 
     /// The person merges a done ticket's branch into main — their gate, never a
     /// member's — and pushes main when they said so. A conflict merges nothing.
+    /// The merge and the push are worked out off the loop (a push talks to a
+    /// server); [`Runtime::on_merged`] takes it from there.
     fn merge(&mut self, squad: &str, ticket: TicketId, push: bool) {
-        let Some(mut found) = self.find_ticket(squad, ticket) else {
+        let Some(found) = self.find_ticket(squad, ticket) else {
             return;
         };
         if found.status != TicketStatus::Done {
@@ -2842,9 +3272,27 @@ for one project goes to it as tickets for its owners, with that project — and 
             let message = say!(self, "error.no_branch", id = ticket);
             return self.squad_error(squad, message);
         };
+        // Asked twice: the merge under way answers both.
+        if !self.merging.insert((squad.to_owned(), ticket)) {
+            return;
+        }
         let message = format!("equipe: merge T-{ticket} {}\n\nAccepted by the person; merged from {branch}.", found.title);
-        let main = match worktree::merge_into_main(&repo, &branch, &message) {
-            Ok(main) => main,
+        let (internal, squad) = (self.internal.clone(), squad.to_owned());
+        tokio::task::spawn_blocking(move || {
+            let result = worktree::merge_into_main(&repo, &branch, &message)
+                .map(|main| (main, push.then(|| worktree::push_main(&repo).map(|_| ()))));
+            let _ = internal.send(Internal::Merged { squad, ticket, result });
+        });
+    }
+
+    /// A merge the person asked for is through, or merged nothing.
+    fn on_merged(&mut self, squad: &str, ticket: TicketId, result: MergeResult) {
+        self.merging.remove(&(squad.to_owned(), ticket));
+        let Some(mut found) = self.find_ticket(squad, ticket) else {
+            return;
+        };
+        let (main, pushed) = match result {
+            Ok(merged) => merged,
             Err(err) => {
                 // Why it stays off main, for the screens to say.
                 found.off_main = Some(if err.contains(" conflicts with ") {
@@ -2863,17 +3311,16 @@ for one project goes to it as tickets for its owners, with that project — and 
         };
         let mut line = format!("You merged T-{ticket} · {} into {main}", found.title);
         let mut news = "news.merged";
-        if push {
-            match worktree::push_main(&repo) {
-                Ok(_) => {
-                    line.push_str(" and pushed it");
-                    news = "news.merged_pushed";
-                }
-                Err(err) => {
-                    let message = say!(self, "error.not_pushed", branch = main, err = err);
-                    self.squad_error(squad, message);
-                }
+        match pushed {
+            Some(Ok(())) => {
+                line.push_str(" and pushed it");
+                news = "news.merged_pushed";
             }
+            Some(Err(err)) => {
+                let message = say!(self, "error.not_pushed", branch = main, err = err);
+                self.squad_error(squad, message);
+            }
+            None => {}
         }
         let shown = self.said(news, &[("id", ticket.to_string()), ("title", found.title.clone()), ("branch", main.clone())]);
         found.merged = Some(true);
@@ -2884,7 +3331,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         }
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: found });
         // Work it was built on came along with it.
-        self.settle_merged(squad);
+        self.settle_all_merged();
         self.brief_pm(squad, format!("{line}."), Some(shown));
     }
 
@@ -2892,27 +3339,65 @@ for one project goes to it as tickets for its owners, with that project — and 
     /// bring there (it got in another way, or it changes nothing: `+0 −0`)
     /// are merged: nothing to ask the person. Their worktree went when they
     /// were accepted; their branch stays, as after any merge.
-    fn settle_merged(&mut self, squad: &str) {
-        for mut t in self.tickets(squad).into_iter().filter(Ticket::not_on_main) {
-            if merged_state(&t) != Some(true) {
-                continue;
+    ///
+    /// Every squad open is looked at, every minute and after a merge — off the
+    /// loop, a few git commands per repository, and a merge worked out only for
+    /// a branch that moved, or whose main did ([`worktree::MergedCache`]).
+    /// [`Runtime::on_settled`] takes the answer. One look at a time.
+    fn settle_all_merged(&mut self) {
+        self.settled_at = Some(std::time::Instant::now());
+        let Some(mut cache) = self.merged_cache.take() else {
+            self.settle_again = true;
+            return;
+        };
+        let squads: Vec<String> = self.journals.keys().cloned().collect();
+        // By project: the tickets on it (squad, ticket, branch).
+        type OnBranch = (String, TicketId, String);
+        let mut asked: Vec<(PathBuf, Vec<OnBranch>)> = Vec::new();
+        for squad in squads {
+            for t in self.tickets(&squad).into_iter().filter(|t| t.not_on_main() && !t.kind.in_home()) {
+                let (Some(project), Some(branch)) = (t.project.clone(), t.branch.clone()) else { continue };
+                match asked.iter_mut().find(|(p, _)| *p == project) {
+                    Some((_, tickets)) => tickets.push((squad.clone(), t.id, branch)),
+                    None => asked.push((project, vec![(squad.clone(), t.id, branch)])),
+                }
             }
+        }
+        if asked.is_empty() {
+            self.merged_cache = Some(cache);
+            return;
+        }
+        let internal = self.internal.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut merged = Vec::new();
+            for (project, tickets) in asked {
+                let branches: Vec<String> = tickets.iter().map(|(_, _, b)| b.clone()).collect();
+                for ((squad, id, _), told) in tickets.into_iter().zip(cache.merged(&project, &branches)) {
+                    if told == Some(true) {
+                        merged.push((squad, id));
+                    }
+                }
+            }
+            let _ = internal.send(Internal::Settled { merged, cache });
+        });
+    }
+
+    /// The look at done work off main is back: what has nothing left to bring
+    /// is merged — if it still waits to be.
+    fn on_settled(&mut self, merged: Vec<(String, TicketId)>, cache: worktree::MergedCache) {
+        self.merged_cache = Some(cache);
+        for (squad, id) in merged {
+            let Some(mut t) = self.find_ticket(&squad, id).filter(Ticket::not_on_main) else { continue };
             t.merged = Some(true);
             t.off_main = None;
-            if let Some(journal) = self.journal(squad) {
+            if let Some(journal) = self.journal(&squad) {
                 let _ = journal.save_ticket(&t);
                 let _ = journal.ticket_event(t.id, "equipe", "merged", "nothing left to merge: its work is in main");
             }
-            self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: t });
+            self.publish(Event::TicketChanged { squad, ticket: t });
         }
-    }
-
-    /// Every squad open, settled: work that reached main outside equipe stops
-    /// asking to be merged.
-    fn settle_all_merged(&mut self) {
-        let squads: Vec<String> = self.journals.keys().cloned().collect();
-        for squad in squads {
-            self.settle_merged(&squad);
+        if std::mem::take(&mut self.settle_again) {
+            self.settle_all_merged();
         }
     }
 
@@ -3050,8 +3535,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                     self.publish(Event::Notice { session: id, text });
                 }
                 let _ = reply.send(ToolResult {
-                    text: "Your browser is open in the person's browser panel, at that page, in their hands. Tell them what \
-to do there and end your turn: you'll be told when they hand it back."
+                    text: "Your browser is open in the person's browser panel, at that page, in their hands, with your `why` \
+shown over it as what to do. Say in one line what they should do there, then end your turn. When they press \"done\" \
+and hand it back you get a message and carry on by yourself — don't ask them to tell you."
                         .into(),
                     is_error: false,
                     image: None,
@@ -3594,7 +4080,8 @@ there, end your turn, and carry on when they say they're done."
                 // and its turn ended: it carries on now.
                 if checked.is_some() && asked.is_none() {
                     if refused && !working {
-                        self.submit(session, "The person handled the page that needed them in your browser (a human check or a sign-in) and handed it back. Carry on where you were.".into()).await;
+                        let text = say!(self, "notice.browser_given_back");
+                        self.carry_on(session, text, "[equipe: the person handled the page that needed them in your browser (a human check or a sign-in) and handed it back. Carry on where you were.]".into()).await;
                     } else if working {
                         let text = say!(self, "notice.browser_given_back");
                         self.publish(Event::Notice { session, text });
@@ -3602,15 +4089,20 @@ there, end your turn, and carry on when they say they're done."
                     return;
                 }
                 match (by.is_some(), asked.is_some()) {
-                    // Put in their hands for a page that waits for them: told when it was.
-                    (true, _) if check.is_some() => {}
+                    // Put in their hands for a page that waits for them, or because
+                    // its member asked: told when it was.
+                    (true, _) if check.is_some() || self.asked_in.contains_key(&lane) => {}
                     // Only a turn under way needs telling: between turns nothing waits on it.
                     (true, _) if working => {
                         let text = say!(self, "notice.browser_taken");
                         self.publish(Event::Notice { session, text });
                     }
                     // Done with what it asked of them: it carries on.
-                    (false, true) => self.submit(session, "The person finished in the browser.".into()).await,
+                    (false, true) => {
+                        let why = asked.unwrap_or_default();
+                        let text = say!(self, "notice.browser_given_back");
+                        self.carry_on(session, text, handed_back(&why)).await;
+                    }
                     (false, false) if working => {
                         let text = say!(self, "notice.browser_given_back");
                         self.publish(Event::Notice { session, text });
@@ -3623,6 +4115,10 @@ there, end your turn, and carry on when they say they're done."
                 self.publish(Event::BrowserDialog { squad, lane, page, kind, message, default });
             }
             HostEvent::DialogClosed { page } => self.publish(Event::BrowserDialogClosed { page }),
+            HostEvent::Wants { lane, page, action } => {
+                let (squad, _) = self.lane_session(&lane);
+                self.publish(Event::BrowserWants { squad, lane, page, action });
+            }
             HostEvent::Exited => {
                 // Its tabs went with it.
                 for (lane, tabs) in std::mem::take(&mut self.tabs) {
@@ -3649,7 +4145,7 @@ there, end your turn, and carry on when they say they're done."
         let let_go = |page: u64, url: &str| self.let_go.contains(&(lane.to_owned(), page, url.to_owned()));
         match browser::check_step(pages, agent, self.checking.contains_key(lane), self.held.contains_key(lane), let_go) {
             browser::CheckStep::Pause { page, url, check } => {
-                self.hub.op(&json!({ "op": "control", "lane": lane, "by": "person", "why": "check" }));
+                self.hub.op(&json!({ "op": "control", "lane": lane, "by": "person", "why": "check", "page": page }));
                 if let Some(session) = session {
                     let site = browser::site_of(&url).to_owned();
                     let text = say!(self, "notice.browser_check", site = site);
@@ -3662,6 +4158,51 @@ there, end your turn, and carry on when they say they're done."
             }
             browser::CheckStep::Nothing => {}
         }
+    }
+
+    /// The person closed a tab of a member's browser: its member is told —
+    /// at its next step if it is at work, else in its conversation.
+    async fn closed_by_person(&mut self, page: u64) {
+        let found = self.tabs.iter().find_map(|(lane, tabs)| match tabs {
+            Event::BrowserTabs { pages, .. } if !lane.is_empty() => pages.iter().find(|p| p.id == page).map(|p| (lane.clone(), p.url.clone())),
+            _ => None,
+        });
+        let Some((lane, url)) = found else { return };
+        let (_, Some(session)) = self.lane_session(&lane) else { return };
+        let text = say!(self, "notice.browser_tab_closed", url = url);
+        if self.sessions.get(&session).is_some_and(Session::is_working) {
+            let prompt = format!("[equipe: the person closed your browser tab {url}. Don't open it again unless they ask; carry on without it.]");
+            self.carry_on(session, text, prompt).await;
+        } else {
+            self.publish(Event::Notice { session, text });
+        }
+    }
+
+    /// equipe tells a member something on the person's behalf — their browser
+    /// came back, a tab of it was closed: a notice in the conversation
+    /// (`notice`, in the person's language), never a message of theirs, and
+    /// `prompt` to the member — read at its next step if it is at work, else
+    /// starting a turn of its own.
+    async fn carry_on(&mut self, id: SessionId, notice: String, prompt: String) {
+        self.publish(Event::Notice { session: id, text: notice });
+        let Some(session) = self.sessions.get(&id) else { return };
+        if session.is_working() {
+            if let Some(steer) = session.steer.clone() {
+                let _ = steer.send(prompt);
+            }
+            return;
+        }
+        if !self.ensure_codex(id).await {
+            return;
+        }
+        let Some(session) = self.sessions.get_mut(&id) else { return };
+        // What it missed travels with it, as with the person's own messages.
+        let prompt = match std::mem::take(&mut session.briefing) {
+            briefing if briefing.is_empty() => prompt,
+            briefing => format!("[equipe: since your last turn —\n{}]\n\n{prompt}", briefing.iter().map(|line| format!("- {line}")).collect::<Vec<_>>().join("\n")),
+        };
+        self.save_waiting(id);
+        self.start_turn(id, prompt);
     }
 
     /// Whether `page` of `lane` waits for a person, as last told.
@@ -3804,7 +4345,11 @@ there, end your turn, and carry on when they say they're done."
                 }
                 let staffed = |o: &str| self.member_id(&squad, o).is_some() || self.team(&squad).iter().any(|(_, _, r)| r == o);
                 if let Some(owner) = owner.filter(|o| !staffed(o)) {
-                    reply.push_str(&format!(" Nobody on the squad is {owner} yet — the person can add one with /add {owner}."));
+                    if is_pm {
+                        reply.push_str(&format!(" Nobody on the squad is {owner} yet — propose one with propose_team_change (role {owner}): the person approves it on a card."));
+                    } else {
+                        reply.push_str(&format!(" Nobody on the squad is {owner} yet — the PM can propose adding one."));
+                    }
                 }
                 Ok(reply)
             }
@@ -3918,6 +4463,7 @@ it back there once they have done it.{again} End your turn now with a short line
                 ))
             }
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
+            crate::team::PROPOSE_TEAM_CHANGE => self.propose_team_change(&squad, &member, id, &args),
             board::ESTIMATE => {
                 let minutes = |key: &str| args.get(key).and_then(Value::as_f64).map(|m| m.max(0.0));
                 let (done, live) = (minutes("done_in_minutes"), minutes("live_in_minutes"));
@@ -4015,6 +4561,7 @@ it back there once they have done it.{again} End your turn now with a short line
                     queued_project: s.memo_threads.first().cloned().flatten(),
                     queued_in: s.memo_threads.clone(),
                     steering: s.steering.clone(),
+                    steering_in: s.steer_threads.clone(),
                     lane: s.lane.clone().map(|(of, project)| equipe_protocol::Lane { of, project }),
                     estimate: s.estimate.clone().filter(|e| !e.is_empty()),
                     work: s.work.as_ref().map(|w| WorkInfo {
@@ -4024,6 +4571,11 @@ it back there once they have done it.{again} End your turn now with a short line
                     }),
                     mode: s.mode,
                     effort: s.effort.clone(),
+                    subagents: s
+                        .subagents
+                        .iter()
+                        .map(|(id, what, step, since)| equipe_protocol::SubagentInfo { id: id.clone(), what: what.clone(), step: step.clone(), secs: since.elapsed().as_secs() })
+                        .collect(),
                 }
             })
             .collect();
@@ -4041,7 +4593,9 @@ it back there once they have done it.{again} End your turn now with a short line
         let allowed = self.journals.get(squad).and_then(|j| j.allowed().ok()).unwrap_or_default();
         let browsers_shown = self.journals.get(squad).is_some_and(Journal::browsers_all_shown);
         let questions = self.question_sets(squad).clone();
+        let team_changes = self.team_changes(squad).clone();
         Snapshot {
+            team_changes,
             squad: squad.to_owned(),
             projects,
             sessions,
@@ -4073,11 +4627,11 @@ it back there once they have done it.{again} End your turn now with a short line
             // A squad from before squad homes gets its home now.
             let home = squad_home::path(&self.config.home, &squad);
             if let Err(err) = squad_home::ensure(&self.config.home, &squad, journal.language().as_deref()) {
-                eprintln!("equipe: {squad}'s folder couldn't be made: {err}");
+                crate::daemon_log!("equipe: {squad}'s folder couldn't be made: {err}");
             }
             // Members of one role once each kept their own lessons; now they share them.
             if let Err(err) = journal::fold_member_memories(&self.config.home, &squad) {
-                eprintln!("equipe: {squad}'s members' memories couldn't be gathered: {err}");
+                crate::daemon_log!("equipe: {squad}'s members' memories couldn't be gathered: {err}");
             }
             let projects = journal.projects().unwrap_or_default();
             let tickets = journal.tickets().unwrap_or_default();
@@ -4136,9 +4690,15 @@ it back there once they have done it.{again} End your turn now with a short line
                     memos.extend(unread.iter().cloned());
                     let _ = journal.set_waiting(record.id, "memo", &memos);
                 }
-                for text in unread {
+                let unread_in: Vec<Option<String>> = journal
+                    .waiting(record.id, "steer-threads")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|p| Some(p).filter(|p| !p.is_empty()))
+                    .collect();
+                for (i, text) in unread.into_iter().enumerate() {
                     queued.push(text);
-                    memo_threads.push(None);
+                    memo_threads.push(unread_in.get(i).cloned().flatten());
                 }
                 // The PM's other conversations, by project, as they were left.
                 let (thread, others) = journal.desk_threads(record.id);
@@ -4181,6 +4741,10 @@ it back there once they have done it.{again} End your turn now with a short line
                         memo_thread: None,
                         steer: None,
                         steering: Vec::new(),
+                        steer_threads: Vec::new(),
+                        taken_back: Vec::new(),
+                        send_now_prompt: None,
+                        subagents: Vec::new(),
                         briefing: journal.waiting(record.id, "briefing").unwrap_or_default(),
                         memory,
                         mode: record.mode,
@@ -4317,7 +4881,7 @@ check what is already done in your worktree first."
         let home = self.config.home.clone();
         std::thread::spawn(move || {
             for line in worktree::trim_builds(&home, &busy, BUILD_CAP) {
-                eprintln!("equipe: {line}");
+                crate::daemon_log!("equipe: {line}");
             }
         });
     }
@@ -4380,7 +4944,7 @@ check what is already done in your worktree first."
         let home = self.config.home.clone();
         std::thread::spawn(move || {
             for line in worktree::tidy(&home, &in_use, &kept) {
-                eprintln!("equipe: {line}");
+                crate::daemon_log!("equipe: {line}");
             }
         });
     }
@@ -4640,6 +5204,17 @@ const REFRESH_FULL_PERCENT: u64 = 60;
 /// again whole once the prompt cache has expired.
 const REFRESH_COLD_TOKENS: u64 = 60_000;
 const REFRESH_COLD_AFTER: Duration = Duration::from_secs(60 * 60);
+/// What a member is told when the person hands back the browser it handed
+/// them (`show_my_browser`, in the panel): its turn starts again on it.
+fn handed_back(why: &str) -> String {
+    let why = why.trim();
+    let what = if why.is_empty() { String::new() } else { format!(" (you asked: {why})") };
+    format!(
+        "[equipe: the person finished in your browser{what} and handed it back to you. Look at the page as it is now \
+and carry on where you left off.]"
+    )
+}
+
 /// How many of the last messages a fresh conversation is handed.
 const REFRESH_TAIL: usize = 12;
 
@@ -4688,14 +5263,17 @@ fn recent_history(history: &[responses::Message]) -> Vec<responses::Message> {
 
 /// Remove a ticket's worktree; keep its branch if it has commits, drop it if not.
 /// Returns the branch that remains.
-/// Whether a ticket's branch is in its project's main branch; `None` when that
-/// can't be told (no branch, no repository).
+/// Whether a ticket just accepted is on its project's main branch, as far as
+/// the loop tells without git: not yet (`Some(false)`) when it has a branch in
+/// a repository — the sweep ([`Runtime::settle_all_merged`]), off the loop,
+/// settles what has nothing left to bring; `None` when that can't be told (no
+/// branch, no repository).
 fn merged_state(ticket: &Ticket) -> Option<bool> {
-    if ticket.kind.in_home() {
+    if ticket.kind.in_home() || ticket.branch.is_none() {
         return None;
     }
-    let repo = worktree::repo_root(ticket.project.as_deref()?).ok()?;
-    worktree::is_merged(&repo, ticket.branch.as_deref()?).ok()
+    let project = ticket.project.as_deref()?;
+    project.ancestors().any(|dir| dir.join(".git").exists()).then_some(false)
 }
 
 /// The finished work a ticket builds on — what it depends on, and what that
@@ -4761,9 +5339,14 @@ async fn codex_credentials(client: &reqwest::Client, store: &CredentialStore, la
         .map_err(|err| (words.fill("error.codex_unreadable", &[("path", store.path("openai").display().to_string()), ("err", err.to_string())]), "equipe login codex"))?
         .filter(|c| c.method == AuthMethod::OauthSubscription)
         .ok_or((words.get("error.codex_signed_out").to_owned(), "equipe login codex"))?;
-    codex::ensure_fresh(client, store, cred)
-        .await
-        .map_err(|err| (words.fill("error.codex_not_refreshed", &[("err", err.to_string())]), "equipe login codex"))
+    // Asked from the loop: a sign-in server that never answers holds nothing up for long.
+    match tokio::time::timeout(SERVER_WAIT, codex::ensure_fresh(client, store, cred)).await {
+        Ok(fresh) => fresh.map_err(|err| (words.fill("error.codex_not_refreshed", &[("err", err.to_string())]), "equipe login codex")),
+        Err(_) => {
+            let err = format!("no answer in {}s", SERVER_WAIT.as_secs());
+            Err((words.fill("error.codex_not_refreshed", &[("err", err)]), "equipe login codex"))
+        }
+    }
 }
 
 /// The journal of `squad`, opened on first use.
@@ -4776,33 +5359,47 @@ fn journal_for<'a>(journals: &'a mut HashMap<String, Journal>, home: &Path, squa
 }
 
 /// Write what an event made final, and what it changed about the session.
-fn record(journal: &Journal, id: SessionId, event: &Event, finished: &[Entry], title: Option<&str>) {
+/// `false` when the disk had no room for it. Nothing else stops for a write
+/// that failed: the screens still get the event.
+fn record(journal: &Journal, id: SessionId, event: &Event, finished: &[Entry], title: Option<&str>) -> bool {
+    let mut room = true;
+    let mut saw = |result: journal::Result<()>| {
+        if let Err(err) = result
+            && journal::is_full(&err)
+        {
+            room = false;
+        }
+    };
     for entry in finished {
-        let _ = journal.append(id, entry);
+        saw(journal.append(id, entry));
     }
     match event {
         Event::UserMessage { .. } => {
             if let Some(title) = title {
-                let _ = journal.set_title_if_empty(id, title);
+                saw(journal.set_title_if_empty(id, title));
             }
         }
-        Event::ModelKnown { model, .. } => {
-            let _ = journal.set_model(id, model);
-        }
-        Event::TurnEnded { usage: Some(u), .. } => {
-            let _ = journal.add_tokens(id, u.total());
-        }
-        Event::BranchLanded { branch, .. } => {
-            let _ = journal.set_outcome(id, &format!("landed {branch}"));
-        }
-        Event::NothingChanged { .. } => {
-            let _ = journal.set_outcome(id, "no changes");
-        }
-        Event::SessionClosed { .. } => {
-            let _ = journal.close_session(id);
-        }
+        Event::ModelKnown { model, .. } => saw(journal.set_model(id, model)),
+        Event::TurnEnded { usage: Some(u), .. } => saw(journal.add_tokens(id, u.total())),
+        Event::BranchLanded { branch, .. } => saw(journal.set_outcome(id, &format!("landed {branch}"))),
+        Event::NothingChanged { .. } => saw(journal.set_outcome(id, "no changes")),
+        Event::SessionClosed { .. } => saw(journal.close_session(id)),
         _ => {}
     }
+    room
+}
+
+/// The space free on the disk `path` is on, for whoever isn't root.
+fn free_space(path: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: statvfs writes only the struct it is given, and `c` is a valid C string.
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+    #[allow(clippy::unnecessary_cast)]
+    Some(stat.f_bavail as u64 * stat.f_frsize as u64)
 }
 
 fn workspace_of(sandbox: &Sandbox) -> Workspace {
@@ -4961,6 +5558,21 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(debug_assertions)]
+    #[tokio::test]
+    #[should_panic(expected = "must not run on the core loop")]
+    async fn git_that_may_take_long_stops_a_debug_build_on_the_core_loop() {
+        CORE_LOOP.scope((), async { worktree::is_merged(Path::new("/nonexistent"), "equipe/x").ok() }).await;
+    }
+
+    #[tokio::test]
+    async fn off_the_core_loop_it_runs() {
+        assert!(!on_core_loop());
+        let told = tokio::task::spawn_blocking(|| worktree::is_merged(Path::new("/nonexistent"), "equipe/x")).await.unwrap();
+        assert!(told.is_err(), "no repository there");
+        assert!(CORE_LOOP.scope((), async { on_core_loop() }).await);
+    }
 
     #[test]
     fn the_pm_hears_about_stale_tickets_and_proposes_rather_than_cancels() {

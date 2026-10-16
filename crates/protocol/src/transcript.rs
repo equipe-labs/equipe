@@ -215,8 +215,10 @@ pub mod scope {
         /// Lines about the project: shown.
         Here(Range<usize>),
         /// Lines about other projects or the whole squad, folded into one row
-        /// saying how many things were said there.
-        Elsewhere { lines: Range<usize>, said: usize },
+        /// saying how many things were said there. `kept`: lines of the
+        /// project's own within it — news only, that would otherwise split
+        /// the row in several — shown after the row while it is folded.
+        Elsewhere { lines: Range<usize>, said: usize, kept: Vec<Range<usize>> },
     }
 
     /// Whether a line is something said — a message, a reply, news, an error,
@@ -253,11 +255,82 @@ pub mod scope {
             } else {
                 let said = lines[start..ix].iter().filter(|(e, _)| is_said(e.borrow())).count();
                 if said > 0 {
-                    parts.push(Part::Elsewhere { lines: start..ix, said });
+                    parts.push(Part::Elsewhere { lines: start..ix, said, kept: Vec::new() });
                 }
             }
         }
-        parts
+        // Folds with only the project's news between them are one fold: a
+        // row each, a news line between, read as clutter.
+        let news_only = |range: &Range<usize>| lines[range.clone()].iter().all(|(e, _)| !matches!(e.borrow(), Entry::User { .. } | Entry::Reply { .. } | Entry::Error { .. } | Entry::Landed { .. }));
+        let mut merged: Vec<Part> = Vec::with_capacity(parts.len());
+        let mut rest = parts.into_iter().peekable();
+        while let Some(part) = rest.next() {
+            let between = match (merged.last(), &part) {
+                (Some(Part::Elsewhere { .. }), Part::Here(range)) if news_only(range) && matches!(rest.peek(), Some(Part::Elsewhere { .. })) => Some(range.clone()),
+                _ => None,
+            };
+            let Some(between) = between else {
+                merged.push(part);
+                continue;
+            };
+            let Some(Part::Elsewhere { lines: next, said: more, kept: next_kept }) = rest.next() else { unreachable!("peeked") };
+            if let Some(Part::Elsewhere { lines: range, said, kept }) = merged.last_mut() {
+                range.end = next.end;
+                *said += more;
+                kept.push(between);
+                kept.extend(next_kept);
+            }
+        }
+        merged
+    }
+}
+
+/// A conversation as Markdown, for a file the person can search and copy —
+/// the same text on every screen that exports one.
+pub fn markdown(entries: &[Entry], heading: &str) -> String {
+    let mut out = format!("# {heading}\n\n");
+    for entry in entries {
+        match entry {
+            Entry::User { text } => out.push_str(&format!("**You:** {text}\n\n")),
+            Entry::Reply { text } => out.push_str(&format!("{text}\n\n")),
+            Entry::Tool { tool, target, .. } => {
+                out.push_str(&format!("- {} {}\n", tool_verb(tool), target.as_deref().unwrap_or("")));
+            }
+            Entry::Note { text } => out.push_str(&format!("_{text}_\n\n")),
+            Entry::Thread { project } => out.push_str(&format!("## {}\n\n", project.as_deref().unwrap_or("The whole squad"))),
+            Entry::Error { message, next } => {
+                out.push_str(&format!("> ✗ {message}{}\n\n", next.as_ref().map(|n| format!(" → `{n}`")).unwrap_or_default()))
+            }
+            Entry::Landed { branch, stat } => out.push_str(&format!("✓ Landed on `{branch}`\n\n```\n{stat}\n```\n\n")),
+        }
+    }
+    out
+}
+
+/// How a tool use reads in one word.
+pub fn tool_verb(name: &str) -> &str {
+    match name {
+        "Read" => "read",
+        "Edit" | "MultiEdit" | "NotebookEdit" => "edit",
+        "Write" => "write",
+        "Bash" => "run",
+        "Glob" | "Grep" => "search",
+        "WebFetch" | "WebSearch" => "fetch",
+        // A subagent the member handed side work to.
+        "Agent" | "Task" => "delegate",
+        other => match other.strip_prefix("mcp__equipe__") {
+            // equipe's own board tools read as what they do.
+            Some("board") => "board",
+            Some("create_ticket") => "ticket",
+            Some("update_ticket") => "ticket",
+            Some("comment") => "comment",
+            Some("submit_for_review") => "hand in",
+            Some("block_on_person") => "wait on you",
+            Some("ask_person") => "ask you",
+            // The member's browser: every step reads as browsing.
+            _ if other.starts_with("mcp__browser__") => "browse",
+            _ => other,
+        },
     }
 }
 
@@ -332,11 +405,36 @@ mod tests {
             let pairs: Vec<(&Entry, Option<String>)> = lines.iter().zip(s).collect();
             assert_eq!(
                 scope::slice(&pairs, "app", false),
-                vec![Part::Here(0..4), Part::Elsewhere { lines: 4..12, said: 4 }, Part::Here(12..15)],
+                vec![Part::Here(0..4), Part::Elsewhere { lines: 4..12, said: 4, kept: vec![] }, Part::Here(12..15)],
                 "site's turn and the squad-wide one fold together: four things said"
             );
-            assert_eq!(scope::slice(&pairs, "site", false), vec![Part::Elsewhere { lines: 0..4, said: 2 }, Part::Here(4..9), Part::Elsewhere { lines: 9..15, said: 4 }]);
-            assert_eq!(scope::slice(&pairs, "web", false), vec![Part::Elsewhere { lines: 0..15, said: 8 }]);
+            assert_eq!(scope::slice(&pairs, "site", false), vec![Part::Elsewhere { lines: 0..4, said: 2, kept: vec![] }, Part::Here(4..9), Part::Elsewhere { lines: 9..15, said: 4, kept: vec![] }]);
+            assert_eq!(scope::slice(&pairs, "web", false), vec![Part::Elsewhere { lines: 0..15, said: 8, kept: vec![] }]);
+        }
+
+        #[test]
+        fn folds_with_only_the_projects_news_between_are_one() {
+            let news = |t: &str| Entry::Note { text: t.into() };
+            let lines = vec![
+                about(Some("app")), user("a1"), reply("a2"),
+                about(Some("site")), news("T-4 handed in"),
+                about(Some("app")), user("a3"), reply("a4"),
+                about(Some("site")), news("T-5 started"), news("T-6 started"),
+                about(None), user("all"), reply("all answer"),
+                about(Some("site")), user("s1"), reply("s2"),
+            ];
+            let s = scope::of(&lines);
+            let pairs: Vec<(&Entry, Option<String>)> = lines.iter().zip(s).collect();
+            assert_eq!(
+                scope::slice(&pairs, "site", false),
+                vec![Part::Elsewhere { lines: 0..14, said: 6, kept: vec![3..5, 8..11] }, Part::Here(14..17)],
+                "one row for the others, the site's news after it"
+            );
+            // Something said between them keeps them apart.
+            let lines = vec![about(Some("app")), user("a1"), about(Some("site")), user("s1"), about(Some("app")), user("a2")];
+            let s = scope::of(&lines);
+            let pairs: Vec<(&Entry, Option<String>)> = lines.iter().zip(s).collect();
+            assert_eq!(scope::slice(&pairs, "site", false).len(), 3);
         }
 
         #[test]
@@ -344,12 +442,12 @@ mod tests {
             let lines = vec![about(Some("app")), user("a"), reply("b"), about(None), user("all?"), reply("stream")];
             let s = scope::of(&lines);
             let pairs: Vec<(&Entry, Option<String>)> = lines.iter().zip(s).collect();
-            assert_eq!(scope::slice(&pairs, "app", true), vec![Part::Here(0..3), Part::Elsewhere { lines: 3..5, said: 1 }, Part::Here(5..6)]);
-            assert_eq!(scope::slice(&pairs, "app", false), vec![Part::Here(0..3), Part::Elsewhere { lines: 3..6, said: 2 }]);
+            assert_eq!(scope::slice(&pairs, "app", true), vec![Part::Here(0..3), Part::Elsewhere { lines: 3..5, said: 1, kept: vec![] }, Part::Here(5..6)]);
+            assert_eq!(scope::slice(&pairs, "app", false), vec![Part::Here(0..3), Part::Elsewhere { lines: 3..6, said: 2, kept: vec![] }]);
             // Another project's reply streaming stays folded.
             let lines = vec![about(Some("site")), user("s"), reply("stream")];
             let pairs: Vec<(&Entry, Option<String>)> = lines.iter().zip(scope::of(&lines)).collect();
-            assert_eq!(scope::slice(&pairs, "app", true), vec![Part::Elsewhere { lines: 0..3, said: 2 }]);
+            assert_eq!(scope::slice(&pairs, "app", true), vec![Part::Elsewhere { lines: 0..3, said: 2, kept: vec![] }]);
         }
 
         #[test]

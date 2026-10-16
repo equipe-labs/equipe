@@ -27,6 +27,7 @@ use crate::ui;
 use equipe_core::t;
 
 mod decide;
+mod team;
 mod turn;
 
 /// How many columns `text` takes on screen — a Korean letter takes two.
@@ -376,6 +377,9 @@ fn rows(app: &App, theme: Theme, screen: Rect) -> Rows {
     }
     if asking.is_empty() {
         asking = decide::lines(app, theme, area.width.saturating_sub(2) as usize);
+    }
+    if asking.is_empty() {
+        asking = team::lines(app, theme, area.width.saturating_sub(2) as usize);
     }
     let asking_height = if asking.is_empty() { 0 } else { asking.len() as u16 + 1 };
     let (composer_rows, _) = app.composer.layout(area.width.saturating_sub(2) as usize);
@@ -1887,16 +1891,21 @@ fn transcript_lines(agent: &Agent, looks: &Looks, turns: &Turns, theme: Theme, w
     // each only in the conversation of the project it was left in. On a ticket
     // there is one conversation, the ticket's: every memo is for it.
     let here = |about: &Option<String>| agent.ticket.is_some() || agent.lane.is_some() || agent.in_view(about.as_deref());
+    // Each says inline what it waits for; /unqueue takes the last back, /now sends them.
     for (memo, _) in agent.queued.iter().zip(&agent.queued_in).filter(|(_, about)| here(about)) {
         gap(&mut lines);
-        lines.extend(wrapped(vec![Span::styled("› ", theme.dim())], &attachments_named(memo), theme.dim(), 2, width));
-        lines.push(Line::from(Span::styled(format!("  {}", t!("view.memo_note")), theme.dim())));
+        let said = format!("{}  {}", attachments_named(memo), t!("view.pending_memo"));
+        lines.extend(wrapped(vec![Span::styled("› ", theme.dim())], &said, theme.dim(), 2, width));
     }
-    // Said while it works: read at its next step, the work carrying on.
-    for text in &agent.steering {
+    // Said while it works: read at its next step, the work carrying on — in
+    // the conversation of the project it was said about.
+    for (i, text) in agent.steering.iter().enumerate() {
+        if !here(&agent.steering_in.get(i).cloned().flatten()) {
+            continue;
+        }
         gap(&mut lines);
-        lines.extend(wrapped(vec![Span::styled("› ", theme.accent())], &attachments_named(text), theme.dim(), 2, width));
-        lines.push(Line::from(Span::styled(format!("  {}", t!("view.steering_note")), theme.dim())));
+        let said = format!("{}  {}", attachments_named(text), t!("view.pending_steer"));
+        lines.extend(wrapped(vec![Span::styled("› ", theme.accent())], &said, theme.dim(), 2, width));
     }
     lines
 }
@@ -3208,7 +3217,7 @@ mod tests {
         app.agents[0].thread_view = Some("app".into());
         let shot = screen(&app, 110, 24);
         assert!(shot.contains("› and the app icon"), "{shot}");
-        assert!(shot.contains("memo · read when this turn ends"), "{shot}");
+        assert!(shot.contains("(when done)"), "{shot}");
         assert!(shot.contains("in site ·"), "{shot}");
         // Looking at site: the turn is here, the memo is app's.
         app.agents[0].thread_view = Some("site".into());
@@ -3221,7 +3230,7 @@ mod tests {
         app.on_event(Event::MessageQueued { session: pm, text: "and the site footer".into(), project: Some("site".into()) });
         let shot = screen(&app, 110, 24);
         assert!(shot.contains("› and the site footer"), "{shot}");
-        assert!(shot.contains("memo · read when this turn ends"), "{shot}");
+        assert!(shot.contains("(when done)"), "{shot}");
         assert!(!shot.contains("and the app icon"), "{shot}");
         // The turn ends: app's memo goes, into app's conversation; site's waits for the next.
         app.on_event(Event::UserMessage { session: pm, text: "and the app icon".into() });
@@ -3237,7 +3246,7 @@ mod tests {
             app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char(c)), Instant::now());
         }
         let sent = app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter), Instant::now());
-        assert_eq!(sent, vec![Command::Submit { session: pm, text: "how is the app?".into() }]);
+        assert_eq!(sent, vec![Command::Submit { session: pm, text: "how is the app?".into(), about: Some(None) }]);
         assert!(app.flash.as_deref().unwrap().contains("answers now, beside its work on T-1"), "{:?}", app.flash);
         // The daemon runs the conversation beside the ticket: not listed, it is what shows.
         app.on_event(Event::SessionStarted {
@@ -3353,22 +3362,22 @@ mod tests {
             app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char(c)), Instant::now());
         }
         let sent = app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter), Instant::now());
-        assert_eq!(sent, vec![Command::Submit { session: pm, text: "skip the footer".into() }], "Enter steers");
-        app.on_event(Event::SteerQueued { session: pm, text: "skip the footer".into() });
+        assert_eq!(sent, vec![Command::Submit { session: pm, text: "skip the footer".into(), about: Some(None) }], "Enter steers");
+        app.on_event(Event::SteerQueued { session: pm, text: "skip the footer".into(), project: None });
         let shot = screen(&app, 110, 24);
-        assert!(shot.contains("› skip the footer") && shot.contains("steering · read at its next step"), "{shot}");
+        assert!(shot.contains("› skip the footer") && shot.contains("(next step)"), "{shot}");
         assert!(shot.contains("1 unread"), "{shot}");
         // Read: it moves into the conversation, where it was read.
         app.on_event(Event::Steered { session: pm, text: "skip the footer".into() });
         let shot = screen(&app, 110, 24);
-        assert!(!shot.contains("steering ·"), "{shot}");
+        assert!(!shot.contains("(next step)"), "{shot}");
         assert!(app.agents[0].transcript.entries().iter().any(|e| matches!(e, Entry::User { text } if text == "skip the footer")));
         // Tab: for after this turn.
         for c in "then the pricing page".chars() {
             app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char(c)), Instant::now());
         }
         let later = app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Tab), Instant::now());
-        assert_eq!(later, vec![Command::SubmitLater { session: pm, text: "then the pricing page".into() }]);
+        assert_eq!(later, vec![Command::SubmitLater { session: pm, text: "then the pricing page".into(), about: Some(None) }]);
     }
 
     #[test]
@@ -3400,7 +3409,7 @@ mod tests {
         assert!(shot.contains("● frontend  sonnet-5-5"), "{shot}");
         assert!(shot.contains("pm        1 memo"), "{shot}");
         assert!(shot.contains("› and the footer"), "{shot}");
-        assert!(shot.contains("memo · read when this turn ends"), "{shot}");
+        assert!(shot.contains("(when done)"), "{shot}");
 
         app.on_event(Event::WorkStarted {
             session: 2,

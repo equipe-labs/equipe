@@ -65,10 +65,14 @@ fn config(home: &Path, claude: &Path) -> Config {
 }
 
 async fn daemon(home: &Path, claude: &Path) -> (PathBuf, tokio::task::JoinHandle<std::io::Result<()>>) {
-    let socket = gateway::socket_path(home);
+    daemon_with(config(home, claude)).await
+}
+
+async fn daemon_with(config: Config) -> (PathBuf, tokio::task::JoinHandle<std::io::Result<()>>) {
+    let socket = gateway::socket_path(&config.home);
     let task = tokio::spawn({
-        let (home, claude, socket) = (home.to_owned(), claude.to_owned(), socket.clone());
-        async move { gateway::serve(config(&home, &claude), &socket, "test").await }
+        let socket = socket.clone();
+        async move { gateway::serve(config, &socket, "test").await }
     });
     for _ in 0..100 {
         if gateway::is_running(&socket).await {
@@ -127,7 +131,7 @@ async fn the_squad_outlives_its_screens_and_its_daemon() {
     assert!(hello.snapshot.sessions.is_empty());
     a.send(Command::Start { session: 11, spec: spec(&project) });
     until(&mut a, |e| matches!(e, Event::SessionStarted { .. })).await;
-    a.send(Command::Submit { session: 11, text: "keep going without me".into() });
+    a.send(Command::Submit { session: 11, text: "keep going without me".into(), about: None });
     until(&mut a, |e| matches!(e, Event::UserMessage { .. })).await;
     drop(a);
 
@@ -154,7 +158,7 @@ async fn the_squad_outlives_its_screens_and_its_daemon() {
         session.recent,
         vec![Entry::User { text: "keep going without me".into() }, Entry::Reply { text: "fresh".into() }]
     );
-    c.send(Command::Submit { session: 11, text: "and now?".into() });
+    c.send(Command::Submit { session: 11, text: "and now?".into(), about: None });
     let turn = until(&mut c, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(turn.iter().any(|e| matches!(e, Event::TextDelta { text, .. } if text == "resumed")));
     gateway::shutdown(&socket).await.unwrap();
@@ -172,7 +176,7 @@ async fn two_screens_watch_the_same_team() {
     until(&mut a, |e| matches!(e, Event::SessionStarted { .. })).await;
     // B sees a session it didn't open, and the message A typed.
     until(&mut b, |e| matches!(e, Event::SessionStarted { session: 21, .. })).await;
-    a.send(Command::Submit { session: 21, text: "from A".into() });
+    a.send(Command::Submit { session: 21, text: "from A".into(), about: None });
     let seen_by_b = until(&mut b, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(seen_by_b.iter().any(|e| matches!(e, Event::UserMessage { text, .. } if text == "from A")));
     gateway::shutdown(&socket).await.unwrap();
@@ -229,6 +233,46 @@ async fn a_members_tool_call_reaches_the_board_over_the_socket() {
 
     let stranger = ToolCall { member: "nobody".into(), ..call };
     assert!(gateway::call_tool(&socket, &stranger).await.unwrap().is_error);
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+/// A screen that says it has a browser panel — the app, here or on another
+/// Mac — gets a member's browser handed to it rather than a window on the
+/// daemon's screen, for as long as it stays attached.
+#[tokio::test]
+async fn while_the_app_is_attached_a_handed_over_browser_goes_to_its_panel_not_this_macs_screen() {
+    use equipe_core::protocol::rpc::{self, HelloParams, Message};
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+    let (home, project) = squad();
+    let claude = fake_claude(&slow_answer("0"));
+    // The browser host: a Chrome that never says anything.
+    let npx = scratch("npx").join("npx");
+    write_script(&npx, "#!/bin/sh\nexec cat > /dev/null\n");
+    let (socket, _daemon) = daemon_with(Config { npx: Some(npx), browser_host: true, ..config(&home, &claude) }).await;
+    let (mut screen, _) = Client::connect(&socket, "test", "acme").await.unwrap();
+    screen.send(Command::Start { session: 51, spec: SessionSpec { role: Some("pm".into()), ..spec(&project) } });
+    until(&mut screen, |e| matches!(e, Event::SessionStarted { .. })).await;
+    let call = ToolCall { squad: "acme".into(), member: "pm".into(), name: "show_my_browser".into(), arguments: serde_json::json!({ "why": "Sign in to App Store Connect" }) };
+
+    // The app attaches, saying it has a panel (closed for now).
+    let app = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    let (reader, mut writer) = app.into_split();
+    let hello = HelloParams { version: "app".into(), squad: "acme".into(), lang: None, browser_panel: true };
+    writer.write_all(Message::request(1, rpc::HELLO, hello).to_line().as_bytes()).await.unwrap();
+    let mut lines = tokio::io::BufReader::new(reader).lines();
+    while let Some(line) = lines.next_line().await.unwrap() {
+        if Message::from_line(&line).is_ok_and(|m| m.id == Some(1)) {
+            break;
+        }
+    }
+    let result = gateway::call_tool(&socket, &call).await.unwrap();
+    assert!(result.text.contains("browser panel"), "to the app's panel: {result:?}");
+
+    // The app gone: the window on this Mac, as before.
+    drop((lines, writer));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let result = gateway::call_tool(&socket, &call).await.unwrap();
+    assert!(result.text.contains("comes up on the person's screen"), "{result:?}");
     gateway::shutdown(&socket).await.unwrap();
 }
 
@@ -313,7 +357,7 @@ async fn the_daemon_says_who_is_mid_turn() {
     let (mut screen, _) = Client::connect(&socket, "test", "acme").await.unwrap();
     screen.send(Command::Start { session: 4, spec: spec(&project) });
     until(&mut screen, |e| matches!(e, Event::SessionStarted { .. })).await;
-    screen.send(Command::Submit { session: 4, text: "a long job".into() });
+    screen.send(Command::Submit { session: 4, text: "a long job".into(), about: None });
     until(&mut screen, |e| matches!(e, Event::UserMessage { .. })).await;
     let busy = gateway::busy(&socket).await.unwrap().unwrap();
     assert_eq!(busy.working, ["acme/designer"]);

@@ -50,6 +50,20 @@ impl AskUi {
     }
 }
 
+pub fn button(p: Palette, id: &'static str, label: impl Into<SharedString>, primary: bool) -> Stateful<Div> {
+    h_flex()
+        .id(id)
+        .h(px(30.))
+        .px_3()
+        .items_center()
+        .rounded(px(6.))
+        .text_size(px(SMALL))
+        .cursor_pointer()
+        .when(primary, |b| b.bg(p.primary).text_color(p.on_primary).font_weight(FontWeight::SEMIBOLD))
+        .when(!primary, |b| b.border_1().border_color(p.hair).hover(move |s| s.bg(p.wash)))
+        .child(label.into())
+}
+
 /// A one-line text box in the window's own colours, `FIELD` tall, its text
 /// `S3` in from its edge (the box pads its text itself; the rest is ours).
 fn field(p: Palette, state: &Entity<InputState>) -> impl IntoElement {

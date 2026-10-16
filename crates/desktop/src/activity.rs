@@ -283,6 +283,35 @@ pub fn news_of(text: &str) -> Option<News> {
     None
 }
 
+/// The notices of a member handing the person its browser (equipe core's):
+/// into the browser panel, or — no screen with one attached then — onto the
+/// daemon's Mac's screen.
+const HANDED: &[&str] = &["notice.browser_in_panel", "notice.browser_on_screen"];
+
+/// A transcript line saying a member handed the person its browser, in any
+/// language (a line kept from before the language changed, an English one
+/// from a daemon that spoke English): who, and what it asked them to do.
+pub fn handed_of(text: &str) -> Option<(String, String)> {
+    let text = text.trim();
+    for key in HANDED {
+        for lang in Lang::ALL {
+            let Some(args) = match_template(core(lang).get(key), text) else { continue };
+            let arg = |name: &str| args.iter().find(|(k, _)| k == name).map(|(_, v)| v.trim().to_owned());
+            return Some((arg("name")?, arg("why")?));
+        }
+    }
+    None
+}
+
+/// A message equipe sent a member as the person's (before 0.48): its browser
+/// handed back to it.
+pub fn handed_back_line(text: &str) -> bool {
+    let text = text.trim();
+    text == "The person finished in the browser."
+        || text.starts_with("The person handled the page that needed them in your browser")
+        || text.starts_with("The person finished in your browser")
+}
+
 /// A line's leading mark and the stale notice's rules, gone: the icon says it.
 fn unmark(text: &str) -> &str {
     let text = text.trim().trim_start_matches(['✗', '✎', '↪']).trim_start();

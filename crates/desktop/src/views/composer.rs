@@ -23,7 +23,7 @@ use gpui_kit::*;
 
 use crate::attach::{self, Kind, Source, Stage, Strip};
 use crate::commands::Choice;
-use crate::compose::{self, Draft, Drafts, Effect, EnterGuard, History, Said};
+use crate::compose::{self, Draft, Drafts, EnterGuard, History, Said};
 use crate::state::{Model, Presence};
 use crate::icons::{Icon, icon};
 use crate::motion;
@@ -347,7 +347,7 @@ impl Composer {
         !self.choices.is_empty()
     }
 
-    fn refresh_choices(&mut self, model: &Model, cx: &App) {
+    pub(crate) fn refresh_choices(&mut self, model: &Model, cx: &App) {
         let text = self.text(cx);
         self.pick = 0;
         self.choices = if self.dismissed.as_deref() == Some(text.as_str()) { Vec::new() } else { compose::choices_with(model, &text, &self.indexes) };
@@ -428,6 +428,10 @@ fn placeholder(model: &Model) -> String {
     let Some(member) = model.selected_member() else {
         return t!("composer.placeholder").to_owned();
     };
+    // At work: what Enter does now, and what Tab does instead.
+    if model.viewed_presence() == Some(Presence::Working) && model.opened.is_none() {
+        return if member.engine == Some(Engine::Claude) { t!("composer.placeholder_steer", name = member.name) } else { t!("composer.placeholder_memo", name = member.name) };
+    }
     match model.opened {
         Some(ticket) => {
             let to = if member.ticket == Some(ticket) { member.name.as_str() } else { model.members.iter().find(|m| Model::is_pm(m)).map_or(member.name.as_str(), |m| m.name.as_str()) };
@@ -451,6 +455,8 @@ impl Shell {
                 self.composer.history.stop();
                 self.composer.flash = None;
                 self.composer.chip = None;
+                // Typing lets a waiting bubble reached with ↑ go.
+                self.chat.picked = None;
                 if self.composer.text(cx).contains('@') {
                     self.index_projects(cx);
                 }
@@ -561,12 +567,8 @@ impl Shell {
         self.composer.dismissed = None;
         let box_text = plan.restore.map(|_| typed.trim().to_owned()).unwrap_or_default();
         self.composer.set_text(&box_text, window, cx);
-        match plan.effect {
-            Some(Effect::Select(session)) => self.select_member(session, window, cx),
-            Some(Effect::ShowBoard) => self.show(Screen::Board, cx),
-            Some(Effect::Find(words)) => self.board_find(&words, cx),
-            Some(Effect::Focus(project)) => self.set_focus(project, window, cx),
-            None => {}
+        if let Some(effect) = plan.effect {
+            self.apply_effect(effect, window, cx);
         }
         self.save_drafts_soon(cx);
         // What was just said belongs in view.
@@ -852,33 +854,63 @@ impl Shell {
 
     // ── the memos and steers waiting ──
 
-    /// A memo waiting for the member's turn to end, taken back.
-    fn unqueue(&mut self, text: &str) {
-        if let Some(session) = self.model.viewed() {
-            self.send_command(Command::Unqueue { session, text: text.to_owned() });
+    /// 되돌리기: a steer or memo still waiting is taken back — its words and
+    /// what it attached come back into the box — and its bubble fades out.
+    pub fn withdraw_pending(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.model.viewed() else { return };
+        if self.chat.leaving.contains(&text) {
+            return;
         }
-    }
-
-    /// 편집: the memo comes back into the box (and leaves the queue).
-    fn edit_memo(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.unqueue(&text);
+        let said = self.composer.history.sent_as(&text).cloned().unwrap_or_else(|| compose::Said { text: crate::sent::parts(&text).text, attachments: attach::saved_of(&text) });
         let mut now = self.composer.text(cx);
         if !now.trim().is_empty() {
             now.push('\n');
         }
-        now.push_str(&text);
+        now.push_str(&said.text);
         self.composer.set_text(&now, window, cx);
+        if !said.attachments.is_empty() {
+            let mut kept = self.composer.strip.saved();
+            kept.extend(said.attachments);
+            self.composer.strip.restore(&kept);
+        }
         self.composer.focus(window, cx);
+        self.chat.picked = None;
+        // Gone once its fade is over; the daemon says so then.
+        let mut leaving = (*self.chat.leaving).clone();
+        leaving.insert(text.clone());
+        self.chat.leaving = Rc::new(leaving);
+        self.chat_sync(cx);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(motion::BASE).await;
+            this.update(cx, |this, cx| {
+                this.send_command(Command::Unqueue { session, text: text.clone() });
+                let mut leaving = (*this.chat.leaving).clone();
+                leaving.remove(&text);
+                this.chat.leaving = Rc::new(leaving);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
         cx.notify();
     }
 
-    /// 지금 지시: the memo is read at the member's next step instead.
-    fn steer_now(&mut self, text: String, cx: &mut Context<Self>) {
-        self.unqueue(&text);
-        if let Some(session) = self.model.viewed() {
-            self.send_command(Command::Submit { session, text });
-        }
+    /// 지금 보내기: the member's turn stops, as Esc stops it, and everything
+    /// waiting goes to it at once — in the order shown, as one message.
+    pub fn send_pending_now(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.model.viewed() else { return };
+        let Some(texts) = self.model.convo().map(|c| c.queue.texts()).filter(|t| !t.is_empty()) else { return };
+        let n = texts.len();
+        self.send_command(Command::SendNow { session, texts });
+        self.chat.picked = None;
+        self.composer.flash = Some(if n > 1 { t!("composer.sent_now_many", count = n) } else { t!("composer.sent_now").to_owned() });
+        self.chat.follow_tail(cx);
         cx.notify();
+    }
+
+    /// The bubbles waiting in view, in order: their words and when each was said.
+    fn pending_in_view(&self) -> Vec<(String, u64)> {
+        self.chat.blocks.iter().filter_map(|b| if let crate::convo::Block::Pending { text, at, .. } = b { Some((text.clone(), *at)) } else { None }).collect()
     }
 
     // ── menus ──
@@ -1115,6 +1147,35 @@ impl Shell {
             return true;
         }
         let text = self.composer.text(cx);
+        // A bubble waiting, reached with ↑: Backspace takes it back, ⌘↵ sends
+        // everything waiting now, Esc lets it go.
+        if let Some((picked, _)) = self.chat.picked.clone() {
+            match key {
+                "backspace" | "delete" if plain => {
+                    self.withdraw_pending(picked, window, cx);
+                    return true;
+                }
+                "enter" if modifiers.platform && !modifiers.shift => {
+                    self.send_pending_now(cx);
+                    return true;
+                }
+                "escape" => {
+                    self.chat.picked = None;
+                    cx.notify();
+                    return true;
+                }
+                "up" | "down" if plain => {}
+                _ => {
+                    self.chat.picked = None;
+                    cx.notify();
+                }
+            }
+        }
+        // ⌘↵ on an empty box: what waits goes now.
+        if key == "enter" && modifiers.platform && !modifiers.shift && text.trim().is_empty() && self.composer.strip.is_empty() && self.model.convo().is_some_and(|c| !c.queue.is_empty()) {
+            self.send_pending_now(cx);
+            return true;
+        }
         match key {
             "escape" if plain => {
                 if self.composer.open() {
@@ -1134,12 +1195,27 @@ impl Shell {
                     cx.notify();
                     return true;
                 }
-                // ↑ on an empty box takes back the last memo still waiting.
-                if up && text.is_empty() && !self.composer.history.walking() && self.composer.strip.is_empty() {
-                    let last = self.model.convo().and_then(|c| c.queued.last().cloned());
-                    if let Some(memo) = last.filter(|_| self.model.viewed_presence() == Some(Presence::Working)) {
-                        self.edit_memo(memo, window, cx);
-                        return true;
+                // ↑ on an empty box reaches what waits, the last first; ↓ goes back.
+                if text.is_empty() && !self.composer.history.walking() && self.composer.strip.is_empty() {
+                    let waiting = self.pending_in_view();
+                    let at = self.chat.picked.as_ref().and_then(|p| waiting.iter().position(|w| w == p));
+                    let next = match (up, at) {
+                        (true, None) => waiting.len().checked_sub(1),
+                        (true, Some(i)) => Some(i.saturating_sub(1)),
+                        (false, Some(i)) if i + 1 < waiting.len() => Some(i + 1),
+                        (false, _) => None,
+                    };
+                    if up || at.is_some() {
+                        if let Some(i) = next {
+                            self.chat.picked = waiting.get(i).cloned();
+                            cx.notify();
+                            return true;
+                        }
+                        if at.is_some() {
+                            self.chat.picked = None;
+                            cx.notify();
+                            return true;
+                        }
                     }
                 }
                 let said = if up { self.composer.history.older(&text).cloned() } else { self.composer.history.newer() };
@@ -1326,8 +1402,8 @@ fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, run: impl Fn
         }))
 }
 
-/// The composer: what waits, then the card (attachments, the box, the bar),
-/// and — only while a member works — what Enter and Tab do now.
+/// The composer: the card (attachments, the box, the bar). What waits for a
+/// member at work shows in the conversation, as the person's own bubbles.
 pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
     let composer = &shell.composer;
@@ -1338,9 +1414,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .pb_3()
         // Lined up with the text in the card: its padding and border.
         .children(composer.flash.clone().map(|flash| motion::fade(div().px(px(INSET + 1.)).pb_2().text_size(px(SMALL)).text_color(p.text2).child(flash.clone()), ElementId::Name(format!("flash-{}", crate::render::hash_of(&flash)).into()), motion::BASE)))
-        .children(rail(shell, cx))
         .child(card(shell, cx))
-        .children(hint_line(shell, cx))
 }
 
 /// The card's inner padding: the text and the bar's controls start here.
@@ -1905,27 +1979,6 @@ fn context_ring(p: Palette, used: u8) -> impl IntoElement {
     .flex_none()
 }
 
-/// Under the card while a member works: what Enter and Tab do now, lined up
-/// with the text inside the card. Nothing when nobody works — the controls'
-/// tooltips say their keys.
-fn hint_line(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
-    let p = shell.palette;
-    let model = &shell.model;
-    let text = shell.composer.text(cx);
-    let working = model.viewed_presence() == Some(Presence::Working);
-    if !working {
-        return None;
-    }
-    let steerable = model.selected_member().is_some_and(|m| m.engine == Some(Engine::Claude));
-    let says = !text.trim().is_empty() && !text.starts_with('/');
-    let hint = match (says, steerable) {
-        (true, true) => t!("composer.hint_steer"),
-        (true, false) => t!("composer.hint_memo"),
-        (false, _) => t!("composer.hint_stop"),
-    };
-    Some(motion::fade(h_flex().h(px(24.)).px(px(INSET + 1.)).items_center().text_size(px(crate::theme::META)).text_color(p.muted).child(hint), "hint-in", motion::BASE))
-}
-
 /// Who the line goes to, as the bar shows it: always someone, never a guess.
 fn recipient(p: Palette, model: &Model, text: &str) -> (String, Rgba) {
     let name_of = |m: &crate::state::Member| {
@@ -2171,86 +2224,6 @@ fn chip(shell: &Shell, item: &attach::Item, n: usize, cx: &mut Context<Shell>) -
 }
 
 // ── what waits for a member at work ──
-
-/// What a button does.
-type Run = dyn Fn(&mut Shell, &mut Window, &mut Context<Shell>);
-
-/// Above the card while a member works: one card per memo it will get when
-/// its turn ends (편집 · 삭제 · 지금 지시) and per steer it hasn't read yet
-/// (grey, until it does).
-fn rail(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
-    let p = shell.palette;
-    let model = &shell.model;
-    let convo = model.convo()?;
-    if convo.queued.is_empty() && convo.steering.is_empty() {
-        return None;
-    }
-    let steerable = model.selected_member().is_some_and(|m| m.engine == Some(Engine::Claude));
-    let working = model.viewed_presence() == Some(Presence::Working);
-    let link = |id: (&'static str, usize), label: &'static str, run: Rc<Run>, cx: &mut Context<Shell>| {
-        let b = button(id, label, move |this, window, cx| run(this, window, cx), cx).px_2().h(px(24.)).flex().items_center().rounded(px(R_SM)).text_size(px(12.)).text_color(p.text2).child(label);
-        motion::hover_fill(b, (id.0, id.1 + 1000), p.wash, false)
-    };
-    let badge = |label: &'static str, fg: Rgba, bg: Rgba| {
-        div().flex_none().h(px(20.)).px_1p5().flex().items_center().rounded(px(R_SM)).bg(bg).text_size(px(11.)).text_color(fg).child(label)
-    };
-    let mut cards: Vec<AnyElement> = Vec::new();
-    // What a memo attached shows small beside its words, never as its tags.
-    let attached = super::attached::Ctx::of(shell, cx.entity().downgrade(), 300.);
-    for (i, memo) in convo.queued.iter().enumerate().take(4) {
-        let parts = crate::sent::parts(memo);
-        let mini = super::attached::mini(&attached, 1 << 40 | i as u64, &parts.tags, cx);
-        let (edit, drop_it, now) = (memo.clone(), memo.clone(), memo.clone());
-        let card = h_flex()
-            .h(px(36.))
-            .pl(px(INSET))
-            .pr_1()
-            .gap_2()
-            .items_center()
-            .rounded(px(R_LG))
-            .bg(p.raised)
-            .border_1()
-            .border_color(p.hair)
-            .child(badge(t!("composer.rail_memo"), p.text2, p.wash))
-            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(SMALL)).text_color(p.text2).child(parts.text.lines().next().unwrap_or_default().to_owned()))
-            .children(mini)
-            .child(link(("memo-edit", i), t!("composer.rail_edit"), Rc::new(move |this, window, cx| this.edit_memo(edit.clone(), window, cx)), cx))
-            .child(link(("memo-drop", i), t!("composer.rail_delete"), Rc::new(move |this, _, cx| {
-                this.unqueue(&drop_it);
-                cx.notify();
-            }), cx))
-            .when(steerable && working, |c| c.child(link(("memo-now", i), t!("composer.rail_now"), Rc::new(move |this, _, cx| this.steer_now(now.clone(), cx)), cx)));
-        cards.push(motion::rise(card, ("memo-in", crate::render::hash_of(memo))).into_any_element());
-    }
-    for (i, steer) in convo.steering.iter().enumerate().take(3) {
-        let parts = crate::sent::parts(steer);
-        let mini = super::attached::mini(&attached, 1 << 41 | i as u64, &parts.tags, cx);
-        let card = h_flex()
-            .id(("steer", i))
-            .h(px(36.))
-            .px(px(INSET))
-            .gap_2()
-            .items_center()
-            .rounded(px(R_LG))
-            .border_1()
-            .border_dashed()
-            .border_color(p.hair)
-            .child(badge(t!("composer.rail_steer"), p.accent, p.accent_bg))
-            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(SMALL)).text_color(p.muted).child(parts.text.lines().next().unwrap_or_default().to_owned()))
-            .children(mini)
-            .child(div().flex_none().text_size(px(12.)).text_color(p.muted).child(t!("composer.rail_unread")));
-        cards.push(motion::rise(card, ("steer-in", crate::render::hash_of(steer))).into_any_element());
-    }
-    let more = convo.queued.len().saturating_sub(4) + convo.steering.len().saturating_sub(3);
-    Some(
-        v_flex()
-            .gap_1()
-            .pb_2()
-            .children(cards)
-            .when(more > 0, |r| r.child(div().px(px(INSET + 1.)).text_size(px(12.)).text_color(p.muted).child(t!("composer.rail_more", n = more)))),
-
-    )
-}
 
 // ── over the window ──
 

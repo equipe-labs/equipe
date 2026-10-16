@@ -35,6 +35,7 @@ pub fn panel(shell: &Shell, need: Need, cx: &mut Context<Shell>) -> AnyElement {
             .children(super::approvals::card(shell, id, false, cx))
             .into_any_element(),
         Need::Questions(id) => super::decide::peek(shell, id, cx),
+        Need::Team(id) => super::team::peek(shell, id, cx),
         Need::Browser(page) => super::browser::need_peek(shell, page, cx),
         Need::Ticket(id) => {
             let Some(t) = shell.model.tickets.iter().find(|t| t.id == id).cloned() else { return div().into_any_element() };
@@ -375,8 +376,7 @@ fn links(shell: &Shell, t: &Ticket, cx: &mut Context<Shell>) -> Vec<AnyElement> 
     let model = &shell.model;
     let named = |dep: TicketId, cx: &mut Context<Shell>| {
         let found = model.tickets.iter().find(|x| x.id == dep);
-        h_flex()
-            .id(("link", dep as usize))
+        super::ticket_card::hover_link(h_flex().id(("link", dep as usize)), dep, super::ticket_card::Side::Below)
             .h(px(26.))
             .px_1()
             .gap_2()

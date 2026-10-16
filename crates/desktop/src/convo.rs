@@ -20,11 +20,24 @@ use crate::state::Clock;
 /// How many targets a merged tool line names before it counts the rest.
 pub const TARGETS_SHOWN: usize = 3;
 
+/// A subagent the member handed work to, at it now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sub {
     pub id: String,
+    /// What it was handed: the delegation's task, its first 80 characters.
     pub what: String,
+    /// Its latest step, once it has taken one.
     pub step: Option<String>,
+    /// Since when it works (attached mid-way: as long ago as the daemon said).
+    pub since: Instant,
+}
+
+impl Sub {
+    /// Whether `target` — a delegation step's task — is what this one was handed.
+    pub fn handed(&self, target: &str) -> bool {
+        let first: String = target.chars().take(80).collect();
+        first == self.what || (!target.is_empty() && self.what.starts_with(target))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -32,13 +45,9 @@ pub struct Convo {
     pub transcript: Transcript,
     /// Shown as the work on this ticket only — the ticket open on screen.
     pub showing: Option<TicketId>,
-    /// Memos waiting for the turn in progress to end.
-    pub queued: Vec<String>,
-    /// The project each memo was left about (`None`: the whole squad): each
-    /// shows in that project's conversation.
-    pub queued_in: Vec<Option<String>>,
-    /// What the person said while it works, not read yet (steering).
-    pub steering: Vec<String>,
+    /// What waits for it while it works: steers not read yet and memos for
+    /// when its turn ends, in order, each with its project.
+    pub queue: crate::queue::Queue,
     /// The greyed guess at what the person says next, while it rests.
     pub suggestion: Option<String>,
     /// Subagents it handed work to this turn and that haven't handed back.
@@ -73,9 +82,7 @@ impl Convo {
         Self {
             transcript: Transcript::default(),
             showing: None,
-            queued: Vec::new(),
-            queued_in: Vec::new(),
-            steering: Vec::new(),
+            queue: crate::queue::Queue::default(),
             suggestion: None,
             subagents: Vec::new(),
             desk: base.clone(),
@@ -94,10 +101,12 @@ impl Convo {
         let mut convo = Self::new(work_base.unwrap_or_else(|| info.project.clone()), info.member.as_ref().is_some_and(|m| m.role == "pm"));
         convo.desk = info.project.clone();
         convo.transcript = Transcript::from_entries(info.recent.clone());
-        convo.queued = info.queued.clone();
-        // From an older daemon: one project for them all.
-        convo.queued_in = if info.queued_in.len() == info.queued.len() { info.queued_in.clone() } else { vec![info.queued_project.clone(); info.queued.len()] };
-        convo.steering = info.steering.clone();
+        convo.queue = crate::queue::Queue::from_info(info);
+        convo.subagents = info
+            .subagents
+            .iter()
+            .map(|s| Sub { id: s.id.clone(), what: s.what.clone(), step: s.step.clone(), since: now.checked_sub(Duration::from_secs(s.secs)).unwrap_or(now) })
+            .collect();
         // Attached mid-turn: the clock starts now, not when the turn did.
         if info.state == equipe_core::protocol::SessionState::Working {
             convo.working_since = Some(now);
@@ -135,24 +144,25 @@ impl Convo {
                 self.suggestion = None;
                 // The memos of one project are delivered together, into its
                 // conversation; another project's wait for the next turn's end.
-                self.deliver_memos();
+                self.queue.delivered();
             }
-            Event::SteerQueued { text, .. } => self.steering.push(text.clone()),
+            Event::SteerQueued { text, project, .. } => self.queue.steer(text, project.clone(), crate::state::now_unix()),
             Event::Steered { text, .. } => {
-                if let Some(at) = self.steering.iter().position(|t| t == text) {
-                    self.steering.remove(at);
-                }
+                self.queue.read(text);
             }
+            Event::MemoWithdrawn { text, .. } => {
+                self.queue.withdraw(text);
+            }
+            Event::QueueSent { texts, .. } => self.queue.sent(texts),
             Event::Suggestion { text, .. } => {
                 // Too late once it is at work again, or a memo is on its way.
-                if self.working_since.is_none() && self.queued.is_empty() {
+                if self.working_since.is_none() && !self.queue.has_memo() {
                     self.suggestion = Some(text.clone());
                 }
             }
             Event::MessageQueued { text, project, .. } => {
                 self.suggestion = None;
-                self.queued.push(text.clone());
-                self.queued_in.push(project.clone());
+                self.queue.memo(text, project.clone(), crate::state::now_unix());
             }
             Event::WorkStarted { project, workspace, .. } => {
                 self.suggestion = None;
@@ -162,7 +172,9 @@ impl Convo {
             Event::WorkEnded { .. } => {
                 self.base = self.desk.clone();
             }
-            Event::SubagentStarted { id, what, .. } => self.subagents.push(Sub { id: id.clone(), what: what.clone(), step: None }),
+            // Told twice (attached as it started): it is the one already here.
+            Event::SubagentStarted { id, .. } if self.subagents.iter().any(|s| s.id == *id) => {}
+            Event::SubagentStarted { id, what, .. } => self.subagents.push(Sub { id: id.clone(), what: what.clone(), step: None, since: now }),
             Event::SubagentStep { id, step, .. } => {
                 if let Some(sub) = self.subagents.iter_mut().find(|s| s.id == *id) {
                     sub.step = Some(step.clone());
@@ -172,7 +184,7 @@ impl Convo {
             Event::TurnEnded { outcome, .. } => {
                 self.subagents.clear();
                 // Unread, it comes back as a memo, delivered now.
-                self.steering.clear();
+                self.queue.turn_ended();
                 self.stop_working(now, at, *outcome);
             }
             _ => {}
@@ -197,17 +209,6 @@ impl Convo {
     /// What the reasoning numbered `n` was.
     pub fn thought(&self, n: usize) -> Option<&str> {
         self.thoughts.get(n).map(String::as_str)
-    }
-
-    /// The memos sent as its new turn starts: those of the first project one
-    /// was left in.
-    fn deliver_memos(&mut self) {
-        let Some(project) = self.queued_in.first().cloned() else {
-            self.queued.clear();
-            return;
-        };
-        let (queued, queued_in) = std::mem::take(&mut self.queued).into_iter().zip(std::mem::take(&mut self.queued_in)).filter(|(_, about)| *about != project).unzip();
-        (self.queued, self.queued_in) = (queued, queued_in);
     }
 
     /// The conversation its turns go into now (`None`: the whole squad's).
@@ -298,12 +299,11 @@ impl Convo {
     }
 
     /// The blocks the conversation is drawn as: one per message, reply, run of
-    /// steps, note — then each memo still waiting.
+    /// steps, note — then what waits for it, as the person said it.
     pub fn blocks(&self) -> Vec<Block> {
         let mut blocks = build_blocks(&self.shown(), &self.base);
         self.finish(&mut blocks, true);
-        blocks.extend(self.queued.iter().map(|memo| Block::Memo(memo.clone())));
-        blocks.extend(self.steering.iter().map(|text| Block::Steering(text.clone())));
+        blocks.extend(self.queue.items().iter().map(Block::pending));
         blocks
     }
 
@@ -316,6 +316,7 @@ impl Convo {
                 *text = self.thought(*n).unwrap_or_default().to_owned();
             }
         }
+        self.mark_delegations(blocks);
         if !end_shown {
             return;
         }
@@ -333,6 +334,19 @@ impl Convo {
         }
         if let Some((_, text)) = &self.thinking {
             blocks.push(Block::Thinking(text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default().to_owned()));
+        }
+    }
+
+    /// A delegation whose subagent is still at it runs, wherever it is — one
+    /// sent to the background answered at once, but its work goes on. The
+    /// latest delegation of each task is its subagent's.
+    fn mark_delegations(&self, blocks: &mut [Block]) {
+        for sub in &self.subagents {
+            if let Some((at, line)) = delegation_of(blocks, sub)
+                && let Block::Steps(lines) = &mut blocks[at]
+            {
+                lines[line].status = Status::Running;
+            }
         }
     }
 
@@ -361,33 +375,43 @@ impl Convo {
         };
         let mut out = Sliced::default();
         let mut seen = vec![false; lines.len()];
+        // The fold the conversation ends in, if it does: its row.
+        let mut ends_in_fold = None;
         for part in parts {
             let (range, fold) = match part {
                 Part::Here(range) => (range, None),
-                Part::Elsewhere { lines: range, said } => {
+                Part::Elsewhere { lines: range, said, kept } => {
                     let key = elsewhere_key(slice, lines[range.start].0.as_ref());
-                    (range, Some((key, said, open.contains(&key))))
+                    (range, Some((key, said, open.contains(&key), kept)))
                 }
             };
-            if let Some((key, said, open)) = fold {
+            // A block per run of lines about one project, so each says which.
+            let mut draw = |range: std::ops::Range<usize>, out: &mut Sliced| {
+                seen[range.clone()].iter_mut().for_each(|s| *s = true);
+                let mut at = range.start;
+                while at < range.end {
+                    let about = lines[at].1.clone();
+                    let end = (at..range.end).find(|&i| lines[i].1 != about).unwrap_or(range.end);
+                    let run: Vec<Cow<'_, Entry>> = lines[at..end].iter().map(|(e, _)| Cow::Borrowed(e.as_ref())).collect();
+                    let blocks = build_blocks(&run, &self.base);
+                    out.about.extend(std::iter::repeat_n(about, blocks.len()));
+                    out.blocks.extend(blocks);
+                    at = end;
+                }
+            };
+            ends_in_fold = fold.as_ref().map(|_| out.blocks.len());
+            if let Some((key, said, open, kept)) = fold {
                 out.blocks.push(Block::Elsewhere { key, said, open });
                 out.about.push(None);
                 if !open {
+                    // Folded, the project's own news within it follows the row.
+                    for range in kept {
+                        draw(range, &mut out);
+                    }
                     continue;
                 }
             }
-            seen[range.clone()].iter_mut().for_each(|s| *s = true);
-            // A block per run of lines about one project, so each says which.
-            let mut at = range.start;
-            while at < range.end {
-                let about = lines[at].1.clone();
-                let end = (at..range.end).find(|&i| lines[i].1 != about).unwrap_or(range.end);
-                let run: Vec<Cow<'_, Entry>> = lines[at..end].iter().map(|(e, _)| Cow::Borrowed(e.as_ref())).collect();
-                let blocks = build_blocks(&run, &self.base);
-                out.about.extend(std::iter::repeat_n(about, blocks.len()));
-                out.blocks.extend(blocks);
-                at = end;
-            }
+            draw(range, &mut out);
         }
         // Only the first reply in sight names who speaks.
         let mut named = false;
@@ -410,19 +434,47 @@ impl Convo {
         {
             out.answered_in = Some(lines[at].1.clone());
         }
-        // Memos wait below the conversation they go into until the turn ends.
-        for (memo, about) in self.queued.iter().zip(self.queued_in.iter().chain(std::iter::repeat(&None))) {
-            if slice.is_none() || about.as_deref() == slice {
-                out.blocks.push(Block::Memo(memo.clone()));
-                out.about.push(about.clone());
+        // What waits shows below the conversation it goes into, as sent
+        // messages do: another project's counts in a fold of its own — or
+        // the fold that ends the conversation — and opens there.
+        let (here, elsewhere) = self.queue.shown(slice);
+        if elsewhere > 0 {
+            let key = pending_key(slice);
+            let open = match ends_in_fold.and_then(|ix| out.blocks.get_mut(ix)) {
+                Some(Block::Elsewhere { said, open, .. }) => {
+                    *said += elsewhere;
+                    *open
+                }
+                _ => {
+                    let open = open.contains(&key);
+                    out.blocks.push(Block::Elsewhere { key, said: elsewhere, open });
+                    out.about.push(None);
+                    open
+                }
+            };
+            if open {
+                for item in self.queue.items() {
+                    out.blocks.push(Block::pending(item));
+                    out.about.push(item.project.clone());
+                }
+                return out;
             }
         }
-        for text in &self.steering {
-            out.blocks.push(Block::Steering(text.clone()));
-            out.about.push(None);
+        for item in here {
+            out.blocks.push(Block::pending(item));
+            out.about.push(item.project.clone());
         }
         out
     }
+}
+
+/// Where `sub` was handed its work in `blocks`: the block, and the line in
+/// it — the latest delegation of that task.
+pub fn delegation_of(blocks: &[Block], sub: &Sub) -> Option<(usize, usize)> {
+    blocks.iter().enumerate().rev().find_map(|(at, block)| match block {
+        Block::Steps(lines) => lines.iter().rposition(|l| l.verb == "delegate" && l.targets.first().is_some_and(|t| sub.handed(t))).map(|line| (at, line)),
+        _ => None,
+    })
 }
 
 /// The conversation as a project's slice shows it ([`Convo::sliced`]).
@@ -443,6 +495,15 @@ fn elsewhere_key(slice: Option<&str>, first: &Entry) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     slice.hash(&mut h);
     format!("{first:?}").hash(&mut h);
+    h.finish()
+}
+
+/// What names the fold of what waits about other projects, alone at the end.
+fn pending_key(slice: Option<&str>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    slice.hash(&mut h);
+    "waiting elsewhere".hash(&mut h);
     h.finish()
 }
 
@@ -545,24 +606,33 @@ pub enum Block {
     Thinking(String),
     Error { message: String, next: Option<String> },
     Landed { branch: String, stat: String },
-    /// A memo left while the member works.
-    Memo(String),
-    /// Said while it works: read at its next step, the work carrying on.
-    Steering(String),
+    /// Said while the member works, waiting: a steer (read at its next
+    /// step, the work carrying on) or a memo (read when its turn ends); when
+    /// it was said, in unix seconds (0: not known).
+    Pending { text: String, steer: bool, at: u64 },
     /// A stretch about other projects folded into a row, saying how many
     /// things were said there; open, they follow it in place.
     Elsewhere { key: u64, said: usize, open: bool },
+    /// A member handed the person its browser, asking `why`: a row to open
+    /// it from, and give it back; `live` on the member's latest (an earlier
+    /// one is past).
+    HandOver { name: String, why: String, live: bool },
 }
 
 impl Block {
+    fn pending(item: &crate::queue::Pending) -> Self {
+        Block::Pending { text: item.text.clone(), steer: item.kind == crate::queue::Kind::Steer, at: item.at }
+    }
+
     /// The words a search finds in it.
     pub fn searchable(&self) -> Option<String> {
         match self {
             // Your words as shown: without the attachments' tags.
-            Block::User(t) | Block::Memo(t) | Block::Steering(t) => Some(crate::sent::parts(t).text),
+            Block::User(t) | Block::Pending { text: t, .. } => Some(crate::sent::parts(t).text),
             Block::Reply { text: t, .. } | Block::Note(t) => Some(t.clone()),
             Block::News(lines) => Some(lines.iter().map(|n| n.text.clone()).collect::<Vec<_>>().join("\n")),
             Block::YourTurn { news, .. } => Some(news.clone()),
+            Block::HandOver { name, why, .. } => Some(format!("{name}\n{why}")),
             Block::Worked(_) => None,
             Block::Steps(lines) => Some(lines.iter().map(|l| format!("{} {}", verb_word(&l.verb), l.targets.join(" "))).collect::<Vec<_>>().join("\n")),
             Block::Error { message, .. } => Some(message.clone()),
@@ -667,6 +737,9 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
             blocks.extend(crate::activity::groups(std::mem::take(&mut run)).into_iter().map(Block::Steps));
         }
         match entry {
+            // What equipe once told a member as if the person had said it (its
+            // browser handed back): a line of equipe's, never their bubble.
+            Entry::User { text } if crate::activity::handed_back_line(text) => blocks.push(Block::Note(t!("chat.browser_given_back").to_owned())),
             Entry::User { text } => blocks.push(Block::User(text.clone())),
             Entry::Reply { text } => {
                 blocks.push(Block::Reply { text: text.clone(), first: !replied, live: false, worked: None });
@@ -678,6 +751,10 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
                     Some(Block::Reply { worked: slot, .. }) => *slot = Some(worked),
                     _ => blocks.push(Block::Worked(worked)),
                 },
+                (None, None) if crate::activity::handed_of(text).is_some() => {
+                    let (name, why) = crate::activity::handed_of(text).unwrap_or_default();
+                    blocks.push(Block::HandOver { name, why, live: false });
+                }
                 (None, None) => match crate::activity::news_of(text) {
                     // A ticket waiting for the person: their card, not a line.
                     Some(news) if news.kind == crate::activity::NewsKind::Waiting && ticket_ref(&news.text).is_some() => {
@@ -701,6 +778,17 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
         blocks.extend(crate::activity::groups(run).into_iter().map(Block::Steps));
     }
     blocks
+}
+
+/// The conversation's hand-over rows brought up to date: each member's
+/// latest is live (it can be opened and given back), the rest past.
+pub fn mark_handed(blocks: &mut [Block]) {
+    let mut seen = HashSet::new();
+    for block in blocks.iter_mut().rev() {
+        if let Block::HandOver { name, live, .. } = block {
+            *live = seen.insert(name.clone());
+        }
+    }
 }
 
 /// The member's auto memory, which equipe keeps under the squad's members.
@@ -922,6 +1010,45 @@ mod tests {
     }
 
     #[test]
+    fn a_browser_handed_over_is_a_row_to_act_on_in_any_language_its_latest_live() {
+        let why = "App Store Connect(Umbriles Inc. 계정 소유자 Apple ID)에 로그인해 주세요. 끝나면 DSA '거래자' 신고는 제가 이어서 합니다.";
+        let mut c = convo(true);
+        feed(
+            &mut c,
+            &[
+                // From a daemon that spoke English, popping the window on its own Mac.
+                Event::Notice { session: 1, text: format!("🖥 pm's browser comes up on this Mac's screen: {why}") },
+                Event::Notice { session: 1, text: "You accepted T-58 · 헤더.".into() },
+                // Into the panel, worded in Korean.
+                Event::Notice { session: 1, text: "🖥 pm의 브라우저가 브라우저 패널에 열립니다: 2단계 인증 코드를 입력해 주세요".into() },
+            ],
+        );
+        let mut blocks = c.blocks();
+        mark_handed(&mut blocks);
+        assert_eq!(blocks[0], Block::HandOver { name: "pm".into(), why: why.into(), live: false }, "{blocks:?}");
+        assert!(matches!(&blocks[1], Block::News(_)));
+        assert_eq!(blocks[2], Block::HandOver { name: "pm".into(), why: "2단계 인증 코드를 입력해 주세요".into(), live: true });
+        assert_eq!(blocks[2].searchable().as_deref(), Some("pm\n2단계 인증 코드를 입력해 주세요"));
+    }
+
+    #[test]
+    fn a_browser_handed_back_long_ago_reads_as_equipes_line_not_the_persons_bubble() {
+        let mut c = convo(true);
+        feed(
+            &mut c,
+            &[
+                Event::UserMessage { session: 1, text: "The person finished in the browser.".into() },
+                Event::UserMessage { session: 1, text: "The person handled the page that needed them in your browser (a human check or a sign-in) and handed it back. Carry on where you were.".into() },
+                Event::UserMessage { session: 1, text: "The person finished the report".into() },
+            ],
+        );
+        let blocks = c.blocks();
+        assert_eq!(blocks[0], Block::Note(t!("chat.browser_given_back").to_owned()));
+        assert_eq!(blocks[1], Block::Note(t!("chat.browser_given_back").to_owned()));
+        assert_eq!(blocks[2], Block::User("The person finished the report".into()), "words of the person's own stay theirs");
+    }
+
+    #[test]
     fn a_ticket_waiting_for_the_person_is_a_card_not_a_news_line() {
         let mut c = convo(true);
         feed(
@@ -1092,9 +1219,68 @@ mod tests {
                 Event::MessageQueued { session: 1, text: "for app".into(), project: Some("app".into()) },
             ],
         );
-        let memos = |s: &Sliced| s.blocks.iter().filter_map(|b| if let Block::Memo(t) = b { Some(t.clone()) } else { None }).collect::<Vec<_>>();
+        let memos = |s: &Sliced| waiting(&s.blocks).into_iter().map(|(t, _)| t).collect::<Vec<_>>();
         assert_eq!(memos(&c.sliced(Some("app"), &HashSet::new())), ["for app"]);
         assert_eq!(memos(&c.sliced(None, &HashSet::new())), ["for site", "for app"]);
+    }
+
+    /// What waits, as the conversation shows it: its words, and whether a steer.
+    fn waiting(blocks: &[Block]) -> Vec<(String, bool)> {
+        blocks.iter().filter_map(|b| if let Block::Pending { text, steer, .. } = b { Some((text.clone(), *steer)) } else { None }).collect()
+    }
+
+    #[test]
+    fn steers_show_in_the_project_they_were_said_about_and_the_rest_count_in_a_fold() {
+        let mut c = two_projects();
+        feed(
+            &mut c,
+            &[
+                Event::UserMessage { session: 1, text: "work".into() },
+                Event::SteerQueued { session: 1, text: "mobile한 명 더 추가하는거 승인할게.".into(), project: None },
+                Event::SteerQueued { session: 1, text: "우리 웹사이트는 어떻게 되어가는중?".into(), project: Some("site".into()) },
+                Event::MessageQueued { session: 1, text: "app memo".into(), project: Some("app".into()) },
+            ],
+        );
+        let site = c.sliced(Some("site"), &HashSet::new());
+        assert_eq!(waiting(&site.blocks), [("우리 웹사이트는 어떻게 되어가는중?".to_owned(), true)], "{:?}", site.blocks);
+        // The other two count where the conversation folds the others.
+        let Some(Block::Elsewhere { key, said, open: false }) = site.blocks.iter().rev().find(|b| matches!(b, Block::Elsewhere { .. })).cloned() else { panic!("{:?}", site.blocks) };
+        let before = c.clone();
+        let quiet = { let mut q = before; q.queue = crate::queue::Queue::default(); q.sliced(Some("site"), &HashSet::new()) };
+        let said_before = quiet.blocks.iter().rev().find_map(|b| if let Block::Elsewhere { said, .. } = b { Some(*said) } else { None }).unwrap_or(0);
+        assert_eq!(said, said_before + 2);
+        // Opened, everything waiting shows in order.
+        let open = c.sliced(Some("site"), &HashSet::from([key]));
+        assert_eq!(waiting(&open.blocks).len(), 3);
+        // Every project: all of them, each with its project.
+        let all = c.sliced(None, &HashSet::new());
+        assert_eq!(waiting(&all.blocks).len(), 3);
+        assert_eq!(all.about[all.about.len() - 3..], [None, Some("site".into()), Some("app".into())]);
+    }
+
+    #[test]
+    fn the_projects_news_between_other_projects_talk_follows_one_fold() {
+        let mut c = convo(true);
+        feed(
+            &mut c,
+            &[
+                Event::Thread { session: 1, project: Some("app".into()) },
+                Event::UserMessage { session: 1, text: "a1".into() },
+                Event::TextDelta { session: 1, text: "a2".into() },
+                Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None },
+                Event::Thread { session: 1, project: Some("site".into()) },
+                Event::Notice { session: 1, text: "frontend handed in T-4".into() },
+                Event::Thread { session: 1, project: None },
+                Event::UserMessage { session: 1, text: "all".into() },
+                Event::TextDelta { session: 1, text: "all answer".into() },
+                Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None },
+            ],
+        );
+        let site = c.sliced(Some("site"), &HashSet::new());
+        let folds = site.blocks.iter().filter(|b| matches!(b, Block::Elsewhere { .. })).count();
+        assert_eq!(folds, 1, "{:?}", site.blocks);
+        assert!(matches!(site.blocks.first(), Some(Block::Elsewhere { .. })));
+        assert!(site.blocks.iter().any(|b| b.searchable().is_some_and(|t| t.contains("T-4"))), "the site's news shows after it: {:?}", site.blocks);
     }
 
     #[test]
@@ -1156,10 +1342,11 @@ mod tests {
     fn a_memo_waits_below_the_conversation_until_the_turn_delivers_it() {
         let mut c = convo(false);
         feed(&mut c, &[Event::UserMessage { session: 1, text: "work".into() }, Event::MessageQueued { session: 1, text: "also this".into(), project: None }]);
-        assert_eq!(c.blocks().last(), Some(&Block::Memo("also this".into())));
+        assert_eq!(waiting(&c.blocks()), [("also this".to_owned(), false)]);
+        assert!(matches!(c.blocks().last(), Some(Block::Pending { .. })));
         feed(&mut c, &[Event::UserMessage { session: 1, text: "also this".into() }]);
-        assert!(c.queued.is_empty());
-        assert!(!c.blocks().iter().any(|b| matches!(b, Block::Memo(_))));
+        assert!(c.queue.is_empty());
+        assert!(waiting(&c.blocks()).is_empty());
     }
 
     #[test]
@@ -1173,22 +1360,29 @@ mod tests {
                 Event::MessageQueued { session: 1, text: "for app".into(), project: Some("app".into()) },
             ],
         );
-        let memos = |c: &Convo| c.blocks().into_iter().filter_map(|b| if let Block::Memo(t) = b { Some(t) } else { None }).collect::<Vec<_>>();
+        let memos = |c: &Convo| waiting(&c.blocks()).into_iter().map(|(t, _)| t).collect::<Vec<_>>();
         assert_eq!(memos(&c), ["for site", "for app"]);
         // The next turn takes the first project's; the other waits.
         feed(&mut c, &[Event::UserMessage { session: 1, text: "for site".into() }]);
-        assert_eq!(c.queued, ["for app"]);
+        assert_eq!(c.queue.texts(), ["for app"]);
     }
 
     #[test]
     fn steering_shows_as_read_next_step_until_read_or_the_turn_ends() {
         let mut c = convo(false);
-        feed(&mut c, &[Event::UserMessage { session: 1, text: "work".into() }, Event::SteerQueued { session: 1, text: "skip the footer".into() }]);
-        assert_eq!(c.blocks().last(), Some(&Block::Steering("skip the footer".into())));
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "work".into() }, Event::SteerQueued { session: 1, text: "skip the footer".into(), project: None }]);
+        assert_eq!(waiting(&c.blocks()), [("skip the footer".to_owned(), true)]);
+        // Read: it is the conversation's, where it was read.
         feed(&mut c, &[Event::Steered { session: 1, text: "skip the footer".into() }]);
-        assert!(c.steering.is_empty());
-        feed(&mut c, &[Event::SteerQueued { session: 1, text: "and the nav".into() }, Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }]);
-        assert!(!c.blocks().iter().any(|b| matches!(b, Block::Steering(_))));
+        assert!(c.queue.is_empty());
+        assert!(matches!(c.blocks().last(), Some(Block::User(t)) if t == "skip the footer"));
+        // Unread at the turn's end: a memo in its place, delivered with the next turn.
+        feed(&mut c, &[Event::SteerQueued { session: 1, text: "and the nav".into(), project: None }, Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }]);
+        assert_eq!(waiting(&c.blocks()), [("and the nav".to_owned(), false)]);
+        feed(&mut c, &[Event::MessageQueued { session: 1, text: "and the nav".into(), project: None }]);
+        assert_eq!(waiting(&c.blocks()).len(), 1, "once");
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "and the nav".into() }]);
+        assert!(c.queue.is_empty());
     }
 
     #[test]
@@ -1207,10 +1401,66 @@ mod tests {
     #[test]
     fn subagents_come_and_go_with_their_steps() {
         let mut c = convo(false);
-        feed(&mut c, &[Event::SubagentStarted { session: 1, id: "a".into(), what: "look".into() }, Event::SubagentStep { session: 1, id: "a".into(), step: "Read x".into() }]);
-        assert_eq!(c.subagents, [Sub { id: "a".into(), what: "look".into(), step: Some("Read x".into()) }]);
-        feed(&mut c, &[Event::SubagentEnded { session: 1, id: "a".into() }]);
-        assert!(c.subagents.is_empty());
+        let start = Instant::now();
+        c.on_event(&Event::SubagentStarted { session: 1, id: "a".into(), what: "look".into() }, start, T);
+        c.on_event(&Event::SubagentStep { session: 1, id: "a".into(), step: "Read x".into() }, start + Duration::from_secs(5), T);
+        assert_eq!(c.subagents, [Sub { id: "a".into(), what: "look".into(), step: Some("Read x".into()), since: start }], "its clock runs from when it started");
+        // Told again (attached as it started): still one.
+        feed(&mut c, &[Event::SubagentStarted { session: 1, id: "a".into(), what: "look".into() }, Event::SubagentStarted { session: 1, id: "b".into(), what: "more".into() }]);
+        assert_eq!(c.subagents.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["a", "b"], "in the order they started");
+        feed(&mut c, &[Event::SubagentEnded { session: 1, id: "a".into() }, Event::SubagentStep { session: 1, id: "a".into(), step: "late".into() }]);
+        assert_eq!(c.subagents.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["b"], "a step after its end brings nothing back");
+        feed(&mut c, &[Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }]);
+        assert!(c.subagents.is_empty(), "the turn's end takes the rest with it");
+    }
+
+    #[test]
+    fn attaching_mid_turn_lists_the_subagents_at_work_with_their_clocks() {
+        let info: SessionInfo = serde_json::from_value(serde_json::json!({
+            "session": 2, "project": "/p", "member": {"role": "frontend", "name": "frontend"}, "engine": "claude", "model": null,
+            "access": "read_only", "workspace": null, "state": "working", "title": null, "tokens": 0,
+            "recent": [{"kind": "tool", "tool": "Agent", "target": "Read the logs"}],
+            "subagents": [{"id": "t1", "what": "Read the logs", "step": "Grep error", "secs": 90}]
+        }))
+        .unwrap();
+        let now = Instant::now();
+        let c = Convo::from_info(&info, now);
+        assert_eq!(c.subagents, [Sub { id: "t1".into(), what: "Read the logs".into(), step: Some("Grep error".into()), since: now - Duration::from_secs(90) }]);
+        let Block::Steps(lines) = &c.blocks()[0] else { panic!("{:?}", c.blocks()) };
+        assert_eq!((lines[0].verb.as_str(), lines[0].status), ("delegate", Status::Running));
+    }
+
+    #[test]
+    fn a_delegation_runs_while_its_subagent_does_even_answered_or_further_up() {
+        let mut c = convo(false);
+        feed(
+            &mut c,
+            &[
+                Event::UserMessage { session: 1, text: "go".into() },
+                tool("Agent", "Read the logs"),
+                Event::SubagentStarted { session: 1, id: "t1".into(), what: "Read the logs".into() },
+                // Sent to the background: answered at once, at work still.
+                Event::ToolResult { session: 1, tool: "Agent".into(), target: Some("Read the logs".into()), outcome: ToolOutcome { ok: true, exit: None, ms: Some(5), output: String::new(), skipped: 0, diff: None } },
+                Event::TextDelta { session: 1, text: "Meanwhile…".into() },
+                tool("Read", "/work/site/a.rs"),
+            ],
+        );
+        let blocks = c.blocks();
+        let sub = c.subagents[0].clone();
+        let (at, line) = delegation_of(&blocks, &sub).expect("its delegation");
+        assert_eq!(at, 1, "{blocks:?}");
+        let Block::Steps(lines) = &blocks[at] else { panic!() };
+        assert_eq!(lines[line].status, Status::Running);
+        feed(&mut c, &[Event::SubagentEnded { session: 1, id: "t1".into() }]);
+        let Block::Steps(lines) = &c.blocks()[1] else { panic!() };
+        assert_eq!(lines[0].status, Status::Done, "handed back: done");
+    }
+
+    #[test]
+    fn a_subagent_knows_its_task_cut_at_eighty_characters() {
+        let long = "a".repeat(100);
+        let sub = Sub { id: "x".into(), what: "a".repeat(80), step: None, since: Instant::now() };
+        assert!(sub.handed(&long) && !sub.handed("b") && !sub.handed(""));
     }
 
     #[test]
@@ -1246,7 +1496,7 @@ mod tests {
         let now = Instant::now();
         let mut c = Convo::from_info(&info, now);
         assert!(c.is_pm);
-        assert_eq!(c.queued, ["m"]);
+        assert_eq!(c.queue.texts(), ["m"]);
         c.on_event(&Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }, now + Duration::from_secs(3), T);
         assert!(c.blocks().iter().any(|b| matches!(b, Block::Reply { worked: Some(w), .. } if w.took() == "3초 작업함")), "{:?}", c.blocks());
     }

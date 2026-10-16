@@ -121,6 +121,12 @@
   "news.stale.one": "── {count} 件のチケットが 1 週間動いていません: PM が整理を提案します ──",
   "news.stale.other": "── {count} 件のチケットが 1 週間動いていません: PM が整理を提案します ──",
   "news.taken_on": "提案 T-{id} を採用しました · {title}。",
+  "news.team_added": "チームに {names} を追加しました",
+  "news.team_declined": "チーム変更の提案を断りました · {what}",
+  "news.team_not_added": "チームに {role} を追加できませんでした",
+  "news.team_removed": "{name} をチームから外しました",
+  "news.team_what_add.other": "{role} を {count} 人追加",
+  "news.team_what_remove": "{name} を外す",
   "news.waiting": "T-{id} があなたを待っています — {name} にはあなたにしかできないことが必要です · {title}。",
   "news.you_told": "↪ あなた → {name}: {text}",
   "note.ended_early": "エンジンが早めに終了しました。",
@@ -135,6 +141,7 @@
   "notice.browser_given_back": "🖐 ブラウザを返しました。",
   "notice.browser_in_panel": "🖥 {name} のブラウザがブラウザパネルで開きます: {why}",
   "notice.browser_on_screen": "🖥 {name} のブラウザがこの Mac の画面に表示されます: {why}",
+  "notice.browser_tab_closed": "🖐 ブラウザのタブを閉じました: {url}",
   "notice.browser_taken": "🖐 このブラウザをあなたが操作中です。ブラウザツールはあなたを待ちます。",
   "notice.declined": "✗ 断りました: {action}",
   "notice.declined_why": "✗ {why} 却下: {action}",
@@ -163,5 +170,8 @@
   "status.proposed": "提案",
   "status.review": "レビュー",
   "status.todo": "未着手",
-  "status.waiting": "あなたの番"
+  "status.waiting": "あなたの番",
+  "error.disk_full": "ディスクがいっぱいです。空きができるまで、equipe は会話とチケットを保存できません。たいていはメンバーのビルドフォルダ (target/) が原因です。",
+  "notice.disk_room": "ディスクに空きが戻りました。equipe は会話とチケットを再び保存します。",
+  "error.stuck": "デーモンが応答しません。{since} から {doing} の処理で止まっています。`equipe daemon restart` を試してください。"
 }

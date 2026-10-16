@@ -115,9 +115,84 @@ pub async fn attach(squad: &str) -> io::Result<(Client, Hello)> {
     Client::connect_in(&socket(), &build_id(), squad, Some(crate::i18n::lang())).await
 }
 
-/// `equipe daemon stop`: `Ok(false)` when none was running.
-pub async fn stop() -> io::Result<bool> {
-    gateway::shutdown(&socket()).await
+/// How long `equipe daemon status` waits for the daemon to answer.
+pub const ANSWER_WAIT: Duration = Duration::from_secs(5);
+/// How long a stop waits for the daemon to put its turns down before it is ended.
+const STOP_WAIT: Duration = Duration::from_secs(15);
+
+/// What the daemon says when asked what it is doing.
+pub enum Answer {
+    /// None runs: nothing listens at the socket.
+    NotRunning,
+    /// It answered — maybe that its core is stuck (`stalled`).
+    Busy(equipe_core::protocol::rpc::Busy),
+    /// It takes connections but answered nothing in [`ANSWER_WAIT`].
+    Silent,
+}
+
+/// Ask the daemon what it is doing, never waiting longer than [`ANSWER_WAIT`].
+pub async fn ask() -> Answer {
+    let socket = socket();
+    if !tokio::time::timeout(ANSWER_WAIT, gateway::is_running(&socket)).await.unwrap_or(false) {
+        return Answer::NotRunning;
+    }
+    match tokio::time::timeout(ANSWER_WAIT, gateway::busy(&socket)).await {
+        Ok(Ok(Some(busy))) => Answer::Busy(busy),
+        // Older than `busy`: it answers, with nothing to say.
+        Ok(Ok(None)) => Answer::Busy(Default::default()),
+        Ok(Err(_)) | Err(_) => Answer::Silent,
+    }
+}
+
+/// How `equipe daemon stop` went.
+pub enum Stopped {
+    None,
+    /// It stopped when asked.
+    Asked,
+    /// It didn't, and was ended: this process.
+    Ended(u32),
+}
+
+/// `equipe daemon stop`: asked to stop, a daemon puts its turns down and
+/// exits; one that doesn't within [`STOP_WAIT`] — it no longer answers — is
+/// ended (TERM, then KILL). Under the login service it then starts again.
+pub async fn stop() -> io::Result<Stopped> {
+    let socket = socket();
+    if !gateway::is_running(&socket).await {
+        return Ok(Stopped::None);
+    }
+    let pid = gateway::daemon_pid(&socket).await;
+    match tokio::time::timeout(STOP_WAIT, gateway::shutdown(&socket)).await {
+        Ok(Ok(true)) => return Ok(Stopped::Asked),
+        Ok(Ok(false)) => return Ok(Stopped::None),
+        Ok(Err(_)) | Err(_) => {}
+    }
+    let Some(pid) = pid else {
+        return Err(io::Error::new(io::ErrorKind::TimedOut, equipe_core::t!("daemon.no_pid")));
+    };
+    end(pid).await;
+    Ok(Stopped::Ended(pid))
+}
+
+/// End process `pid`: TERM, and KILL when it is still there a few seconds on.
+async fn end(pid: u32) {
+    let pid = pid as libc::pid_t;
+    // SAFETY: kill has no memory preconditions; `pid` is a single process (> 1).
+    let gone = || unsafe { libc::kill(pid, 0) } != 0;
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+    for _ in 0..50 {
+        if gone() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+    for _ in 0..20 {
+        if gone() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// The daemon as a login service — launchd on macOS, systemd on Linux — so it

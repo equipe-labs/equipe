@@ -109,7 +109,7 @@ pub fn history(n: usize) -> Vec<Entry> {
     let projects = [Some("app"), Some("web"), Some("api"), None];
     let mut turn = 0u64;
     while out.len() < n {
-        if turn % 6 == 0 {
+        if turn.is_multiple_of(6) {
             let project = projects[rng.below(4) as usize];
             out.push(Entry::Thread { project: project.map(str::to_owned) });
         }

@@ -45,6 +45,16 @@ asks the next time you call `block_on_person`, so don't repeat it; \"not yet\" i
 it yourself and say what you chose. \"the person doesn't know\": find it out another way, or ask it differently. A \
 note under an item and their own words at the end (\"From the person:\") come first: follow them.";
 
+/// The roles a new squad may start with, besides the PM, and which are ticked.
+pub const STARTERS: [(&str, bool); 5] =
+    [("designer", true), ("frontend", true), ("backend", false), ("qa", false), ("data", false)];
+
+/// The team a squad started from a screen begins with: the PM, then the
+/// starters ticked by default.
+pub fn starting_team() -> Vec<String> {
+    std::iter::once(PM).chain(STARTERS.iter().filter(|(_, on)| *on).map(|(id, _)| *id)).map(str::to_owned).collect()
+}
+
 pub const ROLES: [Role; 7] = [
     Role {
         id: PM,
@@ -252,8 +262,12 @@ finished work; tell them when something waits for review. Give each ticket to th
 nobody on the team could do it — while you work a ticket, the person waits to talk to you, and there is only one \
 of you. Split work into tickets that can run side by side without \
 touching the same files, and give each to a role (`backend`), not to a numbered member: each member decides for \
-itself when a big ticket is worth splitting across subagents. Teammates are the person's to add: when one role's work keeps piling up past \
-what its members get through, propose that they add one with `/add <role>` — never add one yourself.\n\nNot every request needs a ticket. Something short — an answer, a quick \
+itself when a big ticket is worth splitting across subagents. The team is the person's to change, never yours: when more hands \
+would unblock work — a ticket waits while its role's members are busy for hours, one role's work piles up past what its \
+members get through — or when the person says in words to add or remove someone (\"add one more mobile\", \"I'll approve \
+adding one\"), call `propose_team_change` right away instead of asking them to type a command: the card it puts in front \
+of them makes it one click. Neither their words nor yours are the approval — only their click on the card changes the \
+team.\n\nNot every request needs a ticket. Something short — an answer, a quick \
 lookup, a note or one table, a few minutes at most, with nothing the person must check before it counts — do \
 yourself, right in the conversation, and save what is worth keeping in the squad's folder. Anything bigger — several \
 steps, findings the person should check, a document or a deliverable, work for a teammate — goes on a ticket, and you \
@@ -261,9 +275,8 @@ say in a line which ticket it went to. That holds for your own work too: a ticke
 conversation, so the person can always reach you — long work done right in the conversation keeps them waiting. \
 Tickets are: `task` for \
 finding out, writing, calculating or paperwork, `action` for doing something in an app or the browser, `code` only \
-when a repository changes. When nobody on the team fits a task or an action, own it yourself, or propose that the \
-person bring someone in with `/add <role>` (designer, frontend, backend, mobile, qa, data — or `/add custom <name>`, \
-with `--edits` when it should change a project's files). Code needs an engineer: when the team has none, propose one.",
+when a repository changes. When nobody on the team fits a task or an action, own it yourself, or propose someone with \
+`propose_team_change` (designer, frontend, backend, mobile, qa, data — or `custom` with a name). Code needs an engineer: when the team has none, propose one.",
         (true, false) => "Your equipe tools: `board` shows the board, `create_ticket` proposes work outside your \
 ticket, `comment` notes something on a ticket, and `submit_for_review` hands in the ticket you are on once \
 it meets its acceptance criteria. When you can't go on without something only the person can do — a token, an \
@@ -272,7 +285,8 @@ you take other work until they have; don't keep a ticket open just to wait. Give
 `needs`, a complete sentence that stands alone (never several joined into one), and name a file or folder by its \
 path in backticks (`outputs/shots/`), so the person can open it from the card they answer on. They may answer \
 only some items, or hand one back to you (\"do it yourself\") — then it is yours to do; what they put off stays \
-open on the ticket and is asked again with your next `block_on_person`.",
+open on the ticket and is asked again with your next `block_on_person`. When more hands would get work unblocked \
+sooner, tell the PM, who proposes it to the person — never ask the person to type a command to add someone.",
         (false, _) => "You have no board tools on this engine: say plainly when a ticket is done, and the person \
 accepts it.",
     };
@@ -307,9 +321,13 @@ they sign in once, in your window, and it holds for the whole squad. Before anyt
 that can't easily be taken back — creating an account, accepting terms, starting a trial or a paid plan, inviting \
 someone, deleting or transferring, changing security or billing settings — call `ask_person` with exactly what \
 and why, and go ahead only on their yes. Never type a card number or a password you weren't given, and never try \
-to get past a CAPTCHA. When the person has to do a step — sign in, a code, a CAPTCHA — or should see something, \
-call `show_my_browser` with the page: your own browser comes up on their screen when your turn ends, and they do \
-it there while you wait; their sign-ins are kept as they go, no window to close. Never run `equipe browser` \
+to get past a CAPTCHA. When the person has to do a step in your browser — sign in, a code, a CAPTCHA — or should \
+see something, hand it to them with `show_my_browser`: never only ask in words (\"please log in\"), which leaves \
+them looking for a browser they can't see. Give the page, and as `why` exactly what to do there, in their \
+language — which site, which account, which button (\"Sign in to App Store Connect with the Umbriles Inc. \
+account holder's Apple ID\"). Then say it in one line and end your turn: it opens in their hands in equipe's \
+browser panel (or on their screen), and when they hand it back you are told and carry on by yourself — don't ask \
+them to tell you they're done. Their sign-ins are kept as they go, no window to close. Never run `equipe browser` \
 yourself — it stops your turn until a window is closed. A one-time code the person sends you you may type. Your \
 windows are yours alone, but sign-ins are shared by everyone's: don't sign out of a site, or switch it to another \
 account, team or workspace, without saying so first — the rest of the squad works signed in there too."
@@ -484,6 +502,18 @@ mod tests {
     }
 
     #[test]
+    fn a_member_hands_its_browser_over_with_what_to_do_and_carries_on_when_it_comes_back() {
+        let team = [Teammate { name: "pm", role: "pm" }];
+        let text = charter(role(PM).unwrap(), "pm", &Context { browser: true, ..ctx(&team, &[], true) });
+        for part in ["hand it to them with `show_my_browser`", "never only ask in words", "exactly what to do there", "end your turn", "carry on by yourself"] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+        let tools = crate::board::tools(true);
+        let show = tools.iter().find(|t| t["name"] == crate::board::SHOW_BROWSER).expect("the hand-over tool");
+        assert!(show["description"].as_str().unwrap().contains("rather than only asking in words"), "{show}");
+    }
+
+    #[test]
     fn the_pm_is_told_how_to_pick_a_tickets_kind() {
         let team = [Teammate { name: "pm", role: "pm" }];
         let text = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
@@ -607,9 +637,13 @@ mod tests {
     fn the_pm_does_short_work_itself_and_puts_bigger_work_of_any_kind_on_tickets() {
         let team = [Teammate { name: "pm", role: "pm" }];
         let text = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
-        for part in ["research, writing, numbers, paperwork", "or yourself", "Not every request needs a ticket", "do yourself", "own it yourself", "`/add <role>`", "`--edits`", "Code needs an engineer"] {
+        for part in ["research, writing, numbers, paperwork", "or yourself", "Not every request needs a ticket", "do yourself", "own it yourself", "`propose_team_change`", "only their click on the card", "Code needs an engineer"] {
             assert!(text.contains(part), "{part}: {text}");
         }
+        // The team changes on the person's click, never on a typed command or anyone's words.
+        assert!(text.contains("instead of asking them to type a command") && !text.contains("/add"), "{text}");
+        let member = charter(role("mobile").unwrap(), "mobile", &ctx(&team, &[], true));
+        assert!(member.contains("tell the PM, who proposes it to the person") && !member.contains("`propose_team_change`"), "{member}");
         // The rule for code stays: the PM doesn't change a project's code.
         assert!(text.contains("You don't change a project's code yourself"), "{text}");
         assert!(!text.contains("software squad"), "{text}");

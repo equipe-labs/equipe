@@ -199,7 +199,7 @@ impl Shell {
         if !self.can_act() || self.model.asked.get(id).is_none() {
             return;
         }
-        self.send_command(Command::AnswerQuestions { squad: self.model.squad.clone(), id, answers });
+        self.send_command(Command::AnswerQuestions { squad: self.model.squad.clone(), id, answers, about: Some(self.model.focus.clone()) });
         self.model.asked.sent(id);
         self.model.revision += 1;
         self.decide_give_back(window, cx);

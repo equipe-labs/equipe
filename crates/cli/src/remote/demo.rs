@@ -145,11 +145,13 @@ fn session(id: SessionId, role: &str, project: &str, recent: Vec<Entry>, work: O
         queued_project: None,
         queued_in: vec![],
         steering: vec![],
+        steering_in: vec![],
         lane: None,
         estimate: None,
         work: work.map(|ticket| WorkInfo { ticket, project: project.into(), workspace: None }),
         mode: None,
         effort: None,
+        subagents: Vec::new(),
     }
 }
 
@@ -337,7 +339,7 @@ impl Scene {
                 self.at(end + NEXT_REQUEST_MS, next);
                 vec![resolved]
             }
-            Command::Submit { session, text } => {
+            Command::Submit { session, text, .. } => {
                 let Some(member) = self.member(session).map(str::to_owned).filter(|_| self.later.len() < LATER) else { return vec![] };
                 let text: String = text.chars().take(MESSAGE).collect();
                 let ko = korean(&text);
@@ -524,14 +526,14 @@ mod tests {
     fn the_pm_answers_and_puts_asked_work_on_the_board() {
         let mut demo = Demo::default();
         hello(&mut demo, "a");
-        let out = demo.command("a", Command::Submit { session: PM, text: "What's the status?".into() }, 0);
+        let out = demo.command("a", Command::Submit { session: PM, text: "What's the status?".into(), about: None }, 0);
         assert_eq!(out, vec![Event::UserMessage { session: PM, text: "What's the status?".into() }]);
         let later: Vec<Event> = demo.due(30_000).into_iter().map(|(_, e)| e).collect();
         let said: String = later.iter().filter_map(|e| match e { Event::TextDelta { session: PM, text } => Some(text.as_str()), _ => None }).collect();
         assert!(said.contains("T-2"), "{said}");
         assert!(later.iter().any(|e| matches!(e, Event::TurnEnded { session: PM, outcome: TurnOutcome::Completed, .. })));
         // Asked in Korean for work: a ticket, and the answer in Korean.
-        demo.command("a", Command::Submit { session: PM, text: "FAQ 페이지 추가해줘".into() }, 40_000);
+        demo.command("a", Command::Submit { session: PM, text: "FAQ 페이지 추가해줘".into(), about: None }, 40_000);
         let later: Vec<Event> = demo.due(80_000).into_iter().map(|(_, e)| e).collect();
         assert!(later.iter().any(|e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 7 && ticket.title == "FAQ 페이지 추가해줘")));
         let said: String = later.iter().filter_map(|e| match e { Event::TextDelta { text, .. } => Some(text.as_str()), _ => None }).collect();
@@ -565,7 +567,7 @@ mod tests {
         assert!(matches!(&out[..], [Event::TicketChanged { ticket, .. }] if ticket.status == TicketStatus::InProgress));
         assert!(demo.due(10_000).iter().any(|(_, e)| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 4 && ticket.status == TicketStatus::Review)));
         assert!(demo.command("a", Command::Reopen { squad: SQUAD.into(), ticket: 1, note: String::new() }, 0).is_empty(), "only work in review goes back");
-        demo.command("a", Command::Submit { session: BACKEND, text: "hi".into() }, 20_000);
+        demo.command("a", Command::Submit { session: BACKEND, text: "hi".into(), about: None }, 20_000);
         let out = demo.command("a", Command::Interrupt { session: BACKEND }, 20_100);
         assert!(matches!(&out[..], [Event::TurnEnded { outcome: TurnOutcome::Interrupted, .. }]));
         assert!(demo.due(60_000).iter().all(|(_, e)| e.session() != Some(BACKEND)));
@@ -660,7 +662,7 @@ mod tests {
     fn a_phone_that_floods_the_pm_stops_being_answered() {
         let mut demo = Demo::default();
         hello(&mut demo, "a");
-        let answered = (0..1000).filter(|_| !demo.command("a", Command::Submit { session: PM, text: "hi".into() }, 0).is_empty()).count();
+        let answered = (0..1000).filter(|_| !demo.command("a", Command::Submit { session: PM, text: "hi".into(), about: None }, 0).is_empty()).count();
         assert!(answered < 100, "{answered}");
         assert!(demo.scenes["a"].later.len() <= LATER + 20);
     }
