@@ -35,6 +35,7 @@ mod state;
 mod stream;
 mod target;
 mod theme;
+mod team;
 mod tickets;
 mod tips;
 mod ui;
@@ -437,6 +438,11 @@ impl Shell {
                 }
                 views::decide::Took::Typing => return,
                 views::decide::Took::Pass => {}
+            }
+            // A change to the team the PM proposed: ⌘⏎ approves it, above an empty composer or in the peek.
+            if this.update(cx, |shell, cx| shell.on_team_key(key, &modifiers, cx)).unwrap_or(false) {
+                cx.stop_propagation();
+                return;
             }
             // The work screens' keys: A R N…, moving, the peek, search.
             if this.update(cx, |shell, cx| shell.on_board_key(key, &modifiers, window, cx)).unwrap_or(false) {

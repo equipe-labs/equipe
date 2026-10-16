@@ -483,6 +483,12 @@ impl Shell {
             }
             // Answered on its card, in the peek.
             Need::Questions(_) => {}
+            // A change to the team: Y approves it, as its card's button does.
+            Need::Team(id) => {
+                let before = board::items(&self.board_rows());
+                self.team_decide(id, true, cx);
+                self.advance_from(&before, need, cx);
+            }
             // A page waiting for the person: the panel, on it, in their hands.
             Need::Browser(page) => self.reveal_browser(page, cx),
         }
@@ -504,7 +510,7 @@ impl Shell {
                     self.board_yes(cx);
                 }
             }
-            Some(Need::Questions(_) | Need::Browser(_)) | None => {}
+            Some(Need::Questions(_) | Need::Team(_) | Need::Browser(_)) | None => {}
         }
     }
 
@@ -705,6 +711,12 @@ impl Shell {
                     }
                 }
             }
+            // A change to the team: N says no to it.
+            Some(Need::Team(id)) => {
+                let before = board::items(&self.board_rows());
+                self.team_decide(id, false, cx);
+                self.advance_from(&before, Need::Team(id), cx);
+            }
             // Closed on its card (✕), where what it closes is in sight.
             Some(Need::Questions(_) | Need::Browser(_)) | None => {}
         }
@@ -816,6 +828,7 @@ impl Shell {
     pub fn board_talk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let session = match self.picked_need() {
             Some(Need::Permission(id)) => self.model.approvals.get(id).map(|a| a.session),
+            Some(Need::Team(id)) => self.model.team.get(id).map(|c| c.session),
             Some(Need::Questions(id)) => {
                 let member = self.model.asked.get(id).map(|s| s.member.clone());
                 self.model.members.iter().find(|m| m.presence != Presence::Closed && Some(&m.name) == member.as_ref()).map(|m| m.session)
@@ -1760,6 +1773,21 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
                 .child(super::browser::need_mark(p))
+                .child(div().w(px(44.)).flex_none())
+                .when(show_project, |r| r.child(project_col(None)))
+                .child(div().flex_1().min_w(px(120.)).truncate().text_color(p.text).child(title))
+                .child(div().w(px(flags_w)).flex_none())
+                .child(cell(detail_w).text_color(color).child(name))
+                .child(cell(eta_w))
+                .child(cell(34.))
+                .into_any_element()
+        }
+        Need::Team(id) => {
+            let Some((title, name, color)) = super::team::row_text(shell, id) else { return div().into_any_element() };
+            base(SharedString::from(format!("team-{id}")), cx)
+                .pl_2()
+                .child(div().w(px(14.)).flex_none())
+                .child(super::team::mark(p))
                 .child(div().w(px(44.)).flex_none())
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(120.)).truncate().text_color(p.text).child(title))

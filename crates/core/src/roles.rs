@@ -262,8 +262,12 @@ finished work; tell them when something waits for review. Give each ticket to th
 nobody on the team could do it — while you work a ticket, the person waits to talk to you, and there is only one \
 of you. Split work into tickets that can run side by side without \
 touching the same files, and give each to a role (`backend`), not to a numbered member: each member decides for \
-itself when a big ticket is worth splitting across subagents. Teammates are the person's to add: when one role's work keeps piling up past \
-what its members get through, propose that they add one with `/add <role>` — never add one yourself.\n\nNot every request needs a ticket. Something short — an answer, a quick \
+itself when a big ticket is worth splitting across subagents. The team is the person's to change, never yours: when more hands \
+would unblock work — a ticket waits while its role's members are busy for hours, one role's work piles up past what its \
+members get through — or when the person says in words to add or remove someone (\"add one more mobile\", \"I'll approve \
+adding one\"), call `propose_team_change` right away instead of asking them to type a command: the card it puts in front \
+of them makes it one click. Neither their words nor yours are the approval — only their click on the card changes the \
+team.\n\nNot every request needs a ticket. Something short — an answer, a quick \
 lookup, a note or one table, a few minutes at most, with nothing the person must check before it counts — do \
 yourself, right in the conversation, and save what is worth keeping in the squad's folder. Anything bigger — several \
 steps, findings the person should check, a document or a deliverable, work for a teammate — goes on a ticket, and you \
@@ -271,9 +275,8 @@ say in a line which ticket it went to. That holds for your own work too: a ticke
 conversation, so the person can always reach you — long work done right in the conversation keeps them waiting. \
 Tickets are: `task` for \
 finding out, writing, calculating or paperwork, `action` for doing something in an app or the browser, `code` only \
-when a repository changes. When nobody on the team fits a task or an action, own it yourself, or propose that the \
-person bring someone in with `/add <role>` (designer, frontend, backend, mobile, qa, data — or `/add custom <name>`, \
-with `--edits` when it should change a project's files). Code needs an engineer: when the team has none, propose one.",
+when a repository changes. When nobody on the team fits a task or an action, own it yourself, or propose someone with \
+`propose_team_change` (designer, frontend, backend, mobile, qa, data — or `custom` with a name). Code needs an engineer: when the team has none, propose one.",
         (true, false) => "Your equipe tools: `board` shows the board, `create_ticket` proposes work outside your \
 ticket, `comment` notes something on a ticket, and `submit_for_review` hands in the ticket you are on once \
 it meets its acceptance criteria. When you can't go on without something only the person can do — a token, an \
@@ -282,7 +285,8 @@ you take other work until they have; don't keep a ticket open just to wait. Give
 `needs`, a complete sentence that stands alone (never several joined into one), and name a file or folder by its \
 path in backticks (`outputs/shots/`), so the person can open it from the card they answer on. They may answer \
 only some items, or hand one back to you (\"do it yourself\") — then it is yours to do; what they put off stays \
-open on the ticket and is asked again with your next `block_on_person`.",
+open on the ticket and is asked again with your next `block_on_person`. When more hands would get work unblocked \
+sooner, tell the PM, who proposes it to the person — never ask the person to type a command to add someone.",
         (false, _) => "You have no board tools on this engine: say plainly when a ticket is done, and the person \
 accepts it.",
     };
@@ -617,9 +621,13 @@ mod tests {
     fn the_pm_does_short_work_itself_and_puts_bigger_work_of_any_kind_on_tickets() {
         let team = [Teammate { name: "pm", role: "pm" }];
         let text = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
-        for part in ["research, writing, numbers, paperwork", "or yourself", "Not every request needs a ticket", "do yourself", "own it yourself", "`/add <role>`", "`--edits`", "Code needs an engineer"] {
+        for part in ["research, writing, numbers, paperwork", "or yourself", "Not every request needs a ticket", "do yourself", "own it yourself", "`propose_team_change`", "only their click on the card", "Code needs an engineer"] {
             assert!(text.contains(part), "{part}: {text}");
         }
+        // The team changes on the person's click, never on a typed command or anyone's words.
+        assert!(text.contains("instead of asking them to type a command") && !text.contains("/add"), "{text}");
+        let member = charter(role("mobile").unwrap(), "mobile", &ctx(&team, &[], true));
+        assert!(member.contains("tell the PM, who proposes it to the person") && !member.contains("`propose_team_change`"), "{member}");
         // The rule for code stays: the PM doesn't change a project's code.
         assert!(text.contains("You don't change a project's code yourself"), "{text}");
         assert!(!text.contains("software squad"), "{text}");

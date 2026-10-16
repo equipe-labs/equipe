@@ -17,6 +17,7 @@ pub mod decide;
 pub mod rpc;
 pub mod stream;
 pub mod tags;
+pub mod team;
 pub mod transcript;
 
 pub use transcript::Transcript;
@@ -593,6 +594,13 @@ pub enum Command {
     /// The person closes a member's questions without answering: the member is
     /// told to go on without them.
     DismissQuestions { squad: SquadName, id: u64 },
+    /// The person approves a change to the team the PM proposed
+    /// ([`Event::TeamChangeProposed`]): the members join as `/add` brings
+    /// them in, or the member leaves as `/close` lets it go. Only ever the
+    /// person's: no agent sends it. Answered by [`Event::TeamChangeClosed`].
+    ApproveTeamChange { squad: SquadName, id: u64 },
+    /// The person says no to it: nothing changes, and the PM is told.
+    DeclineTeamChange { squad: SquadName, id: u64 },
     /// How many extra members of a role equipe may bring in when several of
     /// its tickets are ready at once; 0 brings in none.
     Scale { squad: SquadName, extra: usize },
@@ -928,6 +936,19 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         answers: Option<Vec<decide::Answer>>,
     },
+    /// The PM proposes a change to the team (`propose_team_change`): it waits
+    /// for the person's [`Command::ApproveTeamChange`] or
+    /// [`Command::DeclineTeamChange`].
+    TeamChangeProposed { squad: SquadName, change: team::TeamChange },
+    /// No longer waiting: approved (`members`: who joined, or left), declined,
+    /// or moot (its member left anyway; `approved: false`).
+    TeamChangeClosed {
+        squad: SquadName,
+        id: u64,
+        approved: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        members: Vec<String>,
+    },
     /// The squad's "always allow" rules changed (one added by an answer of
     /// [`Decision::Always`], one taken back): all of them, oldest first.
     Allowed { squad: SquadName, rules: Vec<String> },
@@ -1104,6 +1125,8 @@ impl Event {
             | Event::ApprovalResolved { squad, .. }
             | Event::QuestionsAsked { squad, .. }
             | Event::QuestionsClosed { squad, .. }
+            | Event::TeamChangeProposed { squad, .. }
+            | Event::TeamChangeClosed { squad, .. }
             | Event::Allowed { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } => squad.as_deref(),
             _ => None,
@@ -1148,6 +1171,8 @@ impl Event {
             | Event::ApprovalResolved { .. }
             | Event::QuestionsAsked { .. }
             | Event::QuestionsClosed { .. }
+            | Event::TeamChangeProposed { .. }
+            | Event::TeamChangeClosed { .. }
             | Event::Allowed { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
@@ -1350,6 +1375,9 @@ pub struct Snapshot {
     /// Members' questions waiting for the person, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub questions: Vec<decide::QuestionSet>,
+    /// Changes to the team the PM proposed, waiting for the person, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub team_changes: Vec<team::TeamChange>,
     /// How many extra members of a role equipe may bring in when its work waits.
     #[serde(default)]
     pub scale: Option<usize>,
@@ -1610,6 +1638,22 @@ mod tests {
                 }],
                 asked_at: 1,
             }],
+            team_changes: vec![team::TeamChange {
+                id: 5,
+                change: team::Change::Add,
+                role: "mobile".into(),
+                count: 1,
+                member: None,
+                engine: None,
+                model: None,
+                effort: None,
+                reason: "T-1 waits".into(),
+                unblocks: vec![1],
+                by: "pm".into(),
+                session: 9,
+                proposed_at: 2,
+                busy_on: None,
+            }],
             scale: Some(2),
             suggestions_off: false,
             plan: None,
@@ -1669,6 +1713,50 @@ mod tests {
         let old: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[]}"#).unwrap();
         assert!(old.questions.is_empty());
         assert!(serde_json::to_value(&old).unwrap().get("questions").is_none(), "none: the wire as before");
+    }
+
+    #[test]
+    fn team_changes_are_proposed_approved_or_declined_as_json_and_older_snapshots_have_none() {
+        let approve = Command::ApproveTeamChange { squad: "acme".into(), id: 7 };
+        assert_eq!(serde_json::to_value(&approve).unwrap(), json!({ "type": "approve_team_change", "squad": "acme", "id": 7 }));
+        let decline = Command::DeclineTeamChange { squad: "acme".into(), id: 7 };
+        assert_eq!(serde_json::to_value(&decline).unwrap(), json!({ "type": "decline_team_change", "squad": "acme", "id": 7 }));
+        for command in [approve, decline] {
+            assert_eq!(serde_json::from_str::<Command>(&serde_json::to_string(&command).unwrap()).unwrap(), command);
+        }
+        let change = team::TeamChange {
+            id: 7,
+            change: team::Change::Remove,
+            role: "qa".into(),
+            count: 1,
+            member: Some("qa-2".into()),
+            engine: None,
+            model: None,
+            effort: None,
+            reason: "idle".into(),
+            unblocks: vec![],
+            by: "pm".into(),
+            session: 1,
+            proposed_at: 3,
+            busy_on: Some(4),
+        };
+        let events = [
+            Event::TeamChangeProposed { squad: "acme".into(), change },
+            Event::TeamChangeClosed { squad: "acme".into(), id: 7, approved: true, members: vec!["qa-2".into()] },
+            Event::TeamChangeClosed { squad: "acme".into(), id: 7, approved: false, members: vec![] },
+        ];
+        for event in events {
+            assert_eq!((event.squad(), event.session(), event.for_everyone()), (Some("acme"), None, false));
+            let json = serde_json::to_string(&event).unwrap();
+            assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event, "{json}");
+        }
+        assert_eq!(
+            serde_json::to_value(Event::TeamChangeClosed { squad: "a".into(), id: 1, approved: false, members: vec![] }).unwrap(),
+            json!({ "type": "team_change_closed", "squad": "a", "id": 1, "approved": false })
+        );
+        let old: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[]}"#).unwrap();
+        assert!(old.team_changes.is_empty());
+        assert!(serde_json::to_value(&old).unwrap().get("team_changes").is_none(), "none: the wire as before");
     }
 
     #[test]

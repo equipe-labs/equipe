@@ -1298,6 +1298,8 @@ impl App {
                 | Event::ApprovalResolved { .. }
                 | Event::QuestionsAsked { .. }
                 | Event::QuestionsClosed { .. }
+                | Event::TeamChangeProposed { .. }
+                | Event::TeamChangeClosed { .. }
                 | Event::Allowed { .. } => {}
                 Event::Error { message, next, .. } => {
                     failure.get_or_insert(Failure { message, next });

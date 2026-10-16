@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use equipe_core::protocol::decide::{Answer, Choice, Question, QuestionSet};
 use equipe_core::protocol::rpc::{Hello, Message};
+use equipe_core::protocol::team::{Change, TeamChange};
 use equipe_core::protocol::{
     Access, Approval, Decision, Engine, Entry, Event, Member, Mode, SessionInfo, SessionState, Snapshot, Ticket, TicketKind, TicketStatus, TurnOutcome, Usage, WorkInfo,
 };
@@ -670,6 +671,26 @@ fn questions() -> QuestionSet {
     }
 }
 
+/// The PM proposes one more backend for T-41, which waits while backend is on T-38.
+fn team_change() -> TeamChange {
+    TeamChange {
+        id: 6_000_001,
+        change: Change::Add,
+        role: "backend".into(),
+        count: 1,
+        member: None,
+        engine: None,
+        model: None,
+        effort: None,
+        reason: "T-41이 4시간째 기다려요 (backend는 T-38 중)".into(),
+        unblocks: vec![41],
+        by: "pm".into(),
+        session: 1001,
+        proposed_at: NOW / 1000,
+        busy_on: None,
+    }
+}
+
 fn ticket(status: TicketStatus) -> Ticket {
     Ticket {
         id: 38,
@@ -750,6 +771,7 @@ fn snapshot() -> Snapshot {
         mode: Mode::Auto,
         approvals: vec![approval()],
         questions: vec![questions()],
+        team_changes: vec![team_change()],
         scale: Some(0),
         plan: None,
         suggestions_off: false,
@@ -816,6 +838,13 @@ fn message_vectors() -> Value {
     tell(&mut core, &mut examples, "event: questions answered", Event::QuestionsClosed { squad: SQUAD.into(), id: 5_000_001, answers: Some(answered) });
     tell(&mut core, &mut examples, "event: questions closed", Event::QuestionsClosed { squad: SQUAD.into(), id: 5_000_001, answers: None });
 
+    // A change to the team the PM proposed: approved or declined by the person.
+    tell(&mut core, &mut examples, "event: team change proposed", Event::TeamChangeProposed { squad: SQUAD.into(), change: team_change() });
+    ask(&mut core, &mut examples, "approve team change", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "approve_team_change", "squad": SQUAD, "id": 6_000_001 } }));
+    ask(&mut core, &mut examples, "decline team change", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decline_team_change", "squad": SQUAD, "id": 6_000_001 } }));
+    tell(&mut core, &mut examples, "event: team change approved", Event::TeamChangeClosed { squad: SQUAD.into(), id: 6_000_001, approved: true, members: vec!["backend-2".into()] });
+    tell(&mut core, &mut examples, "event: team change declined", Event::TeamChangeClosed { squad: SQUAD.into(), id: 6_000_001, approved: false, members: vec![] });
+
     // Review.
     ask(&mut core, &mut examples, "accept", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "accept", "squad": SQUAD, "ticket": 38 } }));
     ask(&mut core, &mut examples, "reopen", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "reopen", "squad": SQUAD, "ticket": 38, "note": "에러 메시지를 한국어로" } }));
@@ -848,6 +877,7 @@ fn message_vectors() -> Value {
         ("push: review", Event::TicketChanged { squad: SQUAD.into(), ticket: ticket(TicketStatus::Review) }),
         ("push: waiting", Event::TicketChanged { squad: SQUAD.into(), ticket: ticket(TicketStatus::Waiting) }),
         ("push: decision", Event::QuestionsAsked { squad: SQUAD.into(), questions: questions() }),
+        ("push: team change", Event::TeamChangeProposed { squad: SQUAD.into(), change: team_change() }),
     ] {
         let out = relay_frames(&core.on_squad_event(SQUAD, &event));
         let mut push = out[0].clone();

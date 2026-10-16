@@ -113,7 +113,8 @@ pub fn pairing_url(relay: &str, id: &str, public: &str, secret: &[u8], name: &st
 
 /// The commands a phone may send, as it may send them: from a phone a request
 /// is allowed once, never always; a member's questions are the person's to
-/// answer or close from anywhere; starting, closing, merging and changing
+/// answer or close from anywhere, and so is a change to the team the PM
+/// proposed to approve or decline; starting, closing, merging and changing
 /// modes stay at the console — and so does writing, editing and rearranging
 /// tickets (the phone answers what the board asks; it doesn't plan it yet).
 pub fn allowed(command: Command) -> Option<Command> {
@@ -128,6 +129,8 @@ pub fn allowed(command: Command) -> Option<Command> {
         | Command::Decide { .. }
         | Command::AnswerQuestions { .. }
         | Command::DismissQuestions { .. }
+        | Command::ApproveTeamChange { .. }
+        | Command::DeclineTeamChange { .. }
         | Command::Focus { .. }
         | Command::Refresh { .. }) => Some(c),
         _ => None,
@@ -147,6 +150,8 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::Decide { squad, .. }
         | Command::AnswerQuestions { squad, .. }
         | Command::DismissQuestions { squad, .. }
+        | Command::ApproveTeamChange { squad, .. }
+        | Command::DeclineTeamChange { squad, .. }
         | Command::Scale { squad, .. }
         | Command::Focus { squad, .. }
         | Command::ShowBrowser { squad, .. } => Some(squad),
@@ -569,6 +574,17 @@ impl Core {
                     Event::QuestionsAsked { squad: squad.to_owned(), questions: short },
                 )
             }
+            Event::TeamChangeProposed { change, .. } => {
+                let mut short = change.clone();
+                short.reason = short.reason.chars().take(PUSH_ACTION).collect();
+                let title = match change.change {
+                    equipe_core::protocol::team::Change::Add => t!("remote.push_team_add", member = change.by, role = change.role, count = change.count),
+                    equipe_core::protocol::team::Change::Remove => {
+                        t!("remote.push_team_remove", member = change.by, name = change.member.clone().unwrap_or_else(|| change.role.clone()))
+                    }
+                };
+                (title, squad.to_owned(), "team", format!("team-{}", change.id), Event::TeamChangeProposed { squad: squad.to_owned(), change: short })
+            }
             Event::TicketChanged { ticket, .. } => {
                 // A demo phone's board is its own.
                 let board = only.map_or_else(|| squad.to_owned(), |device| format!("{squad}/{device}"));
@@ -788,6 +804,14 @@ pub(crate) mod tests {
         let dismiss = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "dismiss_questions", "squad": "acme", "id": 5 } });
         assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), dismiss, now), now)[..], [Action::Command { command: Command::DismissQuestions { .. }, .. }]));
         let elsewhere = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "dismiss_questions", "squad": "zeta", "id": 5 } });
+        assert!(core.on_relay(&phone.send(&c, Some("acme"), elsewhere, now), now).is_empty(), "only the frame's squad");
+        // A change to the team the PM proposed: the person's to approve or decline from a phone too.
+        let approve = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "approve_team_change", "squad": "acme", "id": 6 } });
+        let out = core.on_relay(&phone.send(&c, Some("acme"), approve, now), now);
+        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::ApproveTeamChange { squad: "acme".into(), id: 6 } }]);
+        let decline = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decline_team_change", "squad": "acme", "id": 6 } });
+        assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), decline, now), now)[..], [Action::Command { command: Command::DeclineTeamChange { .. }, .. }]));
+        let elsewhere = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "approve_team_change", "squad": "zeta", "id": 6 } });
         assert!(core.on_relay(&phone.send(&c, Some("acme"), elsewhere, now), now).is_empty(), "only the frame's squad");
         // Merging stays at the console; another squad than the frame's is refused.
         let merge = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "merge", "squad": "acme", "ticket": 1, "push": true } });

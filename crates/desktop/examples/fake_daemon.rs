@@ -34,6 +34,9 @@
 //! `FAKE_DECIDE_AFTER` ms (default 5000). Answered here, the answers go to the
 //! member as the person's message and it replies.
 //!
+//! `FAKE_TEAM=1`: the PM proposes one more frontend, for the person to
+//! approve on a card (`fake_daemon/team.rs`; `remove`, `elsewhere`).
+//!
 //! `FAKE_BROWSER=1`: the shared Chrome's tabs and a picture stream for the
 //! browser panel (`fake_daemon/browser.rs`); `FAKE_BROWSER=empty`, no tabs.
 //!
@@ -640,6 +643,9 @@ mod browser;
 #[path = "fake_daemon/torture.rs"]
 mod torture;
 
+#[path = "fake_daemon/team.rs"]
+mod team;
+
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
 /// Where a message goes, as the daemon decides: the project in focus, each
@@ -776,11 +782,13 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             sessions,
                             approvals: asks().lock().unwrap().clone(),
                             questions: questions().lock().unwrap().clone(),
+                            team_changes: team::changes(),
                             tickets: tickets().lock().unwrap().clone(),
                             allowed: allowed().lock().unwrap().clone(),
                             browsers_shown: true,
                             ..Default::default()
                         };
+                        team::on_hello(&events);
                         let hello = Hello { version: "fake".into(), snapshot };
                         writer.write_all(Message::response(id, hello).to_line().as_bytes()).await.unwrap();
                         // `FAKE_BROWSER`: the shared Chrome's tabs as they stand, as the daemon tells them.
@@ -924,7 +932,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 tokio::spawn(async move { pairing(&pair, &events).await });
                             }
                             other => {
-                                if browser::on_command(&other, &events) {
+                                if browser::on_command(&other, &events) || team::on_command(&other, &events) {
                                     continue;
                                 }
                                 if let Some(said) = on_board_command(&other) {

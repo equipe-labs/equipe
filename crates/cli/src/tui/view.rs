@@ -27,6 +27,7 @@ use crate::ui;
 use equipe_core::t;
 
 mod decide;
+mod team;
 mod turn;
 
 /// How many columns `text` takes on screen — a Korean letter takes two.
@@ -376,6 +377,9 @@ fn rows(app: &App, theme: Theme, screen: Rect) -> Rows {
     }
     if asking.is_empty() {
         asking = decide::lines(app, theme, area.width.saturating_sub(2) as usize);
+    }
+    if asking.is_empty() {
+        asking = team::lines(app, theme, area.width.saturating_sub(2) as usize);
     }
     let asking_height = if asking.is_empty() { 0 } else { asking.len() as u16 + 1 };
     let (composer_rows, _) = app.composer.layout(area.width.saturating_sub(2) as usize);
