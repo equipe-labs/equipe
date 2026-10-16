@@ -108,6 +108,58 @@ never an agent: the phone approves with the command `approve_team_change` `{ "sq
 change became moot (its member left anyway). A push for a proposal carries the event with
 `reason` cut to 800 characters, category `team`.
 
+### A member's conversation
+
+Each session's events (`params` carry `session`) make its conversation. Besides `user_message`,
+`message_queued`, `text_delta`, `tool_use`, `tool_result`, `turn_ended`, `notice` and `error`:
+
+- `steer_queued` `{ "session", "text", "project"? }` — a `submit` sent while the member works,
+  with an engine that takes it mid-turn (Claude Code): it reads it at its next step, without
+  stopping. It confirms the `submit` as `user_message` and `message_queued` do; `project` is the
+  one the person was looking at (absent: the whole squad). Not a line yet.
+- `steered` `{ "session", "text" }` — the member read it: a user line here, in the middle of the
+  turn. A steer not read before the turn ends becomes a memo (`message_queued`) and is
+  delivered after it.
+  `memo_withdrawn` `{ "session", "text" }` takes back a memo or a steer not read yet.
+- `thread` `{ "session", "project" }` — what follows is about `project` (`null`: the whole
+  squad): a message sent looking at it, news of its ticket, a ticket's work. Never shown itself;
+  a screen shows one project's slice.
+- `model_known` `{ "session", "model" }` — the engine named its model, or the person changed it.
+- `branch_landed` `{ "session", "branch", "base", "stat" }` — an editing session closed with
+  changes committed to `branch`, made from `base`; `stat` is `git diff --stat`.
+- `nothing_changed` `{ "session" }` — an editing session closed without changes; no branch kept.
+- `error` `{ "session"?, "message", "next"? }` — `next` is the command that fixes it, when
+  there is one.
+
+The snapshot's sessions carry `recent`, the latest lines oldest first, each `{ "kind", … }`:
+`user` / `reply` `{ "text" }`, `tool` `{ "tool", "target", "outcome"? }`, `note` `{ "text" }`,
+`error` `{ "message", "next" }`, `landed` `{ "branch", "stat" }` and `thread` `{ "project" }`
+(lines before any `thread` are about the whole squad). Beside `queued` (memos, and `queued_in`:
+the project each was left about), `steering` lists the steers not read yet, and `steering_in`
+the project each was said about (`null`: the whole squad; absent when there are none).
+
+**Folding.** Events become lines the way `crates/protocol/src/transcript.rs` folds them, the
+same in the journal, the snapshot and every screen, so a screen that attaches later sees what a
+screen that watched saw:
+
+- `text_delta` joins the open reply, or opens one.
+- A reply is closed by the next line, by `output` (it comes as one of the engine's requests
+  ends, after its text: the next request's text is a reply of its own), by `turn_ended`,
+  `work_ended` or `session_closed`. Events that make no line and may come mid-sentence —
+  `steer_queued`, `message_queued`, `memo_withdrawn`, `thinking`, `tool_result`, `model_known`,
+  `subagent_*`, `estimated`, `suggestion` — leave it open: a steer sent while the member writes
+  doesn't cut its answer; where it is read (`steered`) the reply so far ends and the steer
+  follows it.
+- Lines: `user_message` and `steered` → `user`; `notice` → `note`; `thread` → `thread`;
+  `tool_use` → `tool` (its `tool_result` sets `outcome` on the latest open call of the same
+  `tool` and `target`); `error` → `error`; `branch_landed` → `landed`; `nothing_changed` → note
+  `No files changed, so no branch was kept.`; `turn_ended` `interrupted` → note `Stopped.`,
+  `incomplete` → note `The engine ended early.`; `work_started` → note `── T-<n> · <title>`
+  (and ` — on branch <branch>`). Notes are in English; a screen shows them in the person's
+  language.
+- A memo is not a line until it is delivered, as a `user_message` (memos left meanwhile arrive
+  together). At most 500 lines are kept.
+
 ### Conformance vectors
 
 `docs/remote-vectors/` holds frames sealed with fixed keys and fixed ephemeral keys, QR codes

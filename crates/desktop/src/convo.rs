@@ -118,6 +118,8 @@ impl Convo {
     /// shows may differ (the token counter's ticks don't count).
     pub fn on_event(&mut self, event: &Event, now: Instant, at: Clock) -> bool {
         if matches!(event, Event::Output { .. } | Event::ModelKnown { .. }) {
+            // A request's end closes its reply, as the daemon's copy does.
+            self.transcript.apply(event);
             return false;
         }
         if let Event::Thinking { text, .. } = event {

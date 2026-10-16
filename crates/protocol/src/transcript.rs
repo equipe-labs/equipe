@@ -58,8 +58,8 @@ impl Transcript {
     }
 
     /// Apply one event. Returns the lines it made final — what a journal stores.
-    /// Streaming text joins the open reply and is final only once something else
-    /// happens (a tool use, the turn ending, an error).
+    /// Streaming text joins the open reply and is final only once another line
+    /// follows (a tool use, a message, an error) or the turn ends.
     pub fn apply(&mut self, event: &Event) -> Vec<Entry> {
         if let Event::TextDelta { text, .. } = event {
             match (self.open_reply, self.entries.last_mut()) {
@@ -89,13 +89,6 @@ impl Transcript {
             return Vec::new();
         }
 
-        let mut done = Vec::new();
-        if self.open_reply {
-            self.open_reply = false;
-            if let Some(reply) = self.entries.last() {
-                done.push(reply.clone());
-            }
-        }
         let new = match event {
             Event::SessionStarted { workspace: Some(ws), .. } => {
                 Some(Entry::Note { text: format!("{}{}{}", notes::WORKING_ON, ws.branch, notes::WORKING_REST) })
@@ -120,6 +113,19 @@ impl Transcript {
             Event::NothingChanged { .. } => Some(Entry::Note { text: notes::NOTHING_CHANGED.into() }),
             _ => None,
         };
+        // A reply ends where a line follows it, or the engine's request ends
+        // (`Output` comes then, after its text: the next request's text is a
+        // reply of its own), or its turn does. What makes no line and may come
+        // mid-sentence — a steer waiting to be read, a subagent's step, a
+        // guess at the next message — leaves it open.
+        let ends = matches!(event, Event::Output { .. } | Event::TurnEnded { .. } | Event::WorkEnded { .. } | Event::SessionClosed { .. });
+        let mut done = Vec::new();
+        if self.open_reply && (new.is_some() || ends) {
+            self.open_reply = false;
+            if let Some(reply) = self.entries.last() {
+                done.push(reply.clone());
+            }
+        }
         if let Some(entry) = new {
             self.entries.push(entry.clone());
             done.push(entry);
@@ -485,6 +491,26 @@ mod tests {
         assert_eq!(done, vec![Entry::Reply { text: "Let me look.".into() }, Entry::Tool { tool: "Read".into(), target: Some("a.rs".into()), outcome: None }]);
         t.apply(&delta("Done."));
         assert_eq!(t.entries().len(), 3);
+    }
+
+    #[test]
+    fn what_makes_no_line_leaves_the_reply_open() {
+        let mut t = Transcript::default();
+        t.apply(&delta("Look"));
+        assert!(t.apply(&Event::SteerQueued { session: 1, text: "skip the footer".into(), project: None }).is_empty());
+        assert!(t.apply(&Event::SubagentStep { session: 1, id: "a".into(), step: "Read x".into() }).is_empty());
+        assert!(t.apply(&Event::ModelKnown { session: 1, model: "m".into() }).is_empty());
+        t.apply(&delta("ing."));
+        assert_eq!(t.entries(), &[Entry::Reply { text: "Looking.".into() }]);
+        // Read where it was: the reply so far is final, the steer follows it.
+        let done = t.apply(&Event::Steered { session: 1, text: "skip the footer".into() });
+        assert_eq!(done, vec![Entry::Reply { text: "Looking.".into() }, Entry::User { text: "skip the footer".into() }]);
+        // The engine's request ended: the next one's text is a reply of its own.
+        t.apply(&delta("Done."));
+        assert_eq!(t.apply(&Event::Output { session: 1, tokens: 40 }), vec![Entry::Reply { text: "Done.".into() }]);
+        t.apply(&delta("Also."));
+        let done = t.apply(&Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None });
+        assert_eq!(done, vec![Entry::Reply { text: "Also.".into() }]);
     }
 
     #[test]

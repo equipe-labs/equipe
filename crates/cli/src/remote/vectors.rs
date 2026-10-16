@@ -732,7 +732,14 @@ fn snapshot() -> Snapshot {
                 title: Some("이번 주 계획".into()),
                 tokens: 18200,
                 context: Some((41000, 200000)),
-                recent: vec![Entry::User { text: "이번 주 계획 정리해 줘".into() }, Entry::Reply { text: "보드에 세 장 올렸어요.".into() }],
+                // What follows each `thread` line is about that project (null: the whole squad).
+                recent: vec![
+                    Entry::Thread { project: None },
+                    Entry::User { text: "이번 주 계획 정리해 줘".into() },
+                    Entry::Reply { text: "보드에 세 장 올렸어요.".into() },
+                    Entry::Thread { project: Some("api".into()) },
+                    Entry::Error { message: "Claude Code isn't signed in".into(), next: Some("claude login".into()) },
+                ],
                 queued: vec![],
                 queued_project: None,
                 queued_in: vec![],
@@ -757,12 +764,17 @@ fn snapshot() -> Snapshot {
                 title: None,
                 tokens: 5300,
                 context: None,
-                recent: vec![Entry::Tool { tool: "Bash".into(), target: Some("cargo test".into()), outcome: None }],
+                // Its last ticket landed; on T-38 now, with a steer it hasn't read yet.
+                recent: vec![
+                    Entry::Thread { project: Some("api".into()) },
+                    Entry::Landed { branch: "equipe/backend-t37-9f8e7d6c".into(), stat: " src/session.rs | 12 ++++++------\n 1 file changed, 6 insertions(+), 6 deletions(-)".into() },
+                    Entry::Tool { tool: "Bash".into(), target: Some("cargo test".into()), outcome: None },
+                ],
                 queued: vec![],
                 queued_project: None,
                 queued_in: vec![],
-                steering: vec![],
-                steering_in: vec![],
+                steering: vec!["에러 메시지는 한국어로".into()],
+                steering_in: vec![Some("api".into())],
                 lane: None,
                 estimate: None,
                 work: Some(WorkInfo { ticket: 38, project: "/Users/you/projects/api".into(), workspace: None }),
@@ -877,9 +889,24 @@ fn message_vectors() -> Value {
     ask(&mut core, &mut examples, "submit: about a project", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "submit", "session": pm, "text": "웹사이트는 어떻게 되어가?", "about": "web" } }));
     ask(&mut core, &mut examples, "submit: about the whole squad", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "submit", "session": pm, "text": "전체 상황은?", "about": null } }));
     tell(&mut core, &mut examples, "event: steer queued", Event::SteerQueued { session: pm, text: "푸터는 빼 줘".into(), project: Some("web".into()) });
+    // Read at its next step: it shows where it was read, as the person's message.
+    tell(&mut core, &mut examples, "event: steered", Event::Steered { session: pm, text: "푸터는 빼 줘".into() });
+    // What follows is about a project (null: the whole squad).
+    tell(&mut core, &mut examples, "event: thread", Event::Thread { session: pm, project: Some("web".into()) });
+    tell(&mut core, &mut examples, "event: thread, the whole squad", Event::Thread { session: pm, project: None });
+    tell(&mut core, &mut examples, "event: model known", Event::ModelKnown { session: pm, model: "claude-opus-5-5".into() });
     // What waits, sent now: the turn stops and it goes as one message.
     ask(&mut core, &mut examples, "send now", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "send_now", "session": pm, "texts": ["푸터는 빼 줘", "그리고 테스트도"] } }));
     tell(&mut core, &mut examples, "event: queue sent", Event::QueueSent { session: pm, texts: vec!["푸터는 빼 줘".into(), "그리고 테스트도".into()] });
+
+    // An editing session closes: its branch landed, or nothing changed.
+    tell(&mut core, &mut examples, "event: branch landed", Event::BranchLanded {
+        session: 4242,
+        branch: "equipe/backend-t38-1a2b3c4d".into(),
+        base: "main".into(),
+        stat: " src/login.rs | 48 ++++++++++++++++++++++++++++++++++++++++++++++++\n 1 file changed, 48 insertions(+)".into(),
+    });
+    tell(&mut core, &mut examples, "event: nothing changed", Event::NothingChanged { session: 4242 });
 
     // Not from a phone.
     ask(&mut core, &mut examples, "merge is refused", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "merge", "squad": SQUAD, "ticket": 38, "push": true } }));
