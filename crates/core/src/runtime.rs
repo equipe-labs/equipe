@@ -350,6 +350,9 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         settled_at: None,
         merging: std::collections::HashSet::new(),
         disk_full: None,
+        sign_ins: HashMap::new(),
+        next_sign_in: 1,
+        codex_binary: crate::engines::codex_binary(),
     };
     let mut memos = Vec::new();
     if runtime.config.persist {
@@ -577,6 +580,10 @@ enum Internal {
     Merged { squad: String, ticket: TicketId, result: MergeResult },
     /// The free space on equipe's disk, as just looked at.
     Disk(Option<u64>, std::time::Instant),
+    /// Where the engines stand, as just looked at off the loop.
+    Engines(Vec<equipe_protocol::EngineStatus>),
+    /// A sign-in (the one numbered so) ended.
+    SignInEnded(Engine, u64),
 }
 
 /// A request for permission waiting for the person, and the engine waiting on it.
@@ -679,6 +686,11 @@ struct Runtime {
     merging: std::collections::HashSet<(String, TicketId)>,
     /// The disk is full, as last looked at or as a write said: the screens were told.
     disk_full: Option<std::time::Instant>,
+    /// Sign-ins under way on this machine, by engine: which one, and its task.
+    sign_ins: HashMap<Engine, (u64, JoinHandle<()>)>,
+    next_sign_in: u64,
+    /// The `codex` the person's Codex sign-in runs.
+    codex_binary: String,
 }
 
 /// What woke the loop.
@@ -718,6 +730,8 @@ impl Wake {
             Wake::Internal(Internal::Settled { .. }) => Borrowed("settling merged work"),
             Wake::Internal(Internal::Merged { .. }) => Borrowed("a merge's end"),
             Wake::Internal(Internal::Disk(..)) => Borrowed("the disk's free space"),
+            Wake::Internal(Internal::Engines(_)) => Borrowed("where the engines stand"),
+            Wake::Internal(Internal::SignInEnded(..)) => Borrowed("a sign-in's end"),
             Wake::Host(_) => Borrowed("the browser host's news"),
             Wake::Daily => Borrowed("daily prune"),
             Wake::DesktopTick => Borrowed("desktop tick"),
@@ -848,6 +862,12 @@ impl Runtime {
                 Internal::Settled { merged, cache } => self.on_settled(merged, cache),
                 Internal::Merged { squad, ticket, result } => self.on_merged(&squad, ticket, result),
                 Internal::Disk(free, asked) => self.on_disk(free, asked),
+                Internal::Engines(engines) => self.publish_engines(engines),
+                Internal::SignInEnded(engine, id) => {
+                    if self.sign_ins.get(&engine).is_some_and(|(at, _)| *at == id) {
+                        self.sign_ins.remove(&engine);
+                    }
+                }
             },
             Wake::Host(said) => self.on_host(said).await,
             Wake::Daily => self.prune(),
@@ -1217,7 +1237,82 @@ impl Runtime {
             // Phones are paired by the gateway, per screen, with the daemon's
             // phone link (`crate::pairing`); they never reach the runtime.
             Command::PairStart | Command::PairAnswer { .. } | Command::PairCancel | Command::Devices | Command::Unpair { .. } => {}
+            Command::Engines => self.look_at_engines(),
+            Command::SignIn { engine, device } => self.sign_in(engine, device),
+            Command::SignInCancel { engine } => {
+                if let Some((_, task)) = self.sign_ins.remove(&engine) {
+                    task.abort();
+                    self.publish(Event::SignIn { engine, step: equipe_protocol::SignInStep::Cancelled });
+                    self.look_at_engines();
+                }
+            }
+            Command::SignOut { engine } => self.sign_out(engine),
         }
+    }
+
+    // ── the engines ──
+
+    /// Where each engine stands, looked at off the loop (each engine's own
+    /// tool answers), then told to every screen.
+    fn look_at_engines(&mut self) {
+        let (claude, codex, store, internal) = (self.config.claude_binary.clone(), self.codex_binary.clone(), self.config.store.clone(), self.internal.clone());
+        tokio::spawn(async move {
+            let engines = crate::engines::statuses(&claude, &codex, &store).await;
+            let _ = internal.send(Internal::Engines(engines));
+        });
+    }
+
+    /// The engines as just looked at, with who is on each and the sign-ins
+    /// under way, for every screen.
+    fn publish_engines(&mut self, mut engines: Vec<equipe_protocol::EngineStatus>) {
+        for status in &mut engines {
+            let mut members: Vec<MemberRef> = self.sessions.values().filter(|s| s.engine == status.engine).filter_map(session_member).collect();
+            members.sort_by(|a, b| (&a.squad, &a.member).cmp(&(&b.squad, &b.member)));
+            members.dedup();
+            status.members = members;
+            status.signing_in = self.sign_ins.contains_key(&status.engine);
+        }
+        self.publish(Event::Engines { engines });
+    }
+
+    /// Sign Codex in with its own tool, here on the daemon's machine; every
+    /// screen hears each step (the code to enter, when `device`), then where
+    /// the engines stand. A new sign-in stops the one under way.
+    fn sign_in(&mut self, engine: Engine, device: bool) {
+        use equipe_protocol::{SignInFailure, SignInStep};
+        if engine != Engine::Codex {
+            self.publish(Event::SignIn { engine, step: SignInStep::Failed { why: SignInFailure::Unsupported, detail: String::new() } });
+            return;
+        }
+        if let Some((_, old)) = self.sign_ins.remove(&engine) {
+            old.abort();
+        }
+        let id = self.next_sign_in;
+        self.next_sign_in += 1;
+        let (claude, codex, store, internal) = (self.config.claude_binary.clone(), self.codex_binary.clone(), self.config.store.clone(), self.internal.clone());
+        let task = tokio::spawn(async move {
+            let tell = |step| drop(internal.send(Internal::Event(Box::new(Event::SignIn { engine, step }))));
+            let end = crate::engines::codex_login(&codex, device, tell).await;
+            tell(end);
+            let _ = internal.send(Internal::SignInEnded(engine, id));
+            let _ = internal.send(Internal::Engines(crate::engines::statuses(&claude, &codex, &store).await));
+        });
+        self.sign_ins.insert(engine, (id, task));
+    }
+
+    /// Sign `engine` out with its own tool. Claude Code's login is the
+    /// person's: equipe never touches it.
+    fn sign_out(&mut self, engine: Engine) {
+        if engine != Engine::Codex {
+            return;
+        }
+        let (claude, codex, store, internal) = (self.config.claude_binary.clone(), self.codex_binary.clone(), self.config.store.clone(), self.internal.clone());
+        tokio::spawn(async move {
+            if let Err(why) = crate::engines::codex_logout(&codex).await {
+                crate::daemon_log!("equipe: `codex logout` failed: {why}");
+            }
+            let _ = internal.send(Internal::Engines(crate::engines::statuses(&claude, &codex, &store).await));
+        });
     }
 
     // ── squads ──

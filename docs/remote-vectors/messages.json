@@ -13,7 +13,7 @@
             "type": "accept"
           }
         },
-        "seq": 22,
+        "seq": 25,
         "squad": "home",
         "ts": 1760000000000
       }
@@ -30,7 +30,7 @@
             "type": "accept"
           }
         },
-        "seq": 21,
+        "seq": 24,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -358,6 +358,62 @@
         "ts": 1760000000000
       }
     },
+    "engine sign-in is refused": {
+      "daemon": "nothing: dropped without an answer",
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "engine": "codex",
+            "type": "sign_in"
+          }
+        },
+        "seq": 21,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "engine sign-out is refused": {
+      "daemon": "nothing: dropped without an answer",
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "engine": "codex",
+            "type": "sign_out"
+          }
+        },
+        "seq": 22,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "engines": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "type": "engines"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "type": "engines"
+          }
+        },
+        "seq": 20,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "event: approval requested": {
       "receives": {
         "rpc": {
@@ -395,6 +451,43 @@
           }
         },
         "seq": 8,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: engines": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "engines": [
+              {
+                "engine": "claude",
+                "members": [
+                  {
+                    "member": "pm",
+                    "squad": "acme"
+                  }
+                ],
+                "plan": "max",
+                "state": "signed_in"
+              },
+              {
+                "engine": "codex",
+                "members": [
+                  {
+                    "member": "backend",
+                    "squad": "acme"
+                  }
+                ],
+                "state": "signed_in"
+              }
+            ],
+            "type": "engines"
+          }
+        },
+        "seq": 29,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1143,7 +1236,7 @@
             "type": "merge"
           }
         },
-        "seq": 20,
+        "seq": 23,
         "squad": "acme",
         "ts": 1760000000000
       }

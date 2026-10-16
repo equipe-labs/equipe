@@ -1046,9 +1046,9 @@ impl App {
     fn logout(&self) -> CmdResult {
         let p = ui::out();
         let path = self.store.path("openai");
-        match std::fs::remove_file(&path) {
-            Ok(()) => println!("{}", p.ok_line(t!("main.codex_signed_out"))),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => println!("{}", p.note(0, t!("main.codex_wasnt_signed_in"))),
+        match self.store.remove("openai") {
+            Ok(true) => println!("{}", p.ok_line(t!("main.codex_signed_out"))),
+            Ok(false) => println!("{}", p.note(0, t!("main.codex_wasnt_signed_in"))),
             Err(err) => return Err(Failure::new(t!("main.remove_failed", path = path.display(), err = err))),
         }
         println!("{}", p.note(2, t!("main.claude_own_login")));
@@ -1291,7 +1291,8 @@ impl App {
                 Event::ToolResult { .. } | Event::Thinking { .. } => {}
                 Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. }
                 | Event::BrowserWants { .. }
-                | Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. } => {}
+                | Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. }
+                | Event::Engines { .. } | Event::SignIn { .. } => {}
                 Event::TurnEnded { outcome, usage, .. } => {
                     printer.end(outcome, usage);
                     core.send(Cmd::Close { session: ID });
