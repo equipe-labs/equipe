@@ -69,6 +69,8 @@ Plaintext is UTF-8 JSON:
 | `{ "id", "method": "squads" }` (no `squad`) | `result`: `[{ "name", "projects": [<project names>] }]` |
 | `{ "id", "method": "hello", "params": { "version", "squad" } }`, `squad` set too | `result`: `{ "version", "snapshot" }`; from then on the squad's `event`s, with `squad` set. A device may follow several squads; a second `hello` for one replaces the first. Error `-32602` "no such squad"; `-32000` when the daemon couldn't follow it |
 | `{ "method": "command", "params": <Command> }` — a notification, no `id` | none: what it did shows in events. Dropped without a word when it isn't one a device may send, its squad isn't the frame's, or the frame's squad isn't followed |
+| `{ "id", "method": "upload", "params": <chunk> }` (no `squad` needed) | `result`: `{ "received" }`, and once the whole file is in, `path` and `tag` — see [Attachments](#attachments) |
+| `{ "method": "upload_cancel", "params": { "upload_id" } }` — a notification | none |
 | anything else with an `id` | error `-32601` "not something a device may ask" |
 
 A frame that doesn't open, is off by more than 5 minutes, repeats a `seq` or doesn't parse is
@@ -108,11 +110,111 @@ never an agent: the phone approves with the command `approve_team_change` `{ "sq
 change became moot (its member left anyway). A push for a proposal carries the event with
 `reason` cut to 800 characters, category `team`.
 
+### Attachments
+
+A phone attaches a photo, a file, a sound or a video the way a screen does: it puts the file
+on the daemon's machine first, then sends a `submit` whose `text` carries the file's **tag**.
+A file goes in pieces, each piece one ordinary sealed frame (`seq`, `ts`, the same keys), so
+the relay passes it like any other and can't read it — no other channel, no storage at the
+relay.
+
+**Does this daemon take uploads?** The answer to `hello` carries `uploads` when it does:
+
+```json
+{ "version": "…", "snapshot": { … },
+  "uploads": { "chunk": 393216, "image": 8388608, "file": 26214400, "video": 67108864, "transcript": 65536 } }
+```
+
+(bytes: the largest piece, the largest image, other file, video and transcript). A daemon
+without it answers `upload` with `-32601`; the app then says the Mac's equipe needs an update.
+
+**A piece** — `upload`, a request:
+
+```jsonc
+{ "jsonrpc": "2.0", "id": 7, "method": "upload", "params": {
+    "upload_id": "9b2c4e1a-…",   // the phone's, 8–64 of A–Z a–z 0–9 - _ ; one per file
+    "name": "IMG_0421.jpg",      // its name where it came from; folders are dropped
+    "kind": "image",             // image | video | pdf | file (sounds are files: m4a, mp3, wav, aac, caf, ogg, opus, flac)
+    "total": 612345,             // the whole file, bytes
+    "offset": 0,                 // where this piece starts
+    "data": "<base64, standard alphabet, padded; at most `chunk` bytes once decoded>",
+    // only with the first piece (offset 0), all optional:
+    "transcript": "…",           // what the phone heard in a sound or a video
+    "duration": 31.4,            // a sound's or a video's length in seconds, when the phone knows it
+    "pages": 12                  // a PDF's page count
+} }
+```
+
+Pieces of one file go in order, one at a time (send the next once the last is answered); two
+files may go at once, at most 4 per device. A piece of 384 KiB seals to about 700 KB, well
+inside the relay's 1 MiB frame.
+
+The answer:
+
+```jsonc
+{ "result": { "received": 393216 } }                       // more to come
+{ "result": { "received": 612345,                           // the last piece: the file is kept
+              "path": "/Users/abel/.equipe/uploads/1760000000000-IMG_0421.jpg",
+              "tag": "[image: /Users/abel/.equipe/uploads/1760000000000-IMG_0421.jpg]" } }
+```
+
+- `received` is how much of the file the daemon has, in order. A piece it already has (the same
+  `upload_id` and an `offset` below `received`) is answered with `received` and changes nothing,
+  so a piece sent again after a lost answer is harmless; the last piece sent again gets the same
+  whole answer, for an hour.
+- An `offset` above `received` — or a piece for an `upload_id` the daemon doesn't know, past 0
+  (it was swept, or the daemon restarted) — is `-32602` "send from received" with
+  `data: { "received" }`: the phone carries on from there (0: from the start).
+- **Resuming.** A connection that drops halfway loses nothing: the pieces are kept by
+  `upload_id`, not by connection. After the next `hello` the phone sends the piece it was on
+  again; the answer says where to go on from. A file no piece has reached for an hour is thrown
+  away.
+- **Cancelling**: `upload_cancel { upload_id }`, a notification: what came of that file is thrown
+  away. Unknown ids are ignored.
+- The daemon checks for itself, never trusting the phone: the `kind`'s extensions (an image is
+  png, jpg, jpeg, gif or webp; a PDF ends in .pdf), the size for the kind, the piece's size, that
+  `total`, `name` and `kind` stay what the first piece said. Refusals:
+
+| error | when | `data` |
+|---|---|---|
+| `-32602` "too large" | `total` over the kind's limit, or a `transcript` over its limit | `{ "limit" }` |
+| `-32602` "piece too large" | a piece over `chunk` bytes, or one going past `total` | `{ "limit" }` |
+| `-32602` "send from received" | `offset` isn't where the daemon is | `{ "received" }` |
+| `-32602` "not the same upload" | `name`, `kind` or `total` differ from the first piece's | |
+| `-32602` (why) | the name doesn't fit the kind, a missing field, data not base64 | |
+| `-32000` "too many uploads at once" | a fifth file under way from one device | |
+| `-32000` (why) | the daemon couldn't write it | |
+
+**What the file becomes.** It is kept like a screen's upload: `~/.equipe/uploads/`, 0600 in a
+0700 folder, named by the daemon (`<ms>-<tidied name>.<ext>`), swept after 7 days. Pieces wait
+in `uploads/.partial/`, which nothing reads back. Then, by kind:
+
+| kind | kept | `tag` |
+|---|---|---|
+| image | as sent | `[image: <path>]` |
+| pdf | as sent | `[pdf: <path> · 12 pages]` (`pages` as the phone said) |
+| a sound (file) | as sent, and the `transcript` as `<name>-transcript.txt` beside it | `[audio: <path> · 0:31] [file: <transcript> · 2 lines]` |
+| other file | as sent | `[file: <path> · 3 lines]` (lines counted by the daemon, for UTF-8 text up to 8 MB) or `[file: <path>]` |
+| video | as sent; its frames — 4 to 12, one per ten seconds, from the middle of equal parts, 1568 px on the long side — and the `transcript`, as files beside it | `[video: <path> · 0:42 · 1920×1080 · frames: <f1>@0:05, …] [file: <transcript> · 3 lines]` |
+
+A member can't watch a video or hear a sound: it reads a video's frames and a transcript. The
+frames are made on the daemon's machine with `ffmpeg` (looked for in `/opt/homebrew/bin`,
+`/usr/local/bin`, `/usr/bin`). Without it the video is kept and tagged without frames, and the
+last answer says so — `"notice": "no_ffmpeg"` — for the app to tell the person
+("Install ffmpeg on your Mac (`brew install ffmpeg`) to send what a video shows"); the daemon's
+log says it too. A sound sent without `transcript` is tagged alone.
+
+**Pointing at it.** The phone puts each finished `tag`, followed by a space, after what was
+typed — the desktop's `attach::message`: `"<typed> <tag> <tag>"`, or the tags alone — and sends
+that as `submit`'s `text`. Tags are text: the member reads the files by their paths as it reads
+a screen's (`crates/protocol/src/tags.rs` is the grammar). Uploading gives a phone no other
+command, and doesn't send anything: a file nobody's message points at is only swept.
+
 ### Conformance vectors
 
 `docs/remote-vectors/` holds frames sealed with fixed keys and fixed ephemeral keys, QR codes
-good and bad, one pairing start to end, `seq` and `ts` cases, and the JSON the daemon sends,
-screen by screen — all made by the daemon's code and checked against it:
+good and bad, one pairing start to end, `seq` and `ts` cases, the JSON the daemon sends,
+screen by screen, and a phone's files sent a piece at a time (`uploads.json`) — all made by the daemon's code and checked against it:
 `cargo test -p equipe vectors` (`EQUIPE_WRITE_VECTORS=1` writes them again). The equipe app
 keeps a copy in its `docs/vectors/`.
 
@@ -258,6 +360,12 @@ device → relay: `{ "type": "send", "data" }`; `{ "type": "push_token", "platfo
 relay → device: `{ "type": "recv", "data" }`; `{ "type": "presence", "online" }` (the daemon's);
 `{ "type": "unpaired" }` (the answer to `unpair`, just before the socket closes)
 
+A device's `send` is refused with `error` "frame is too large" when the `recv` the daemon would
+get — its `data` wrapped with the device id — passes 1 MiB, and with `error` "slow down"
+(`retry_ms`: when to try again) once a device has sent more than 96 MiB of `data` in a minute;
+either frame is dropped, never cut. A `send` while the daemon is away is dropped too (the device
+has `presence` `online: false`): an upload waits and resumes.
+
 ### Pairing socket: `GET /v1/daemons/<id>/pair/<slot>` (WebSocket), no auth
 
 Only while the slot is open, and for one connection. device → relay `{ "type": "send", "data" }`;
@@ -282,7 +390,7 @@ its secrets. Without them configured, a push answers `push_result` `ok: false`.
 
 The daemon follows a device like one more screen, with less reach than the terminal:
 
-- **may:** `hello`, `squads`, and the commands `submit`, `interrupt`, `send_now`, `accept`, `reopen`,
+- **may:** `hello`, `squads`, `upload`, `upload_cancel` (files only: see Attachments), and the commands `submit`, `interrupt`, `send_now`, `accept`, `reopen`,
   `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `approve_team_change`,
   `decline_team_change`, `focus`, `refresh`.
 - `submit` and `answer_questions` may say what the message is about: `about` — the project the

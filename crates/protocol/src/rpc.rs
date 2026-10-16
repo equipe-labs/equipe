@@ -75,6 +75,9 @@ pub struct Message {
 pub struct RpcError {
     pub code: i64,
     pub message: String,
+    /// More about it, when the error says what to do next (an upload's `received`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
 }
 
 /// What a screen says when it attaches.
@@ -287,7 +290,12 @@ impl Message {
     }
 
     pub fn failure(id: u64, code: i64, message: impl Into<String>) -> Self {
-        Self { id: Some(id), error: Some(RpcError { code, message: message.into() }), ..Self::base() }
+        Self { id: Some(id), error: Some(RpcError { code, message: message.into(), data: None }), ..Self::base() }
+    }
+
+    /// A failure that says more in `data`.
+    pub fn failure_with(id: u64, code: i64, message: impl Into<String>, data: impl Serialize) -> Self {
+        Self { id: Some(id), error: Some(RpcError { code, message: message.into(), data: Some(to_value(data)) }), ..Self::base() }
     }
 
     pub fn command(command: &Command) -> Self {

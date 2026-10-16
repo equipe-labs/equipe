@@ -1,0 +1,597 @@
+{
+  "about": "A phone's files, a piece at a time (docs/remote-protocol.md, Attachments). Run in order on one daemon whose uploads are at /Users/abel/.equipe/uploads and whose clock is now — paths and stamps put back to those; checked against the daemon. sends: the plaintext the phone seals (device_to_daemon). daemon_answers: what it sealed back, opened; null when there is no answer. The video ran without ffmpeg, so it has no frames and the notice says so; with ffmpeg its tag carries `1920×1080 · frames: <path>@0:02, …` after the length.",
+  "limits": {
+    "chunk": 393216,
+    "file": 26214400,
+    "image": 8388608,
+    "transcript": 65536,
+    "video": 67108864
+  },
+  "now": 1760000000000,
+  "sealed_piece": {
+    "aad": "4e03a65cc601c4c9135d6c771cd878e9:b9e7dbfc95945ac17102665e1cc82fa6",
+    "ciphertext": "JJX18VJREhPtsiJOzFGqTEk0iTiSmBh9FaNbeoYVsfVuGhtSXJMSO8LocLizDSQ8Nb5NaoArryMlqQy4KPygvKglyaNhNqar0NjJIR039e849M7Lp4Z3lnPkVGoJycsbyrQV4Ux58ebH7kBknWjtxmloj4kcZxdvil2nP7Aowk83XZ9kevHqBa1rRVGxQTP3yszZM2N6nagiQcA5PqmIierx9ko0OfVG3-zq9t2q_8cVWvvPKcRM-uShlixmP0T9vtQuKGYw3NO4cq-dmXZt-DALl0MfRWTLsoOaZesf3JaLEUZTH6f_m5PssURPFVE3",
+    "enc": "OHqMXwpDZFN8_HkVbKltzLEqQSderp3NgF-n-Zpjojo",
+    "ikm_e": "u7_3zNiWNcosfSEE7cGkV-Yzy9gQ1hBlXgBpmD1MSJw",
+    "info": "equipe/1 device-to-daemon",
+    "kind": "device_to_daemon",
+    "mode": "auth",
+    "name": "an upload piece",
+    "pk_e": "OHqMXwpDZFN8_HkVbKltzLEqQSderp3NgF-n-Zpjojo",
+    "plaintext": "{\"rpc\":{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"upload\",\"params\":{\"data\":\"/9j/4CBhIHRpbg==\",\"kind\":\"image\",\"name\":\"IMG_0421.JPG\",\"offset\":0,\"total\":19,\"upload_id\":\"3f1c2a9e-0d4b-4c55-9a7e-61b2c8e0aa01\"}},\"seq\":1,\"ts\":1760000000000}",
+    "psk": false,
+    "recipient": "daemon",
+    "sealed": "OHqMXwpDZFN8_HkVbKltzLEqQSderp3NgF-n-ZpjojoklfXxUlESE-2yIk7MUapMSTSJOJKYGH0Vo1t6hhWx9W4aG1JckxI7wuhwuLMNJDw1vk1qgCuvIyWpDLgo_KC8qCXJo2E2pqvQ2MkhHTf17zj0zsunhneWc-RUagnJyxvKtBXhTHnx5sfuQGSdaO3GaWiPiRxnF2-KXac_sCjCTzddn2R68eoFrWtFUbFBM_fKzNkzY3qdqCJBwDk-qYiJ6vH2SjQ59Ubf7Or23ar_xxVa-88pxEz65KGWLGY_RP2-1C4oZjDc07hyr52Zdm34MAuXQx9FZMuyg5pl6x_closRRlMfp_-bk-yxRE8VUTc",
+    "sender": "device",
+    "sk_e": "BjJW6wRPRiROXY3Z3LjE4aiKzXQb5YoGuN0r7TfE-5Y"
+  },
+  "steps": [
+    {
+      "daemon_answers": {
+        "rpc": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": {
+            "received": 10
+          }
+        },
+        "seq": 1,
+        "ts": 1760000000000
+      },
+      "name": "a photo: the first piece",
+      "sends": {
+        "rpc": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "method": "upload",
+          "params": {
+            "data": "/9j/4CBhIHRpbg==",
+            "kind": "image",
+            "name": "IMG_0421.JPG",
+            "offset": 0,
+            "total": 19,
+            "upload_id": "3f1c2a9e-0d4b-4c55-9a7e-61b2c8e0aa01"
+          }
+        },
+        "seq": 1,
+        "ts": 1760000000000
+      }
+    },
+    {
+      "daemon_answers": {
+        "rpc": {
+          "id": 2,
+          "jsonrpc": "2.0",
+          "result": {
+            "received": 10
+          }
+        },
+        "seq": 2,
+        "ts": 1760000000000
+      },
+      "name": "the first piece again (its answer was lost)",
+      "sends": {
+        "rpc": {
+          "id": 2,
+          "jsonrpc": "2.0",
+          "method": "upload",
+          "params": {
+            "data": "/9j/4CBhIHRpbg==",
+            "kind": "image",
+            "name": "IMG_0421.JPG",
+            "offset": 0,
+            "total": 19,
+            "upload_id": "3f1c2a9e-0d4b-4c55-9a7e-61b2c8e0aa01"
+          }
+        },
+        "seq": 2,
+        "ts": 1760000000000
+      }
+    },
+    {
+      "daemon_answers": {
+        "rpc": {
+          "error": {
+            "code": -32602,
+            "data": {
+              "received": 10
+            },
+            "message": "send from received"
+          },
+          "id": 3,
+          "jsonrpc": "2.0"
+        },
+        "seq": 3,
+        "ts": 1760000000000
+      },
+      "name": "a piece past where the daemon is",
+      "sends": {
+        "rpc": {
+          "id": 3,
+          "jsonrpc": "2.0",
+          "method": "upload",
+          "params": {
+            "data": "RyD/2Q==",
+            "kind": "image",
+            "name": "IMG_0421.JPG",
+            "offset": 15,
+            "total": 19,
+            "upload_id": "3f1c2a9e-0d4b-4c55-9a7e-61b2c8e0aa01"
+          }
+        },
+        "seq": 3,
+        "ts": 1760000000000
+      }
+    },
+    {
+      "daemon_answers": {
+        "rpc": {
+          "id": 4,
+          "jsonrpc": "2.0",
+          "result": {
+            "path": "/Users/abel/.equipe/uploads/1760000000000-IMG_0421.jpg",
+            "received": 19,
+            "tag": "[image: /Users/abel/.equipe/uploads/1760000000000-IMG_0421.jpg]"
+          }
+        },
+        "seq": 4,
+        "ts": 1760000000000
+      },
+      "name": "the last piece: kept, with its tag",
+      "sends": {
+        "rpc": {
+          "id": 4,
+          "jsonrpc": "2.0",
+          "method": "upload",
+          "params": {
+            "data": "eSBKUEVHIP/Z",
+            "kind": "image",
+            "name": "IMG_0421.JPG",
+            "offset": 10,
+            "total": 19,
+            "upload_id": "3f1c2a9e-0d4b-4c55-9a7e-61b2c8e0aa01"
+          }
+        },
+        "seq": 4,
+        "ts": 1760000000000
+      }
+    },
+    {
+      "daemon_answers": {
+        "rpc": {
+          "id": 5,
+          "jsonrpc": "2.0",
+          "result": {
+            "path": "/Users/abel/.equipe/uploads/1760000000000-IMG_0421.jpg",
+            "received": 19,
+            "tag": "[image: /Users/abel/.equipe/uploads/1760000000000-IMG_0421.jpg]"
+          }
+        },
+        "seq": 5,
+        "ts": 1760000000000
+      },
+      "name": "the last piece again: the same answer",
+      "sends": {
+        "rpc": {
+          "id": 5,
+          "jsonrpc": "2.0",
+          "method": "upload",
+          "params": {
+            "data": "eSBKUEVHIP/Z",
+            "kind": "image",
+            "name": "IMG_0421.JPG",
+            "offset": 10,
+            "total": 19,
+            "upload_id": "3f1c2a9e-0d4b-4c55-9a7e-61b2c8e0aa01"
+          }
+        },
+        "seq": 5,
+        "ts": 1760000000000
+      }
+    },
+    {
+      "daemon_answers": {
+        "rpc": {
+          "id": 6,
+          "jsonrpc": "2.0",
+          "result": {
+            "path": "/Users/abel/.equipe/uploads/1760000000000-Voice-memo.m4a",
+            "received": 4,
+            "tag": "[audio: /Users/abel/.equipe/uploads/1760000000000-Voice-memo.m4a · 0:31] [file: /Users/abel/.equipe/uploads/1760000000000-Voice-memo-transcript.txt · 2 lines]"
+          }
+        },
+        "seq": 6,
+        "ts": 1760000000000
+      },
+      "name": "a sound with what the phone heard",
+      "sends": {
+        "rpc": {
+          "id": 6,
+          "jsonrpc": "2.0",
+          "method": "upload",
+          "params": {
+            "data": "AAAAGA==",
+            "duration": 31.4,
+            "kind": "file",
+            "name": "Voice memo.m4a",
+            "offset": 0,
+            "total": 4,
+            "transcript": "내일 회의는 3시로 옮겨 주세요.\n자료는 금요일까지.",
+            "upload_id": "voice-memo-0001"
+          }
+        },
+        "seq": 6,
+        "ts": 1760000000000
+      }
+    },
+    {
+      "daemon_answers": {
+        "rpc": {
+          "id": 7,
+          "jsonrpc": "2.0",
+          "result": {
+            "notice": "no_ffmpeg",
+            "path": "/Users/abel/.equipe/uploads/1760000000000-IMG_0500.mov",
+            "received": 4,
+            "tag": "[video: /Users/abel/.equipe/uploads/1760000000000-IMG_0500.mov · 0:12] [file: /Users/abel/.equipe/uploads/1760000000000-IMG_0500-transcript.txt · 1 line]"
+          }
+        },
+        "seq": 7,
+        "ts": 1760000000000
+      },
+      "name": "a video, on a Mac without ffmpeg",
+      "sends": {
+        "rpc": {
+          "id": 7,
+          "jsonrpc": "2.0",
+          "method": "upload",
+          "params": {
+            "data": "AAAAFA==",
+            "duration": 12.0,
+            "kind": "video",
+            "name": "IMG_0500.MOV",
+            "offset": 0,
+            "total": 4,
+            "transcript": "여기 버튼이 안 눌려요",
+            "upload_id": "clip-0001"
+          }
+        },
+        "seq": 7,
+        "ts": 1760000000000
+      }
+    },
+    {
+      "daemon_answers": {
+        "rpc": {
+          "id": 8,
+          "jsonrpc": "2.0",
+          "result": {
+            "path": "/Users/abel/.equipe/uploads/1760000000000-기획서-v2.pdf",
+            "received": 8,
+            "tag": "[pdf: /Users/abel/.equipe/uploads/1760000000000-기획서-v2.pdf · 12 pages]"
+          }
+        },
+        "seq": 8,
+        "ts": 1760000000000
+      },
+      "name": "a PDF",
+      "sends": {
+        "rpc": {
+          "id": 8,
+          "jsonrpc": "2.0",
+          "method": "upload",
+          "params": {
+            "data": "JVBERi0xLjc=",
+            "kind": "pdf",
+            "name": "기획서 v2.pdf",
+            "offset": 0,
+            "pages": 12,
+            "total": 8,
+            "upload_id": "spec-0001"
+          }
+        },
+        "seq": 8,
+        "ts": 1760000000000
+      }
+    },
+    {
+      "daemon_answers": {
+        "rpc": {
+          "id": 9,
+          "jsonrpc": "2.0",
+          "result": {
+            "path": "/Users/abel/.equipe/uploads/1760000000000-notes.md",
+            "received": 14,
+            "tag": "[file: /Users/abel/.equipe/uploads/1760000000000-notes.md · 3 lines]"
+          }
+        },
+        "seq": 9,
+        "ts": 1760000000000
+      },
+      "name": "a text file: its lines counted",
+      "sends": {
+        "rpc": {
+          "id": 9,
+          "jsonrpc": "2.0",
+          "method": "upload",
+          "params": {
+            "data": "b25lCnR3bwp0aHJlZQo=",
+            "kind": "file",
+            "name": "notes.md",
+            "offset": 0,
+            "total": 14,
+            "upload_id": "notes-0001"
+          }
+        },
+        "seq": 9,
+        "ts": 1760000000000
+      }
+    },
+    {
+      "daemon_answers": {
+        "rpc": {
+          "error": {
+            "code": -32602,
+            "data": {
+              "limit": 8388608
+            },
+            "message": "too large"
+          },
+          "id": 10,
+          "jsonrpc": "2.0"
+        },
+        "seq": 10,
+        "ts": 1760000000000
+      },
+      "name": "an image too large",
+      "sends": {
+        "rpc": {
+          "id": 10,
+          "jsonrpc": "2.0",
+          "method": "upload",
+          "params": {
+            "data": "eA==",
+            "kind": "image",
+            "name": "a.png",
+            "offset": 0,
+            "total": 8388609,
+            "upload_id": "big-0001"
+          }
+        },
+        "seq": 10,
+        "ts": 1760000000000
+      }
+    },
+    {
+      "daemon_answers": {
+        "rpc": {
+          "error": {
+            "code": -32602,
+            "data": {
+              "limit": 26214400
+            },
+            "message": "too large"
+          },
+          "id": 11,
+          "jsonrpc": "2.0"
+        },
+        "seq": 11,
+        "ts": 1760000000000
+      },
+      "name": "a file too large",
+      "sends": {
+        "rpc": {
+          "id": 11,
+          "jsonrpc": "2.0",
+          "method": "upload",
+          "params": {
+            "data": "eA==",
+            "kind": "file",
+            "name": "a.zip",
+            "offset": 0,
+            "total": 26214401,
+            "upload_id": "big-0002"
+          }
+        },
+        "seq": 11,
+        "ts": 1760000000000
+      }
+    },
+    {
+      "daemon_answers": {
+        "rpc": {
+          "error": {
+            "code": -32602,
+            "data": {
+              "limit": 393216
+            },
+            "message": "piece too large"
+          },
+          "id": 12,
+          "jsonrpc": "2.0"
+        },
+        "seq": 12,
+        "ts": 1760000000000
+      },
+      "name": "a piece going past the total",
+      "sends": {
+        "rpc": {
+          "id": 12,
+          "jsonrpc": "2.0",
+          "method": "upload",
+          "params": {
+            "data": "eHk=",
+            "kind": "file",
+            "name": "a.zip",
+            "offset": 0,
+            "total": 1,
+            "upload_id": "big-0003"
+          }
+        },
+        "seq": 12,
+        "ts": 1760000000000
+      }
+    },
+    {
+      "daemon_answers": {
+        "rpc": {
+          "error": {
+            "code": -32602,
+            "message": "only images can be uploaded (png, jpg, jpeg, gif, webp)"
+          },
+          "id": 13,
+          "jsonrpc": "2.0"
+        },
+        "seq": 13,
+        "ts": 1760000000000
+      },
+      "name": "a name the kind doesn't take",
+      "sends": {
+        "rpc": {
+          "id": 13,
+          "jsonrpc": "2.0",
+          "method": "upload",
+          "params": {
+            "data": "eA==",
+            "kind": "image",
+            "name": "run.sh",
+            "offset": 0,
+            "total": 1,
+            "upload_id": "bad-0001"
+          }
+        },
+        "seq": 13,
+        "ts": 1760000000000
+      }
+    },
+    {
+      "daemon_answers": {
+        "rpc": {
+          "error": {
+            "code": -32602,
+            "data": {
+              "received": 0
+            },
+            "message": "send from received"
+          },
+          "id": 14,
+          "jsonrpc": "2.0"
+        },
+        "seq": 14,
+        "ts": 1760000000000
+      },
+      "name": "a piece for a file the daemon doesn't know",
+      "sends": {
+        "rpc": {
+          "id": 14,
+          "jsonrpc": "2.0",
+          "method": "upload",
+          "params": {
+            "data": "eA==",
+            "kind": "file",
+            "name": "a.zip",
+            "offset": 10,
+            "total": 20,
+            "upload_id": "gone-0001"
+          }
+        },
+        "seq": 14,
+        "ts": 1760000000000
+      }
+    },
+    {
+      "daemon_answers": {
+        "rpc": {
+          "id": 15,
+          "jsonrpc": "2.0",
+          "result": {
+            "received": 10
+          }
+        },
+        "seq": 15,
+        "ts": 1760000000000
+      },
+      "name": "a file under way",
+      "sends": {
+        "rpc": {
+          "id": 15,
+          "jsonrpc": "2.0",
+          "method": "upload",
+          "params": {
+            "data": "MDEyMzQ1Njc4OQ==",
+            "kind": "file",
+            "name": "a.zip",
+            "offset": 0,
+            "total": 20,
+            "upload_id": "cancel-0001"
+          }
+        },
+        "seq": 15,
+        "ts": 1760000000000
+      }
+    },
+    {
+      "daemon_answers": null,
+      "name": "cancelled",
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "upload_cancel",
+          "params": {
+            "upload_id": "cancel-0001"
+          }
+        },
+        "seq": 16,
+        "ts": 1760000000000
+      }
+    },
+    {
+      "daemon_answers": {
+        "rpc": {
+          "error": {
+            "code": -32602,
+            "data": {
+              "received": 0
+            },
+            "message": "send from received"
+          },
+          "id": 16,
+          "jsonrpc": "2.0"
+        },
+        "seq": 16,
+        "ts": 1760000000000
+      },
+      "name": "its next piece, after the cancel",
+      "sends": {
+        "rpc": {
+          "id": 16,
+          "jsonrpc": "2.0",
+          "method": "upload",
+          "params": {
+            "data": "MDEyMzQ1Njc4OQ==",
+            "kind": "file",
+            "name": "a.zip",
+            "offset": 10,
+            "total": 20,
+            "upload_id": "cancel-0001"
+          }
+        },
+        "seq": 17,
+        "ts": 1760000000000
+      }
+    }
+  ],
+  "then_submit": {
+    "about": "Each finished tag, then a space, after what was typed (the desktop's attach::message): sent as submit's text.",
+    "sends": {
+      "jsonrpc": "2.0",
+      "method": "command",
+      "params": {
+        "session": 1001,
+        "squad": "acme",
+        "text": "이거 봐 주세요 [image: /Users/abel/.equipe/uploads/1760000000000-IMG_0421.jpg] [audio: /Users/abel/.equipe/uploads/1760000000000-Voice-memo.m4a · 0:31] [file: /Users/abel/.equipe/uploads/1760000000000-Voice-memo-transcript.txt · 2 lines]",
+        "type": "submit"
+      }
+    }
+  }
+}
