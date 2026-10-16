@@ -520,9 +520,36 @@ the repository (the public key file is public by design).
 
 In the app (`src/update.rs`): when `Contents/Frameworks/Sparkle.framework` is
 there, the app `dlopen`s it and starts `SPUStandardUpdaterController`. Sparkle
-checks the feed once a day by itself and asks before installing; the app menu
-(equipe ▸ 업데이트 확인…) checks now. `cargo run` has no framework, so updates
-are off and the item is disabled. The menu also has 가리기 (⌘H), 기타 가리기
+checks the feed every hour by itself, and the app looks too right after launch
+and when the window comes back after 5 minutes; the app menu (equipe ▸
+업데이트 확인…) and Settings ▸ 업데이트와 정보 ▸ 지금 확인 check now. `cargo run`
+has no framework, so updates are off and the item is disabled.
+
+Where an update stands is `relaunch::Update`, moved by each of Sparkle's
+delegate calls (`didFindValidUpdate`, `willDownloadUpdate`,
+`failedToDownloadUpdate`, `userDidCancelDownload`, `willInstallUpdateOnQuit`,
+`didAbortWithError`, `didFinishUpdateCycleForUpdateCheck`), and shown the same
+way in the sidebar's pill and in settings: **새 버전 0.49.0 받는 중…** (quiet;
+Sparkle's delegate gives no download progress), **다시 시작해 업데이트 →**,
+**업데이트 받기 실패 · 다시 시도** (settings: the reason in plain words, 로그 보기,
+다시 시도), or **Applications 폴더로 옮겨 주세요** when the app was opened from the
+disk image or translocated from a download (Finder에서 보기). Found and
+downloaded each give one notice per version (업데이트가 준비됐을 때; told
+versions kept in `desktop-target` as `update-told`); clicking the downloaded
+one restarts into it.
+
+Every step and every error — domain, code, description, userInfo and the
+errors under it — goes to `~/Library/Logs/equipe/updates.log`, with where the
+app started from: the first thing to read when Sparkle says only "An error
+occurred while running the updater".
+
+The app never starts a Sparkle session against one in progress: its quiet
+check runs only when `sessionInProgress` is false and no update is found,
+downloading or waiting (`relaunch::may_check_quietly`); 지금 확인 with an update
+waiting installs it through the block Sparkle handed `willInstallUpdateOnQuit`
+(Sparkle 2.3+ allows calling it again after a cancelled quit) rather than
+checking again, and while Sparkle downloads on its own (`canCheckForUpdates`
+false) it is left to finish. The menu also has 가리기 (⌘H), 기타 가리기
 (⌥⌘H), 모두 보기 and 종료 (⌘Q).
 
 Knobs for testing: `EQUIPE_DMG_ARCHS=aarch64` (one arch, quicker),

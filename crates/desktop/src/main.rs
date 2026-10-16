@@ -121,8 +121,8 @@ pub struct Shell {
     pub board_ticket: Option<u32>,
     /// Notifications: what macOS allows, the sheet asking, the reply awaited, the Dock's number.
     pub bell: notify::Bell,
-    /// An update downloaded and waiting for a restart: its version.
-    pub update_ready: Option<String>,
+    /// Where an update stands: being downloaded, waiting for a restart, failed.
+    pub update: relaunch::Update,
     /// Whose daemon this window is a window onto, and what it remembers of that.
     pub endpoint: Endpoint,
     pub remembered: Remembered,
@@ -205,7 +205,7 @@ impl Shell {
             browser,
             board_ticket: None,
             bell: Default::default(),
-            update_ready: relaunch::watch().borrow().clone(),
+            update: relaunch::current(),
             endpoint: endpoint.clone(),
             remembered,
             connect,
@@ -249,12 +249,14 @@ impl Shell {
         let mut updates = relaunch::watch();
         shell._updates = Some(cx.spawn_in(window, async move |this, cx| {
             while updates.changed().await.is_ok() {
-                let version = updates.borrow_and_update().clone();
+                let state = updates.borrow_and_update().clone();
                 if this.update_in(cx, |this, window, cx| {
-                    if let Some(version) = version.clone().filter(|v| this.update_ready.as_ref() != Some(v)) {
-                        this.announce(vec![notify::Alert::Update { version }], window, cx);
+                    // Found and downloaded: each told once (and remembered across launches).
+                    if let Some(alert) = notify::update_alert(&state, &mut this.remembered.update_told) {
+                        this.remembered.save(&equipe_home());
+                        this.announce(vec![alert], window, cx);
                     }
-                    this.update_ready = version;
+                    this.update = state;
                     cx.notify();
                 })
                 .is_err()
@@ -780,8 +782,12 @@ impl Shell {
             notify::Go::Ticket(ticket) => self.open_ticket(ticket, cx),
             notify::Go::Board => self.show(Screen::Board, cx),
             notify::Go::Browser(page) => self.reveal_browser(page, cx),
-            // The sidebar offers the restart.
-            notify::Go::Update => {}
+            // Downloaded: the notice's click restarts into it; before, the window shows the pill.
+            notify::Go::Update => {
+                if self.update.ready().is_some() {
+                    self.relaunch_to_update(cx);
+                }
+            }
             notify::Go::Relaunch => self.relaunch_to_update(cx),
         }
         window.activate_window();

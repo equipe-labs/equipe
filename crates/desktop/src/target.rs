@@ -179,6 +179,8 @@ pub struct Remembered {
     /// The person said "나중에" when asked to let equipe notify: not asked
     /// again on its own (settings still offers it).
     pub notify_later: bool,
+    /// The update notices told already (`found <v>`, `ready <v>`): each once.
+    pub update_told: Vec<String>,
     /// The PM's conversation shows whole whatever project is in focus — as it
     /// did before it followed the project (settings ▸ 일반).
     pub whole_conversation: bool,
@@ -412,6 +414,8 @@ impl Remembered {
                 }
             } else if line.trim() == "notify later" {
                 out.notify_later = true;
+            } else if let Some(rest) = line.strip_prefix("update-told ") {
+                out.update_told.push(rest.trim().to_owned());
             } else if let Some(rest) = line.strip_prefix("board-split ") {
                 out.board_split = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("browser-width ") {
@@ -471,6 +475,9 @@ impl Remembered {
         }
         if self.notify_later {
             text.push_str("notify later\n");
+        }
+        for told in &self.update_told {
+            text.push_str(&format!("update-told {told}\n"));
         }
         for (project, way) in &self.merge_ways {
             text.push_str(&format!("merge {project} {way}\n"));
@@ -671,16 +678,17 @@ mod tests {
         assert_eq!((loaded.merge_way("app"), loaded.merge_way("site")), (None, Some("merge")), "back to asking each time");
 
         // The kinds that are off by default are written when on, and the rest when off.
-        let mut prefs = Remembered { notify_later: true, ..Remembered::default() };
+        let mut prefs = Remembered { notify_later: true, update_told: vec!["ready 0.49.0".into()], ..Remembered::default() };
         prefs.pings.set(Ping::Merged, true);
         prefs.pings.set(Ping::Badge, false);
         prefs.pings.set(Ping::Replies, false);
         prefs.save(&dir);
         let text = std::fs::read_to_string(Remembered::path(&dir)).unwrap();
-        assert_eq!(text, "quiet replies\nping merged\nquiet badge\nnotify later\n");
+        assert_eq!(text, "quiet replies\nping merged\nquiet badge\nnotify later\nupdate-told ready 0.49.0\n");
         let loaded = Remembered::load(&dir);
         assert_eq!(loaded.pings, prefs.pings);
         assert!(loaded.notify_later && loaded.pings.update && loaded.pings.sound);
+        assert_eq!(loaded.update_told, ["ready 0.49.0"]);
         let old = Remembered::parse("quiet sound\n");
         assert!(!old.pings.sound && !old.pings.merged && old.pings.replies && old.pings.badge, "an older file reads with the new kinds as by default");
 

@@ -54,6 +54,8 @@ pub enum Alert {
     /// Merging an accepted ticket's work failed — `conflict` with main, or
     /// otherwise; nothing was merged.
     MergeFailed { ticket: TicketId, conflict: bool, project: Option<String> },
+    /// A new version of the app is found; it is being downloaded.
+    UpdateFound { version: String },
     /// A new version of the app is downloaded and goes in on a restart.
     Update { version: String },
 }
@@ -62,7 +64,7 @@ impl Alert {
     /// News rather than something waiting: told one by one, never folded into
     /// "n things wait for you".
     fn is_news(&self) -> bool {
-        matches!(self, Alert::Reply { .. } | Alert::Merged { .. } | Alert::Update { .. })
+        matches!(self, Alert::Reply { .. } | Alert::Merged { .. } | Alert::UpdateFound { .. } | Alert::Update { .. })
     }
 }
 
@@ -81,7 +83,7 @@ impl Pings {
             Alert::Failed { .. } | Alert::MergeFailed { .. } => self.failed,
             Alert::Reply { .. } => self.replies,
             Alert::Merged { .. } => self.merged,
-            Alert::Update { .. } => self.update,
+            Alert::UpdateFound { .. } | Alert::Update { .. } => self.update,
         }
     }
 }
@@ -96,7 +98,8 @@ pub enum Go {
     Board,
     /// The browser panel, on a page waiting for the person, in their hands.
     Browser(u64),
-    /// The window, where the sidebar offers "다시 시작해 업데이트".
+    /// The update's notice: with the update downloaded, a restart into it;
+    /// before, the window, where the sidebar's pill follows the download.
     Update,
     /// The update notice's "다시 시작": install the downloaded update now.
     Relaunch,
@@ -161,8 +164,8 @@ pub struct Toast {
 }
 
 impl Toast {
-    /// The notice's identifier, `n` making it unique — except the update's,
-    /// which a newer one replaces.
+    /// The notice's identifier, `n` making it unique — except the update's:
+    /// "downloaded" replaces "found", a newer version the older.
     pub fn request_id(&self, n: u64) -> String {
         match self.go {
             Go::Update => "update|0".into(),
@@ -191,7 +194,7 @@ pub fn thread(alert: &Alert, squad: &str) -> String {
         Alert::Review { by, .. } | Alert::Waiting { by, .. } => by.as_deref().map_or_else(|| squad_thread(squad), |b| member_thread(squad, b)),
         Alert::Failed { member, .. } | Alert::Decision { member, .. } | Alert::Browser { member, .. } | Alert::Reply { member, .. } => member_thread(squad, member),
         Alert::Merged { .. } | Alert::MergeFailed { .. } => squad_thread(squad),
-        Alert::Update { .. } => "equipe/update".into(),
+        Alert::UpdateFound { .. } | Alert::Update { .. } => "equipe/update".into(),
     }
 }
 
@@ -253,6 +256,7 @@ fn toast(alert: &Alert, squad: &str, titles: bool) -> Toast {
             let project = project.as_deref().map(|p| format!(" · {p}")).unwrap_or_default();
             (t!("notify.merge_failed_title", ticket = ticket), format!("{why}{project}"), Go::Ticket(*ticket))
         }
+        Alert::UpdateFound { version } => (t!("notify.update_found_title", version = version), t!("notify.update_found_body").to_owned(), Go::Update),
         Alert::Update { version } => (t!("notify.update_title").to_owned(), t!("notify.update_body", version = version), Go::Update),
     };
     Toast { title, body, go, thread: thread(alert, squad) }
@@ -444,6 +448,25 @@ pub fn follow_clicks(to: tokio::sync::mpsc::UnboundedSender<Go>) {
     system::follow_clicks(to);
     #[cfg(not(target_os = "macos"))]
     let _ = to;
+}
+
+/// The update notice for where the update stands, if it wasn't told yet:
+/// each version is told once found and once downloaded — `told` remembers
+/// (`found <v>`, `ready <v>`; the last few), across launches.
+pub fn update_alert(now: &crate::relaunch::Update, told: &mut Vec<String>) -> Option<Alert> {
+    use crate::relaunch::Update;
+    let (key, alert) = match now {
+        Update::Found(v) | Update::Downloading(v) => (format!("found {v}"), Alert::UpdateFound { version: v.clone() }),
+        Update::Ready(v) => (format!("ready {v}"), Alert::Update { version: v.clone() }),
+        _ => return None,
+    };
+    if told.contains(&key) {
+        return None;
+    }
+    told.push(key);
+    let extra = told.len().saturating_sub(4);
+    told.drain(..extra);
+    Some(alert)
 }
 
 /// Whether the window is in front of the person now: then a notice that
@@ -696,6 +719,28 @@ mod tests {
             assert!(!explain_now(p, false), "{p:?}");
         }
         assert_eq!((0..=5).map(Permission::from_status).collect::<Vec<_>>(), [Permission::NotAsked, Permission::Denied, Permission::Allowed, Permission::Allowed, Permission::Allowed, Permission::Unknown]);
+    }
+
+    #[test]
+    fn each_version_is_told_once_found_and_once_downloaded() {
+        use crate::relaunch::{Update, Why};
+        let mut told = Vec::new();
+        assert_eq!(update_alert(&Update::Found("0.49.0".into()), &mut told), Some(Alert::UpdateFound { version: "0.49.0".into() }));
+        assert_eq!(update_alert(&Update::Downloading("0.49.0".into()), &mut told), None, "the same download");
+        assert_eq!(update_alert(&Update::Ready("0.49.0".into()), &mut told), Some(Alert::Update { version: "0.49.0".into() }));
+        assert_eq!(update_alert(&Update::Ready("0.49.0".into()), &mut told), None, "not again, even after a restart (told is kept)");
+        assert_eq!(update_alert(&Update::Idle, &mut told), None);
+        assert_eq!(update_alert(&Update::Failed { version: None, why: Why::Download }, &mut told), None, "a failure shows in the window, not as a notice");
+        assert!(update_alert(&Update::Found("0.50.0".into()), &mut told).is_some());
+        for v in ["0.51.0", "0.52.0", "0.53.0"] {
+            update_alert(&Update::Ready(v.into()), &mut told);
+        }
+        assert_eq!(told.len(), 4, "only the last few are kept");
+        let found = toasts(&[Alert::UpdateFound { version: "0.49.0".into() }], "acme", true);
+        assert_eq!((found[0].title.as_str(), found[0].body.as_str(), found[0].go), ("equipe 0.49.0 나왔어요", "받는 중이에요 — 다 받으면 다시 알려 드릴게요", Go::Update));
+        let ready = toasts(&[Alert::Update { version: "0.49.0".into() }], "acme", true);
+        assert_eq!(found[0].request_id(1), ready[0].request_id(2), "downloaded replaces found in Notification Center");
+        assert_eq!((found[0].category(), ready[0].category()), (CATEGORY_UPDATE, CATEGORY_UPDATE));
     }
 
     #[test]

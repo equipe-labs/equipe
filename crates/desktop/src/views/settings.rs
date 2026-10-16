@@ -672,8 +672,30 @@ fn about(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         .words("version")
         .control(h_flex().gap_1().items_center().child(value(p, version)).child(ui::icon_button(p, "copy-version", Icon::Copy, t!("settings.copy_version"), None).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(version.to_owned())))));
     let mut updates = vec![this_version];
-    if let Some(ready) = shell.update_ready.clone() {
-        updates.push(Line::new(crate::relaunch::label(&ready), t!("settings.update_ready_desc")).words("update").control(ui::button(p, "relaunch-now", Kind::Secondary, t!("settings.relaunch")).on_click(cx.listener(|this, _, _, cx| this.relaunch_to_update(cx)))));
+    // Where the update stands, as the sidebar's pill says it.
+    match &shell.update {
+        crate::relaunch::Update::Ready(ready) => {
+            updates.push(Line::new(crate::relaunch::label(ready), t!("settings.update_ready_desc")).words("update").control(ui::button(p, "relaunch-now", Kind::Secondary, t!("settings.relaunch")).on_click(cx.listener(|this, _, _, cx| this.relaunch_to_update(cx)))));
+        }
+        crate::relaunch::Update::Found(v) | crate::relaunch::Update::Downloading(v) => {
+            updates.push(Line::new(t!("relaunch.downloading", version = v), t!("settings.update_downloading_desc")).words("update download"));
+        }
+        crate::relaunch::Update::Failed { why, .. } => {
+            let moving = matches!(why, crate::relaunch::Why::Move | crate::relaunch::Why::Permission);
+            let fix = if moving {
+                ui::button(p, "reveal-app", Kind::Secondary, t!("settings.reveal_app")).on_click(|_, _, _| crate::relaunch::reveal()).into_any_element()
+            } else {
+                ui::button(p, "retry-update", Kind::Secondary, t!("settings.retry_update")).on_click(|_, _, cx| crate::relaunch::check_now(cx)).into_any_element()
+            };
+            let title = if moving { t!("relaunch.move") } else { t!("settings.update_failed") };
+            updates.push(
+                Line::new(title, why.words())
+                    .warn(true)
+                    .words("update error log applications")
+                    .control(h_flex().gap_2().items_center().child(ui::button(p, "update-log", Kind::Ghost, t!("settings.show_log")).on_click(|_, _, _| crate::relaunch::open_log())).child(fix)),
+            );
+        }
+        crate::relaunch::Update::Idle => {}
     }
     updates.push(
         Line::new(t!("settings.check_updates"), if can { t!("settings.check_updates_desc") } else { t!("settings.no_updater") })
