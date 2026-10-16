@@ -157,7 +157,7 @@ can't go on without the person.
 | `todo` | ready once its dependencies are done | equipe's rules hand it to a free owner |
 | `in_progress` | a member is on it, in its worktree | the member hands it in or puts it down |
 | `waiting` | put down until the person does their part; the note is their checklist | the person (`/resume T-3`) or the PM (`update_ticket` → `todo`) |
-| `review` | handed in | the person accepts, reopens or cancels |
+| `review` | handed in — first to a designer's design QA when its screens changed | the person accepts, reopens or cancels |
 | `done` / `cancelled` | closed | the person can reopen |
 
 - **The PM writes the board** through tools; a ticket has an owner (a role or a
@@ -175,6 +175,9 @@ can't go on without the person.
 - **It hands the work in** (`submit_for_review`): at the end of the turn its
   changes are committed to the branch and the ticket goes to `review`. The
   worktree stays, so the work can be sent back.
+- **Changed screens pass a designer first** (*design QA*, below): a `code`
+  ticket that changes what users see waits in `review` for the squad's designer
+  before the person is told it is ready.
 - **It puts the ticket down when it needs the person** (`block_on_person`): a
   token to issue, an account or a setting to change. At the end of the turn its
   changes so far are committed, the ticket goes to `waiting` with the person's
@@ -212,6 +215,46 @@ can't go on without the person.
   October 2026: eight accepted tickets, a README on main); without starting from
   dependencies, a person who wants to look before merging holds the squad up.
 
+### Design QA
+
+A squad's designer checks changed screens before the person reviews them, the
+way a company's designer checks a build against their spec. The person decided
+it (T-143, 2026-10-16): required for every change users see, skipped when the
+squad has no designer. `equipe_core::runtime::design_qa`.
+
+- **What counts as a screen change is the engineer's word**, not a guess from
+  file names: in a squad with a designer, `submit_for_review` on a `code` ticket
+  by anyone but a designer must say `changes_screens` — true when users see a
+  change (a screen, page, layout, style, visible copy, an icon), false otherwise.
+  Left out, the hand-in is refused with why; true without a screenshot in
+  `images` is refused too, since the designer checks from pictures. A designer's
+  own code ticket, a `task` or an `action` skips the step.
+- **The hand-in waits in `review` on a design QA ticket.** At the end of the
+  turn the ticket goes to `review` as ever, with `design_qa: <id>` set, and
+  equipe creates that ticket: a `task` owned by `designer`, created by `equipe`,
+  about the same project. The rules hand it to a free designer; its turn is
+  told the checked ticket's body (the spec), the engineer's hand-in and
+  screenshots, and its branch and worktree, to read only. The PM hears it was
+  handed in for design QA; the person isn't told it is ready, and screens leave
+  it out of what waits for them, showing it as *Design QA*.
+- **The verdict is a tool** (`design_qa`), not a hand-in — `submit_for_review`
+  on a design QA ticket is refused. `pass`: the design QA ticket is done (its
+  files go into the squad's folder without a review of their own), the checked
+  ticket's `design_qa` clears, its note gains "Design QA by <designer>
+  (T-<id>): passed." and the findings, its pictures the designer's, and the
+  person is told it is ready for review. `changes`: the checked ticket goes back
+  to its engineer — `todo`, same branch, worktree and conversation, like the
+  person's send-back — with the numbered findings as its note; the engineer
+  fixes them and hands in again, which asks for a new design QA.
+- **The person stays the gate.** Accepting, reopening or cancelling the ticket
+  while its design QA is open cancels the design QA ticket; cancelling or
+  accepting the design QA ticket itself releases the ticket to their review.
+  An older screen, which doesn't know `design_qa`, shows the ticket as an
+  ordinary review.
+- **What a designer counts as a defect**: differences from the spec, the
+  design system's tokens and accessibility — not taste. New ideas are proposed
+  tickets.
+
 ### Board tools (MCP)
 
 A Claude Code member gets its tools from `equipe mcp`, a stdio MCP server equipe
@@ -226,7 +269,8 @@ model says.
 | `create_ticket` | everyone | the PM's are `todo`; anyone else's are proposals |
 | `update_ticket` | the PM | change a `proposed`/`todo`/`waiting` ticket; accept or drop a proposal; resume a waiting one |
 | `comment` | everyone | add to a ticket's record |
-| `submit_for_review` | the member on a ticket | hand it in |
+| `submit_for_review` | the member on a ticket | hand it in; on a `code` ticket in a squad with a designer, `changes_screens` (and screenshots in `images`) says whether it goes to design QA |
+| `design_qa` | a designer on a design QA ticket | `pass` (on to the person's review) or `changes` (back to its engineer), with findings |
 | `block_on_person` | the member on a ticket | put it down until the person does their part |
 
 `--strict-mcp-config` keeps the person's own MCP servers (mail, calendar…) away
@@ -612,7 +656,7 @@ writing there, reading every project. Roles live in `equipe_core::roles`:
 | Role | Does | Edits files | Model tier |
 |---|---|---|---|
 | `pm` (or `po`) | turns what the person wants into a plan and tickets; the main contact | no | top |
-| `designer` | flows, layout, visual language, tokens | yes | upper |
+| `designer` | flows, UI, design system and brand; design QA of changed screens | yes | upper |
 | `frontend` | pages, components, styles, client logic | yes | upper |
 | `backend` | servers, APIs, data models, integrations | yes | top |
 | `qa` | reviews, test plans, edge cases, acceptance | no | mid |
@@ -636,6 +680,17 @@ owns it or suggests `/add`.
   follows the team as members come and go.
 - **Names** are unique per team — `frontend`, `frontend-2` — and editing members
   work on `equipe/<name>-<id>` branches.
+- **The designer** works like a company's product designer (T-142's playbook,
+  taken on in T-143): problem and success criteria → references → at least
+  three genuinely different options side by side in one comparison sheet →
+  the person's critique → full fidelity → a handoff spec → design QA of the
+  build. The person makes the taste calls. Mockups are files (tokens as DTCG
+  JSON, SVG, HTML, markdown), rendered and looked at before they are shown —
+  through a `data:` URL, since the members' browser opens neither `file://` nor
+  a server started on the Mac — and contrast is computed, not judged. A
+  project's design assets live in its own repository's `design/`, versioned
+  with its code; the squad home's `design/` holds only principles every project
+  shares.
 
 ### Talking to the team
 

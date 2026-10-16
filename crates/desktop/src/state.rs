@@ -213,6 +213,7 @@ pub fn look_of(t: &Ticket) -> Look {
 /// word — or, for accepted work not in main, that and where it is.
 pub fn state_word(t: &Ticket) -> &'static str {
     match t.off_main {
+        _ if t.in_design_qa() => t!("state.status_design_qa"),
         _ if !t.not_on_main() => status_word(t.status),
         Some(OffMain::Kept) => t!("state.accepted_kept"),
         _ => t!("state.accepted_not_on_main"),
@@ -1028,6 +1029,8 @@ impl Model {
 
     fn on_ticket(&mut self, ticket: &Ticket) {
         let was = self.tickets.iter().find(|t| t.id == ticket.id).map(|t| t.status);
+        // Past its design QA: ready for the person now, as if just handed in.
+        let qa_passed = ticket.ready_for_review() && self.tickets.iter().any(|t| t.id == ticket.id && t.in_design_qa());
         if let Some(alert) = self.tickets.iter().find(|t| t.id == ticket.id).and_then(|old| crate::notify::merge_alert(old, ticket, self.ticket_project_name(ticket))) {
             self.alerts.push(alert);
         }
@@ -1041,8 +1044,10 @@ impl Model {
         if self.acted.get(&ticket.id).is_some_and(|look| *look != look_of(ticket)) {
             self.acted.remove(&ticket.id);
         }
-        if was.is_some() && was != Some(ticket.status) {
+        if was.is_some() && (was != Some(ticket.status) || qa_passed) {
             match ticket.status {
+                // A designer checks it first: the person hears once that passes.
+                TicketStatus::Review if ticket.in_design_qa() => {}
                 TicketStatus::Review => {
                     self.flash = Some(t!("state.review_flash", id = ticket.id));
                     self.alerts.push(Alert::Review { ticket: ticket.id, title: ticket.title.clone(), by: ticket.assignee.clone().or(ticket.owner.clone()), project: self.ticket_project_name(ticket) });
@@ -1245,6 +1250,8 @@ impl Model {
     pub fn section_of(&self, t: &Ticket) -> Option<Section> {
         match t.status {
             TicketStatus::Waiting => Some(Section::Waiting),
+            // A designer checks its screens first.
+            TicketStatus::Review if t.in_design_qa() => None,
             TicketStatus::Review => Some(Section::Review),
             TicketStatus::Proposed => Some(Section::Proposed),
             TicketStatus::Done if t.waits_to_merge() => Some(Section::NotOnMain),
@@ -1345,7 +1352,7 @@ impl Model {
     pub fn for_you_here(&self) -> Vec<&Ticket> {
         let mut out: Vec<&Ticket> = Vec::new();
         for status in [TicketStatus::Review, TicketStatus::Waiting] {
-            let mut group: Vec<&Ticket> = self.tickets.iter().filter(|t| t.status == status && self.in_focus(t)).collect();
+            let mut group: Vec<&Ticket> = self.tickets.iter().filter(|t| t.status == status && !t.in_design_qa() && self.in_focus(t)).collect();
             group.sort_by_key(|t| t.id);
             out.extend(group);
         }
@@ -2168,6 +2175,23 @@ mod tests {
         let needs: Vec<Need> = model.needs_you().into_iter().map(|(_, n)| n).collect();
         assert_eq!(needs, [Need::Permission(11), Need::Ticket(3), Need::Ticket(6), Need::Ticket(5), Need::Ticket(4), Need::Ticket(9)], "the review that unblocks work first");
         assert_eq!(model.needs_you_count(), 6);
+    }
+
+    #[test]
+    fn a_hand_in_in_design_qa_waits_for_the_designer_then_comes_to_the_person() {
+        let mut model = needs_model();
+        model.take_alerts();
+        let five = model.tickets.iter().find(|t| t.id == 5).unwrap().clone();
+        let held = Ticket { design_qa: Some(12), ..five.clone() };
+        model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: held.clone() }), T0);
+        assert_eq!(state_word(&held), "디자인 QA 중");
+        assert_eq!(model.section_of(&held), None, "not the person's yet");
+        assert!(!model.for_you_here().iter().any(|t| t.id == 5));
+        assert!(!model.take_alerts().iter().any(|a| matches!(a, Alert::Review { ticket: 5, .. })));
+        // Passed: the person hears it is ready, as with any hand-in.
+        model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: five }), T0);
+        assert!(model.take_alerts().iter().any(|a| matches!(a, Alert::Review { ticket: 5, .. })));
+        assert_eq!(model.section_of(model.tickets.iter().find(|t| t.id == 5).unwrap()), Some(Section::Review));
     }
 
     #[test]

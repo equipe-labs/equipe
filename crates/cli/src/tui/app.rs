@@ -1217,7 +1217,7 @@ impl App {
                 .iter()
                 .filter(|a| a.state == AgentState::Working && self.agent_project(a).as_deref() == Some(project))
                 .count(),
-            for_you: self.tickets.iter().filter(|t| matches!(t.status, TicketStatus::Review | TicketStatus::Waiting) && here(t)).count(),
+            for_you: self.tickets.iter().filter(|t| (t.ready_for_review() || t.status == TicketStatus::Waiting) && here(t)).count(),
         }
     }
 
@@ -1255,7 +1255,7 @@ impl App {
                     at,
                     name,
                     busy,
-                    for_you: here.iter().filter(|t| matches!(t.status, TicketStatus::Review | TicketStatus::Waiting)).count(),
+                    for_you: here.iter().filter(|t| t.ready_for_review() || t.status == TicketStatus::Waiting).count(),
                     open: here.iter().filter(|t| matches!(t.status, TicketStatus::Todo | TicketStatus::InProgress)).count(),
                 }
             })
@@ -1866,7 +1866,9 @@ impl App {
         {
             self.accepted.push((ticket.id, ticket.title.clone(), branch.clone()));
         }
-        if ticket.status == TicketStatus::Review && was != Some(TicketStatus::Review) {
+        // Ready once handed in — or once its design QA passes, when a designer checks it first.
+        let was_ready = self.tickets.iter().any(|t| t.id == ticket.id && t.ready_for_review());
+        if ticket.ready_for_review() && !was_ready {
             self.flash = Some(t!("app.ticket_ready", id = ticket.id));
         }
         if ticket.status == TicketStatus::Waiting && was != Some(TicketStatus::Waiting) {
@@ -3325,6 +3327,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
 pub fn section_of(t: &Ticket) -> Option<Section> {
     match t.status {
         TicketStatus::Waiting => Some(Section::Waiting),
+        TicketStatus::Review if t.in_design_qa() => None,
         TicketStatus::Review => Some(Section::Review),
         TicketStatus::Proposed => Some(Section::Proposed),
         TicketStatus::Done if t.waits_to_merge() => Some(Section::NotOnMain),
@@ -3642,6 +3645,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
+            design_qa: None,
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: None,

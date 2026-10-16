@@ -1125,6 +1125,7 @@
   "state.status_in_progress": "进行中",
   "state.status_proposed": "提议",
   "state.status_review": "审查",
+  "state.status_design_qa": "设计 QA 中",
   "state.status_todo": "待办",
   "state.status_waiting": "轮到你",
   "state.waiting_flash.other": "T-{id} 轮到你 — {name} 有 {count} 件事要问你",

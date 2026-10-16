@@ -299,6 +299,11 @@ pub struct Ticket {
     /// an older daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<u64>,
+    /// While in review: the design QA ticket on which a designer checks its
+    /// screens first — the person is told it's ready once that passes. Left
+    /// out otherwise, and absent from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub design_qa: Option<TicketId>,
 }
 
 /// The gap between two tickets' ranks when they are spread out again.
@@ -309,6 +314,16 @@ impl Ticket {
     /// number spread out, so tickets never placed keep the order they were made in.
     pub fn order_key(&self) -> i64 {
         if self.rank != 0 { self.rank } else { i64::from(self.id) * RANK_STEP }
+    }
+
+    /// Handed in and waiting on a designer's design QA before the person's review.
+    pub fn in_design_qa(&self) -> bool {
+        self.status == TicketStatus::Review && self.design_qa.is_some()
+    }
+
+    /// Handed in and ready for the person's review: past design QA, if it had one.
+    pub fn ready_for_review(&self) -> bool {
+        self.status == TicketStatus::Review && self.design_qa.is_none()
     }
 
     /// Accepted, but its work isn't on the main branch yet.
@@ -1517,6 +1532,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
+            design_qa: None,
             kind: TicketKind::Code,
             created_by: "pm".into(),
             note: None,

@@ -1125,6 +1125,7 @@
   "state.status_in_progress": "작업 중",
   "state.status_proposed": "제안",
   "state.status_review": "검토",
+  "state.status_design_qa": "디자인 QA 중",
   "state.status_todo": "할 일",
   "state.status_waiting": "내 차례",
   "state.waiting_flash.other": "T-{id} 내 차례 — {name}이(가) {count}가지를 묻습니다",

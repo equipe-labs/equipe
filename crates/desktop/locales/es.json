@@ -1157,6 +1157,7 @@
   "state.status_in_progress": "En curso",
   "state.status_proposed": "Propuesto",
   "state.status_review": "Revisión",
+  "state.status_design_qa": "QA de diseño",
   "state.status_todo": "Por hacer",
   "state.status_waiting": "Tu turno",
   "state.waiting_flash.one": "T-{id} tu turno — {name} te pide {count} cosa",

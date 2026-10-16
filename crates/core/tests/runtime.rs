@@ -999,6 +999,7 @@ async fn work_not_on_main_says_why_can_be_kept_on_its_branch_and_settles_when_no
                     worktree: None,
                     merged: None,
                     off_main: None,
+                    design_qa: None,
                     kind: equipe_core::protocol::TicketKind::Code,
                     created_by: "pm".into(),
                     note: None,
@@ -1083,6 +1084,7 @@ async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
                     worktree: None,
                     merged: Some(false),
                     off_main: None,
+                    design_qa: None,
                     kind: equipe_core::protocol::TicketKind::Code,
                     created_by: "pm".into(),
                     note: None,
@@ -3394,4 +3396,159 @@ async fn the_desktop_is_only_for_members_the_person_turned_it_on_for() {
     let helper = handle.desktop(desktop("frontend")).await;
     assert!(helper.is_error && helper.text.contains("equipe desktop setup"), "{}", helper.text);
     assert!(handle.desktop(desktop("nobody")).await.text.contains("off for nobody"));
+}
+
+// ── design QA ──
+
+/// A ticket's turn that saves a screenshot, `shot.png`, in its worktree, then works on a while.
+fn screenshot_turn() -> String {
+    format!("case \"$*\" in *\"You're on T-\"*) echo 'pretend png' > shot.png; sleep 2;; esac\n{}", answering("working on it"))
+}
+
+/// Wait until `file` exists.
+async fn exists(file: &Path) {
+    for _ in 0..200 {
+        if file.exists() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("{} never appeared", file.display());
+}
+
+/// A squad of a PM, a frontend and a designer, with T-1 handed in by the
+/// frontend as changing screens: it waits in review on design QA T-2, which
+/// the designer has picked up.
+async fn screens_in_design_qa(recorded: &Path, handle: &Handle, events: &mut UnboundedReceiver<Event>, site: &Path) -> Ticket {
+    add(handle, events, 1, member(site, "pm")).await;
+    add(handle, events, 2, member(site, "frontend")).await;
+    add(handle, events, 3, member(site, "designer")).await;
+    tool(handle, "pm", "create_ticket", serde_json::json!({ "title": "Settings screen", "body": "Per the spec in design/settings.md.", "owner": "frontend" })).await;
+    let started = until(events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    exists(&ws.path.join("shot.png")).await;
+
+    // With a designer on the squad, an engineer says whether users see the change — and shows it.
+    let unsaid = tool(handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Settings built." })).await;
+    assert!(unsaid.is_error && unsaid.text.contains("changes_screens"), "{unsaid:?}");
+    let unseen = tool(handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Settings built.", "changes_screens": true })).await;
+    assert!(unseen.is_error && unseen.text.contains("screenshot"), "{unseen:?}");
+    let handed = tool(handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Settings built.", "changes_screens": true, "images": ["shot.png"] })).await;
+    assert!(!handed.is_error && handed.text.contains("designer checks"), "{handed:?}");
+
+    // In review, held for design QA: a task for the designer, who takes it.
+    let qa = until(events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
+    let changed = ticket_changed(&qa);
+    let held = changed.iter().rev().find(|t| t.id == 1).unwrap().clone();
+    assert_eq!((held.status, held.design_qa), (TicketStatus::Review, Some(2)));
+    let made = changed.iter().find(|t| t.id == 2).unwrap();
+    assert_eq!((made.kind, made.owner.as_deref(), made.created_by.as_str()), (equipe_core::protocol::TicketKind::Task, Some("designer"), "equipe"));
+    assert!(made.title.contains("T-1") && made.title.contains("Settings screen"), "{}", made.title);
+    assert!(matches!(qa.last(), Some(Event::WorkStarted { session: 3, .. })), "{qa:#?}");
+    // The person isn't told it's ready for review yet; the PM hears the designer checks it first.
+    let told = text_of_notices(&qa);
+    assert!(told.iter().any(|t| t.contains("checks its screens before your review")), "{told:#?}");
+    assert!(!told.iter().any(|t| t.contains("handed in T-1 for your review")), "{told:#?}");
+
+    let call = latest_call(recorded, |p| p.contains("This is design QA of T-1")).await;
+    let prompt = arg(&call, "-p").unwrap();
+    for part in ["Per the spec in design/settings.md.", "Settings built.", "shot.png", "finish with design_qa", "not taste"] {
+        assert!(prompt.contains(part), "{part}: {prompt}");
+    }
+    // A design QA ends with a verdict, not a hand-in.
+    let wrong = tool(handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Looks fine." })).await;
+    assert!(wrong.is_error && wrong.text.contains("design_qa"), "{wrong:?}");
+    held
+}
+
+fn text_of_notices(events: &[Event]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Notice { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn changed_screens_pass_design_qa_before_the_person_reviews_them() {
+    let site = repo();
+    let (claude, recorded) = recording_claude(&screenshot_turn());
+    let home = squad_home(&[&site]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
+
+    let passed = tool(&handle, "designer", "design_qa", serde_json::json!({ "verdict": "pass", "findings": "Matches the spec.", "images": ["shot.png"] })).await;
+    assert!(!passed.is_error, "{passed:?}");
+    let done = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Done)).await;
+    let checked = ticket_changed(&done).into_iter().rev().find(|t| t.id == 1).unwrap();
+    assert_eq!((checked.status, checked.design_qa), (TicketStatus::Review, None), "on to the person");
+    let note = checked.note.unwrap();
+    assert!(note.starts_with("Settings built.") && note.contains("Design QA by designer (T-2): passed.") && note.contains("Matches the spec."), "{note}");
+    assert_eq!(checked.images.len(), 2, "the engineer's screenshot, then the designer's: {:?}", checked.images);
+    let told = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("passed the screens of T-1"))).await;
+    assert!(!told.is_empty());
+
+    // The person accepts it as any hand-in.
+    handle.send(Command::Accept { squad: "acme".into(), ticket: 1 });
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Done)).await;
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn screens_that_need_changes_go_back_to_their_engineer() {
+    let site = repo();
+    let (claude, recorded) = recording_claude(&screenshot_turn());
+    let home = squad_home(&[&site]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    let held = screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
+
+    let sent = tool(&handle, "designer", "design_qa", serde_json::json!({ "verdict": "changes", "findings": "1. The title is 20px; the spec says 24px." })).await;
+    assert!(!sent.is_error, "{sent:?}");
+    let again = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    assert!(matches!(again.last(), Some(Event::WorkStarted { session: 2, workspace: Some(ws), .. }) if Some(&ws.branch) == held.branch.as_ref()), "{again:#?}");
+    let qa = ticket_changed(&again).into_iter().rev().find(|t| t.id == 2).unwrap();
+    assert_eq!(qa.status, TicketStatus::Done);
+    let call = latest_call(&recorded, |p| p.contains("designer checked its screens and sent it back")).await;
+    let prompt = arg(&call, "-p").unwrap();
+    assert!(prompt.contains("The title is 20px; the spec says 24px.") && prompt.contains("fresh screenshots"), "{prompt}");
+    assert!(!prompt.contains("The person sent it back"), "the designer did, not the person: {prompt}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_person_taking_a_ticket_over_drops_its_design_qa() {
+    let site = repo();
+    let (claude, recorded) = recording_claude(&screenshot_turn());
+    let home = squad_home(&[&site]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
+
+    handle.send(Command::Accept { squad: "acme".into(), ticket: 1 });
+    let done = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Done)).await;
+    let changed = ticket_changed(&done);
+    assert!(changed.iter().any(|t| t.id == 2 && t.status == TicketStatus::Cancelled), "{changed:#?}");
+    assert_eq!(changed.iter().rev().find(|t| t.id == 1).unwrap().design_qa, None);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn without_a_designer_changed_screens_go_straight_to_the_person() {
+    let site = repo();
+    let (claude, _recorded) = recording_claude(&screenshot_turn());
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&site]), false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "frontend")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Settings screen", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    // Nobody to check screens: nothing more to say, and no step in between.
+    let handed = tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Settings built." })).await;
+    assert!(!handed.is_error && handed.text.contains("the person reviews them"), "{handed:?}");
+    let review = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
+    let ticket = ticket_changed(&review).pop().unwrap();
+    assert_eq!((ticket.id, ticket.design_qa), (1, None));
+    let told = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("handed in T-1 for your review"))).await;
+    assert!(!told.is_empty());
+    handle.shutdown().await;
 }

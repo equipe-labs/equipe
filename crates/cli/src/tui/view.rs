@@ -2460,6 +2460,7 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         facts.push(who.clone());
     }
     facts.push(match t.off_main {
+        _ if t.in_design_qa() => t!("app.status_design_qa"),
         _ if !t.not_on_main() => status_word(t.status),
         Some(equipe_core::protocol::OffMain::Kept) => t!("app.accepted_kept"),
         _ => t!("app.accepted_not_on_main"),
@@ -3002,6 +3003,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
+            design_qa: None,
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: None,

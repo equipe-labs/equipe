@@ -59,6 +59,7 @@ macro_rules! say {
 }
 
 mod decide;
+mod design_qa;
 mod team;
 mod tickets;
 
@@ -406,6 +407,11 @@ struct Work {
     /// Set by `block_on_person`: what the person has to do. The ticket waits
     /// for them when the turn ends.
     waiting: Option<String>,
+    /// Set by `submit_for_review` on a code ticket that changes what users
+    /// see, in a squad with a designer: it goes to design QA first.
+    screens: bool,
+    /// Set by `design_qa` on a design QA ticket: the designer's word.
+    verdict: Option<design_qa::Verdict>,
 }
 
 /// One of the PM's conversations at its desk, while another is the current one.
@@ -605,6 +611,9 @@ enum WorkEnd {
     /// The person gave the ticket to someone else (`to`, a member or a role):
     /// it goes back on the board for them, its work so far on its branch.
     Reassigned { to: String },
+    /// A designer finished a design QA ticket (`design_qa`): it is done, its
+    /// files in the squad's folder, and the ticket it checked moves on.
+    Checked,
 }
 
 struct Runtime {
@@ -2897,7 +2906,11 @@ for one project goes to it as tickets for its owners, with that project — and 
         ticket.assignee = Some(name.clone());
         ticket.branch = sandbox.as_ref().map(|s| s.branch.clone()).or(ticket.branch);
         ticket.worktree = sandbox.as_ref().map(|s| s.path.clone());
-        let reopened = ticket.note.as_ref().filter(|n| n.starts_with("Reopened") || n.starts_with("Resumed")).cloned();
+        let reopened = ticket
+            .note
+            .as_ref()
+            .filter(|n| n.starts_with("Reopened") || n.starts_with("Resumed") || n.starts_with("Design QA by "))
+            .cloned();
         if let Some(journal) = self.journal(&squad) {
             let _ = journal.save_ticket(&ticket);
             let _ = journal.set_ticket_work(
@@ -2922,6 +2935,8 @@ for one project goes to it as tickets for its owners, with that project — and 
                 handed_in: None,
                 shown: Vec::new(),
                 waiting: None,
+                screens: false,
+                verdict: None,
             });
         }
         self.publish(Event::TicketChanged { squad: squad.clone(), ticket: ticket.clone() });
@@ -2937,6 +2952,9 @@ for one project goes to it as tickets for its owners, with that project — and 
         self.brief_pm(&squad, format!("{name} picked up T-{ticket_id} ({}).", ticket.title), None);
         let language = self.journal(&squad).and_then(Journal::language);
         let mut prompt = work_prompt(&ticket, &project, sandbox.as_ref(), reopened.as_deref(), board_tools, language.as_deref());
+        if let Some(checked) = self.checked_by(&squad, ticket_id) {
+            prompt.push_str(&design_qa::qa_prompt(ticket_id, &checked));
+        }
         if sandbox.is_some() && !after.is_empty() && fresh {
             let ids: Vec<&str> = after.iter().map(|(what, _)| what.as_str()).collect();
             prompt.push_str(&format!(
@@ -2972,6 +2990,8 @@ for one project goes to it as tickets for its owners, with that project — and 
         let Some(work) = session.work.take() else {
             return;
         };
+        // A design QA handed in is finished by its verdict, not the person's review.
+        let how = if how == WorkEnd::HandedIn && work.verdict.is_some() { WorkEnd::Checked } else { how };
         let (Some(squad), Some(name)) = (session.squad.clone(), session.name().map(str::to_owned)) else {
             return;
         };
@@ -2992,7 +3012,10 @@ for one project goes to it as tickets for its owners, with that project — and 
             }
             if matches!(how, WorkEnd::HandedIn | WorkEnd::Waiting) {
                 kept_worktree = Some(sandbox.path.clone());
-            } else if how == WorkEnd::Accepted && ticket.kind.in_home() {
+            } else if matches!(how, WorkEnd::Accepted | WorkEnd::Checked) && ticket.kind.in_home() {
+                if how == WorkEnd::Checked {
+                    ticket.images = work.shown.clone();
+                }
                 let result = self.land_in_home(&squad, &mut ticket, sandbox);
                 if result.is_err() {
                     kept_worktree = Some(sandbox.path.clone());
@@ -3015,16 +3038,45 @@ for one project goes to it as tickets for its owners, with that project — and 
             }
             _ => work.shown.clone(),
         };
-        if !matches!(how, WorkEnd::HandedIn | WorkEnd::Accepted) {
+        if !matches!(how, WorkEnd::HandedIn | WorkEnd::Accepted | WorkEnd::Checked) {
             ticket.images.clear();
         }
+        // What the hand-in's news is about: the ticket, or the one a design QA checked.
+        let (mut about, mut to): (Option<(TicketId, String)>, Option<String>) = (None, None);
         // What the PM is told, in English, and what the person reads (`news`).
         let (by, event, line, news) = match how {
             WorkEnd::HandedIn => {
                 ticket.status = TicketStatus::Review;
                 ticket.note = handed_in;
                 ticket.images = images;
-                (name.as_str(), "handed in", format!("{name} handed in T-{} for your review", ticket.id), "news.handed_in")
+                match work.screens.then(|| self.ask_design_qa(&squad, &mut ticket, &name)).flatten() {
+                    Some(qa) => {
+                        to = Some(design_qa::DESIGNER.to_owned());
+                        let line = format!("{name} handed in T-{}; the designer checks its screens on T-{qa} before the person reviews it", ticket.id);
+                        (name.as_str(), "handed in", line, "news.design_qa_asked")
+                    }
+                    None => (name.as_str(), "handed in", format!("{name} handed in T-{} for your review", ticket.id), "news.handed_in"),
+                }
+            }
+            WorkEnd::Checked => {
+                let verdict = work.verdict.clone().unwrap_or(design_qa::Verdict { passed: true, findings: String::new() });
+                ticket.note = summary.clone();
+                // Its files are in the squad's folder: done; when they couldn't go in, the person sees to it.
+                ticket.status = if matches!(landed, Some(Err(_))) { TicketStatus::Review } else { TicketStatus::Done };
+                if ticket.status == TicketStatus::Done {
+                    ticket.merged = merged_state(&ticket);
+                }
+                let checked = self.design_qa_checked(&squad, &ticket, &name, &verdict);
+                let (id, engineer) = checked.as_ref().map_or((ticket.id, String::new()), |(t, e)| (t.id, e.clone()));
+                if let Some((checked, engineer)) = checked {
+                    about = Some((checked.id, checked.title));
+                    to = Some(engineer);
+                }
+                if verdict.passed {
+                    (name.as_str(), "design QA passed", format!("{name} passed the design QA of T-{id}: it is ready for the person's review"), "news.design_qa_passed")
+                } else {
+                    (name.as_str(), "design QA: changes", format!("{name}'s design QA sent T-{id} back to {engineer}: its screens need changes"), "news.design_qa_changes")
+                }
             }
             WorkEnd::Waiting => {
                 ticket.status = TicketStatus::Waiting;
@@ -3081,8 +3133,9 @@ for one project goes to it as tickets for its owners, with that project — and 
             let _ = journal.ticket_event(ticket.id, &by, event, summary.as_deref().unwrap_or(""));
         }
         let ticket_id = ticket.id;
-        let to = ticket.owner.clone().unwrap_or_default();
-        let shown = self.said(news, &[("id", ticket.id.to_string()), ("name", name.clone()), ("title", ticket.title.clone()), ("to", to)]);
+        let (about_id, about_title) = about.unwrap_or_else(|| (ticket.id, ticket.title.clone()));
+        let to = to.or_else(|| ticket.owner.clone()).unwrap_or_default();
+        let shown = self.said(news, &[("id", about_id.to_string()), ("name", name.clone()), ("title", about_title), ("to", to)]);
         self.publish(Event::TicketChanged { squad: squad.clone(), ticket });
         self.publish(Event::WorkEnded { session: id, ticket: ticket_id });
         // Back at its desk: the thread it was in there.
@@ -3246,6 +3299,8 @@ for one project goes to it as tickets for its owners, with that project — and 
 
     /// The person accepts a ticket: it is done, and its branch stays to merge.
     async fn accept(&mut self, squad: &str, ticket: TicketId) {
+        // The person's word comes before a designer's.
+        self.drop_design_qa(squad, ticket);
         let Some(found) = self.find_ticket(squad, ticket) else {
             return;
         };
@@ -3264,6 +3319,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             }
             None => self.close_ticket(squad, found, TicketStatus::Done),
         }
+        self.design_qa_closed(squad, ticket);
         // Work already in main stops asking to be merged as soon as the sweep says so.
         self.settle_all_merged();
         self.dispatch(squad).await;
@@ -3446,6 +3502,7 @@ for one project goes to it as tickets for its owners, with that project — and 
     /// The person sends work back: the ticket goes to its member again, on the
     /// same branch and conversation, with what to change.
     async fn reopen(&mut self, squad: &str, ticket: TicketId, note: String) {
+        self.drop_design_qa(squad, ticket);
         let Some(mut found) = self.find_ticket(squad, ticket) else {
             return;
         };
@@ -3516,6 +3573,7 @@ for one project goes to it as tickets for its owners, with that project — and 
     }
 
     async fn cancel(&mut self, squad: &str, ticket: TicketId) {
+        self.drop_design_qa(squad, ticket);
         let Some(found) = self.find_ticket(squad, ticket) else {
             return;
         };
@@ -3530,6 +3588,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             }
             None => self.close_ticket(squad, found, TicketStatus::Cancelled),
         }
+        self.design_qa_closed(squad, ticket);
         self.drop_questions(squad, |set| set.ticket == Some(ticket));
         self.dispatch(squad).await;
     }
@@ -4339,6 +4398,7 @@ there, end your turn, and carry on when they say they're done."
                     worktree: None,
                     merged: None,
                     off_main: None,
+                    design_qa: None,
                     created_by: member.clone(),
                     note: None,
                     asks: vec![],
@@ -4447,16 +4507,26 @@ there, end your turn, and carry on when they say they're done."
                 let (cwd, roots) = self.picture_places(&squad, id);
                 let shown = crate::visuals::resolve_all(&board::arg_strs(&args, "images"), &cwd, &roots, crate::visuals::HAND_IN)
                     .map_err(|e| format!("{e}. Save the pictures in your worktree and give their paths, then hand in again."))?;
+                let screens = self.screens_handed_in(&squad, id, &args, shown.len())?;
                 let session = self.sessions.get_mut(&id).ok_or("You're not on the squad.")?;
                 let work = session.work.as_mut().ok_or("You're not on a ticket — there is nothing to hand in.")?;
                 work.handed_in = Some(summary);
                 work.shown = shown;
                 work.waiting = None;
-                Ok(format!(
-                    "Handed in T-{}. Your changes are committed when this turn ends and the person reviews them. \
+                work.screens = screens;
+                Ok(if screens {
+                    format!(
+                        "Handed in T-{}. Your changes are committed when this turn ends; the squad's designer checks \
+the screens, then the person reviews them. End your turn now with a short summary.",
+                        work.ticket
+                    )
+                } else {
+                    format!(
+                        "Handed in T-{}. Your changes are committed when this turn ends and the person reviews them. \
 End your turn now with a short summary.",
-                    work.ticket
-                ))
+                        work.ticket
+                    )
+                })
             }
             board::BLOCK_ON_PERSON => {
                 let asked = board::arg_strs(&args, "needs");
@@ -4487,6 +4557,7 @@ it back there once they have done it.{again} End your turn now with a short line
                 ))
             }
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
+            board::DESIGN_QA => self.finish_design_qa(&squad, id, &args),
             crate::team::PROPOSE_TEAM_CHANGE => self.propose_team_change(&squad, &member, id, &args),
             board::ESTIMATE => {
                 let minutes = |key: &str| args.get(key).and_then(Value::as_f64).map(|m| m.max(0.0));
@@ -5023,6 +5094,8 @@ fn restore_work(journal: &Journal, ticket: &Ticket, projects: &[PathBuf], home: 
         handed_in: None,
         shown: Vec::new(),
         waiting: None,
+        screens: false,
+        verdict: None,
     })
 }
 
@@ -5125,6 +5198,11 @@ check what is already done in your worktree first.\n"
             out.push_str(crate::roles::ANSWERS_GUIDE);
             out.push('\n');
         }
+    } else if let Some(note) = reopened.filter(|n| n.starts_with("Design QA by ")) {
+        out.push_str(&format!(
+            "The squad's designer checked its screens and sent it back. {note}\nFix each difference it lists in your \
+worktree, then hand in again with fresh screenshots of the screens you changed.\n"
+        ));
     } else if let Some(note) = reopened {
         out.push_str(&format!(
             "The person sent it back. {note}\nWhat they asked for says something about how they want work done: save that \
