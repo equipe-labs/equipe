@@ -1167,6 +1167,7 @@ fn main() {
     gpui_kit::application().with_http_client(http).with_assets(icons::AppAssets).run(|cx| {
         gpui_kit::init(cx);
         tips::init(cx);
+        render::code::warm();
         cx.bind_keys(window_bindings());
         app_menu(cx);
         views::composer::bind_keys(cx);

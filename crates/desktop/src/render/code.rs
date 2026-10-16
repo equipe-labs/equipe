@@ -158,6 +158,39 @@ pub fn highlighter(dark: bool) -> Arc<Highlighter> {
     .clone()
 }
 
+/// The languages a highlighter is made for ahead, off the window's thread.
+const WARM: [&str; 7] = ["bash", "rust", "typescript", "tsx", "javascript", "python", "json"];
+
+/// Highlighters made ahead, not yet taken.
+static MADE: std::sync::Mutex<Vec<(&str, SyntaxHighlighter)>> = std::sync::Mutex::new(Vec::new());
+
+/// Make the highlighters for the languages members write most on a thread of
+/// their own, a moment after launch: making one compiles its grammar's
+/// queries — tens of milliseconds (tsx the most) that, on the window's
+/// thread, froze the first frame a block of that language came into sight
+/// in (`docs/PERF-2026-10.md`).
+pub fn warm() {
+    let _ = std::thread::Builder::new().name("equipe-highlighters".into()).spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        for lang in WARM {
+            if LanguageRegistry::singleton().language(lang).is_none() {
+                continue;
+            }
+            let made = SyntaxHighlighter::new(lang);
+            if let Ok(mut all) = MADE.lock() {
+                all.push((lang, made));
+            }
+        }
+    });
+}
+
+/// `lang`'s highlighter, if one was made ahead.
+fn made(lang: &str) -> Option<SyntaxHighlighter> {
+    let mut all = MADE.lock().ok()?;
+    let at = all.iter().position(|(l, _)| *l == lang)?;
+    Some(all.swap_remove(at).1)
+}
+
 fn highlight(lang: &'static str, code: &str, palette: &SyntaxPalette) -> Vec<(Range<usize>, HighlightStyle)> {
     thread_local! {
         static HIGHLIGHTERS: std::cell::RefCell<HashMap<&'static str, SyntaxHighlighter>> = std::cell::RefCell::new(HashMap::new());
@@ -167,7 +200,7 @@ fn highlight(lang: &'static str, code: &str, palette: &SyntaxPalette) -> Vec<(Ra
     }
     HIGHLIGHTERS.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let highlighter = cache.entry(lang).or_insert_with(|| SyntaxHighlighter::new(lang));
+        let highlighter = cache.entry(lang).or_insert_with(|| made(lang).unwrap_or_else(|| SyntaxHighlighter::new(lang)));
         let rope = ropey::Rope::from_str(code);
         highlighter.update(None, &rope, None);
         highlighter.styles(&(0..code.len()), palette)
