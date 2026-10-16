@@ -131,6 +131,10 @@ pub fn replay() -> Vec<Event> {
         // The PM's was handed over, saying what for; the daemon tells it so to every screen.
         if lane == PM {
             out.push(Event::BrowserControl { squad: Some(SQUAD.into()), lane: lane.clone(), by: Some("person".into()), why: Some(PM_WHY.into()), check: None });
+            // `FAKE_WANTS=1`: the PM tried closing the tab the person is on.
+            if std::env::var_os("FAKE_WANTS").is_some() {
+                out.push(Event::BrowserWants { squad: Some(SQUAD.into()), lane: lane.clone(), page: FIRST + 4, action: "close".into() });
+            }
             continue;
         }
         let check = s.lanes.iter().find(|l| l.id == lane).and_then(|l| l.pages.iter().find_map(|p| p.check));

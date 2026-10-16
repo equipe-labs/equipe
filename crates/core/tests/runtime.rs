@@ -2789,14 +2789,21 @@ async fn a_member_hands_its_browser_to_the_panel_of_a_screen_on_another_mac_and_
     assert!(sent.contains("appstoreconnect.apple.com") && sent.contains("\"by\":\"person\""), "{sent}");
     assert!(!sent.lines().any(|l| l.contains("\"shown\":true")), "no window on this Mac: {sent}");
 
-    // The person presses "done — give it back": its turn starts again, told so.
+    // The person presses "done — give it back": its turn starts again, told so —
+    // a notice in the conversation, not a message of the person's.
     let before = calls(&recorded).len();
     handle.send(Command::BrowserControl { lane: "acme/pm".into(), take: false });
-    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::UserMessage { .. })), "never the person's words: {seen:?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text } if text.contains("gave the browser back"))), "{seen:?}");
     let all = calls(&recorded);
     assert_eq!(all.len(), before + 1, "one turn, without the person typing a word");
     let prompt = arg(all.last().unwrap(), "-p").unwrap();
     assert!(prompt.contains("handed it back") && prompt.contains(why), "{prompt}");
+
+    // The person closes a tab of pm's: pm's conversation says so.
+    handle.send(Command::BrowserCloseTab { page: 9_000_001 });
+    until(&mut events, |e| matches!(e, Event::Notice { session: 1, text } if text.contains("closed this browser tab") && text.contains("appstoreconnect"))).await;
 
     // That screen gone and none other attached: the window on this Mac, as before.
     handle.browser_hub().await.unwrap().screen(false);

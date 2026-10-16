@@ -910,8 +910,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     && browser::handover()
                                     && lane == browser::PM
                                 {
-                                    let text = format!("The person finished in your browser (you asked: {}) and handed it back to you.", browser::PM_WHY);
-                                    let _ = events.send(Event::UserMessage { session: 1, text });
+                                    let _ = events.send(Event::Notice { session: 1, text: "🖐 브라우저를 돌려줬습니다.".into() });
                                     turns.lock().await.insert(1, tokio::spawn(turn(1, events.clone(), seconds)));
                                 }
                                 if browser::on_command(&other, &events) {

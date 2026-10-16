@@ -872,6 +872,7 @@ impl Runtime {
             }
             Command::BrowserCloseTab { page } => {
                 self.hub.op(&json!({ "op": "closetab", "page": page }));
+                self.closed_by_person(page).await;
             }
             Command::BrowserControl { lane, take } => {
                 self.hub.op(&json!({ "op": "control", "lane": lane, "by": take.then_some("person") }));
@@ -3591,7 +3592,8 @@ there, end your turn, and carry on when they say they're done."
                 // and its turn ended: it carries on now.
                 if checked.is_some() && asked.is_none() {
                     if refused && !working {
-                        self.submit(session, "The person handled the page that needed them in your browser (a human check or a sign-in) and handed it back. Carry on where you were.".into()).await;
+                        let text = say!(self, "notice.browser_given_back");
+                        self.carry_on(session, text, "[equipe: the person handled the page that needed them in your browser (a human check or a sign-in) and handed it back. Carry on where you were.]".into()).await;
                     } else if working {
                         let text = say!(self, "notice.browser_given_back");
                         self.publish(Event::Notice { session, text });
@@ -3610,7 +3612,8 @@ there, end your turn, and carry on when they say they're done."
                     // Done with what it asked of them: it carries on.
                     (false, true) => {
                         let why = asked.unwrap_or_default();
-                        self.submit(session, handed_back(&why)).await;
+                        let text = say!(self, "notice.browser_given_back");
+                        self.carry_on(session, text, handed_back(&why)).await;
                     }
                     (false, false) if working => {
                         let text = say!(self, "notice.browser_given_back");
@@ -3624,6 +3627,10 @@ there, end your turn, and carry on when they say they're done."
                 self.publish(Event::BrowserDialog { squad, lane, page, kind, message, default });
             }
             HostEvent::DialogClosed { page } => self.publish(Event::BrowserDialogClosed { page }),
+            HostEvent::Wants { lane, page, action } => {
+                let (squad, _) = self.lane_session(&lane);
+                self.publish(Event::BrowserWants { squad, lane, page, action });
+            }
             HostEvent::Exited => {
                 // Its tabs went with it.
                 for (lane, tabs) in std::mem::take(&mut self.tabs) {
@@ -3650,7 +3657,7 @@ there, end your turn, and carry on when they say they're done."
         let let_go = |page: u64, url: &str| self.let_go.contains(&(lane.to_owned(), page, url.to_owned()));
         match browser::check_step(pages, agent, self.checking.contains_key(lane), self.held.contains_key(lane), let_go) {
             browser::CheckStep::Pause { page, url, check } => {
-                self.hub.op(&json!({ "op": "control", "lane": lane, "by": "person", "why": "check" }));
+                self.hub.op(&json!({ "op": "control", "lane": lane, "by": "person", "why": "check", "page": page }));
                 if let Some(session) = session {
                     let site = browser::site_of(&url).to_owned();
                     let text = say!(self, "notice.browser_check", site = site);
@@ -3663,6 +3670,51 @@ there, end your turn, and carry on when they say they're done."
             }
             browser::CheckStep::Nothing => {}
         }
+    }
+
+    /// The person closed a tab of a member's browser: its member is told —
+    /// at its next step if it is at work, else in its conversation.
+    async fn closed_by_person(&mut self, page: u64) {
+        let found = self.tabs.iter().find_map(|(lane, tabs)| match tabs {
+            Event::BrowserTabs { pages, .. } if !lane.is_empty() => pages.iter().find(|p| p.id == page).map(|p| (lane.clone(), p.url.clone())),
+            _ => None,
+        });
+        let Some((lane, url)) = found else { return };
+        let (_, Some(session)) = self.lane_session(&lane) else { return };
+        let text = say!(self, "notice.browser_tab_closed", url = url);
+        if self.sessions.get(&session).is_some_and(Session::is_working) {
+            let prompt = format!("[equipe: the person closed your browser tab {url}. Don't open it again unless they ask; carry on without it.]");
+            self.carry_on(session, text, prompt).await;
+        } else {
+            self.publish(Event::Notice { session, text });
+        }
+    }
+
+    /// equipe tells a member something on the person's behalf — their browser
+    /// came back, a tab of it was closed: a notice in the conversation
+    /// (`notice`, in the person's language), never a message of theirs, and
+    /// `prompt` to the member — read at its next step if it is at work, else
+    /// starting a turn of its own.
+    async fn carry_on(&mut self, id: SessionId, notice: String, prompt: String) {
+        self.publish(Event::Notice { session: id, text: notice });
+        let Some(session) = self.sessions.get(&id) else { return };
+        if session.is_working() {
+            if let Some(steer) = session.steer.clone() {
+                let _ = steer.send(prompt);
+            }
+            return;
+        }
+        if !self.ensure_codex(id).await {
+            return;
+        }
+        let Some(session) = self.sessions.get_mut(&id) else { return };
+        // What it missed travels with it, as with the person's own messages.
+        let prompt = match std::mem::take(&mut session.briefing) {
+            briefing if briefing.is_empty() => prompt,
+            briefing => format!("[equipe: since your last turn —\n{}]\n\n{prompt}", briefing.iter().map(|line| format!("- {line}")).collect::<Vec<_>>().join("\n")),
+        };
+        self.save_waiting(id);
+        self.start_turn(id, prompt);
     }
 
     /// Whether `page` of `lane` waits for a person, as last told.
@@ -4631,8 +4683,8 @@ fn handed_back(why: &str) -> String {
     let why = why.trim();
     let what = if why.is_empty() { String::new() } else { format!(" (you asked: {why})") };
     format!(
-        "The person finished in your browser{what} and handed it back to you. Look at the page as it is now and carry \
-on where you left off."
+        "[equipe: the person finished in your browser{what} and handed it back to you. Look at the page as it is now \
+and carry on where you left off.]"
     )
 }
 

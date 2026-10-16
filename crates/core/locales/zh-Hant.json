@@ -135,6 +135,7 @@
   "notice.browser_given_back": "🖐 你交還了瀏覽器。",
   "notice.browser_in_panel": "🖥 {name} 的瀏覽器在瀏覽器面板中開啟：{why}",
   "notice.browser_on_screen": "🖥 {name} 的瀏覽器出現在這台 Mac 的螢幕上：{why}",
+  "notice.browser_tab_closed": "🖐 已關閉這個瀏覽器分頁：{url}",
   "notice.browser_taken": "🖐 你接管了這個瀏覽器；它的瀏覽器工具會等你。",
   "notice.declined": "✗ 你拒絕了：{action}",
   "notice.declined_why": "✗ {why} 已拒絕：{action}",

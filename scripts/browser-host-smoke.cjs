@@ -17,7 +17,7 @@ const { spawn } = require('node:child_process');
 const assets = path.join(__dirname, '..', 'crates', 'core', 'assets');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'equipe-host-smoke-'));
 const script = path.join(dir, 'browser-host.cjs');
-fs.writeFileSync(script, fs.readFileSync(path.join(assets, 'browser-host.cjs'), 'utf8').replace('__DRIVING__', fs.readFileSync(path.join(assets, 'driving.js'), 'utf8')));
+fs.writeFileSync(script, fs.readFileSync(path.join(assets, 'browser-host.cjs'), 'utf8').replace('__DRIVING__', fs.readFileSync(path.join(assets, 'driving.js'), 'utf8')).replace('__GATE__', fs.readFileSync(path.join(assets, 'gate.js'), 'utf8')));
 fs.writeFileSync(path.join(dir, 'state.json'), '{"cookies":[],"origins":[]}');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -89,6 +89,25 @@ const freePort = () => new Promise((resolve) => {
   const port = await freePort();
   const lane = 'acme/frontend';
   op({ op: 'lane', id: lane, member: 'frontend', color: '120, 190, 240', port, output: path.join(dir, 'out'), shown: false });
+  // One turn of a member: calls on one session, which keeps the tab it is on.
+  const turn = async () => {
+    const url = `http://localhost:${port}/mcp`;
+    const post = async (body, session) => {
+      const headers = { 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+      if (session) headers['mcp-session-id'] = session;
+      return fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+    };
+    const init = await post({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'smoke', version: '1' } } });
+    const session = init.headers.get('mcp-session-id');
+    await init.text();
+    await (await post({ jsonrpc: '2.0', method: 'notifications/initialized' }, session)).text();
+    let n = 1;
+    return async (tool, args) => {
+      const raw = await (await post({ jsonrpc: '2.0', id: n++, method: 'tools/call', params: { name: tool, arguments: args } }, session)).text();
+      const line = raw.split('\n').find((l) => l.startsWith('data:'));
+      return JSON.parse(line ? line.slice(5) : raw).result;
+    };
+  };
   const mcp = async (tool, args) => {
     const url = `http://localhost:${port}/mcp`;
     const post = async (body, session) => {
@@ -139,7 +158,22 @@ const freePort = () => new Promise((resolve) => {
 
   // The member waits meanwhile.
   const busy = await mcp('browser_snapshot', {});
-  check(busy.isError && /person is using this browser/.test(busy.content[0].text), 'a member\'s tool call waits while the person has the page');
+  check(busy.isError && /person is using this tab/.test(busy.content[0].text), 'a member\'s tool call waits while the person has the page');
+  // Only that tab is theirs: another tab its member opens, uses and closes.
+  const call = await turn();
+  await call('browser_tabs', { action: 'list' });
+  const opened = await call('browser_tabs', { action: 'new' });
+  check(!opened.isError, 'meanwhile its member opens another tab');
+  const there = await call('browser_navigate', { url: `${base}/other` });
+  check(!there.isError, 'and works there');
+  if (there.isError) console.log(JSON.stringify(there).slice(0, 300));
+  const shut = await call('browser_tabs', { action: 'close', index: 0 });
+  check(shut.isError && /using this tab/.test(shut.content[0].text), 'but can\'t close the tab the person is on');
+  check(!!(await until('the person asked about closing', () => messages.find((m) => m.type === 'wants' && m.lane === lane && m.page === page && m.action === 'close'))), 'the person is asked whether to let it close');
+  const closedOwn = await call('browser_tabs', { action: 'close', index: 1 });
+  check(!closedOwn.isError, 'its own other tab it closes');
+  if (closedOwn.isError) console.log(JSON.stringify(closedOwn).slice(0, 300));
+  await until('the other tab closed', () => !lastTabs(lane)?.pages.some((p) => p.url.endsWith('/other')));
   op({ op: 'control', lane, by: null });
   await until('control given back', () => messages.find((m) => m.type === 'control' && m.lane === lane && m.by === null));
   const typed = await mcp('browser_evaluate', { function: '() => document.getElementById("q").value' });
@@ -184,6 +218,9 @@ const freePort = () => new Promise((resolve) => {
   await until('held for the check', () => messages.find((m) => m.type === 'control' && m.lane === lane && m.by === 'person'));
   const waiting = await mcp('browser_snapshot', {});
   check(waiting.isError && /waits for a person/.test(waiting.content[0].text), 'a member\'s tool call is told a page waits for the person');
+  // Nobody's hand on it: its member may still leave the page it no longer needs.
+  const away = await mcp('browser_navigate', { url: `${base}/wall#again` });
+  check(!away.isError, 'a hold from detection alone never stops its member going elsewhere in the tab');
   // Passed by itself (no hand on it): back to the member, which is told it was turned away.
   messages.length = 0;
   op({ op: 'control', lane, by: null, ifUntouched: true });

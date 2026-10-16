@@ -328,6 +328,18 @@ impl Handovers {
     }
 }
 
+/// Whether a wheel over the page goes to it: always on the person's own tab;
+/// on a member's only once it is in their hands — a wheel never takes it.
+pub fn wheel_goes(members: bool, held: bool) -> bool {
+    !members || held
+}
+
+/// Whether closing a tab asks first: a member's, while it is at work on it.
+/// The person's own tabs, and an idle member's, close at once.
+pub fn close_asks(members: bool, working: bool) -> bool {
+    members && working
+}
+
 // ── the page's size ──
 
 /// The box the page shows in, as the stream is asked for it: CSS pixels and
@@ -531,6 +543,15 @@ mod tests {
         assert!(matches!(panel.on_control("acme/backend", true, None, Some(HumanCheck::SignIn), Some(4)), Some(Open::Now(_, 4))));
         assert_eq!(panel.on_control("acme/frontend", true, None, None, Some(5)), None);
         assert_eq!(panel.on_control("", true, Some("x"), None, Some(1)), None, "the person's own tabs");
+    }
+
+    #[test]
+    fn a_wheel_never_takes_a_members_page_and_closing_one_at_work_asks_first() {
+        assert!(wheel_goes(false, false), "the person's own tab scrolls");
+        assert!(!wheel_goes(true, false), "a member's it drives: no — a click takes it");
+        assert!(wheel_goes(true, true), "in their hands: it scrolls");
+        assert!(close_asks(true, true), "a member at work: asked once");
+        assert!(!close_asks(true, false) && !close_asks(false, true), "an idle member's, or the person's own: at once");
     }
 
     #[test]

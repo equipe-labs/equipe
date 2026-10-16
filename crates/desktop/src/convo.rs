@@ -672,6 +672,9 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
             blocks.extend(crate::activity::groups(std::mem::take(&mut run)).into_iter().map(Block::Steps));
         }
         match entry {
+            // What equipe once told a member as if the person had said it (its
+            // browser handed back): a line of equipe's, never their bubble.
+            Entry::User { text } if crate::activity::handed_back_line(text) => blocks.push(Block::Note(t!("chat.browser_given_back").to_owned())),
             Entry::User { text } => blocks.push(Block::User(text.clone())),
             Entry::Reply { text } => {
                 blocks.push(Block::Reply { text: text.clone(), first: !replied, live: false, worked: None });
@@ -940,6 +943,23 @@ mod tests {
         assert!(matches!(&blocks[1], Block::News(_)));
         assert_eq!(blocks[2], Block::HandOver { name: "pm".into(), why: "2단계 인증 코드를 입력해 주세요".into(), live: true });
         assert_eq!(blocks[2].searchable().as_deref(), Some("pm\n2단계 인증 코드를 입력해 주세요"));
+    }
+
+    #[test]
+    fn a_browser_handed_back_long_ago_reads_as_equipes_line_not_the_persons_bubble() {
+        let mut c = convo(true);
+        feed(
+            &mut c,
+            &[
+                Event::UserMessage { session: 1, text: "The person finished in the browser.".into() },
+                Event::UserMessage { session: 1, text: "The person handled the page that needed them in your browser (a human check or a sign-in) and handed it back. Carry on where you were.".into() },
+                Event::UserMessage { session: 1, text: "The person finished the report".into() },
+            ],
+        );
+        let blocks = c.blocks();
+        assert_eq!(blocks[0], Block::Note(t!("chat.browser_given_back").to_owned()));
+        assert_eq!(blocks[1], Block::Note(t!("chat.browser_given_back").to_owned()));
+        assert_eq!(blocks[2], Block::User("The person finished the report".into()), "words of the person's own stay theirs");
     }
 
     #[test]

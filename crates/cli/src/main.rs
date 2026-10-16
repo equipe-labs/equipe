@@ -1209,6 +1209,7 @@ impl App {
                 Event::SubagentStep { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::Estimated { .. } | Event::MemoWithdrawn { .. } => {}
                 Event::ToolResult { .. } | Event::Thinking { .. } => {}
                 Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. }
+                | Event::BrowserWants { .. }
                 | Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. } => {}
                 Event::TurnEnded { outcome, usage, .. } => {
                     printer.end(outcome, usage);

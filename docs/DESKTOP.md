@@ -352,6 +352,24 @@ signed in once, so the person sees exactly what the members see.
   넘겼어요" with 브라우저 열기 / 돌려주기 on the latest (old lines, the English
   "comes up on this Mac's screen" included, read as rows too). A phone away
   gets a push saying to do it in the app on the Mac.
+- **What a hold stops** (`crates/core/assets/gate.js`, tested in
+  `browser::tests` through Node). A hold equipe made for a page that waits for
+  a person, nobody's hand on it yet, never stops its member closing that tab,
+  going elsewhere in it, or using its other tabs — the daemon then lets the
+  hold go (banner and 나에게 with it). Only the person's own hand (직접 하기, a
+  click or a key on the page — moves and the wheel never take it) makes a tab
+  theirs, and only that tab: the member's other tabs, and closing them, stay
+  its own. A refusal says why and since when ("The person is using this tab
+  since 12:47 — ask them in words, or wait"); a refused close asks the person
+  in the panel ("pm이(가) 이 탭을 닫으려 해요 · 계속 쓰기 / 닫기").
+- **Closing.** Every tab has a ✕ (on hover; always on the one picked), ⌘W
+  closes the picked tab, a right-click offers 탭 닫기 / 다른 탭 닫기 / Chrome에서
+  열기, and the check banner and bar have 탭 닫기 / 확인 그만하고 탭 닫기. A
+  member's tab while it is at work asks once ("pm이(가) 쓰는 중이에요.
+  닫을까요?"); its member is told the person closed it. Taking a browser and
+  giving it back each say so for a moment ("브라우저를 직접 쓰고 있어요 — pm은(는)
+  기다려요 …", "pm에게 돌려줬어요"); what equipe tells the member then is a
+  notice in the conversation, never a message in the person's name.
 - JS dialogs show as a card over the page; what a picture can't do (passkeys,
   permission prompts, a `<select>`'s list, file choosers) goes through
   Chrome에서 열기.
@@ -391,7 +409,7 @@ signed in once, so the person sees exactly what the members see.
   so in place of the picture.
 
 Snapshot steps: `browser`, `bopen:<url>`, `bpick:<n>`, `btake`, `bgive`,
-`breveal:<page>`, `bclick:<fx>,<fy>`, `bkeys:<text>`, `bime:ㅎ|하|한`. The fake
+`breveal:<page>`, `bclick:<fx>,<fy>`, `bkeys:<text>`, `bime:ㅎ|하|한`, `bclose:<n>`, `bwheel`. The fake
 daemon has a browser with `FAKE_BROWSER=1` (frontend on an App Store
 Connect–like page, backend paused at a "Just a moment…" wall that a click
 passes, a tab of the person's own; `FAKE_BROWSER=empty` for none;

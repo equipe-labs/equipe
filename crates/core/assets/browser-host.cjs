@@ -57,6 +57,8 @@ const [profile, STATE] = process.argv.slice(2);
 
 __DRIVING__
 
+__GATE__
+
 // Google's sign-in is this browser's own; the sign-ins file never carries it.
 const own = (domain) => /(^|\.)(google\.[a-z]{2,3}(\.[a-z]{2})?|youtube\.com|googleusercontent\.com)$/.test(String(domain).replace(/^\./, ''));
 
@@ -65,10 +67,6 @@ const PLACEHOLDER = 'data:text/html;charset=utf-8,' + encodeURIComponent(
   '<!doctype html><title>equipe</title><meta name="color-scheme" content="light dark">'
   + '<body style="font: 14px -apple-system, system-ui; display: grid; place-items: center; height: 90vh; color: #888">'
   + 'equipe — members’ tabs are behind this one</body>');
-const BUSY = 'The person is using this browser; wait or ask them.';
-const BUSY_CHECK = 'A page in this browser waits for a person (a "verify you are human" check, a sign-in or a code from their phone), '
-  + 'and the person was asked to do it. Don\'t try to get around it: stop using the browser and end your turn, saying you wait for them. '
-  + 'You\'ll be told when they hand the browser back.';
 // A person who stops touching a member's page hands it back after this long.
 const IDLE_CONTROL_MS = 120000;
 
@@ -251,7 +249,7 @@ const address = (text) => {
   // on the person's screen: in the panel, the panel says who drives it.
   const onScreen = (page) => {
     const lane = lanes.get(owner.get(page));
-    return !!lane && (lane.shown || personShown === page);
+    return !!lane && (lane.shown || personShown === page) && lane.control !== 'person';
   };
   await context.exposeBinding('__equipeWho', ({ page }) => {
     const lane = lanes.get(owner.get(page));
@@ -434,13 +432,34 @@ const address = (text) => {
     });
   };
 
+  // The tabs a member's tool call acts on, by page id: a tab closed by its
+  // index, every tab for closing the browser, none for listing or opening one,
+  // else the tab it is on.
+  const targetsOf = (laneId, backend, name, args) => {
+    let current = null;
+    try {
+      const page = backend._context?.currentTab?.()?.page;
+      if (page && !page.isClosed()) current = idOf(page);
+    } catch {}
+    const tabs = tabsOf(laneId).map(idOf);
+    // A turn's first call has no tab of its own yet: Playwright starts it on the first.
+    current = current ?? tabs[0] ?? null;
+    if (name === 'browser_close') return tabs;
+    if (name === 'browser_tabs') {
+      if (args?.action !== 'close') return [];
+      return typeof args.index === 'number' ? [tabs[args.index]].filter((p) => p !== undefined) : [current].filter((p) => p !== null);
+    }
+    return current !== null ? [current] : [];
+  };
+
   const openLane = async ({ id, member, color, port, output, shown }) => {
     if (lanes.has(id)) return show({ id, shown });
     // control: 'person' while the person has it — `reason` 'check' when equipe put
     // it in their hands for a page that waits for a person, 'hand' when they took
     // it; `touched`, they put a hand on it since; `refused`, its tools were
-    // turned away meanwhile.
-    const lane = { events: new EventEmitter(), member, color, shown: !!shown, control: null, reason: null, touched: false, refused: false, lastInput: 0, agent: null, busy: 0 };
+    // turned away meanwhile; `page`, the tab the hold is about (the waiting page,
+    // or the one the person is on) and `since`, when it began (`gate.js`).
+    const lane = { events: new EventEmitter(), member, color, shown: !!shown, control: null, reason: null, touched: false, refused: false, lastInput: 0, agent: null, busy: 0, page: null, since: 0 };
     lanes.set(id, lane);
     const config = await tools.resolveCLIConfigForMCP({ outputDir: output }, process.env);
     const toolset = tools.filteredTools(config);
@@ -452,13 +471,17 @@ const address = (text) => {
       toolSchemas: toolset.map((t) => t.schema),
       create: async () => {
         const backend = new tools.BrowserBackend(config, ctx, toolset);
-        // While the person uses this member's browser its tools wait for them;
-        // after each call, the tab it worked in is the one the screen follows.
+        // While the person uses a tab of this member's browser its tools wait
+        // for them there (`gate.js`: a hold from detection alone never stops it
+        // leaving the page, and its other tabs stay its own); after each call,
+        // the tab it worked in is the one the screen follows.
         const call = backend.callTool.bind(backend);
         backend.callTool = async (name, args, signal) => {
-          if (lane.control === 'person') {
+          const no = gate(lane, { tool: name, args, targets: targetsOf(id, backend, name, args) });
+          if (no) {
             lane.refused = true;
-            return { content: [{ type: 'text', text: `### Error\n${lane.reason === 'check' ? BUSY_CHECK : BUSY}` }], isError: true };
+            if (no.wants && no.page) emit({ type: 'wants', lane: id, page: no.page, action: no.wants });
+            return { content: [{ type: 'text', text: `### Error\n${no.text}` }], isError: true };
           }
           // A step under way is never resized under it: a panel's new size
           // waits for the step to finish (`applyFit`).
@@ -609,10 +632,20 @@ const address = (text) => {
 
   // `why` 'check': equipe puts it in the person's hands for a page waiting for
   // a person; anything else, the person took it.
-  const setControl = async (laneId, by, why) => {
+  const setControl = async (laneId, by, why, page) => {
     const lane = lanes.get(laneId);
     if (!lane) return;
     if (by && why !== 'check') lane.touched = true;
+    // What the hold is about: the page that waits (from the daemon), else the
+    // one the person is on — its member's, as the panel shows it.
+    if (by) {
+      if (page) lane.page = page;
+      else if (lane.control !== by || !lane.page) lane.page = lane.agent;
+      if (lane.control !== by) lane.since = Date.now();
+    } else {
+      lane.page = null;
+      lane.since = 0;
+    }
     if (lane.control === by) return;
     lane.control = by;
     lane.lastInput = Date.now();
@@ -625,6 +658,9 @@ const address = (text) => {
       lane.touched = false;
     }
     lane.refused = false;
+    // The in-page "… is working in this browser" label says nothing while the
+    // person drives: one state at a time.
+    hush(laneId);
     for (const page of tabsOf(laneId)) {
       const cdp = await cdpOf(page);
       await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
@@ -646,9 +682,11 @@ const address = (text) => {
     const laneId = owner.get(page);
     const lane = lanes.get(laneId);
     if (lane) {
-      if (lane.control !== 'person') await setControl(laneId, 'person');
+      if (lane.control !== 'person') await setControl(laneId, 'person', undefined, pid);
       lane.touched = true;
       lane.lastInput = Date.now();
+      // Their hand is on this tab: it is the one that is theirs.
+      lane.page = pid;
     }
     const cdp = await cdpOf(page);
     switch (ev.t) {
@@ -696,9 +734,9 @@ const address = (text) => {
   const closetab = async ({ page }) => pages.get(page)?.close().catch(() => {});
   // `ifUntouched`: handed back only if the person never put a hand on it (a
   // check that passed by itself).
-  const control = ({ lane, by, why, ifUntouched }) => {
+  const control = ({ lane, by, why, ifUntouched, page }) => {
     if (!by && ifUntouched && lanes.get(lane)?.touched) return undefined;
-    return setControl(lane, by || null, why);
+    return setControl(lane, by || null, why, page);
   };
   const dialog = async ({ page, accept, text }) => {
     const d = dialogs.get(page);

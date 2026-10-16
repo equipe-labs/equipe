@@ -303,6 +303,15 @@ pub fn handed_of(text: &str) -> Option<(String, String)> {
     None
 }
 
+/// A message equipe sent a member as the person's (before 0.48): its browser
+/// handed back to it.
+pub fn handed_back_line(text: &str) -> bool {
+    let text = text.trim();
+    text == "The person finished in the browser."
+        || text.starts_with("The person handled the page that needed them in your browser")
+        || text.starts_with("The person finished in your browser")
+}
+
 /// A line's leading mark and the stale notice's rules, gone: the icon says it.
 fn unmark(text: &str) -> &str {
     let text = text.trim().trim_start_matches(['✗', '✎', '↪']).trim_start();

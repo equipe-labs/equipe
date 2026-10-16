@@ -49,6 +49,10 @@ fn ensure_state(home: &Path) -> PathBuf {
 /// written into both browser scripts.
 const DRIVING: &str = include_str!("../assets/driving.js");
 
+/// Whether a member's tool call may go ahead while its browser is in the
+/// person's hands: written into the browser host.
+const GATE: &str = include_str!("../assets/gate.js");
+
 /// The script that hands a member's sign-ins back, with the state file's path
 /// written in. Written next to the state when it changed.
 const KEEP_SIGN_INS: &str = include_str!("../assets/keep-sign-ins.ts");
@@ -233,6 +237,9 @@ pub enum HostEvent {
         default: Option<String>,
     },
     DialogClosed { page: u64 },
+    /// A member's tool call was refused on a tab the person is on, for
+    /// something the person can allow at a click (`close`).
+    Wants { lane: String, page: u64, action: String },
     /// The host is gone (its Chrome closed, or it failed).
     #[serde(skip)]
     Exited,
@@ -443,7 +450,7 @@ impl Host {
         use std::os::unix::process::CommandExt as _;
         let state = ensure_state(home);
         let script = home.join("browser").join("browser-host.cjs");
-        let text = HOST.replace("__DRIVING__", DRIVING);
+        let text = HOST.replace("__DRIVING__", DRIVING).replace("__GATE__", GATE);
         if std::fs::read_to_string(&script).ok().as_deref() != Some(text.as_str()) {
             std::fs::write(&script, text)?;
         }
@@ -1176,6 +1183,71 @@ mod tests {
             "once each change: the first panel; a bigger one; back to the first; nobody watching — the member's own size"
         );
         assert!(ops.iter().all(|o| o["page"] == 7));
+    }
+
+    /// The gate a member's browser tools pass while the person has its
+    /// browser (`assets/gate.js`), run in Node as the browser host runs it.
+    #[test]
+    fn a_check_nobody_touched_never_stops_its_member_and_a_persons_hand_keeps_only_its_own_tab() {
+        let Some(node) = std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|d| d.join("node")).find(|p| p.is_file())) else {
+            return; // No Node here: the smoke test covers it where there is.
+        };
+        let since = 1_792_000_000_000u64;
+        let check = json!({ "control": "person", "reason": "check", "touched": false, "page": 7, "since": since });
+        let hand = json!({ "control": "person", "reason": "hand", "touched": true, "page": 7, "since": since });
+        let touched_check = json!({ "control": "person", "reason": "check", "touched": true, "page": 7, "since": since });
+        let call = |tool: &str, args: Value, targets: &[u64]| json!({ "tool": tool, "args": args, "targets": targets });
+        let close = |targets: &[u64]| call("browser_tabs", json!({ "action": "close", "index": 0 }), targets);
+        // (lane, call, what should come of it: "go", "no", or "ask" — refused, the person asked to let it close)
+        let cases = [
+            (json!({ "control": null }), call("browser_click", json!({}), &[7]), "go"),
+            // A hold from detection alone: leaving the page, and other tabs, are the member's.
+            (check.clone(), close(&[7]), "go"),
+            (check.clone(), call("browser_close", json!({}), &[7, 8]), "go"),
+            (check.clone(), call("browser_navigate", json!({ "url": "https://example.com" }), &[7]), "go"),
+            (check.clone(), call("browser_navigate_back", json!({}), &[7]), "go"),
+            (check.clone(), call("browser_tabs", json!({ "action": "new" }), &[]), "go"),
+            (check.clone(), call("browser_click", json!({}), &[8]), "go"),
+            (check.clone(), call("browser_click", json!({}), &[7]), "no"),
+            // The person's hand: that tab is theirs, closing it is theirs to allow; the rest stays the member's.
+            (hand.clone(), call("browser_snapshot", json!({}), &[7]), "no"),
+            (hand.clone(), call("browser_navigate", json!({ "url": "https://example.com" }), &[7]), "no"),
+            (hand.clone(), close(&[7]), "ask"),
+            (hand.clone(), call("browser_close", json!({}), &[7, 8]), "ask"),
+            (hand.clone(), close(&[8]), "go"),
+            (hand.clone(), call("browser_navigate", json!({ "url": "https://example.com" }), &[8]), "go"),
+            (hand.clone(), call("browser_tabs", json!({ "action": "new" }), &[]), "go"),
+            (touched_check.clone(), close(&[7]), "ask"),
+            (touched_check, call("browser_navigate", json!({ "url": "https://example.com" }), &[7]), "no"),
+        ];
+        let input: Vec<Value> = cases.iter().map(|(lane, call, _)| json!({ "lane": lane, "call": call })).collect();
+        let script = format!("{GATE}\nconst cases = {};\nprocess.stdout.write(JSON.stringify(cases.map((c) => gate(c.lane, c.call))));", Value::Array(input));
+        let out = std::process::Command::new(node).arg("-e").arg(script).output().expect("node runs");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let said: Vec<Value> = serde_json::from_slice(&out.stdout).unwrap();
+        for ((lane, call, want), got) in cases.iter().zip(&said) {
+            let came = match (got.is_null(), got["wants"].as_str()) {
+                (true, _) => "go",
+                (false, Some("close")) => "ask",
+                (false, _) => "no",
+            };
+            assert_eq!(came, *want, "{lane} {call}: {got}");
+            if came != "go" {
+                assert_eq!(got["page"], 7, "{got}");
+            }
+        }
+        // What the member is told says why, since when, and what it can do.
+        let refused = said[8]["text"].as_str().unwrap();
+        assert!(regex_lite_like(refused), "{refused}");
+        assert!(said[7]["text"].as_str().unwrap().contains("close this tab or go elsewhere"), "{}", said[7]);
+        assert!(said[10]["text"].as_str().unwrap().contains("asked whether to let you close it"), "{}", said[10]);
+    }
+
+    /// `The person is using this tab since HH:MM — ask them in words, or wait.`
+    fn regex_lite_like(text: &str) -> bool {
+        let Some(rest) = text.strip_prefix("The person is using this tab since ") else { return false };
+        let b = rest.as_bytes();
+        b.len() > 5 && b[0].is_ascii_digit() && b[1].is_ascii_digit() && b[2] == b':' && b[3].is_ascii_digit() && b[4].is_ascii_digit() && rest[5..].starts_with(" — ask them in words, or wait.")
     }
 
     #[test]

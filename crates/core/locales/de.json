@@ -135,6 +135,7 @@
   "notice.browser_given_back": "🖐 Du hast den Browser zurückgegeben.",
   "notice.browser_in_panel": "🖥 Der Browser von {name} öffnet sich in deinem Browser-Panel: {why}",
   "notice.browser_on_screen": "🖥 Der Browser von {name} erscheint auf dem Bildschirm dieses Mac: {why}",
+  "notice.browser_tab_closed": "🖐 Browser-Tab geschlossen: {url}",
   "notice.browser_taken": "🖐 Du hast diesen Browser übernommen; seine Browser-Werkzeuge warten auf dich.",
   "notice.declined": "✗ Du hast abgelehnt: {action}",
   "notice.declined_why": "✗ {why} Abgelehnt: {action}",

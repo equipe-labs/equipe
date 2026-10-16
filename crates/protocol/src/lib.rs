@@ -1019,6 +1019,10 @@ pub enum Event {
     },
     /// The page's question was answered (here or elsewhere), or it went away.
     BrowserDialogClosed { page: u64 },
+    /// A member asked to do something to a tab the person is on, and was
+    /// refused for it — `action` `close`: the screen offers to let it, at
+    /// one click (closing the tab), or keep using it.
+    BrowserWants { squad: Option<SquadName>, lane: String, page: u64, action: String },
     /// The member handed `what` to a subagent, which works alongside it.
     SubagentStarted { session: SessionId, id: String, what: String },
     /// A subagent's latest step.
@@ -1100,7 +1104,7 @@ impl Event {
             | Event::QuestionsAsked { squad, .. }
             | Event::QuestionsClosed { squad, .. }
             | Event::Allowed { squad, .. } => Some(squad),
-            Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } => squad.as_deref(),
+            Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             _ => None,
         }
     }
@@ -1151,6 +1155,7 @@ impl Event {
             | Event::BrowserControl { .. }
             | Event::BrowserDialog { .. }
             | Event::BrowserDialogClosed { .. }
+            | Event::BrowserWants { .. }
             // Pairing a phone: the daemon machine's, told only the screen that asked.
             | Event::PairOffer { .. }
             | Event::PairAsked { .. }
