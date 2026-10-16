@@ -24,7 +24,7 @@ use super::board::{dot, kbd};
 use crate::board::{Menu, MergeWay};
 use crate::icons::{Icon, icon};
 use crate::motion;
-use crate::notify::Ping;
+use crate::notify::{Permission, Ping};
 use crate::settings::{self as rules, Category};
 use crate::state::Conn;
 use crate::target::{Endpoint, Start};
@@ -370,17 +370,35 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
 
     let pings = shell.remembered.pings;
     let ping = |ping: Ping, label: &'static str, desc: &'static str, cx: &mut Context<Shell>| {
-        Line::new(label, desc).words("notification").control(switch(shell, ping.code(), pings.get(ping), true, move |this, on, _, _| this.set_ping(ping, on), cx))
+        Line::new(label, desc).words("notification").control(switch(shell, ping.code(), pings.get(ping), true, move |this, on, _, cx| this.set_ping(ping, on, cx), cx))
     };
+    // What macOS allows, first: nothing else here matters while it allows nothing.
+    let permission = shell.bell.permission;
+    let (state, warn) = match permission {
+        Permission::Allowed => (t!("settings.notifications_allowed"), false),
+        Permission::Denied => (t!("settings.notifications_denied"), true),
+        Permission::NotAsked => (t!("settings.notifications_not_asked"), false),
+        Permission::NoBundle => (t!("settings.notifications_no_bundle"), true),
+        Permission::Unknown => (t!("settings.system_notifications_desc"), false),
+    };
+    let system = Line::new(t!("settings.system_notifications"), state).warn(warn).words("macos permission allow").control(match permission {
+        Permission::NotAsked => ui::button(p, "allow-notifications", Kind::Primary, t!("notify.sheet_allow")).on_click(cx.listener(|this, _, _, cx| this.offer_notifications(cx))).into_any_element(),
+        Permission::NoBundle => value(p, t!("settings.none")),
+        _ => ui::button(p, "open-notifications", Kind::Secondary, t!("settings.open_system_settings")).icon(Icon::External).on_click(|_, _, cx| cx.open_url(&crate::notify::settings_url())).into_any_element(),
+    });
     let notifications = vec![
+        system,
         ping(Ping::Approvals, t!("settings.ping_approvals"), t!("settings.ping_approvals_desc"), cx),
         ping(Ping::Reviews, t!("settings.ping_reviews"), t!("settings.ping_reviews_desc"), cx),
         ping(Ping::Waiting, t!("settings.ping_waiting"), t!("settings.ping_waiting_desc"), cx),
         ping(Ping::Failed, t!("settings.ping_failed"), t!("settings.ping_failed_desc"), cx),
+        ping(Ping::Replies, t!("settings.ping_replies"), t!("settings.ping_replies_desc"), cx),
+        ping(Ping::Merged, t!("settings.ping_merged"), t!("settings.ping_merged_desc"), cx),
+        ping(Ping::Update, t!("settings.ping_update"), t!("settings.ping_update_desc"), cx),
         ping(Ping::Sound, t!("settings.ping_sound"), t!("settings.ping_sound_desc"), cx),
-        Line::new(t!("settings.system_notifications"), t!("settings.system_notifications_desc"))
-            .words("macos")
-            .control(ui::button(p, "open-notifications", Kind::Secondary, t!("settings.open_system_settings")).icon(Icon::External).on_click(|_, _, cx| cx.open_url("x-apple.systempreferences:com.apple.Notifications-Settings.extension"))),
+        Line::new(t!("settings.ping_badge"), t!("settings.ping_badge_desc"))
+            .words("dock badge count notification")
+            .control(switch(shell, Ping::Badge.code(), pings.badge, true, |this, on, _, _| this.set_badge_shown(on), cx)),
     ];
     vec![
         Section::new(t!("settings.section_look"), vec![language, appearance, zoom]).foot(format!("{} {}", t!("settings.language_note"), t!("settings.this_mac_foot"))),
@@ -1130,9 +1148,21 @@ impl Shell {
         self.remembered.save(&equipe_providers::credentials::equipe_home());
     }
 
-    pub fn set_ping(&mut self, ping: Ping, on: bool) {
+    /// A kind of notice on or off. Turned on while macOS was never asked: the
+    /// sheet says why, then macOS asks.
+    pub fn set_ping(&mut self, ping: Ping, on: bool, cx: &mut Context<Self>) {
         self.remembered.pings.set(ping, on);
         self.remembered.save(&equipe_providers::credentials::equipe_home());
+        if on {
+            self.offer_notifications(cx);
+        }
+    }
+
+    /// "Dock 아이콘에 숫자 표시": the number goes, or comes back, at once.
+    pub fn set_badge_shown(&mut self, on: bool) {
+        self.remembered.pings.set(Ping::Badge, on);
+        self.remembered.save(&equipe_providers::credentials::equipe_home());
+        self.sync_badge();
     }
 
     pub fn set_project_way(&mut self, project: &str, way: Option<MergeWay>) {
