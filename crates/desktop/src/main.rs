@@ -5,6 +5,7 @@
 //! It draws only when the daemon says something changed or the person acts —
 //! see docs/DESKTOP.md. `EQUIPE_LOG_RENDER=1` prints a line per frame, to see that.
 
+mod asklist;
 mod askpass;
 mod attach;
 mod board;
@@ -111,6 +112,8 @@ pub struct Shell {
     pub turn: views::yourturn::TurnUi,
     /// Members' questions: where the person is in each set, and its boxes.
     pub decide: views::decide::DecideUi,
+    /// A reply's list of questions, answered in place.
+    pub asklist: views::asklist::AskListUi,
     pub settings: views::settings::SettingsUi,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
     pub browser: Entity<BrowserPanel>,
@@ -197,6 +200,7 @@ impl Shell {
             board: BoardUi::new(window, cx, fetched_tx),
             turn: Default::default(),
             decide: Default::default(),
+            asklist: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
             browser,
             board_ticket: None,
@@ -337,6 +341,16 @@ impl Shell {
             if key == "escape" && this.update(cx, |shell, cx| shell.close_popover(cx)).unwrap_or(false) {
                 cx.stop_propagation();
                 return;
+            }
+            // A reply's list of questions as a form: Tab, Esc — and its boxes' typing;
+            // ⏎ on a "1." in the composer opens it.
+            match this.update(cx, |shell, cx| shell.on_asklist_key(key, &modifiers, window, cx)).unwrap_or(views::decide::Took::Pass) {
+                views::decide::Took::Taken => {
+                    cx.stop_propagation();
+                    return;
+                }
+                views::decide::Took::Typing => return,
+                views::decide::Took::Pass => {}
             }
             // A member's questions above an empty composer (or in the peek):
             // 1–9, ↑↓, Space, ⏎, ⌘⏎, Tab, Esc — and its own box's typing.

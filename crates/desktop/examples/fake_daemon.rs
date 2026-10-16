@@ -18,6 +18,8 @@
 //! ```
 //! `FAKE_SECONDS` (default 4) is how long a reply streams; `FAKE_SAID` adds a
 //! last message of the person's to the PM's history (attachment tags and all).
+//! `FAKE_ASKLIST=1` ends the PM's history on a reply asking three things in a
+//! numbered list of its own words, as a member does that skips `ask_decision`.
 //!
 //! `FAKE_TURN=1` puts T-117 down for the person — three asks, one naming a
 //! folder with spaces and a file it made under the app's repository — with
@@ -52,6 +54,9 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, broadcast};
 
 const REPLY: &str = "네, 확인했습니다. 지금 보드를 살펴보고 **T-12**를 먼저 처리하겠습니다.\n\n진행 순서는 다음과 같습니다.\n\n- 헤더 컴포넌트 정리\n- 입력창 한글 조합 확인\n- 스트리밍 표시 점검 (`T-13`)\n\n| 항목 | 상태 | 담당 |\n|---|---|---|\n| 헤더 | 진행 중 | frontend |\n| 입력창 | 대기 | frontend |\n| 데몬 연결 | 완료 | backend |\n\n```rust\nfn main() {\n    println!(\"안녕, equipe\");\n}\n```\n\n끝나면 다시 알려 드리겠습니다.";
+
+/// `FAKE_ASKLIST`'s reply: what the PM needs to know, as a numbered list in prose.
+const ASKLIST: &str = "EU 디지털 서비스법(DSA) 때문에 EU 스토어에 앱을 내려면 판매자 연락처를 공개해야 합니다. App Store Connect에 아직 비어 있어서 **T-117** 제출이 여기서 멈춰 있어요.\n\n## 알려 주세요\n\n1. EU 스토어에 공개할 전화번호: 국가번호 포함 (예: +82 10-1234-5678)\n2. 공개할 이메일: 스토어 페이지에 그대로 보입니다\n3. T-117 심사 연락처: 위와 같은 번호와 메일을 써도 되는지\n\n받으면 바로 입력합니다.";
 
 fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
     SessionInfo {
@@ -695,6 +700,12 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             routes.lock().await.thread.insert(1, Some("app".into()));
                         }
                         history.extend(std::env::var("FAKE_SAID").ok().filter(|s| !s.is_empty()).map(|text| Entry::User { text }));
+                        // `FAKE_ASKLIST=1`: the PM's last reply asks three things in a list of its own words.
+                        if std::env::var("FAKE_ASKLIST").is_ok_and(|v| v == "1") {
+                            history.push(Entry::User { text: "EU 스토어에도 바로 낼 수 있어?".into() });
+                            history.push(Entry::Tool { tool: "WebFetch".into(), target: Some("https://developer.apple.com/help/app-store-connect/manage-compliance-information/manage-european-union-digital-services-act-trader-requirements".into()), outcome: None });
+                            history.push(Entry::Reply { text: ASKLIST.into() });
+                        }
                         if let Some(how) = your_turn() {
                             history.push(Entry::Note { text: "frontend handed in T-63 for your review · 경쟁 앱 온보딩 조사.".into() });
                             history.push(Entry::Note { text: "T-117 waits for you — frontend needs something only you can do · 앱스토어 제출.".into() });

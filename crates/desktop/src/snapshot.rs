@@ -14,6 +14,7 @@
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
 //! `answer:<ticket>,<n>,<words>` / `aok:<ticket>,<n>` / `atick:<ticket>,<n>` / `asend:<ticket>` (a waiting ticket's card: type in box n, its quick OK, tick thing n off, send) ·
 //! `dkey:<key>` (a member's questions' card: `1`–`9`, `up`, `down`, `space`, `enter`, `cmd-enter`, `tab`, `left`, `escape`) · `dtype:<words>` (in its box for the person's own words) · `decided` (open the latest decided row) · `dpick:<id>` (a set in 나에게, peeking) ·
+//! `qopen` · `qtype:<n>,<words>` · `qsay:<n>,<words>` · `qsend` · `qesc` · `qenter` (a reply's list of questions as a form: open it, type in box n — past the items, the one for anything to add — tap a quick answer, send, cancel; ⏎ in the composer) ·
 //! `browser` (the browser panel, ⌘⇧B) · `bpick:<n>` (its nth tab) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 
@@ -225,6 +226,22 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 "dpick" => shell.update(cx, |shell, cx| {
                     shell.board.view.peek = true;
                     shell.board_pick(crate::state::Need::Questions(arg.parse().unwrap_or(0)), cx);
+                }),
+                // A reply's list of questions answered in place.
+                "qopen" => shell.update(cx, |shell, cx| shell.asklist_open(None, window, cx)),
+                "qtype" => shell.update(cx, |shell, cx| {
+                    let (n, words) = arg.split_once(',').unwrap_or(("0", ""));
+                    shell.asklist_type(n.parse().unwrap_or(0), words, window, cx);
+                }),
+                "qsay" => shell.update(cx, |shell, cx| {
+                    let (n, words) = arg.split_once(',').unwrap_or(("0", ""));
+                    shell.asklist_say(n.parse().unwrap_or(0), words, window, cx);
+                }),
+                "qsend" => shell.update(cx, |shell, cx| shell.asklist_send(window, cx)),
+                "qesc" => shell.update(cx, |shell, cx| shell.asklist_cancel(window, cx)),
+                "qenter" => shell.update(cx, |shell, cx| {
+                    let took = shell.on_asklist_key("enter", &Modifiers::default(), window, cx);
+                    eprintln!("qenter: {took:?}");
                 }),
                 "browser" => shell.update(cx, |shell, cx| shell.toggle_browser(window, cx)),
                 "bopen" => {
