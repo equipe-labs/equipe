@@ -23,4 +23,5 @@ pub mod sidebar;
 pub mod team;
 pub mod ticket_card;
 pub mod tickets;
+pub mod visuals;
 pub mod yourturn;

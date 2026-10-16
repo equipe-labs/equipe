@@ -31,6 +31,7 @@ pub mod squads;
 pub mod steers;
 pub mod store;
 pub mod team;
+pub mod visuals;
 pub mod watchdog;
 pub mod worktree;
 

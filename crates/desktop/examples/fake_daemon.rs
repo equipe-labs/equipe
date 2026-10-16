@@ -36,7 +36,10 @@
 //! the second several-pick — and backend one more about T-70;
 //! `FAKE_DECIDE=elsewhere` answers the PM's from "another screen" after
 //! `FAKE_DECIDE_AFTER` ms (default 5000). Answered here, the answers go to the
-//! member as the person's message and it replies.
+//! member as the person's message and it replies. `FAKE_DECIDE=logo` puts
+//! the designer's logo question first, each option its picture, and has the
+//! designer's brand guide (T-144) handed in with its pictures
+//! (`fake_daemon/pictures.rs`).
 //!
 //! `FAKE_HISTORY=<n>`: the PM's history is a long day's, `n` lines of it
 //! (`fake_daemon/history.rs`); `FAKE_LONG_REPLY=1`: its answers are long too.
@@ -279,6 +282,11 @@ fn board() -> Vec<Ticket> {
     if your_turn().is_some() {
         out.push(turn_ticket());
     }
+    // `FAKE_DECIDE=logo`: the designer's brand guide, handed in with its pictures.
+    if pictures::on() {
+        let note = "브랜드 가이드를 정리했습니다 — 이름과 로고는 그대로 두고 쓰임새를 맞췄습니다.\n\n- 로고 시트: 흰 바탕과 어두운 바탕\n- 앱 아이콘 1024px\n- 색상 다섯 가지 (`brand/palette.md`)";
+        out.push(pictures::hand_in(ticket(144, "review", "app", "designer", "equipe 브랜드 정리·체계화 (이름·로고 유지)", "- [ ] 로고가 작은 크기에서도 읽힌다\n- [ ] 색상 대비가 충분하다", &[], None, Some(note))));
+    }
     if busy() {
         out.extend(BUSY.iter().map(|(id, _, who, title)| ticket(*id, "in_progress", "web", who, title, "", &[], None, None)));
         out.extend([
@@ -313,7 +321,7 @@ fn deciding() -> Option<String> {
 fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
     static QUESTIONS: std::sync::OnceLock<std::sync::Mutex<Vec<QuestionSet>>> = std::sync::OnceLock::new();
     QUESTIONS.get_or_init(|| {
-        let choice = |label: &str, description: &str| Choice { label: label.into(), description: description.into() };
+        let choice = |label: &str, description: &str| Choice { label: label.into(), description: description.into(), ..Choice::default() };
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         let sets = vec![
             QuestionSet {
@@ -331,6 +339,7 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
                             choice("이메일 + 비밀번호", "익숙하지만 재설정 흐름까지 만들어야 합니다"),
                         ],
                         multi_select: false,
+                        ..Question::default()
                     },
                     Question {
                         question: "첫 릴리스에 어떤 화면을 넣을까요?".into(),
@@ -341,6 +350,7 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
                             choice("설정", "알림·계정 관리"),
                         ],
                         multi_select: true,
+                        ..Question::default()
                     },
                 ],
                 asked_at: now.saturating_sub(90),
@@ -355,10 +365,12 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
                     header: "페이지".into(),
                     options: vec![choice("20개 (추천)", "앱 목록 화면 한 번에 맞습니다"), choice("50개", "요청은 줄지만 첫 화면이 느려집니다")],
                     multi_select: false,
+                    ..Question::default()
                 }],
                 asked_at: now.saturating_sub(30),
             },
         ];
+        let sets = if pictures::on() { std::iter::once(pictures::question_set(now)).chain(sets).collect() } else { sets };
         std::sync::Mutex::new(if deciding().is_some() { sets } else { Vec::new() })
     })
 }
@@ -751,6 +763,8 @@ mod torture;
 #[path = "fake_daemon/history.rs"]
 mod history;
 
+#[path = "fake_daemon/pictures.rs"]
+mod pictures;
 #[path = "fake_daemon/team.rs"]
 mod team;
 
@@ -784,6 +798,9 @@ async fn main() {
     let _ = std::fs::remove_file(&socket);
     let listener = UnixListener::bind(&socket).expect("bind the fake daemon's socket");
     seed_repos();
+    if pictures::on() {
+        pictures::make();
+    }
     eprintln!("fake daemon on {}", socket.display());
     let seconds: f32 = std::env::var("FAKE_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(4.);
     let (events, _) = broadcast::channel::<Event>(1024);
@@ -842,6 +859,9 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history.push(Entry::User { text: "EU 스토어에도 바로 낼 수 있어?".into() });
                             history.push(Entry::Tool { tool: "WebFetch".into(), target: Some("https://developer.apple.com/help/app-store-connect/manage-compliance-information/manage-european-union-digital-services-act-trader-requirements".into()), outcome: None });
                             history.push(Entry::Reply { text: ASKLIST.into() });
+                        }
+                        if pictures::on() {
+                            history.push(Entry::Note { text: pictures::NEWS.into() });
                         }
                         if browser::handover() {
                             history.push(Entry::User { text: "App Store Connect에서 EU DSA 거래자 상태를 바꿔 줘".into() });
@@ -973,6 +993,17 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                     (Some(rpc::READ_UPLOAD), Some(id)) => {
                         let ask: rpc::ReadUpload = message.params_as().unwrap();
                         let reply = match gateway::read_upload(&equipe_home(), &ask) {
+                            Ok(read) => Message::response(id, read),
+                            Err(why) => Message::failure(id, -32000, why),
+                        };
+                        if writer.write_all(reply.to_line().as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                    // A member's picture: from the pictures' folder only.
+                    (Some(rpc::READ_IMAGE), Some(id)) => {
+                        let ask: rpc::ReadImage = message.params_as().unwrap();
+                        let reply = match pictures::read(&ask) {
                             Ok(read) => Message::response(id, read),
                             Err(why) => Message::failure(id, -32000, why),
                         };

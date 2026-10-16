@@ -281,6 +281,12 @@ pub struct Ticket {
     /// on without it, and it is asked again with its next wait.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remaining: Vec<String>,
+    /// The pictures its hand-in shows — renders, mockups, screenshots: the
+    /// ones its member named, then the images its branch changed — by their
+    /// paths on the daemon's machine, which screens ask for (`read_image`).
+    /// Left out when none, and absent from an older daemon.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
     /// How soon it should be done; normal unless the person said.
     #[serde(default, skip_serializing_if = "Priority::is_normal")]
     pub priority: Priority,
@@ -1516,9 +1522,24 @@ mod tests {
             note: None,
             asks: vec![],
             remaining: Vec::new(),
+            images: Vec::new(),
             updated_at: None,
             priority: Default::default(), rank: 0,
         }
+    }
+
+    #[test]
+    fn a_hand_ins_pictures_travel_as_paths_and_are_left_out_when_none() {
+        let mut t = ticket(144);
+        assert!(serde_json::to_value(&t).unwrap().get("images").is_none(), "no pictures: the wire as before");
+        t.status = TicketStatus::Review;
+        t.images = vec!["/h/worktrees/acme.home/144/brand/logo-a.png".into(), "/h/worktrees/acme.home/144/brand/logo-b.svg".into()];
+        let wire = serde_json::to_value(&t).unwrap();
+        assert_eq!(wire["images"][1], json!("/h/worktrees/acme.home/144/brand/logo-b.svg"));
+        assert_eq!(serde_json::from_value::<Ticket>(wire.clone()).unwrap(), t);
+        let mut old = wire;
+        old.as_object_mut().unwrap().remove("images");
+        assert!(serde_json::from_value::<Ticket>(old).unwrap().images.is_empty(), "an older daemon's ticket: none");
     }
 
     #[test]
@@ -1715,8 +1736,9 @@ mod tests {
                 questions: vec![decide::Question {
                     question: "Which plan?".into(),
                     header: "Plan".into(),
-                    options: vec![decide::Choice { label: "Pro".into(), description: String::new() }, decide::Choice { label: "Free".into(), description: "for now".into() }],
+                    options: vec![decide::Choice { label: "Pro".into(), description: String::new(), ..Default::default() }, decide::Choice { label: "Free".into(), description: "for now".into(), ..Default::default() }],
                     multi_select: false,
+                    ..Default::default()
                 }],
                 asked_at: 1,
             }],

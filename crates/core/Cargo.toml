@@ -9,6 +9,8 @@ equipe-desktop-control = { path = "../desktop-control" }
 equipe-protocol = { path = "../protocol" }
 equipe-providers = { path = "../providers" }
 base64 = "0.23.1"
+# Members' pictures, sent to screens as thumbnails (`visuals`).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 libc = "0.2.190"
 reqwest = { version = "0.13.5", default-features = false }
 rusqlite = { version = "0.37", features = ["bundled"] }

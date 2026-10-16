@@ -229,7 +229,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
-            remaining: vec![],
+            remaining: vec![], images: Vec::new(),
             updated_at: None,
             priority: Default::default(),
             rank: 0,

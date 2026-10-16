@@ -135,6 +135,8 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
 
     let mut lines = BufReader::new(reader).lines();
     let mut forwarder: Option<tokio::task::JoinHandle<()>> = None;
+    // The squad the screen follows: the one whose pictures it may ask for.
+    let mut followed: Option<String> = None;
     // Set when the connection becomes a browser panel's stream.
     let mut stream: Option<(std::sync::Arc<crate::browser::Hub>, u8)> = None;
     // Pairing a phone: this screen's line to the phone link, opened when it asks.
@@ -184,6 +186,7 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
                     }
                 };
                 let _ = out_tx.send(Message::response(id, Hello { version: version.clone(), snapshot }));
+                followed = Some(params.squad.clone());
                 let out = out_tx.clone();
                 forwarder.replace(tokio::spawn(async move {
                     while let Some(event) = events.recv().await {
@@ -266,6 +269,27 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
                         Ok(Ok(read)) => Message::response(id, read),
                         Ok(Err(why)) => Message::failure(id, -32000, why),
                         Err(_) => Message::failure(id, -32000, "the file couldn't be read"),
+                    });
+                });
+            }
+            (Some(rpc::READ_IMAGE), Some(id)) => {
+                // A picture of the squad this screen follows, and of no other.
+                let Some(ask) = message.params_as::<rpc::ReadImage>() else {
+                    let _ = out_tx.send(Message::failure(id, -32602, "read_image needs { squad, path }"));
+                    continue;
+                };
+                if followed.as_deref() != Some(ask.squad.as_str()) {
+                    let _ = out_tx.send(Message::failure(id, -32002, "say hello to that squad first"));
+                    continue;
+                }
+                let home = home.clone();
+                let out = out_tx.clone();
+                tokio::spawn(async move {
+                    let read = tokio::task::spawn_blocking(move || crate::visuals::serve(&home, &ask, None)).await;
+                    let _ = out.send(match read {
+                        Ok(Ok(read)) => Message::response(id, read),
+                        Ok(Err(why)) => Message::failure(id, -32000, why),
+                        Err(_) => Message::failure(id, -32000, "the picture couldn't be read"),
                     });
                 });
             }

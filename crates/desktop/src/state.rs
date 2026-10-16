@@ -2102,7 +2102,7 @@ mod tests {
         let mut model = needs_model();
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "backend", "backend", SessionState::Working)]), T0);
         model.take_alerts();
-        let q = Question { question: "Which?".into(), header: String::new(), options: vec![Choice { label: "a".into(), description: String::new() }, Choice { label: "b".into(), description: String::new() }], multi_select: false };
+        let q = Question { question: "Which?".into(), header: String::new(), options: vec![Choice { label: "a".into(), description: String::new(), ..Choice::default() }, Choice { label: "b".into(), description: String::new(), ..Choice::default() }], multi_select: false, ..Question::default() };
         let set = QuestionSet { id: 40, session: 2, member: "backend".into(), ticket: None, questions: vec![q.clone(), q], asked_at: 1 };
         assert!(model.apply(Update::Event(Event::QuestionsAsked { squad: "acme".into(), questions: set.clone() }), T0), "the card shows: a redraw");
         assert_eq!(model.take_alerts(), vec![Alert::Decision { session: 2, member: "backend".into(), count: 2 }]);
