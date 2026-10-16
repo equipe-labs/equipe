@@ -357,7 +357,7 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
                     live.push(format!("{} {}", t!("board.flag_quiet"), short_span(q)));
                 }
                 if !live.is_empty() {
-                    out.push(h_flex().gap_2().items_center().text_size(px(13.)).text_color(p.text2).when(model.is_live(t), |d| d.child(icons::live_dot(p, shell.board.pulse))).child(live.join(" · ")).into_any_element());
+                    out.push(h_flex().gap_2().items_center().text_size(px(13.)).text_color(p.text2).when(model.is_live(t), |d| d.child(icons::live_dot(p, shell.pulse(cx)))).child(live.join(" · ")).into_any_element());
                 }
             }
             if let Some(note) = t.note.as_deref().filter(|n| !n.trim().is_empty() && t.status.is_closed()) {

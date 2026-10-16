@@ -655,6 +655,11 @@ impl Render for TicketCard {
         };
         let root = div().absolute().top_0().left_0().size_full().child(listen);
         let Some(shell) = self.shell.upgrade() else { return root };
+        // Its undo counts the seconds down (`beat.rs`).
+        let shell_now = shell.read(cx);
+        if let Some(at) = shell_now.board.undo.latest().filter(|p| shell_now.screen != Screen::Board && self.acted.contains(&p.ticket)).map(|p| rules::Undo::next_count(p, Instant::now())) {
+            crate::beat::Beat::wake(cx.entity_id(), at, cx);
+        }
         let shell = shell.read(cx);
         let root = root.children(undo_toast(shell, &self.acted, &self.shell));
         let Some(target) = self.hover.shown() else {

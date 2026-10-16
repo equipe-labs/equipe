@@ -1486,7 +1486,7 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                 .items_center()
                 .text_size(px(crate::theme::BODY))
                 .line_height(px(crate::theme::BODY_LINE))
-                .child(div().size(px(8.)).flex_none().rounded_full().bg(p.danger()).with_animation("listening", Animation::new(Duration::from_millis(1200)).repeat().with_easing(pulsating_between(0.35, 1.)), |d, t| d.opacity(t)))
+                .child(div().size(px(8.)).flex_none().rounded_full().bg(p.danger()).with_animation("listening", Animation::new(Duration::from_millis(1200)).repeat().with_easing(pulsating_between(0.35, 1.)).with_max_fps(20.), |d, t| d.opacity(t)))
                 .child(div().min_w_0().text_color(p.muted).italic().child(if heard.is_empty() { t!("composer.dictation_listening").to_owned() } else { heard }))
         }))
         .child(bar(shell, cx))
