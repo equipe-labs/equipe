@@ -462,7 +462,7 @@
   "composer.steer_button": "Indicar ⏎",
   "composer.stop": "■ Detener",
   "composer.stopping": "Deteniendo…",
-  "composer.strip_count": "{count}/{max} — se envían con el mensaje",
+  "composer.strip_count": "{count} de {max}",
   "composer.text_lines.one": "{size} · {count} línea",
   "composer.text_lines.other": "{size} · {count} líneas",
   "composer.tip_attach": "Adjuntar",

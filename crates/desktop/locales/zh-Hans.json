@@ -443,7 +443,7 @@
   "composer.steer_button": "指示 ⏎",
   "composer.stop": "■ 停止",
   "composer.stopping": "正在停止…",
-  "composer.strip_count": "{count}/{max} — 随消息一起发送",
+  "composer.strip_count": "{count}/{max}",
   "composer.text_lines.other": "{size} · {count} 行",
   "composer.tip_attach": "附加",
   "composer.tip_context": "上下文",

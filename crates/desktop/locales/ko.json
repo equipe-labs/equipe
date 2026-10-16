@@ -443,7 +443,7 @@
   "composer.steer_button": "지시 ⏎",
   "composer.stop": "■ 정지",
   "composer.stopping": "중단하는 중…",
-  "composer.strip_count": "{count}/{max}개 — 메시지와 함께 보냅니다",
+  "composer.strip_count": "{count}/{max}장",
   "composer.text_lines.other": "{size} · {count}줄",
   "composer.tip_attach": "첨부",
   "composer.tip_context": "컨텍스트",

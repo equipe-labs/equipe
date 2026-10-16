@@ -1957,6 +1957,9 @@ fn recipient(p: Palette, model: &Model, text: &str) -> (String, Rgba) {
 /// thumbnails with their number, other files as chips with their kind, name
 /// and what they hold — each with a ✕ the keyboard reaches too, how far it
 /// got, and (in red, until dismissed) why one couldn't be attached.
+/// How close to the attachment limit before the strip shows its count.
+const NEAR_LIMIT: usize = 5;
+
 fn strip(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
     let strip = &shell.composer.strip;
     if strip.is_empty() {
@@ -1967,14 +1970,16 @@ fn strip(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + us
     let chips: Vec<AnyElement> = strip.items().iter().enumerate().map(|(n, item)| motion::rise(div().flex_none().child(chip(shell, item, n, cx)), ("chip-in", item.id)).into_any_element()).collect();
     let failed = strip.failed();
     let count = strip.len() - failed;
-    let summary = h_flex()
+    // The count only near the limit: below it, the chips say enough.
+    let near_limit = count + NEAR_LIMIT >= attach::MAX_ATTACHMENTS;
+    let summary = (near_limit || failed >= 2).then(|| h_flex()
         .px(px(INSET))
         .pt_2()
         .gap_2()
         .items_center()
         .text_size(px(11.5))
         .text_color(p.muted)
-        .when(count > 0, |r| r.child(t!("composer.strip_count", count = count, max = attach::MAX_ATTACHMENTS)))
+        .when(near_limit, |r| r.child(t!("composer.strip_count", count = count, max = attach::MAX_ATTACHMENTS)))
         .when(failed >= 2, |r| {
             r.child(div().text_color(p.danger()).child(t!("composer.failed_summary", n = failed)))
                 .child(button("dismiss-failed", t!("composer.dismiss_failed"), |this, _, cx| {
@@ -1984,11 +1989,11 @@ fn strip(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + us
                 .text_color(p.text2)
                 .underline()
                 .child(t!("composer.dismiss_failed")))
-        });
+        }));
     Some(
         v_flex()
             .child(h_flex().px(px(INSET)).pt(px(INSET)).gap_2().flex_wrap().items_start().children(chips))
-            .child(summary),
+            .children(summary),
     )
 }
 
@@ -2398,7 +2403,10 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoEleme
                     .id("lightbox-bar")
                     .flex_none()
                     .h(px(44.))
-                    .px_2()
+                    // A round button at an end sits 8 in; words at an end need
+                    // 16, so the pill looks even on both sides.
+                    .pl(px(if n > 1 { 8. } else { 16. }))
+                    .pr_2()
                     .gap_3()
                     .items_center()
                     .rounded(px(22.))
