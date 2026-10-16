@@ -698,7 +698,24 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         .w_full()
         .relative()
         .on_mouse_down(MouseButton::Left, cx.listener(|shell, _, _, cx| shell.quote_pointer_down(cx)))
-        .on_mouse_up(MouseButton::Left, cx.listener(|shell, _, window, cx| shell.quote_pointer_up(window, cx)))
+        // The release is heard wherever it lands: a drag that ends over the
+        // composer, a card or past the window's edge still offers its words.
+        .child({
+            let shell = cx.entity().downgrade();
+            canvas(
+                |_, _, _| {},
+                move |_, _, window, _| {
+                    let shell = shell.clone();
+                    window.on_mouse_event(move |e: &MouseUpEvent, phase, window, cx| {
+                        if phase == DispatchPhase::Capture && e.button == MouseButton::Left {
+                            let _ = shell.update(cx, |shell, cx| shell.quote_pointer_up(e.position, window, cx));
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .size_0()
+        })
         .children(pulse)
         .children(jump)
         .child(

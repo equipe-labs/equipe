@@ -37,6 +37,9 @@ use crate::{Screen, Shell};
 /// How long after the button lets go the bar shows: a drag that goes on
 /// doesn't make it flicker.
 const SETTLE: Duration = Duration::from_millis(150);
+/// Looked at again this often, this many times, while the selection ends.
+const SETTLE_AGAIN: Duration = Duration::from_millis(60);
+const SETTLE_TRIES: usize = 6;
 /// The quoted words flash this long, strongly, then fade out over `FADE`.
 const FLASH: Duration = Duration::from_millis(900);
 const FADE: Duration = Duration::from_millis(500);
@@ -53,6 +56,9 @@ pub struct QuoteUi {
     pub ask: Option<Ask>,
     /// The row whose words are lit (the box's quote, or a flash), to unlight.
     lit: Option<usize>,
+    /// A press began in the conversation: its release, wherever it lands
+    /// (on the composer, a card, outside the window), offers what it selected.
+    pressed: bool,
     _settle: Option<Task<()>>,
     _flash: Option<Task<()>>,
 }
@@ -62,6 +68,9 @@ pub struct Offer {
     text: String,
     /// Where the selection's ends were last drawn.
     ends: Cell<Option<(Rect, Rect)>>,
+    /// Where the button let go: the bar's place when the selection doesn't
+    /// say where its ends are (a word picked by a double click).
+    released: Rect,
     copied: bool,
 }
 
@@ -95,32 +104,45 @@ fn window_size(window: &Window) -> (f32, f32) {
 impl Shell {
     /// The button let go over the conversation: a beat later, words selected
     /// there are offered to quote.
-    pub fn quote_pointer_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.quote.ask.is_some() {
+    pub fn quote_pointer_up(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.quote.pressed) || self.quote.ask.is_some() {
             return;
         }
+        let released = Rect { x: f32::from(at.x), y: f32::from(at.y), w: 1., h: 1. };
         self.quote._settle = Some(cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(SETTLE).await;
-            this.update_in(cx, |shell, window, cx| shell.quote_offer(window, cx)).ok();
+            // The selection may still be ending (a slow frame): look again a
+            // few times rather than give up on the first.
+            for _ in 0..SETTLE_TRIES {
+                let Ok(settled) = this.update_in(cx, |shell, window, cx| shell.quote_offer(released, window, cx)) else { return };
+                if settled {
+                    return;
+                }
+                cx.background_executor().timer(SETTLE_AGAIN).await;
+            }
         }));
     }
 
     /// The button pressed in the conversation: whatever was offered goes.
     pub fn quote_pointer_down(&mut self, cx: &mut Context<Self>) {
         self.quote._settle = None;
+        self.quote.pressed = true;
         if self.quote.offer.take().is_some() {
             cx.notify();
         }
     }
 
-    fn quote_offer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(session), Some(at)) = (self.model.viewed(), ends(window, cx)) else { return };
-        if self.screen != Screen::Chat {
-            return;
+    /// Offer what is selected, if anything. False while the selection is
+    /// still being dragged out, to be asked again.
+    fn quote_offer(&mut self, released: Rect, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if TextSelection::is_selecting(window, cx) {
+            return false;
         }
-        let Some(text) = rules::trim(&TextSelection::selected_text(window, cx)) else { return };
-        self.quote.offer = Some(Offer { session, text, ends: Cell::new(Some(at)), copied: false });
+        let Some(session) = self.model.viewed().filter(|_| self.screen == Screen::Chat) else { return true };
+        let Some(text) = rules::trim(&TextSelection::selected_text(window, cx)) else { return true };
+        self.quote.offer = Some(Offer { session, text, ends: Cell::new(ends(window, cx)), released, copied: false });
         cx.notify();
+        true
     }
 
     /// The offer, while its selection still shows in the conversation on screen.
@@ -128,7 +150,9 @@ impl Shell {
         let offer = self.quote.offer.as_ref().filter(|o| self.screen == Screen::Chat && Some(o.session) == self.model.viewed() && self.quote.ask.is_none())?;
         // Copied, it stays a moment to say so.
         if !offer.copied {
-            offer.ends.set(Some(ends(window, cx)?));
+            // Where the selection is drawn now; where the button let go when
+            // it doesn't say (a double-clicked word).
+            offer.ends.set(Some(ends(window, cx).unwrap_or((offer.released, offer.released))));
         }
         Some(offer)
     }
