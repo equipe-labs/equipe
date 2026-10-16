@@ -7,7 +7,7 @@ exclude = ["vendor"]
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.52.0"
+version = "0.53.0"
 
 [profile.release]
 lto = "thin"
@@ -30,6 +30,8 @@ opt-level = 2
 #   and what asked for each frame (`window.rs` `equipe_perf`; docs/PERF-2026-10.md).
 # - gpui-base: a text view's link underline and the room between list items
 #   are the style's to set (`TextViewStyle`).
+# - gpui-base: where the window's selection ends are drawn, for what floats
+#   over it (`TextSelection::ends`, `is_selecting`; `views/quote.rs`).
 [patch.crates-io]
 gpui-pre = { path = "vendor/gpui-pre" }
 gpui-base = { path = "vendor/gpui-base" }

@@ -112,6 +112,11 @@ pub struct BoardUi {
     pub wide: bool,
     /// How wide the list is, as last drawn: narrow lists drop columns.
     pub list_width: f32,
+    /// How wide the peek is: `PEEK`, or what the window leaves it over the
+    /// list (a narrow window, a big zoom); its rows lay out by it.
+    pub peek_width: f32,
+    /// A width the peek is held at (the snapshot script's `peekw:`).
+    pub peek_held: Option<f32>,
     /// How strong the live dots are now (0–1), stepped by the ticker.
     pub pulse: f32,
     pulse_step: u32,
@@ -174,6 +179,8 @@ impl BoardUi {
             keys_open: false,
             wide: true,
             list_width: 900.,
+            peek_width: PEEK,
+            peek_held: None,
             pulse: 1.,
             pulse_step: 0,
             _ticker: None,
@@ -1135,7 +1142,10 @@ impl Shell {
         self.board.wide = width >= PEEK_BESIDE_FROM;
         let peek = self.board.view.peek && self.board.wide && self.board.view.page.is_none();
         let side = if self.board.sidebar_hidden { 0. } else { self.board.sidebar_width };
-        self.board.list_width = width - side - if peek { PEEK } else { 0. } - 16.;
+        // Over the list, it takes no more than the room there is.
+        let room = if self.board.wide { PEEK } else { PEEK.min(width - side) };
+        self.board.peek_width = self.board.peek_held.unwrap_or(room).max(240.);
+        self.board.list_width = width - side - if peek { self.board.peek_width } else { 0. } - 16.;
         self.note_place();
     }
 }
@@ -1228,13 +1238,13 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             let list = if shell.tickets_board() { super::tickets::board(shell, cx) } else { list(shell, &rows, pick, cx).into_any_element() };
             let peek = pick.filter(|_| view.peek).map(|need| super::peek::panel(shell, need, cx));
             match (peek, shell.board.wide) {
-                (Some(peek), true) => h_flex().flex_1().min_h_0().items_start().child(list).child(div().w(px(PEEK)).h_full().flex_none().border_l_1().border_color(p.hair).child(peek)).into_any_element(),
+                (Some(peek), true) => h_flex().flex_1().min_h_0().items_start().child(list).child(div().w(px(shell.board.peek_width)).h_full().flex_none().border_l_1().border_color(p.hair).child(peek)).into_any_element(),
                 (Some(peek), false) => div()
                     .flex_1()
                     .min_h_0()
                     .relative()
                     .child(list)
-                    .child(div().absolute().top_0().right_0().bottom_0().w(px(PEEK)).bg(p.bg).border_l_1().border_color(p.hair).shadow_lg().child(peek))
+                    .child(div().absolute().top_0().right_0().bottom_0().w(px(shell.board.peek_width)).bg(p.bg).border_l_1().border_color(p.hair).shadow_lg().child(peek))
                     .into_any_element(),
                 (None, _) => list.into_any_element(),
             }

@@ -1444,6 +1444,42 @@ impl WindowSelectionState {
             })
     }
 
+    /// equipe: where the selection's ends were painted last frame — the caret
+    /// boxes at its first and last selected characters, of the earliest and
+    /// latest participant in document order — or, where no participant
+    /// paints them, the pointer's two points.
+    fn ends(&self, cx: &App) -> Option<(Bounds<Pixels>, Bounds<Pixels>)> {
+        if !self.has_selection(cx) {
+            return None;
+        }
+        let mut start: Option<(u64, Bounds<Pixels>)> = None;
+        let mut end: Option<(u64, Bounds<Pixels>)> = None;
+        for registration in self.participants.values() {
+            let geometry = &registration.registration;
+            if geometry.scope != self.active_scope || registration.participant.upgrade().is_none() {
+                continue;
+            }
+            let Some((edge_start, edge_end)) = geometry.selection_edges else {
+                continue;
+            };
+            let order = geometry.document_order;
+            if start.is_none_or(|(best, _)| order < best) {
+                start = Some((order, edge_start));
+            }
+            if end.is_none_or(|(best, _)| order >= best) {
+                end = Some((order, edge_end));
+            }
+        }
+        if let (Some((_, start)), Some((_, end))) = (start, end) {
+            return Some((start, end));
+        }
+        let points = self.snapshot()?.window_points()?;
+        let (a, c) = (points.anchor(), points.cursor());
+        let (first, last) = if (a.y, a.x) <= (c.y, c.x) { (a, c) } else { (c, a) };
+        let caret = gpui::size(px(1.), px(1.));
+        Some((Bounds::new(first, caret), Bounds::new(last, caret)))
+    }
+
     /// Returns whether a drag or a participant-local selection is active.
     pub fn has_selection(&self, cx: &App) -> bool {
         self.snapshot().is_some()
@@ -2321,6 +2357,17 @@ impl TextSelection {
     /// has an active participant-local selection such as select-all.
     pub fn has_selection(window: &mut Window, cx: &mut App) -> bool {
         live_text_selection_state(window, cx).is_some_and(|state| state.read(cx).has_selection(cx))
+    }
+
+    /// equipe: where the window's selection starts and ends on screen, as
+    /// painted last frame (see `WindowSelectionState::ends`), while one shows.
+    pub fn ends(window: &Window, cx: &App) -> Option<(Bounds<Pixels>, Bounds<Pixels>)> {
+        WindowSelectionState::existing(window, cx)?.read(cx).ends(cx)
+    }
+
+    /// equipe: whether the pointer is still dragging a selection out.
+    pub fn is_selecting(window: &Window, cx: &App) -> bool {
+        WindowSelectionState::existing(window, cx).is_some_and(|state| state.read(cx).is_selecting)
     }
 
     /// Clears window selection and every participant's local selection.
