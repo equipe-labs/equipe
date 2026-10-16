@@ -15,7 +15,7 @@ use equipe_core::protocol::decide::{Answer, Choice, Question, QuestionSet};
 use equipe_core::protocol::rpc::{Hello, Message};
 use equipe_core::protocol::team::{Change, TeamChange};
 use equipe_core::protocol::{
-    Access, Approval, Decision, Engine, EnginePlan, Entry, Event, Member, Mode, PlanUsage, PlanWindow, SessionInfo, SessionState, Snapshot, SubagentInfo, Ticket, TicketKind, TicketStatus, TurnOutcome, Usage, WorkInfo,
+    Access, Approval, Decision, Engine, EnginePlan, EngineState, EngineStatus, Entry, Event, Member, MemberRef, Mode, PlanUsage, PlanWindow, SessionInfo, SessionState, SignInStep, Snapshot, SubagentInfo, Ticket, TicketKind, TicketStatus, TurnOutcome, Usage, WorkInfo,
 };
 use serde_json::{Value, json};
 
@@ -948,8 +948,21 @@ fn message_vectors() -> Value {
 
     // The disk's room, told on a change of level (and in the snapshot while it's short).
     tell(&mut core, &mut examples, "event: disk level", Event::DiskLevel { status: disk_status() });
+    // Where the engines stand on the daemon's machine: asked, and told to every screen.
+    ask(&mut core, &mut examples, "engines", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "engines" } }));
+    let mut codex = EngineStatus::new(Engine::Codex, EngineState::SignedIn);
+    codex.members = vec![MemberRef { squad: SQUAD.into(), member: "backend".into() }];
+    let mut claude = EngineStatus::new(Engine::Claude, EngineState::SignedIn);
+    claude.plan = Some("max".into());
+    claude.members = vec![MemberRef { squad: SQUAD.into(), member: "pm".into() }];
+    tell(&mut core, &mut examples, "event: engines", Event::Engines { engines: vec![claude, codex] });
+    // A sign-in's code signs the daemon's machine in to whoever enters it: it never reaches a phone.
+    let code = Event::SignIn { engine: Engine::Codex, step: SignInStep::DeviceCode { url: "https://auth.openai.com/codex/device".into(), code: "ABCD-12345".into() } };
+    assert!(core.on_event(&device_id(), SQUAD, &code).is_empty());
 
     // Not from a phone.
+    ask(&mut core, &mut examples, "engine sign-in is refused", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "sign_in", "engine": "codex" } }));
+    ask(&mut core, &mut examples, "engine sign-out is refused", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "sign_out", "engine": "codex" } }));
     ask(&mut core, &mut examples, "merge is refused", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "merge", "squad": SQUAD, "ticket": 38, "push": true } }));
     ask(&mut core, &mut examples, "a command for another squad than the frame's", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "accept", "squad": "home", "ticket": 1 } }));
     ask(&mut core, &mut examples, "a command for a squad not followed", Some("home"), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "accept", "squad": "home", "ticket": 1 } }));

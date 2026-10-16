@@ -67,6 +67,8 @@ pub struct SettingsUi {
     /// Where each control that opens a pop-up was last drawn.
     anchors: Rc<RefCell<HashMap<Pop, Bounds<Pixels>>>>,
     pub scroll: ScrollHandle,
+    /// The AI platforms' buttons, for Tab (`super::engines::KEYS` a card).
+    pub engine_keys: Vec<FocusHandle>,
 }
 
 impl SettingsUi {
@@ -79,6 +81,7 @@ impl SettingsUi {
             pop: None,
             anchors: Rc::default(),
             scroll: ScrollHandle::new(),
+            engine_keys: (0..crate::engines::PLATFORMS.len() * super::engines::KEYS).map(|_| cx.focus_handle().tab_stop(true)).collect(),
         }
     }
 
@@ -91,7 +94,7 @@ impl SettingsUi {
 
 /// One row: what it is, a line saying what it does, and its control. `words`
 /// are what else search finds it by.
-struct Line {
+pub(super) struct Line {
     label: AnyElement,
     text: String,
     desc: Option<(String, bool)>,
@@ -99,27 +102,29 @@ struct Line {
     control: Option<AnyElement>,
     /// A row of a list (a shortcut): shorter, no description.
     compact: bool,
+    /// Drawn under the words, across the row (a code to enter, a usage bar).
+    below: Option<AnyElement>,
 }
 
 impl Line {
-    fn new(label: impl Into<String>, desc: impl Into<String>) -> Self {
+    pub(super) fn new(label: impl Into<String>, desc: impl Into<String>) -> Self {
         let label = label.into();
         let desc: String = desc.into();
-        Self { label: div().child(label.clone()).into_any_element(), text: label, desc: (!desc.is_empty()).then_some((desc, false)), words: String::new(), control: None, compact: false }
+        Self { label: div().child(label.clone()).into_any_element(), text: label, desc: (!desc.is_empty()).then_some((desc, false)), words: String::new(), control: None, compact: false, below: None }
     }
 
-    fn control(mut self, control: impl IntoElement) -> Self {
+    pub(super) fn control(mut self, control: impl IntoElement) -> Self {
         self.control = Some(control.into_any_element());
         self
     }
 
-    fn words(mut self, words: impl Into<String>) -> Self {
+    pub(super) fn words(mut self, words: impl Into<String>) -> Self {
         self.words = words.into();
         self
     }
 
     /// The description in the danger colour: a choice that takes care.
-    fn warn(mut self, warn: bool) -> Self {
+    pub(super) fn warn(mut self, warn: bool) -> Self {
         if let Some((_, w)) = self.desc.as_mut() {
             *w = warn;
         }
@@ -127,8 +132,14 @@ impl Line {
     }
 
     /// The label drawn otherwise (a member's mark, a rule in monospace); `text` stays what search reads.
-    fn label_el(mut self, el: impl IntoElement) -> Self {
+    pub(super) fn label_el(mut self, el: impl IntoElement) -> Self {
         self.label = el.into_any_element();
+        self
+    }
+
+    /// Something across the row under its words.
+    pub(super) fn below(mut self, el: impl IntoElement) -> Self {
+        self.below = Some(el.into_any_element());
         self
     }
 
@@ -137,7 +148,7 @@ impl Line {
     }
 }
 
-struct Section {
+pub(super) struct Section {
     title: Option<String>,
     lines: Vec<Line>,
     /// A line under the card: whose setting it is, what follows from it.
@@ -145,12 +156,12 @@ struct Section {
 }
 
 impl Section {
-    fn new(title: impl Into<String>, lines: Vec<Line>) -> Self {
+    pub(super) fn new(title: impl Into<String>, lines: Vec<Line>) -> Self {
         let title: String = title.into();
         Self { title: (!title.is_empty()).then_some(title), lines, foot: None }
     }
 
-    fn foot(mut self, foot: impl Into<String>) -> Self {
+    pub(super) fn foot(mut self, foot: impl Into<String>) -> Self {
         self.foot = Some(foot.into());
         self
     }
@@ -295,7 +306,7 @@ fn picker(shell: &Shell, pop: Pop, label: String, min: f32, cx: &mut Context<She
 }
 
 /// A command to type, in monospace, with a button that copies it.
-fn command_chip(p: Palette, id: &'static str, command: &'static str) -> AnyElement {
+pub(super) fn command_chip(p: Palette, id: impl Into<ElementId>, command: &'static str) -> AnyElement {
     h_flex()
         .flex_none()
         .gap_1()
@@ -306,7 +317,7 @@ fn command_chip(p: Palette, id: &'static str, command: &'static str) -> AnyEleme
 }
 
 /// Plain words where a control would be: a value to read.
-fn value(p: Palette, text: impl Into<SharedString>) -> AnyElement {
+pub(super) fn value(p: Palette, text: impl Into<SharedString>) -> AnyElement {
     div().flex_none().max_w(px(260.)).truncate().text_size(px(SMALL)).text_color(p.text2).child(text.into()).into_any_element()
 }
 
@@ -729,6 +740,7 @@ fn about(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
 fn sections(shell: &Shell, category: Category, cx: &mut Context<Shell>) -> Vec<Section> {
     match category {
         Category::General => general(shell, cx),
+        Category::Engines => super::engines::sections(shell, cx),
         Category::Squad => squad(shell, cx),
         Category::Team => team(shell, cx),
         Category::Permissions => permissions(shell, cx),
@@ -742,6 +754,7 @@ fn sections(shell: &Shell, category: Category, cx: &mut Context<Shell>) -> Vec<S
 fn intro(category: Category) -> &'static str {
     match category {
         Category::General => t!("settings.intro_general"),
+        Category::Engines => t!("settings.intro_engines"),
         Category::Squad => t!("settings.intro_squad"),
         Category::Team => t!("settings.intro_team"),
         Category::Permissions => t!("settings.intro_permissions"),
@@ -756,7 +769,8 @@ fn intro(category: Category) -> &'static str {
 
 fn draw_line(p: Palette, line: Line, first: bool) -> AnyElement {
     let compact = line.compact;
-    h_flex()
+    let below = line.below;
+    let row = h_flex()
         .w_full()
         .min_h(px(if compact { 40. } else if line.desc.is_some() { 60. } else { 48. }))
         .px_4()
@@ -772,8 +786,11 @@ fn draw_line(p: Palette, line: Line, first: bool) -> AnyElement {
                 .child(div().text_size(px(if compact { SMALL } else { UI })).text_color(p.text).child(line.label))
                 .children(line.desc.map(|(desc, warn)| div().text_size(px(12.5)).line_height(px(18.)).text_color(if warn { p.danger() } else { p.muted }).child(desc))),
         )
-        .children(line.control.map(|c| div().flex_none().flex().items_center().child(c)))
-        .into_any_element()
+        .children(line.control.map(|c| div().flex_none().flex().items_center().child(c)));
+    match below {
+        None => row.into_any_element(),
+        Some(below) => v_flex().w_full().when(!first, |r| r.border_t_1().border_color(p.hair)).child(row.border_t_0()).child(div().w_full().px_4().pb(px(12.)).child(below)).into_any_element(),
+    }
 }
 
 fn draw_section(p: Palette, section: Section) -> AnyElement {
@@ -1040,8 +1057,10 @@ impl Shell {
     /// ⌘,, the gear: settings, at `category` (or where it was left).
     pub fn open_settings(&mut self, category: Option<Category>, window: &mut Window, cx: &mut Context<Self>) {
         crate::tips::hide(cx);
-        if category.unwrap_or(self.settings.category) == Category::Squad {
-            self.ask_devices(cx);
+        match category.unwrap_or(self.settings.category) {
+            Category::Squad => self.ask_devices(cx),
+            Category::Engines => self.ask_engines(cx),
+            _ => {}
         }
         if self.screen != Screen::Settings {
             self.settings.back_to = self.screen;
@@ -1079,8 +1098,10 @@ impl Shell {
     }
 
     pub fn settings_go(&mut self, category: Category, cx: &mut Context<Self>) {
-        if category == Category::Squad {
-            self.ask_devices(cx);
+        match category {
+            Category::Squad => self.ask_devices(cx),
+            Category::Engines => self.ask_engines(cx),
+            _ => {}
         }
         if self.settings.category != category {
             self.settings.category = category;
@@ -1108,6 +1129,14 @@ impl Shell {
                 self.settings_go(next, cx);
             }
             "f" if modifiers.platform => self.settings.search.update(cx, |s, cx| s.focus(window, cx)),
+            // Tab walks the page's buttons and switches.
+            "tab" if !typing && !modifiers.control && !modifiers.alt && !modifiers.platform => {
+                if modifiers.shift {
+                    window.focus_prev(cx);
+                } else {
+                    window.focus_next(cx);
+                }
+            }
             _ => return false,
         }
         cx.notify();

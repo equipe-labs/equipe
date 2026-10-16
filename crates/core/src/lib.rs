@@ -15,6 +15,7 @@ pub mod browser;
 pub mod desktop;
 pub mod desktop_gate;
 pub mod disk;
+pub mod engines;
 pub mod eta;
 pub mod gateway;
 pub mod i18n;

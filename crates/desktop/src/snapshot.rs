@@ -9,7 +9,7 @@
 //! `menu:<inbox|working|all|view0…>` (a sidebar item) · `cmenu:<attach|recent|to|model|effort|mode|context>` (a composer menu) · `bkey:<key>` (a work
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
-//! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `popup:subagents:<member>` · `subagent:<member>` (its first subagent's row, clicked) · `settings[:<category>]` (settings, at general · squad · team · permissions · projects · browser · keys · about) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
+//! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `popup:subagents:<member>` · `subagent:<member>` (its first subagent's row, clicked) · `settings[:<category>]` (settings, at general · engines · squad · team · permissions · projects · browser · keys · about) · `eng:<signin|cancel|signout|sure|keep|tab>:<codex|claude>` (an AI platform's card) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
 //! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `sdrag:<x1>,<y1>,<x2>,<y2>` (a selection dragged out) · `peekw:<px>` (the peek held that wide) · `quote:<open|copy|type:<words>|send|close|jump>` (asking about the words selected) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
@@ -426,6 +426,27 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                         "notasked" => shell.bell.permission = crate::notify::Permission::NotAsked,
                         "denied" => shell.bell.permission = crate::notify::Permission::Denied,
                         "allowed" => shell.bell.permission = crate::notify::Permission::Allowed,
+                        _ => {}
+                    }
+                    cx.notify();
+                }),
+                // An AI platform's card in settings: `eng:<signin|cancel|signout|sure|keep|tab>:<codex|claude>`
+                // (로그인, 취소, 로그아웃 and its 로그아웃 or 유지; `tab` moves the keys' focus to its first button).
+                "eng" => shell.update(cx, |shell, cx| {
+                    let (act, which) = arg.split_once(':').unwrap_or((arg.as_str(), "codex"));
+                    let engine = if which == "claude" { equipe_core::protocol::Engine::Claude } else { equipe_core::protocol::Engine::Codex };
+                    match act {
+                        "signin" => shell.engine_sign_in(engine, cx),
+                        "cancel" => shell.engine_cancel(engine, cx),
+                        "signout" => shell.engines.ask_sign_out(engine),
+                        "sure" => shell.engine_sign_out(engine, cx),
+                        "keep" => shell.engines.keep(engine),
+                        "tab" => {
+                            let at = crate::engines::PLATFORMS.iter().position(|p| p.engine == engine).unwrap_or(0);
+                            if let Some(focus) = shell.settings.engine_keys.get(at * crate::views::engines::KEYS) {
+                                window.focus(focus, cx);
+                            }
+                        }
                         _ => {}
                     }
                     cx.notify();

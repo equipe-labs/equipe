@@ -54,6 +54,7 @@
 //!
 //! `FAKE_DISK=low|critical|full`: the disk runs short, with a realistic look
 //! at what takes it and a clean that gives it back (`fake_daemon/disk.rs`).
+//! `FAKE_ENGINES`: settings' AI platforms in each state (`fake_daemon/engines.rs`).
 //!
 //! Pairing a phone: a code at once, and two phones paired already.
 //! `FAKE_PAIR=ask` has a phone ask 1.5 s after the code shows (`allow` pairs
@@ -770,6 +771,8 @@ mod history;
 mod pictures;
 #[path = "fake_daemon/team.rs"]
 mod team;
+#[path = "fake_daemon/engines.rs"]
+mod engines;
 
 #[path = "fake_daemon/disk.rs"]
 mod disk;
@@ -957,6 +960,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             allowed: allowed().lock().unwrap().clone(),
                             browsers_shown: true,
                             disk: disk::status(),
+                            plan: engines::plan(),
                             ..Default::default()
                         };
                         team::on_hello(&events);
@@ -1152,7 +1156,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     let _ = events.send(Event::Notice { session: 1, text: "🖐 브라우저를 돌려줬습니다.".into() });
                                     turns.lock().await.insert(1, tokio::spawn(turn(1, events.clone(), seconds)));
                                 }
-                                if browser::on_command(&other, &events) || team::on_command(&other, &events) || disk::on_command(&other, &events) {
+                                if browser::on_command(&other, &events) || team::on_command(&other, &events) || disk::on_command(&other, &events) || engines::on_command(&other, &events) {
                                     continue;
                                 }
                                 if let Some(said) = on_board_command(&other) {

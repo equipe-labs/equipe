@@ -291,6 +291,29 @@ are for it.
 Spike knobs (env): `EQUIPE_AGENTS` (3), `EQUIPE_RATE` lines/s per mock agent
 (200, `0` = idle), `EQUIPE_TICK_MS` UI poll interval (33), `EQUIPE_W`/`EQUIPE_H`.
 
+## AI 플랫폼 (the engines)
+
+Settings ▸ AI 플랫폼 has a card for each entry in `engines.rs`'s `PLATFORMS` (mark, name, its
+CLI, how it signs in, its install line and guide, the line saying what it adds): one more
+platform is one more entry. Each card says where the engine stands on the daemon's machine
+(`engines` → `Event::Engines`: signed in and the plan when its CLI says, signed out, CLI not
+installed, or couldn't check), who is on it now, and its usage (the Claude plan's windows;
+room for the rest). Each engine is the person's own CLI with its own login, which equipe asks
+about and never reads.
+
+Codex signs in from the card: the daemon runs `codex login` on its machine — the browser
+opens there, which is this Mac when the window is local — or, when the window is on another
+Mac over SSH, `codex login --device-auth`, whose address and one-time code the card shows
+(the page opens here; 코드 복사). Every screen follows the sign-in (`Event::SignIn`), and the
+card turns signed in when it ends, without a restart; 취소 stops the CLI, failures say what
+to do (device codes turned off in ChatGPT's security settings, out of time, no answer from an
+older daemon, a lost connection) with 다시 시도. 로그아웃 asks first, then runs `codex logout`.
+equipe's own older login (`equipe login codex`) shows as "이전 방식" when it's kept. Claude Code
+is the person's own: on this Mac "터미널에서 로그인" opens Terminal running `claude auth login`
+(a `.command` file; the card looks again every few seconds), over SSH the card says what to run
+there. A phone may see where the engines stand, never sign one in or out, and never gets a
+code. `FAKE_ENGINES` in the fake daemon shows each state.
+
 ## Pairing a phone
 
 "휴대폰 연결…" (the app menu, the account menu at the sidebar's foot, or settings ▸ 스쿼드와

@@ -334,6 +334,32 @@ Answers to `devices` and `remove` carry `"op"`; a device row is `{ id, name, pla
 online, seen? }`, `seen` being when it last connected or left (kept in `remote.json`). The code
 reaches the screen only in `pair_offer` and is never logged or kept on either side.
 
+### The engines (AI platforms)
+
+A screen asks where each engine stands on the daemon's machine with the command `engines`; every
+screen (a phone too) then gets `engines { engines: [{ engine, state, plan?, per_token?, detail?,
+members?, signing_in?, legacy? }] }` — `state`: `signed_in`, `signed_out`, `not_installed`, or
+`unknown` (also what an older screen reads for a state it doesn't know); `members`: `[{ squad,
+member }]` on that engine now; `legacy`: equipe's own older Codex login (`equipe login codex`) is
+kept beside the tool's. It is told again after every sign-in and sign-out. Entries for engines a
+screen doesn't know are left out, not an error. Each engine is the person's own command-line tool
+with its own login, which equipe asks about (`claude auth status`, `codex login status`) and never
+reads.
+
+A screen signs Codex in with `sign_in { engine: "codex", device? }`: the daemon runs `codex login`
+on its own machine — the browser opens there — or, with `device: true` (a window on another Mac),
+`codex login --device-auth`. Every screen gets `sign_in { engine, step }`, `step` being
+`{ kind: "browser", url? }` (the page to open by hand if the browser didn't), `{ kind:
+"device_code", url, code }`, `{ kind: "done" }`, `{ kind: "failed", why, detail? }` (`why`:
+`not_installed`, `device_code_off`, `expired`, `unsupported`, `failed`) or `{ kind: "cancelled" }`
+(after `sign_in_cancel { engine }`). `sign_out { engine }` runs `codex logout`. Claude Code signs in
+on its own (`claude auth login`, in a terminal on the daemon's machine): `sign_in` for it fails
+with `unsupported`.
+
+A phone may send `engines`, never `sign_in`, `sign_in_cancel` or `sign_out` (dropped like any
+command a device may not send), and never gets `sign_in` events: a one-time code signs the
+daemon's machine in to whoever enters it.
+
 ### A phone forgets itself
 
 A phone can also forget itself ("Erase this phone" in the app, for account deletion): it sends
@@ -454,7 +480,7 @@ The daemon follows a device like one more screen, with less reach than the termi
 - **may:** `hello`, `squads`, `upload`, `upload_cancel` (files only: see Attachments), `read_image` (a member's
   pictures: see A member's pictures), and the commands `submit`, `interrupt`, `send_now`, `accept`, `reopen`,
   `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `approve_team_change`,
-  `decline_team_change`, `focus`, `refresh`.
+  `decline_team_change`, `focus`, `refresh`, `engines` (where the engines stand; never signing one in or out).
 - `submit` and `answer_questions` may say what the message is about: `about` — the project the
   phone shows, or `null` for the whole squad. Left out, the daemon takes the project in focus
   (the last `focus` any screen sent). Said while the member works, a message steers it

@@ -48,6 +48,7 @@ pub fn equipe_home() -> PathBuf {
     }
 }
 
+#[derive(Clone)]
 pub struct CredentialStore {
     dir: PathBuf,
 }
@@ -91,6 +92,15 @@ impl CredentialStore {
         serde_json::from_slice(&bytes)
             .map(Some)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
+    }
+
+    /// Forget `provider`'s login: true when there was one.
+    pub fn remove(&self, provider: &str) -> io::Result<bool> {
+        match fs::remove_file(self.path(provider)) {
+            Ok(()) => Ok(true),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err),
+        }
     }
 }
 
@@ -157,6 +167,15 @@ mod tests {
         let store = CredentialStore::new(temp_home("roundtrip"));
         store.save(&sample()).unwrap();
         assert_eq!(store.load("openai").unwrap(), Some(sample()));
+    }
+
+    #[test]
+    fn removing_a_login_says_whether_there_was_one() {
+        let store = CredentialStore::new(temp_home("remove"));
+        assert!(!store.remove("openai").unwrap());
+        store.save(&sample()).unwrap();
+        assert!(store.remove("openai").unwrap());
+        assert_eq!(store.load("openai").unwrap(), None);
     }
 
     #[test]

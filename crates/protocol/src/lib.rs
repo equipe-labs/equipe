@@ -729,6 +729,121 @@ pub enum Command {
     /// `id`s): only the ones it may remove, looked at again first. Answered by
     /// [`Event::DiskCleaned`], then a fresh [`Event::DiskReport`].
     DiskClean { ids: Vec<String> },
+    /// Where each engine stands on the daemon's machine: answered, to every
+    /// screen, by [`Event::Engines`].
+    Engines,
+    /// Sign `engine` in on the daemon's machine, with its own command-line
+    /// tool (`codex login`), whose login it keeps and equipe never reads.
+    /// `device`: with a one-time code the screen shows, for a browser on
+    /// another machine (`codex login --device-auth`); else the browser opens
+    /// on the daemon's machine. Claude Code is signed in by the person
+    /// (`claude auth login` in a terminal). Answered, to every screen, by
+    /// [`Event::SignIn`].
+    SignIn {
+        engine: Engine,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        device: bool,
+    },
+    /// Stop the sign-in under way: answered by [`SignInStep::Cancelled`].
+    SignInCancel { engine: Engine },
+    /// Sign `engine` out with its own tool (`codex logout`). Claude Code's
+    /// login is the person's own: equipe never touches it. Answered by
+    /// [`Event::Engines`].
+    SignOut { engine: Engine },
+}
+
+/// Where an engine stands on the daemon's machine ([`Event::Engines`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineStatus {
+    pub engine: Engine,
+    /// Its own login — the one its command-line tool keeps.
+    pub state: EngineState,
+    /// The plan it draws on, when its tool says: `max`, `pro` (Claude), `plus` (ChatGPT).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    /// Signed in, but billed per token rather than against a plan (an API key).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub per_token: bool,
+    /// Why the state is [`EngineState::Unknown`], in the tool's words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// The members on it now, across squads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<MemberRef>,
+    /// A sign-in is under way on the daemon's machine.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub signing_in: bool,
+    /// equipe's own older login to it is kept too (`equipe login codex`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub legacy: bool,
+}
+
+impl EngineStatus {
+    pub fn new(engine: Engine, state: EngineState) -> Self {
+        Self { engine, state, plan: None, per_token: false, detail: None, members: Vec::new(), signing_in: false, legacy: false }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EngineState {
+    SignedIn,
+    SignedOut,
+    /// Its command-line tool (`claude`, `codex`) isn't on the daemon's machine.
+    NotInstalled,
+    /// The check failed (`detail` says why) — or a state this build doesn't know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// How a sign-in goes ([`Event::SignIn`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SignInStep {
+    /// The browser opened on the daemon's machine; `url`, when the tool
+    /// printed it, is the address to open by hand if it didn't.
+    Browser {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
+    /// Open `url` in any browser and enter `code` there. A code signs the
+    /// daemon's machine in to whoever enters it: shown to the person's screens
+    /// only, never to a phone, never logged.
+    DeviceCode { url: String, code: String },
+    /// Signed in; the tool keeps the login on the daemon's machine.
+    Done,
+    Failed {
+        why: SignInFailure,
+        /// More, in the tool's words, when there is any.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        detail: String,
+    },
+    /// Stopped before it finished.
+    Cancelled,
+}
+
+/// Why a sign-in didn't finish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignInFailure {
+    /// The tool isn't on the daemon's machine.
+    NotInstalled,
+    /// Sign-in with a code is turned off for the account (ChatGPT → Settings →
+    /// Security, or the workspace's admin).
+    DeviceCodeOff,
+    /// Nobody finished it in the browser in time.
+    Expired,
+    /// The engine signs in on its own (Claude Code), not through equipe.
+    Unsupported,
+    /// Something else — or a reason this build doesn't know.
+    #[serde(other)]
+    Failed,
+}
+
+/// The engines a newer daemon lists that this build doesn't know are left out.
+fn known_engines<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<EngineStatus>, D::Error> {
+    let listed: Vec<serde_json::Value> = Vec::deserialize(d)?;
+    Ok(listed.into_iter().filter_map(|e| serde_json::from_value(e).ok()).collect())
 }
 
 /// A phone paired with the daemon's machine.
@@ -1216,6 +1331,14 @@ pub enum Event {
     DiskReport { report: disk::DiskReport },
     /// What a [`Command::DiskClean`] gave back.
     DiskCleaned { cleaned: disk::DiskCleaned },
+    /// Where each engine stands on the daemon's machine ([`Command::Engines`]),
+    /// told again whenever a sign-in or sign-out changes it.
+    Engines {
+        #[serde(deserialize_with = "known_engines")]
+        engines: Vec<EngineStatus>,
+    },
+    /// A sign-in to `engine` moved on ([`Command::SignIn`]).
+    SignIn { engine: Engine, step: SignInStep },
 }
 
 impl Event {
@@ -1296,6 +1419,9 @@ impl Event {
             | Event::DiskLevel { .. }
             | Event::DiskReport { .. }
             | Event::DiskCleaned { .. } => None,
+            // The engines: the daemon machine's, for every screen.
+            | Event::Engines { .. }
+            | Event::SignIn { .. } => None,
         }
     }
 
@@ -1308,6 +1434,8 @@ impl Event {
                 | Event::DiskLevel { .. }
                 | Event::DiskReport { .. }
                 | Event::DiskCleaned { .. }
+                | Event::Engines { .. }
+                | Event::SignIn { .. }
                 | Event::BrowserDialogClosed { .. }
                 | Event::BrowserTabs { squad: None, .. }
                 | Event::BrowserControl { squad: None, .. }
@@ -2015,5 +2143,60 @@ mod tests {
         let Event::Devices { devices, connected, .. } = old else { panic!() };
         assert_eq!((devices[0].seen, devices[0].online, connected), (None, false, false));
         assert_eq!(serde_json::to_value(PairEnd::Unavailable).unwrap(), "unavailable");
+    }
+
+    #[test]
+    fn signing_in_to_an_engine_travels_as_json_to_every_screen() {
+        let commands = [
+            Command::Engines,
+            Command::SignIn { engine: Engine::Codex, device: false },
+            Command::SignIn { engine: Engine::Codex, device: true },
+            Command::SignInCancel { engine: Engine::Codex },
+            Command::SignOut { engine: Engine::Codex },
+        ];
+        for command in commands {
+            let json = serde_json::to_string(&command).unwrap();
+            assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), command);
+        }
+        assert_eq!(serde_json::to_value(Command::SignIn { engine: Engine::Codex, device: false }).unwrap(), json!({ "type": "sign_in", "engine": "codex" }));
+        assert_eq!(serde_json::to_value(Command::SignIn { engine: Engine::Codex, device: true }).unwrap(), json!({ "type": "sign_in", "engine": "codex", "device": true }));
+
+        let mut codex = EngineStatus::new(Engine::Codex, EngineState::SignedIn);
+        codex.legacy = true;
+        codex.members = vec![MemberRef { squad: "acme".into(), member: "backend".into() }];
+        let mut claude = EngineStatus::new(Engine::Claude, EngineState::SignedIn);
+        claude.plan = Some("max".into());
+        let events = [
+            Event::Engines { engines: vec![claude, codex, EngineStatus::new(Engine::Codex, EngineState::NotInstalled)] },
+            Event::SignIn { engine: Engine::Codex, step: SignInStep::Browser { url: Some("https://auth.openai.com/oauth/authorize?state=s".into()) } },
+            Event::SignIn { engine: Engine::Codex, step: SignInStep::DeviceCode { url: "https://auth.openai.com/codex/device".into(), code: "ABCD-12345".into() } },
+            Event::SignIn { engine: Engine::Codex, step: SignInStep::Done },
+            Event::SignIn { engine: Engine::Codex, step: SignInStep::Failed { why: SignInFailure::DeviceCodeOff, detail: "device code login is not enabled".into() } },
+            Event::SignIn { engine: Engine::Codex, step: SignInStep::Cancelled },
+        ];
+        for event in events {
+            assert_eq!((event.squad(), event.session(), event.for_everyone()), (None, None, true));
+            let json = serde_json::to_string(&event).unwrap();
+            assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event);
+        }
+        // Quiet when there's nothing to say: a signed-out engine is its name and state.
+        let quiet = serde_json::to_value(EngineStatus::new(Engine::Codex, EngineState::SignedOut)).unwrap();
+        assert_eq!(quiet, json!({ "engine": "codex", "state": "signed_out" }));
+        let step = serde_json::to_value(SignInStep::Failed { why: SignInFailure::Expired, detail: String::new() }).unwrap();
+        assert_eq!(step, json!({ "kind": "failed", "why": "expired" }));
+        assert_eq!(serde_json::to_value(SignInStep::Browser { url: None }).unwrap(), json!({ "kind": "browser" }));
+    }
+
+    #[test]
+    fn a_newer_daemons_engines_and_reasons_dont_break_an_older_screen() {
+        let said = json!({ "type": "engines", "engines": [
+            { "engine": "gemini", "state": "signed_in" },
+            { "engine": "codex", "state": "rate_limited" },
+            { "engine": "claude", "state": "signed_in", "plan": "max" },
+        ]});
+        let Event::Engines { engines } = serde_json::from_value(said).unwrap() else { panic!() };
+        assert_eq!(engines.iter().map(|e| (e.engine, e.state)).collect::<Vec<_>>(), [(Engine::Codex, EngineState::Unknown), (Engine::Claude, EngineState::SignedIn)]);
+        let failed: SignInStep = serde_json::from_value(json!({ "kind": "failed", "why": "region_blocked" })).unwrap();
+        assert_eq!(failed, SignInStep::Failed { why: SignInFailure::Failed, detail: String::new() });
     }
 }

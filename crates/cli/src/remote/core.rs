@@ -150,6 +150,9 @@ pub fn pairing_url(relay: &str, id: &str, public: &str, secret: &[u8], name: &st
 /// proposed to approve or decline; starting, closing, merging and changing
 /// modes stay at the console — and so does writing, editing and rearranging
 /// tickets (the phone answers what the board asks; it doesn't plan it yet).
+/// A phone may ask where the engines stand, but never sign one in or out: a
+/// phone (or whoever holds it) must not put another account behind the
+/// person's squad, nor see the one-time code that would.
 pub fn allowed(command: Command) -> Option<Command> {
     match command {
         Command::Decide { squad, approval, decision: Decision::Always } => Some(Command::Decide { squad, approval, decision: Decision::Allow }),
@@ -166,7 +169,8 @@ pub fn allowed(command: Command) -> Option<Command> {
         | Command::ApproveTeamChange { .. }
         | Command::DeclineTeamChange { .. }
         | Command::Focus { .. }
-        | Command::Refresh { .. }) => Some(c),
+        | Command::Refresh { .. }
+        | Command::Engines) => Some(c),
         _ => None,
     }
 }
@@ -619,8 +623,9 @@ impl Core {
     /// An event of a squad a device follows: on to the device.
     pub fn on_event(&mut self, device: &str, squad: &str, event: &Event) -> Vec<Action> {
         // Pictures of a browser someone at the Mac watches stay on the Mac, and
-        // so does the disk panel's look (the phone gets the disk's level).
-        if !self.online.contains(device) || matches!(event, Event::BrowserFrame { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. }) {
+        // so does the disk panel's look (the phone gets the disk's level), and a
+        // sign-in's one-time code: it is for the person's screens.
+        if !self.online.contains(device) || matches!(event, Event::BrowserFrame { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. } | Event::SignIn { .. }) {
             return vec![];
         }
         self.frame_for(device, Some(squad), &Message::event(event)).into_iter().collect()
@@ -1159,6 +1164,19 @@ pub(crate) mod tests {
     #[test]
     fn a_phone_can_neither_pair_another_nor_forget_one() {
         for command in [Command::PairStart, Command::PairAnswer { approve: true }, Command::PairCancel, Command::Devices, Command::Unpair { device: "x".into() }] {
+            assert_eq!(allowed(command.clone()), None, "{command:?} stays at the person's screens");
+        }
+    }
+
+    #[test]
+    fn a_phone_sees_where_the_engines_stand_but_signs_none_in_or_out() {
+        use equipe_core::protocol::Engine;
+        assert_eq!(allowed(Command::Engines), Some(Command::Engines));
+        for command in [
+            Command::SignIn { engine: Engine::Codex, device: true },
+            Command::SignInCancel { engine: Engine::Codex },
+            Command::SignOut { engine: Engine::Codex },
+        ] {
             assert_eq!(allowed(command.clone()), None, "{command:?} stays at the person's screens");
         }
     }
