@@ -52,3 +52,60 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: shellcheck -s sh install.sh paste-setup.sh
+
+  # The release's builds, on main, so their caches live where tag runs can
+  # read them: what a tag run saves stays with that tag and no later release
+  # finds it. Same toolchain, targets, commands and shared keys as release.yml.
+  warm-release:
+    name: warm release cache (${{ matrix.target }})
+    if: github.event_name == 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+            package: equipe
+            key: release-aarch64-apple-darwin
+          - target: x86_64-apple-darwin
+            os: macos-14
+            package: equipe
+            key: release-x86_64-apple-darwin
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            package: equipe
+            key: release-x86_64-unknown-linux-musl
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            package: equipe
+            key: release-aarch64-unknown-linux-musl
+          - target: aarch64-apple-darwin
+            os: macos-14
+            package: equipe-desktop
+            key: release-desktop-aarch64
+          - target: x86_64-apple-darwin
+            os: macos-14
+            package: equipe-desktop
+            key: release-desktop-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: musl toolchain
+        if: contains(matrix.target, 'linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.key }}
+          cache-workspace-crates: ${{ matrix.package == 'equipe-desktop' }}
+      # As release.yml builds each: the app with its macOS floor, the CLI without.
+      - name: Build
+        if: matrix.package == 'equipe'
+        run: cargo build --release --locked -p equipe --target ${{ matrix.target }}
+      - name: Build the app
+        if: matrix.package == 'equipe-desktop'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+        run: cargo build --release --locked -p equipe-desktop --target ${{ matrix.target }}

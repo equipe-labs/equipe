@@ -27,6 +27,7 @@ use crate::ui;
 use equipe_core::t;
 
 mod decide;
+mod turn;
 
 /// How many columns `text` takes on screen — a Korean letter takes two.
 fn cols(text: &str) -> usize {
@@ -368,7 +369,11 @@ struct Rows {
 fn rows(app: &App, theme: Theme, screen: Rect) -> Rows {
     let area = content(screen);
     let mut asking = approval_lines(app, theme, area.width.saturating_sub(2) as usize);
-    // No request for permission: a member's questions, where it would be.
+    // No request for permission: a waiting ticket's card, open — or a member's
+    // questions — where it would be.
+    if asking.is_empty() {
+        asking = turn::lines(app, theme, area.width.saturating_sub(2) as usize);
+    }
     if asking.is_empty() {
         asking = decide::lines(app, theme, area.width.saturating_sub(2) as usize);
     }
@@ -2992,6 +2997,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
+            remaining: Vec::new(),
             updated_at: None,
             priority: Default::default(), rank: 0,
         }
@@ -3722,7 +3728,7 @@ mod tests {
         assert_eq!(at("2. Decide when"), at("1. Tell me the review contact") + 1, "one ask a line:\n{shot}");
         assert_eq!(at("3. Check the shots"), at("2. Decide when") + 1, "{shot}");
         assert!(lines[at("3. Check the shots")].contains("▎"), "{shot}");
-        assert!(shot.contains("/resume T-117"), "answering stays as it was:\n{shot}");
+        assert!(shot.contains("/answer T-117"), "how to answer, item by item:\n{shot}");
         assert!(!shot.contains("waits for you —"), "not one run-on line:\n{shot}");
         // Answered: the line it came as.
         t.status = TicketStatus::InProgress;

@@ -79,17 +79,19 @@ pub struct Button {
     tip: Option<(SharedString, Option<&'static str>)>,
     height: f32,
     disabled: bool,
+    selected: bool,
+    focus: Option<FocusHandle>,
     on_click: Option<OnClick>,
 }
 
 /// A button with words.
 pub fn button(p: Palette, id: impl Into<ElementId>, kind: Kind, label: impl Into<SharedString>) -> Button {
-    Button { id: id.into(), p, kind, label: Some(label.into()), icon: None, key: None, tip: None, height: CONTROL, disabled: false, on_click: None }
+    Button { id: id.into(), p, kind, label: Some(label.into()), icon: None, key: None, tip: None, height: CONTROL, disabled: false, selected: false, focus: None, on_click: None }
 }
 
 /// A square button with only an icon; its name shows as a tooltip.
 pub fn icon_button(p: Palette, id: impl Into<ElementId>, glyph: Icon, name: impl Into<SharedString>, keys: Option<&'static str>) -> Button {
-    Button { id: id.into(), p, kind: Kind::Ghost, label: None, icon: Some(glyph), key: None, tip: Some((name.into(), keys)), height: CONTROL, disabled: false, on_click: None }
+    Button { id: id.into(), p, kind: Kind::Ghost, label: None, icon: Some(glyph), key: None, tip: Some((name.into(), keys)), height: CONTROL, disabled: false, selected: false, focus: None, on_click: None }
 }
 
 impl Button {
@@ -126,6 +128,20 @@ impl Button {
         self.on_click = Some(Rc::new(f));
         self
     }
+
+    /// One of a few choices, and the one chosen: a tint of the accent with
+    /// its edge, the words bolder — whatever its kind.
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    /// Reached by Tab through `focus`; Space or Return presses it, and a
+    /// ring shows only when the keys moved there.
+    pub fn focus(mut self, focus: &FocusHandle) -> Self {
+        self.focus = Some(focus.clone());
+        self
+    }
 }
 
 impl RenderOnce for Button {
@@ -139,6 +155,11 @@ impl RenderOnce for Button {
         if !live && look.fill.is_some() {
             look = Look { fill: Some(p.wash), text: p.muted, key: p.muted, ..look };
         }
+        if self.selected && live {
+            let tint = |a: f32| Rgba { a, ..p.accent };
+            look = Look { fill: Some(mix(p.raised, p.accent, 0.16)), text: p.text, key: p.text2, edge: tint(0.75), hover: mix(p.raised, p.accent, 0.24), press: mix(p.raised, p.accent, 0.3) };
+        }
+        let ring = Rgba { a: 0.55, ..p.accent };
         let square = self.label.is_none();
         let b = h_flex()
             .id(self.id.clone())
@@ -155,13 +176,16 @@ impl RenderOnce for Button {
             .whitespace_nowrap()
             .when(square, |b| b.w(px(self.height)))
             .when(!square, |b| b.px_3())
-            .when(self.kind == Kind::Primary, |b| b.font_weight(FontWeight::SEMIBOLD))
+            .when(self.kind == Kind::Primary || self.selected, |b| b.font_weight(FontWeight::SEMIBOLD))
             .when_some(look.fill, |b, fill| b.bg(fill))
             .when(faded, |b| b.opacity(0.4))
             .when(live, |b| b.cursor_pointer().active(move |s| s.bg(look.press)))
             .children(self.icon.map(|g| icon(g, ICON, look.text)))
             .children(self.label)
             .children(self.key.map(|k| div().text_size(px(12.)).font_weight(FontWeight::NORMAL).text_color(look.key).child(k)))
+            .when_some(self.focus.filter(|_| live), |b, focus| {
+                b.track_focus(&focus).focus_visible(move |s| s.shadow(vec![BoxShadow { color: ring.into(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(2.), inset: false }]))
+            })
             .when_some(self.on_click.filter(|_| live), |b, f| b.on_click(move |e, w, cx| f(e, w, cx)));
         let b = match self.tip {
             Some((name, keys)) => crate::tips::tip(b, p, name, keys),

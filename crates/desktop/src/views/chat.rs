@@ -1594,6 +1594,15 @@ impl Shell {
         self.chat_toggle(row, part, cx);
     }
 
+    /// Open or close the latest answered card of `ticket` (the snapshot script's).
+    #[cfg(feature = "snapshot")]
+    pub fn chat_open_turn(&mut self, ticket: u32, cx: &mut Context<Self>) {
+        let at = self.chat.blocks.iter().rposition(|b| matches!(b, Block::YourTurn { ticket: t, .. } if *t == ticket));
+        if let Some(ix) = at {
+            self.chat_turn(ix, None, cx);
+        }
+    }
+
     /// Open or close the conversation's latest decided row (the snapshot script's).
     #[cfg(feature = "snapshot")]
     pub fn chat_open_decided(&mut self, cx: &mut Context<Self>) {

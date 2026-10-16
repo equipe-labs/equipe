@@ -533,7 +533,7 @@ impl Shell {
     fn done_note(&self, t: &Ticket, cx: &App) -> String {
         // Its card's answers, numbered as asked, and the things ticked off.
         if !t.asks().is_empty() {
-            return self.turn_message(t, cx);
+            return self.turn_message(t, "", cx);
         }
         let items = t.note.as_deref().map(board::checklist).unwrap_or_default();
         let ticked = self.board.ticked.get(&t.id);
@@ -786,8 +786,13 @@ impl Shell {
                 self.hold(id, t!("board.toast_send_back", id = id), vec![Command::Reopen { squad, ticket: id, note }], cx);
             }
             TicketStatus::Waiting => {
-                let done = self.done_note(&t, cx);
-                let note = [done, note].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
+                // A card's answers carry the words as the person's own, last.
+                let note = if t.asks().is_empty() {
+                    let done = self.done_note(&t, cx);
+                    [done, note].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n")
+                } else {
+                    self.turn_message(&t, &note, cx)
+                };
                 self.hold(id, t!("board.toast_resume", id = id), vec![Command::Resume { squad, ticket: id, note }], cx);
             }
             _ => {
@@ -1021,8 +1026,16 @@ impl Shell {
                 return true;
             }
         }
-        // A waiting ticket's checklist: 1–9 tick its lines off.
+        // A waiting ticket's checklist: 1–9 tick its lines off (a card's things to do: 했음).
         if let (Some(d @ 1..=9), Some(t)) = (key.parse::<usize>().ok(), self.picked().filter(|t| t.status == TicketStatus::Waiting)) {
+            let asks = t.asks();
+            if !asks.is_empty() {
+                let id = t.id;
+                if asks.get(d - 1).is_some_and(|a| crate::yourturn::want_of(a) == crate::yourturn::Want::Do) {
+                    self.turn_pick(id, d - 1, crate::yourturn::Pick::Done, window, cx);
+                }
+                return true;
+            }
             let set = self.board.ticked.entry(t.id).or_default();
             if !set.remove(&(d - 1)) {
                 set.insert(d - 1);
