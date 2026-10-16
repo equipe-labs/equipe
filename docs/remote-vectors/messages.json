@@ -13,7 +13,7 @@
             "type": "accept"
           }
         },
-        "seq": 17,
+        "seq": 19,
         "squad": "home",
         "ts": 1760000000000
       }
@@ -30,7 +30,7 @@
             "type": "accept"
           }
         },
-        "seq": 16,
+        "seq": 18,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -83,7 +83,7 @@
             "type": "accept"
           }
         },
-        "seq": 11,
+        "seq": 13,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -184,6 +184,34 @@
         "ts": 1760000000000
       }
     },
+    "approve team change": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 6000001,
+            "squad": "acme",
+            "type": "approve_team_change"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 6000001,
+            "squad": "acme",
+            "type": "approve_team_change"
+          }
+        },
+        "seq": 11,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "decide: allow": {
       "daemon": {
         "command": {
@@ -274,6 +302,34 @@
         "ts": 1760000000000
       }
     },
+    "decline team change": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 6000001,
+            "squad": "acme",
+            "type": "decline_team_change"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 6000001,
+            "squad": "acme",
+            "type": "decline_team_change"
+          }
+        },
+        "seq": 12,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "dismiss questions": {
       "daemon": {
         "command": {
@@ -355,7 +411,7 @@
             "type": "error"
           }
         },
-        "seq": 20,
+        "seq": 23,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -372,7 +428,7 @@
             "type": "message_queued"
           }
         },
-        "seq": 14,
+        "seq": 17,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -388,7 +444,7 @@
             "type": "notice"
           }
         },
-        "seq": 19,
+        "seq": 22,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -493,6 +549,70 @@
         "ts": 1760000000000
       }
     },
+    "event: team change approved": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "approved": true,
+            "id": 6000001,
+            "members": [
+              "backend-2"
+            ],
+            "squad": "acme",
+            "type": "team_change_closed"
+          }
+        },
+        "seq": 13,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: team change declined": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "approved": false,
+            "id": 6000001,
+            "squad": "acme",
+            "type": "team_change_closed"
+          }
+        },
+        "seq": 14,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: team change proposed": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "change": {
+              "by": "pm",
+              "change": "add",
+              "id": 6000001,
+              "proposed_at": 1760000000,
+              "reason": "T-41이 4시간째 기다려요 (backend는 T-38 중)",
+              "role": "backend",
+              "session": 1001,
+              "unblocks": [
+                41
+              ]
+            },
+            "squad": "acme",
+            "type": "team_change_proposed"
+          }
+        },
+        "seq": 12,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "event: text delta": {
       "receives": {
         "rpc": {
@@ -504,7 +624,7 @@
             "type": "text_delta"
           }
         },
-        "seq": 15,
+        "seq": 18,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -535,7 +655,7 @@
             "type": "ticket_changed"
           }
         },
-        "seq": 12,
+        "seq": 15,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -583,7 +703,7 @@
             "type": "tool_use"
           }
         },
-        "seq": 16,
+        "seq": 19,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -603,7 +723,7 @@
             }
           }
         },
-        "seq": 17,
+        "seq": 20,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -620,7 +740,7 @@
             "usage": null
           }
         },
-        "seq": 18,
+        "seq": 21,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -636,7 +756,7 @@
             "type": "user_message"
           }
         },
-        "seq": 13,
+        "seq": 16,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -786,6 +906,20 @@
                 ],
                 "squad": "acme",
                 "suggestions_off": false,
+                "team_changes": [
+                  {
+                    "by": "pm",
+                    "change": "add",
+                    "id": 6000001,
+                    "proposed_at": 1760000000,
+                    "reason": "T-41이 4시간째 기다려요 (backend는 T-38 중)",
+                    "role": "backend",
+                    "session": 1001,
+                    "unblocks": [
+                      41
+                    ]
+                  }
+                ],
                 "tickets": [
                   {
                     "assignee": "backend",
@@ -897,7 +1031,7 @@
             "type": "interrupt"
           }
         },
-        "seq": 14,
+        "seq": 16,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -915,7 +1049,7 @@
             "type": "merge"
           }
         },
-        "seq": 15,
+        "seq": 17,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1054,6 +1188,42 @@
         "ts": 1760000000000
       }
     },
+    "push: team change": {
+      "daemon_sends": {
+        "body": "acme",
+        "category": "team",
+        "collapse": "team-6000001",
+        "data": "<sealed daemon-to-device frame: data_opened>",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "title": "pm proposes adding backend",
+        "type": "push"
+      },
+      "data_opened": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "change": {
+              "by": "pm",
+              "change": "add",
+              "id": 6000001,
+              "proposed_at": 1760000000,
+              "reason": "T-41이 4시간째 기다려요 (backend는 T-38 중)",
+              "role": "backend",
+              "session": 1001,
+              "unblocks": [
+                41
+              ]
+            },
+            "squad": "acme",
+            "type": "team_change_proposed"
+          }
+        },
+        "seq": 0,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "push: waiting": {
       "daemon_sends": {
         "body": "T-38 · acme",
@@ -1119,7 +1289,7 @@
             "type": "reopen"
           }
         },
-        "seq": 12,
+        "seq": 14,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1181,7 +1351,7 @@
             "type": "submit"
           }
         },
-        "seq": 13,
+        "seq": 15,
         "squad": "acme",
         "ts": 1760000000000
       }

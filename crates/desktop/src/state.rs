@@ -180,6 +180,8 @@ pub enum Need {
     Permission(u64),
     /// A set of questions (`crate::decide`), by its id.
     Questions(u64),
+    /// A change to the team the PM proposed (`crate::team`), by its id.
+    Team(u64),
     Ticket(TicketId),
     /// A member's browser page waiting for the person's own hand (a human
     /// check, a sign-in), by its page id ([`BrowserWait`]).
@@ -267,6 +269,8 @@ pub struct Model {
     pub approvals: Queue,
     /// Members' questions waiting for the person, oldest first.
     pub asked: crate::decide::Asked,
+    /// Changes to the team the PM proposed, waiting for the person, oldest first.
+    pub team: crate::team::Proposals,
     /// Things that need the person and have not been announced yet: the shell
     /// takes them and tells the person if the window is out of sight.
     alerts: Vec<Alert>,
@@ -345,6 +349,7 @@ impl Model {
             mode: Mode::default(),
             approvals: Queue::default(),
             asked: Default::default(),
+            team: Default::default(),
             alerts: Vec::new(),
             flash: None,
             convos: HashMap::new(),
@@ -582,6 +587,7 @@ impl Model {
                 // Answers sent into a dead link never came back as resolved.
                 self.approvals.forget_answers();
                 self.asked.forget_sent();
+                self.team.forget_sent();
                 let next = match &self.conn {
                     // Already down: only the reason may have moved on, and it
                     // is not shown while the banner is up.
@@ -640,6 +646,7 @@ impl Model {
         self.mode = snapshot.mode;
         self.approvals.load(snapshot.approvals.clone());
         self.asked.load(snapshot.questions.clone());
+        self.team.load(snapshot.team_changes.clone());
         if let Some(note) = crate::notify::stale_daemon(&version, env!("CARGO_PKG_VERSION")) {
             self.flash = Some(note);
         }
@@ -753,6 +760,15 @@ impl Model {
             Event::QuestionsClosed { squad, id, .. } if squad == self.squad => {
                 self.asked.close(id);
             }
+            // A change to the team waits for the person: announced as a decision is.
+            Event::TeamChangeProposed { squad, change } if squad == self.squad => {
+                let session = self.members.iter().find(|m| m.name == change.by).map_or(change.session, |m| m.session);
+                let member = change.by.clone();
+                if self.team.push(change) {
+                    self.alerts.push(Alert::Decision { session, member, count: 1 });
+                }
+            }
+            Event::TeamChangeClosed { squad, id, .. } if squad == self.squad => self.team.close(id),
             Event::ModeChanged { squad, member, mode } if squad == self.squad => match member {
                 None => self.mode = mode.unwrap_or_default(),
                 Some(name) => {
@@ -968,7 +984,7 @@ impl Model {
     /// What the cards above the composer show, for change detection.
     fn card_hint(&self) -> CardHint {
         (
-            self.approvals.ids().into_iter().chain(self.asked.ids()).collect(),
+            self.approvals.ids().into_iter().chain(self.asked.ids()).chain(self.team.ids()).collect(),
             self.for_you_here().iter().map(|t| (t.id, t.status, t.note.clone())).collect(),
             self.flash.clone(),
         )
@@ -1044,6 +1060,7 @@ impl Model {
     pub fn needs_you(&self) -> Vec<(Section, Need)> {
         let mut out: Vec<(Section, Need)> = self.approvals.open_items().map(|a| (Section::Permission, Need::Permission(a.id))).collect();
         out.extend(self.asked.open().map(|s| (Section::Decide, Need::Questions(s.id))));
+        out.extend(self.team.open().map(|c| (Section::Decide, Need::Team(c.id))));
         // A page that waits for the person's own hand: their turn, first.
         out.extend(self.browser_waits.iter().map(|w| (Section::Waiting, Need::Browser(w.page))));
         for section in &Section::TICKETS {
@@ -1271,7 +1288,7 @@ fn percent((used, window): (u64, u64)) -> Option<u8> {
 mod tests {
     use super::*;
     use equipe_core::protocol::rpc::Hello;
-    use equipe_core::protocol::{Access, Approval, Engine, Member as Who, SessionInfo, Snapshot, WorkInfo};
+    use equipe_core::protocol::{Access, Approval, Command, Engine, Member as Who, SessionInfo, Snapshot, WorkInfo};
 
     const T0: Clock = Clock { hour: 14, minute: 2, second: 10 };
     const T1: Clock = Clock { hour: 14, minute: 3, second: 12 };
@@ -1832,6 +1849,43 @@ mod tests {
         assert!(model.apply(Update::Event(Event::QuestionsClosed { squad: "acme".into(), id: 40, answers: None }), T0), "answered on another screen: it goes, live");
         assert!(model.asked.ids().is_empty());
         assert!(matches!(model.status(&model.members[1]), Status::Working { .. }));
+    }
+
+    #[test]
+    fn a_change_to_the_team_waits_to_be_decided_and_goes_once_decided_anywhere() {
+        use equipe_core::protocol::team::{Change, TeamChange};
+        let mut model = needs_model();
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "mobile", "mobile", SessionState::Working)]), T0);
+        model.take_alerts();
+        let change = TeamChange {
+            id: 70,
+            change: Change::Add,
+            role: "mobile".into(),
+            count: 1,
+            member: None,
+            engine: None,
+            model: None,
+            effort: None,
+            reason: "T-7 waits".into(),
+            unblocks: vec![7],
+            by: "pm".into(),
+            session: 1,
+            proposed_at: 1,
+            busy_on: None,
+        };
+        assert!(model.apply(Update::Event(Event::TeamChangeProposed { squad: "acme".into(), change: change.clone() }), T0), "the card shows: a redraw");
+        assert_eq!(model.take_alerts(), vec![Alert::Decision { session: 1, member: "pm".into(), count: 1 }]);
+        model.apply(Update::Event(Event::TeamChangeProposed { squad: "other".into(), change: TeamChange { id: 71, ..change.clone() } }), T0);
+        model.apply(Update::Event(Event::TeamChangeProposed { squad: "acme".into(), change: change.clone() }), T0);
+        assert!(model.take_alerts().is_empty(), "another squad's, or the same again: nothing");
+        let decide: Vec<Need> = model.needs_you().into_iter().filter(|(s, _)| *s == Section::Decide).map(|(_, n)| n).collect();
+        assert_eq!(decide, [Need::Team(70)], "결정 필요");
+        // Approved here: the person's command, and hidden at once; decided anywhere: gone, live.
+        assert_eq!(model.team.decide("acme", 70, true), Some(Command::ApproveTeamChange { squad: "acme".into(), id: 70 }));
+        assert!(!model.needs_you().iter().any(|(_, n)| *n == Need::Team(70)));
+        model.team.forget_sent();
+        assert!(model.apply(Update::Event(Event::TeamChangeClosed { squad: "acme".into(), id: 70, approved: true, members: vec!["mobile-2".into()] }), T0));
+        assert!(model.team.ids().is_empty());
     }
 
     #[test]
