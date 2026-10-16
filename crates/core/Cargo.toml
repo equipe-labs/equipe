@@ -5,6 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+equipe-desktop-control = { path = "../desktop-control" }
 equipe-protocol = { path = "../protocol" }
 equipe-providers = { path = "../providers" }
 base64 = "0.23.1"

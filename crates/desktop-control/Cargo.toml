@@ -1,0 +1,31 @@
+[package]
+name = "equipe-desktop-control"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+description = "Members working the Mac's desktop apps: the helper that holds the permissions, and its tools"
+
+[dependencies]
+base64 = "0.23.1"
+equipe-protocol = { path = "../protocol" }
+serde_json = "1.0.154"
+tokio = { version = "1.53.2", features = ["net", "io-util", "time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSRunningApplication", "NSWorkspace"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGImage"] }
+objc2-screen-capture-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
+    "SCShareableContent",
+    "SCScreenshotManager",
+    "SCStream",
+] }
+
+[dev-dependencies]
+tokio = { version = "1.53.2", features = ["rt", "macros"] }

@@ -178,6 +178,8 @@ pub struct Context<'a> {
     pub screen_language: Option<&'a str>,
     /// Whether the member has a browser, signed in as the person.
     pub browser: bool,
+    /// Whether the member works the Mac's desktop apps (`mcp__desktop__…`).
+    pub desktop: bool,
     /// The squad's home, where the member sits between tickets.
     pub home: Option<&'a str>,
     /// The squad's memory: its index as the member is given it, and how many facts it holds.
@@ -297,6 +299,17 @@ account, team or workspace, without saying so first — the rest of the squad wo
     } else {
         ""
     };
+    let desktop = if ctx.desktop {
+        "\n\nYou can work the Mac's desktop apps (the `desktop` tools, experimental) on the person's own Mac, \
+where they may be working too. Look first: `screenshot`, then `elements` for the app's buttons and fields — \
+clicking or typing into an element id is steadier than coordinates, which are pixels of your last screenshot. \
+`open_app` or `focus_window` says which app you mean. A click is refused when the point isn't in that app, and \
+typing when the keyboard focus isn't: look again and bring the app forward rather than retrying blindly, and \
+stop if the person seems to be using the Mac. Check what you typed in the reply or with `elements`. Sending a \
+message, a mail or anything else to someone in the person's name asks the person first with `ask_person`."
+    } else {
+        ""
+    };
     let home = match ctx.home {
         Some(home) => format!(
             "\n\nThe squad's folder is {home} — your working directory between tickets, a folder the person can open \
@@ -360,7 +373,7 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
     };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{desktop}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
@@ -435,7 +448,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, board_tools, language: None, screen_language: None, browser: false, home: None, memory: None, facts: 0, edits: false }
+        Context { team, projects, board_tools, language: None, screen_language: None, browser: false, desktop: false, home: None, memory: None, facts: 0, edits: false }
     }
 
     #[test]

@@ -12,6 +12,7 @@ crossterm = { version = "0.29", features = ["event-stream", "bracketed-paste"] }
 dialoguer = "0.12.0"
 dirs = "7.0.0"
 equipe-core = { path = "../core" }
+equipe-desktop-control = { path = "../desktop-control" }
 equipe-protocol = { path = "../protocol" }
 equipe-providers = { path = "../providers" }
 futures-util = "0.3.34"
