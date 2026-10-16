@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::geometry::{Frame, Mapping, Pt};
 use crate::keys::{self, Combo};
@@ -107,6 +107,10 @@ pub trait Desktop {
     fn same(&self, a: &Self::Element, b: &Self::Element) -> bool;
     fn frame(&self, element: &Self::Element) -> Option<Frame>;
     fn value(&self, element: &Self::Element) -> Option<String>;
+    /// The element as it is now: role, name, value.
+    fn node(&self, _element: &Self::Element) -> Option<Node> {
+        None
+    }
     fn press(&self, element: &Self::Element) -> Result<(), String>;
     fn focus(&self, element: &Self::Element) -> Result<(), String>;
     fn pointer(&self, action: Pointer);
@@ -172,8 +176,22 @@ impl<D: Desktop> Controller<D> {
         Self { desktop, members: HashMap::new() }
     }
 
-    /// Run `tool` for `member`.
+    /// Run `tool` for `member`. With `_expect` in `args` (a [`Controller::scene`]
+    /// the daemon checked), an input goes ahead only while the screen is still
+    /// that scene: a send the person said yes to doesn't land in another
+    /// conversation, and a field that turned into a password field gets nothing.
     pub fn call(&mut self, member: &str, tool: &str, args: &Value) -> Reply {
+        if let Some(expected) = args.get(EXPECT) {
+            match self.scene(member, tool, args) {
+                Ok(now) if same_scene(expected, &now) => {}
+                Ok(_) => {
+                    return Reply::refuse(
+                        "The screen changed since equipe checked this input (another app, conversation, field or draft): nothing done. Take a screenshot and call again.",
+                    );
+                }
+                Err(refused) => return refused,
+            }
+        }
         let result = match tool {
             "screenshot" => self.screenshot(member, args),
             "list_windows" => self.list_windows(member, args),
@@ -189,6 +207,82 @@ impl<D: Desktop> Controller<D> {
             other => Err(Reply::refuse(format!("There is no desktop tool called {other}."))),
         };
         result.unwrap_or_else(|refused| refused)
+    }
+
+    /// What `tool` with `args` is about to act on, read without acting: the
+    /// app, its front window, what a click lands on, what has keyboard focus.
+    /// JSON in the shape of `equipe_core::desktop_gate::Scene`, for the daemon's
+    /// send gate. A click by point brings the app forward first, as the click would.
+    pub fn scene(&mut self, member: &str, tool: &str, args: &Value) -> Step<Value> {
+        self.need(false, true, "read apps' UI")?;
+        let element = self.element(member, args)?;
+        let app = match &element {
+            Some((pid, ..)) => self.app_of(member, *pid)?,
+            None => self.target(member, args)?,
+        };
+        let node = |c: &Self, (_, e, n): &(i32, D::Element, Node)| c.desktop.node(e).unwrap_or_else(|| n.clone());
+        let mut target = None;
+        let mut focused = None;
+        match tool {
+            "click" | "double_click" => {
+                target = match &element {
+                    Some(found) => Some(node(self, found)),
+                    None => {
+                        let at = self.point(member, args, "x", "y")?;
+                        self.hit_in(&app, at)
+                    }
+                };
+            }
+            "drag" => {
+                let at = self.point(member, args, "from_x", "from_y")?;
+                target = self.hit_in(&app, at);
+            }
+            "type_text" => focused = element.as_ref().map(|found| node(self, found)),
+            _ => {}
+        }
+        if focused.is_none() && self.desktop.focused_app() == Some(app.pid) {
+            focused = self.desktop.focused_element().and_then(|f| self.desktop.node(&f));
+        }
+        let window = self.desktop.windows().into_iter().find(|w| w.pid == app.pid).map(|w| w.title);
+        let mut scene = json!({ "app": { "name": app.name } });
+        if let Some(bundle) = app.bundle_id {
+            scene["app"]["bundle_id"] = json!(bundle);
+        }
+        if let Some(window) = window {
+            scene["window"] = json!(window);
+        }
+        if let Some(target) = target {
+            scene["target"] = element_json(&target);
+        }
+        if let Some(focused) = focused {
+            scene["focused"] = element_json(&focused);
+        }
+        Ok(scene)
+    }
+
+    /// What a click at `at` reaches in `app`, once it is in front; `None`
+    /// when it would land elsewhere (the click itself is refused then).
+    fn hit_in(&mut self, app: &App, at: Pt) -> Option<Node> {
+        if self.desktop.focused_app() != Some(app.pid) {
+            let _ = self.desktop.raise(app.pid, None);
+            self.desktop.pause(300);
+        }
+        self.desktop.hit(at).filter(|hit| hit.pid == app.pid).map(|hit| Node { role: hit.role, title: hit.title, ..Node::default() })
+    }
+
+    /// The whole screen, for the person to see what they are asked about.
+    /// Leaves every member's coordinates as they were.
+    pub fn capture(&self) -> Reply {
+        let shot = || -> Step<Vec<u8>> {
+            self.need(true, false, "see the screen")?;
+            let display = self.display()?;
+            let mapping = Mapping::for_frame(display.frame, display.backing);
+            self.desktop.capture(None, mapping.width, mapping.height).map_err(|why| Reply::refuse(format!("Couldn't capture the screen: {why}")))
+        };
+        match shot() {
+            Ok(jpeg) => Reply { text: String::new(), is_error: false, jpeg: Some(jpeg) },
+            Err(refused) => refused,
+        }
     }
 
     fn state(&mut self, member: &str) -> &mut Member<D::Element> {
@@ -642,6 +736,36 @@ impl<D: Desktop> Controller<D> {
     }
 }
 
+/// The argument a checked input carries: the scene the daemon judged.
+pub const EXPECT: &str = "_expect";
+
+/// Whether the screen is still `expected`. An element's text counts only when
+/// `expected` has it — the draft the person said yes to; elsewhere text
+/// changes by itself (a log, a clock) and means nothing here.
+fn same_scene(expected: &Value, now: &Value) -> bool {
+    let mut now = now.clone();
+    for key in ["target", "focused"] {
+        if expected[key].get("value").is_none()
+            && let Some(element) = now.get_mut(key).and_then(Value::as_object_mut)
+        {
+            element.remove("value");
+        }
+    }
+    now == *expected
+}
+
+/// A UI element as the send gate reads it.
+fn element_json(node: &Node) -> Value {
+    let mut element = json!({ "role": node.role });
+    if !node.title.is_empty() {
+        element["title"] = json!(node.title);
+    }
+    if let Some(value) = node.value.as_deref().filter(|v| !v.is_empty()) {
+        element["value"] = json!(value);
+    }
+    element
+}
+
 fn text<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(Value::as_str).filter(|s| !s.trim().is_empty())
 }
@@ -771,6 +895,11 @@ mod tests {
         }
         fn value(&self, _: &usize) -> Option<String> {
             Some(self.typed.borrow().clone())
+        }
+        fn node(&self, e: &usize) -> Option<Node> {
+            let (_, mut node) = self.elements(TEXTEDIT, None, 10).into_iter().find(|(i, _)| i == e)?;
+            node.value = self.value(e).filter(|_| *e == 1);
+            Some(node)
         }
         fn press(&self, _: &usize) -> Result<(), String> {
             Ok(())
@@ -902,6 +1031,48 @@ mod tests {
         let opened = c.call("frontend", "open_app", &json!({ "app": "TextEdit" }));
         assert!(opened.text.contains("in front"), "{}", opened.text);
         assert!(!c.call("frontend", "type_text", &json!({ "text": "x" })).is_error, "open_app sets the app");
+    }
+
+    #[test]
+    fn the_scene_says_what_an_input_would_act_on_without_acting() {
+        let mut c = controller(Fake::new());
+        c.call("frontend", "elements", &json!({ "app": "TextEdit" }));
+        *c.desktop.typed.borrow_mut() = "draft".into();
+        let typing = c.scene("frontend", "type_text", &json!({ "text": "x", "app": "TextEdit" })).unwrap();
+        assert_eq!(
+            typing,
+            json!({
+                "app": { "name": "텍스트 편집기", "bundle_id": "com.apple.TextEdit" },
+                "window": "Untitled",
+                "focused": { "role": "AXTextArea", "value": "draft" },
+            })
+        );
+        let pressing = c.scene("frontend", "click", &json!({ "element": "e1" })).unwrap();
+        assert_eq!(pressing["target"], json!({ "role": "AXButton", "title": "Save" }));
+        let at = c.scene("frontend", "click", &json!({ "x": 400, "y": 300 })).unwrap();
+        assert_eq!(at["target"], json!({ "role": "AXTextArea" }), "what the hit test finds");
+        assert_eq!(*c.desktop.typed.borrow(), "draft", "nothing typed");
+        assert!(c.desktop.pointer.borrow().is_empty(), "nothing clicked");
+    }
+
+    #[test]
+    fn a_checked_input_goes_ahead_only_on_the_screen_it_was_checked_on() {
+        let mut c = controller(Fake::new());
+        *c.desktop.typed.borrow_mut() = "draft".into();
+        let scene = c.scene("frontend", "key", &json!({ "keys": "return", "app": "TextEdit" })).unwrap();
+        // The draft changed since the person said yes.
+        *c.desktop.typed.borrow_mut() = "something else".into();
+        let refused = c.call("frontend", "key", &json!({ "keys": "return", "app": "TextEdit", EXPECT: scene }));
+        assert!(refused.is_error && refused.text.contains("screen changed"), "{}", refused.text);
+        assert_eq!(*c.desktop.typed.borrow(), "something else", "Return not pressed");
+        let scene = c.scene("frontend", "key", &json!({ "keys": "return", "app": "TextEdit" })).unwrap();
+        assert!(!c.call("frontend", "key", &json!({ "keys": "return", "app": "TextEdit", EXPECT: scene })).is_error);
+        assert_eq!(*c.desktop.typed.borrow(), "something else⌨");
+        // Checked without its text (nothing asked): the text may change meanwhile.
+        let mut scene = c.scene("frontend", "key", &json!({ "keys": "cmd+s", "app": "TextEdit" })).unwrap();
+        scene["focused"].as_object_mut().unwrap().remove("value");
+        c.desktop.typed.borrow_mut().push('!');
+        assert!(!c.call("frontend", "key", &json!({ "keys": "cmd+s", "app": "TextEdit", EXPECT: scene })).is_error);
     }
 
     #[test]

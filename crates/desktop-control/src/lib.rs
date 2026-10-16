@@ -10,7 +10,7 @@
 //! checks the member may, and hands the call on.
 //!
 //! Experimental: off for every member until the person turns it on, and
-//! without the screen lease (T-22) or the send approval (T-23) yet.
+//! behind the screen lease (T-22) and the send approval (T-23) in the daemon.
 
 pub mod controller;
 pub mod geometry;

@@ -76,6 +76,20 @@ pub enum Use {
     Look,
     /// Clicks, types, scrolls, opens or brings forward an app.
     Input,
+    /// An input the person has just said yes to (a send): their being at the
+    /// Mac — where they likely answered — doesn't hold it back. The lease, a
+    /// locked screen and /desktop stop still do.
+    Approved,
+}
+
+impl Use {
+    /// What the desktop tool `tool` (`screenshot`, `mcp__desktop__click`) does.
+    pub fn of(tool: &str) -> Use {
+        match tool.rsplit("__").next().unwrap_or(tool) {
+            "screenshot" | "list_windows" | "elements" => Use::Look,
+            _ => Use::Input,
+        }
+    }
 }
 
 /// Why a member can't use the screen now. The text goes back to the model.
@@ -165,6 +179,9 @@ impl Desktop {
             Screen::Open => {}
             Screen::Locked => return Err(Refusal::Locked),
             Screen::NoSession => return Err(Refusal::NoSession),
+        }
+        if what == Use::Approved {
+            return Ok(());
         }
         // Not knowing whether the person is there is not leave to go ahead.
         let Some(idle) = self.probe.idle() else {
@@ -264,6 +281,7 @@ mod tests {
         let a = member("frontend");
         assert!(matches!(d.ask(&a, Use::Input), Err(Refusal::Person { .. })));
         assert_eq!(d.ask(&a, Use::Look), Ok(()));
+        assert_eq!(d.ask(&a, Use::Approved), Ok(()), "a send they just said yes to");
         // They stopped a while ago, but not long enough ago.
         mac.0.lock().unwrap().0 = Some(PERSON_QUIET - 5.0);
         assert!(matches!(d.ask(&a, Use::Input), Err(Refusal::Person { .. })));
@@ -288,6 +306,7 @@ mod tests {
         let (mut d, mac) = desktop(Some(600.0), Screen::Locked);
         let a = member("frontend");
         assert_eq!(d.ask(&a, Use::Input), Err(Refusal::Locked));
+        assert_eq!(d.ask(&a, Use::Approved), Err(Refusal::Locked));
         assert_eq!(d.ask(&a, Use::Look), Ok(()));
         mac.0.lock().unwrap().1 = Screen::NoSession;
         assert_eq!(d.ask(&a, Use::Input), Err(Refusal::NoSession));

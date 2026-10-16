@@ -16,7 +16,7 @@ use equipe_protocol::rpc::{Image, ToolResult};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
-use crate::controller::{Controller, Desktop, SETUP};
+use crate::controller::{Controller, Desktop, Reply, SETUP};
 
 /// The helper's folder in equipe's home: socket, token, signing key, bundles.
 pub fn dir(home: &Path) -> PathBuf {
@@ -78,6 +78,11 @@ pub const NOT_RUNNING: &str =
 pub const STATUS: &str = "_status";
 pub const REQUEST: &str = "_request";
 
+/// Requests the daemon makes before a member's input, for the send gate: what
+/// the input would act on (`arguments`: `{ tool, arguments }`), and the screen.
+pub const SCENE: &str = "_scene";
+pub const CAPTURE: &str = "_capture";
+
 /// Serve on the socket until the process ends, one request at a time.
 pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: impl Fn(&D) -> Value, request: impl Fn(&D)) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
@@ -123,18 +128,28 @@ fn answer<D: Desktop>(
             request(&controller.desktop);
             ToolResult::ok(status(&controller.desktop).to_string())
         }
+        SCENE => {
+            let arguments = &message["arguments"];
+            let inner = arguments["tool"].as_str().unwrap_or_default();
+            match controller.scene(member, inner, &arguments["arguments"]) {
+                Ok(scene) => ToolResult::ok(scene.to_string()),
+                Err(refused) => ToolResult::error(refused.text),
+            }
+        }
+        CAPTURE => reply(controller.capture()),
         _ => {
             let reply = controller.call(member, tool, &message["arguments"]);
             eprintln!("equipe desktop helper: {member} {tool}{}", if reply.is_error { " (refused)" } else { "" });
-            ToolResult {
-                text: reply.text,
-                is_error: reply.is_error,
-                image: reply.jpeg.map(|bytes| Image {
-                    mime: "image/jpeg".into(),
-                    data: base64::engine::general_purpose::STANDARD.encode(bytes),
-                }),
-            }
+            self::reply(reply)
         }
+    }
+}
+
+fn reply(reply: Reply) -> ToolResult {
+    ToolResult {
+        text: reply.text,
+        is_error: reply.is_error,
+        image: reply.jpeg.map(|bytes| Image { mime: "image/jpeg".into(), data: base64::engine::general_purpose::STANDARD.encode(bytes) }),
     }
 }
 
