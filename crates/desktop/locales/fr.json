@@ -1258,5 +1258,9 @@
   "turn.tip_your_call": "{name} décide et dit ce qu'il a choisi",
   "turn.tip_yours": "Le rendre : {name} s'en charge — et vous appelle dans le navigateur s'il faut votre connexion",
   "turn.waiting": "{name} attend — une fois envoyé, il reprend là où il s'était arrêté",
-  "update.new_version": "Nouvelle version"
+  "update.new_version": "Nouvelle version",
+  "header.screen_holder": "{name} utilise l'écran du Mac",
+  "header.screen_waiting_one": "{name} attend",
+  "header.screen_waiting_more": "{name} et {n} autres attendent",
+  "header.screen_stopped": "Écran du Mac repris · /desktop resume"
 }

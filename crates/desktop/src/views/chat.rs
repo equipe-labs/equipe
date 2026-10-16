@@ -632,27 +632,17 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     // A reply about another project came: a pill to go there, the view stays.
     let answered = shell.chat.answered_in.clone().map(|about| answered_pill(p, about, cx));
     let pulse = (replying && following && answered.is_none()).then(|| pulse_pill(p));
-    let scroller = div().flex_1().min_h_0().w_full().relative().children(pulse).child(
+    // Our own pill, not the kit's jump button: the kit's put a tooltip with the
+    // same word on it, in its own white, over the conversation.
+    let jump = (!following && answered.is_none()).then(|| jump_pill(p, shell.chat.scroller.clone()));
+    let scroller = div().flex_1().min_h_0().w_full().relative().children(pulse).children(jump).child(
         MessageScroller::new("conversation", shell.chat.scroller.clone(), move |ix, window, cx| row(&rows, ix, window, cx))
-            // It fades and slides up into place, bottom-centre over the composer.
-            .with_jump_button_transition(motion::BASE)
+            .jump_button(false)
             .with_row_style(StyleRefinement::default().pb(px(8.)).pl(px(TEXT_INSET)).pr(px(TEXT_INSET)))
             // Room under the last line, so it never sits on the composer's
             // edge; read back, the rows fade out there under the jump pill.
             .with_list_style(StyleRefinement::default().pt(px(8.)).pb(px(TAIL_ROOM)))
             .with_bottom_fade(p.bg)
-            .with_jump_button_label(t!("chat.jump_to_bottom"))
-            // A pill in the app's colours, with its words beside the arrow: on
-            // its own the arrow sat white on white.
-            .with_jump_button_style(
-                StyleRefinement::default()
-                    .h(px(32.))
-                    .bg(Hsla::from(p.popover()))
-                    .text_color(Hsla::from(p.text))
-                    .border_color(Hsla::from(p.hair))
-                    .shadow(motion::float_shadow(0.8)),
-            )
-            .with_jump_button_renderer(|button| button.label(t!("chat.jump_to_bottom")).px_3()),
     );
     // The pill has its own room under the list, so it covers nothing.
     let list = v_flex().flex_1().min_h_0().w_full().max_w(px(COLUMN)).px_4().child(scroller).children(answered);
@@ -1481,6 +1471,31 @@ fn tool_button(p: Palette, id: (&'static str, u64), glyph: Icon, label: &'static
 }
 
 /// Three dots that pulse while a reply streams, over the composer.
+/// Read back up the conversation: a pill over the composer to the latest,
+/// fading and rising into place.
+fn jump_pill(p: Palette, scroller: Entity<MessageScrollerState>) -> impl IntoElement {
+    let pill = h_flex()
+        .id("jump-to-latest")
+        .h(px(32.))
+        .pl(px(10.))
+        .pr_3()
+        .gap(px(6.))
+        .items_center()
+        .rounded_full()
+        .bg(p.popover())
+        .border_1()
+        .border_color(p.hair)
+        .shadow(motion::float_shadow(0.8))
+        .text_size(px(13.))
+        .text_color(p.text)
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.wash))
+        .child(icon(Icon::ArrowDown, 14., p.text2))
+        .child(t!("chat.jump_to_bottom"))
+        .on_click(move |_, _, cx| scroller.update(cx, |state, cx| state.scroll_to_end(cx)));
+    div().absolute().bottom(px(12.)).left_0().right_0().flex().justify_center().child(motion::rise(pill, "jump-to-latest-in"))
+}
+
 fn pulse_pill(p: Palette) -> impl IntoElement {
     let dot = move |n: usize| {
         div().size(px(5.)).rounded_full().bg(p.muted).with_animation(

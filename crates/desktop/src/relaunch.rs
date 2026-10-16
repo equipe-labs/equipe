@@ -88,7 +88,7 @@ pub fn check_now(cx: &gpui_kit::App) {
 
 /// After a launch, and when the window comes back after a while: look for an
 /// update without a window, so a release shows its button in minutes, not hours.
-pub const LOOK_AGAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+pub const LOOK_AGAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 pub fn check_quietly(cx: &gpui_kit::App, stale: std::time::Duration) {
     #[cfg(target_os = "macos")]

@@ -1258,5 +1258,9 @@
   "turn.tip_your_call": "{name} entscheidet und sagt, was es gewählt hat",
   "turn.tip_yours": "Zurückgeben: {name} macht es selbst – und holt dich in den Browser, wenn es deine Anmeldung braucht",
   "turn.waiting": "{name} wartet – nach dem Senden macht es dort weiter, wo es aufgehört hat",
-  "update.new_version": "Neue Version"
+  "update.new_version": "Neue Version",
+  "header.screen_holder": "{name} nutzt den Mac-Bildschirm",
+  "header.screen_waiting_one": "{name} wartet",
+  "header.screen_waiting_more": "{name} +{n} warten",
+  "header.screen_stopped": "Mac-Bildschirm zurückgeholt · /desktop resume"
 }
