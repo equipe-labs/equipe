@@ -1400,8 +1400,9 @@ impl Shell {
             cx.spawn(async move |this, cx| {
                 let pic = loaded.await.unwrap_or_else(Pic::Gone);
                 let _ = this.update(cx, |this, cx| {
-                    if this.design.pictures.contains_key(&path) {
-                        this.design.pictures.insert(path, pic);
+                    // Still wanted (another connection may have let it go).
+                    if let Some(kept) = this.design.pictures.get_mut(&path) {
+                        *kept = pic;
                         cx.notify();
                     }
                 });
