@@ -355,7 +355,7 @@
             "type": "error"
           }
         },
-        "seq": 20,
+        "seq": 23,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -388,7 +388,7 @@
             "type": "notice"
           }
         },
-        "seq": 19,
+        "seq": 22,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -489,6 +489,56 @@
           }
         },
         "seq": 11,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: subagent ended": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "id": "toolu_02",
+            "session": 1001,
+            "type": "subagent_ended"
+          }
+        },
+        "seq": 19,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: subagent started": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "id": "toolu_02",
+            "session": 1001,
+            "type": "subagent_started",
+            "what": "Compare the two login flows"
+          }
+        },
+        "seq": 17,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: subagent step": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "id": "toolu_02",
+            "session": 1001,
+            "step": "Read src/login.tsx",
+            "type": "subagent_step"
+          }
+        },
+        "seq": 18,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -603,7 +653,7 @@
             }
           }
         },
-        "seq": 17,
+        "seq": 20,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -620,7 +670,7 @@
             "usage": null
           }
         },
-        "seq": 18,
+        "seq": 21,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -774,6 +824,14 @@
                     "session": 4242,
                     "state": "working",
                     "steering": [],
+                    "subagents": [
+                      {
+                        "id": "toolu_01",
+                        "secs": 48,
+                        "step": "Grep TimeoutError",
+                        "what": "Read the API's error logs"
+                      }
+                    ],
                     "title": null,
                     "tokens": 5300,
                     "work": {

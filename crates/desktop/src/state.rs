@@ -462,6 +462,17 @@ impl Model {
         self.lanes.iter().filter(|l| l.of == member && l.presence == Presence::Working).count()
     }
 
+    /// The subagents a member handed work to and that are at it now — from
+    /// its own conversation and its lanes' — oldest first, each with the
+    /// conversation it works for.
+    pub fn subagents_of(&self, member: SessionId) -> Vec<(SessionId, &crate::convo::Sub)> {
+        let lanes = self.lanes.iter().filter(|l| l.of == member).map(|l| l.session);
+        let mut subs: Vec<(SessionId, &crate::convo::Sub)> =
+            std::iter::once(member).chain(lanes).filter_map(|s| self.convos.get(&s).map(|c| (s, c))).flat_map(|(s, c)| c.subagents.iter().map(move |sub| (s, sub))).collect();
+        subs.sort_by_key(|(_, sub)| sub.since);
+        subs
+    }
+
     /// How many of a member's conversations are at work at once.
     pub fn at_once(&self, member: &Member) -> usize {
         self.lanes_working(member.session) + usize::from(member.presence == Presence::Working)
@@ -962,7 +973,11 @@ impl Model {
 
     /// The subagents under each member, which the sidebar lists.
     fn subagents_hint(&self) -> Vec<(SessionId, Vec<crate::convo::Sub>)> {
-        self.members.iter().filter_map(|m| self.convos.get(&m.session).filter(|c| !c.subagents.is_empty()).map(|c| (m.session, c.subagents.clone()))).collect()
+        self.members
+            .iter()
+            .map(|m| (m.session, self.subagents_of(m.session).into_iter().map(|(_, s)| s.clone()).collect::<Vec<_>>()))
+            .filter(|(_, subs)| !subs.is_empty())
+            .collect()
     }
 
     /// What the cards above the composer show, for change detection.
@@ -1271,7 +1286,8 @@ fn percent((used, window): (u64, u64)) -> Option<u8> {
 mod tests {
     use super::*;
     use equipe_core::protocol::rpc::Hello;
-    use equipe_core::protocol::{Access, Approval, Engine, Member as Who, SessionInfo, Snapshot, WorkInfo};
+    use equipe_core::protocol::{Access, Approval, Engine, Member as Who, SessionInfo, Snapshot, SubagentInfo, WorkInfo};
+    use std::time::Duration;
 
     const T0: Clock = Clock { hour: 14, minute: 2, second: 10 };
     const T1: Clock = Clock { hour: 14, minute: 3, second: 12 };
@@ -1336,6 +1352,7 @@ mod tests {
             work: None,
             mode: None,
             effort: None,
+            subagents: Vec::new(),
         }
     }
 
@@ -1790,6 +1807,51 @@ mod tests {
         // Whatever project is in focus, it is the one shown.
         model.set_focus(Some("site".into()));
         assert_eq!(model.viewed(), Some(9));
+    }
+
+    fn subs(model: &Model, member: SessionId) -> Vec<(SessionId, String, Option<String>)> {
+        model.subagents_of(member).into_iter().map(|(s, sub)| (s, sub.what.clone(), sub.step.clone())).collect()
+    }
+
+    #[test]
+    fn a_members_subagents_start_step_and_end_under_it_and_each_is_a_redraw() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "frontend", "frontend", SessionState::Working)]), T0);
+        // Not the conversation on screen, yet the sidebar draws again each time.
+        assert!(model.apply(Update::Event(Event::SubagentStarted { session: 2, id: "a".into(), what: "Read the logs".into() }), T0));
+        assert!(model.apply(Update::Event(Event::SubagentStarted { session: 2, id: "b".into(), what: "Run the tests".into() }), T0));
+        assert!(model.apply(Update::Event(Event::SubagentStep { session: 2, id: "b".into(), step: "Bash cargo test".into() }), T0));
+        assert_eq!(subs(&model, 2), [(2, "Read the logs".into(), None), (2, "Run the tests".into(), Some("Bash cargo test".into()))]);
+        assert!(subs(&model, 1).is_empty());
+        assert!(model.apply(Update::Event(Event::SubagentEnded { session: 2, id: "a".into() }), T0));
+        assert_eq!(subs(&model, 2), [(2, "Run the tests".into(), Some("Bash cargo test".into()))]);
+        // Someone else's subagent ending changes nothing here.
+        assert!(!model.apply(Update::Event(Event::SubagentEnded { session: 2, id: "zz".into() }), T0));
+    }
+
+    #[test]
+    fn attaching_again_shows_the_subagents_at_work_now_and_not_those_that_ended_meanwhile() {
+        let mut model = Model::new("acme");
+        let mut frontend = session(2, "frontend", "frontend", SessionState::Working);
+        frontend.subagents = vec![SubagentInfo { id: "a".into(), what: "Read the logs".into(), step: Some("Grep error".into()), secs: 30 }];
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), frontend.clone()]), T0);
+        assert_eq!(subs(&model, 2), [(2, "Read the logs".into(), Some("Grep error".into()))]);
+        let (_, sub) = model.subagents_of(2)[0];
+        assert!(sub.since.elapsed() >= Duration::from_secs(30), "its clock picks up where the daemon's was");
+        // The link went down; meanwhile one handed back and another started.
+        model.apply(Update::Down(Failure::Closed), T0);
+        frontend.subagents = vec![SubagentInfo { id: "c".into(), what: "Compare flows".into(), step: None, secs: 2 }];
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), frontend]), T0);
+        assert_eq!(subs(&model, 2), [(2, "Compare flows".into(), None)]);
+    }
+
+    #[test]
+    fn a_lanes_subagents_are_its_members_oldest_first() {
+        let mut model = with_lane();
+        model.apply(Update::Event(Event::SubagentStarted { session: 1, id: "a".into(), what: "own".into() }), T0);
+        std::thread::sleep(Duration::from_millis(2));
+        model.apply(Update::Event(Event::SubagentStarted { session: 77, id: "b".into(), what: "lane's".into() }), T0);
+        assert_eq!(subs(&model, 1), [(1, "own".into(), None), (77, "lane's".into(), None)]);
     }
 
     fn needs_model() -> Model {

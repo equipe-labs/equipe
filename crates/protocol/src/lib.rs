@@ -1319,6 +1319,25 @@ pub struct SessionInfo {
     /// How hard it thinks ([`Command::SetEffort`]); `None`: its engine's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// The subagents it handed work to this turn that haven't handed back,
+    /// in the order they started ([`Event::SubagentStarted`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subagents: Vec<SubagentInfo>,
+}
+
+/// A subagent at work for a member, for a screen that attaches mid-turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentInfo {
+    /// As its events name it.
+    pub id: String,
+    /// What it was handed.
+    pub what: String,
+    /// Its latest step, once it has taken one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    /// How long it had been at it when the snapshot was taken, in seconds.
+    #[serde(default)]
+    pub secs: u64,
 }
 
 /// A member's current ticket, for a screen that attaches mid-work.
@@ -1636,6 +1655,7 @@ mod tests {
                 work: Some(WorkInfo { ticket: 1, project: "/repo".into(), workspace: None }),
                 mode: Some(Mode::Ask),
                 effort: Some("high".into()),
+                subagents: vec![SubagentInfo { id: "toolu_1".into(), what: "Read the logs".into(), step: Some("Read build.log".into()), secs: 42 }],
             }],
             allowed: vec!["Bash(npm install:*)".into()],
             browsers_shown: true,
@@ -1695,6 +1715,18 @@ mod tests {
         // Nothing new is written when there is nothing to say: older screens read the same bytes.
         let json = serde_json::to_value(&snapshot).unwrap();
         assert!(json.get("allowed").is_none() && json.get("browsers_shown").is_none(), "{json}");
+    }
+
+    #[test]
+    fn a_session_lists_its_subagents_only_when_it_has_some() {
+        let old = r#"{"session":1,"project":"/r","engine":"claude","model":null,"access":"read_only","workspace":null,"state":"working","title":null,"tokens":0,"recent":[]}"#;
+        let mut info: SessionInfo = serde_json::from_str(old).unwrap();
+        assert!(info.subagents.is_empty(), "an older daemon's session has none");
+        assert!(serde_json::to_value(&info).unwrap().get("subagents").is_none(), "none: the wire as before");
+        info.subagents.push(SubagentInfo { id: "toolu_1".into(), what: "Read the logs".into(), step: None, secs: 3 });
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["subagents"], json!([{ "id": "toolu_1", "what": "Read the logs", "secs": 3 }]));
+        assert_eq!(serde_json::from_value::<SessionInfo>(json).unwrap(), info);
     }
 
     #[test]

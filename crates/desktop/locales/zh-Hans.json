@@ -1003,6 +1003,8 @@
   "sidebar.settings": "设置",
   "sidebar.show_tip": "显示边栏 ⌘\\",
   "sidebar.squads": "小队",
+  "sidebar.subagent_starting": "刚开始",
+  "sidebar.subagents": "子代理 {n}",
   "sidebar.switch_project": "切换到此项目",
   "sidebar.talk": "对话",
   "sidebar.team": "团队",

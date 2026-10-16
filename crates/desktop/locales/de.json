@@ -1034,6 +1034,8 @@
   "sidebar.settings": "Einstellungen",
   "sidebar.show_tip": "Seitenleiste einblenden ⌘\\",
   "sidebar.squads": "Squads",
+  "sidebar.subagent_starting": "Gerade gestartet",
+  "sidebar.subagents": "Subagenten {n}",
   "sidebar.switch_project": "Zu diesem Projekt wechseln",
   "sidebar.talk": "Sprechen",
   "sidebar.team": "Team",

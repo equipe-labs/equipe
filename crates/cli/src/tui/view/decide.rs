@@ -159,6 +159,7 @@ mod tests {
             work: None,
             mode: None,
             effort: None,
+            subagents: Vec::new(),
         };
         App::from_snapshot("/repo".into(), Snapshot { squad: "acme".into(), projects: vec!["/repo".into()], sessions: vec![info], ..Snapshot::default() }, &[]).0
     }

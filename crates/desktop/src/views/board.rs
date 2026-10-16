@@ -92,6 +92,8 @@ pub struct BoardUi {
     pub sidebar_shown_at: Option<Instant>,
     /// The sidebar's live rows as last drawn, to ease them in and out.
     pub side_motion: std::cell::RefCell<super::sidebar::SideMotion>,
+    /// The team block's subagent rows as last drawn, the same way.
+    pub sub_motion: std::cell::RefCell<super::sidebar::SubMotion>,
     /// A small menu out of the sidebar's foot.
     pub popup: Option<super::sidebar::Popup>,
     /// The language picked in settings for every screen; `None`: System.
@@ -162,6 +164,7 @@ impl BoardUi {
             sidebar_drag: None,
             sidebar_shown_at: None,
             side_motion: Default::default(),
+            sub_motion: Default::default(),
             popup: None,
             language: equipe_core::i18n::saved(&equipe_providers::credentials::equipe_home()),
             words: crate::i18n::lang(),
@@ -1663,7 +1666,11 @@ fn meta(shell: &Shell, t: &Ticket) -> Meta {
     let model = &shell.model;
     let flags = row_flags(shell, t);
     let activity = match t.status {
-        TicketStatus::InProgress => live_activity(model, t).map(|a| (a, p.text2)),
+        // What it does now, and how many subagents it handed work to.
+        TicketStatus::InProgress => live_activity(model, t).map(|a| match model.member_on(t.id).map_or(0, |m| model.subagents_of(m.session).len()) {
+            0 => (a, p.text2),
+            n => (format!("{a} · {}", t!("sidebar.subagents", n = n)), p.text2),
+        }),
         TicketStatus::Waiting => board::first_need(t).map(|n| (n, p.accent)),
         TicketStatus::Proposed => Some((t!("board.proposed_by", who = t.created_by), p.muted)),
         TicketStatus::Review | TicketStatus::Done if t.kind.in_home() => Some((t!("board.kind_label", kind = equipe_core::i18n::label::kind(crate::i18n::lang(), t.kind)), p.muted)),

@@ -270,8 +270,18 @@ impl Chat {
         self.scroller.update(cx, |s, cx| s.scroll_to_end(cx));
     }
 
-    /// Bring row `ix` to the top (the snapshot script's).
-    #[cfg_attr(not(feature = "snapshot"), allow(dead_code))]
+    /// The row where `sub` was handed its work, as the conversation shows
+    /// now — its group of calls opened, so its line is in sight.
+    pub fn open_delegation(&mut self, sub: &crate::convo::Sub, cx: &mut App) -> Option<usize> {
+        let (ix, _) = crate::convo::delegation_of(&self.blocks, sub)?;
+        let row = self.serial << 24 | ix as u64;
+        if matches!(self.blocks.get(ix), Some(Block::Steps(lines)) if lines.len() > 1) && !self.opened.contains(&(row, PART_GROUP)) {
+            self.toggle(row, PART_GROUP, cx);
+        }
+        Some(ix)
+    }
+
+    /// Bring row `ix` to the top (the snapshot script's; a subagent's row in the sidebar).
     pub fn scroll_to(&self, ix: usize, cx: &mut App) {
         self.scroller.update(cx, |s, cx| {
             s.scroll_to_item(ix, cx);

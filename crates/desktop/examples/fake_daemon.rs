@@ -9,7 +9,8 @@
 //! would — and so do the person's own create, edit, move and comment (by
 //! `equipe_core::board`'s rules), each kept in the ticket's record.
 //! `FAKE_EMPTY=1` starts with nothing waiting for the person;
-//! `FAKE_BUSY=1` adds four members at work in web and more finished today.
+//! `FAKE_BUSY=1` adds four members at work in web and more finished today;
+//! `FAKE_SUBAGENTS=1` has frontend and backend hand work to subagents that come and go.
 //!
 //! ```text
 //! export EQUIPE_HOME=$(mktemp -d) EQUIPE_SQUAD=demo
@@ -49,7 +50,7 @@ use std::time::Duration;
 use equipe_core::gateway;
 use equipe_core::protocol::decide::{Answer, Choice, Question, QuestionSet};
 use equipe_core::protocol::rpc::{self, Hello, Message};
-use equipe_core::protocol::{Access, Approval, Command, Engine, Entry, Estimate, Event, Member, Priority, SessionId, SessionInfo, SessionState, Snapshot, Ticket, TicketEntry, TicketStatus, TurnOutcome, Usage, WorkInfo};
+use equipe_core::protocol::{Access, Approval, Command, Engine, Entry, Estimate, Event, Member, Priority, SessionId, SessionInfo, SessionState, Snapshot, SubagentInfo, Ticket, TicketEntry, TicketStatus, TurnOutcome, Usage, WorkInfo};
 use equipe_providers::credentials::equipe_home;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -83,6 +84,7 @@ fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
         work: None,
         mode: None,
         effort: None,
+        subagents: Vec::new(),
     }
 }
 
@@ -380,6 +382,95 @@ const BUSY: [(u32, SessionId, &str, &str); 4] = [
     (82, 7, "qa", "체크아웃 E2E 테스트"),
     (83, 8, "data", "구매 전환 대시보드 이벤트"),
 ];
+
+/// `FAKE_SUBAGENTS=1`: frontend and backend hand side work to subagents, which
+/// start, take steps and hand back over time, round and round — backend's
+/// first already at it when a screen attaches (in the snapshot, as a daemon
+/// lists them). `FAKE_SUBAGENTS_MS` (default 1500) is the beat.
+fn subagents_on() -> bool {
+    std::env::var("FAKE_SUBAGENTS").is_ok_and(|v| v == "1")
+}
+
+/// The subagents at work now, by session: what a snapshot lists.
+fn live_subagents() -> &'static std::sync::Mutex<Vec<(SessionId, SubagentInfo, std::time::Instant)>> {
+    static LIVE: std::sync::OnceLock<std::sync::Mutex<Vec<(SessionId, SubagentInfo, std::time::Instant)>>> = std::sync::OnceLock::new();
+    LIVE.get_or_init(|| {
+        // Backend's, at it since before anyone looked.
+        let since = std::time::Instant::now() - Duration::from_secs(48);
+        std::sync::Mutex::new(vec![(3, SubagentInfo { id: "sub-b0".into(), what: "API 에러 로그에서 타임아웃 원인 찾기".into(), step: Some("Grep TimeoutError logs/".into()), secs: 0 }, since)])
+    })
+}
+
+/// A session's subagents as a snapshot carries them, and the delegations
+/// that started them, for its conversation.
+fn subagents_of(session: SessionId) -> (Vec<SubagentInfo>, Vec<Entry>) {
+    let live = live_subagents().lock().unwrap();
+    let subs: Vec<SubagentInfo> = live.iter().filter(|(s, ..)| *s == session).map(|(_, info, since)| SubagentInfo { secs: since.elapsed().as_secs(), ..info.clone() }).collect();
+    let calls = subs.iter().map(|s| Entry::Tool { tool: "Agent".into(), target: Some(s.what.clone()), outcome: None }).collect();
+    (subs, calls)
+}
+
+/// Starts, steps and ends, `beat` apart, round and round: (session, id, what), a step, or an end.
+async fn subagents_play(events: broadcast::Sender<Event>) {
+    let beat = Duration::from_millis(std::env::var("FAKE_SUBAGENTS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500));
+    let tasks: [(SessionId, &str, &[&str]); 6] = [
+        (2, "갤러리 썸네일 크기와 비율 조사", &["Read src/gallery.tsx", "Grep aspect-ratio", "Read src/thumb.tsx"]),
+        (2, "모바일 스와이프 제스처 동작 확인", &["Read src/swipe.ts", "Bash npm test swipe"]),
+        (3, "페이지네이션 커서 인코딩 비교", &["Read api/cursor.rs", "WebFetch RFC 4648"]),
+        (2, "이미지 지연 로딩 테스트 작성", &["Write src/gallery.test.tsx", "Bash npm test gallery"]),
+        (2, "접근성 라벨과 키보드 이동 점검", &["Read src/gallery.tsx", "Grep aria-label"]),
+        (2, "번들 크기 변화 측정", &["Bash npm run build", "Read dist/stats.json"]),
+    ];
+    let mut round = 0u32;
+    loop {
+        let mut started: Vec<(SessionId, String, usize)> = Vec::new();
+        for (n, (session, what, _)) in tasks.iter().enumerate() {
+            let id = format!("sub-{round}-{n}");
+            let _ = events.send(Event::ToolUse { session: *session, tool: "Agent".into(), target: Some((*what).into()) });
+            live_subagents().lock().unwrap().push((*session, SubagentInfo { id: id.clone(), what: (*what).into(), step: None, secs: 0 }, std::time::Instant::now()));
+            let _ = events.send(Event::SubagentStarted { session: *session, id: id.clone(), what: (*what).into() });
+            started.push((*session, id, n));
+            tokio::time::sleep(beat).await;
+            // Everyone at work takes a step.
+            for (s, id, task) in &started {
+                let steps = tasks[*task].2;
+                let step = steps[(round as usize + n + task) % steps.len()];
+                if let Some(entry) = live_subagents().lock().unwrap().iter_mut().find(|(_, info, _)| info.id == *id) {
+                    entry.1.step = Some(step.into());
+                }
+                let _ = events.send(Event::SubagentStep { session: *s, id: id.clone(), step: step.into() });
+            }
+            // From the sixth on, the oldest hands back as the next starts.
+            if n >= 5 {
+                let (s, id, _) = started.remove(0);
+                end_subagent(&events, s, &id);
+            }
+        }
+        tokio::time::sleep(beat * 2).await;
+        for (s, id, _) in started.drain(..) {
+            end_subagent(&events, s, &id);
+            tokio::time::sleep(beat / 2).await;
+        }
+        // Backend's first, from before, hands back once.
+        if round == 0 {
+            end_subagent(&events, 3, "sub-b0");
+        }
+        tokio::time::sleep(beat * 2).await;
+        round += 1;
+    }
+}
+
+fn end_subagent(events: &broadcast::Sender<Event>, session: SessionId, id: &str) {
+    let what = {
+        let mut live = live_subagents().lock().unwrap();
+        let what = live.iter().find(|(_, info, _)| info.id == id).map(|(_, info, _)| info.what.clone());
+        live.retain(|(_, info, _)| info.id != id);
+        what
+    };
+    let outcome = equipe_core::protocol::ToolOutcome { ok: true, exit: None, ms: Some(9_000), output: String::new(), skipped: 0, diff: None };
+    let _ = events.send(Event::ToolResult { session, tool: "Agent".into(), target: what, outcome });
+    let _ = events.send(Event::SubagentEnded { session, id: id.into() });
+}
 
 /// `FAKE_TURN`: T-117 waits for the person (`1`), and is answered elsewhere (`elsewhere`).
 fn your_turn() -> Option<String> {
@@ -761,6 +852,18 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         designer.mode = Some(equipe_core::protocol::Mode::Ask);
                         let mut backend = backend;
                         backend.effort = Some("high".into());
+                        let mut frontend = frontend;
+                        if subagents_on() {
+                            for member in [&mut frontend, &mut backend] {
+                                let (subs, calls) = subagents_of(member.session);
+                                member.subagents = subs;
+                                member.recent.extend(calls);
+                            }
+                            static PLAYING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                            if !PLAYING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                                tokio::spawn(subagents_play(events.clone()));
+                            }
+                        }
                         let mut sessions = vec![info(1, "pm", history), frontend, backend, designer];
                         if busy() {
                             for (ticket, session, name, title) in BUSY {

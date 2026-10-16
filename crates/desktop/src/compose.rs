@@ -691,6 +691,7 @@ mod tests {
             work: None,
             mode: None,
             effort: None,
+            subagents: Vec::new(),
             queued_project: None,
             queued_in: vec![],
             steering: vec![],
