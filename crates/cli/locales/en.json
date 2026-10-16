@@ -448,6 +448,8 @@
   "remote.push_asks_fetch": "{member} asks to fetch a page",
   "remote.push_asks_permission": "{member} asks for permission",
   "remote.push_asks_run": "{member} asks to run a command",
+  "remote.push_browser": "{member} is waiting for you in its browser",
+  "remote.push_browser_body": "{squad} · do it in the equipe app on your Mac — the browser can't be used from a phone",
   "remote.push_decision.one": "{member} asks you to decide",
   "remote.push_decision.other": "{member} asks you to decide {count} things",
   "remote.push_review": "{who} handed in work to review",

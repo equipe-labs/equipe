@@ -448,6 +448,8 @@
   "remote.push_asks_fetch": "{member} möchte eine Seite abrufen",
   "remote.push_asks_permission": "{member} bittet um Erlaubnis",
   "remote.push_asks_run": "{member} möchte einen Befehl ausführen",
+  "remote.push_browser": "{member} wartet im Browser auf dich",
+  "remote.push_browser_body": "{squad} · in der equipe-App auf dem Mac erledigen – den Browser kann man nicht vom Handy aus bedienen",
   "remote.push_decision.one": "{member} bittet dich um eine Entscheidung",
   "remote.push_decision.other": "{member} bittet dich um {count} Entscheidungen",
   "remote.push_review": "{who} hat Arbeit zum Review abgegeben",

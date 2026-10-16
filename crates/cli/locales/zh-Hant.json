@@ -446,6 +446,8 @@
   "remote.push_asks_fetch": "{member} 請求擷取網頁",
   "remote.push_asks_permission": "{member} 請求權限",
   "remote.push_asks_run": "{member} 請求執行指令",
+  "remote.push_browser": "{member} 在瀏覽器裡等你",
+  "remote.push_browser_body": "{squad} · 請在 Mac 上的 equipe App 裡操作 —— 瀏覽器無法在手機上使用",
   "remote.push_decision.other": "{member} 請你決定 {count} 件事",
   "remote.push_review": "{who} 提交了待審查的工作",
   "remote.push_waiting": "{who} 需要你",

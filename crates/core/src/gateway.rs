@@ -100,6 +100,8 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
     // Pairing a phone: this screen's line to the phone link, opened when it asks.
     let mut pairing: Option<crate::pairing::Bridge> = None;
     let mut lang: Option<crate::i18n::Lang> = None;
+    // A screen with a browser panel, counted while it is attached.
+    let mut panel_screen: Option<std::sync::Arc<crate::browser::Hub>> = None;
     while let Ok(Some(line)) = lines.next_line().await {
         let Ok(message) = Message::from_line(&line) else {
             continue;
@@ -114,6 +116,13 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
                 if let Some(code) = params.lang.clone() {
                     lang = crate::i18n::Lang::parse(&code);
                     core.send(Command::Language { lang: code });
+                }
+                if params.browser_panel
+                    && panel_screen.is_none()
+                    && let Some(hub) = core.browser_hub().await
+                {
+                    hub.screen(true);
+                    panel_screen = Some(hub);
                 }
                 let Some((snapshot, mut events)) = core.subscribe(&params.squad).await else {
                     break;
@@ -248,6 +257,9 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
     // The screen left. Its agents keep working; only its view goes away.
     if let Some(forwarder) = forwarder {
         forwarder.abort();
+    }
+    if let Some(hub) = panel_screen {
+        hub.screen(false);
     }
     // Its line to the phone link closes, and any code it had open with it.
     drop(pairing);
@@ -546,7 +558,7 @@ impl Client {
     pub async fn connect_in(socket: &Path, version: &str, squad: &str, lang: Option<crate::i18n::Lang>) -> io::Result<(Self, Hello)> {
         let stream = UnixStream::connect(socket).await?;
         let (reader, mut writer) = stream.into_split();
-        let params = HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: lang.map(|l| l.code().to_owned()) };
+        let params = HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: lang.map(|l| l.code().to_owned()), browser_panel: false };
         let hello = Message::request(1, rpc::HELLO, params);
         write_line(&mut writer, &hello).await?;
 

@@ -3046,8 +3046,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                     self.publish(Event::Notice { session: id, text });
                 }
                 let _ = reply.send(ToolResult {
-                    text: "Your browser is open in the person's browser panel, at that page, in their hands. Tell them what \
-to do there and end your turn: you'll be told when they hand it back."
+                    text: "Your browser is open in the person's browser panel, at that page, in their hands, with your `why` \
+shown over it as what to do. Say in one line what they should do there, then end your turn. When they press \"done\" \
+and hand it back you get a message and carry on by yourself — don't ask them to tell you."
                         .into(),
                     is_error: false,
                     image: None,
@@ -3598,15 +3599,19 @@ there, end your turn, and carry on when they say they're done."
                     return;
                 }
                 match (by.is_some(), asked.is_some()) {
-                    // Put in their hands for a page that waits for them: told when it was.
-                    (true, _) if check.is_some() => {}
+                    // Put in their hands for a page that waits for them, or because
+                    // its member asked: told when it was.
+                    (true, _) if check.is_some() || self.asked_in.contains_key(&lane) => {}
                     // Only a turn under way needs telling: between turns nothing waits on it.
                     (true, _) if working => {
                         let text = say!(self, "notice.browser_taken");
                         self.publish(Event::Notice { session, text });
                     }
                     // Done with what it asked of them: it carries on.
-                    (false, true) => self.submit(session, "The person finished in the browser.".into()).await,
+                    (false, true) => {
+                        let why = asked.unwrap_or_default();
+                        self.submit(session, handed_back(&why)).await;
+                    }
                     (false, false) if working => {
                         let text = say!(self, "notice.browser_given_back");
                         self.publish(Event::Notice { session, text });
@@ -4620,6 +4625,17 @@ const REFRESH_FULL_PERCENT: u64 = 60;
 /// again whole once the prompt cache has expired.
 const REFRESH_COLD_TOKENS: u64 = 60_000;
 const REFRESH_COLD_AFTER: Duration = Duration::from_secs(60 * 60);
+/// What a member is told when the person hands back the browser it handed
+/// them (`show_my_browser`, in the panel): its turn starts again on it.
+fn handed_back(why: &str) -> String {
+    let why = why.trim();
+    let what = if why.is_empty() { String::new() } else { format!(" (you asked: {why})") };
+    format!(
+        "The person finished in your browser{what} and handed it back to you. Look at the page as it is now and carry \
+on where you left off."
+    )
+}
+
 /// How many of the last messages a fresh conversation is handed.
 const REFRESH_TAIL: usize = 12;
 

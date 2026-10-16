@@ -569,6 +569,9 @@ struct HubInner {
     next: u64,
     /// Browser panels connected now.
     panels: usize,
+    /// Screens attached now that have a browser panel (the desktop app, on
+    /// this Mac or another), whether or not the panel is open yet.
+    screens: usize,
 }
 
 /// What the host should be drawing: for each watched page, the most any
@@ -685,10 +688,24 @@ impl Hub {
         inner.panels = if connected { inner.panels + 1 } else { inner.panels.saturating_sub(1) };
     }
 
+    /// A screen with a browser panel attached (`true`) or left — its panel
+    /// open or not: it opens the panel when a member hands the person its
+    /// browser.
+    pub fn screen(&self, attached: bool) {
+        let mut inner = self.inner.lock().expect("hub");
+        inner.screens = if attached { inner.screens + 1 } else { inner.screens.saturating_sub(1) };
+    }
+
     /// Whether a screen with a browser panel is attached: then a member's
-    /// browser the person is asked into shows there, not on the Mac's screen.
+    /// browser the person is handed shows there, in their hands — never as a
+    /// window on the daemon's Mac, which may be a machine nobody is looking at
+    /// (the app attached over SSH). On the daemon's own Mac too: the panel is
+    /// where the person already is, and it says what to do and hands back.
+    /// The raw window only comes up with no such screen attached, or when the
+    /// person asks for it (the panel's "open in Chrome").
     pub fn has_panel(&self) -> bool {
-        self.inner.lock().expect("hub").panels > 0
+        let inner = self.inner.lock().expect("hub");
+        inner.panels > 0 || inner.screens > 0
     }
 }
 
@@ -1048,6 +1065,21 @@ mod tests {
         assert!(hub.has_panel());
         hub.panel(false);
         hub.panel(false);
+        assert!(!hub.has_panel());
+    }
+
+    #[test]
+    fn a_screen_with_a_panel_attached_counts_before_its_panel_opens() {
+        let hub = Hub::new();
+        assert!(!hub.has_panel(), "nobody attached: the window on this Mac");
+        // The app on another Mac, its panel closed: the hand-over goes to it.
+        hub.screen(true);
+        assert!(hub.has_panel());
+        hub.panel(true);
+        hub.screen(false);
+        assert!(hub.has_panel(), "its panel's line still up");
+        hub.panel(false);
+        hub.screen(false);
         assert!(!hub.has_panel());
     }
 

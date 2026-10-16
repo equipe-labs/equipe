@@ -2707,6 +2707,104 @@ async fn one_browser_at_a_time_comes_on_screen_and_a_member_can_call_for_it() {
     assert!(shown("pm") && !shown("frontend"));
 }
 
+/// A stand-in `npx` that also plays the browser host (`browser-host.cjs`):
+/// each request it is sent written down, a lane's tabs told when it opens or
+/// moves, and who has a lane in hand told back as the host tells it.
+fn fake_host_npx() -> (PathBuf, PathBuf) {
+    let (npx, _) = fake_npx();
+    let dir = npx.parent().unwrap().to_owned();
+    let ops = dir.join("host-ops");
+    let host = dir.join("host.py");
+    std::fs::write(
+        &host,
+        format!(
+            r#"import json, socket, struct, sys
+pages = {{}}
+ports = []
+def say(m):
+    b = json.dumps(m).encode()
+    sys.stdout.buffer.write(struct.pack(">I", len(b) + 1) + bytes([1]) + b)
+    sys.stdout.buffer.flush()
+def tabs(lane):
+    pid, url = pages[lane]
+    say({{"type": "tabs", "lane": lane, "member": lane.split("/")[1], "pages": [{{"id": pid, "url": url, "title": ""}}], "agent": pid}})
+say({{"type": "ready"}})
+for line in sys.stdin:
+    with open({ops:?}, "a") as f:
+        f.write(line)
+    op = json.loads(line)
+    if op.get("op") == "lane":
+        # Its MCP endpoint, as the host opens one per lane.
+        if op["id"] not in pages:
+            s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", op["port"])); s.listen(); ports.append(s)
+        pages.setdefault(op["id"], [9000001 + len(pages), "about:blank"])
+        tabs(op["id"])
+    elif op.get("op") == "goto" and op.get("lane") in pages:
+        pages[op["lane"]][1] = op["url"]
+        tabs(op["lane"])
+    elif op.get("op") == "control":
+        say({{"type": "control", "lane": op["lane"], "by": op.get("by")}})
+"#,
+            ops = ops.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let script = std::fs::read_to_string(&npx).unwrap();
+    // `npx -y -p playwright node <host> …` is the host; anything else a member's browser.
+    let host_line = format!("#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = node ] && exec python3 -u '{}'; done\n", host.display());
+    write_script(&npx, &script.replacen("#!/bin/sh\n", &host_line, 1));
+    (npx, ops)
+}
+
+#[tokio::test]
+async fn a_member_hands_its_browser_to_the_panel_of_a_screen_on_another_mac_and_carries_on_when_it_comes_back() {
+    let repo = repo();
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    let (npx, ops) = fake_host_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), browser_host: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    // The app attached from another Mac, its browser panel not open yet.
+    handle.browser_hub().await.unwrap().screen(true);
+
+    let why = "Umbriles Inc. 계정 소유자 Apple ID로 App Store Connect에 로그인해 주세요";
+    let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://appstoreconnect.apple.com/", "why": why })).await;
+    assert!(!said.is_error && said.text.contains("browser panel") && said.text.contains("carry on by yourself"), "{said:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
+    assert!(
+        seen.iter().any(|e| matches!(e, Event::BrowserControl { lane, by: Some(by), why: Some(w), .. } if lane == "acme/pm" && by == "person" && w == why)),
+        "every screen is told: in the person's hands, and what for: {seen:?}"
+    );
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text } if text.contains(why) && text.contains("browser panel"))), "{seen:?}");
+    // Nothing comes up on the daemon's own screen.
+    assert!(!Journal::for_squad(&home, "acme").unwrap().browser_shown("pm"));
+    let sent = || std::fs::read_to_string(&ops).unwrap_or_default();
+    for _ in 0..100 {
+        if sent().contains("\"control\"") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let sent = sent();
+    assert!(sent.contains("appstoreconnect.apple.com") && sent.contains("\"by\":\"person\""), "{sent}");
+    assert!(!sent.lines().any(|l| l.contains("\"shown\":true")), "no window on this Mac: {sent}");
+
+    // The person presses "done — give it back": its turn starts again, told so.
+    let before = calls(&recorded).len();
+    handle.send(Command::BrowserControl { lane: "acme/pm".into(), take: false });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    let all = calls(&recorded);
+    assert_eq!(all.len(), before + 1, "one turn, without the person typing a word");
+    let prompt = arg(all.last().unwrap(), "-p").unwrap();
+    assert!(prompt.contains("handed it back") && prompt.contains(why), "{prompt}");
+
+    // That screen gone and none other attached: the window on this Mac, as before.
+    handle.browser_hub().await.unwrap().screen(false);
+    let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://appstoreconnect.apple.com/", "why": why })).await;
+    assert!(said.text.contains("comes up on the person's screen"), "{said:?}");
+    assert!(Journal::for_squad(&home, "acme").unwrap().browser_shown("pm"));
+}
+
 #[tokio::test]
 async fn after_a_member_answers_the_person_their_next_message_is_guessed() {
     let cwd = scratch("cwd");
