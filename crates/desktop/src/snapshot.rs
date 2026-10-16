@@ -5,7 +5,7 @@
 //! `EQUIPE_SCRIPT="wait:1500;say:안녕;wait:800;shot:/tmp/a.png"` — steps split on `;`:
 //! `wait:<ms>` · `shot:<png>` · `say:<text>` (type it in the box and send) ·
 //! `memo:<text>` (send it as a memo, as Tab does) · `type:<text>` (type, don't send) · `key:<y|a|n|o>` (answer a request) · `esc` (stop the member) · `up`/`down`
-//! (history) · `project:<name|all>` · `shead:<project>` / `sfold:<project>` (a sidebar header's name, its chevron; empty: the shared folder) · `select:<member>` · `board` · `chat` ·
+//! (history; ↑ on an empty box reaches the bubbles waiting) · `pwithdraw` (take the last waiting bubble back) · `pnow` (send what waits now) · `project:<name|all>` · `shead:<project>` / `sfold:<project>` (a sidebar header's name, its chevron; empty: the shared folder) · `select:<member>` · `board` · `chat` ·
 //! `menu:<inbox|working|all|view0…>` (a sidebar item) · `cmenu:<attach|recent|to|model|effort|mode|context>` (a composer menu) · `bkey:<key>` (a work
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
@@ -143,6 +143,14 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     let taken = shell.on_composer_key(&arg, &Modifiers::default(), window, cx);
                     eprintln!("ckey {arg}: taken = {taken}");
                 }),
+                // What waits for the member: the last bubble taken back, or all of it sent now.
+                "pwithdraw" => shell.update(cx, |shell, cx| {
+                    let last = shell.chat.blocks.iter().rev().find_map(|b| if let crate::convo::Block::Pending { text, .. } = b { Some(text.clone()) } else { None });
+                    if let Some(text) = last {
+                        shell.withdraw_pending(text, window, cx);
+                    }
+                }),
+                "pnow" => shell.update(cx, |shell, cx| shell.send_pending_now(cx)),
                 "light" => shell.update(cx, |shell, cx| {
                     let id = shell.composer.strip.items().get(arg.parse::<usize>().unwrap_or(0)).map(|i| i.id);
                     shell.show_big(id, cx);

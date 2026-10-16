@@ -729,7 +729,6 @@
   "view.longer_than_usual": "plus long que d'habitude",
   "view.members": "{open} membres",
   "view.members_working": "{open} membres · {working} au travail",
-  "view.memo_note": "mémo · lu à la fin de ce tour",
   "view.elsewhere.one": "{count} message d'autres projets · /project all l'affiche",
   "view.elsewhere.other": "{count} messages d'autres projets · /project all les affiche",
   "view.memos": "{n} mémos",
@@ -762,7 +761,6 @@
   "view.side_recent_done_today": "Terminés récemment · {n} aujourd’hui",
   "view.side_shared_folder": "Dossier partagé de l'escouade",
   "view.side_squad": "ESCOUADE",
-  "view.steering_note": "orientation · lue à sa prochaine étape, rien n'est arrêté",
   "view.the_squad": "l'escouade",
   "view.time_hours": "{h} h",
   "view.time_hours_minutes": "{h} h {m} min",
@@ -858,5 +856,12 @@
   "commands.new": "Mettre un ticket à vous au tableau (⇧N sur le tableau)",
   "commands.new_args": "<titre>",
   "commands.title": "Modifier le titre d'un ticket (⇧E sur le tableau)",
-  "commands.title_args": "T-n <titre>"
+  "commands.title_args": "T-n <titre>",
+  "view.pending_steer": "(prochaine étape)",
+  "view.pending_memo": "(à la fin)",
+  "commands.unqueue": "Reprendre le dernier message en attente, dans la zone de saisie",
+  "commands.now": "Arrêter le travail et envoyer maintenant ce qui attend, en un seul message",
+  "app.nothing_waiting": "Rien n'attend",
+  "app.unqueued": "Repris — il est dans la zone de saisie",
+  "app.sent_now": "Envoyé maintenant — le travail a été arrêté"
 }

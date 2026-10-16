@@ -723,7 +723,6 @@
   "view.longer_than_usual": "比平时久",
   "view.members": "{open} 名成员",
   "view.members_working": "{open} 名成员 · {working} 名工作中",
-  "view.memo_note": "备忘 · 本轮结束后读取",
   "view.elsewhere.other": "其他项目的对话 {count} 条 · /project all 显示全部",
   "view.memos": "{n} 条备忘",
   "view.mode_hint": "/mode {member} full 让 {member} 不再询问 · /mode 查看所有模式",
@@ -755,7 +754,6 @@
   "view.side_recent_done_today": "最近完成 · 今天 {n}",
   "view.side_shared_folder": "小队共享文件夹",
   "view.side_squad": "小队",
-  "view.steering_note": "指示 · 下一步读取，不中断工作",
   "view.the_squad": "小队",
   "view.time_hours": "{h}小时",
   "view.time_hours_minutes": "{h}小时{m}分",
@@ -850,5 +848,12 @@
   "commands.new": "把你自己的工单放上看板（看板中 ⇧N）",
   "commands.new_args": "<标题>",
   "commands.title": "修改工单标题（看板中 ⇧E）",
-  "commands.title_args": "T-n <标题>"
+  "commands.title_args": "T-n <标题>",
+  "view.pending_steer": "（下一步）",
+  "view.pending_memo": "（完成后）",
+  "commands.unqueue": "撤回最后一条等待中的消息，放回输入框",
+  "commands.now": "停下手头的工作，把等待的消息合成一条立即发送",
+  "app.nothing_waiting": "没有等待中的消息",
+  "app.unqueued": "已撤回 — 在输入框里",
+  "app.sent_now": "已立即发送 — 手头的工作已停止"
 }

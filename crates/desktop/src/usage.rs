@@ -106,6 +106,7 @@ mod tests {
             queued_project: None,
             queued_in: vec![],
             steering: vec![],
+            steering_in: vec![],
             lane: None,
             estimate: None,
             work: None,

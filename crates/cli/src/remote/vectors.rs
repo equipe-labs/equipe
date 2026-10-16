@@ -737,6 +737,7 @@ fn snapshot() -> Snapshot {
                 queued_project: None,
                 queued_in: vec![],
                 steering: vec![],
+                steering_in: vec![],
                 lane: None,
                 estimate: None,
                 work: None,
@@ -760,6 +761,7 @@ fn snapshot() -> Snapshot {
                 queued_project: None,
                 queued_in: vec![],
                 steering: vec![],
+                steering_in: vec![],
                 lane: None,
                 estimate: None,
                 work: Some(WorkInfo { ticket: 38, project: "/Users/you/projects/api".into(), workspace: None }),
@@ -864,6 +866,13 @@ fn message_vectors() -> Value {
     tell(&mut core, &mut examples, "event: turn interrupted", Event::TurnEnded { session: pm, outcome: TurnOutcome::Interrupted, usage: None });
     tell(&mut core, &mut examples, "event: notice", Event::Notice { session: pm, text: "↪ You → backend: 로그인 API 먼저".into() });
     tell(&mut core, &mut examples, "event: error", Event::Error { session: Some(pm), message: "Claude Code isn't signed in".into(), next: Some("claude login".into()) });
+    // What the screen shows goes with the message: a project, or (null) the whole squad.
+    ask(&mut core, &mut examples, "submit: about a project", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "submit", "session": pm, "text": "웹사이트는 어떻게 되어가?", "about": "web" } }));
+    ask(&mut core, &mut examples, "submit: about the whole squad", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "submit", "session": pm, "text": "전체 상황은?", "about": null } }));
+    tell(&mut core, &mut examples, "event: steer queued", Event::SteerQueued { session: pm, text: "푸터는 빼 줘".into(), project: Some("web".into()) });
+    // What waits, sent now: the turn stops and it goes as one message.
+    ask(&mut core, &mut examples, "send now", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "send_now", "session": pm, "texts": ["푸터는 빼 줘", "그리고 테스트도"] } }));
+    tell(&mut core, &mut examples, "event: queue sent", Event::QueueSent { session: pm, texts: vec!["푸터는 빼 줘".into(), "그리고 테스트도".into()] });
 
     // Not from a phone.
     ask(&mut core, &mut examples, "merge is refused", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "merge", "squad": SQUAD, "ticket": 38, "push": true } }));

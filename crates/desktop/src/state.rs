@@ -887,19 +887,11 @@ impl Model {
                 self.desktop = desktop;
             }
             Event::LaneOpened { session, of, project } => self.open_lane(session, of, project),
-            // A memo taken back: it leaves the conversation's waiting ones.
-            Event::MemoWithdrawn { session, text } => {
-                if let Some(convo) = self.convos.get_mut(&session)
-                    && let Some(at) = convo.queued.iter().position(|q| *q == text)
-                {
-                    convo.queued.remove(at);
-                    if at < convo.queued_in.len() {
-                        convo.queued_in.remove(at);
-                    }
-                    self.revision += 1;
-                }
-                if let Some(member) = self.members.iter_mut().find(|m| m.session == session) {
-                    member.memos = member.memos.saturating_sub(1);
+            // Taken back, or sent at once: the member's count follows its conversation's.
+            Event::MemoWithdrawn { session, .. } | Event::QueueSent { session, .. } => {
+                let memos = self.convos.get(&session).map(|c| c.queue.memo_count());
+                if let (Some(member), Some(memos)) = (self.members.iter_mut().find(|m| m.session == session), memos) {
+                    member.memos = memos;
                 }
             }
             Event::SessionClosed { session } if self.lanes.iter().any(|l| l.session == session) => self.fold_lane(session),
@@ -1540,6 +1532,7 @@ mod tests {
             queued_project: None,
             queued_in: vec![],
             steering: vec![],
+            steering_in: vec![],
             lane: None,
             estimate: None,
             work: None,
@@ -1920,7 +1913,7 @@ mod tests {
         assert!(model.open(Side::Ticket(7)));
         assert_eq!((model.viewed(), model.side_open()), (Some(2), Some(Side::Ticket(7))));
         let plan = crate::compose::plan(&model, "skip the footer", false);
-        assert_eq!(plan.commands, vec![equipe_core::protocol::Command::Submit { session: 2, text: "skip the footer".into() }]);
+        assert_eq!(plan.commands, vec![equipe_core::protocol::Command::Submit { session: 2, text: "skip the footer".into(), about: Some(None) }]);
         // A ticket with no work to show: the board's to show.
         assert!(!model.open(Side::Ticket(8)));
         assert_eq!(model.opened, None);
@@ -2235,9 +2228,12 @@ mod tests {
         }
         assert_eq!(model.members[0].memos, 3);
         assert!(model.apply(Update::Event(Event::MemoWithdrawn { session: 1, text: "a".into() }), T0));
-        assert_eq!(model.convo().unwrap().queued, ["b", "a"], "only the first with that text");
-        assert_eq!(model.convo().unwrap().queued_in.len(), 2);
+        assert_eq!(model.convo().unwrap().queue.texts(), ["b", "a"], "only the first with that text");
         assert_eq!(model.members[0].memos, 2);
+        // Sent at once: none waits.
+        model.apply(Update::Event(Event::QueueSent { session: 1, texts: vec!["b".into(), "a".into()] }), T0);
+        assert!(model.convo().unwrap().queue.is_empty());
+        assert_eq!(model.members[0].memos, 0);
     }
 
     #[test]

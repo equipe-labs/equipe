@@ -124,6 +124,7 @@ pub fn allowed(command: Command) -> Option<Command> {
         Command::Decide { squad, approval, decision: Decision::Always } => Some(Command::Decide { squad, approval, decision: Decision::Allow }),
         c @ (Command::Submit { .. }
         | Command::Interrupt { .. }
+        | Command::SendNow { .. }
         | Command::Accept { .. }
         | Command::Reopen { .. }
         | Command::Resume { .. }
@@ -823,7 +824,7 @@ pub(crate) mod tests {
         let answer = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "answer_questions", "squad": "acme", "id": 5, "answers": [{ "picked": [1] }, {}] } });
         let out = core.on_relay(&phone.send(&c, Some("acme"), answer, now), now);
         let answers = vec![equipe_core::protocol::decide::Answer { picked: vec![1], other: None }, Default::default()];
-        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::AnswerQuestions { squad: "acme".into(), id: 5, answers } }]);
+        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::AnswerQuestions { squad: "acme".into(), id: 5, answers, about: None } }]);
         let dismiss = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "dismiss_questions", "squad": "acme", "id": 5 } });
         assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), dismiss, now), now)[..], [Action::Command { command: Command::DismissQuestions { .. }, .. }]));
         let elsewhere = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "dismiss_questions", "squad": "zeta", "id": 5 } });

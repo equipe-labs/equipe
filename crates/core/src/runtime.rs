@@ -43,6 +43,7 @@ use crate::permissions;
 use crate::roles::{self, Teammate};
 use crate::squad_home;
 use crate::squad_memory;
+use crate::steers;
 use crate::worktree::{self, Sandbox};
 
 /// What equipe says to the person, in their language: `say!(self, "notice.model", model = m)`.
@@ -297,6 +298,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         pending: HashMap::new(),
         next_approval: 1,
         focus: HashMap::new(),
+        said_about: None,
         builds_trimmed: None,
         browsers: HashMap::new(),
         host: None,
@@ -327,7 +329,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let handle = Handle { requests: req_tx };
     // Memos for a turn the restart ended go in first, as if just sent.
     for (session, text) in memos {
-        handle.send(Command::Submit { session, text });
+        handle.send(Command::Submit { session, text, about: None });
     }
     (handle, evt_rx)
 }
@@ -416,6 +418,14 @@ struct Session {
     steer: Option<mpsc::UnboundedSender<String>>,
     /// What was sent that way and not read yet; at the turn's end, memos.
     steering: Vec<String>,
+    /// For each of those, the project the person was looking at (`None`: the whole squad).
+    steer_threads: Vec<Option<String>>,
+    /// Steers taken back after they went into the turn: not shown when the
+    /// engine echoes them, as it reads them with the word to disregard them.
+    taken_back: Vec<String>,
+    /// The words a message sent at once ([`Command::SendNow`]) goes to the
+    /// engine as — each part with its project — in place of the message.
+    send_now_prompt: Option<String>,
     /// For the PM: what happened with the team since the PM's last turn. It
     /// travels with the PM's next message, so the PM keeps up without spending a
     /// turn on every exchange.
@@ -552,6 +562,10 @@ struct Runtime {
     next_approval: u64,
     /// The project each squad's person is looking at, by name.
     focus: HashMap<String, String>,
+    /// While a message of the person's is handled: the project the screen
+    /// that sent it shows (`Some(None)`: the whole squad) — it, not the
+    /// focus another screen set last, says what the message is about.
+    said_about: Option<Option<String>>,
     /// When members' build caches were last looked at.
     builds_trimmed: Option<std::time::Instant>,
     /// Members' browsers, kept between turns: by squad and member.
@@ -659,7 +673,11 @@ async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut inte
                 None => break,
             },
             Some(message) = internal.recv() => match message {
-                Internal::Event(event) => rt.publish(*event),
+                Internal::Event(event) => match *event {
+                    // What the engine echoes as it reads the person's steers: each said as it was.
+                    Event::Steered { session, text } => rt.steered(session, &text),
+                    event => rt.publish(event),
+                },
                 Internal::Done(done) => rt.on_turn_done(done).await,
                 Internal::ApprovalTimedOut(id) => rt.answer(id, Decision::Deny, "Nobody answered in time."),
                 Internal::Frame(session, frame) => {
@@ -736,6 +754,9 @@ impl Runtime {
                 Event::Steered { text, .. } => {
                     if let Some(at) = session.steering.iter().position(|t| t == text) {
                         session.steering.remove(at);
+                        if at < session.steer_threads.len() {
+                            session.steer_threads.remove(at);
+                        }
                     }
                 }
                 Event::TurnEnded { usage, .. } => {
@@ -818,16 +839,20 @@ impl Runtime {
     async fn handle(&mut self, command: Command) {
         match command {
             Command::Start { session, spec } => self.start(session, spec).await,
-            Command::Submit { session, text } => {
+            Command::Submit { session, text, about } => {
+                self.said_about = about;
                 let session = self.route(session);
-                self.submit(session, text).await
+                self.submit(session, text).await;
+                self.said_about = None;
             }
-            Command::SubmitLater { session, text } => {
+            Command::SubmitLater { session, text, about } => {
+                self.said_about = about;
                 let session = self.route(session);
                 match self.sessions.get(&session) {
                     Some(s) if s.is_working() => self.leave_memo(session, text),
                     _ => self.submit(session, text).await,
                 }
+                self.said_about = None;
             }
             Command::Interrupt { session } => self.interrupt(session).await,
             Command::Close { session } => self.close(session).await,
@@ -923,6 +948,7 @@ impl Runtime {
                 }
             }
             Command::Unqueue { session, text } => self.unqueue(session, &text),
+            Command::SendNow { session, texts } => self.send_now(session, texts).await,
             Command::SetEffort { session, effort } => {
                 let effort = effort.map(|e| e.trim().to_ascii_lowercase()).filter(|e| !e.is_empty());
                 if let Some(s) = self.sessions.get_mut(&session) {
@@ -947,7 +973,11 @@ impl Runtime {
                     self.answer(approval, decision, "");
                 }
             }
-            Command::AnswerQuestions { squad, id, answers } => self.answer_questions(&squad, id, answers).await,
+            Command::AnswerQuestions { squad, id, answers, about } => {
+                self.said_about = about;
+                self.answer_questions(&squad, id, answers).await;
+                self.said_about = None;
+            }
             Command::DismissQuestions { squad, id } => self.dismiss_questions(&squad, id).await,
             Command::ApproveTeamChange { squad, id } => self.approve_team_change(&squad, id).await,
             Command::DeclineTeamChange { squad, id } => self.decline_team_change(&squad, id),
@@ -975,8 +1005,10 @@ impl Runtime {
         };
         let threads: Vec<String> = session.memo_threads.iter().map(|p| p.clone().unwrap_or_default()).collect();
         let steering = session.steering.clone();
+        let steer_threads: Vec<String> = session.steer_threads.iter().map(|p| p.clone().unwrap_or_default()).collect();
         if let Some(journal) = self.journal(&squad) {
             let _ = journal.set_waiting(id, "steer", &steering);
+            let _ = journal.set_waiting(id, "steer-threads", &steer_threads);
             let _ = journal.set_waiting(id, "memo", &queued);
             let _ = journal.set_waiting(id, "memo-threads", &threads);
             let _ = journal.set_waiting(id, "briefing", &briefing);
@@ -1295,6 +1327,9 @@ impl Runtime {
                 memo_thread: None,
                 steer: None,
                 steering: Vec::new(),
+                steer_threads: Vec::new(),
+                taken_back: Vec::new(),
+                send_now_prompt: None,
                 answers_person: false,
                 effort: None,
                 briefing: Vec::new(),
@@ -1344,13 +1379,20 @@ impl Runtime {
             // Said while it works: it reads it at its next step and carries on,
             // steered (what is said mid-work is mostly a correction); an engine
             // that can't take it mid-turn gets it as a memo.
-            if let Some(steer) = session.steer.clone()
-                && steer.send(text.clone()).is_ok()
-            {
-                session.steering.push(text.clone());
-                self.save_waiting(id);
-                self.tell_the_pm(id, |name| format!("The person told {name}, mid-work: {text}"), Some(&text));
-                return self.publish(Event::SteerQueued { session: id, text });
+            if let Some(steer) = session.steer.clone() {
+                // Each steer says which project it is about, as a message does:
+                // several read together at one step may be about different ones.
+                let project = self.looking_at(id);
+                let said = self.steer_words(id, &text, project.as_deref());
+                if steer.send(said).is_ok() {
+                    if let Some(session) = self.sessions.get_mut(&id) {
+                        session.steering.push(text.clone());
+                        session.steer_threads.push(project.clone());
+                    }
+                    self.save_waiting(id);
+                    self.tell_the_pm(id, |name| format!("The person told {name}, mid-work: {text}"), Some(&text));
+                    return self.publish(Event::SteerQueued { session: id, text, project });
+                }
             }
             return self.leave_memo(id, text);
         }
@@ -1360,38 +1402,168 @@ impl Runtime {
     /// A memo: it waits for the turn to end rather than cutting in, and belongs
     /// with the project the person is looking at now.
     fn leave_memo(&mut self, id: SessionId, text: String) {
+        let project = self.looking_at(id);
+        self.leave_memo_about(id, text, project);
+    }
+
+    /// A memo about `project` (`None`: the whole squad).
+    fn leave_memo_about(&mut self, id: SessionId, text: String, project: Option<String>) {
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
-        {
-            let looking_at = match &session.work {
-                Some(work) => Some(crate::board::project_name(&work.project)),
-                None => session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned(),
-            };
-            session.queued.push(text.clone());
-            session.memo_threads.push(looking_at.clone());
-            let project = looking_at;
-            self.save_waiting(id);
-            self.publish(Event::MessageQueued { session: id, text, project });
+        session.queued.push(text.clone());
+        session.memo_threads.push(project.clone());
+        self.save_waiting(id);
+        self.publish(Event::MessageQueued { session: id, text, project });
+    }
+
+    /// The project what is said to `id` now is about: its ticket's, at work
+    /// on one; else the one the person looks at (`None`: the whole squad).
+    fn looking_at(&self, id: SessionId) -> Option<String> {
+        let session = self.sessions.get(&id)?;
+        match &session.work {
+            Some(work) => Some(crate::board::project_name(&work.project)),
+            None => self.said_about.clone().unwrap_or_else(|| session.squad.as_ref().and_then(|s| self.focus.get(s)).cloned()),
+        }
+    }
+
+    /// A steer as it goes into the turn: with the project it is about first,
+    /// as a message is sent — at the PM's desk, of a squad with several
+    /// projects, the whole squad's said too.
+    fn steer_words(&mut self, id: SessionId, text: &str, project: Option<&str>) -> String {
+        let desk = self.sessions.get(&id).filter(|s| s.is_pm() && s.work.is_none()).and_then(|s| s.squad.clone());
+        let whole = project.is_none() && desk.is_some_and(|squad| self.projects(&squad).len() > 1);
+        steers::words(text, project, whole)
+    }
+
+    /// The engine read what the person said while it works: `raw` as it
+    /// echoes it — one steer, or several read at once — each shown as it was
+    /// said, in the conversation of the project it was about. A steer taken
+    /// back, and the word that it was, are not shown.
+    fn steered(&mut self, id: SessionId, raw: &str) {
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        // Each with the project it was said about; `None`: not one equipe knows of.
+        let mut read: Vec<(String, Option<Option<String>>)> = Vec::new();
+        for part in steers::read(raw, &session.steering) {
+            if part.starts_with(steers::TAKEN_BACK) {
+                continue;
+            }
+            if let Some(at) = session.taken_back.iter().position(|t| *t == part) {
+                session.taken_back.remove(at);
+                continue;
+            }
+            let about = session.steering.iter().position(|t| *t == part).map(|at| session.steer_threads.get(at).cloned().flatten());
+            read.push((part, about));
+        }
+        // At the PM's desk the line goes where it was said about, and the
+        // turn goes on about its own after it.
+        let marks = session.is_pm() && session.work.is_none();
+        for (text, about) in read {
+            let now = self.sessions.get(&id).and_then(|s| scope::current(s.transcript.entries())).flatten();
+            let about = about.unwrap_or_else(|| now.clone());
+            let elsewhere = marks && about != now;
+            if elsewhere {
+                self.publish(Event::Thread { session: id, project: about });
+            }
+            self.publish(Event::Steered { session: id, text });
+            if elsewhere {
+                self.publish(Event::Thread { session: id, project: now });
+            }
+        }
+        self.save_waiting(id);
+    }
+
+    /// The session holding what waits with `held` for `id`: its own, or its lane's.
+    fn holder(&self, id: SessionId, held: impl Fn(&Session) -> bool) -> Option<SessionId> {
+        match self.sessions.get(&id) {
+            Some(s) if held(s) => Some(id),
+            _ => self.sessions.iter().find(|(_, s)| s.lane.as_ref().is_some_and(|(of, _)| *of == id) && held(s)).map(|(lane, _)| *lane),
+        }
+    }
+
+    /// Send what waits for `id` now ([`Command::SendNow`]): its turn stops
+    /// and the steers not read and the memos — `first` in its order, then
+    /// the rest — go to it together, as one message about their project
+    /// (each part with its own, when they are about several).
+    async fn send_now(&mut self, id: SessionId, first: Vec<String>) {
+        let waits = |s: &Session| !s.steering.is_empty() || !s.queued.is_empty();
+        let Some(id) = self.holder(id, waits) else {
+            return;
+        };
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        // Everything waiting, steers first as they were said, then memos.
+        let mut waiting: Vec<(String, Option<String>)> = Vec::new();
+        let steer_threads = std::mem::take(&mut session.steer_threads);
+        for (i, text) in std::mem::take(&mut session.steering).into_iter().enumerate() {
+            waiting.push((text, steer_threads.get(i).cloned().flatten()));
+        }
+        let memo_threads = std::mem::take(&mut session.memo_threads);
+        for (i, text) in std::mem::take(&mut session.queued).into_iter().enumerate() {
+            waiting.push((text, memo_threads.get(i).cloned().flatten()));
+        }
+        let items = steers::order(waiting, &first);
+        session.steer = None;
+        let texts: Vec<String> = items.iter().map(|(t, _)| t.clone()).collect();
+        if texts.is_empty() {
+            return;
+        }
+        let about: Vec<Option<String>> = items.iter().map(|(_, a)| a.clone()).collect();
+        let one = about.iter().all(|a| *a == about[0]);
+        let text = texts.join("\n\n");
+        // About several projects: each part says its own to the engine.
+        let prompt = (!one).then(|| items.iter().map(|(t, a)| steers::part(t, a.as_deref())).collect::<Vec<_>>().join("\n\n"));
+        self.save_waiting(id);
+        self.publish(Event::QueueSent { session: id, texts: texts.clone() });
+        let project = if one { about[0].clone() } else { None };
+        let stopped = self.stop_turn(id);
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        session.queued.insert(0, text);
+        session.memo_threads.insert(0, project);
+        session.send_now_prompt = prompt;
+        // A turn that finished already ends as it lands, delivering this first.
+        let landing = !stopped && session.turn.is_some();
+        if !landing {
+            // The turn's end, as Esc's: its work handed in, what waits delivered —
+            // this message first.
+            self.after_turn(id).await;
+        }
+        // What went into the stopped turn unread is in the message now: an
+        // echo of it still on its way is not shown twice.
+        if let Some(session) = self.sessions.get_mut(&id) {
+            session.taken_back.extend(texts);
         }
     }
 
     /// Take back a memo not delivered yet: the first one with `text`, in the
     /// session it was left in (a lane's, when the member had one).
     fn unqueue(&mut self, id: SessionId, text: &str) {
-        let held = |s: &Session| s.queued.iter().any(|q| q == text);
-        let id = match self.sessions.get(&id) {
-            Some(s) if held(s) => id,
-            _ => match self.sessions.iter().find(|(_, s)| s.lane.as_ref().is_some_and(|(of, _)| *of == id) && held(s)) {
-                Some((lane, _)) => *lane,
-                None => return,
-            },
+        let held = |s: &Session| s.queued.iter().any(|q| q == text) || s.steering.iter().any(|q| q == text);
+        let Some(id) = self.holder(id, held) else {
+            return;
         };
         let Some(session) = self.sessions.get_mut(&id) else { return };
-        let Some(at) = session.queued.iter().position(|q| q == text) else { return };
-        session.queued.remove(at);
-        if at < session.memo_threads.len() {
-            session.memo_threads.remove(at);
+        if let Some(at) = session.queued.iter().position(|q| q == text) {
+            session.queued.remove(at);
+            if at < session.memo_threads.len() {
+                session.memo_threads.remove(at);
+            }
+        } else if let Some(at) = session.steering.iter().position(|q| q == text) {
+            // A steer is in the turn already, unread: the engine is told to
+            // disregard it, and its echo isn't shown.
+            session.steering.remove(at);
+            if at < session.steer_threads.len() {
+                session.steer_threads.remove(at);
+            }
+            session.taken_back.push(text.to_owned());
+            if let Some(steer) = session.steer.clone() {
+                let _ = steer.send(steers::taken_back(text));
+            }
         }
         self.save_waiting(id);
         self.publish(Event::MemoWithdrawn { session: id, text: text.to_owned() });
@@ -1409,12 +1581,16 @@ impl Runtime {
         if !self.ensure_codex(id).await {
             return;
         }
-        // The project the message is about: the one the person looks at — a
-        // memo's, the one it was left in. None: the whole squad.
-        let about = memo_thread.flatten().or_else(|| {
-            let squad = self.sessions.get(&id)?.squad.clone()?;
-            self.focus.get(&squad).cloned()
-        });
+        // The project the message is about: the one the person looks at on
+        // the screen they sent it from (else the one in focus) — a memo's,
+        // the one it was left in. None: the whole squad.
+        let about = match memo_thread {
+            Some(left_in) => left_in,
+            None => self.said_about.clone().unwrap_or_else(|| {
+                let squad = self.sessions.get(&id).and_then(|s| s.squad.clone());
+                squad.and_then(|squad| self.focus.get(&squad).cloned())
+            }),
+        };
         // In the PM's conversation the message, its reply and its steps are
         // about that project: a marker says so where it changes.
         if let Some(session) = self.sessions.get(&id)
@@ -1445,6 +1621,8 @@ impl Runtime {
             return;
         };
         session.prompts.push(text.clone());
+        // A message sent at once about several projects: each part says its own.
+        let text = session.send_now_prompt.take().unwrap_or(text);
         // What the PM missed travels with its next message; the person sees only theirs.
         let mut prompt = match std::mem::take(&mut session.briefing) {
             briefing if briefing.is_empty() => text,
@@ -1610,6 +1788,9 @@ for one project goes to it as tickets for its owners, with that project — and 
             memo_thread: None,
             steer: None,
             steering: Vec::new(),
+            steer_threads: Vec::new(),
+            taken_back: Vec::new(),
+            send_now_prompt: None,
             answers_person: false,
             effort: None,
             briefing: Vec::new(),
@@ -2198,10 +2379,12 @@ for one project goes to it as tickets for its owners, with that project — and 
         // Said while it worked but not read before the turn ended: delivered now, with the memos.
         let unread = self.sessions.get_mut(&id).map(|s| {
             s.steer = None;
-            std::mem::take(&mut s.steering)
+            s.taken_back.clear();
+            let threads = std::mem::take(&mut s.steer_threads);
+            std::mem::take(&mut s.steering).into_iter().enumerate().map(|(i, t)| (t, threads.get(i).cloned().flatten())).collect::<Vec<_>>()
         });
-        for text in unread.unwrap_or_default() {
-            self.leave_memo(id, text);
+        for (text, project) in unread.unwrap_or_default() {
+            self.leave_memo_about(id, text, project);
         }
         let Some(session) = self.sessions.get(&id) else {
             return;
@@ -4089,6 +4272,7 @@ it back there once they have done it.{again} End your turn now with a short line
                     queued_project: s.memo_threads.first().cloned().flatten(),
                     queued_in: s.memo_threads.clone(),
                     steering: s.steering.clone(),
+                    steering_in: s.steer_threads.clone(),
                     lane: s.lane.clone().map(|(of, project)| equipe_protocol::Lane { of, project }),
                     estimate: s.estimate.clone().filter(|e| !e.is_empty()),
                     work: s.work.as_ref().map(|w| WorkInfo {
@@ -4212,9 +4396,15 @@ it back there once they have done it.{again} End your turn now with a short line
                     memos.extend(unread.iter().cloned());
                     let _ = journal.set_waiting(record.id, "memo", &memos);
                 }
-                for text in unread {
+                let unread_in: Vec<Option<String>> = journal
+                    .waiting(record.id, "steer-threads")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|p| Some(p).filter(|p| !p.is_empty()))
+                    .collect();
+                for (i, text) in unread.into_iter().enumerate() {
                     queued.push(text);
-                    memo_threads.push(None);
+                    memo_threads.push(unread_in.get(i).cloned().flatten());
                 }
                 // The PM's other conversations, by project, as they were left.
                 let (thread, others) = journal.desk_threads(record.id);
@@ -4257,6 +4447,9 @@ it back there once they have done it.{again} End your turn now with a short line
                         memo_thread: None,
                         steer: None,
                         steering: Vec::new(),
+                        steer_threads: Vec::new(),
+                        taken_back: Vec::new(),
+                        send_now_prompt: None,
                         briefing: journal.waiting(record.id, "briefing").unwrap_or_default(),
                         memory,
                         mode: record.mode,

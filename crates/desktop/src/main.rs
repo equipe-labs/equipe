@@ -26,6 +26,7 @@ mod media;
 mod mem;
 mod notify;
 mod pair;
+mod queue;
 mod sheet;
 mod sidecar;
 mod ssh;

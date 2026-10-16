@@ -723,7 +723,6 @@
   "view.longer_than_usual": "比平常久",
   "view.members": "{open} 位成員",
   "view.members_working": "{open} 位成員 · {working} 位進行中",
-  "view.memo_note": "備忘 · 這一輪結束時讀取",
   "view.elsewhere.other": "其他專案的對話 {count} 則 · /project all 顯示全部",
   "view.memos": "{n} 則備忘",
   "view.mode_hint": "/mode {member} full 讓 {member} 不再詢問 · /mode 查看所有模式",
@@ -755,7 +754,6 @@
   "view.side_recent_done_today": "最近完成 · 今天 {n}",
   "view.side_shared_folder": "小隊共用資料夾",
   "view.side_squad": "小隊",
-  "view.steering_note": "指示 · 下一步讀取，不中斷",
   "view.the_squad": "小隊",
   "view.time_hours": "{h} 小時",
   "view.time_hours_minutes": "{h} 小時 {m} 分",
@@ -850,5 +848,12 @@
   "commands.new": "把你自己的工單放上看板（看板中 ⇧N）",
   "commands.new_args": "<標題>",
   "commands.title": "修改工單標題（看板中 ⇧E）",
-  "commands.title_args": "T-n <標題>"
+  "commands.title_args": "T-n <標題>",
+  "view.pending_steer": "（下一步）",
+  "view.pending_memo": "（完成後）",
+  "commands.unqueue": "撤回最後一則等待中的訊息，放回輸入框",
+  "commands.now": "停下手邊的工作，把等待的訊息合成一則立即傳送",
+  "app.nothing_waiting": "沒有等待中的訊息",
+  "app.unqueued": "已撤回 — 在輸入框裡",
+  "app.sent_now": "已立即傳送 — 手邊的工作已停止"
 }

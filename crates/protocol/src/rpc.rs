@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn a_command_travels_as_a_one_line_notification() {
-        let cmd = Command::Submit { session: 3, text: "two\nlines".into() };
+        let cmd = Command::Submit { session: 3, text: "two\nlines".into(), about: None };
         let line = Message::command(&cmd).to_line();
         assert_eq!(line.matches('\n').count(), 1, "exactly the trailing newline: {line:?}");
         let back = Message::from_line(&line).unwrap();
