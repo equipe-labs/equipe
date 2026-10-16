@@ -730,7 +730,8 @@ pub fn save_view_bar(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // Not `super::*`: that brings GPUI's own `test` attribute in.
+    use super::{BOX_PAD, LABEL, PAGE_PROPS, Props, VALUE_MIN, foot_columns, pad, props_layout, words_width};
 
     /// The properties' room inside the peek's box, at a peek `width`.
     fn inside(width: f32) -> f32 {
