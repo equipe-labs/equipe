@@ -198,6 +198,10 @@ async fn codex_asks_the_person_and_an_always_becomes_the_squads_rule() {
     assert_eq!(board["default_tools_approval_mode"], "approve");
     let args: Vec<&str> = board["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
     assert_eq!(&args[..5], ["mcp", "--squad", "acme", "--member", "qa"]);
+    // Only equipe's: the person's own are switched off, by name.
+    assert_eq!(start["config"]["mcp_servers"]["node_repl"]["enabled"], false);
+    assert_eq!(start["config"]["plugins"]["unified-computer-use@openai-bundled"]["enabled"], false);
+    assert_eq!(start["config"]["features"]["apps"], false);
     assert!(start["developerInstructions"].as_str().unwrap().starts_with("You are qa, the QA engineer"));
 }
 

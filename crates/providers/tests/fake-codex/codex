@@ -203,6 +203,10 @@ def handle(message):
     elif method == "model/list":
         models = [("gpt-6-luna", False, False), ("gpt-6.1-sol", True, False), ("codex-auto-review", False, True), ("gpt-6-astra", False, False)]
         send({"id": request_id, "result": {"data": [{"id": m, "model": m, "displayName": m, "hidden": hidden, "isDefault": default} for m, default, hidden in models], "nextCursor": None}})
+    elif method == "mcpServerStatus/list":
+        # The person's own: a configured server, a plugin's, and Codex's apps.
+        servers = [("codex_apps", None), ("node_repl", None), ("cua_repl", "unified-computer-use@openai-bundled")]
+        send({"id": request_id, "result": {"data": [{"name": n, "pluginId": p, "tools": {}} for n, p in servers], "nextCursor": None}})
     elif method in ("thread/start", "thread/resume"):
         state["cwd"] = params.get("cwd") or state["cwd"]
         state["model"] = params.get("model") or state["model"]

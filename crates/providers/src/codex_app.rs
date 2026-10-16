@@ -163,17 +163,47 @@ fn tools_approval(approved: bool) -> &'static str {
     if approved { "approve" } else { "prompt" }
 }
 
-/// The config a thread starts with: only the MCP servers given — never the
-/// person's own — and the project's `CLAUDE.md` read where it has no
-/// `AGENTS.md`, so a project written for Claude Code tells Codex its
-/// conventions too.
-pub fn thread_config(mcp_servers: Option<&Value>) -> Value {
-    let mut config = json!({ "project_doc_fallback_filenames": ["CLAUDE.md"] });
-    if let Some(servers) = mcp_servers {
-        config["mcp_servers"] = servers.clone();
+/// The config a thread starts with: the project's `CLAUDE.md` read where it
+/// has no `AGENTS.md`, so a project written for Claude Code tells Codex its
+/// conventions too; and, given MCP servers, only those — `others` is what
+/// [`others_off`] made of the person's own.
+pub fn thread_config(mcp_servers: Option<&Value>, others: Option<&Value>) -> Value {
+    let mut config = others.cloned().filter(Value::is_object).unwrap_or_else(|| json!({}));
+    config["project_doc_fallback_filenames"] = json!(["CLAUDE.md"]);
+    if let Some(Value::Object(servers)) = mcp_servers {
+        let mut all = config.get("mcp_servers").and_then(Value::as_object).cloned().unwrap_or_default();
+        all.extend(servers.clone());
+        config["mcp_servers"] = Value::Object(all);
     }
     config
 }
+
+/// The person's own MCP servers turned off for a thread, from what
+/// `mcpServerStatus/list` names — never their settings: config overrides add
+/// to `~/.codex/config.toml` rather than replace it, so each server it
+/// configures is switched off by name, each plugin's likewise, and the apps'.
+/// Claude Code's `--strict-mcp-config`, as Codex takes it.
+pub fn others_off(listing: &Value, ours: &Value) -> Value {
+    let mut servers = serde_json::Map::new();
+    let mut plugins = serde_json::Map::new();
+    for server in listing.get("data").and_then(Value::as_array).into_iter().flatten() {
+        let Some(name) = server.get("name").and_then(Value::as_str) else { continue };
+        match server.get("pluginId").and_then(Value::as_str) {
+            Some(plugin) => {
+                plugins.insert(plugin.to_owned(), json!({ "enabled": false }));
+            }
+            // The apps' server is Codex's own, off with its feature.
+            None if name == APPS_SERVER || ours.get(name).is_some() => {}
+            None => {
+                servers.insert(name.to_owned(), json!({ "enabled": false }));
+            }
+        }
+    }
+    json!({ "mcp_servers": servers, "plugins": plugins, "features": { "apps": false } })
+}
+
+/// Codex's built-in server for ChatGPT apps.
+const APPS_SERVER: &str = "codex_apps";
 
 // ── one turn ──
 
@@ -198,13 +228,13 @@ pub struct TurnRequest<'a> {
     pub env: &'a [(String, String)],
 }
 
-/// `thread/start`'s parameters.
-pub fn start_params(request: &TurnRequest<'_>, cwd: &Path) -> Value {
+/// `thread/start`'s parameters; `others`, the person's own MCP servers off.
+pub fn start_params(request: &TurnRequest<'_>, cwd: &Path, others: Option<&Value>) -> Value {
     let mut params = json!({
         "cwd": cwd,
         "approvalPolicy": approval_policy(request.access),
         "sandbox": sandbox_mode(request.access),
-        "config": thread_config(request.mcp_servers),
+        "config": thread_config(request.mcp_servers, others),
         "serviceName": CLIENT_NAME,
     });
     if let Some(model) = request.model {
@@ -218,8 +248,8 @@ pub fn start_params(request: &TurnRequest<'_>, cwd: &Path) -> Value {
 
 /// `thread/resume`'s: the same settings, which may have changed since — the
 /// team, the mode — for the thread `id`.
-pub fn resume_params(request: &TurnRequest<'_>, cwd: &Path, id: &str) -> Value {
-    let mut params = start_params(request, cwd);
+pub fn resume_params(request: &TurnRequest<'_>, cwd: &Path, id: &str, others: Option<&Value>) -> Value {
+    let mut params = start_params(request, cwd, others);
     if let Some(map) = params.as_object_mut() {
         map.remove("serviceName");
         map.insert("threadId".into(), json!(id));
@@ -1079,6 +1109,10 @@ impl Server {
     }
 }
 
+/// A request of the app-server's waiting for the person: its id, method and
+/// parameters, and whether they allowed it.
+type Answering = std::pin::Pin<Box<dyn std::future::Future<Output = (Value, String, Value, bool)> + Send>>;
+
 /// Run one turn through the person's Codex, in `cwd`, reporting what it does
 /// as it happens. What the person says meanwhile comes on `steering`; what
 /// Codex asks before acting goes out on `asks` (none: declined); a word on
@@ -1100,14 +1134,23 @@ pub async fn run_turn(
         return Err(Error::CodexSignedOut);
     }
 
+    // Given servers of its own, the person's are left out: named, to be switched off.
+    let others = match request.mcp_servers {
+        Some(ours) => server
+            .call("mcpServerStatus/list", json!({ "detail": "toolsAndAuthOnly", "limit": 200 }), THREAD_WAIT)
+            .await
+            .ok()
+            .map(|listing| others_off(&listing, ours)),
+        None => None,
+    };
     // The member's thread, continued; a fresh one when there is none, or it is gone.
     let resumed = match request.resume {
-        Some(id) => server.call("thread/resume", resume_params(&request, cwd, id), THREAD_WAIT).await.ok(),
+        Some(id) => server.call("thread/resume", resume_params(&request, cwd, id, others.as_ref()), THREAD_WAIT).await.ok(),
         None => None,
     };
     let opened = match resumed {
         Some(opened) => opened,
-        None => server.call("thread/start", start_params(&request, cwd), THREAD_WAIT).await?,
+        None => server.call("thread/start", start_params(&request, cwd, others.as_ref()), THREAD_WAIT).await?,
     };
     let Some(thread) = opened.get("thread").and_then(|t| t.get("id")).and_then(Value::as_str).map(str::to_owned) else {
         return Err(Error::Protocol("codex app-server started no thread".into()));
@@ -1124,7 +1167,7 @@ pub async fn run_turn(
 
     // Steers said before the turn had an id wait for it.
     let mut unsent: Vec<String> = Vec::new();
-    let mut answers: FuturesUnordered<std::pin::Pin<Box<dyn std::future::Future<Output = (Value, String, Value, bool)> + Send>>> = FuturesUnordered::new();
+    let mut answers: FuturesUnordered<Answering> = FuturesUnordered::new();
     let mut stop = stop;
     let mut stopping: Option<tokio::time::Instant> = None;
     let mut interrupt_sent = false;
@@ -1267,7 +1310,14 @@ mod tests {
     fn a_thread_starts_in_the_worktree_with_the_charter_and_only_equipes_servers() {
         let servers = json!({ "equipe": mcp_server(Path::new("/opt/equipe"), &["mcp".into(), "--squad".into(), "acme".into()], true) });
         let request = TurnRequest { prompt: "hi", model: Some("gpt-6.1-sol"), access: Access::EditFiles, instructions: Some("You are qa."), mcp_servers: Some(&servers), ..Default::default() };
-        let params = start_params(&request, Path::new("/w/t-3"));
+        let listing = json!({ "data": [
+            { "name": "codex_apps", "pluginId": null },
+            { "name": "shadcn", "pluginId": null },
+            { "name": "cua_repl", "pluginId": "unified-computer-use@openai-bundled" },
+            { "name": "equipe", "pluginId": null },
+        ] });
+        let others = others_off(&listing, &servers);
+        let params = start_params(&request, Path::new("/w/t-3"), Some(&others));
         assert_eq!(params["cwd"], "/w/t-3");
         assert_eq!(params["sandbox"], "workspace-write");
         assert_eq!(params["approvalPolicy"], "on-request");
@@ -1276,14 +1326,19 @@ mod tests {
         assert_eq!(params["config"]["mcp_servers"]["equipe"]["command"], "/opt/equipe");
         assert_eq!(params["config"]["mcp_servers"]["equipe"]["default_tools_approval_mode"], "approve", "board tools never ask");
         assert_eq!(params["config"]["project_doc_fallback_filenames"], json!(["CLAUDE.md"]), "a CLAUDE.md-only project still tells Codex its conventions");
+        // The person's own servers off, by name: their settings never read.
+        assert_eq!(params["config"]["mcp_servers"]["shadcn"], json!({ "enabled": false }));
+        assert!(params["config"]["mcp_servers"].get("codex_apps").is_none(), "Codex's own, off with its feature");
+        assert_eq!(params["config"]["plugins"]["unified-computer-use@openai-bundled"], json!({ "enabled": false }));
+        assert_eq!(params["config"]["features"]["apps"], false);
         assert!(params.get("ephemeral").is_none(), "kept, so the next turn continues it");
-        let resume = resume_params(&request, Path::new("/w/t-3"), "thr-1");
+        let resume = resume_params(&request, Path::new("/w/t-3"), "thr-1", None);
         assert_eq!((resume["threadId"].as_str(), resume["developerInstructions"].as_str()), (Some("thr-1"), Some("You are qa.")));
         let turn = turn_params(&TurnRequest { effort: Some("high"), ..request }, Path::new("/w/t-3"), "thr-1");
         assert_eq!(turn["input"][0]["text"], "hi");
         assert_eq!(turn["effort"], "high");
         assert_eq!(turn["sandboxPolicy"]["type"], "workspaceWrite");
-        let plain = start_params(&TurnRequest { prompt: "hi", ..Default::default() }, Path::new("/r"));
+        let plain = start_params(&TurnRequest { prompt: "hi", ..Default::default() }, Path::new("/r"), None);
         assert!(plain["config"].get("mcp_servers").is_none(), "without servers of equipe's, the person's own");
         assert!(plain.get("model").is_none() && plain.get("developerInstructions").is_none());
     }
