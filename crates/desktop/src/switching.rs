@@ -191,7 +191,7 @@ pub fn engine_name(engine: Engine) -> &'static str {
 /// "5시간", "주간".
 pub fn window_word(window: Option<Window>) -> &'static str {
     match window {
-        Some(Window::Weekly) => t!("engines.window_week"),
+        Some(Window::Weekly) => t!("switch.window_week"),
         _ => t!("engines.window_5h"),
     }
 }
@@ -335,9 +335,9 @@ pub fn buttons(p: &Proposal) -> (&'static str, &'static str) {
     match (p.why, p.applied) {
         (_, true) => (t!("engines.undo"), t!("engines.ok")),
         (Why::Setup, false) => (t!("engines.apply"), t!("engines.later")),
-        (Why::StepDown, false) => (t!("engines.lighten"), t!("engines.keep")),
+        (Why::StepDown, false) => (t!("engines.lighten"), t!("switch.keep")),
         (Why::Exhausted, false) => (t!("engines.hand_over_now"), t!("engines.wait")),
-        (_, false) => (t!("engines.move"), t!("engines.keep")),
+        (_, false) => (t!("engines.move"), t!("switch.keep")),
     }
 }
 

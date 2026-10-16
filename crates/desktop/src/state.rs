@@ -293,7 +293,7 @@ pub struct Model {
     /// Changes to the team the PM proposed, waiting for the person, oldest first.
     pub team: crate::team::Proposals,
     /// Both engines' plans, the squad's switching and its cards (`engines`).
-    pub engines: crate::engines::Engines,
+    pub engines: crate::switching::Engines,
     /// Things that need the person and have not been announced yet: the shell
     /// takes them and tells the person if the window is out of sight.
     alerts: Vec<Alert>,

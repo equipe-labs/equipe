@@ -46,7 +46,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                         cx.notify();
                     }))
                     .child(title(p, m))
-                    .children(m.engine.map(|e| super::engines::badge(p, e)))
+                    .children(m.engine.map(|e| super::switching::badge(p, e)))
                     .children(ticket.map(|t| div().max_w(px(320.)).truncate().text_size(px(14.)).text_color(p.text2).child(format!("· {}", t.title))))
                     .child(super::sidebar::icon(IconName::ChevronDown, 13., p.muted)),
             )

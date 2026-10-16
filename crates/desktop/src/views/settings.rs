@@ -33,8 +33,8 @@ use crate::tips::TipExt as _;
 use crate::ui::{self, Kind};
 use crate::{Screen, Shell};
 
-#[path = "settings_engines.rs"]
-mod engines;
+#[path = "settings_switching.rs"]
+mod switching;
 
 /// The page's column, at most this wide.
 const PAGE: f32 = 720.;
@@ -726,7 +726,7 @@ fn sections(shell: &Shell, category: Category, cx: &mut Context<Shell>) -> Vec<S
     match category {
         Category::General => general(shell, cx),
         Category::Squad => squad(shell, cx),
-        Category::Team => team(shell, cx).into_iter().chain(engines::sections(shell, cx)).collect(),
+        Category::Team => team(shell, cx).into_iter().chain(switching::sections(shell, cx)).collect(),
         Category::Permissions => permissions(shell, cx),
         Category::Projects => projects(shell, cx),
         Category::Browser => browser(shell, cx),

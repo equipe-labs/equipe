@@ -774,7 +774,7 @@ mod pictures;
 mod team;
 
 #[path = "fake_daemon/engines.rs"]
-mod engines;
+mod switching;
 
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
@@ -947,12 +947,12 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 sessions.push(member);
                             }
                         }
-                        engines::mix(&mut sessions);
+                        switching::mix(&mut sessions);
                         let snapshot = Snapshot {
-                            plans: engines::plans(),
-                            plan: engines::claude(),
-                            engine_switching: engines::switching(),
-                            engine_proposals: engines::proposals(),
+                            plans: switching::plans(),
+                            plan: switching::claude(),
+                            engine_switching: switching::switching(),
+                            engine_proposals: switching::proposals(),
                             squad: params.squad,
                             projects: vec![repo("web"), repo("app"), repo("api")],
                             sessions,
@@ -1157,7 +1157,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     let _ = events.send(Event::Notice { session: 1, text: "🖐 브라우저를 돌려줬습니다.".into() });
                                     turns.lock().await.insert(1, tokio::spawn(turn(1, events.clone(), seconds)));
                                 }
-                                if browser::on_command(&other, &events) || team::on_command(&other, &events) || engines::on_command(&other, &events) {
+                                if browser::on_command(&other, &events) || team::on_command(&other, &events) || switching::on_command(&other, &events) {
                                     continue;
                                 }
                                 if let Some(said) = on_board_command(&other) {

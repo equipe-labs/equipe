@@ -12,7 +12,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::engines::{self as rules, Answer, Gauge, Meter, Tone};
+use crate::switching::{self as rules, Answer, Gauge, Meter, Tone};
 use crate::icons::{Icon, icon};
 use crate::motion;
 use crate::theme::{Palette, R_LG, R_MD, SMALL};

@@ -61,7 +61,7 @@ pub fn view(model: &Model, when: impl Fn(i64) -> String) -> View {
         None => vec![Row { label: "—".into(), text: equipe_core::t!("engines.codex_not_read").into(), percent: None }],
     };
     let mode = model.engines.mode;
-    let switching = Row { label: crate::engines::mode_word(mode).into(), text: format!("{} · /engines", crate::engines::mode_about(mode)), percent: None };
+    let switching = Row { label: crate::switching::mode_word(mode).into(), text: format!("{} · /engines", crate::switching::mode_about(mode)), percent: None };
     View { plan: plan_rows(model.plan, &when), codex, switching, members }
 }
 

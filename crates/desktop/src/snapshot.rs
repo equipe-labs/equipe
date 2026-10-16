@@ -301,9 +301,9 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 // The engine card answered; the squad's engine switching set.
                 "eyes" | "eno" | "eundo" => shell.update(cx, |shell, cx| {
                     let answer = match verb.as_str() {
-                        "eyes" => crate::engines::Answer::Apply,
-                        "eundo" => crate::engines::Answer::Undo,
-                        _ => crate::engines::Answer::Leave,
+                        "eyes" => crate::switching::Answer::Apply,
+                        "eundo" => crate::switching::Answer::Undo,
+                        _ => crate::switching::Answer::Leave,
                     };
                     if let Some(id) = shell.model.engines.first().map(|p| p.id) {
                         shell.engines_decide(id, answer, cx);

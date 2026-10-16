@@ -13,7 +13,7 @@ mod board;
 mod browse;
 mod commands;
 mod diffs;
-mod engines;
+mod switching;
 mod export;
 mod compose;
 mod activity;

@@ -618,12 +618,12 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             }
         }
         "engines" => match rest {
-            "" => Plan::say(t!("engines.now", mode = crate::engines::mode_word(model.engines.mode), about = crate::engines::mode_about(model.engines.mode))),
+            "" => Plan::say(t!("engines.now", mode = crate::switching::mode_word(model.engines.mode), about = crate::switching::mode_about(model.engines.mode))),
             "setup" => Plan::send(Command::ShowEngineSetup { squad }),
             word => match equipe_core::protocol::engines::Switching::parse(word) {
                 Some(mode) => Plan {
                     commands: vec![Command::SetEngineSwitching { squad, mode }],
-                    flash: Some(t!("engines.set", mode = crate::engines::mode_word(mode), about = crate::engines::mode_about(mode))),
+                    flash: Some(t!("engines.set", mode = crate::switching::mode_word(mode), about = crate::switching::mode_about(mode))),
                     ..Plan::default()
                 },
                 None => Plan::say(t!("engines.cmd_usage")),
