@@ -31,6 +31,9 @@ pub const RELAY_FRAME_MAX: usize = 1024 * 1024;
 /// About the most a message to a phone can say and still fit in one frame:
 /// sealed (32 + 16 bytes), base64 (4/3), wrapped with its device and clock.
 const RELAY_PLAIN_MAX: usize = (RELAY_FRAME_MAX - 512) / 4 * 3 - 48 - 256;
+/// About the most a picture's bytes (base64) may come to and still reach a
+/// phone in one frame: past it, a smaller copy is made.
+pub const PHONE_IMAGE_MAX: usize = RELAY_PLAIN_MAX - 4096;
 /// How many phones a demo daemon keeps; past that the oldest is forgotten.
 pub const DEMO_DEVICES: usize = 200;
 
@@ -42,6 +45,9 @@ pub enum Action {
     Open { device: String, squad: String, id: Value },
     /// A command from `device` for `squad`.
     Command { device: String, squad: String, command: Command },
+    /// Read a member's picture `device` asked for (`id`), of `squad`; the
+    /// answer goes back through [`Core::image_read`].
+    ReadImage { device: String, squad: String, id: u64, ask: rpc::ReadImage },
     /// The device left: stop following squads for it.
     Close { device: String },
     /// For `equipe pair`, waiting at the terminal.
@@ -522,6 +528,18 @@ impl Core {
                 let list: Vec<Value> = self.squads.iter().map(|(name, projects)| json!({ "name": name, "projects": projects })).collect();
                 self.frame_for(device, None, &Message::response(id, list)).into_iter().collect()
             }
+            // A member's picture: of the squad the frame is about and the phone follows.
+            Some(rpc::READ_IMAGE) => {
+                let Some(id) = id else { return vec![] };
+                let Some(ask) = message.params_as::<rpc::ReadImage>() else {
+                    return fail(self, -32602, "read_image needs { squad, path }");
+                };
+                let followed = self.following.contains(&(device.to_owned(), ask.squad.clone()));
+                if squad.as_deref() != Some(ask.squad.as_str()) || !followed {
+                    return fail(self, -32002, "say hello to that squad first");
+                }
+                vec![Action::ReadImage { device: device.to_owned(), squad: ask.squad.clone(), id, ask }]
+            }
             Some(rpc::COMMAND) => {
                 let Some(command) = message.params_as::<Command>() else {
                     return vec![];
@@ -585,6 +603,15 @@ impl Core {
                 self.following.remove(&(device.to_owned(), squad.to_owned()));
                 Message::failure(id, -32000, why)
             }
+        };
+        self.frame_for(device, Some(squad), &message).into_iter().collect()
+    }
+
+    /// A picture a device asked for (`read_image`), read: back to it.
+    pub fn image_read(&mut self, device: &str, squad: &str, id: u64, read: Result<rpc::ImageRead, String>) -> Vec<Action> {
+        let message = match read {
+            Ok(read) => Message::response(id, read),
+            Err(why) => Message::failure(id, -32000, why),
         };
         self.frame_for(device, Some(squad), &message).into_iter().collect()
     }
@@ -999,6 +1026,30 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_phone_asks_for_a_members_picture_of_the_squad_it_follows_only() {
+        use equipe_core::protocol::rpc::{ImageRead, ReadImage};
+        let (mut core, mut phone, now) = core_with_phone();
+        let c = core.config.clone().unwrap();
+        let ask = |id: u64, squad: &str| json!({ "jsonrpc": "2.0", "id": id, "method": "read_image", "params": { "squad": squad, "path": "/h/squads/acme/home/brand/a.png", "max": 4000 } });
+        // Not followed yet: refused, with why.
+        let out = core.on_relay(&phone.send(&c, Some("acme"), ask(1, "acme"), now), now);
+        assert!(phone.open(&c, &out[0])["rpc"]["error"]["message"].as_str().unwrap().contains("hello"));
+        core.on_relay(&phone.send(&c, Some("acme"), json!({ "jsonrpc": "2.0", "id": 2, "method": "hello", "params": { "version": "app", "squad": "acme" } }), now), now);
+        let out = core.on_relay(&phone.send(&c, Some("acme"), ask(3, "acme"), now), now);
+        let wanted = ReadImage { squad: "acme".into(), path: "/h/squads/acme/home/brand/a.png".into(), max: Some(4000) };
+        assert_eq!(out, vec![Action::ReadImage { device: phone.id.clone(), squad: "acme".into(), id: 3, ask: wanted }]);
+        // Another squad than the frame's.
+        let out = core.on_relay(&phone.send(&c, Some("acme"), ask(4, "zeta"), now), now);
+        assert!(phone.open(&c, &out[0])["rpc"]["error"].is_object());
+        // Read: back to the phone, sealed; or why not.
+        let read = ImageRead { mime: "image/png".into(), size: 9, width: Some(2), height: Some(1), data: "AA==".into(), scaled: true };
+        let out = core.image_read(&phone.id, "acme", 3, Ok(read));
+        assert_eq!(phone.open(&c, &out[0])["rpc"]["result"]["mime"], "image/png");
+        let out = core.image_read(&phone.id, "acme", 5, Err("gone".into()));
+        assert_eq!(phone.open(&c, &out[0])["rpc"]["error"]["message"], "gone");
+    }
+
+    #[test]
     fn replayed_stale_or_foreign_frames_are_dropped() {
         let (mut core, mut phone, now) = core_with_phone();
         let c = core.config.clone().unwrap();
@@ -1028,7 +1079,7 @@ pub(crate) mod tests {
         let opened = phone.open(&c, &out[0]);
         assert_eq!((opened["seq"].as_u64(), opened["rpc"]["params"]["approval"]["action"].as_str()), (Some(0), Some("rm -rf build")));
         // A ticket handed in pushes once.
-        let mut t = Ticket { id: 4, title: "x".into(), body: String::new(), status: TicketStatus::Review, owner: Some("backend".into()), assignee: None, kind: equipe_core::protocol::TicketKind::Task, project: None, depends_on: vec![], branch: None, worktree: None, merged: None, off_main: None, created_by: "pm".into(), note: None, asks: vec![], remaining: vec![], updated_at: None, priority: Default::default(), rank: 0 };
+        let mut t = Ticket { id: 4, title: "x".into(), body: String::new(), status: TicketStatus::Review, owner: Some("backend".into()), assignee: None, kind: equipe_core::protocol::TicketKind::Task, project: None, depends_on: vec![], branch: None, worktree: None, merged: None, off_main: None, created_by: "pm".into(), note: None, asks: vec![], remaining: vec![], images: vec![], updated_at: None, priority: Default::default(), rank: 0 };
         assert_eq!(core.on_squad_event("acme", &Event::TicketChanged { squad: "acme".into(), ticket: t.clone() }).len(), 1);
         assert!(core.on_squad_event("acme", &Event::TicketChanged { squad: "acme".into(), ticket: t.clone() }).is_empty());
         t.status = TicketStatus::Done;
@@ -1036,13 +1087,13 @@ pub(crate) mod tests {
         // A decision to make: who asks and how many — the questions travel sealed, cut short.
         use equipe_core::protocol::decide::{Choice, Question, QuestionSet};
         let long = "왜".repeat(500);
-        let option = |label: &str| Choice { label: label.into(), description: "a long why".into() };
+        let option = |label: &str| Choice { label: label.into(), description: "a long why".into(), ..Choice::default() };
         let set = QuestionSet {
             id: 11,
             session: 2,
             member: "backend".into(),
             ticket: Some(4),
-            questions: vec![Question { question: long.clone(), header: "DB".into(), options: vec![option("Postgres"), option("SQLite")], multi_select: false }; 2],
+            questions: vec![Question { question: long.clone(), header: "DB".into(), options: vec![option("Postgres"), option("SQLite")], multi_select: false, ..Question::default() }; 2],
             asked_at: 1,
         };
         let out = core.on_squad_event("acme", &Event::QuestionsAsked { squad: "acme".into(), questions: set });

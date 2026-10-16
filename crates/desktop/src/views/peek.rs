@@ -275,6 +275,12 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
     let md = |key: &'static str, text: &str| super::chat::markdown(p, (key, t.id as u64), text, crate::theme::UI, crate::theme::UI_PROSE_LINE, p.text2, &handle).into_any_element();
     // What the person left open when they last answered it: a quiet line.
     out.extend(super::yourturn::remaining(p, t));
+    // A decision its member waits on about it, answered right here: first —
+    // after a hand-in's pictures and note, which come first in a review.
+    let review = matches!(t.status, TicketStatus::Review | TicketStatus::Done);
+    if !review {
+        out.extend(super::decide::for_ticket(shell, t.id, cx));
+    }
     match t.status {
         TicketStatus::Waiting => {
             match super::yourturn::Card::of(shell, t.id, cx).filter(|c| !c.asks.is_empty()) {
@@ -310,9 +316,14 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
                         .into_any_element(),
                 );
             }
+            // What the work looks like, over what was said of it.
+            let key = crate::render::hash_of(("hand-in-gallery", t.id, wide, place == Place::Side));
+            let guess = if wide { 700. } else { shell.board.peek_width - 2. * pad(shell.board.peek_width) };
+            out.extend(super::visuals::gallery(shell, key, t.id, &t.images, guess, cx));
             if let Some(note) = t.note.as_deref().filter(|n| !n.trim().is_empty()) {
                 out.push(v_flex().gap_1().child(kicker(p, t!("peek.hand_in"))).child(md("peek-note", note)).into_any_element());
             }
+            out.extend(super::decide::for_ticket(shell, t.id, cx));
             // On the page the description above carries its checklist already.
             let checks = if wide { Vec::new() } else { rules::checklist(&t.body) };
             if !checks.is_empty() {
@@ -357,7 +368,7 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
                     live.push(format!("{} {}", t!("board.flag_quiet"), short_span(q)));
                 }
                 if !live.is_empty() {
-                    out.push(h_flex().gap_2().items_center().text_size(px(13.)).text_color(p.text2).when(model.is_live(t), |d| d.child(icons::live_dot(p, shell.board.pulse))).child(live.join(" · ")).into_any_element());
+                    out.push(h_flex().gap_2().items_center().text_size(px(13.)).text_color(p.text2).when(model.is_live(t), |d| d.child(icons::live_dot(p, shell.pulse(cx)))).child(live.join(" · ")).into_any_element());
                 }
             }
             if let Some(note) = t.note.as_deref().filter(|n| !n.trim().is_empty() && t.status.is_closed()) {

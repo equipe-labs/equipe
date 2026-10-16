@@ -19,7 +19,7 @@ projects. The tightest one counts.
 | `ok` | room enough | nothing |
 | `low` | under 15 GB free, or a tenth of the disk if that is less | the screens show a banner |
 | `critical` | under 5 GB | the banner; every member is briefed, the PM above all (news row in its conversation); **new code tickets wait** (tasks don't build and still start); a push to the phone |
-| `full` | under 1 GB, or a write just failed for want of room (a journal's SQLITE_FULL, a member's `No space left on device`) | as critical, and the old `error.disk_full` line |
+| `full` | under 1 GB, or a write failed for want of room in the last 5 minutes (a journal's SQLITE_FULL, a member's `No space left on device`) | as critical, and the old `error.disk_full` line |
 
 A level is left only with a fifth more room than it took to enter it (critical until 6 GB,
 low until 18 GB), so a disk at an edge changes level once. Screens hear only changes

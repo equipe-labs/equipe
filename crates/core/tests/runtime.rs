@@ -1003,7 +1003,7 @@ async fn work_not_on_main_says_why_can_be_kept_on_its_branch_and_settles_when_no
                     created_by: "pm".into(),
                     note: None,
                     asks: vec![],
-                    remaining: Vec::new(),
+                    remaining: Vec::new(), images: Vec::new(),
                     updated_at: None,
                     priority: Default::default(), rank: 0,
                 })
@@ -1087,7 +1087,7 @@ async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
                     created_by: "pm".into(),
                     note: None,
                     asks: vec![],
-                    remaining: Vec::new(),
+                    remaining: Vec::new(), images: Vec::new(),
                     updated_at: None,
                     priority: Default::default(), rank: 0,
                 })
@@ -2225,6 +2225,44 @@ async fn a_squad_from_before_homes_gets_one_and_its_desks_move_there_afresh() {
 }
 
 // ── tickets that aren't code ──
+
+#[tokio::test]
+async fn a_visual_hand_in_shows_the_images_its_branch_made_and_they_follow_it_into_the_folder() {
+    let site = named("site");
+    // Its turn draws the mark, then works on a while: the hand-in comes meanwhile.
+    let turn = format!("case \"$*\" in *\"You're on T-\"*) mkdir -p brand; echo 'pretend png' > brand/logo-a.png; sleep 3;; esac\n{}", answering("working on it"));
+    let (claude, _recorded) = recording_claude(&turn);
+    let home = squad_home(&[&site]);
+    let folder = squads_home(&home);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "designer")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Logo", "body": "Two marks.", "owner": "designer", "kind": "task" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    for _ in 0..100 {
+        if ws.path.join("brand/logo-a.png").exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // A picture that isn't there: said, to fix; nothing handed in.
+    let missing = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Done.", "images": ["brand/nope.png"] })).await;
+    assert!(missing.is_error && missing.text.contains("brand/nope.png"), "{missing:?}");
+    tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Two marks.", "images": "brand/logo-a.png" })).await;
+    let review = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
+    let ticket = ticket_changed(&review).pop().unwrap();
+    let worktree = ticket.worktree.clone().unwrap().canonicalize().unwrap();
+    assert_eq!(ticket.images, [worktree.join("brand/logo-a.png").to_string_lossy().into_owned()], "named, and changed on its branch: once");
+
+    // Accepted: the worktree goes, and its pictures are shown from the folder.
+    handle.send(Command::Accept { squad: "acme".into(), ticket: 1 });
+    let done = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Done)).await;
+    let ticket = ticket_changed(&done).pop().unwrap();
+    assert_eq!(ticket.images, [folder.canonicalize().unwrap().join("brand/logo-a.png").to_string_lossy().into_owned()]);
+    handle.shutdown().await;
+}
 
 /// A ticket's turn that writes `file` (relative to its worktree) with `text`.
 fn writing_turn(file: &str, text: &str) -> String {

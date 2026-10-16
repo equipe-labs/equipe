@@ -8,6 +8,9 @@
 use super::*;
 use crate::disk::{self, DiskCleaned, DiskLevel, DiskReport, DiskStatus};
 
+/// How long a write that failed for want of room keeps the disk full, whatever a look says.
+const NO_ROOM_HOLD: Duration = Duration::from_secs(5 * 60);
+
 /// What the daemon knows of its disk.
 #[derive(Default)]
 pub(super) struct DiskWatch {
@@ -67,8 +70,9 @@ impl Runtime {
 
     /// A fresh count of the free space, begun at `asked`: its level, and what changes with it.
     fn disk_measured(&mut self, mut status: DiskStatus, asked: std::time::Instant) {
-        // A write that failed after this look began still says full.
-        let no_room = self.disk.no_room.is_some_and(|since| since >= asked);
+        // A write that failed after this look began still says full — and for a
+        // while after any: writes failing over and over say so once, not each minute.
+        let no_room = self.disk.no_room.is_some_and(|since| since >= asked || since.elapsed() < NO_ROOM_HOLD);
         let before = self.disk.status.level;
         status.level = disk::next_level(before, status.free, status.total, no_room);
         if status.level < DiskLevel::Full && !no_room {

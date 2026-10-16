@@ -9,6 +9,7 @@
 use equipe_protocol::decide::{self, Answer, QuestionSet};
 
 use super::*;
+use crate::visuals;
 
 impl Runtime {
     /// `squad`'s question sets waiting for the person, oldest first — read
@@ -28,10 +29,31 @@ impl Runtime {
         }
     }
 
+    /// Where conversation `id` works, and where its pictures may be: its
+    /// ticket's worktree (or its own), and the squad's folder.
+    pub(super) fn picture_places(&self, squad: &str, id: SessionId) -> (PathBuf, Vec<PathBuf>) {
+        let mut roots = vec![squad_home::path(&self.config.home, squad)];
+        let Some(session) = self.sessions.get(&id) else { return (roots[0].clone(), roots) };
+        let cwd = session.work.as_ref().map_or_else(|| session.cwd.clone(), |w| w.cwd.clone());
+        roots.extend(session.work.as_ref().and_then(|w| w.sandbox.as_ref()).map(|s| s.path.clone()));
+        roots.extend(session.sandbox.as_ref().map(|s| s.path.clone()));
+        (cwd, roots)
+    }
+
     /// `ask_decision`: the questions checked, kept and shown; the member is
     /// told the answers come as the person's next message.
     pub(super) fn ask_decision(&mut self, squad: &str, member: &str, id: SessionId, args: &Value) -> Result<String, String> {
-        let questions = board::questions_arg(args)?;
+        let mut questions = board::questions_arg(args)?;
+        // Each picture found where the member works, or the call is refused with why.
+        let (cwd, roots) = self.picture_places(squad, id);
+        let fix = "Save the pictures in your worktree or the squad's folder and give their paths, then ask again.";
+        for (n, q) in questions.iter_mut().enumerate() {
+            q.images = visuals::resolve_all(&q.images, &cwd, &roots, visuals::PER_QUESTION).map_err(|e| format!("Question {}: {e}. {fix}", n + 1))?;
+            for (m, option) in q.options.iter_mut().enumerate() {
+                option.images = visuals::resolve_all(&option.images, &cwd, &roots, visuals::PER_OPTION).map_err(|e| format!("Question {}, option {}: {e}. {fix}", n + 1, m + 1))?;
+            }
+        }
+        let nudge = visuals::nudge(&questions);
         // Asked in a conversation beside the member's own: answered there.
         let session = if self.sessions.get(&id).is_some_and(Session::is_working) {
             id
@@ -58,10 +80,13 @@ impl Runtime {
             };
             self.brief_pm(squad, line, Some(shown));
         }
-        Ok("Asked. The person sees your questions with their options and answers when they can; the answers will \
+        let asked = "Asked. The person sees your questions with their options and answers when they can; the answers will \
 arrive as their next message (\"Answers to your question: 1) … → …\"). Don't wait for them in this turn: end it now \
-with a short line, or carry on with work that doesn't depend on the answer."
-            .into())
+with a short line, or carry on with work that doesn't depend on the answer.";
+        Ok(match nudge {
+            Some(nudge) => format!("{asked}\n\n{nudge}"),
+            None => asked.into(),
+        })
     }
 
     /// Take set `id` out of what waits, if it still does.
@@ -154,8 +179,9 @@ mod tests {
         let q = |multi_select| Question {
             question: "?".into(),
             header: String::new(),
-            options: vec![Choice { label: "a".into(), description: String::new() }, Choice { label: "b".into(), description: String::new() }],
+            options: vec![Choice { label: "a".into(), ..Choice::default() }, Choice { label: "b".into(), ..Choice::default() }],
             multi_select,
+            ..Question::default()
         };
         let set = QuestionSet { id: 1, session: 1, member: "pm".into(), ticket: None, questions: vec![q(false), q(true), q(false)], asked_at: 0 };
         let fitted = fit(&set, vec![Answer { picked: vec![1, 0], other: Some("  ".into()) }, Answer { picked: vec![1, 9, 0, 1], other: Some(" x ".into()) }]);

@@ -583,6 +583,7 @@
   "decide.keys_free": "⏎ escribir · ⌘⏎ siguiente · Esc contraer",
   "decide.keys_multi": "1–9 o Espacio elegir · ↑↓ moverse · ⌘⏎ siguiente · Tab tu respuesta · Esc contraer",
   "decide.keys_peek": "1–9 elegir · Tab tu respuesta · ⌘⏎ siguiente",
+  "decide.keys_visual": "1–9 elegir · clic en una imagen para ampliarla · ⏎ siguiente · Tab tu respuesta · Esc contraer",
   "decide.more.one": "{count} más esperando",
   "decide.more.other": "{count} más esperando",
   "decide.multi_hint": "Elige todas las que apliquen",
@@ -1413,5 +1414,12 @@
   "settings.disk_desc": "Hay espacio · mira qué lo ocupa y limpia",
   "settings.disk_open": "Ver disco…",
   "commands.about_disk": "Espacio en el disco y lo que se puede liberar",
-  "chat.news_disk_clean": "Limpiar"
+  "chat.news_disk_clean": "Limpiar",
+  "visuals.gone": "No se encuentra la imagen",
+  "visuals.open": "Ver en grande",
+  "visuals.pick": "Elegir esta",
+  "visuals.picked": "Elegida",
+  "visuals.pictures.one": "{count} imagen",
+  "visuals.pictures.other": "{count} imágenes",
+  "visuals.recommended": "Recomendada"
 }

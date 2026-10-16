@@ -21,6 +21,9 @@
 //! - `read_upload` (request): [`ReadUpload`] → [`UploadRead`], a file a message
 //!   attached, read back from the daemon's `uploads` folder (and nowhere else)
 //!   so a screen on another machine can show it; only after `hello`
+//! - `read_image` (request): [`ReadImage`] → [`ImageRead`], a picture a member
+//!   showed (a decision's option, a hand-in), whole or as a thumbnail; only
+//!   after `hello`, for the squad followed
 //! - `browser_stream` (request): the connection becomes the browser panel's
 //!   picture stream ([`crate::stream`])
 //! - `attached` (notification, `equipe attach --stdio` → screen): [`Attached`],
@@ -42,6 +45,7 @@ pub const ATTACHED: &str = "attached";
 pub const SQUADS: &str = "squads";
 pub const UPLOAD: &str = "upload";
 pub const READ_UPLOAD: &str = "read_upload";
+pub const READ_IMAGE: &str = "read_image";
 
 /// The wire's version: bumped when a change would break a screen built
 /// against the one before (a method or a field it relies on removed or
@@ -238,6 +242,40 @@ pub struct UploadRead {
     pub data: Option<String>,
 }
 
+/// Ask for a picture a member showed — an option of its decision, its
+/// hand-in — back from the daemon's machine. Given only when the squad shows
+/// that path now, and the file is an image in the member's worktree or the
+/// squad's folder (`equipe_core::visuals`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadImage {
+    /// The squad that shows it: the one the screen follows.
+    pub squad: crate::SquadName,
+    /// The path, as the decision or the ticket names it.
+    pub path: String,
+    /// At most this many pixels on its longer side: a thumbnail. Absent: the
+    /// picture whole, unless it is too big to send.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<u32>,
+}
+
+/// A picture read back: its type, its size on disk, its pixels across and
+/// down (unknown for an SVG), and its bytes (base64) — scaled down when it
+/// was asked for smaller, or too big to send whole.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageRead {
+    /// `image/png`, `image/jpeg`, `image/webp`, `image/gif`, `image/svg+xml`.
+    pub mime: String,
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    pub data: String,
+    /// The bytes are a smaller copy (PNG or JPEG), not the file.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub scaled: bool,
+}
+
 /// What `equipe attach --stdio` says first: which equipe answered on the
 /// other end, and which daemon it reached.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -389,5 +427,23 @@ mod tests {
         assert_eq!(Message::from_line(&line).unwrap().params_as::<ReadUpload>().unwrap().path, std::path::PathBuf::from("/h/uploads/1-a.png"));
         let answer = Message::response(9, UploadRead { size: 3, data: None });
         assert_eq!(answer.result_as::<UploadRead>(), Some(UploadRead { size: 3, data: None }));
+    }
+
+    #[test]
+    fn a_members_picture_is_asked_for_by_squad_and_path_and_comes_back_scaled_when_asked() {
+        let ask = ReadImage { squad: "acme".into(), path: "/h/squads/acme/home/brand/a.png".into(), max: None };
+        let line = Message::request(4, READ_IMAGE, &ask).to_line();
+        assert!(line.contains(r#""method":"read_image""#) && !line.contains("max"), "{line}");
+        assert_eq!(Message::from_line(&line).unwrap().params_as::<ReadImage>(), Some(ask));
+        let thumb = ReadImage { max: Some(640), ..ReadImage { squad: "acme".into(), path: "/p.png".into(), max: None } };
+        assert!(serde_json::to_string(&thumb).unwrap().contains(r#""max":640"#));
+        let read = ImageRead { mime: "image/png".into(), size: 2048, width: Some(1200), height: Some(800), data: "AA==".into(), scaled: true };
+        let wire = serde_json::to_value(&read).unwrap();
+        assert_eq!((wire["width"].as_u64(), wire["scaled"].as_bool()), (Some(1200), Some(true)));
+        assert_eq!(Message::response(4, &read).result_as::<ImageRead>(), Some(read));
+        // An SVG as it is: no size known, not scaled — and left out.
+        let svg = ImageRead { mime: "image/svg+xml".into(), size: 300, width: None, height: None, data: "PHN2Zz4=".into(), scaled: false };
+        let wire = serde_json::to_string(&svg).unwrap();
+        assert!(!wire.contains("width") && !wire.contains("scaled"), "{wire}");
     }
 }

@@ -316,6 +316,17 @@ a project, task when it has none.",
     })
 });
 
+/// The `images` of an option, and of a hand-in: pictures by their paths.
+static IMAGES_SCHEMA: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+    json!({
+        "type": "array",
+        "items": { "type": "string" },
+        "maxItems": crate::visuals::HAND_IN,
+        "description": "Pictures of it — renders, mockups, screenshots you saved: PNG, JPG, WebP, GIF or SVG, by their \
+path in your worktree or the squad's folder (relative to where you work, or absolute). At most 4 an option.",
+    })
+});
+
 /// The kind a new ticket gets when none is given: `code` when it has a project, `task` when not.
 pub fn default_kind(project: Option<&Path>) -> TicketKind {
     if project.is_some() { TicketKind::Code } else { TicketKind::Task }
@@ -369,10 +380,16 @@ It waits on the board as a proposal until the PM or the person accepts it."
         json!({
             "name": SUBMIT_FOR_REVIEW,
             "description": "Hand in the ticket you are working on, once it meets its acceptance criteria. \
-Your changes are committed to the ticket's branch and the person reviews them. Then end your turn.",
+Your changes are committed to the ticket's branch and the person reviews them. Then end your turn. When the work is \
+visual — a logo, a screen, a mockup, an illustration, colours, a layout — name its pictures in `images` (renders or \
+screenshots you saved in your worktree), so the person sees them above your summary; images your branch changes \
+are shown too.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "summary": { "type": "string", "description": "What you did and how to check it, in a few lines — in the person's language." } },
+                "properties": {
+                    "summary": { "type": "string", "description": "What you did and how to check it, in a few lines — in the person's language." },
+                    "images": IMAGES_SCHEMA.clone(),
+                },
                 "required": ["summary"],
             },
         }),
@@ -440,7 +457,10 @@ out, and they answer in their own words — for what only they know (a phone num
 may skip any. It doesn't wait, and needs no ticket: the person answers when they can, and their answers come to you \
 as their next message (\"Answers to your question: 1) … → …\"). Then end your turn, or carry on with work that \
 doesn't depend on it. When the ticket you are on can't go on without the answer, or they must do something only \
-they can, that is block_on_person; never for a yes before acting in their name (ask_person) or for permissions.",
+they can, that is block_on_person; never for a yes before acting in their name (ask_person) or for permissions. A \
+visual choice — a logo, colours, a layout, a screen, an icon, an illustration — is never asked in words alone: \
+render or mock up each option first (PNG, JPG, WebP, GIF or SVG, in your worktree or the squad's folder), then ask, \
+giving each option its `images`; the person sees them side by side and picks from the pictures.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -463,11 +483,18 @@ they can, that is block_on_person; never for a yes before acting in their name (
                                     "properties": {
                                         "label": { "type": "string", "description": "The option in 1 to 5 words." },
                                         "description": { "type": "string", "description": "One line: what it means, or what it costs." },
+                                        "images": IMAGES_SCHEMA.clone(),
                                     },
                                     "required": ["label"],
                                 },
                             },
                             "multi_select": { "type": "boolean", "description": "Set when several options can be picked together." },
+                            "images": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "maxItems": crate::visuals::PER_QUESTION,
+                                "description": "Pictures of the question as a whole — what is there now, say — shown above its options.",
+                            },
                         },
                         "required": ["question"],
                     },
@@ -597,8 +624,12 @@ pub fn questions_arg(args: &Value) -> Result<Vec<crate::protocol::decide::Questi
             .into_iter()
             .flatten()
             .filter_map(|o| match o {
-                Value::String(label) => Some(Choice { label: label.trim().to_owned(), description: String::new() }),
-                o => Some(Choice { label: arg_str(o, "label")?.to_owned(), description: arg_str(o, "description").unwrap_or_default().to_owned() }),
+                Value::String(label) => Some(Choice { label: label.trim().to_owned(), ..Choice::default() }),
+                o => Some(Choice {
+                    label: arg_str(o, "label")?.to_owned(),
+                    description: arg_str(o, "description").unwrap_or_default().to_owned(),
+                    images: arg_strs(o, "images"),
+                }),
             })
             .filter(|c| !c.label.is_empty())
             .collect();
@@ -612,7 +643,9 @@ pub fn questions_arg(args: &Value) -> Result<Vec<crate::protocol::decide::Questi
         }
         let header: String = arg_str(item, "header").unwrap_or_default().chars().take(24).collect();
         let multi_select = !options.is_empty() && item.get("multi_select").and_then(Value::as_bool).unwrap_or(false);
-        out.push(Question { question: question.to_owned(), header, options, multi_select });
+        // Pictures as the member named them; the runtime finds them where it works.
+        let images = arg_strs(item, "images");
+        out.push(Question { question: question.to_owned(), header, options, multi_select, images });
     }
     Ok(out)
 }
@@ -682,7 +715,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
-            remaining: Vec::new(),
+            remaining: Vec::new(), images: Vec::new(),
             updated_at: None,
             priority: Default::default(), rank: 0,
             kind: TicketKind::Code,
@@ -916,6 +949,40 @@ mod tests {
             assert!(doc.contains("(Recommended)") && doc.contains("block_on_person") && doc.contains("permissions"), "{doc}");
             assert!(doc.contains("leave `options` out") && doc.contains("never write them as a numbered list"), "{doc}");
             assert_eq!(questions["items"]["required"], json!(["question"]));
+        }
+    }
+
+    #[test]
+    fn a_visual_choice_names_its_pictures_on_each_option_and_the_tools_say_to() {
+        let asked = questions_arg(&json!({ "questions": [{
+            "question": "Which logo?",
+            "images": "brand/now.png",
+            "options": [
+                { "label": "Blue dot (Recommended)", "images": ["brand/a.png", " ", "brand/a-dark.png"] },
+                { "label": "Grey dot", "images": "brand/b.svg" },
+                "Four blue dots",
+            ],
+        }] }))
+        .unwrap();
+        let q = &asked[0];
+        assert_eq!(q.images, ["brand/now.png"], "one path given on its own counts");
+        assert_eq!(q.options[0].images, ["brand/a.png", "brand/a-dark.png"], "blanks dropped");
+        assert_eq!((q.options[1].images.len(), q.options[2].images.len()), (1, 0));
+        // The schema has them, and says why; for the PM and members alike.
+        for is_pm in [true, false] {
+            let tools = tools(is_pm);
+            let decide = tools.iter().find(|t| t["name"] == ASK_DECISION).unwrap();
+            let item = &decide["inputSchema"]["properties"]["questions"]["items"];
+            assert_eq!(item["properties"]["options"]["items"]["properties"]["images"]["type"], "array");
+            assert_eq!(item["properties"]["images"]["type"], "array");
+            let doc = decide["description"].as_str().unwrap();
+            for part in ["logo", "render or mock up each option first", "`images`", "side by side"] {
+                assert!(doc.contains(part), "{part}: {doc}");
+            }
+            let hand_in = tools.iter().find(|t| t["name"] == SUBMIT_FOR_REVIEW).unwrap();
+            assert_eq!(hand_in["inputSchema"]["properties"]["images"]["type"], "array");
+            let doc = hand_in["description"].as_str().unwrap();
+            assert!(doc.contains("`images`") && doc.contains("visual"), "{doc}");
         }
     }
 

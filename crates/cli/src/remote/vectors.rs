@@ -647,7 +647,7 @@ fn approval() -> Approval {
 
 /// The reference's two questions, from the member on T-38.
 fn questions() -> QuestionSet {
-    let choice = |label: &str, description: &str| Choice { label: label.into(), description: description.into() };
+    let choice = |label: &str, description: &str| Choice { label: label.into(), description: description.into(), ..Choice::default() };
     QuestionSet {
         id: 5_000_001,
         session: 4242,
@@ -659,14 +659,39 @@ fn questions() -> QuestionSet {
                 header: "토큰".into(),
                 options: vec![choice("httpOnly 쿠키 (추천)", "스크립트가 못 읽어 안전합니다"), choice("localStorage", "간단하지만 XSS에 노출됩니다")],
                 multi_select: false,
+                images: Vec::new(),
             },
             Question {
                 question: "어떤 로그인을 먼저 낼까요?".into(),
                 header: "범위".into(),
                 options: vec![choice("이메일", ""), choice("Google", ""), choice("Apple", "")],
                 multi_select: true,
+                images: Vec::new(),
             },
         ],
+        asked_at: NOW / 1000,
+    }
+}
+
+/// Pictures a designer made, in its worktree of the squad's folder.
+const LOGO_A: &str = "/Users/you/.equipe/worktrees/acme.home/t144-5e6f7a8b/brand/logo-blue-dot.png";
+const LOGO_B: &str = "/Users/you/.equipe/worktrees/acme.home/t144-5e6f7a8b/brand/logo-grey-dot.png";
+
+/// A visual choice: the designer's logos, each option with its picture.
+fn visual_questions() -> QuestionSet {
+    let choice = |label: &str, description: &str, images: &[&str]| Choice { label: label.into(), description: description.into(), images: images.iter().map(|i| (*i).to_owned()).collect() };
+    QuestionSet {
+        id: 5_000_002,
+        session: 4243,
+        member: "designer".into(),
+        ticket: Some(144),
+        questions: vec![Question {
+            question: "로고 마스터는 어느 안으로 할까요?".into(),
+            header: "로고".into(),
+            options: vec![choice("e. + 파란 원 점 (추천)", "사이트와 앱을 하나로", &[LOGO_A]), choice("e. 회색 점 유지", "지금 앱 그대로", &[LOGO_B])],
+            multi_select: false,
+            images: Vec::new(),
+        }],
         asked_at: NOW / 1000,
     }
 }
@@ -709,7 +734,7 @@ fn ticket(status: TicketStatus) -> Ticket {
         created_by: "pm".into(),
         note: None,
         asks: vec![],
-        remaining: Vec::new(),
+        remaining: Vec::new(), images: Vec::new(),
         updated_at: None,
         priority: Default::default(), rank: 0,
     }
@@ -806,6 +831,7 @@ fn message_vectors() -> Value {
             [Action::Relay(f)] => json!({ "answers": opened(f) }),
             [Action::Open { squad, id, .. }] => json!({ "follows": squad, "answers_later": id }),
             [Action::Command { squad, command, .. }] => json!({ "to_squad": squad, "command": Message::command(command) }),
+            [Action::ReadImage { squad, ask, .. }] => json!({ "reads_picture_of": squad, "asked": ask, "max_for_a_phone": equipe_core::visuals::PHONE_SIDE }),
             other => panic!("{name}: {other:?}"),
         };
         examples.insert(name.to_owned(), json!({ "sends": serde_json::from_str::<Value>(&sealed.plaintext).unwrap(), "daemon": does }));
@@ -848,6 +874,20 @@ fn message_vectors() -> Value {
     let answered = vec![Answer { picked: vec![0], other: None }, Answer { picked: vec![0, 1], other: Some("Apple은 다음 달에".into()) }];
     tell(&mut core, &mut examples, "event: questions answered", Event::QuestionsClosed { squad: SQUAD.into(), id: 5_000_001, answers: Some(answered) });
     tell(&mut core, &mut examples, "event: questions closed", Event::QuestionsClosed { squad: SQUAD.into(), id: 5_000_001, answers: None });
+    // A visual choice: each option with its pictures, which the phone asks for, as thumbnails.
+    tell(&mut core, &mut examples, "event: visual questions asked", Event::QuestionsAsked { squad: SQUAD.into(), questions: visual_questions() });
+    let picture = |id: u64, squad: &str| json!({ "jsonrpc": "2.0", "id": id, "method": "read_image", "params": { "squad": squad, "path": LOGO_A, "max": 480 } });
+    let out = ask(&mut core, &mut examples, "read image", Some(SQUAD), picture(20, SQUAD));
+    let [Action::ReadImage { id, .. }] = &out[..] else { panic!("{out:?}") };
+    let read = equipe_core::protocol::rpc::ImageRead { mime: "image/png".into(), size: 48_213, width: Some(1024), height: Some(1024), data: "iVBORw0KGgo=".into(), scaled: true };
+    examples["read image"]["daemon"]["answers"] = opened(&relay_frames(&core.image_read(&device_id(), SQUAD, *id, Ok(read)))[0]);
+    let refused = relay_frames(&core.image_read(&device_id(), SQUAD, 21, Err(format!("{LOGO_A} isn't a picture {SQUAD} shows"))));
+    examples.insert("read image: a picture the squad doesn't show".into(), json!({ "receives": opened(&refused[0]) }));
+    ask(&mut core, &mut examples, "read image: a squad not followed", Some("home"), picture(22, "home"));
+    // A hand-in of visual work: its pictures over the note.
+    let mut shown = ticket(TicketStatus::Review);
+    shown.images = vec![LOGO_A.into(), LOGO_B.into()];
+    tell(&mut core, &mut examples, "event: ticket handed in with pictures", Event::TicketChanged { squad: SQUAD.into(), ticket: shown });
 
     // A change to the team the PM proposed: approved or declined by the person.
     tell(&mut core, &mut examples, "event: team change proposed", Event::TeamChangeProposed { squad: SQUAD.into(), change: team_change() });

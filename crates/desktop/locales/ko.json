@@ -559,6 +559,7 @@
   "decide.keys_free": "⏎ 답 적기 · ⌘⏎ 다음 · Esc 접기",
   "decide.keys_multi": "1–9·Space 고르기 · ↑↓ 이동 · ⌘⏎ 다음 · Tab 직접 입력 · Esc 접기",
   "decide.keys_peek": "1–9 고르기 · Tab 직접 입력 · ⌘⏎ 다음",
+  "decide.keys_visual": "1–9 고르기 · 이미지를 누르면 크게 보기 · ⏎ 다음 · Tab 직접 입력 · Esc 접기",
   "decide.more.other": "{count}개 더 기다림",
   "decide.multi_hint": "해당하는 것을 모두 고르세요",
   "decide.next": "다음",
@@ -1373,5 +1374,11 @@
   "settings.disk_desc": "여유 있음 · 무엇이 공간을 쓰는지 보고 정리해요",
   "settings.disk_open": "디스크 보기…",
   "commands.about_disk": "디스크 여유와 정리할 수 있는 것",
-  "chat.news_disk_clean": "정리하기"
+  "chat.news_disk_clean": "정리하기",
+  "visuals.gone": "이미지를 찾을 수 없어요",
+  "visuals.open": "크게 보기",
+  "visuals.pick": "이 안으로 고르기",
+  "visuals.picked": "골랐어요",
+  "visuals.pictures.other": "이미지 {count}개",
+  "visuals.recommended": "추천"
 }

@@ -5,22 +5,29 @@
 //! phone number, an email). It doesn't hold the member up: the set waits
 //! for the person, and their answers go back to the member as their next
 //! message — the one message [`answer_message`] writes, which every screen
-//! reads back ([`read_answers`]) to show it as "decided".
+//! reads back ([`read_answers`]) to show it as "decided". A visual choice
+//! carries its pictures: paths on the daemon's machine, in the member's
+//! worktree or the squad's folder, which screens ask for (`read_image`).
 
 use serde::{Deserialize, Serialize};
 
 use crate::{SessionId, TicketId};
 
-/// One option of a question: a short label, and a line on what it means.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One option of a question: a short label, a line on what it means, and —
+/// a visual choice — the pictures of it (renders, mockups).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Choice {
     pub label: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    /// Its pictures, by their paths on the daemon's machine; left out when
+    /// none (and absent from an older daemon).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
 }
 
 /// One question of a set.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Question {
     /// The question, in a sentence.
     pub question: String,
@@ -33,6 +40,23 @@ pub struct Question {
     /// The person may pick several options, not just one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub multi_select: bool,
+    /// Pictures of the question as a whole (what is there now, say), by
+    /// their paths on the daemon's machine; left out when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
+}
+
+impl Question {
+    /// Whether any option is shown as a picture: then the options are a
+    /// grid of pictures rather than a list.
+    pub fn is_visual(&self) -> bool {
+        self.options.iter().any(|c| !c.images.is_empty())
+    }
+
+    /// Its own pictures, then each option's, in order.
+    pub fn images(&self) -> impl Iterator<Item = &str> {
+        self.images.iter().chain(self.options.iter().flat_map(|c| &c.images)).map(String::as_str)
+    }
 }
 
 /// A set of questions waiting for the person.
@@ -48,6 +72,13 @@ pub struct QuestionSet {
     /// When it was asked, in unix seconds.
     #[serde(default)]
     pub asked_at: u64,
+}
+
+impl QuestionSet {
+    /// Every picture the set shows, question by question.
+    pub fn images(&self) -> impl Iterator<Item = &str> {
+        self.questions.iter().flat_map(Question::images)
+    }
 }
 
 /// The person's answer to one question: the options they picked (by index),
@@ -171,7 +202,7 @@ mod tests {
     use serde_json::json;
 
     fn set() -> QuestionSet {
-        let choice = |label: &str, description: &str| Choice { label: label.into(), description: description.into() };
+        let choice = |label: &str, description: &str| Choice { label: label.into(), description: description.into(), ..Default::default() };
         QuestionSet {
             id: 7,
             session: 42,
@@ -183,14 +214,16 @@ mod tests {
                     header: "Database".into(),
                     options: vec![choice("Postgres (Recommended)", "Relational, runs on Supabase"), choice("SQLite", "One file, no server")],
                     multi_select: false,
+                    ..Default::default()
                 },
                 Question {
                     question: "Which features ship\nfirst?".into(),
                     header: "Scope".into(),
                     options: vec![choice("Auth", ""), choice("Payments", ""), choice("Search", "")],
                     multi_select: true,
+                    ..Default::default()
                 },
-                Question { question: "Where to deploy?".into(), header: String::new(), options: vec![choice("Vercel", ""), choice("Fly", "")], multi_select: false },
+                Question { question: "Where to deploy?".into(), header: String::new(), options: vec![choice("Vercel", ""), choice("Fly", "")], multi_select: false, ..Default::default() },
             ],
             asked_at: 1_760_000_000,
         }
@@ -255,5 +288,22 @@ mod tests {
         assert_eq!(serde_json::from_value::<QuestionSet>(wire).unwrap(), s);
         let bare: QuestionSet = serde_json::from_value(json!({ "id": 1, "session": 2, "member": "pm", "questions": [{ "question": "?", "options": [{ "label": "a" }, { "label": "b" }] }] })).unwrap();
         assert_eq!((bare.ticket, bare.asked_at, bare.questions[0].multi_select), (None, 0, false));
+        assert!(bare.images().next().is_none() && !bare.questions[0].is_visual(), "an older daemon's set: no pictures");
+    }
+
+    #[test]
+    fn a_visual_choice_carries_its_pictures_and_a_plain_one_the_wire_as_before() {
+        let mut s = set();
+        assert!(serde_json::to_value(&s).unwrap()["questions"][0].get("images").is_none());
+        assert!(serde_json::to_value(&s).unwrap()["questions"][0]["options"][0].get("images").is_none());
+        s.questions[0].images = vec!["/w/t-144/now.png".into()];
+        s.questions[0].options[0].images = vec!["/w/t-144/a.png".into(), "/w/t-144/a-dark.png".into()];
+        s.questions[0].options[1].images = vec!["/w/t-144/b.svg".into()];
+        let wire = serde_json::to_value(&s).unwrap();
+        assert_eq!(wire["questions"][0]["images"], json!(["/w/t-144/now.png"]));
+        assert_eq!(wire["questions"][0]["options"][0]["images"], json!(["/w/t-144/a.png", "/w/t-144/a-dark.png"]));
+        assert_eq!(serde_json::from_value::<QuestionSet>(wire).unwrap(), s);
+        assert!(s.questions[0].is_visual() && !s.questions[1].is_visual(), "a question's own picture alone doesn't make its options a grid");
+        assert_eq!(s.images().collect::<Vec<_>>(), ["/w/t-144/now.png", "/w/t-144/a.png", "/w/t-144/a-dark.png", "/w/t-144/b.svg"]);
     }
 }

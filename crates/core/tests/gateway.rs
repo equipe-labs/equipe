@@ -339,6 +339,60 @@ async fn a_screen_that_said_hello_reads_back_an_upload_and_nothing_else() {
 }
 
 #[tokio::test]
+async fn a_screen_reads_the_pictures_its_squad_shows_and_nothing_else() {
+    use equipe_core::protocol::decide::{Choice, Question, QuestionSet};
+    use equipe_core::protocol::rpc::{self, ImageRead, Message, ReadImage};
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+    let (home, _project) = squad();
+    let folder = equipe_core::squad_home::path(&home, "acme");
+    std::fs::create_dir_all(folder.join("brand")).unwrap();
+    // A 2×1 PNG, and one beside it that nothing shows.
+    image::RgbImage::new(2, 1).save(folder.join("brand/a.png")).unwrap();
+    image::RgbImage::new(2, 1).save(folder.join("brand/hidden.png")).unwrap();
+    let shown = folder.join("brand/a.png").canonicalize().unwrap().to_string_lossy().into_owned();
+    let hidden = folder.join("brand/hidden.png").canonicalize().unwrap().to_string_lossy().into_owned();
+    let option = |label: &str, images: Vec<String>| Choice { label: label.into(), images, ..Choice::default() };
+    let set = QuestionSet {
+        id: 5,
+        session: 1,
+        member: "designer".into(),
+        ticket: None,
+        questions: vec![Question { question: "Which logo?".into(), options: vec![option("A", vec![shown.clone()]), option("B", vec![])], ..Question::default() }],
+        asked_at: 1,
+    };
+    equipe_core::journal::Journal::for_squad(&home, "acme").unwrap().set_questions(&[set]).unwrap();
+    let claude = fake_claude(&slow_answer("0"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+
+    let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+    let mut ask = async |id: u64, method: &str, params: serde_json::Value| -> Message {
+        writer.write_all(Message::request(id, method, params).to_line().as_bytes()).await.unwrap();
+        loop {
+            let message = Message::from_line(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            if message.id == Some(id) {
+                return message;
+            }
+        }
+    };
+    let read = |squad: &str, path: &str| serde_json::to_value(ReadImage { squad: squad.into(), path: path.into(), max: Some(64) }).unwrap();
+
+    let before = ask(1, rpc::READ_IMAGE, read("acme", &shown)).await;
+    assert!(before.error.is_some(), "not before hello: {before:?}");
+    assert!(ask(2, rpc::HELLO, serde_json::json!({ "version": "test", "squad": "acme" })).await.result.is_some());
+    let got = ask(3, rpc::READ_IMAGE, read("acme", &shown)).await.result_as::<ImageRead>().unwrap();
+    assert_eq!((got.mime.as_str(), got.width, got.height), ("image/png", Some(2), Some(1)));
+    let unshown = ask(4, rpc::READ_IMAGE, read("acme", &hidden)).await;
+    assert!(unshown.error.is_some() && unshown.result.is_none(), "{unshown:?}");
+    let other = ask(5, rpc::READ_IMAGE, read("zeta", &shown)).await;
+    assert!(other.error.is_some(), "only the squad it follows: {other:?}");
+    let secret = ask(6, rpc::READ_IMAGE, read("acme", &home.join("squads.json").to_string_lossy())).await;
+    assert!(secret.error.is_some());
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+#[tokio::test]
 async fn the_socket_is_private() {
     use std::os::unix::fs::PermissionsExt;
     let home = scratch("home");

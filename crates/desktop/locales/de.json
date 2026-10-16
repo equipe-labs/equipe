@@ -583,6 +583,7 @@
   "decide.keys_free": "⏎ schreiben · ⌘⏎ weiter · Esc einklappen",
   "decide.keys_multi": "1–9 oder Leertaste wählen · ↑↓ bewegen · ⌘⏎ weiter · Tab eigene Antwort · Esc einklappen",
   "decide.keys_peek": "1–9 wählen · Tab eigene Antwort · ⌘⏎ weiter",
+  "decide.keys_visual": "1–9 wählen · Bild anklicken zum Vergrößern · ⏎ weiter · Tab eigene Antwort · Esc einklappen",
   "decide.more.one": "{count} weitere wartet",
   "decide.more.other": "{count} weitere warten",
   "decide.multi_hint": "Alles Passende auswählen",
@@ -1413,5 +1414,12 @@
   "settings.disk_desc": "Genug Platz · sieh, was ihn belegt, und räum auf",
   "settings.disk_open": "Festplatte zeigen…",
   "commands.about_disk": "Platz auf der Festplatte, und was sich freigeben lässt",
-  "chat.news_disk_clean": "Aufräumen"
+  "chat.news_disk_clean": "Aufräumen",
+  "visuals.gone": "Bild nicht gefunden",
+  "visuals.open": "Größer ansehen",
+  "visuals.pick": "Diese nehmen",
+  "visuals.picked": "Gewählt",
+  "visuals.pictures.one": "{count} Bild",
+  "visuals.pictures.other": "{count} Bilder",
+  "visuals.recommended": "Empfohlen"
 }

@@ -182,6 +182,44 @@ async fn a_member_asks_the_person_decides_and_the_answers_start_its_next_turn() 
 }
 
 #[tokio::test]
+async fn a_visual_choice_shows_its_pictures_found_where_the_member_works_and_a_blind_one_is_nudged() {
+    let (claude, _recorded) = recording_claude();
+    let (home, project) = squad_home();
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&project, "pm")).await;
+    add(&handle, &mut events, 2, member(&project, "designer")).await;
+    // The designer sits in the squad's folder: its renders are there.
+    let folder = equipe_core::squad_home::path(&home, "acme");
+    std::fs::create_dir_all(folder.join("brand")).unwrap();
+    for name in ["a.png", "b.png"] {
+        image::RgbaImage::new(8, 8).save(folder.join("brand").join(name)).unwrap();
+    }
+    std::fs::write(project.join("elsewhere.png"), b"x").unwrap();
+    let logo = |a: &str| json!({ "questions": [{ "question": "Which logo?", "options": [
+        { "label": "Blue dot (Recommended)", "images": [a] },
+        { "label": "Grey dot", "images": "brand/b.png" },
+    ] }] });
+
+    // A picture that isn't where it works: said, to fix — nothing is asked.
+    let outside = tool(&handle, "designer", "ask_decision", logo(&project.join("elsewhere.png").to_string_lossy())).await;
+    assert!(outside.is_error && outside.text.contains("option 1") && outside.text.contains("outside"), "{outside:?}");
+    let climbing = tool(&handle, "designer", "ask_decision", logo("../../../../etc/hosts.png")).await;
+    assert!(climbing.is_error && climbing.text.contains("`..`"), "{climbing:?}");
+
+    let said = tool(&handle, "designer", "ask_decision", logo("brand/a.png")).await;
+    assert!(!said.is_error && !said.text.contains("choosing blind"), "{said:?}");
+    let set = asked(&until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await);
+    let real = |name: &str| folder.join("brand").join(name).canonicalize().unwrap().to_string_lossy().into_owned();
+    assert_eq!(set.questions[0].options[0].images, [real("a.png")]);
+    assert_eq!(set.questions[0].options[1].images, [real("b.png")]);
+
+    // Asked in words alone: it goes, and the member is told to show them next time.
+    let blind = tool(&handle, "designer", "ask_decision", json!({ "questions": [{ "question": "로고 마스터는 어느 안으로 할까요?", "options": ["e. + 파란 원 점 (추천)", "e. 회색 점 유지"] }] })).await;
+    assert!(!blind.is_error && blind.text.contains("Asked.") && blind.text.contains("choosing blind") && blind.text.contains("`images`"), "{blind:?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn skipped_questions_say_so_and_a_closed_set_tells_the_member_to_go_on() {
     let (claude, _recorded) = recording_claude();
     let (home, project) = squad_home();

@@ -559,6 +559,7 @@
   "decide.keys_free": "⏎ 填寫 · ⌘⏎ 下一個 · Esc 收合",
   "decide.keys_multi": "1–9 或空白鍵 選擇 · ↑↓ 移動 · ⌘⏎ 下一步 · Tab 自行填寫 · Esc 收合",
   "decide.keys_peek": "1–9 選擇 · Tab 自行填寫 · ⌘⏎ 下一步",
+  "decide.keys_visual": "1–9 選擇 · 點圖片放大 · ⏎ 下一步 · Tab 自行填寫 · Esc 收合",
   "decide.more.other": "還有 {count} 個在等",
   "decide.multi_hint": "可複選",
   "decide.next": "下一步",
@@ -1373,5 +1374,11 @@
   "settings.disk_desc": "空間充足 · 查看佔用空間的內容並清理",
   "settings.disk_open": "查看磁碟…",
   "commands.about_disk": "磁碟剩餘空間和可清理的內容",
-  "chat.news_disk_clean": "清理"
+  "chat.news_disk_clean": "清理",
+  "visuals.gone": "找不到圖片",
+  "visuals.open": "放大檢視",
+  "visuals.pick": "選這個方案",
+  "visuals.picked": "已選擇",
+  "visuals.pictures.other": "{count} 張圖片",
+  "visuals.recommended": "推薦"
 }
