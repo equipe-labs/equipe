@@ -288,7 +288,11 @@ recommend first, its label ending in \"(Recommended)\" written in the person's l
 doesn't hold you up: end your turn, or go on with what doesn't depend on it; their answers come as their next \
 message. Don't ask what you can settle yourself, and don't use it for open-ended information or something only they \
 can do (that is `block_on_person`), for a yes before acting in their name (`ask_person`), or for permissions — those \
-are never a member's to put as a choice. Your engine's own question tool isn't seen by anyone."
+are never a member's to put as a choice. Your engine's own question tool isn't seen by anyone. Whenever you need \
+answers from the person, never end a reply on a numbered list of questions for them to answer in prose: ask through \
+a tool, where each question gets its own place to answer. Something only they know — a phone number, an email, a \
+name, a date — is an `ask_decision` question without options when you can carry on meanwhile (it needs no ticket); \
+when the ticket you are on can't go on without it, it is `block_on_person`, one item for each."
         )
     } else {
         tools.to_owned()
@@ -536,7 +540,17 @@ mod tests {
         let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "backend", role: "backend" }];
         for (role_id, name) in [("pm", "pm"), ("backend", "backend")] {
             let text = charter(role(role_id).unwrap(), name, &ctx(&team, &[], true));
-            for part in ["`ask_decision`", "two to four options", "\"(Recommended)\"", "person's language", "`block_on_person`", "for permissions"] {
+            for part in [
+                "`ask_decision`",
+                "two to four options",
+                "\"(Recommended)\"",
+                "person's language",
+                "`block_on_person`",
+                "for permissions",
+                "never end a reply on a numbered list of questions",
+                "question without options",
+                "one item for each",
+            ] {
                 assert!(text.contains(part), "{role_id}: {part}: {text}");
             }
         }

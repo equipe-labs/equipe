@@ -77,7 +77,7 @@ type Shown = (SessionId, Option<u32>, Option<Option<String>>);
 
 pub struct Chat {
     scroller: Entity<MessageScrollerState>,
-    blocks: Rc<Vec<Block>>,
+    pub blocks: Rc<Vec<Block>>,
     /// Whose conversation `blocks` are, the ticket it shows the work of, and
     /// the slice of it.
     shown: Option<Shown>,
@@ -314,6 +314,13 @@ impl Chat {
         });
     }
 
+    /// Row `ix` is measured again (what it shows grew or shrank in place).
+    pub fn remeasure_at(&self, ix: usize, cx: &mut App) {
+        if ix < self.blocks.len() {
+            self.scroller.update(cx, |s, cx| s.remeasure_items(ix..ix + 1, cx));
+        }
+    }
+
     fn remeasure_row(&self, row: u64, cx: &mut App) {
         if row >> 24 != self.serial {
             return;
@@ -469,7 +476,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 .w_full()
                 .max_w(px(COLUMN))
                 .px_4()
-                .child(v_flex().children(approvals::for_you(shell, cx)).children(approvals::approval(shell, cx)).children(super::decide::docked(shell, cx)))
+                .child(v_flex().children(approvals::for_you(shell, cx)).children(approvals::approval(shell, cx)).children(super::decide::docked(shell, cx)).children(super::asklist::hint(shell, cx)))
                 .child(composer::render(shell, cx)),
         )
         .children(lightbox(shell, cx));
@@ -538,6 +545,9 @@ struct Rows {
     about: Rc<Vec<Option<String>>>,
     projects: Rc<Vec<String>>,
     focus: Option<String>,
+    /// The latest reply, when it asks the person things in a list: its row,
+    /// the list, and the form it turns into.
+    asking: Option<Rc<super::asklist::Shown>>,
 }
 
 impl Rows {
@@ -607,6 +617,7 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         about: shell.chat.about.clone(),
         projects: Rc::new(if every { names } else { Vec::new() }),
         focus: slice.flatten(),
+        asking: super::asklist::shown(shell, cx),
         turns: shell
             .chat
             .blocks
@@ -839,10 +850,35 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
 #[allow(clippy::too_many_arguments)]
 fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bool, worked: Option<&crate::convo::Worked>, _window: &mut Window, cx: &mut App) -> AnyElement {
     let p = rows.p;
-    let (markdown, full) = view::prepare(text, live, &|n| rows.opened.contains(&(key, n as u32)));
-    let state = rows.views.borrow_mut().get(view_key(key, 0), &markdown, cx);
     let look = Look { size: BODY, line: BODY_LINE, color: p.prose, live };
-    let body = view::configure(TextView::new(&state), p, look, key, Arc::new(full));
+    // A part of the reply's words, drawn in text view `kind`.
+    let words = |part: &str, kind: u64, cx: &mut App| {
+        let (markdown, full) = view::prepare(part, live, &|n| rows.opened.contains(&(key, n as u32)));
+        let state = rows.views.borrow_mut().get(view_key(key, kind), &markdown, cx);
+        view::configure(TextView::new(&state), p, look, key, Arc::new(full))
+    };
+    // A reply that ends asking things in a list: a way to answer them under
+    // the list — or, open, the list as a form, the rest of the words around it.
+    let body: AnyElement = match rows.asking.as_ref().filter(|a| a.ix == ix && !live) {
+        Some(asking) => {
+            let span = asking.asked.span.clone();
+            let (above, below) = match &asking.open {
+                Some(_) => (&text[..span.start], &text[span.end..]),
+                None => (&text[..span.end], &text[span.end..]),
+            };
+            let middle = match &asking.open {
+                Some(open) => super::asklist::form(p, rows.tones, asking, open, key, &rows.handle, cx),
+                None => super::asklist::button(p, key, &rows.handle),
+            };
+            v_flex()
+                .w_full()
+                .when(!above.trim().is_empty(), |c| c.child(words(above, 0, cx)))
+                .child(middle)
+                .when(!below.trim().is_empty(), |c| c.child(words(below.trim_start(), 1, cx)))
+                .into_any_element()
+        }
+        None => words(text, 0, cx).into_any_element(),
+    };
     let group: SharedString = format!("reply-{key}").into();
     // After a group of calls or the news, a little air before the words.
     let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::Thought { .. } | Block::Worked(_));

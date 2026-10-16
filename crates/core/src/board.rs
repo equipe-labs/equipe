@@ -429,14 +429,16 @@ wrote and answers yes or no; wait for the answer and do only what they said yes 
     }));
     tools.push(json!({
         "name": ASK_DECISION,
-        "description": "Put a decision to the person as questions with options to pick from — for a real choice \
-between distinct options that is theirs to make (an approach, a scope, a provider, a trade-off), not one you can \
-settle yourself. 1 to 4 questions at once, each with 2 to 4 options: the one you recommend first, its label ending \
-in \"(Recommended)\" in the person's language. They can also pick several where multi_select is set, write their \
-own answer, or skip a question. It doesn't wait: the person answers when they can, and their answers come to you as \
-their next message (\"Answers to your question: 1) … → …\"). Then end your turn, or carry on with work that doesn't \
-depend on it. Not for open-ended information or something only they can do (that is block_on_person), never for a \
-yes before acting in their name (ask_person) or for permissions.",
+        "description": "Put questions to the person, 1 to 4 at once, each answered in its own place — never write \
+them as a numbered list in your reply instead. A decision: a question with 2 to 4 options to pick from, for a real \
+choice between distinct options that is theirs to make (an approach, a scope, a provider, a trade-off), not one you \
+can settle yourself — the one you recommend first, its label ending in \"(Recommended)\" in the person's language; \
+they can also pick several where multi_select is set, or write their own answer. A plain question: leave `options` \
+out, and they answer in their own words — for what only they know (a phone number, an email, a name, a date). They \
+may skip any. It doesn't wait, and needs no ticket: the person answers when they can, and their answers come to you \
+as their next message (\"Answers to your question: 1) … → …\"). Then end your turn, or carry on with work that \
+doesn't depend on it. When the ticket you are on can't go on without the answer, or they must do something only \
+they can, that is block_on_person; never for a yes before acting in their name (ask_person) or for permissions.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -451,6 +453,7 @@ yes before acting in their name (ask_person) or for permissions.",
                             "header": { "type": "string", "description": "A word or two for it, at most 12 characters: Database, Scope." },
                             "options": {
                                 "type": "array",
+                                "description": "2 to 4 options to pick from; left out, the person answers in their own words.",
                                 "minItems": 2,
                                 "maxItems": 4,
                                 "items": {
@@ -464,7 +467,7 @@ yes before acting in their name (ask_person) or for permissions.",
                             },
                             "multi_select": { "type": "boolean", "description": "Set when several options can be picked together." },
                         },
-                        "required": ["question", "options"],
+                        "required": ["question"],
                     },
                 },
             },
@@ -566,8 +569,9 @@ pub fn waiting_needs(note: &str) -> Vec<String> {
 }
 
 /// The questions of an `ask_decision` call, checked: 1 to 4, each with a
-/// question and 2 to 4 options with distinct labels. What is wrong is said
-/// so the member can call again.
+/// question and 2 to 4 options with distinct labels — or none, for one the
+/// person answers in their own words. What is wrong is said so the member
+/// can call again.
 pub fn questions_arg(args: &Value) -> Result<Vec<crate::protocol::decide::Question>, String> {
     use crate::protocol::decide::{Choice, OPTIONS, QUESTIONS, Question};
     let items = match args.get("questions") {
@@ -594,14 +598,16 @@ pub fn questions_arg(args: &Value) -> Result<Vec<crate::protocol::decide::Questi
             })
             .filter(|c| !c.label.is_empty())
             .collect();
-        if !OPTIONS.contains(&options.len()) {
-            return Err(format!("Question {n} needs 2 to 4 options with a label each, not {}.", options.len()));
+        // None: answered in the person's own words.
+        let given = item.get("options").and_then(Value::as_array).is_some_and(|o| !o.is_empty());
+        if given && !OPTIONS.contains(&options.len()) {
+            return Err(format!("Question {n} needs 2 to 4 options with a label each (or none, for an answer in the person's own words), not {}.", options.len()));
         }
         if options.iter().enumerate().any(|(i, c)| options[..i].iter().any(|d| d.label == c.label)) {
             return Err(format!("Question {n} has two options with the same label."));
         }
         let header: String = arg_str(item, "header").unwrap_or_default().chars().take(24).collect();
-        let multi_select = item.get("multi_select").and_then(Value::as_bool).unwrap_or(false);
+        let multi_select = !options.is_empty() && item.get("multi_select").and_then(Value::as_bool).unwrap_or(false);
         out.push(Question { question: question.to_owned(), header, options, multi_select });
     }
     Ok(out)
@@ -875,6 +881,9 @@ mod tests {
         assert!(asked[1].multi_select && asked[1].options.len() == 3 && asked[1].header.is_empty());
         // One question on its own counts.
         assert_eq!(questions_arg(&json!({ "questions": q(two.clone()) })).unwrap().len(), 1);
+        // Without options, the person answers in their own words.
+        let free = questions_arg(&json!({ "questions": [{ "question": "Which phone number goes on the EU listing?", "multi_select": true }, { "question": "Email?", "options": [] }] })).unwrap();
+        assert!(free.iter().all(|q| q.options.is_empty() && !q.multi_select), "{free:?}");
 
         let refused = |args: Value| questions_arg(&args).unwrap_err();
         assert!(refused(json!({})).contains("1 to 4"));
@@ -895,6 +904,8 @@ mod tests {
             assert_eq!((options["minItems"].as_u64(), options["maxItems"].as_u64()), (Some(2), Some(4)));
             let doc = tool["description"].as_str().unwrap();
             assert!(doc.contains("(Recommended)") && doc.contains("block_on_person") && doc.contains("permissions"), "{doc}");
+            assert!(doc.contains("leave `options` out") && doc.contains("never write them as a numbered list"), "{doc}");
+            assert_eq!(questions["items"]["required"], json!(["question"]));
         }
     }
 

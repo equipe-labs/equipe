@@ -64,14 +64,18 @@ pub(super) fn lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>>
     };
     out.push(Line::from(vec![Span::styled("o ", theme.bold()), other]));
     let last = step + 1 >= set.questions.len();
-    let mut keys = vec![
-        Span::styled(format!("1–{}", q.options.len()), theme.bold()),
-        Span::styled(format!(" {}   ", t!("view.decide_pick")), theme.dim()),
+    // A question answered in their own words only has no options to pick.
+    let mut keys = if q.options.is_empty() {
+        Vec::new()
+    } else {
+        vec![Span::styled(format!("1–{}", q.options.len()), theme.bold()), Span::styled(format!(" {}   ", t!("view.decide_pick")), theme.dim())]
+    };
+    keys.extend([
         Span::styled("enter", theme.bold()),
         Span::styled(format!(" {}   ", if last { t!("view.decide_send") } else { t!("view.decide_next") }), theme.dim()),
         Span::styled("-", theme.bold()),
         Span::styled(format!(" {}", t!("view.decide_skip")), theme.dim()),
-    ];
+    ]);
     if step > 0 {
         keys.extend([Span::styled("   ←", theme.bold()), Span::styled(format!(" {}", t!("view.decide_back")), theme.dim())]);
     }
