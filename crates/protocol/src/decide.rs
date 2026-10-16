@@ -1,10 +1,11 @@
 //! A decision a member puts to the person (`ask_decision`): one to four
 //! questions, each with two to four options to pick from (or several, where
-//! it says so), and words of their own for anything the options miss. It
-//! doesn't hold the member up: the set waits for the person, and their
-//! answers go back to the member as their next message — the one message
-//! [`answer_message`] writes, which every screen reads back
-//! ([`read_answers`]) to show it as "decided".
+//! it says so), and words of their own for anything the options miss — or
+//! with no options at all, a plain question answered in their own words (a
+//! phone number, an email). It doesn't hold the member up: the set waits
+//! for the person, and their answers go back to the member as their next
+//! message — the one message [`answer_message`] writes, which every screen
+//! reads back ([`read_answers`]) to show it as "decided".
 
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +27,8 @@ pub struct Question {
     /// A word or two for it: "Database", "Scope".
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub header: String,
+    /// What to pick from; none: answered in the person's own words only.
+    #[serde(default)]
     pub options: Vec<Choice>,
     /// The person may pick several options, not just one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -68,7 +71,7 @@ impl Answer {
     }
 }
 
-/// How many questions a set may have, and options a question.
+/// How many questions a set may have, and options a question that has any.
 pub const QUESTIONS: std::ops::RangeInclusive<usize> = 1..=4;
 pub const OPTIONS: std::ops::RangeInclusive<usize> = 2..=4;
 

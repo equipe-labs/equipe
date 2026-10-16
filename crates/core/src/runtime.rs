@@ -4530,8 +4530,9 @@ lesson in your memory before you start, so the next ticket begins with it.\n"
         "\nWhen it meets the acceptance criteria, call submit_for_review with a short summary, then end your turn. \
 If you can't go on without something only the person can do (a token, an account, a setting), call block_on_person \
 with what they need to do — each ask its own item, a full sentence, files by their path in backticks — and end your \
-turn: you are free for other work until they have. If you need a decision, \
-say so and end your turn — the person answers here."
+turn: you are free for other work until they have. If you need a decision or an answer you can go on without for \
+now, ask it with ask_decision (options to pick, or none for an answer in their own words) — never as a numbered list \
+of questions in your reply."
     } else {
         "\nWhen it's done, say so plainly; the person accepts it. If you are blocked or need a decision, say so."
     });
