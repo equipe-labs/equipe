@@ -108,4 +108,6 @@ jobs:
         if: matrix.package == 'equipe-desktop'
         env:
           MACOSX_DEPLOYMENT_TARGET: "12.0"
+          # The app in 16 pieces: twice as fast to build, 7% larger.
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: cargo build --release --locked -p equipe-desktop --target ${{ matrix.target }}
