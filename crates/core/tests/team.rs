@@ -233,6 +233,7 @@ fn nothing_adds_or_lets_go_a_member_but_the_persons_commands() {
     let mut starts = Vec::new();
     let mut start_commands = Vec::new();
     let mut approvals = Vec::new();
+    let mut switches = Vec::new();
     for file in &files {
         let text = std::fs::read_to_string(file).unwrap();
         let name = file.file_name().unwrap().to_string_lossy().into_owned();
@@ -250,13 +251,30 @@ fn nothing_adds_or_lets_go_a_member_but_the_persons_commands() {
             if line.contains("approve_team_change(") {
                 approvals.push(format!("{name}: {line}"));
             }
+            if line.contains("switch_member(") {
+                switches.push(format!("{name}: {line}"));
+            }
         }
     }
     assert_eq!(starts, ["runtime.rs: Command::Start { session, spec } => self.start(session, spec).await,"], "a member starts only for Command::Start");
     assert_eq!(
         start_commands,
-        ["runtime.rs: Command::Start { session, spec } => self.start(session, spec).await,", "team.rs: Box::pin(self.handle(Command::Start { session, spec })).await;"],
-        "only the approval sends what /add sends"
+        [
+            "runtime.rs: Command::Start { session, spec } => self.start(session, spec).await,",
+            "team.rs: Box::pin(self.handle(Command::Start { session, spec })).await;",
+            // A member moving engines is started again under its own name (or,
+            // when the other engine can't take it, where it was): nobody joins.
+            "engines.rs: Box::pin(self.handle(Command::Start { session: fresh, spec })).await;",
+            "engines.rs: Box::pin(self.handle(Command::Start { session: again, spec })).await;",
+        ],
+        "only the approval sends what /add sends, and moving engines restarts a member"
+    );
+    // A move is made only at a member's boundary, from moves the person
+    // applied or their own `auto` scheduled.
+    assert_eq!(
+        switches,
+        ["engines.rs: let moved = gone || self.switch_member(squad, id, &due).await;", "engines.rs: async fn switch_member(&mut self, squad: &str, id: SessionId, due: &Due) -> bool {"],
+        "members move engines only at their boundary"
     );
     assert_eq!(
         approvals,
