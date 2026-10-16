@@ -7,7 +7,7 @@ exclude = ["vendor"]
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.54.0"
+version = "0.56.0"
 
 [profile.release]
 lto = "thin"
@@ -28,6 +28,9 @@ opt-level = 2
 #   the drawing and maps the viewport, input and IME positions (`zoom.rs`).
 # - gpui-pre: `EQUIPE_PERF=1|2|3` logs frame times (wall and main-thread CPU)
 #   and what asked for each frame (`window.rs` `equipe_perf`; docs/PERF-2026-10.md).
+# - gpui-pre: a cached view is drawn again when an entity it read while drawn
+#   is notified between frames, not only itself (`Window::notified_entities`,
+#   `view.rs`; the desktop's panes, docs/PERF-2026-10.md 6).
 # - gpui-base: a text view's link underline and the room between list items
 #   are the style's to set (`TextViewStyle`).
 # - gpui-base: where the window's selection ends are drawn, for what floats

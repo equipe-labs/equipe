@@ -439,7 +439,7 @@ impl Shell {
         }
         self.model.board_rev += 1;
         self.board.undo.push_edit(first, text, commands, before, Instant::now());
-        self.ensure_ticker(cx);
+        self.ensure_undo_timer(cx);
         cx.notify();
     }
 
@@ -1204,7 +1204,7 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
             control(
                 EditKind::Status,
                 24.,
-                div().relative().size(px(14.)).child(icons::status(p, t.status, 14.)).when(live, |d| d.child(div().absolute().top(px(-2.)).right(px(-3.)).child(icons::live_dot(p, shell.board.pulse)))).into_any_element(),
+                div().relative().size(px(14.)).child(icons::status(p, t.status, 14.)).when(live, |d| d.child(div().absolute().top(px(-2.)).right(px(-3.)).child(icons::live_dot(p, shell.pulse(cx))))).into_any_element(),
                 cx,
             )
             .tip(p, t!("tickets.tip_status", status = crate::state::state_word(t)), Some("S")),
@@ -1673,7 +1673,7 @@ fn card(shell: &Shell, id: TicketId, status: TicketStatus, next: Option<TicketId
                             key,
                         ))
                         .child(div().font_family(MONO).text_size(px(11.)).text_color(p.muted).child(format!("T-{id}")))
-                        .when(live, |h| h.child(icons::live_dot(p, shell.board.pulse)))
+                        .when(live, |h| h.child(icons::live_dot(p, shell.pulse(cx))))
                         .child(div().flex_1())
                         .child(anchored(
                             div()

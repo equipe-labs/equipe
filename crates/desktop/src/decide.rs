@@ -363,15 +363,15 @@ mod tests {
     use equipe_core::protocol::decide::Choice;
 
     fn set() -> QuestionSet {
-        let options = |labels: &[&str]| labels.iter().map(|l| Choice { label: (*l).into(), description: String::new() }).collect();
+        let options = |labels: &[&str]| labels.iter().map(|l| Choice { label: (*l).into(), description: String::new(), ..Choice::default() }).collect();
         QuestionSet {
             id: 7,
             session: 1,
             member: "pm".into(),
             ticket: None,
             questions: vec![
-                Question { question: "Which database?".into(), header: "Database".into(), options: options(&["Postgres (Recommended)", "SQLite", "MySQL"]), multi_select: false },
-                Question { question: "Which features first?".into(), header: "Scope".into(), options: options(&["Auth", "Payments", "Search"]), multi_select: true },
+                Question { question: "Which database?".into(), header: "Database".into(), options: options(&["Postgres (Recommended)", "SQLite", "MySQL"]), multi_select: false, ..Question::default() },
+                Question { question: "Which features first?".into(), header: "Scope".into(), options: options(&["Auth", "Payments", "Search"]), multi_select: true, ..Question::default() },
             ],
             asked_at: 0,
         }
@@ -415,7 +415,7 @@ mod tests {
     #[test]
     fn a_question_without_options_is_answered_in_its_box() {
         let mut s = set();
-        s.questions = vec![Question { question: "EU 스토어에 공개할 전화번호는?".into(), header: String::new(), options: Vec::new(), multi_select: false }];
+        s.questions = vec![Question { question: "EU 스토어에 공개할 전화번호는?".into(), header: String::new(), options: Vec::new(), multi_select: false, ..Question::default() }];
         let mut d = Draft::new(&s);
         assert_eq!(d.other_row(&s), 0);
         assert_eq!(d.key(&s, Key::Enter, &others(1), false), Effect::FocusOther, "⏎ goes to the box");

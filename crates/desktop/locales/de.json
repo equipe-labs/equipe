@@ -584,6 +584,7 @@
   "decide.keys_free": "⏎ schreiben · ⌘⏎ weiter · Esc einklappen",
   "decide.keys_multi": "1–9 oder Leertaste wählen · ↑↓ bewegen · ⌘⏎ weiter · Tab eigene Antwort · Esc einklappen",
   "decide.keys_peek": "1–9 wählen · Tab eigene Antwort · ⌘⏎ weiter",
+  "decide.keys_visual": "1–9 wählen · Bild anklicken zum Vergrößern · ⏎ weiter · Tab eigene Antwort · Esc einklappen",
   "decide.more.one": "{count} weitere wartet",
   "decide.more.other": "{count} weitere warten",
   "decide.multi_hint": "Alles Passende auswählen",
@@ -1430,5 +1431,12 @@
   "update.why_move": "Eine App, die aus dem Disk-Image oder einem Download-Ordner geöffnet wurde, kann sich nicht selbst aktualisieren — bewege sie in „Programme“ und öffne sie dort",
   "update.why_other": "Beim Update ist ein Fehler aufgetreten (Code {code}) — Einzelheiten stehen im Protokoll",
   "update.why_permission": "Keine Schreibrechte im Ordner der App, daher konnte das Update nicht installiert werden — prüfe, ob sie in „Programme“ liegt",
-  "update.why_signature": "Die Signatur des geladenen Updates ließ sich nicht prüfen, daher wurde es nicht installiert"
+  "update.why_signature": "Die Signatur des geladenen Updates ließ sich nicht prüfen, daher wurde es nicht installiert",
+  "visuals.gone": "Bild nicht gefunden",
+  "visuals.open": "Größer ansehen",
+  "visuals.pick": "Diese nehmen",
+  "visuals.picked": "Gewählt",
+  "visuals.pictures.one": "{count} Bild",
+  "visuals.pictures.other": "{count} Bilder",
+  "visuals.recommended": "Empfohlen"
 }

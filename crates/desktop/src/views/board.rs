@@ -9,7 +9,7 @@
 
 use equipe_core::t;
 use std::collections::{BTreeSet, HashMap};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use equipe_core::protocol::{Command, Decision, Ticket, TicketId, TicketStatus};
 use gpui_kit::component::input::{Input, InputEvent, InputState, TextareaState};
@@ -104,8 +104,6 @@ pub struct BoardUi {
     /// Where the window has been, for back and forward.
     pub history: Vec<super::sidebar::Place>,
     pub history_at: usize,
-    /// How far the sidebar's spinners have turned.
-    pub spin: f32,
     /// The keys' sheet is open (?).
     pub keys_open: bool,
     /// The window is wide enough for the peek beside the list.
@@ -117,10 +115,8 @@ pub struct BoardUi {
     pub peek_width: f32,
     /// A width the peek is held at (the snapshot script's `peekw:`).
     pub peek_held: Option<f32>,
-    /// How strong the live dots are now (0–1), stepped by the ticker.
-    pub pulse: f32,
-    pulse_step: u32,
-    _ticker: Option<Task<()>>,
+    /// Sends what is held back when its time comes (`Shell::ensure_undo_timer`).
+    _undo_timer: Option<Task<()>>,
     /// 티켓's own: menus, the board's drag, the new ticket sheet, the page's edits.
     pub tk: super::tickets::TicketsUi,
 }
@@ -175,15 +171,12 @@ impl BoardUi {
             words: crate::i18n::lang(),
             history: Vec::new(),
             history_at: 0,
-            spin: 0.,
             keys_open: false,
             wide: true,
             list_width: 900.,
             peek_width: PEEK,
             peek_held: None,
-            pulse: 1.,
-            pulse_step: 0,
-            _ticker: None,
+            _undo_timer: None,
             tk: super::tickets::TicketsUi::new(window, cx),
         }
     }
@@ -337,7 +330,7 @@ impl Shell {
         {
             self.board.diff = None;
         }
-        self.ensure_ticker(cx);
+        self.ensure_undo_timer(cx);
         cx.notify();
     }
 
@@ -613,7 +606,7 @@ impl Shell {
         self.board.flow = None;
         self.board.ticked.remove(&id);
         self.advance_from(&before, Need::Ticket(id), cx);
-        self.ensure_ticker(cx);
+        self.ensure_undo_timer(cx);
     }
 
     /// After acting on `done`: the next thing comes up.
@@ -645,47 +638,44 @@ impl Shell {
         }
     }
 
-    /// Send what is due; step the live dots. True when the screen changed.
-    fn tick(&mut self, now: Instant) -> bool {
+    /// Send what is due. True when something was.
+    fn send_due(&mut self, now: Instant) -> bool {
         let due = self.board.undo.take_due(now);
-        let mut changed = !due.is_empty() || !self.board.undo.pending.is_empty();
+        let sent = !due.is_empty();
         for p in due {
             for command in p.commands {
                 self.send_command(command);
             }
             self.tickets_sent(p.restore);
         }
-        // The live dots pulse and the sidebar's spinners turn while a member works.
-        if self.model.tickets.iter().any(|t| self.model.is_live(t)) || self.model.members.iter().any(|m| m.presence == Presence::Working) {
-            self.board.pulse_step = self.board.pulse_step.wrapping_add(1);
-            self.board.pulse = [1.0, 0.75, 0.45, 0.3, 0.45, 0.75][(self.board.pulse_step / 2) as usize % 6];
-            self.board.spin = super::sidebar::spin(self.board.pulse_step);
-            changed = true;
-        }
-        changed
+        sent
     }
 
-    /// A ticker runs while something is held back or something on screen is live.
-    pub fn ensure_ticker(&mut self, cx: &mut Context<Self>) {
-        if self.board._ticker.is_some() {
+    /// While something is held back, a timer sends it when its time comes.
+    /// (Its toast counts the seconds on the clock: `beat.rs`. A 10 Hz ticker
+    /// did both, and turned the spinners and the live dots — drawing the
+    /// whole window for as long as anyone worked: docs/PERF-2026-10.md, 6.)
+    pub fn ensure_undo_timer(&mut self, cx: &mut Context<Self>) {
+        if self.board._undo_timer.is_some() || self.board.undo.pending.is_empty() {
             return;
         }
-        self.board._ticker = Some(cx.spawn(async move |this, cx| {
+        self.board._undo_timer = Some(cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_millis(100)).await;
-                let keep = this.update(cx, |this, cx| {
-                    let changed = this.tick(Instant::now());
-                    if changed {
+                let due = this.update(cx, |this, _| {
+                    let due = this.board.undo.pending.iter().map(|p| p.due).min();
+                    if due.is_none() {
+                        this.board._undo_timer = None;
+                    }
+                    due
+                });
+                let Ok(Some(due)) = due else { break };
+                cx.background_executor().timer(due.saturating_duration_since(Instant::now())).await;
+                let sent = this.update(cx, |this, cx| {
+                    if this.send_due(Instant::now()) {
                         cx.notify();
                     }
-                    let live = this.model.tickets.iter().any(|t| this.model.is_live(t)) || this.model.members.iter().any(|m| m.presence == Presence::Working);
-                    let keep = !this.board.undo.pending.is_empty() || live;
-                    if !keep {
-                        this.board._ticker = None;
-                    }
-                    keep
                 });
-                if !matches!(keep, Ok(true)) {
+                if sent.is_err() {
                     break;
                 }
             }
@@ -1893,7 +1883,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                         })),
                 )
                 .child(div().relative().size(px(14.)).flex_none().child(icons::status(p, t.status, 14.)).when(live, |d| {
-                    d.child(div().absolute().top(px(-2.)).right(px(-3.)).child(icons::live_dot(p, shell.board.pulse)))
+                    d.child(div().absolute().top(px(-2.)).right(px(-3.)).child(icons::live_dot(p, shell.pulse(cx))))
                 }))
                 .child(div().w(px(44.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
                 .when(show_project, |r| r.child(project_col(Some(t))))
@@ -2006,7 +1996,9 @@ fn bulk_bar(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
 pub fn toast(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
     let pending = shell.board.undo.latest()?;
-    let left = Undo::seconds_left(pending, Instant::now());
+    let now = Instant::now();
+    let left = Undo::seconds_left(pending, now);
+    shell.wake_at(Undo::next_count(pending, now), cx);
     let more = shell.board.undo.pending.len().saturating_sub(1);
     let lift = if shell.board.view.chosen.is_empty() { 20. } else { 72. };
     // Over the list, not the peek beside it.

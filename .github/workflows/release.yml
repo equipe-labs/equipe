@@ -198,6 +198,11 @@ jobs:
           mount="$(hdiutil attach -nobrowse -readonly dist/equipe.dmg | tail -1 | cut -f3)"
           lipo -archs "$mount/equipe.app/Contents/MacOS/equipe-desktop" | grep -q "x86_64 arm64"
           codesign --verify --deep --strict "$mount/equipe.app"
+          if [ -n "$APPLE_API_KEY" ] && [ -n "$MACOS_CERTIFICATE" ]; then
+            xcrun stapler validate "$mount/equipe.app"
+            spctl -a -vv -t exec "$mount/equipe.app"
+            xcrun stapler validate dist/equipe.dmg
+          fi
           test -L "$mount/Applications"
           hdiutil detach "$mount"
 

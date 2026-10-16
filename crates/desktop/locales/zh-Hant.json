@@ -560,6 +560,7 @@
   "decide.keys_free": "⏎ 填寫 · ⌘⏎ 下一個 · Esc 收合",
   "decide.keys_multi": "1–9 或空白鍵 選擇 · ↑↓ 移動 · ⌘⏎ 下一步 · Tab 自行填寫 · Esc 收合",
   "decide.keys_peek": "1–9 選擇 · Tab 自行填寫 · ⌘⏎ 下一步",
+  "decide.keys_visual": "1–9 選擇 · 點圖片放大 · ⏎ 下一步 · Tab 自行填寫 · Esc 收合",
   "decide.more.other": "還有 {count} 個在等",
   "decide.multi_hint": "可複選",
   "decide.next": "下一步",
@@ -1391,5 +1392,11 @@
   "update.why_move": "從磁碟映像或下載檔案夾打開的 App 無法自行更新 — 請移到「應用程式」檔案夾後從那裡打開",
   "update.why_other": "更新時發生錯誤（代碼 {code}）— 詳情見日誌",
   "update.why_permission": "沒有寫入 App 所在檔案夾的權限，無法安裝更新 — 請確認它在「應用程式」檔案夾中",
-  "update.why_signature": "無法驗證下載的更新的簽名，因此未安裝"
+  "update.why_signature": "無法驗證下載的更新的簽名，因此未安裝",
+  "visuals.gone": "找不到圖片",
+  "visuals.open": "放大檢視",
+  "visuals.pick": "選這個方案",
+  "visuals.picked": "已選擇",
+  "visuals.pictures.other": "{count} 張圖片",
+  "visuals.recommended": "推薦"
 }

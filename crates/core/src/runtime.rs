@@ -412,6 +412,8 @@ struct Work {
     history: Vec<responses::Message>,
     /// Set by `submit_for_review`; the work is handed in when the turn ends.
     handed_in: Option<String>,
+    /// The pictures `submit_for_review` named, resolved: shown above the hand-in.
+    shown: Vec<String>,
     /// Set by `block_on_person`: what the person has to do. The ticket waits
     /// for them when the turn ends.
     waiting: Option<String>,
@@ -2959,6 +2961,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 claude_session: saved.engine_session,
                 history: Vec::new(),
                 handed_in: None,
+                shown: Vec::new(),
                 waiting: None,
             });
         }
@@ -3045,11 +3048,23 @@ for one project goes to it as tickets for its owners, with that project — and 
             (WorkEnd::HandedIn, Some(summary)) if ticket.kind.in_home() => Some(self.home_hand_in(&squad, &ticket, work.sandbox.as_ref(), summary)),
             _ => summary.clone(),
         };
+        // What the hand-in shows: the pictures named, then the images its branch changed.
+        let images = match &work.sandbox {
+            Some(sandbox) if how == WorkEnd::HandedIn => {
+                let roots = [squad_home::path(&self.config.home, &squad), sandbox.path.clone()];
+                crate::visuals::hand_in(&work.shown, &sandbox.changed_files().unwrap_or_default(), &sandbox.path, &roots)
+            }
+            _ => work.shown.clone(),
+        };
+        if !matches!(how, WorkEnd::HandedIn | WorkEnd::Accepted) {
+            ticket.images.clear();
+        }
         // What the PM is told, in English, and what the person reads (`news`).
         let (by, event, line, news) = match how {
             WorkEnd::HandedIn => {
                 ticket.status = TicketStatus::Review;
                 ticket.note = handed_in;
+                ticket.images = images;
                 (name.as_str(), "handed in", format!("{name} handed in T-{} for your review", ticket.id), "news.handed_in")
             }
             WorkEnd::Waiting => {
@@ -3153,12 +3168,16 @@ for one project goes to it as tickets for its owners, with that project — and 
             let _ = squad_home::save_persons(&sandbox.repo);
         }
         let message = format!("{}: T-{} {}", ticket.assignee.as_deref().unwrap_or("equipe"), ticket.id, ticket.title);
+        // The worktree goes once merged: its pictures are shown from the folder they landed in.
+        let from = sandbox.path.canonicalize().unwrap_or_else(|_| sandbox.path.clone());
         if let Err(err) = worktree::merge_into_main(&sandbox.repo, &sandbox.branch, &message) {
             if let Some(journal) = self.journal(squad) {
                 let _ = journal.ticket_event(ticket.id, "equipe", "not merged", &err);
             }
             return Err(err);
         }
+        let folder = squad_home::path(&self.config.home, squad);
+        ticket.images = crate::visuals::moved(&ticket.images, &from, &folder.canonicalize().unwrap_or(folder));
         let _ = sandbox.discard();
         ticket.branch = None;
         ticket.worktree = None;
@@ -4364,7 +4383,7 @@ there, end your turn, and carry on when they say they're done."
                     created_by: member.clone(),
                     note: None,
                     asks: vec![],
-                    remaining: Vec::new(),
+                    remaining: Vec::new(), images: Vec::new(),
                     updated_at: None,
                     priority: Default::default(), rank: 0,
                 };
@@ -4465,9 +4484,14 @@ there, end your turn, and carry on when they say they're done."
             }
             board::SUBMIT_FOR_REVIEW => {
                 let summary = board::arg_str(&args, "summary").ok_or("Summarize what you did.")?.to_owned();
+                // Its pictures, found where it works; one that isn't there is said, to fix.
+                let (cwd, roots) = self.picture_places(&squad, id);
+                let shown = crate::visuals::resolve_all(&board::arg_strs(&args, "images"), &cwd, &roots, crate::visuals::HAND_IN)
+                    .map_err(|e| format!("{e}. Save the pictures in your worktree and give their paths, then hand in again."))?;
                 let session = self.sessions.get_mut(&id).ok_or("You're not on the squad.")?;
                 let work = session.work.as_mut().ok_or("You're not on a ticket — there is nothing to hand in.")?;
                 work.handed_in = Some(summary);
+                work.shown = shown;
                 work.waiting = None;
                 Ok(format!(
                     "Handed in T-{}. Your changes are committed when this turn ends and the person reviews them. \
@@ -5041,6 +5065,7 @@ fn restore_work(journal: &Journal, ticket: &Ticket, projects: &[PathBuf], home: 
         claude_session: saved.engine_session,
         history: Vec::new(),
         handed_in: None,
+        shown: Vec::new(),
         waiting: None,
     })
 }
@@ -5154,7 +5179,8 @@ lesson in your memory before you start, so the next ticket begins with it.\n"
         out.push_str(&format!("\n{}\n", ticket.body));
     }
     out.push_str(if board_tools {
-        "\nWhen it meets the acceptance criteria, call submit_for_review with a short summary, then end your turn. \
+        "\nWhen it meets the acceptance criteria, call submit_for_review with a short summary — and, when the work is \
+visual, its pictures in `images` — then end your turn. \
 If you can't go on without something only the person can do (a token, an account, a setting), call block_on_person \
 with what they need to do — each ask its own item, a full sentence, files by their path in backticks — and end your \
 turn: you are free for other work until they have. If you need a decision or an answer you can go on without for \

@@ -8,6 +8,7 @@
 mod asklist;
 mod askpass;
 mod attach;
+mod beat;
 mod board;
 mod browse;
 mod commands;
@@ -27,6 +28,7 @@ mod media;
 mod mem;
 mod notify;
 mod pair;
+mod pane;
 mod queue;
 mod quote;
 mod sheet;
@@ -53,6 +55,7 @@ mod settings;
 mod update;
 mod usage;
 mod views;
+mod visuals;
 mod wire;
 mod yourturn;
 mod zoom;
@@ -164,10 +167,15 @@ pub struct Shell {
     pub chat: Chat,
     pub composer: Composer,
     pub board: BoardUi,
+    /// The window's big parts, each drawn on its own (`pane.rs`).
+    pub panes: pane::Panes,
     /// The answer boxes of the cards tickets waiting for the person ask on.
     pub turn: views::yourturn::TurnUi,
     /// Members' questions: where the person is in each set, and its boxes.
     pub decide: views::decide::DecideUi,
+    /// Members' pictures — decisions' options, hand-ins — and the one shown big.
+    pub shots: std::rc::Rc<std::cell::RefCell<visuals::Visuals>>,
+    pub viewer: Option<visuals::Viewer>,
     /// A reply's list of questions, answered in place.
     pub asklist: views::asklist::AskListUi,
     /// Words selected in the conversation, asked about (`views/quote.rs`).
@@ -203,7 +211,7 @@ pub struct Shell {
     /// The roles a squad just started joins with, once it is open and empty.
     pending_team: Option<Vec<String>>,
     connecting_shown: bool,
-    log_renders: bool,
+    pub(crate) log_renders: bool,
     renders: u64,
     started: std::time::Instant,
     // Dropping these ends the link's thread and the tasks that feed from it.
@@ -265,8 +273,11 @@ impl Shell {
             chat: Chat::new(cx),
             composer: Composer::new(window, cx),
             board: BoardUi::new(window, cx, fetched_tx),
+            panes: pane::Panes::new(cx),
             turn: Default::default(),
             decide: Default::default(),
+            shots: Default::default(),
+            viewer: None,
             asklist: Default::default(),
             quote: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
@@ -420,6 +431,11 @@ impl Shell {
                     this.update(cx, |shell, cx| shell.answer_question(true, window, cx)).ok();
                     cx.stop_propagation();
                 }
+                return;
+            }
+            // A member's picture shown big: ←/→, a pick, Esc — and nothing typed underneath.
+            if this.update(cx, |shell, cx| shell.on_viewer_key(key, &modifiers, window, cx)).unwrap_or(false) {
+                cx.stop_propagation();
                 return;
             }
             // Words selected in the conversation: ⏎ or ⌘⇧R asks about them; in
@@ -594,6 +610,8 @@ impl Shell {
         // Another machine: its files aren't the ones known.
         self.chat.sent.borrow_mut().clear();
         self.chat.gallery = None;
+        self.shots.borrow_mut().clear();
+        self.viewer = None;
         // Questions still open were for the connection being left.
         self.ask.queue.clear();
         let backoff = if target.endpoint.is_remote() { Backoff::remote() } else { Backoff::default() };
@@ -670,6 +688,7 @@ impl Shell {
                             // Back on the line: what a message attached that couldn't be had is asked again.
                             daemon::Update::Attached(_) => {
                                 this.chat.sent.borrow_mut().retry_gone();
+                                this.shots.borrow_mut().retry_gone();
                                 // The daemon tells its browser's tabs afresh: none held from before.
                                 this.browser.update(cx, |b, cx| b.reattached(window, cx));
                             }
@@ -919,7 +938,8 @@ impl Shell {
         }
     }
 
-    fn body(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The screen beside the sidebar, drawn in its pane (`pane.rs`).
+    pub fn body(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette;
         let nothing_attached = matches!(self.model.conn, Conn::Down { had_snapshot: false, .. });
         // A Mac without equipe is told how to install; a far machine's missing
@@ -971,7 +991,8 @@ impl Shell {
         if shown <= 0. {
             return None;
         }
-        let side = views::sidebar::render(self, cx).into_any_element();
+        let width = self.board.sidebar_width;
+        let side = self.panes.sidebar.clone().cached(StyleRefinement::default().w(px(width)).h_full().flex_none()).into_any_element();
         if shown >= 1. {
             return Some(side);
         }
@@ -1150,7 +1171,7 @@ impl Render for Shell {
         }
         let sidebar = self.sidebar(window, cx);
         let browser = (self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
-        root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(div().flex_1().min_w_0().h_full().flex().flex_col().child(self.body(cx))).children(browser))
+        root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(self.panes.body.clone().cached(StyleRefinement::default().flex_1().min_w_0().h_full())).children(browser))
             // The title bar's fixed buttons, by the traffic lights, over the
             // sidebar or the header alike: the same place whatever slides.
             .child(views::sidebar::title_buttons(self, cx))
@@ -1159,6 +1180,7 @@ impl Render for Shell {
             .children(views::composer::drop_overlay(self, cx))
             .children(views::composer::lightbox(self, cx))
             .children(views::attached::gallery(self, cx))
+            .children(views::visuals::viewer(self, window, cx))
             .children(views::sheet::sheet(self, cx))
             .children(views::sheet::question(self, cx))
             .children(self.connect.open.then(|| views::connect::chooser(self, cx)))

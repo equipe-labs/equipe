@@ -13,7 +13,7 @@
             "type": "accept"
           }
         },
-        "seq": 25,
+        "seq": 27,
         "squad": "home",
         "ts": 1760000000000
       }
@@ -30,7 +30,7 @@
             "type": "accept"
           }
         },
-        "seq": 24,
+        "seq": 26,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -83,7 +83,7 @@
             "type": "accept"
           }
         },
-        "seq": 16,
+        "seq": 18,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -207,7 +207,7 @@
             "type": "apply_engine_proposal"
           }
         },
-        "seq": 13,
+        "seq": 15,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -235,7 +235,7 @@
             "type": "approve_team_change"
           }
         },
-        "seq": 11,
+        "seq": 13,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -353,7 +353,7 @@
             "type": "decline_team_change"
           }
         },
-        "seq": 12,
+        "seq": 14,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -381,7 +381,7 @@
             "type": "dismiss_engine_proposal"
           }
         },
-        "seq": 14,
+        "seq": 16,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -491,7 +491,7 @@
             "type": "engine_proposed"
           }
         },
-        "seq": 17,
+        "seq": 22,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -531,7 +531,7 @@
             "type": "engine_proposed"
           }
         },
-        "seq": 16,
+        "seq": 21,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -548,7 +548,7 @@
             "type": "engine_proposal_closed"
           }
         },
-        "seq": 18,
+        "seq": 23,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -564,7 +564,7 @@
             "type": "engine_switching_changed"
           }
         },
-        "seq": 19,
+        "seq": 24,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -581,7 +581,7 @@
             "type": "error"
           }
         },
-        "seq": 31,
+        "seq": 36,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -598,7 +598,7 @@
             "type": "message_queued"
           }
         },
-        "seq": 22,
+        "seq": 27,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -614,7 +614,7 @@
             "type": "notice"
           }
         },
-        "seq": 30,
+        "seq": 35,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -639,7 +639,7 @@
             }
           }
         },
-        "seq": 15,
+        "seq": 20,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -758,7 +758,7 @@
             "type": "queue_sent"
           }
         },
-        "seq": 33,
+        "seq": 38,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -775,7 +775,7 @@
             "type": "steer_queued"
           }
         },
-        "seq": 32,
+        "seq": 37,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -791,7 +791,7 @@
             "type": "subagent_ended"
           }
         },
-        "seq": 27,
+        "seq": 32,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -808,7 +808,7 @@
             "what": "Compare the two login flows"
           }
         },
-        "seq": 25,
+        "seq": 30,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -825,7 +825,7 @@
             "type": "subagent_step"
           }
         },
-        "seq": 26,
+        "seq": 31,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -845,7 +845,7 @@
             "type": "team_change_closed"
           }
         },
-        "seq": 13,
+        "seq": 18,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -862,7 +862,7 @@
             "type": "team_change_closed"
           }
         },
-        "seq": 14,
+        "seq": 19,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -889,7 +889,7 @@
             "type": "team_change_proposed"
           }
         },
-        "seq": 12,
+        "seq": 17,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -905,7 +905,7 @@
             "type": "text_delta"
           }
         },
-        "seq": 23,
+        "seq": 28,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -936,7 +936,7 @@
             "type": "ticket_changed"
           }
         },
-        "seq": 20,
+        "seq": 25,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -972,6 +972,41 @@
         "ts": 1760000000000
       }
     },
+    "event: ticket handed in with pictures": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "squad": "acme",
+            "ticket": {
+              "assignee": "backend",
+              "body": "이메일 로그인, 토큰 발급.",
+              "branch": "equipe/backend-t38-1a2b3c4d",
+              "created_by": "pm",
+              "depends_on": [],
+              "id": 38,
+              "images": [
+                "/Users/you/.equipe/worktrees/acme.home/t144-5e6f7a8b/brand/logo-blue-dot.png",
+                "/Users/you/.equipe/worktrees/acme.home/t144-5e6f7a8b/brand/logo-grey-dot.png"
+              ],
+              "kind": "code",
+              "merged": null,
+              "note": null,
+              "owner": "backend",
+              "project": "/Users/you/projects/api",
+              "status": "review",
+              "title": "로그인 API",
+              "worktree": "/Users/you/.equipe/worktrees/api/t38-1a2b3c4d"
+            },
+            "type": "ticket_changed"
+          }
+        },
+        "seq": 16,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "event: tool use": {
       "receives": {
         "rpc": {
@@ -984,7 +1019,7 @@
             "type": "tool_use"
           }
         },
-        "seq": 24,
+        "seq": 29,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1004,7 +1039,7 @@
             }
           }
         },
-        "seq": 28,
+        "seq": 33,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1021,7 +1056,7 @@
             "usage": null
           }
         },
-        "seq": 29,
+        "seq": 34,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1037,7 +1072,51 @@
             "type": "user_message"
           }
         },
-        "seq": 21,
+        "seq": 26,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: visual questions asked": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "questions": {
+              "asked_at": 1760000000,
+              "id": 5000002,
+              "member": "designer",
+              "questions": [
+                {
+                  "header": "로고",
+                  "options": [
+                    {
+                      "description": "사이트와 앱을 하나로",
+                      "images": [
+                        "/Users/you/.equipe/worktrees/acme.home/t144-5e6f7a8b/brand/logo-blue-dot.png"
+                      ],
+                      "label": "e. + 파란 원 점 (추천)"
+                    },
+                    {
+                      "description": "지금 앱 그대로",
+                      "images": [
+                        "/Users/you/.equipe/worktrees/acme.home/t144-5e6f7a8b/brand/logo-grey-dot.png"
+                      ],
+                      "label": "e. 회색 점 유지"
+                    }
+                  ],
+                  "question": "로고 마스터는 어느 안으로 할까요?"
+                }
+              ],
+              "session": 4243,
+              "ticket": 144
+            },
+            "squad": "acme",
+            "type": "questions_asked"
+          }
+        },
+        "seq": 12,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1296,6 +1375,13 @@
                   }
                 ]
               },
+              "uploads": {
+                "chunk": 393216,
+                "file": 26214400,
+                "image": 8388608,
+                "transcript": 65536,
+                "video": 67108864
+              },
               "version": "0.10.1"
             }
           },
@@ -1388,7 +1474,7 @@
             "type": "interrupt"
           }
         },
-        "seq": 19,
+        "seq": 21,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1406,7 +1492,7 @@
             "type": "merge"
           }
         },
-        "seq": 23,
+        "seq": 25,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1670,6 +1756,96 @@
         "ts": 1760000000000
       }
     },
+    "read image": {
+      "daemon": {
+        "answers": {
+          "rpc": {
+            "id": 20,
+            "jsonrpc": "2.0",
+            "result": {
+              "data": "iVBORw0KGgo=",
+              "height": 1024,
+              "mime": "image/png",
+              "scaled": true,
+              "size": 48213,
+              "width": 1024
+            }
+          },
+          "seq": 13,
+          "squad": "acme",
+          "ts": 1760000000000
+        },
+        "asked": {
+          "max": 480,
+          "path": "/Users/you/.equipe/worktrees/acme.home/t144-5e6f7a8b/brand/logo-blue-dot.png",
+          "squad": "acme"
+        },
+        "max_for_a_phone": 720,
+        "reads_picture_of": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "id": 20,
+          "jsonrpc": "2.0",
+          "method": "read_image",
+          "params": {
+            "max": 480,
+            "path": "/Users/you/.equipe/worktrees/acme.home/t144-5e6f7a8b/brand/logo-blue-dot.png",
+            "squad": "acme"
+          }
+        },
+        "seq": 11,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "read image: a picture the squad doesn't show": {
+      "receives": {
+        "rpc": {
+          "error": {
+            "code": -32000,
+            "message": "/Users/you/.equipe/worktrees/acme.home/t144-5e6f7a8b/brand/logo-blue-dot.png isn't a picture acme shows"
+          },
+          "id": 21,
+          "jsonrpc": "2.0"
+        },
+        "seq": 14,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "read image: a squad not followed": {
+      "daemon": {
+        "answers": {
+          "rpc": {
+            "error": {
+              "code": -32002,
+              "message": "say hello to that squad first"
+            },
+            "id": 22,
+            "jsonrpc": "2.0"
+          },
+          "seq": 15,
+          "squad": "home",
+          "ts": 1760000000000
+        }
+      },
+      "sends": {
+        "rpc": {
+          "id": 22,
+          "jsonrpc": "2.0",
+          "method": "read_image",
+          "params": {
+            "max": 480,
+            "path": "/Users/you/.equipe/worktrees/acme.home/t144-5e6f7a8b/brand/logo-blue-dot.png",
+            "squad": "home"
+          }
+        },
+        "seq": 12,
+        "squad": "home",
+        "ts": 1760000000000
+      }
+    },
     "reopen": {
       "daemon": {
         "command": {
@@ -1695,7 +1871,7 @@
             "type": "reopen"
           }
         },
-        "seq": 17,
+        "seq": 19,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1729,7 +1905,7 @@
             "type": "send_now"
           }
         },
-        "seq": 22,
+        "seq": 24,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1791,7 +1967,7 @@
             "type": "submit"
           }
         },
-        "seq": 18,
+        "seq": 20,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1821,7 +1997,7 @@
             "type": "submit"
           }
         },
-        "seq": 20,
+        "seq": 22,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1851,7 +2027,7 @@
             "type": "submit"
           }
         },
-        "seq": 21,
+        "seq": 23,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1879,7 +2055,7 @@
             "type": "undo_engine_proposal"
           }
         },
-        "seq": 15,
+        "seq": 17,
         "squad": "acme",
         "ts": 1760000000000
       }
