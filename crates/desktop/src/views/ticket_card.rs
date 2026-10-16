@@ -52,6 +52,14 @@ const SLACK: f32 = 2.;
 const GUESS: (f32, f32) = (WIDTH, 230.);
 /// The excerpt: this many lines, then it fades out.
 const EXCERPT_LINES: f32 = 8.;
+/// How tall the fade over a cut edge of the card's text is.
+const FADE: f32 = 28.;
+
+/// Whether the card's text goes on above and below what shows, scrolled
+/// `down` of the `most` it can be.
+fn fades(down: f32, most: f32) -> (bool, bool) {
+    (down > 0.5, most - down > 0.5)
+}
 const EXCERPT_LINE: f32 = 19.;
 
 // ── the rules ──
@@ -439,6 +447,8 @@ pub struct TicketCard {
     asked: HashMap<TicketId, (Option<String>, String, Option<bool>)>,
     /// Tickets acted on from a card: their undo shows off the work screens.
     acted: HashSet<TicketId>,
+    /// Where the card's text is scrolled to, for the card it opened as.
+    said: (u64, ScrollHandle),
 }
 
 struct Layer(Entity<TicketCard>);
@@ -452,7 +462,7 @@ pub fn layer(cx: &mut Context<Shell>) -> AnyView {
         return layer.0.clone().into();
     }
     let shell = cx.entity().downgrade();
-    let card = cx.new(|_| TicketCard { shell, hover: Hover::default(), timer: None, drawn: Rc::new(Cell::new(None)), result: None, asked: HashMap::new(), acted: HashSet::new() });
+    let card = cx.new(|_| TicketCard { shell, hover: Hover::default(), timer: None, drawn: Rc::new(Cell::new(None)), result: None, asked: HashMap::new(), acted: HashSet::new(), said: (0, ScrollHandle::new()) });
     cx.set_global(Layer(card.clone()));
     gpui_kit::base::text::on_link_hover(cx, |url, bounds, _, cx| {
         if let Some(id) = url.strip_prefix(crate::convo::TICKET_SCHEME).and_then(|n| n.parse().ok()) {
@@ -690,7 +700,13 @@ impl Render for TicketCard {
         let shots = super::visuals::Shots::of(shell, self.shell.clone(), cx);
         let held = shell.shots.clone();
         let body = match found {
-            Some(t) => content(shell, t, self.result.clone(), &self.shell, &this, &shots),
+            Some(t) => {
+                // Each card opens at the top of its text.
+                if self.said.0 != self.hover.epoch {
+                    self.said = (self.hover.epoch, ScrollHandle::new());
+                }
+                content(shell, t, self.result.clone(), &self.shell, &this, &shots, &self.said.1)
+            }
             None => missing(p, target.id),
         };
         let found = found.is_some();
@@ -742,7 +758,7 @@ fn missing(p: Palette, id: TicketId) -> AnyElement {
 
 /// The card's inside: where it stands and whose it is, its title, what was
 /// said of it, its size and links, and what can be done now.
-fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &WeakEntity<Shell>, card: &WeakEntity<TicketCard>, shots: &super::visuals::Shots) -> AnyElement {
+fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &WeakEntity<Shell>, card: &WeakEntity<TicketCard>, shots: &super::visuals::Shots, scroll: &ScrollHandle) -> AnyElement {
     let p = shell.palette;
     let model = &shell.model;
     let id = t.id;
@@ -784,12 +800,31 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
     // What was said of it: the hand-in, what it asks, else what it is.
     let said = t.note.as_deref().filter(|n| !n.trim().is_empty() && !matches!(t.status, TicketStatus::Todo | TicketStatus::InProgress | TicketStatus::Proposed)).unwrap_or(&t.body);
     let excerpt = (!said.trim().is_empty()).then(|| {
-        // All of it, scrolled on the card past its first lines.
+        // All of it, scrolled on the card past its first lines; an edge with
+        // more beyond it fades out.
+        let (above, below) = fades(-f32::from(scroll.offset().y), f32::from(scroll.max_offset().y));
+        let fade = |top: bool| {
+            let solid = Hsla::from(p.raised);
+            let clear = Hsla { a: 0., ..solid };
+            let (from, to) = if top { (solid, clear) } else { (clear, solid) };
+            div().absolute().left_0().right_0().h(px(FADE)).when(top, |d| d.top_0()).when(!top, |d| d.bottom_0()).bg(linear_gradient(180., linear_color_stop(from, 0.), linear_color_stop(to, 1.)))
+        };
+        let card = card.clone();
         div()
-            .id(("card-said-scroll", id as u64))
-            .max_h(px(EXCERPT_LINES * EXCERPT_LINE))
-            .overflow_y_scroll()
-            .child(super::chat::markdown(p, ("card-said", id as u64), said, 13., EXCERPT_LINE, p.text2, handle))
+            .relative()
+            .child(
+                div()
+                    .id(("card-said-scroll", id as u64))
+                    .max_h(px(EXCERPT_LINES * EXCERPT_LINE))
+                    .overflow_y_scroll()
+                    .track_scroll(scroll)
+                    .on_scroll_wheel(move |_, _, cx| {
+                        let _ = card.update(cx, |_, cx| cx.notify());
+                    })
+                    .child(super::chat::markdown(p, ("card-said", id as u64), said, 13., EXCERPT_LINE, p.text2, handle)),
+            )
+            .when(above, |d| d.child(fade(true)))
+            .when(below, |d| d.child(fade(false)))
     });
     // Its size, what it waits on and holds up, how long it has stood so.
     let mut facts: Vec<AnyElement> = Vec::new();
@@ -1254,5 +1289,13 @@ mod tests {
         // A wheel on the card scrolls it; the card stays.
         assert!(!h.scrolled(t0 + Duration::from_secs(61)));
         assert!(h.shown().is_some());
+    }
+
+    #[test]
+    fn a_cut_edge_fades_and_an_end_reached_does_not() {
+        assert_eq!(super::fades(0., 0.), (false, false), "all of it shows");
+        assert_eq!(super::fades(0., 120.), (false, true), "more below, at the top");
+        assert_eq!(super::fades(60., 120.), (true, true), "in the middle");
+        assert_eq!(super::fades(120., 120.), (true, false), "at the end");
     }
 }
