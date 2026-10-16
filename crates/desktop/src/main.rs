@@ -1092,6 +1092,12 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &FindInConversation, window, cx| this.find_open(window, cx)))
             .on_action(cx.listener(|this, _: &CloseFind, window, cx| {
                 this.chat_escape(window, cx);
+            }))
+            // A ticket's card on the pointer takes Esc, and its keys while the pointer is on it.
+            .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                if views::ticket_card::key(this, e, window, cx) {
+                    cx.stop_propagation();
+                }
             }));
         let root = menu_listeners(root, cx);
         let root = project_actions!(
@@ -1126,6 +1132,7 @@ impl Render for Shell {
             .children(views::pair::sheet(self, cx))
             .children(views::connect::question(self, cx))
             .children(self.zoom_chip(window, cx))
+            .child(views::ticket_card::layer(cx))
             .children(tips::layer(cx))
     }
 }

@@ -18,6 +18,8 @@
 //! ```
 //! `FAKE_SECONDS` (default 4) is how long a reply streams; `FAKE_SAID` adds a
 //! last message of the person's to the PM's history (attachment tags and all).
+//! `FAKE_CARDS=1` ends it on a reply naming T-42 (a review), T-117 and T-999
+//! (no such ticket), to rest the pointer on.
 //! `FAKE_ASKLIST=1` ends the PM's history on a reply asking three things in a
 //! numbered list of its own words, as a member does that skips `ask_decision`.
 //!
@@ -729,6 +731,12 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history.push(Entry::User { text: "App Store Connect에서 EU DSA 거래자 상태를 바꿔 줘".into() });
                             history.push(Entry::Reply { text: "제 브라우저는 App Store Connect에 로그인되어 있지 않아서, 로그인만 먼저 해 주셔야 합니다.".into() });
                             history.push(Entry::Note { text: format!("🖥 pm's browser comes up on this Mac's screen: {}", browser::PM_WHY) });
+                        }
+                        // `FAKE_CARDS=1`: a last reply naming a review, a wait and a number
+                        // long gone, for the tickets' cards on the pointer.
+                        if std::env::var_os("FAKE_CARDS").is_some() {
+                            history.push(Entry::User { text: "지금 볼 거 있어?".into() });
+                            history.push(Entry::Reply { text: "T-42가 검토를 기다리고 있어요. T-117은 당신 차례이고, 예전 T-999는 이제 없습니다.".into() });
                         }
                         if let Some(how) = your_turn() {
                             history.push(Entry::Note { text: "frontend handed in T-63 for your review · 경쟁 앱 온보딩 조사.".into() });
