@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""A stand-in `codex` for equipe's tests: `codex login status` and `codex app-server`.
+
+It speaks the app-server's JSON-RPC over stdio (shapes from codex-cli 0.154.0's
+`codex app-server generate-ts`) and replays turns recorded from a real one.
+What a turn does depends on its prompt:
+
+- "approve": asks to run `git push origin main`, and runs it only if allowed;
+- "interrupt": starts, then waits for `turn/interrupt`;
+- "steer": waits for `turn/steer`, echoes it, and answers with what it read;
+- "fail": fails the way an exhausted plan does;
+- anything else: the recorded turn — a read, a new file written for real, an
+  edit, a failing `cargo test`, a board tool, a web search, a plan, token
+  usage and the plan's limits — ending "DONE".
+
+FAKE_CODEX_LOG: a file each message received is appended to, one JSON a line.
+FAKE_CODEX_SIGNED_OUT: set, it is signed out.
+"""
+import json
+import os
+import sys
+
+THREAD = "thr-1"
+TURN = "turn-1"
+LOG = os.environ.get("FAKE_CODEX_LOG")
+SIGNED_OUT = bool(os.environ.get("FAKE_CODEX_SIGNED_OUT"))
+
+LIMITS = {
+    "limitId": "codex", "limitName": None, "normalModelSlug": None,
+    "primary": {"usedPercent": 42, "windowDurationMins": 300, "resetsAt": 1760630400},
+    "secondary": {"usedPercent": 5, "windowDurationMins": 10080, "resetsAt": 1761000000},
+    "credits": {"hasCredits": True, "unlimited": False, "balance": "12.50"},
+    "individualLimit": None, "spendControlReached": False, "planType": "pro", "rateLimitReachedType": None,
+}
+
+if sys.argv[1:3] == ["login", "status"]:
+    if SIGNED_OUT:
+        print("Not logged in", file=sys.stderr)
+        sys.exit(1)
+    print("Logged in using ChatGPT", file=sys.stderr)
+    sys.exit(0)
+if sys.argv[1:2] != ["app-server"]:
+    print("fake codex: only `login status` and `app-server`", file=sys.stderr)
+    sys.exit(2)
+
+state = {"cwd": os.getcwd(), "thread": THREAD, "model": "gpt-6.1-sol"}
+
+
+def send(message):
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+def notify(method, params):
+    send({"method": method, "params": params})
+
+
+def log(message):
+    if LOG:
+        with open(LOG, "a") as f:
+            f.write(json.dumps(message) + "\n")
+
+
+def read():
+    line = sys.stdin.readline()
+    if not line:
+        sys.exit(0)
+    message = json.loads(line)
+    log(message)
+    return message
+
+
+def item(kind, **fields):
+    fields["type"] = kind
+    return {"threadId": state["thread"], "turnId": TURN, "item": fields}
+
+
+def started(kind, **fields):
+    notify("item/started", item(kind, **fields))
+
+
+def completed(kind, **fields):
+    notify("item/completed", item(kind, **fields))
+
+
+def say(item_id, text, phase="final_answer"):
+    started("agentMessage", id=item_id, text="", phase=phase)
+    for word in text.split(" "):
+        notify("item/agentMessage/delta", {"threadId": state["thread"], "turnId": TURN, "itemId": item_id, "delta": word if word == text.split(" ")[0] else " " + word})
+    completed("agentMessage", id=item_id, text=text, phase=phase)
+
+
+def turn_completed(status="completed", error=None):
+    notify("turn/completed", {"threadId": state["thread"], "turn": {"id": TURN, "items": [], "itemsView": "summary", "status": status, "error": error, "startedAt": 1, "completedAt": 2, "durationMs": 1000}})
+
+
+def wait_for(method):
+    """Answer what comes until a request for `method`; that one is returned unanswered."""
+    while True:
+        message = read()
+        if message.get("method") == method:
+            return message
+        handle(message)
+
+
+def wait_for_answer(request_id):
+    while True:
+        message = read()
+        if message.get("id") == request_id and "method" not in message:
+            return message
+        handle(message)
+
+
+def command(item_id, cmd, actions, status, exit_code, output):
+    fields = dict(id=item_id, pluginId=None, scriptPath=None, command=cmd, cwd=state["cwd"], processId="1", source="unifiedExecStartup", commandActions=actions)
+    started("commandExecution", status="inProgress", aggregatedOutput=None, exitCode=None, durationMs=None, **fields)
+    completed("commandExecution", status=status, aggregatedOutput=output, exitCode=exit_code, durationMs=12, **fields)
+
+
+def recorded_turn(prompt):
+    started("reasoning", id="r1", summary=[], content=[])
+    notify("item/reasoning/summaryTextDelta", {"threadId": state["thread"], "turnId": TURN, "itemId": "r1", "delta": "Looking at the repo", "summaryIndex": 0})
+    completed("reasoning", id="r1", summary=["Looking at the repo"], content=[])
+    say("m1", "I'll add the file, then test.", phase="commentary")
+    readme = os.path.join(state["cwd"], "README.md")
+    command("c1", "/bin/zsh -lc 'cat README.md'", [{"type": "read", "command": "cat README.md", "name": "README.md", "path": readme}], "completed", 0, "hello\n")
+    hello = os.path.join(state["cwd"], "hello.txt")
+    changes = [{"path": hello, "kind": {"type": "add"}, "diff": "hi\n"}]
+    started("fileChange", id="p1", changes=changes, status="inProgress")
+    with open(hello, "w") as f:
+        f.write("hi\n")
+    completed("fileChange", id="p1", changes=changes, status="completed")
+    notify("turn/diff/updated", {"threadId": state["thread"], "turnId": TURN, "diff": "diff --git a/hello.txt b/hello.txt\n"})
+    command("c2", "/bin/zsh -lc 'cargo test'", [{"type": "unknown", "command": "cargo test"}], "failed", 101, "test result: FAILED. 1 failed\n")
+    call = dict(id="b1", server="equipe", tool="board", arguments={}, appContext=None, pluginId=None, readOnlyHint=None, error=None)
+    started("mcpToolCall", status="inProgress", result=None, durationMs=None, **call)
+    completed("mcpToolCall", status="completed", result={"content": [{"type": "text", "text": "The board is empty."}], "structuredContent": None, "_meta": None}, durationMs=5, **call)
+    completed("webSearch", id="w1", query="codex app-server", action={"type": "search", "query": "codex app-server", "queries": None}, results=None)
+    notify("turn/plan/updated", {"threadId": state["thread"], "turnId": TURN, "explanation": None, "plan": [{"step": "Add hello.txt", "status": "completed"}, {"step": "Run the tests", "status": "inProgress"}]})
+    notify("thread/tokenUsage/updated", {"threadId": state["thread"], "turnId": TURN, "tokenUsage": {
+        "total": {"totalTokens": 14220, "inputTokens": 13911, "cachedInputTokens": 2816, "cacheWriteInputTokens": 0, "outputTokens": 309, "reasoningOutputTokens": 37},
+        "last": {"totalTokens": 14220, "inputTokens": 13911, "cachedInputTokens": 2816, "cacheWriteInputTokens": 0, "outputTokens": 309, "reasoningOutputTokens": 37},
+        "modelContextWindow": 258400}})
+    notify("account/rateLimits/updated", {"rateLimits": LIMITS})
+    say("m2", "DONE")
+    turn_completed()
+
+
+def approval_turn():
+    request_id = "srv-1"
+    send({"id": request_id, "method": "item/commandExecution/requestApproval", "params": {
+        "kind": "command", "threadId": state["thread"], "turnId": TURN, "itemId": "c9", "startedAtMs": 1, "environmentId": None,
+        "reason": "Pushing needs the network", "command": "/bin/zsh -lc 'git push origin main'", "cwd": state["cwd"]}})
+    answer = wait_for_answer(request_id)
+    decision = answer.get("result", {}).get("decision")
+    if decision == "accept":
+        command("c9", "/bin/zsh -lc 'git push origin main'", [{"type": "unknown", "command": "git push origin main"}], "completed", 0, "pushed\n")
+        say("m9", "Pushed.")
+    else:
+        command("c9", "/bin/zsh -lc 'git push origin main'", [{"type": "unknown", "command": "git push origin main"}], "declined", None, None)
+        say("m9", "Not pushed: declined.")
+    turn_completed()
+
+
+def interrupt_turn():
+    say("m1", "Working on it", phase="commentary")
+    request = wait_for("turn/interrupt")
+    send({"id": request["id"], "result": {}})
+    turn_completed("interrupted")
+
+
+def steer_turn():
+    say("m1", "Starting", phase="commentary")
+    request = wait_for("turn/steer")
+    send({"id": request["id"], "result": {"turnId": TURN}})
+    text = request["params"]["input"][0]["text"]
+    completed("userMessage", id="u1", clientId=None, content=[{"type": "text", "text": text, "text_elements": []}])
+    say("m2", "Read: " + text)
+    turn_completed()
+
+
+def failing_turn():
+    turn_completed("failed", {"message": "You've hit your usage limit. Try again at 5:00 PM.", "codexErrorInfo": "usageLimitExceeded", "additionalDetails": None, "misalignment": None})
+
+
+def thread(thread_id):
+    return {"id": thread_id, "sessionId": thread_id, "preview": "", "ephemeral": False, "modelProvider": "openai", "model": state["model"], "cwd": state["cwd"], "turns": []}
+
+
+def handle(message):
+    method = message.get("method")
+    params = message.get("params") or {}
+    request_id = message.get("id")
+    if request_id is None:
+        return  # a notification: `initialized`
+    if method == "initialize":
+        send({"id": request_id, "result": {"userAgent": "codex_cli_rs/0.154.0 (fake)", "codexHome": "/nonexistent/.codex", "platformFamily": "unix", "platformOs": "macos"}})
+    elif method == "account/read":
+        account = None if SIGNED_OUT else {"type": "chatgpt", "email": None, "planType": "pro"}
+        send({"id": request_id, "result": {"account": account, "requiresOpenaiAuth": True}})
+    elif method == "account/rateLimits/read":
+        send({"id": request_id, "result": {"ordinaryUsageAllowed": True, "rateLimits": LIMITS, "rateLimitsByLimitId": {"codex": LIMITS}, "rateLimitResetCredits": None, "accountId": None, "rateLimitUpsell": None}})
+    elif method == "model/list":
+        models = [("gpt-6-luna", False, False), ("gpt-6.1-sol", True, False), ("codex-auto-review", False, True), ("gpt-6-astra", False, False)]
+        send({"id": request_id, "result": {"data": [{"id": m, "model": m, "displayName": m, "hidden": hidden, "isDefault": default} for m, default, hidden in models], "nextCursor": None}})
+    elif method in ("thread/start", "thread/resume"):
+        state["cwd"] = params.get("cwd") or state["cwd"]
+        state["model"] = params.get("model") or state["model"]
+        if method == "thread/resume":
+            if params.get("threadId") == "thr-gone":
+                send({"id": request_id, "error": {"code": -32600, "message": "no rollout found for thread id thr-gone"}})
+                return
+            state["thread"] = params["threadId"]
+        else:
+            state["thread"] = THREAD
+        send({"id": request_id, "result": {"thread": thread(state["thread"]), "model": state["model"], "modelProvider": "openai", "cwd": state["cwd"], "approvalPolicy": params.get("approvalPolicy"), "sandbox": {"type": "readOnly"}, "reasoningEffort": None}})
+        notify("thread/started", {"thread": thread(state["thread"])})
+    elif method == "turn/start":
+        state["cwd"] = params.get("cwd") or state["cwd"]
+        send({"id": request_id, "result": {"turn": {"id": TURN, "items": [], "itemsView": "notLoaded", "status": "inProgress", "error": None, "startedAt": None, "completedAt": None, "durationMs": None}}})
+        notify("turn/started", {"threadId": state["thread"], "turn": {"id": TURN, "items": [], "status": "inProgress"}})
+        prompt = "".join(i.get("text", "") for i in params.get("input", []))
+        completed("userMessage", id="u0", clientId=None, content=[{"type": "text", "text": prompt, "text_elements": []}])
+        if "approve" in prompt:
+            approval_turn()
+        elif "interrupt" in prompt:
+            interrupt_turn()
+        elif "steer" in prompt:
+            steer_turn()
+        elif "fail" in prompt:
+            failing_turn()
+        else:
+            recorded_turn(prompt)
+    elif method == "turn/interrupt":
+        send({"id": request_id, "result": {}})
+    else:
+        send({"id": request_id, "error": {"code": -32601, "message": "fake codex has no " + str(method)}})
+
+
+while True:
+    handle(read())

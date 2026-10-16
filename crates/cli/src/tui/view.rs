@@ -3087,7 +3087,7 @@ mod tests {
             }),
         });
         let plan = equipe_core::protocol::PlanWindow { used_percent: 84, resets_at: 0 };
-        app.on_event(Event::PlanUsage { usage: equipe_core::protocol::PlanUsage { five_hour: Some(plan), seven_day: None } });
+        app.on_event(Event::PlanUsage { usage: equipe_core::protocol::PlanUsage { five_hour: Some(plan), seven_day: None }, engine: equipe_core::protocol::Engine::Claude });
         let shot = screen(&app, 130, 22);
         // On a subscription what counts is the plan: in the footer, not a token total.
         assert!(shot.lines().last().unwrap().contains("5h 84%"), "{shot}");

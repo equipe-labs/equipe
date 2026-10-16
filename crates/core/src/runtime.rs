@@ -24,6 +24,7 @@ use equipe_protocol::{
     Estimate, OffMain, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
 };
 use equipe_providers::claude_code::{self, Activity};
+use equipe_providers::codex_app;
 use equipe_providers::credentials::equipe_home;
 use equipe_providers::openai::{codex, responses};
 use equipe_providers::turn::TurnResult;
@@ -98,6 +99,15 @@ const DISK_ROOM_AGAIN: u64 = 1 << 30;
 /// before it is declined.
 const APPROVAL_WAIT: Duration = Duration::from_secs(30 * 60);
 
+/// How long a stopped Codex turn has to wind down before it is cut.
+const STOP_GRACE: Duration = Duration::from_secs(8);
+
+/// How often the Codex plan's usage is read while a squad has Codex members,
+/// and at most when a screen attaches.
+const CODEX_USAGE_EVERY: Duration = Duration::from_secs(5 * 60);
+/// How long the Codex CLI's model list is kept.
+const CODEX_MODELS_KEPT: Duration = Duration::from_secs(10 * 60);
+
 pub struct Config {
     pub store: CredentialStore,
     /// equipe's home: squads, worktrees and logs live under it.
@@ -106,6 +116,9 @@ pub struct Config {
     pub client_version: String,
     /// The Claude Code executable to run.
     pub claude_binary: String,
+    /// The Codex CLI to run (`codex app-server`). Where it isn't installed,
+    /// Codex falls back to equipe's own sign-in, without tools.
+    pub codex_binary: String,
     /// Journal conversations and resume squads at start (the daemon).
     pub persist: bool,
     /// Conversations older than this are pruned to the session record.
@@ -137,6 +150,7 @@ impl Config {
             home: equipe_home(),
             client_version: client_version.to_owned(),
             claude_binary: claude_code::DEFAULT_BINARY.to_owned(),
+            codex_binary: codex_app::DEFAULT_BINARY.to_owned(),
             persist: false,
             retention_days: journal::DEFAULT_RETENTION_DAYS,
             equipe_binary: std::env::current_exe().ok(),
@@ -343,6 +357,11 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         last_url: HashMap::new(),
         show_url: HashMap::new(),
         plan: None,
+        plans: Vec::new(),
+        plan_types: HashMap::new(),
+        codex_read: None,
+        codex_reading: false,
+        codex_models: None,
         questions: HashMap::new(),
         team_changes: HashMap::new(),
         merged_cache: Some(worktree::MergedCache::default()),
@@ -428,11 +447,13 @@ struct Session {
     /// Where desk turns run — and, for a plain editing session, its worktree.
     cwd: PathBuf,
     sandbox: Option<Sandbox>,
-    /// Loaded when the first Codex turn needs it.
+    /// equipe's own Codex sign-in, for the fallback without the Codex CLI:
+    /// loaded when the first such turn needs it.
     codex: Option<Credentials>,
-    /// Codex keeps nothing server-side; the conversation travels with each turn.
+    /// That fallback keeps nothing server-side; the conversation travels with each turn.
     history: Vec<responses::Message>,
-    /// Claude Code keeps the conversation; this id continues it.
+    /// The engine keeps the conversation; this id continues it — Claude Code's
+    /// session, or the Codex CLI's thread.
     claude_session: Option<String>,
     work: Option<Work>,
     prompts: Vec<String>,
@@ -462,6 +483,9 @@ struct Session {
     steer: Option<mpsc::UnboundedSender<String>>,
     /// What was sent that way and not read yet; at the turn's end, memos.
     steering: Vec<String>,
+    /// Stops the turn running now through its engine, which then winds it
+    /// down (Codex's `turn/interrupt`). `None`: stopping kills it.
+    stop: Option<oneshot::Sender<()>>,
     /// For each of those, the project the person was looking at (`None`: the whole squad).
     steer_threads: Vec<Option<String>>,
     /// Steers taken back after they went into the turn: not shown when the
@@ -567,6 +591,10 @@ enum Internal {
     Done(TurnDone),
     /// Nobody answered a request for permission in time.
     ApprovalTimedOut(u64),
+    /// Codex asks before it acts, as Claude Code does through `approve`.
+    Ask(ToolCall, oneshot::Sender<ToolResult>),
+    /// The Codex plan's limits, as just read or reported; `None`: they couldn't be read.
+    CodexLimits(Option<equipe_providers::turn::Limits>),
     /// A picture of a watched member's browser, or none to be had.
     Frame(SessionId, Option<(Vec<u8>, Option<String>)>),
     /// The look at done work off main, worked out off the loop: the tickets
@@ -663,6 +691,15 @@ struct Runtime {
     show_url: HashMap<(String, String), String>,
     /// The Claude plan's usage, as Claude Code last reported it.
     plan: Option<equipe_protocol::PlanUsage>,
+    /// Every engine's plan usage, as last read, and each plan's name.
+    plans: Vec<equipe_protocol::EnginePlan>,
+    plan_types: HashMap<Engine, String>,
+    /// The Codex CLI's plan usage: when it was last read (or tried), and
+    /// whether a read is under way.
+    codex_read: Option<std::time::Instant>,
+    codex_reading: bool,
+    /// The models the Codex CLI offers, as last listed.
+    codex_models: Option<(std::time::Instant, Vec<String>)>,
     /// The Mac's screen, one member at a time, across squads.
     desktop: desktop::Desktop,
     /// Members' questions waiting for the person, by squad (`decide`).
@@ -714,6 +751,8 @@ impl Wake {
             Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
             Wake::Internal(Internal::Done(_)) => Borrowed("a turn's end"),
             Wake::Internal(Internal::ApprovalTimedOut(_)) => Borrowed("an approval timing out"),
+            Wake::Internal(Internal::Ask(..)) => Borrowed("codex asking for approval"),
+            Wake::Internal(Internal::CodexLimits(_)) => Borrowed("codex's plan usage"),
             Wake::Internal(Internal::Frame(..)) => Borrowed("a browser picture"),
             Wake::Internal(Internal::Settled { .. }) => Borrowed("settling merged work"),
             Wake::Internal(Internal::Merged { .. }) => Borrowed("a merge's end"),
@@ -795,6 +834,8 @@ impl Runtime {
                     }
                     self.subscribers.push((Some(squad.clone()), tx));
                     let _ = reply.send((self.snapshot(&squad), rx));
+                    // A screen that shows the plans' usage gets Codex's fresh, soon after.
+                    self.read_codex_usage(true);
                 }
                 Some(Request::Tool(call, reply)) => self.tool(call, reply).await,
                 Some(Request::PersonWindow(url, reply)) => {
@@ -837,6 +878,8 @@ impl Runtime {
                 },
                 Internal::Done(done) => self.on_turn_done(done).await,
                 Internal::ApprovalTimedOut(id) => self.answer(id, Decision::Deny, "Nobody answered in time."),
+                Internal::Ask(call, reply) => self.ask_permission(call, reply),
+                Internal::CodexLimits(limits) => self.on_codex_limits(limits),
                 Internal::Frame(session, frame) => {
                     self.framing.remove(&session);
                     if let Some((png, url)) = frame {
@@ -874,6 +917,7 @@ impl Runtime {
                     self.settle_all_merged();
                 }
                 self.look_at_disk();
+                self.read_codex_usage(false);
             }
         }
         true
@@ -961,8 +1005,15 @@ impl Runtime {
         if let Some(name) = event.squad() {
             squad = Some(name.to_owned());
         }
-        if let Event::PlanUsage { usage } = &event {
-            self.plan = Some(*usage);
+        if let Event::PlanUsage { usage, engine } = &event {
+            if *engine == Engine::Claude {
+                self.plan = Some(*usage);
+            }
+            let plan = equipe_protocol::EnginePlan { engine: *engine, usage: *usage, plan_type: self.plan_types.get(engine).cloned(), at: now_secs() as i64 };
+            match self.plans.iter_mut().find(|p| p.engine == *engine) {
+                Some(kept) => *kept = plan,
+                None => self.plans.push(plan),
+            }
         }
         let everyone = event.for_everyone();
         self.subscribers.retain(|(follows, screen)| match follows {
@@ -972,6 +1023,63 @@ impl Runtime {
         if no_room {
             self.disk_is_full();
         }
+    }
+
+    // ── the Codex plan's usage ──
+
+    /// Read the Codex plan's usage off the loop, through the person's Codex CLI:
+    /// every few minutes while a squad has Codex members, and — `asked` — when
+    /// a screen attaches and the last reading is that old. Never more often.
+    fn read_codex_usage(&mut self, asked: bool) {
+        if self.codex_reading || self.codex_read.is_some_and(|at| at.elapsed() < CODEX_USAGE_EVERY) {
+            return;
+        }
+        let members = self.sessions.values().any(|s| s.engine == Engine::Codex && has_tools(s));
+        if !(members || asked) || codex_app::find(&self.config.codex_binary).is_none() {
+            return;
+        }
+        self.codex_reading = true;
+        self.codex_read = Some(std::time::Instant::now());
+        let (binary, home, internal) = (self.config.codex_binary.clone(), self.config.home.clone(), self.internal.clone());
+        tokio::spawn(async move {
+            let cwd = if home.is_dir() { home } else { std::env::temp_dir() };
+            let read = tokio::time::timeout(SERVER_WAIT, codex_app::read_limits(&binary, &cwd)).await;
+            let _ = internal.send(Internal::CodexLimits(read.ok().and_then(Result::ok)));
+        });
+    }
+
+    /// The Codex plan's limits, read or reported by a turn: to the screens as
+    /// its plan usage, windows known by their length.
+    fn on_codex_limits(&mut self, limits: Option<equipe_providers::turn::Limits>) {
+        let Some(limits) = limits else {
+            // Unreadable (signed out, say): tried again after the usual wait.
+            self.codex_reading = false;
+            return;
+        };
+        self.codex_reading = false;
+        self.codex_read = Some(std::time::Instant::now());
+        if let Some(plan) = &limits.plan_type {
+            self.plan_types.insert(Engine::Codex, plan.clone());
+        }
+        self.publish(Event::PlanUsage { usage: codex_plan(&limits), engine: Engine::Codex });
+    }
+
+    /// The models the person's Codex CLI offers, its default first; kept a while.
+    async fn codex_catalog(&mut self) -> Result<Vec<String>, String> {
+        if let Some((at, models)) = &self.codex_models
+            && at.elapsed() < CODEX_MODELS_KEPT
+        {
+            return Ok(models.clone());
+        }
+        let cwd = if self.config.home.is_dir() { self.config.home.clone() } else { std::env::temp_dir() };
+        let listed = tokio::time::timeout(SERVER_WAIT, codex_app::list_models(&self.config.codex_binary, &cwd)).await;
+        let models = match listed {
+            Ok(Ok(models)) => models,
+            Ok(Err(err)) => return Err(err.to_string()),
+            Err(_) => return Err(format!("Codex didn't answer in {}s", SERVER_WAIT.as_secs())),
+        };
+        self.codex_models = Some((std::time::Instant::now(), models.clone()));
+        Ok(models)
     }
 
     // ── a full disk ──
@@ -1398,9 +1506,11 @@ impl Runtime {
                 let preference = match (role, edits) {
                     (Some(_), Some(true)) => [Engine::Claude, Engine::Codex],
                     (Some(role), _) => roles::engine_preference(role),
+                    // Plain sessions as roles go: writing on Claude, reading on Codex.
+                    (None, _) if spec.access == Access::EditFiles => [Engine::Claude, Engine::Codex],
                     (None, _) => [Engine::Codex, Engine::Claude],
                 };
-                match first_ready_engine(&preference, &self.config.store, &self.config.claude_binary).await {
+                match first_ready_engine(&preference, &self.config.store, &self.config.claude_binary, &self.config.codex_binary).await {
                     Some(engine) => engine,
                     None => {
                         let message = say!(self, "error.no_engine");
@@ -1409,17 +1519,37 @@ impl Runtime {
                 }
             }
         };
-        if spec.access == Access::EditFiles && engine == Engine::Codex {
-            return fail(
-                self,
-                say!(self, "error.codex_edits"),
-                Some("equipe try --edit --engine claude \"…\""),
-            );
+        // The person's own Codex CLI runs an agent with tools; without it, Codex
+        // is equipe's own sign-in, which only answers.
+        let codex_cli = engine == Engine::Codex && codex_app::find(&self.config.codex_binary).is_some();
+        if spec.access == Access::EditFiles && engine == Engine::Codex && !codex_cli {
+            return fail(self, say!(self, "error.codex_edits"), Some("codex login"));
         }
 
         let mut model = spec.model.clone();
         let mut codex_cred = None;
         match engine {
+            Engine::Codex if codex_cli => {
+                match codex_app::login_status(&self.config.codex_binary).await {
+                    Ok(Some(sign_in)) if sign_in.signed_in() => {}
+                    Ok(_) => return fail(self, say!(self, "error.codex_cli_signed_out"), Some("equipe login codex")),
+                    Err(err) => return fail(self, err.to_string(), Some("equipe status")),
+                }
+                if model.is_none() {
+                    // What this account offers, as its own Codex lists it — no id hardcoded.
+                    let catalog = match self.codex_catalog().await {
+                        Ok(catalog) => catalog,
+                        Err(err) => return fail(self, err, Some("equipe status")),
+                    };
+                    model = match role {
+                        Some(role) => roles::recommended_model_for(role, engine, &catalog),
+                        None => catalog.into_iter().next(),
+                    };
+                    if model.is_none() {
+                        return fail(self, say!(self, "error.no_models"), Some("equipe status"));
+                    }
+                }
+            }
             Engine::Codex => {
                 let cred = match codex_credentials(&self.client, &self.config.store, self.config.lang).await {
                     Ok(cred) => cred,
@@ -1434,7 +1564,7 @@ impl Runtime {
                         Err(_) => return fail(self, format!("Codex didn't answer in {}s", SERVER_WAIT.as_secs()), Some("equipe status")),
                     };
                     model = match role {
-                        Some(role) => roles::recommended_model(role.tier, engine, &catalog),
+                        Some(role) => roles::recommended_model_for(role, engine, &catalog),
                         None => catalog.into_iter().next(),
                     };
                     if model.is_none() {
@@ -1445,7 +1575,11 @@ impl Runtime {
             }
             Engine::Claude => {
                 match claude_code::auth_status(&self.config.claude_binary).await {
-                    Ok(Some(status)) if status.logged_in => {}
+                    Ok(Some(status)) if status.logged_in => {
+                        if let Some(plan) = status.subscription_type {
+                            self.plan_types.insert(Engine::Claude, plan);
+                        }
+                    }
                     Ok(Some(_)) => return fail(self, say!(self, "error.claude_signed_out"), Some("equipe login claude")),
                     Ok(None) => {
                         return fail(
@@ -1459,7 +1593,7 @@ impl Runtime {
                 if model.is_none()
                     && let Some(role) = role
                 {
-                    model = roles::recommended_model(role.tier, engine, &[]);
+                    model = roles::recommended_model_for(role, engine, &[]);
                 }
             }
         }
@@ -1557,6 +1691,7 @@ impl Runtime {
                 steer: None,
                 steering: Vec::new(),
                 steer_threads: Vec::new(),
+                stop: None,
                 taken_back: Vec::new(),
                 send_now_prompt: None,
                 subagents: Vec::new(),
@@ -1584,7 +1719,8 @@ impl Runtime {
         let Some(session) = self.sessions.get(&id) else {
             return false;
         };
-        if session.engine != Engine::Codex || session.codex.is_some() {
+        // The Codex CLI signs itself in; only the fallback needs equipe's sign-in.
+        if session.engine != Engine::Codex || session.codex.is_some() || codex_app::find(&self.config.codex_binary).is_some() {
             return true;
         }
         match codex_credentials(&self.client, &self.config.store, self.config.lang).await {
@@ -2019,6 +2155,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             steer: None,
             steering: Vec::new(),
             steer_threads: Vec::new(),
+            stop: None,
             taken_back: Vec::new(),
             send_now_prompt: None,
             subagents: Vec::new(),
@@ -2131,7 +2268,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         };
         let squad = session.squad.clone();
         let projects = squad.as_deref().map(|s| self.projects_cached(s)).unwrap_or_default();
-        let board_tools = session.member.is_some() && session.engine == Engine::Claude && self.config.equipe_binary.is_some();
+        let board_tools = session.member.is_some() && has_tools(session) && self.config.equipe_binary.is_some();
         let language = squad.as_deref().and_then(|s| self.journals.get(s)).and_then(Journal::language);
         let edits = session.edits();
         let mode = session.mode.or_else(|| squad.as_deref().and_then(|s| self.journals.get(s)).map(Journal::mode)).unwrap_or_default();
@@ -2262,7 +2399,109 @@ for one project goes to it as tickets for its owners, with that project — and 
         let internal = self.internal.clone();
         // What the person says while this turn runs goes into it (Claude Code only).
         let mut steer = None;
+        let mut stop = None;
         let turn = match session.engine {
+            // The person's own Codex CLI: an agent with tools, in the worktree.
+            Engine::Codex if session.codex.is_none() => {
+                let binary = self.config.codex_binary.clone();
+                let lang = self.config.lang;
+                let model = session.model.clone();
+                let effort = session.effort.clone();
+                // equipe's servers only, as Claude Code gets them: the board's tools
+                // never ask; the browser's and the desktop's ask unless the mode lets them.
+                let servers = match (&squad, &session.member, &self.config.equipe_binary) {
+                    (Some(squad), Some(m), Some(binary)) if board_tools => {
+                        let args = |server: Option<&str>| {
+                            let mut args: Vec<String> = vec!["mcp".into()];
+                            if let Some(server) = server {
+                                args.extend(["--server".into(), server.into()]);
+                            }
+                            args.extend(["--squad", squad, "--member", &m.name, "--role", &m.role, "--home"].map(str::to_owned));
+                            args.push(self.config.home.to_string_lossy().into_owned());
+                            args
+                        };
+                        let mut servers = json!({ MCP_SERVER: codex_app::mcp_server(binary, &args(None), true) });
+                        if let Some(port) = browser {
+                            servers[browser::SERVER] = codex_app::mcp_http_server(&format!("http://localhost:{port}/mcp"), browses_freely);
+                        }
+                        if desktop {
+                            servers[DESKTOP_SERVER] = codex_app::mcp_server(binary, &args(Some(DESKTOP_SERVER)), matches!(mode, Mode::Auto | Mode::Full));
+                        }
+                        Some(servers)
+                    }
+                    _ => None,
+                };
+                let writable: Vec<PathBuf> = writable.iter().map(PathBuf::from).collect();
+                let (steer_tx, steer_rx) = mpsc::unbounded_channel::<String>();
+                steer = Some(steer_tx);
+                let (stop_tx, stop_rx) = oneshot::channel::<()>();
+                stop = Some(stop_tx);
+                // What Codex asks goes to the person as Claude Code's permission prompts do.
+                let (ask_tx, mut ask_rx) = mpsc::unbounded_channel::<codex_app::Ask>();
+                let asker = session_member(session);
+                let forward = internal.clone();
+                tokio::spawn(async move {
+                    while let Some(ask) = ask_rx.recv().await {
+                        let Some(who) = &asker else {
+                            let _ = ask.answer.send(false);
+                            continue;
+                        };
+                        let (tx, rx) = oneshot::channel();
+                        let arguments = json!({ "tool_name": ask.tool, "input": ask.input });
+                        let call = ToolCall { squad: who.squad.clone(), member: who.member.clone(), name: permissions::APPROVE_TOOL.into(), arguments };
+                        let _ = forward.send(Internal::Ask(call, tx));
+                        let answer = ask.answer;
+                        tokio::spawn(async move {
+                            let allowed = rx.await.ok().and_then(|r| serde_json::from_str::<Value>(&r.text).ok()).is_some_and(|v| v["behavior"] == "allow");
+                            let _ = answer.send(allowed);
+                        });
+                    }
+                });
+                tokio::spawn(async move {
+                    let emit = |event| {
+                        let _ = internal.send(Internal::Event(Box::new(event)));
+                    };
+                    let mut streamed = false;
+                    let request = codex_app::TurnRequest {
+                        prompt: &prompt,
+                        model: model.as_deref(),
+                        effort: effort.as_deref(),
+                        access,
+                        resume: resume.as_deref(),
+                        instructions: charter.as_deref(),
+                        mcp_servers: servers.as_ref(),
+                        writable: &writable,
+                        env: &env,
+                    };
+                    if let Some(port) = browser {
+                        browser::ready(port, Duration::from_secs(90)).await;
+                    }
+                    let outcome = codex_app::run_turn(&binary, &cwd, request, Some(steer_rx), Some(ask_tx), Some(stop_rx), |activity| {
+                        if matches!(activity, Activity::Text(_)) {
+                            streamed = true;
+                        }
+                        match activity {
+                            Activity::Limits(limits) => {
+                                let _ = internal.send(Internal::CodexLimits(Some(limits)));
+                            }
+                            activity => {
+                                if let Some(event) = activity_event(id, activity) {
+                                    emit(event);
+                                }
+                            }
+                        }
+                    })
+                    .await;
+                    // Stopped: the turn's end was said already, and what follows it done.
+                    if outcome.as_ref().is_ok_and(|turn| turn.result.status == "interrupted") {
+                        return;
+                    }
+                    let thread = outcome.as_ref().ok().and_then(|turn| turn.thread_id.clone());
+                    let result = outcome.map(|turn| turn.result).map_err(|err| codex_cli_failure(err, lang));
+                    let reply = finish_turn(&emit, id, result, streamed);
+                    let _ = internal.send(Internal::Done(TurnDone { session: id, prompt, reply, claude_session: thread, ticket }));
+                })
+            }
             Engine::Codex => {
                 let client = self.client.clone();
                 let Some(cred) = session.codex.clone() else {
@@ -2365,34 +2604,12 @@ for one project goes to it as tickets for its owners, with that project — and 
                     if let Some(port) = browser {
                         browser::ready(port, Duration::from_secs(90)).await;
                     }
-                    let outcome = claude_code::run_turn(&binary, &cwd, request, Some(steer_rx), |activity| match activity {
-                        Activity::Text(text) => {
+                    let outcome = claude_code::run_turn(&binary, &cwd, request, Some(steer_rx), |activity| {
+                        if matches!(activity, Activity::Text(_)) {
                             streamed = true;
-                            emit(Event::TextDelta { session: id, text });
                         }
-                        Activity::Tool { name, target } => emit(Event::ToolUse { session: id, tool: name, target }),
-                        Activity::ToolDone(done) => {
-                            let (output, skipped) = equipe_protocol::ToolOutcome::tail(&done.output);
-                            let outcome = equipe_protocol::ToolOutcome { ok: done.ok, exit: done.exit, ms: Some(done.ms), output, skipped, diff: done.diff };
-                            emit(Event::ToolResult { session: id, tool: done.name, target: done.target, outcome })
-                        }
-                        Activity::Thinking(text) => emit(Event::Thinking { session: id, text }),
-                        Activity::Model(model) => emit(Event::ModelKnown { session: id, model }),
-                        Activity::Output(tokens) => emit(Event::Output { session: id, tokens }),
-                        Activity::SubagentStarted { id: sub, what } => emit(Event::SubagentStarted { session: id, id: sub, what }),
-                        Activity::SubagentStep { id: sub, step } => emit(Event::SubagentStep { session: id, id: sub, step }),
-                        Activity::SubagentEnded { id: sub } => emit(Event::SubagentEnded { session: id, id: sub }),
-                        Activity::Steered(text) => emit(Event::Steered { session: id, text }),
-                        Activity::Plan { five_hour, seven_day } => {
-                            let window = |w: Option<(f64, i64)>| {
-                                w.map(|(used, resets_at)| equipe_protocol::PlanWindow {
-                                    used_percent: (used * 100.0).round().clamp(0.0, 100.0) as u8,
-                                    resets_at,
-                                })
-                            };
-                            emit(Event::PlanUsage {
-                                usage: equipe_protocol::PlanUsage { five_hour: window(five_hour), seven_day: window(seven_day) },
-                            })
+                        if let Some(event) = activity_event(id, activity) {
+                            emit(event);
                         }
                     })
                     .await;
@@ -2406,6 +2623,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         if let Some(session) = self.sessions.get_mut(&id) {
             session.turn = Some(turn);
             session.steer = steer;
+            session.stop = stop;
         }
     }
 
@@ -2473,8 +2691,17 @@ for one project goes to it as tickets for its owners, with that project — and 
         let Some(turn) = session.turn.take_if(|t| !t.is_finished()) else {
             return false;
         };
-        // Dropping the turn kills the engine process with it.
-        turn.abort();
+        // Codex winds its turn down itself, keeping its thread whole; one that
+        // doesn't in time is cut. Its end is said here, not by it.
+        if session.stop.take().is_some_and(|stop| stop.send(()).is_ok()) {
+            tokio::spawn(async move {
+                tokio::time::sleep(STOP_GRACE).await;
+                turn.abort();
+            });
+        } else {
+            // Dropping the turn kills the engine process with it.
+            turn.abort();
+        }
         self.publish(Event::TurnEnded { session: id, outcome: TurnOutcome::Interrupted, usage: None });
         // Nobody is waiting for those answers any more.
         let asked: Vec<u64> = self.pending.iter().filter(|(_, p)| p.approval.session == id).map(|(&a, _)| a).collect();
@@ -2846,7 +3073,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             return;
         };
         let role_edits = session.edits();
-        let board_tools = session.engine == Engine::Claude && self.config.equipe_binary.is_some();
+        let board_tools = has_tools(session) && self.config.equipe_binary.is_some();
         let projects = self.projects(&squad);
         let home_dir = squad_home::path(&home, &squad);
         let Some(journal) = self.journal(&squad) else {
@@ -4606,6 +4833,7 @@ it back there once they have done it.{again} End your turn now with a short line
             scale,
             suggestions_off,
             plan: self.plan,
+            plans: self.plans.clone(),
             desktop: self.desktop.state(),
             allowed,
             browsers_shown,
@@ -4664,7 +4892,7 @@ it back there once they have done it.{again} End your turn now with a short line
                 if record.cwd != home {
                     let _ = journal.set_cwd(record.id, &home);
                     record.cwd = home.clone();
-                    if record.engine == Engine::Claude && record.engine_session.is_some() {
+                    if record.engine_session.is_some() {
                         refresh = Some(true);
                     }
                 }
@@ -4742,6 +4970,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         steer: None,
                         steering: Vec::new(),
                         steer_threads: Vec::new(),
+                        stop: None,
                         taken_back: Vec::new(),
                         send_now_prompt: None,
                         subagents: Vec::new(),
@@ -4763,13 +4992,15 @@ it back there once they have done it.{again} End your turn now with a short line
     }
 
     /// Members that were on a ticket when the daemon stopped carry on with it —
-    /// a squad keeps working through a restart. (Codex members wait for their
-    /// next message: their login loads on first use.)
+    /// a squad keeps working through a restart. (Codex members without the
+    /// Codex CLI wait for their next message: equipe's sign-in loads on first use.)
     fn resume_work(&mut self) -> Vec<(SessionId, String)> {
+        let codex_cli = codex_app::find(&self.config.codex_binary).is_some();
+        let resumes = |s: &Session| s.engine == Engine::Claude || codex_cli;
         let on_tickets: Vec<(SessionId, TicketId)> = self
             .sessions
             .iter()
-            .filter(|(_, s)| s.engine == Engine::Claude)
+            .filter(|(_, s)| resumes(s))
             .filter_map(|(&id, s)| s.work.as_ref().map(|w| (id, w.ticket)))
             .collect();
         // Memos for a turn the restart ended are handed back to be sent; a
@@ -4777,7 +5008,7 @@ it back there once they have done it.{again} End your turn now with a short line
         let idle: Vec<SessionId> = self
             .sessions
             .iter()
-            .filter(|(_, s)| s.engine == Engine::Claude && s.work.is_none() && !s.queued.is_empty())
+            .filter(|(_, s)| resumes(s) && s.work.is_none() && !s.queued.is_empty())
             .map(|(&id, _)| id)
             .collect();
         let mut memos = Vec::new();
@@ -4809,7 +5040,7 @@ check what is already done in your worktree first."
     /// what lasts. Returns that hand-off, to open the next prompt with.
     fn refresh_desk(&mut self, id: SessionId) -> Option<String> {
         let session = self.sessions.get_mut(&id)?;
-        if session.work.is_some() || session.engine != Engine::Claude || session.claude_session.is_none() {
+        if session.work.is_some() || !has_tools(session) || session.claude_session.is_none() {
             return None;
         }
         let (used, window) = session.desk_context.unwrap_or((0, 0));
@@ -5316,10 +5547,15 @@ fn release(sandbox: &Sandbox) -> Option<String> {
 // threads, which they are not.
 
 /// The first engine in `preference` that is signed in.
-async fn first_ready_engine(preference: &[Engine], store: &CredentialStore, claude_binary: &str) -> Option<Engine> {
+async fn first_ready_engine(preference: &[Engine], store: &CredentialStore, claude_binary: &str, codex_binary: &str) -> Option<Engine> {
     for &engine in preference {
         let ready = match engine {
-            Engine::Codex => matches!(store.load("openai"), Ok(Some(_))),
+            // The person's Codex CLI, signed in; without it, equipe's own sign-in.
+            Engine::Codex => match codex_app::login_status(codex_binary).await {
+                Ok(Some(sign_in)) => sign_in.signed_in(),
+                Ok(None) => matches!(store.load("openai"), Ok(Some(_))),
+                Err(_) => false,
+            },
             Engine::Claude => {
                 matches!(claude_code::auth_status(claude_binary).await, Ok(Some(status)) if status.logged_in)
             }
@@ -5468,6 +5704,62 @@ fn finish_turn(
             emit(Event::TurnEnded { session: id, outcome: TurnOutcome::Failed, usage: None });
             None
         }
+    }
+}
+
+/// Whether a session's engine runs an agent with tools: Claude Code, or the
+/// person's Codex CLI — not equipe's own Codex sign-in, which only answers.
+fn has_tools(session: &Session) -> bool {
+    session.engine == Engine::Claude || session.codex.is_none()
+}
+
+/// What an engine's activity shows on the screens, as an event of session `id`.
+/// Codex's plan limits are not one of its own: [`Internal::CodexLimits`].
+fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
+    Some(match activity {
+        Activity::Text(text) => Event::TextDelta { session: id, text },
+        Activity::Tool { name, target } => Event::ToolUse { session: id, tool: name, target },
+        Activity::ToolDone(done) => {
+            let (output, skipped) = equipe_protocol::ToolOutcome::tail(&done.output);
+            let outcome = equipe_protocol::ToolOutcome { ok: done.ok, exit: done.exit, ms: Some(done.ms), output, skipped, diff: done.diff };
+            Event::ToolResult { session: id, tool: done.name, target: done.target, outcome }
+        }
+        Activity::Thinking(text) => Event::Thinking { session: id, text },
+        Activity::Model(model) => Event::ModelKnown { session: id, model },
+        Activity::Output(tokens) => Event::Output { session: id, tokens },
+        Activity::SubagentStarted { id: sub, what } => Event::SubagentStarted { session: id, id: sub, what },
+        Activity::SubagentStep { id: sub, step } => Event::SubagentStep { session: id, id: sub, step },
+        Activity::SubagentEnded { id: sub } => Event::SubagentEnded { session: id, id: sub },
+        Activity::Steered(text) => Event::Steered { session: id, text },
+        Activity::Plan { five_hour, seven_day } => {
+            let window = |w: Option<(f64, i64)>| {
+                w.map(|(used, resets_at)| equipe_protocol::PlanWindow { used_percent: (used * 100.0).round().clamp(0.0, 100.0) as u8, resets_at })
+            };
+            Event::PlanUsage { usage: equipe_protocol::PlanUsage { five_hour: window(five_hour), seven_day: window(seven_day) }, engine: Engine::Claude }
+        }
+        Activity::Limits(_) => return None,
+    })
+}
+
+/// The Codex plan's limits as plan usage: its windows known by their length —
+/// five hours, seven days — whichever it lists first. Pro, say, has no
+/// five-hour window, so its first is the weekly one.
+fn codex_plan(limits: &equipe_providers::turn::Limits) -> equipe_protocol::PlanUsage {
+    use equipe_providers::turn::{FIVE_HOURS, SEVEN_DAYS};
+    let window = |minutes| {
+        limits.window(minutes).and_then(|w| {
+            Some(equipe_protocol::PlanWindow { used_percent: w.used_percent.round().clamp(0.0, 100.0) as u8, resets_at: w.resets_at? })
+        })
+    };
+    equipe_protocol::PlanUsage { five_hour: window(FIVE_HOURS), seven_day: window(SEVEN_DAYS) }
+}
+
+/// A Codex CLI turn's failure, and what to do about it.
+fn codex_cli_failure(err: equipe_providers::Error, lang: crate::i18n::Lang) -> (String, Option<&'static str>) {
+    match &err {
+        equipe_providers::Error::CodexSignedOut => (crate::i18n::core(lang).get("error.codex_cli_signed_out").to_owned(), Some("equipe login codex")),
+        equipe_providers::Error::Login(_) => (err.to_string(), Some("equipe status")),
+        _ => (err.to_string(), None),
     }
 }
 

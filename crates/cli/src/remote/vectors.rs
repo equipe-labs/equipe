@@ -15,7 +15,7 @@ use equipe_core::protocol::decide::{Answer, Choice, Question, QuestionSet};
 use equipe_core::protocol::rpc::{Hello, Message};
 use equipe_core::protocol::team::{Change, TeamChange};
 use equipe_core::protocol::{
-    Access, Approval, Decision, Engine, Entry, Event, Member, Mode, SessionInfo, SessionState, Snapshot, SubagentInfo, Ticket, TicketKind, TicketStatus, TurnOutcome, Usage, WorkInfo,
+    Access, Approval, Decision, Engine, EnginePlan, Entry, Event, Member, Mode, PlanUsage, PlanWindow, SessionInfo, SessionState, Snapshot, SubagentInfo, Ticket, TicketKind, TicketStatus, TurnOutcome, Usage, WorkInfo,
 };
 use serde_json::{Value, json};
 
@@ -778,12 +778,28 @@ fn snapshot() -> Snapshot {
         questions: vec![questions()],
         team_changes: vec![team_change()],
         scale: Some(0),
-        plan: None,
+        plan: Some(claude_plan()),
+        // Every engine's plan as last read: Claude's (as `plan`), and Codex's —
+        // whose plan has no five-hour window here, only the weekly one.
+        plans: vec![
+            EnginePlan { engine: Engine::Claude, usage: claude_plan(), plan_type: Some("max".into()), at: (NOW / 1000) as i64 - 120 },
+            EnginePlan { engine: Engine::Codex, usage: codex_plan(), plan_type: Some("pro".into()), at: (NOW / 1000) as i64 - 30 },
+        ],
         suggestions_off: false,
         desktop: Default::default(),
         allowed: vec![],
         browsers_shown: false,
     }
+}
+
+/// The Claude plan's windows, as Claude Code reports them.
+fn claude_plan() -> PlanUsage {
+    PlanUsage { five_hour: Some(PlanWindow { used_percent: 62, resets_at: 1_760_018_000 }), seven_day: Some(PlanWindow { used_percent: 41, resets_at: 1_760_400_000 }) }
+}
+
+/// The Codex plan's: a weekly window only.
+fn codex_plan() -> PlanUsage {
+    PlanUsage { five_hour: None, seven_day: Some(PlanWindow { used_percent: 18, resets_at: 1_760_500_000 }) }
 }
 
 fn message_vectors() -> Value {
@@ -871,6 +887,9 @@ fn message_vectors() -> Value {
     tell(&mut core, &mut examples, "event: subagent ended", Event::SubagentEnded { session: pm, id: "toolu_02".into() });
     tell(&mut core, &mut examples, "event: turn ended", Event::TurnEnded { session: pm, outcome: TurnOutcome::Completed, usage: Some(Usage { input_tokens: Some(1200), output_tokens: Some(340), ..Usage::default() }) });
     tell(&mut core, &mut examples, "event: turn interrupted", Event::TurnEnded { session: pm, outcome: TurnOutcome::Interrupted, usage: None });
+    // Each engine's plan usage, for every screen; a phone that knows no `engine` reads Claude's.
+    tell(&mut core, &mut examples, "event: plan usage (claude)", Event::PlanUsage { usage: claude_plan(), engine: Engine::Claude });
+    tell(&mut core, &mut examples, "event: plan usage (codex)", Event::PlanUsage { usage: codex_plan(), engine: Engine::Codex });
     tell(&mut core, &mut examples, "event: notice", Event::Notice { session: pm, text: "↪ You → backend: 로그인 API 먼저".into() });
     tell(&mut core, &mut examples, "event: error", Event::Error { session: Some(pm), message: "Claude Code isn't signed in".into(), next: Some("claude login".into()) });
     // What the screen shows goes with the message: a project, or (null) the whole squad.

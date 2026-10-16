@@ -1639,10 +1639,12 @@ impl App {
                 }
                 return Vec::new();
             }
-            Event::PlanUsage { usage } => {
+            // The footer shows Claude's plan; another engine's is for screens that show it.
+            Event::PlanUsage { usage, engine: equipe_core::protocol::Engine::Claude } => {
                 self.plan = Some(usage);
                 return Vec::new();
             }
+            Event::PlanUsage { .. } => return Vec::new(),
             Event::Desktop { desktop } => {
                 self.desktop = desktop;
                 return Vec::new();

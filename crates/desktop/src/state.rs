@@ -807,7 +807,8 @@ impl Model {
 
     fn on_event(&mut self, event: Event, now: Clock) {
         match &event {
-            Event::PlanUsage { usage } => self.plan = Some(*usage),
+            // Claude's plan, as before; another engine's is for the usage sheet that shows it.
+            Event::PlanUsage { usage, engine: Engine::Claude } => self.plan = Some(*usage),
             Event::TurnEnded { session, usage: Some(u), .. } if !self.lanes.iter().any(|l| l.session == *session) => {
                 let spent = self.spent.entry(*session).or_default();
                 spent.tokens += u.total();

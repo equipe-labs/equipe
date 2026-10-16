@@ -108,6 +108,19 @@ never an agent: the phone approves with the command `approve_team_change` `{ "sq
 change became moot (its member left anyway). A push for a proposal carries the event with
 `reason` cut to 800 characters, category `team`.
 
+### The plans' usage
+
+Every screen, whichever squad it follows, gets `plan_usage` `{ "usage": { "five_hour",
+"seven_day" }, "engine": "claude" | "codex" }` when an engine reports its plan's usage: each
+window `{ "used_percent": 0–100, "resets_at": <unix seconds> }` or `null`. Windows are known
+by their length — five hours, seven days — never by the order an engine lists them in; a plan
+without one (Codex Pro has no five-hour window) sends `null` there, and a window of any other
+length is left out. Claude's comes with its members' turns; Codex's with theirs and, while a
+squad has Codex members, every five minutes besides. A `plan_usage` without `engine` (from an
+older daemon) is Claude's. The snapshot carries Claude's as `plan` and every engine's as
+`plans`: `[{ "engine", "usage", "plan_type"? ("max", "pro", "plus"…), "at" (unix seconds when
+read) }]` — absent from an older daemon's.
+
 ### Conformance vectors
 
 `docs/remote-vectors/` holds frames sealed with fixed keys and fixed ephemeral keys, QR codes

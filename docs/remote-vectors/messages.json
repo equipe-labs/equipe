@@ -411,7 +411,7 @@
             "type": "error"
           }
         },
-        "seq": 26,
+        "seq": 28,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -444,7 +444,54 @@
             "type": "notice"
           }
         },
+        "seq": 27,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: plan usage (claude)": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "engine": "claude",
+            "type": "plan_usage",
+            "usage": {
+              "five_hour": {
+                "resets_at": 1760018000,
+                "used_percent": 62
+              },
+              "seven_day": {
+                "resets_at": 1760400000,
+                "used_percent": 41
+              }
+            }
+          }
+        },
         "seq": 25,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: plan usage (codex)": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "engine": "codex",
+            "type": "plan_usage",
+            "usage": {
+              "five_hour": null,
+              "seven_day": {
+                "resets_at": 1760500000,
+                "used_percent": 18
+              }
+            }
+          }
+        },
+        "seq": 26,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -563,7 +610,7 @@
             "type": "queue_sent"
           }
         },
-        "seq": 28,
+        "seq": 30,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -580,7 +627,7 @@
             "type": "steer_queued"
           }
         },
-        "seq": 27,
+        "seq": 29,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -872,7 +919,45 @@
                   "stopped": false
                 },
                 "mode": "auto",
-                "plan": null,
+                "plan": {
+                  "five_hour": {
+                    "resets_at": 1760018000,
+                    "used_percent": 62
+                  },
+                  "seven_day": {
+                    "resets_at": 1760400000,
+                    "used_percent": 41
+                  }
+                },
+                "plans": [
+                  {
+                    "at": 1759999880,
+                    "engine": "claude",
+                    "plan_type": "max",
+                    "usage": {
+                      "five_hour": {
+                        "resets_at": 1760018000,
+                        "used_percent": 62
+                      },
+                      "seven_day": {
+                        "resets_at": 1760400000,
+                        "used_percent": 41
+                      }
+                    }
+                  },
+                  {
+                    "at": 1759999970,
+                    "engine": "codex",
+                    "plan_type": "pro",
+                    "usage": {
+                      "five_hour": null,
+                      "seven_day": {
+                        "resets_at": 1760500000,
+                        "used_percent": 18
+                      }
+                    }
+                  }
+                ],
                 "projects": [
                   "/Users/you/projects/site",
                   "/Users/you/projects/api"

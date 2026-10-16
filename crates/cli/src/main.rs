@@ -1,7 +1,9 @@
 //! `equipe` — the command-line entry point.
 //!
 //! Two engines, both on the user's own plans:
-//! - **codex**: equipe signs in to the ChatGPT (Codex) subscription itself.
+//! - **codex**: the user's installed Codex CLI, which signs itself in
+//!   (`codex login`); without it, equipe's own ChatGPT sign-in, which only answers
+//!   (see `equipe_providers::codex_app`).
 //! - **claude**: the user's installed Claude Code, which signs itself in. equipe
 //!   never sees Claude credentials (see `equipe_providers::claude_code`).
 
@@ -30,6 +32,7 @@ use equipe_core::roles::Tier;
 use equipe_core::runtime;
 use equipe_core::t;
 use equipe_providers::claude_code::{self, AuthStatus};
+use equipe_providers::codex_app;
 use equipe_providers::openai::{codex, login};
 use equipe_providers::{AuthMethod, CredentialStore, Credentials};
 
@@ -48,7 +51,7 @@ struct Cli {
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Engine {
-    /// ChatGPT (Codex) subscription, signed in by equipe
+    /// Your installed Codex CLI on your ChatGPT plan, signed in by Codex itself
     Codex,
     /// Your installed Claude Code, signed in by Claude Code itself
     Claude,
@@ -979,6 +982,13 @@ impl App {
                 println!();
             }
             match engine {
+                Engine::Codex if codex_app::find(codex_app::DEFAULT_BINARY).is_some() => match codex_app::login_status(codex_app::DEFAULT_BINARY).await {
+                    Ok(Some(sign_in)) if sign_in.signed_in() && !again && !chosen => {
+                        println!("{}", p.ok_line(&t!("main.codex_cli_already", how = describe_codex_login(sign_in))));
+                        println!("{}", p.note(2, t!("main.codex_again")));
+                    }
+                    _ => self.login_codex_cli().await?,
+                },
                 Engine::Codex => match self.store.load("openai") {
                     Ok(Some(cred)) if !again && !chosen => {
                         let account = cred.account_id.map(|a| format!(" · {a}")).unwrap_or_default();
@@ -1001,7 +1011,10 @@ impl App {
 
     /// Ask which engine to sign in to, showing where each one stands.
     async fn pick_engine(&self) -> Option<Engine> {
-        let codex_ready = matches!(self.store.load("openai"), Ok(Some(_)));
+        let codex_ready = match codex_app::login_status(codex_app::DEFAULT_BINARY).await {
+            Ok(Some(sign_in)) => sign_in.signed_in(),
+            _ => matches!(self.store.load("openai"), Ok(Some(_))),
+        };
         let claude = claude_code::auth_status(claude_code::DEFAULT_BINARY).await.ok().flatten();
         let claude_ready = claude.as_ref().is_some_and(|s| s.logged_in);
 
@@ -1118,6 +1131,25 @@ impl App {
         Ok(())
     }
 
+    /// Sign the person's own Codex CLI in: `codex login`, in their hands. equipe
+    /// never sees the token.
+    async fn login_codex_cli(&self) -> CmdResult {
+        let p = ui::out();
+        println!("{}  {}\n", p.wordmark(), p.dim(&format!("{} · codex", t!("main.sign_in"))));
+        println!("{}\n", p.para(0, t!("main.codex_cli_intro")));
+        let status = tokio::process::Command::new(codex_app::DEFAULT_BINARY)
+            .arg("login")
+            .status()
+            .await
+            .map_err(|err| Failure::new(err.to_string()).next("equipe status"))?;
+        if !status.success() {
+            return Err(Failure::new(t!("main.codex_cli_incomplete")).next("codex login"));
+        }
+        println!();
+        self.codex_section(&ui::out()).await;
+        Ok(())
+    }
+
     async fn login_claude(&self) -> CmdResult {
         let p = ui::out();
         println!("{}  {}\n", p.wordmark(), p.dim(&format!("{} · claude code", t!("main.sign_in"))));
@@ -1164,9 +1196,65 @@ impl App {
         Ok(())
     }
 
-    /// Prints the Codex section; returns whether Codex is usable.
+    /// Prints the Codex section; returns whether Codex is usable. Which path
+    /// equipe takes: the person's own Codex CLI (`codex app-server`), or —
+    /// without it — equipe's own sign-in, which only answers.
     async fn codex_section(&self, p: &ui::Painter) -> bool {
+        let binary = codex_app::DEFAULT_BINARY;
+        let Some(path) = codex_app::find(binary) else {
+            return self.codex_fallback_section(p).await;
+        };
+        println!("{}", p.section("codex", t!("main.codex_cli_section")));
+        println!("{}", p.row(t!("main.row_path"), &t!("main.codex_path_cli", binary = path.display())));
+        match codex_app::login_status(binary).await {
+            Ok(Some(sign_in)) if sign_in.signed_in() => println!("{}", p.row(t!("main.row_login"), &p.ok(&describe_codex_login(sign_in)))),
+            Ok(_) => {
+                println!("{}", p.row(t!("main.row_login"), &p.fail(t!("main.codex_cli_signed_out"))));
+                println!("{}", p.row("", &p.hint("equipe login codex")));
+                return false;
+            }
+            Err(err) => {
+                println!("{}", p.row(t!("main.row_login"), &p.fail(&err.to_string())));
+                return false;
+            }
+        }
+        let cwd = std::env::temp_dir();
+        match codex_app::list_models(binary, &cwd).await {
+            Ok(models) => {
+                let shown = models.iter().take(4).cloned().collect::<Vec<_>>().join(", ");
+                let more = if models.len() > 4 { ", …" } else { "" };
+                println!("{}", p.row(t!("main.row_backend"), &p.ok(&t!("main.models", count = models.len(), list = p.dim(&format!("{shown}{more}"))))));
+            }
+            Err(err) => {
+                println!("{}", p.row(t!("main.row_backend"), &p.fail(&err.to_string())));
+                return false;
+            }
+        }
+        // The plan's usage, its windows by their length (a Pro plan has no five-hour one).
+        if let Ok(limits) = codex_app::read_limits(binary, &cwd).await {
+            let windows: Vec<String> = limits
+                .windows
+                .iter()
+                .map(|w| {
+                    let span = match w.minutes {
+                        Some(m) if m % 1440 == 0 => format!("{}d", m / 1440),
+                        Some(m) if m % 60 == 0 => format!("{}h", m / 60),
+                        Some(m) => format!("{m}m"),
+                        None => "?".into(),
+                    };
+                    format!("{span} {}%", w.used_percent.round())
+                })
+                .collect();
+            let plan = limits.plan_type.clone().unwrap_or_default();
+            println!("{}", p.row(t!("main.row_usage"), &[plan, windows.join(" · ")].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ")));
+        }
+        true
+    }
+
+    /// The fallback without the Codex CLI: equipe's own sign-in, no tools.
+    async fn codex_fallback_section(&self, p: &ui::Painter) -> bool {
         println!("{}", p.section("codex", t!("main.codex_section")));
+        println!("{}", p.row(t!("main.row_path"), &p.dim(t!("main.codex_path_fallback"))));
         let cred = match self.codex_credentials().await {
             Ok(cred) => cred,
             Err(failure) => {
@@ -1249,8 +1337,8 @@ impl App {
         }
         let cwd = std::env::current_dir().map_err(|err| Failure::new(err.to_string()))?;
         let access = if edit { protocol::Access::EditFiles } else { protocol::Access::ReadOnly };
-        // An edit needs Claude Code for now; don't let auto-selection pick Codex.
-        let engine = engine.map(protocol::Engine::from).or(edit.then_some(protocol::Engine::Claude));
+        // Nothing named: the first engine ready — for an edit, Claude Code first.
+        let engine = engine.map(protocol::Engine::from);
 
         let (core, mut events) = runtime::start(runtime::Config::for_user(VERSION));
         const ID: protocol::SessionId = 1;
@@ -1347,6 +1435,14 @@ fn plan_label(status: &AuthStatus) -> String {
         t!("main.plan", plan = plan)
     } else {
         t!("main.billed_per_token").to_owned()
+    }
+}
+
+/// How the Codex CLI is signed in, in a few words.
+fn describe_codex_login(sign_in: codex_app::SignIn) -> String {
+    match sign_in {
+        codex_app::SignIn::ApiKey => t!("main.codex_cli_api_key").to_owned(),
+        _ => t!("main.codex_cli_chatgpt").to_owned(),
     }
 }
 

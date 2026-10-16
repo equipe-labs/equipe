@@ -154,16 +154,56 @@ pub fn role_or_custom(id: &str) -> &'static Role {
     role(id).unwrap_or(&CUSTOM)
 }
 
-/// The engines to try for a role, best first. Editing runs on Claude Code for
-/// now, and so does the PM, whose board tools reach it over MCP; QA and data
-/// prefer Codex — which puts QA on a different engine from the engineers, so a
-/// second model checks the first one's work.
-pub fn engine_preference(role: &Role) -> [Engine; 2] {
-    if role.edits || role.id == PM { [Engine::Claude, Engine::Codex] } else { [Engine::Codex, Engine::Claude] }
+/// Which engine each built-in role starts on when both are signed in: Claude
+/// writes, Codex reviews (docs/research/claude-codex-together.md §5.1). QA on
+/// Codex reviews what Claude's engineers wrote — the other engine from the
+/// author's. A line here changes a default; the person's own choice of engine
+/// and usage-based switching come on top.
+pub const DEFAULT_ENGINES: [(&str, Engine); 7] = [
+    (PM, Engine::Claude),
+    ("designer", Engine::Claude),
+    ("frontend", Engine::Claude),
+    ("backend", Engine::Claude),
+    ("mobile", Engine::Claude),
+    ("qa", Engine::Codex),
+    ("data", Engine::Codex),
+];
+
+/// The Claude Code model each built-in role is recommended: Opus for judgment,
+/// design, hard building and review; Sonnet for everyday building and numbers.
+pub const CLAUDE_MODELS: [(&str, &str); 7] =
+    [(PM, "opus"), ("designer", "opus"), ("frontend", "sonnet"), ("backend", "opus"), ("mobile", "opus"), ("qa", "opus"), ("data", "sonnet")];
+
+/// The roles that review someone else's work: on Codex they get no less than Sol.
+pub const REVIEWERS: [&str; 1] = ["qa"];
+
+/// The other engine.
+pub fn other_engine(engine: Engine) -> Engine {
+    match engine {
+        Engine::Claude => Engine::Codex,
+        Engine::Codex => Engine::Claude,
+    }
 }
 
-/// The model to recommend for a role on an engine. Claude Code takes its own
-/// aliases; Codex picks from the account's live catalog (best first).
+/// The engine that reviews what `author` wrote: the other one, so a second
+/// model checks the first one's work.
+pub fn reviewer_engine(author: Engine) -> Engine {
+    other_engine(author)
+}
+
+/// The engines to try for a role, best first: its default ([`DEFAULT_ENGINES`]),
+/// then the other. A custom role writes on Claude, and reads on Codex.
+pub fn engine_preference(role: &Role) -> [Engine; 2] {
+    let first = DEFAULT_ENGINES
+        .iter()
+        .find(|(id, _)| *id == role.id)
+        .map_or(if role.edits { Engine::Claude } else { Engine::Codex }, |(_, engine)| *engine);
+    [first, other_engine(first)]
+}
+
+/// The model to recommend for a tier on an engine. Claude Code takes its own
+/// aliases; Codex picks from the account's live catalog (`model/list`, its
+/// default first) by family, never by a hardcoded id.
 pub fn recommended_model(tier: Tier, engine: Engine, catalog: &[String]) -> Option<String> {
     match engine {
         Engine::Claude => Some(match tier {
@@ -172,11 +212,39 @@ pub fn recommended_model(tier: Tier, engine: Engine, catalog: &[String]) -> Opti
         }
         .to_owned()),
         Engine::Codex => match tier {
-            Tier::Top | Tier::Upper => catalog.first().cloned(),
-            // A lighter model when the plan offers one.
-            Tier::Mid => catalog.iter().find(|m| m.contains("mini")).or(catalog.first()).cloned(),
-        },
+            // Sol, near Astra's quality at a fifth of its cost; Astra when there's no Sol.
+            Tier::Top | Tier::Upper => codex_family(catalog, &["sol", "astra"]),
+            // Lighter work: Sol, else Luna — the cheap tier, a hundredth of Astra.
+            Tier::Mid => codex_family(catalog, &["sol", "luna"]),
+        }
+        .or_else(|| catalog.first().cloned()),
     }
+}
+
+/// The model to recommend for `role` on an engine: its own line in
+/// [`CLAUDE_MODELS`] on Claude Code; on Codex its tier's — a reviewer's never
+/// below Sol.
+pub fn recommended_model_for(role: &Role, engine: Engine, catalog: &[String]) -> Option<String> {
+    match engine {
+        Engine::Claude => CLAUDE_MODELS
+            .iter()
+            .find(|(id, _)| *id == role.id)
+            .map(|(_, model)| (*model).to_owned())
+            .or_else(|| recommended_model(role.tier, engine, catalog)),
+        Engine::Codex if REVIEWERS.contains(&role.id) => recommended_model(Tier::Upper, engine, catalog),
+        Engine::Codex => recommended_model(role.tier, engine, catalog),
+    }
+}
+
+/// The latest model of the first family in `families` the catalog has:
+/// `gpt-6.1-sol` over `gpt-6-sol`.
+fn codex_family(catalog: &[String], families: &[&str]) -> Option<String> {
+    let version = |id: &str| -> Vec<u32> {
+        id.split('-').find(|part| part.starts_with(|c: char| c.is_ascii_digit())).map(|v| v.split('.').filter_map(|n| n.parse().ok()).collect()).unwrap_or_default()
+    };
+    families.iter().find_map(|family| {
+        catalog.iter().filter(|id| id.split('-').any(|part| part == *family)).max_by_key(|id| version(id)).cloned()
+    })
 }
 
 /// Someone on the team, as a charter names them.
@@ -465,21 +533,41 @@ mod tests {
     }
 
     #[test]
-    fn editors_run_on_claude_and_qa_checks_on_the_other_engine() {
-        assert_eq!(engine_preference(role("backend").unwrap())[0], Engine::Claude);
-        assert_eq!(engine_preference(role("qa").unwrap())[0], Engine::Codex);
-        assert_eq!(engine_preference(role(PM).unwrap())[0], Engine::Claude, "the PM needs its board tools");
+    fn claude_writes_and_codex_reviews_the_other_engines_work() {
+        assert_eq!(engine_preference(role("backend").unwrap()), [Engine::Claude, Engine::Codex]);
+        assert_eq!(engine_preference(role("designer").unwrap())[0], Engine::Claude);
+        assert_eq!(engine_preference(role("qa").unwrap()), [Engine::Codex, Engine::Claude]);
+        assert_eq!(engine_preference(role("data").unwrap())[0], Engine::Codex);
+        assert_eq!(engine_preference(role(PM).unwrap()), [Engine::Claude, Engine::Codex], "the PM can fall back to Codex: it has its board tools there too");
+        assert_eq!(engine_preference(&CUSTOM)[0], Engine::Codex, "a custom role that only reads");
+        assert_eq!(reviewer_engine(Engine::Claude), Engine::Codex);
+        assert_eq!(reviewer_engine(Engine::Codex), Engine::Claude, "Codex's work is reviewed on Claude");
+        assert!(ROLES.iter().all(|r| DEFAULT_ENGINES.iter().any(|(id, _)| *id == r.id) && CLAUDE_MODELS.iter().any(|(id, _)| *id == r.id)));
     }
 
     #[test]
-    fn models_are_recommended_from_what_the_plan_offers() {
-        let catalog = vec!["gpt-6".to_owned(), "gpt-6-mini".to_owned()];
+    fn models_are_recommended_from_what_the_plan_offers_by_family() {
+        // As `model/list` lists them: the account's default first.
+        let catalog: Vec<String> = ["gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-astra"].map(str::to_owned).to_vec();
         assert_eq!(recommended_model(Tier::Top, Engine::Claude, &[]).as_deref(), Some("opus"));
         assert_eq!(recommended_model(Tier::Mid, Engine::Claude, &[]).as_deref(), Some("sonnet"));
-        assert_eq!(recommended_model(Tier::Top, Engine::Codex, &catalog).as_deref(), Some("gpt-6"));
-        assert_eq!(recommended_model(Tier::Mid, Engine::Codex, &catalog).as_deref(), Some("gpt-6-mini"));
-        assert_eq!(recommended_model(Tier::Mid, Engine::Codex, &catalog[..1]).as_deref(), Some("gpt-6"));
+        assert_eq!(recommended_model(Tier::Top, Engine::Codex, &catalog).as_deref(), Some("gpt-6.1-sol"), "the latest Sol");
+        assert_eq!(recommended_model(Tier::Mid, Engine::Codex, &catalog).as_deref(), Some("gpt-6.1-sol"));
+        let no_sol: Vec<String> = ["gpt-5.6-terra", "gpt-6-luna", "gpt-6-astra"].map(str::to_owned).to_vec();
+        assert_eq!(recommended_model(Tier::Upper, Engine::Codex, &no_sol).as_deref(), Some("gpt-6-astra"));
+        assert_eq!(recommended_model(Tier::Mid, Engine::Codex, &no_sol).as_deref(), Some("gpt-6-luna"));
+        // No family it knows: the account's default — never a "mini" guess.
+        let unknown: Vec<String> = ["gpt-5.6-terra", "gpt-5.6-luna-mini"].map(str::to_owned).to_vec();
+        assert_eq!(recommended_model(Tier::Top, Engine::Codex, &unknown).as_deref(), Some("gpt-5.6-terra"));
         assert_eq!(recommended_model(Tier::Top, Engine::Codex, &[]), None);
+        // By role: a reviewer on Codex is never below Sol; Claude's models are the roles' own.
+        let qa = role("qa").unwrap();
+        assert_eq!(recommended_model_for(qa, Engine::Codex, &no_sol).as_deref(), Some("gpt-6-astra"));
+        assert_eq!(recommended_model_for(role("data").unwrap(), Engine::Codex, &no_sol).as_deref(), Some("gpt-6-luna"));
+        assert_eq!(recommended_model_for(qa, Engine::Claude, &[]).as_deref(), Some("opus"));
+        assert_eq!(recommended_model_for(role("frontend").unwrap(), Engine::Claude, &[]).as_deref(), Some("sonnet"));
+        assert_eq!(recommended_model_for(role("designer").unwrap(), Engine::Claude, &[]).as_deref(), Some("opus"));
+        assert_eq!(recommended_model_for(&CUSTOM, Engine::Claude, &[]).as_deref(), Some("sonnet"));
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {

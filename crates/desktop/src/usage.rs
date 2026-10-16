@@ -124,7 +124,7 @@ mod tests {
         let mut m = model();
         let when = |t: i64| format!("@{t}");
         assert_eq!(view(&m, when).plan[0].text, "reported after a member's next turn on Claude Code");
-        m.apply(Update::Event(Event::PlanUsage { usage: PlanUsage { five_hour: Some(PlanWindow { used_percent: 42, resets_at: 100 }), seven_day: None } }), T0);
+        m.apply(Update::Event(Event::PlanUsage { usage: PlanUsage { five_hour: Some(PlanWindow { used_percent: 42, resets_at: 100 }), seven_day: None }, engine: equipe_core::protocol::Engine::Claude }), T0);
         let plan = view(&m, when).plan;
         assert_eq!(plan.len(), 1);
         assert_eq!((plan[0].label.as_str(), plan[0].text.as_str(), plan[0].percent), ("5-hour", "42% used · starts over @100", Some(42)));

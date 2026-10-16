@@ -905,19 +905,39 @@ pub struct Workspace {
     pub path: PathBuf,
 }
 
-/// One of the Claude plan's usage windows: how much of it is used, in
-/// percent, and when it starts over (Unix seconds).
+/// One of a plan's usage windows: how much of it is used, in percent, and
+/// when it starts over (Unix seconds).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanWindow {
     pub used_percent: u8,
     pub resets_at: i64,
 }
 
-/// The Claude plan's usage, as Claude Code last reported it.
+/// A plan's usage, as its engine last reported it. Windows are told apart by
+/// their length — five hours, seven days — never by the order an engine lists
+/// them in; one of another length is left out.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanUsage {
     pub five_hour: Option<PlanWindow>,
     pub seven_day: Option<PlanWindow>,
+}
+
+/// One engine's plan usage, as last read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnginePlan {
+    pub engine: Engine,
+    pub usage: PlanUsage,
+    /// The plan as the engine names it: `max`, `pro`, `plus`, `free`…
+    #[serde(default)]
+    pub plan_type: Option<String>,
+    /// When it was read (Unix seconds).
+    #[serde(default)]
+    pub at: i64,
+}
+
+/// What an engine-less [`Event::PlanUsage`] is about: from before Codex's was read.
+fn claude() -> Engine {
+    Engine::Claude
 }
 
 /// Core → screen: "this happened".
@@ -995,8 +1015,14 @@ pub enum Event {
     /// The squad's "always allow" rules changed (one added by an answer of
     /// [`Decision::Always`], one taken back): all of them, oldest first.
     Allowed { squad: SquadName, rules: Vec<String> },
-    /// The plan's usage windows — for every screen, whichever squad it follows.
-    PlanUsage { usage: PlanUsage },
+    /// An engine's plan usage windows — for every screen, whichever squad it
+    /// follows. Older screens ignore `engine`, and older daemons leave it out:
+    /// theirs is Claude's.
+    PlanUsage {
+        usage: PlanUsage,
+        #[serde(default = "claude")]
+        engine: Engine,
+    },
     /// Who has the Mac's screen and who waits for it changed — for every screen.
     Desktop { desktop: DesktopState },
     /// Output a member's turn has produced so far, in tokens.
@@ -1466,9 +1492,12 @@ pub struct Snapshot {
     /// The person turned off guesses at their next message.
     #[serde(default)]
     pub suggestions_off: bool,
-    /// The plan's usage, as last reported.
+    /// The Claude plan's usage, as last reported.
     #[serde(default)]
     pub plan: Option<PlanUsage>,
+    /// Every engine's plan usage, as last read: Claude's (as `plan`) and Codex's.
+    #[serde(default)]
+    pub plans: Vec<EnginePlan>,
     /// Who has the Mac's screen, across squads.
     #[serde(default)]
     pub desktop: DesktopState,
@@ -1635,6 +1664,33 @@ mod tests {
     }
 
     #[test]
+    fn plan_usage_says_its_engine_and_an_older_one_without_is_claudes() {
+        let window = PlanWindow { used_percent: 42, resets_at: 1_760_630_400 };
+        let codex = Event::PlanUsage { usage: PlanUsage { five_hour: None, seven_day: Some(window) }, engine: Engine::Codex };
+        let json = serde_json::to_value(&codex).unwrap();
+        assert_eq!(json, json!({ "type": "plan_usage", "engine": "codex", "usage": { "five_hour": null, "seven_day": { "used_percent": 42, "resets_at": 1_760_630_400 } } }));
+        assert_eq!(serde_json::from_value::<Event>(json).unwrap(), codex);
+        // From a daemon before engines were told apart: Claude's.
+        let old = json!({ "type": "plan_usage", "usage": { "five_hour": { "used_percent": 7, "resets_at": 1 }, "seven_day": null } });
+        assert!(matches!(serde_json::from_value::<Event>(old).unwrap(), Event::PlanUsage { engine: Engine::Claude, usage } if usage.five_hour.is_some()));
+        assert!(codex.for_everyone() && codex.session().is_none());
+    }
+
+    #[test]
+    fn a_snapshot_carries_every_engines_plan_and_an_older_one_none() {
+        let plan = EnginePlan { engine: Engine::Codex, usage: PlanUsage::default(), plan_type: Some("pro".into()), at: 1_760_000_000 };
+        let snapshot = Snapshot { squad: "acme".into(), plans: vec![plan.clone()], ..Default::default() };
+        let json = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(json["plans"][0], json!({ "engine": "codex", "usage": { "five_hour": null, "seven_day": null }, "plan_type": "pro", "at": 1_760_000_000 }));
+        assert_eq!(serde_json::from_value::<Snapshot>(json).unwrap(), snapshot);
+        // An older daemon's snapshot: no `plans`; an older plan: no type, no time.
+        let old: Snapshot = serde_json::from_value(json!({ "squad": "acme", "sessions": [] })).unwrap();
+        assert!(old.plans.is_empty() && old.plan.is_none());
+        let bare: EnginePlan = serde_json::from_value(json!({ "engine": "claude", "usage": { "five_hour": null, "seven_day": null } })).unwrap();
+        assert_eq!((bare.plan_type, bare.at), (None, 0));
+    }
+
+    #[test]
     fn commands_serialize_with_a_type_tag() {
         let cmd = Command::Submit { session: 1, text: "hi".into(), about: None };
         assert_eq!(
@@ -1739,6 +1795,7 @@ mod tests {
             scale: Some(2),
             suggestions_off: false,
             plan: None,
+            plans: vec![EnginePlan { engine: Engine::Codex, usage: PlanUsage::default(), plan_type: None, at: 7 }],
             desktop: DesktopState::default(),
             sessions: vec![SessionInfo {
                 session: 9,
