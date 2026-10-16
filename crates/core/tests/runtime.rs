@@ -1527,7 +1527,7 @@ exec sleep 30"#;
     let cwd = scratch("cwd");
     let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), true));
     add(&handle, &mut events, 3, member(&cwd, "pm")).await;
-    handle.send(Command::Submit { session: 3, text: "long job".into() });
+    handle.send(Command::Submit { session: 3, text: "long job".into(), about: None });
     until(&mut events, |e| matches!(e, Event::SubagentEnded { .. })).await;
 
     let snapshot = handle.snapshot("acme").await;
