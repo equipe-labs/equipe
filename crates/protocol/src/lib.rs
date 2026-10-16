@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod asks;
 pub mod decide;
+pub mod design;
 pub mod rpc;
 pub mod stream;
 pub mod tags;
@@ -722,6 +723,10 @@ pub enum Command {
     /// Forget a paired phone (its `id` in [`Event::Devices`]): it can't reach
     /// the daemon again. Answered by [`Event::Devices`].
     Unpair { device: String },
+    /// Show the squad's design systems (`design::DesignSystem`): answered by
+    /// [`Event::Design`], and again whenever one of them changes while a
+    /// screen follows the squad.
+    Design { squad: SquadName },
 }
 
 /// A phone paired with the daemon's machine.
@@ -1176,6 +1181,17 @@ pub enum Event {
         #[serde(default)]
         connected: bool,
     },
+    /// The squad's design systems, as they are now ([`Command::Design`]):
+    /// its own first, then each project's that has one, then the drafts
+    /// tickets in review hand in. None: there is none yet, and `folder` is
+    /// where the squad's would be.
+    Design {
+        squad: SquadName,
+        #[serde(default)]
+        systems: Vec<design::DesignSystem>,
+        #[serde(default)]
+        folder: String,
+    },
 }
 
 impl Event {
@@ -1191,7 +1207,8 @@ impl Event {
             | Event::QuestionsClosed { squad, .. }
             | Event::TeamChangeProposed { squad, .. }
             | Event::TeamChangeClosed { squad, .. }
-            | Event::Allowed { squad, .. } => Some(squad),
+            | Event::Allowed { squad, .. }
+            | Event::Design { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             _ => None,
         }
@@ -1239,6 +1256,7 @@ impl Event {
             | Event::TeamChangeProposed { .. }
             | Event::TeamChangeClosed { .. }
             | Event::Allowed { .. }
+            | Event::Design { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
             // A browser's own: never part of a conversation.

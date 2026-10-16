@@ -59,6 +59,7 @@ macro_rules! say {
 }
 
 mod decide;
+mod design;
 mod team;
 mod tickets;
 
@@ -350,6 +351,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         settled_at: None,
         merging: std::collections::HashSet::new(),
         disk_full: None,
+        design_watch: HashMap::new(),
+        design_busy: std::collections::HashSet::new(),
     };
     let mut memos = Vec::new();
     if runtime.config.persist {
@@ -579,6 +582,9 @@ enum Internal {
     Merged { squad: String, ticket: TicketId, result: MergeResult },
     /// The free space on equipe's disk, as just looked at.
     Disk(Option<u64>, std::time::Instant),
+    /// A squad's design systems looked at off the loop: their stamp, and —
+    /// when they changed or were asked for — what they are.
+    Design(String, u64, Option<design::Catalog>),
 }
 
 /// A request for permission waiting for the person, and the engine waiting on it.
@@ -681,6 +687,10 @@ struct Runtime {
     merging: std::collections::HashSet<(String, TicketId)>,
     /// The disk is full, as last looked at or as a write said: the screens were told.
     disk_full: Option<std::time::Instant>,
+    /// Squads whose design systems a screen looks at, and their stamp as
+    /// last sent; those being looked at off the loop now (`design`).
+    design_watch: HashMap<String, u64>,
+    design_busy: std::collections::HashSet<String>,
 }
 
 /// What woke the loop.
@@ -692,6 +702,7 @@ enum Wake {
     DesktopTick,
     Frames,
     Minute,
+    DesignTick,
 }
 
 impl Wake {
@@ -720,11 +731,13 @@ impl Wake {
             Wake::Internal(Internal::Settled { .. }) => Borrowed("settling merged work"),
             Wake::Internal(Internal::Merged { .. }) => Borrowed("a merge's end"),
             Wake::Internal(Internal::Disk(..)) => Borrowed("the disk's free space"),
+            Wake::Internal(Internal::Design(..)) => Borrowed("a design system's look"),
             Wake::Host(_) => Borrowed("the browser host's news"),
             Wake::Daily => Borrowed("daily prune"),
             Wake::DesktopTick => Borrowed("desktop tick"),
             Wake::Frames => Borrowed("browser pictures"),
             Wake::Minute => Borrowed("minute tick"),
+            Wake::DesignTick => Borrowed("design tick"),
         }
     }
 }
@@ -742,9 +755,11 @@ async fn run(
     // A screen held by a member that stopped using it goes to the next in line.
     let mut desktop_tick = tokio::time::interval(Duration::from_secs(5));
     let mut frames = tokio::time::interval(FRAME_EVERY);
+    // A design system on a screen follows what its designer saves.
+    let mut design_tick = tokio::time::interval(design::LOOK_EVERY);
     // A loop held up never catches up on the ticks it missed in a burst: that
     // only holds it up again.
-    for tick in [&mut daily, &mut minute, &mut desktop_tick, &mut frames] {
+    for tick in [&mut daily, &mut minute, &mut desktop_tick, &mut frames, &mut design_tick] {
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     }
     daily.tick().await; // the first tick is immediate; pruning already ran at start
@@ -757,6 +772,7 @@ async fn run(
             _ = desktop_tick.tick() => Wake::DesktopTick,
             _ = frames.tick() => Wake::Frames,
             _ = minute.tick() => Wake::Minute,
+            _ = design_tick.tick(), if !rt.design_watch.is_empty() => Wake::DesignTick,
         };
         pulse.begin(wake.doing());
         let go_on = rt.wake(wake, &pulse).await;
@@ -850,6 +866,7 @@ impl Runtime {
                 Internal::Settled { merged, cache } => self.on_settled(merged, cache),
                 Internal::Merged { squad, ticket, result } => self.on_merged(&squad, ticket, result),
                 Internal::Disk(free, asked) => self.on_disk(free, asked),
+                Internal::Design(squad, stamp, catalog) => self.on_design(squad, stamp, catalog),
             },
             Wake::Host(said) => self.on_host(said).await,
             Wake::Daily => self.prune(),
@@ -859,6 +876,7 @@ impl Runtime {
                 }
             }
             Wake::Frames => self.take_frames(),
+            Wake::DesignTick => self.design_tick(),
             Wake::Minute => {
                 pulse.step("minute tick: idle lanes");
                 self.fold_idle_lanes();
@@ -1219,6 +1237,7 @@ impl Runtime {
             // Phones are paired by the gateway, per screen, with the daemon's
             // phone link (`crate::pairing`); they never reach the runtime.
             Command::PairStart | Command::PairAnswer { .. } | Command::PairCancel | Command::Devices | Command::Unpair { .. } => {}
+            Command::Design { squad } => self.design_asked(squad),
         }
     }
 

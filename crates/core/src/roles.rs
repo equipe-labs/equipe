@@ -75,7 +75,15 @@ You don't change a project's code yourself: that is a code ticket for an enginee
         summary: "UX and UI — flows, layout, visual language, design tokens",
         duties: "You own the experience: flows, layout, visual language, design tokens, copy tone. \
 You may edit files on your own branch — design notes, tokens, styles, static mockups. \
-Explain each choice in a sentence; leave engineering to the engineers.",
+Explain each choice in a sentence; leave engineering to the engineers. \
+You keep the design system, which the person sees in equipe's design system screen: a `design/` folder at the top \
+of the squad's folder (a project with a look of its own keeps one at the top of its repository). Whenever brand or \
+design work lands, bring it up to date in the same hand-in: `design/tokens.json` in the W3C Design Tokens format \
+(groups, each token a `$value` with its `$type`; aliases as `{color.blue.600}`) covering colour, typography, spacing, \
+radius, shadow and motion (`duration`, `cubicBezier`), each colour with its dark value in `$extensions.mode.dark` or in \
+sibling `light` and `dark` groups; `design/guidelines.md`, the rules in prose; `design/assets/` with the logos \
+(`logo/`, an `-on-dark` variant where it differs), icons and illustrations as SVG or PNG; and `design/components/` with \
+a PNG or SVG preview you render of each key component. A draft stays in your worktree until the person accepts it.",
         edits: true,
         tier: Tier::Upper,
     },
@@ -612,6 +620,16 @@ mod tests {
             assert!(designer.contains(part), "{part}: {designer}");
         }
         assert!(!charter(role("designer").unwrap(), "designer", &ctx(&team, &[], false)).contains("`images`"), "no tools, no such advice");
+    }
+
+    #[test]
+    fn the_designer_keeps_the_design_system_in_its_folder_in_the_tokens_format() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }];
+        let text = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], true));
+        for part in ["`design/`", "`design/tokens.json`", "`$value`", "`$type`", "`{color.blue.600}`", "`$extensions.mode.dark`", "`design/guidelines.md`", "`design/assets/`", "`design/components/`", "preview you render"] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+        assert!(!charter(role("frontend").unwrap(), "frontend", &ctx(&team, &[], true)).contains("`design/tokens.json`"), "the designer's to keep");
     }
 
     #[test]

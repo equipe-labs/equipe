@@ -158,7 +158,8 @@ pub fn allowed(command: Command) -> Option<Command> {
         | Command::ApproveTeamChange { .. }
         | Command::DeclineTeamChange { .. }
         | Command::Focus { .. }
-        | Command::Refresh { .. }) => Some(c),
+        | Command::Refresh { .. }
+        | Command::Design { .. }) => Some(c),
         _ => None,
     }
 }
@@ -180,7 +181,8 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::DeclineTeamChange { squad, .. }
         | Command::Scale { squad, .. }
         | Command::Focus { squad, .. }
-        | Command::ShowBrowser { squad, .. } => Some(squad),
+        | Command::ShowBrowser { squad, .. }
+        | Command::Design { squad } => Some(squad),
         _ => None,
     }
 }

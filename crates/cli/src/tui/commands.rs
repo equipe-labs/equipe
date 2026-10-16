@@ -13,7 +13,7 @@ pub struct Spec {
 
 /// Every command, its `about` (and the words in its `args`) in the language in use — asked afresh each
 /// time, since the person may switch language while the console runs.
-pub fn commands() -> [Spec; 33] {
+pub fn commands() -> [Spec; 34] {
     [
         Spec { name: "usage", args: "", about: t!("commands.usage") },
         Spec { name: "compact", args: "[member]", about: t!("commands.compact") },
@@ -30,6 +30,7 @@ pub fn commands() -> [Spec; 33] {
         Spec { name: "answer", args: "T-n", about: t!("commands.answer") },
         Spec { name: "cancel", args: "T-n", about: t!("commands.cancel") },
         Spec { name: "board", args: "", about: t!("commands.board") },
+        Spec { name: "design", args: "", about: t!("commands.design") },
         Spec { name: "new", args: t!("commands.new_args"), about: t!("commands.new") },
         Spec { name: "title", args: t!("commands.title_args"), about: t!("commands.title") },
         Spec { name: "find", args: t!("commands.find_args"), about: t!("commands.find") },
