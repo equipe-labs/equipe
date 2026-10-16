@@ -128,6 +128,9 @@ pub struct Context<'a> {
     /// The models each member's engine offers, and the selected member's.
     pub member_models: Vec<(&'a str, Vec<String>)>,
     pub selected_models: Vec<String>,
+    /// Whether the folders a person types are on this disk — the daemon's
+    /// machine is this one. Over SSH they are on another, which can't be listed here.
+    pub local_folders: bool,
 }
 
 /// The modes as typed, in `Mode::ALL`'s order.
@@ -274,7 +277,7 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             }
             choices
         }
-        ("squad", 2) if words[0] == "add" => folders(typed).into_iter().map(|f| word(&f, "", "")).collect(),
+        ("squad", 2) if words[0] == "add" && ctx.local_folders => folders(typed).into_iter().map(|f| word(&f, "", "")).collect(),
         ("squad", 2) if words[0] == "remove" => ctx.projects.iter().filter(|(p, _)| starts(p)).map(|(p, _)| word(p, "", "")).collect(),
         // A picker: any part of the name finds a project.
         ("project", 1) => {
@@ -285,13 +288,18 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             }
             choices
         }
-        ("squad", 3) if words[0] == "new" => folders(typed).into_iter().map(|f| word(&f, "", "")).collect(),
+        ("squad", 3) if words[0] == "new" && ctx.local_folders => folders(typed).into_iter().map(|f| word(&f, "", "")).collect(),
         ("browser", 1) => [("show", t!("commands.browser_show")), ("hide", t!("commands.browser_hide")), ("max", t!("commands.browser_max"))]
             .iter()
             .filter(|(w, _)| starts(w))
             .map(|(w, about)| word(w, about, ""))
             .collect(),
         ("desktop", 1) => [("stop", t!("commands.desktop_stop")), ("resume", t!("commands.desktop_resume"))]
+            .iter()
+            .filter(|(w, _)| starts(w))
+            .map(|(w, about)| word(w, about, ""))
+            .collect(),
+        ("suggest", 1) => [("on", "guess your next message after an answer"), ("off", "no guesses")]
             .iter()
             .filter(|(w, _)| starts(w))
             .map(|(w, about)| word(w, about, ""))
@@ -360,6 +368,7 @@ mod tests {
             member_modes: vec![("frontend", Mode::Full)],
             member_models: Vec::new(),
             selected_models: Vec::new(),
+            local_folders: true,
         }
     }
 

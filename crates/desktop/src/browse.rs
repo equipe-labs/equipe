@@ -258,6 +258,88 @@ impl Hand {
     }
 }
 
+// ── a browser handed to the person ──
+
+/// What a lane put in the person's hands was handed over for, if it was —
+/// its member's words, or the check its page waits for; `None` for the
+/// person taking it themselves, or giving it back.
+pub fn handed_for(by_person: bool, why: Option<&str>, check: Option<HumanCheck>) -> Option<String> {
+    if !by_person {
+        return None;
+    }
+    why.map(str::to_owned).or_else(|| check.map(|c| format!("{c:?}")))
+}
+
+/// Where the panel opens for a hand-over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Open {
+    /// On this tab of the lane, the person driving.
+    Now(String, u64),
+    /// Its tabs aren't told yet (the lane just opened): when they are.
+    Later,
+}
+
+/// The members' browsers handed to the person that a panel opened itself
+/// for — every screen's panel does, on the tab its member works in — once
+/// each: the same hand-over told again (a screen attaching again) doesn't
+/// open it again after the person closed the panel.
+#[derive(Debug, Default)]
+pub struct Handovers {
+    opened: std::collections::HashSet<(String, String)>,
+    waiting: Option<String>,
+}
+
+impl Handovers {
+    /// The daemon says who has `lane` now. `page`: the tab its member works
+    /// in, if the lane's tabs are known.
+    pub fn on_control(&mut self, lane: &str, by_person: bool, why: Option<&str>, check: Option<HumanCheck>, page: Option<u64>) -> Option<Open> {
+        let Some(what) = handed_for(by_person, why, check) else {
+            if !by_person {
+                self.given_back(lane);
+            }
+            return None;
+        };
+        if lane.is_empty() || !self.opened.insert((lane.to_owned(), what)) {
+            return None;
+        }
+        Some(match page {
+            Some(page) => Open::Now(lane.to_owned(), page),
+            None => {
+                self.waiting = Some(lane.to_owned());
+                Open::Later
+            }
+        })
+    }
+
+    /// A lane's tabs told (`page`, the tab its member works in): a hand-over
+    /// waiting for them opens now.
+    pub fn on_tabs(&mut self, lane: &str, page: Option<u64>) -> Option<(String, u64)> {
+        let page = page.filter(|_| self.waiting.as_deref() == Some(lane))?;
+        self.waiting = None;
+        Some((lane.to_owned(), page))
+    }
+
+    /// Back to its member (here, or on another screen): a next hand-over opens again.
+    pub fn given_back(&mut self, lane: &str) {
+        self.opened.retain(|(l, _)| l != lane);
+        if self.waiting.as_deref() == Some(lane) {
+            self.waiting = None;
+        }
+    }
+}
+
+/// Whether a wheel over the page goes to it: always on the person's own tab;
+/// on a member's only once it is in their hands — a wheel never takes it.
+pub fn wheel_goes(members: bool, held: bool) -> bool {
+    !members || held
+}
+
+/// Whether closing a tab asks first: a member's, while it is at work on it.
+/// The person's own tabs, and an idle member's, close at once.
+pub fn close_asks(members: bool, working: bool) -> bool {
+    members && working
+}
+
 // ── the page's size ──
 
 /// The box the page shows in, as the stream is asked for it: CSS pixels and
@@ -330,6 +412,80 @@ impl Settle {
 /// A watched page whose frames stopped this long is said to be stuck, with a
 /// way to try again.
 pub const STALL: Duration = Duration::from_secs(8);
+
+// ── the pointer ──
+
+/// The person's pointer as it goes to the page, in the page's CSS pixels: a
+/// move no more often than `every`, the last of a burst never lost (it goes
+/// once its time comes), and before a press, a move to the press's own point
+/// if the page last saw the pointer elsewhere — as a real mouse always moves
+/// to where it presses, and the page's hover follows it. Nothing here makes
+/// anything up: every point sent is one the person's pointer was at.
+#[derive(Debug, Clone)]
+pub struct Pointer {
+    every: Duration,
+    /// The last point the page was sent, and when.
+    sent: Option<((f64, f64), Instant)>,
+    /// A move held back by the pace, to go when its time comes.
+    held: Option<(f64, f64)>,
+}
+
+impl Pointer {
+    pub fn new(every: Duration) -> Self {
+        Self { every, sent: None, held: None }
+    }
+
+    /// The pointer moved to `at`: `Some` when the move goes now.
+    pub fn moved(&mut self, at: (f64, f64), now: Instant) -> Option<(f64, f64)> {
+        if self.sent.is_some_and(|(p, _)| p == at) {
+            self.held = None;
+            return None;
+        }
+        match self.sent {
+            Some((_, when)) if now.duration_since(when) < self.every => {
+                self.held = Some(at);
+                None
+            }
+            _ => {
+                self.held = None;
+                self.sent = Some((at, now));
+                Some(at)
+            }
+        }
+    }
+
+    /// How long until a held-back move may go.
+    pub fn wait(&self, now: Instant) -> Option<Duration> {
+        let (_, when) = self.sent?;
+        self.held.map(|_| self.every.saturating_sub(now.duration_since(when)))
+    }
+
+    /// The held-back move, if its time has come.
+    pub fn due(&mut self, now: Instant) -> Option<(f64, f64)> {
+        let at = self.held?;
+        if self.wait(now).is_some_and(|w| !w.is_zero()) {
+            return None;
+        }
+        self.held = None;
+        self.sent = Some((at, now));
+        Some(at)
+    }
+
+    /// A button goes down (or up) at `at`: the move to send first, if the page
+    /// last saw the pointer anywhere else. A press is never held back.
+    pub fn pressed(&mut self, at: (f64, f64), now: Instant) -> Option<(f64, f64)> {
+        self.held = None;
+        let there = self.sent.is_some_and(|(p, _)| p == at);
+        self.sent = Some((at, now));
+        (!there).then_some(at)
+    }
+
+    /// The pointer left the picture: where it was is no longer known.
+    pub fn left(&mut self) {
+        self.sent = None;
+        self.held = None;
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -431,6 +587,47 @@ mod tests {
         assert_eq!(h.mode(None, true), Mode::Asked("로그인해 주세요".into()));
     }
 
+    /// What every attached screen's panel does with the daemon's word that
+    /// a member handed the person its browser: each runs this, so each opens.
+    #[test]
+    fn a_hand_over_opens_the_panel_on_its_members_tab_in_the_persons_hands_once() {
+        let why = "Umbriles Inc. 계정 소유자 Apple ID로 로그인해 주세요";
+        let screens = [Handovers::default(), Handovers::default()];
+        for mut panel in screens {
+            assert_eq!(panel.on_control("acme/pm", true, Some(why), None, Some(7)), Some(Open::Now("acme/pm".into(), 7)), "on the tab pm works in");
+            // The person driving it, its banner saying what pm asked.
+            let mut hand = Hand::default();
+            hand.on_control(true, Some(why.into()), None);
+            hand.take();
+            assert_eq!(hand.mode(None, false), Mode::Asked(why.into()));
+            // Told again (this screen attached again), with or without the words: not opened again.
+            assert_eq!(panel.on_control("acme/pm", true, Some(why), None, Some(7)), None);
+            assert_eq!(panel.on_control("acme/pm", true, None, None, Some(7)), None, "the host saying the person has it");
+            // Given back — here or on another screen — the next hand-over opens again.
+            assert_eq!(panel.on_control("acme/pm", false, None, None, Some(7)), None);
+            assert_eq!(panel.on_control("acme/pm", true, Some(why), None, Some(7)), Some(Open::Now("acme/pm".into(), 7)));
+        }
+        // Handed over as its lane opens, before its tabs are told: when they are.
+        let mut panel = Handovers::default();
+        assert_eq!(panel.on_control("acme/qa", true, Some("2단계 코드를 넣어 주세요"), None, None), Some(Open::Later));
+        assert_eq!(panel.on_tabs("acme/pm", Some(3)), None, "another lane's tabs");
+        assert_eq!(panel.on_tabs("acme/qa", Some(9)), Some(("acme/qa".into(), 9)));
+        assert_eq!(panel.on_tabs("acme/qa", Some(9)), None, "once");
+        // A page waiting for a person opens it too; the person taking a tab themselves doesn't.
+        assert!(matches!(panel.on_control("acme/backend", true, None, Some(HumanCheck::SignIn), Some(4)), Some(Open::Now(_, 4))));
+        assert_eq!(panel.on_control("acme/frontend", true, None, None, Some(5)), None);
+        assert_eq!(panel.on_control("", true, Some("x"), None, Some(1)), None, "the person's own tabs");
+    }
+
+    #[test]
+    fn a_wheel_never_takes_a_members_page_and_closing_one_at_work_asks_first() {
+        assert!(wheel_goes(false, false), "the person's own tab scrolls");
+        assert!(!wheel_goes(true, false), "a member's it drives: no — a click takes it");
+        assert!(wheel_goes(true, true), "in their hands: it scrolls");
+        assert!(close_asks(true, true), "a member at work: asked once");
+        assert!(!close_asks(true, false) && !close_asks(false, true), "an idle member's, or the person's own: at once");
+    }
+
     #[test]
     fn a_page_waiting_for_a_person_asks_them_then_offers_to_give_it_back() {
         let mut h = Hand::default();
@@ -458,6 +655,44 @@ mod tests {
         quiet.on_page(None);
         quiet.on_control(false, None, None);
         assert_eq!(quiet.mode(None, true), Mode::Member { working: true });
+    }
+
+    #[test]
+    fn the_pointer_goes_at_a_pace_and_never_loses_where_it_stopped() {
+        let t0 = Instant::now();
+        let ms = |n| t0 + Duration::from_millis(n);
+        let mut p = Pointer::new(Duration::from_millis(16));
+        assert_eq!(p.moved((10., 10.), t0), Some((10., 10.)), "the first move at once");
+        assert_eq!(p.moved((10., 10.), ms(30)), None, "the same point again: nothing");
+        assert_eq!(p.moved((12., 10.), ms(40)), Some((12., 10.)));
+        // A burst within the pace: held back, only the latest kept.
+        assert_eq!(p.moved((13., 11.), ms(44)), None);
+        assert_eq!(p.moved((15., 12.), ms(50)), None);
+        assert_eq!(p.wait(ms(50)), Some(Duration::from_millis(6)));
+        assert_eq!(p.due(ms(52)), None, "not yet");
+        // The pointer stopped: where it stopped still goes, once its time comes.
+        assert_eq!(p.due(ms(56)), Some((15., 12.)));
+        assert_eq!(p.wait(ms(56)), None);
+        assert_eq!(p.due(ms(90)), None, "nothing more held");
+    }
+
+    #[test]
+    fn a_press_comes_after_a_move_to_its_own_point() {
+        let t0 = Instant::now();
+        let ms = |n| t0 + Duration::from_millis(n);
+        let mut p = Pointer::new(Duration::from_millis(16));
+        // Never moved over the picture (the window just came forward): a move there first.
+        assert_eq!(p.pressed((40., 30.), t0), Some((40., 30.)));
+        assert_eq!(p.pressed((40., 30.), ms(80)), None, "the release where it pressed: no move");
+        assert_eq!(p.moved((50., 30.), ms(100)), Some((50., 30.)));
+        // A move held back by the pace is not lost before the press: the press goes to it.
+        assert_eq!(p.moved((60., 31.), ms(105)), None);
+        assert_eq!(p.pressed((60., 31.), ms(106)), Some((60., 31.)), "moved there first, never held back");
+        assert_eq!(p.due(ms(200)), None, "the press took the held move's place");
+        assert_eq!(p.pressed((60., 31.), ms(180)), None);
+        // Out of the picture and back: where it is isn't known, so a move goes again.
+        p.left();
+        assert_eq!(p.pressed((60., 31.), ms(300)), Some((60., 31.)));
     }
 
     #[test]

@@ -19,6 +19,8 @@
 //! ```
 //! `FAKE_SECONDS` (default 4) is how long a reply streams; `FAKE_SAID` adds a
 //! last message of the person's to the PM's history (attachment tags and all).
+//! `FAKE_CARDS=1` ends it on a reply naming T-42 (a review), T-117 and T-999
+//! (no such ticket), to rest the pointer on.
 //! `FAKE_ASKLIST=1` ends the PM's history on a reply asking three things in a
 //! numbered list of its own words, as a member does that skips `ask_decision`.
 //!
@@ -35,8 +37,13 @@
 //! `FAKE_DECIDE_AFTER` ms (default 5000). Answered here, the answers go to the
 //! member as the person's message and it replies.
 //!
+//! `FAKE_TEAM=1`: the PM proposes one more frontend, for the person to
+//! approve on a card (`fake_daemon/team.rs`; `remove`, `elsewhere`).
+//!
 //! `FAKE_BROWSER=1`: the shared Chrome's tabs and a picture stream for the
-//! browser panel (`fake_daemon/browser.rs`); `FAKE_BROWSER=empty`, no tabs.
+//! browser panel (`fake_daemon/browser.rs`); `FAKE_BROWSER=empty`, no tabs;
+//! `FAKE_BROWSER=handover`, the PM's browser handed to the person to sign in
+//! (its news line, as an English daemon wrote it, last in the PM's history).
 //!
 //! Pairing a phone: a code at once, and two phones paired already.
 //! `FAKE_PAIR=ask` has a phone ask 1.5 s after the code shows (`allow` pairs
@@ -731,6 +738,9 @@ mod browser;
 #[path = "fake_daemon/torture.rs"]
 mod torture;
 
+#[path = "fake_daemon/team.rs"]
+mod team;
+
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
 /// Where a message goes, as the daemon decides: the project in focus, each
@@ -808,6 +818,17 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history.push(Entry::Tool { tool: "WebFetch".into(), target: Some("https://developer.apple.com/help/app-store-connect/manage-compliance-information/manage-european-union-digital-services-act-trader-requirements".into()), outcome: None });
                             history.push(Entry::Reply { text: ASKLIST.into() });
                         }
+                        if browser::handover() {
+                            history.push(Entry::User { text: "App Store Connect에서 EU DSA 거래자 상태를 바꿔 줘".into() });
+                            history.push(Entry::Reply { text: "제 브라우저는 App Store Connect에 로그인되어 있지 않아서, 로그인만 먼저 해 주셔야 합니다.".into() });
+                            history.push(Entry::Note { text: format!("🖥 pm's browser comes up on this Mac's screen: {}", browser::PM_WHY) });
+                        }
+                        // `FAKE_CARDS=1`: a last reply naming a review, a wait and a number
+                        // long gone, for the tickets' cards on the pointer.
+                        if std::env::var_os("FAKE_CARDS").is_some() {
+                            history.push(Entry::User { text: "지금 볼 거 있어?".into() });
+                            history.push(Entry::Reply { text: "T-42가 검토를 기다리고 있어요. T-117은 당신 차례이고, 예전 T-999는 이제 없습니다.".into() });
+                        }
                         if let Some(how) = your_turn() {
                             history.push(Entry::Note { text: "frontend handed in T-63 for your review · 경쟁 앱 온보딩 조사.".into() });
                             history.push(Entry::Note { text: "T-117 waits for you — frontend needs something only you can do · 앱스토어 제출.".into() });
@@ -879,11 +900,13 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             sessions,
                             approvals: asks().lock().unwrap().clone(),
                             questions: questions().lock().unwrap().clone(),
+                            team_changes: team::changes(),
                             tickets: tickets().lock().unwrap().clone(),
                             allowed: allowed().lock().unwrap().clone(),
                             browsers_shown: true,
                             ..Default::default()
                         };
+                        team::on_hello(&events);
                         let hello = Hello { version: "fake".into(), snapshot };
                         writer.write_all(Message::response(id, hello).to_line().as_bytes()).await.unwrap();
                         // `FAKE_BROWSER`: the shared Chrome's tabs as they stand, as the daemon tells them.
@@ -1027,7 +1050,15 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 tokio::spawn(async move { pairing(&pair, &events).await });
                             }
                             other => {
-                                if browser::on_command(&other, &events) {
+                                // The PM's browser given back: it carries on, told so, as the daemon does.
+                                if let Command::BrowserControl { lane, take: false } = &other
+                                    && browser::handover()
+                                    && lane == browser::PM
+                                {
+                                    let _ = events.send(Event::Notice { session: 1, text: "🖐 브라우저를 돌려줬습니다.".into() });
+                                    turns.lock().await.insert(1, tokio::spawn(turn(1, events.clone(), seconds)));
+                                }
+                                if browser::on_command(&other, &events) || team::on_command(&other, &events) {
                                     continue;
                                 }
                                 if let Some(said) = on_board_command(&other) {

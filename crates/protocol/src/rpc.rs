@@ -88,6 +88,12 @@ pub struct HelloParams {
     /// ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
+    /// The screen shows members' browsers in a panel of its own (the desktop
+    /// app, on this Mac or another): a member handing the person its browser
+    /// opens there, rather than as a window on the daemon's Mac, which nobody
+    /// may be looking at. An older screen, or one without a panel: `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub browser_panel: bool,
 }
 
 /// A member calling one of its board tools.
@@ -321,7 +327,7 @@ mod tests {
 
     #[test]
     fn requests_and_responses_pair_by_id() {
-        let req = Message::request(7, HELLO, HelloParams { version: "1".into(), squad: "acme".into(), lang: None });
+        let req = Message::request(7, HELLO, HelloParams { version: "1".into(), squad: "acme".into(), lang: None, browser_panel: false });
         let res = Message::response(7, Hello { version: "1".into(), snapshot: Default::default() });
         assert_eq!(req.id, res.id);
         assert!(res.result_as::<Hello>().is_some());

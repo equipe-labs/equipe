@@ -29,6 +29,7 @@ pub mod squad_home;
 pub mod squad_memory;
 pub mod squads;
 pub mod store;
+pub mod team;
 pub mod worktree;
 
 pub use equipe_protocol as protocol;

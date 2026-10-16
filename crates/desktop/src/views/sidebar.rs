@@ -449,28 +449,22 @@ fn arrive(row: Stateful<Div>, id: ElementId, arrives: bool) -> AnyElement {
 /// A live ticket, as a session: its mark (a spinner, or the orange dot for
 /// the person's turn), its title fading out, how long it has been so — and,
 /// on the pointer, a quick yes for what waits. The number, the whole title,
-/// where it stands and who is on it are in the tooltip.
+/// where it stands and who is on it are on its card (`ticket_card`).
 fn ticket_row(shell: &Shell, t: &Ticket, live: Live, on: bool, arrives: bool, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let model = &shell.model;
     let id = t.id;
     let group = SharedString::from(format!("tk-{id}"));
-    let who = model.member_on(id).map(|m| m.name.clone()).or_else(|| crate::board::who(t).map(str::to_owned));
-    let state = match live {
-        Live::YourTurn if t.status != TicketStatus::Waiting => t!("state.section_permission"),
-        _ => crate::state::state_word(t),
-    };
-    let tip = format!("T-{id} · {}", t.title);
-    let detail = [Some(state.to_owned()), who].into_iter().flatten().collect::<Vec<_>>().join(" · ");
     let time = model.in_state_for(t).map(short_span);
     let yes = t.status == TicketStatus::Waiting && shell.can_act();
     let mark = match live {
         Live::Working => Mark::Spinner,
         Live::YourTurn => Mark::Waits,
     };
-    let row = row_shell(p, ("ticket", id as usize), on)
+    // Its card on the pointer, beside the sidebar: the number, where it
+    // stands, who is on it, what it asks.
+    let row = super::ticket_card::hover_link(row_shell(p, ("ticket", id as usize), on), id, super::ticket_card::Side::Right)
         .group(group.clone())
-        .tip_at(p, tip, Some(&detail), gpui_kit::base::Placement::Right)
         .on_click(cx.listener(move |this, _, window, cx| this.open_ticket_row(id, window, cx)))
         .child(mark_element(p, mark, shell.board.spin))
         .child(fading_title(p, t.title.clone(), on, false))

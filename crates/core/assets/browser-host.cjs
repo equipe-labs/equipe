@@ -25,7 +25,8 @@
 //   {"op":"person","url":"https://…"}
 //   {"op":"watch","page":3,"maxW":1200,"maxH":900,"quality":70,"fps":30}  {"op":"unwatch","page":3}
 //   {"op":"input","page":3,"ev":{…}}   {"op":"nav","page":3,"action":"back|forward|reload|stop|go","url":"…"}
-//   {"op":"fit","page":3,"w":600,"h":800,"dpr":2}  (lay a page the person drives out at the panel's picture)
+//   {"op":"fit","page":3,"w":600,"h":800,"dpr":2}  (lay a page a panel watches out at its picture — the largest panel's)
+//   {"op":"unfit","page":3}  (no panel watches it: its own size again)
 //   {"op":"newtab","url":"…"}  {"op":"closetab","page":3}
 //   {"op":"control","lane":"squad/name","by":"person"|null,"why":"check"?,"ifUntouched":true?}
 //   {"op":"goto","lane":"squad/name","url":"…"}  {"op":"dialog","page":3,"accept":true,"text":"…"}
@@ -56,6 +57,8 @@ const [profile, STATE] = process.argv.slice(2);
 
 __DRIVING__
 
+__GATE__
+
 // Google's sign-in is this browser's own; the sign-ins file never carries it.
 const own = (domain) => /(^|\.)(google\.[a-z]{2,3}(\.[a-z]{2})?|youtube\.com|googleusercontent\.com)$/.test(String(domain).replace(/^\./, ''));
 
@@ -64,10 +67,6 @@ const PLACEHOLDER = 'data:text/html;charset=utf-8,' + encodeURIComponent(
   '<!doctype html><title>equipe</title><meta name="color-scheme" content="light dark">'
   + '<body style="font: 14px -apple-system, system-ui; display: grid; place-items: center; height: 90vh; color: #888">'
   + 'equipe — members’ tabs are behind this one</body>');
-const BUSY = 'The person is using this browser; wait or ask them.';
-const BUSY_CHECK = 'A page in this browser waits for a person (a "verify you are human" check, a sign-in or a code from their phone), '
-  + 'and the person was asked to do it. Don\'t try to get around it: stop using the browser and end your turn, saying you wait for them. '
-  + 'You\'ll be told when they hand the browser back.';
 // A person who stops touching a member's page hands it back after this long.
 const IDLE_CONTROL_MS = 120000;
 
@@ -141,7 +140,7 @@ const address = (text) => {
   const cdps = new Map(); // page -> CDP session, for watching and input
   const dialogs = new Map(); // page id -> the dialog waiting for an answer
   const watches = new Map(); // page id -> { cdp, quality, maxW, maxH, fps, seq, lastAck }
-  const fits = new Map(); // page id -> { w, h, dpr }: the panel's box, for a page the person drives
+  const fits = new Map(); // page id -> { w, h, dpr }: the largest box a panel shows it in
   // Ids go on from where the daemon says (from the clock): a host started again
   // never names a tab with an id a screen still holds for another.
   let nextId = Math.max(1, Number(process.env.EQUIPE_FIRST_PAGE) || 1);
@@ -149,6 +148,8 @@ const address = (text) => {
   let queue = Promise.resolve();
   let parking = null; // { page, cdp, windowId }
   let personShown = null; // a page the person asked for on screen
+  let staged = null; // the page the person drives, in front of a real window (`restage`)
+  let onStage = null; // the page `restack` last brought forward for that
 
   const idOf = (page) => {
     if (!ids.has(page)) {
@@ -250,7 +251,7 @@ const address = (text) => {
   // on the person's screen: in the panel, the panel says who drives it.
   const onScreen = (page) => {
     const lane = lanes.get(owner.get(page));
-    return !!lane && (lane.shown || personShown === page);
+    return !!lane && (lane.shown || personShown === page) && lane.control !== 'person';
   };
   await context.exposeBinding('__equipeWho', ({ page }) => {
     const lane = lanes.get(owner.get(page));
@@ -303,17 +304,24 @@ const address = (text) => {
 
   /// What should be in front of the parking window now: the tab of a member
   /// whose browser is on screen, the person's own tab, or nothing (it goes down).
-  const restack = async () => {
+  // One at a time: a hand taken and given back at once would otherwise leave
+  // the window down with the stage's tab in front, or up with nothing.
+  let stacking = Promise.resolve();
+  const restack = () => (stacking = stacking.then(restackNow, restackNow));
+  const restackNow = async () => {
     const park = await ensureParking();
     const shown = [...lanes.entries()].filter(([, l]) => l.shown).map(([id]) => id);
     const front = (personShown && !personShown.isClosed() ? personShown : null)
       || shown.map((id) => pages.get(lanes.get(id).agent) || tabsOf(id).at(-1)).find((p) => p && !p.isClosed());
     if (front) {
+      onStage = null;
       const { windowId } = await windowOf(front).catch(() => ({}));
       if (windowId) await setState(windowId, 'normal');
       await raise(front);
       return;
     }
+    if (staged && !staged.isClosed()) return putOnStage(staged);
+    onStage = null;
     // Nothing to show: the placeholder in front, the window down — and the
     // keyboard back where it was. Already down, it stays as it is: bringing a
     // tab forward would bring the window up.
@@ -327,6 +335,69 @@ const address = (text) => {
   const raise = async (page) => {
     const original = page.bringToFront.original || page.bringToFront;
     await original.call(page).catch(() => {});
+  };
+
+  // ── the stage: a page the person drives, where a page is ──
+  //
+  // A tab behind the placeholder is drawn for DevTools, and runs as a shown
+  // page does (visible, drawing, its timers at pace) — but it sits on no
+  // screen: its window.screenY is past the foot of the screen and it has no
+  // toolbar (outerHeight = innerHeight), so every click the person makes
+  // through the panel lands, as far as the page can tell, below the screen.
+  // A "verify you are human" check reads that as no person (see
+  // docs/BROWSER-CHECKS.md). So while the person drives a page — a member's in
+  // their hands, or their own once they put a hand on it — and the panel shows
+  // it, it comes to the front of a normal window sized to the panel's box,
+  // behind the app the person is in; given back, it is parked again.
+  const stageable = (page) => {
+    if (!page || page.isClosed() || !watches.has(idOf(page))) return false;
+    const id = owner.get(page);
+    return id === PERSON ? !!page.__equipeHand : lanes.get(id)?.control === 'person';
+  };
+  const restage = async () => {
+    const want = stageable(staged) ? staged : [...watches.keys()].map((pid) => pages.get(pid)).find(stageable) || null;
+    if (want === staged) return;
+    const was = staged;
+    staged = want;
+    // Laid out by its window on the stage, by the panel's box off it.
+    if (was && !was.isClosed()) await applyFit(was);
+    if (want) await applyFit(want);
+    await restack();
+  };
+  const putOnStage = async (page) => {
+    const { windowId } = await windowOf(page).catch(() => ({}));
+    if (!windowId) return;
+    const { bounds } = await parking.cdp.send('Browser.getWindowBounds', { windowId }).catch(() => ({ bounds: {} }));
+    if (onStage === page && bounds.windowState === 'normal') return sizeStage(page, windowId);
+    // Brought up without taking the person's keyboard: whatever app they are
+    // in gets it back, the window behind it.
+    const before = frontApp();
+    if (bounds.windowState !== 'normal') await setState(windowId, 'normal');
+    await raise(page);
+    onStage = page;
+    await sizeStage(page, windowId);
+    giveBack(before);
+  };
+  /// The stage's window, sized so the page's viewport is the panel's box.
+  const sizeStage = async (page, windowId) => {
+    const f = fits.get(idOf(page));
+    if (!f || !windowId) return;
+    // Its toolbar's height, once it is in front (a tab behind has none).
+    let edge = null;
+    for (let i = 0; i < 10; i++) {
+      edge = await page.evaluate(() => [outerWidth - innerWidth, outerHeight - innerHeight, innerWidth, innerHeight]).catch(() => null);
+      if (!edge || edge[1] > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!edge || edge[1] <= 0 || (edge[2] === f.w && edge[3] === f.h)) return;
+    await parking?.cdp.send('Browser.setWindowBounds', { windowId, bounds: { width: f.w + edge[0], height: f.h + edge[1] } }).catch(() => {});
+    // A page that doesn't change draws no new frame: its screencast starts
+    // again, which sends one at the new size at once.
+    const w = watches.get(idOf(page));
+    if (w) {
+      await w.cdp.send('Page.stopScreencast').catch(() => {});
+      await w.cdp.send('Page.startScreencast', { format: 'jpeg', quality: w.quality, maxWidth: w.maxW, maxHeight: w.maxH, everyNthFrame: 1, maxFramesInFlight: 1 }).catch(() => {});
+    }
   };
 
   // ── pages ──
@@ -380,6 +451,11 @@ const address = (text) => {
       const lane = lanes.get(id);
       if (lane && lane.agent === pid) lane.agent = null;
       if (personShown === page) personShown = null;
+      if (onStage === page) onStage = null;
+      if (staged === page) {
+        staged = null;
+        restage().then(restack).catch(() => {});
+      }
       titles.delete(page);
       report(id);
     });
@@ -433,13 +509,34 @@ const address = (text) => {
     });
   };
 
+  // The tabs a member's tool call acts on, by page id: a tab closed by its
+  // index, every tab for closing the browser, none for listing or opening one,
+  // else the tab it is on.
+  const targetsOf = (laneId, backend, name, args) => {
+    let current = null;
+    try {
+      const page = backend._context?.currentTab?.()?.page;
+      if (page && !page.isClosed()) current = idOf(page);
+    } catch {}
+    const tabs = tabsOf(laneId).map(idOf);
+    // A turn's first call has no tab of its own yet: Playwright starts it on the first.
+    current = current ?? tabs[0] ?? null;
+    if (name === 'browser_close') return tabs;
+    if (name === 'browser_tabs') {
+      if (args?.action !== 'close') return [];
+      return typeof args.index === 'number' ? [tabs[args.index]].filter((p) => p !== undefined) : [current].filter((p) => p !== null);
+    }
+    return current !== null ? [current] : [];
+  };
+
   const openLane = async ({ id, member, color, port, output, shown }) => {
     if (lanes.has(id)) return show({ id, shown });
     // control: 'person' while the person has it — `reason` 'check' when equipe put
     // it in their hands for a page that waits for a person, 'hand' when they took
     // it; `touched`, they put a hand on it since; `refused`, its tools were
-    // turned away meanwhile.
-    const lane = { events: new EventEmitter(), member, color, shown: !!shown, control: null, reason: null, touched: false, refused: false, lastInput: 0, agent: null };
+    // turned away meanwhile; `page`, the tab the hold is about (the waiting page,
+    // or the one the person is on) and `since`, when it began (`gate.js`).
+    const lane = { events: new EventEmitter(), member, color, shown: !!shown, control: null, reason: null, touched: false, refused: false, lastInput: 0, agent: null, busy: 0, page: null, since: 0 };
     lanes.set(id, lane);
     const config = await tools.resolveCLIConfigForMCP({ outputDir: output }, process.env);
     const toolset = tools.filteredTools(config);
@@ -451,15 +548,28 @@ const address = (text) => {
       toolSchemas: toolset.map((t) => t.schema),
       create: async () => {
         const backend = new tools.BrowserBackend(config, ctx, toolset);
-        // While the person uses this member's browser its tools wait for them;
-        // after each call, the tab it worked in is the one the screen follows.
+        // While the person uses a tab of this member's browser its tools wait
+        // for them there (`gate.js`: a hold from detection alone never stops it
+        // leaving the page, and its other tabs stay its own); after each call,
+        // the tab it worked in is the one the screen follows.
         const call = backend.callTool.bind(backend);
         backend.callTool = async (name, args, signal) => {
-          if (lane.control === 'person') {
+          const no = gate(lane, { tool: name, args, targets: targetsOf(id, backend, name, args) });
+          if (no) {
             lane.refused = true;
-            return { content: [{ type: 'text', text: `### Error\n${lane.reason === 'check' ? BUSY_CHECK : BUSY}` }], isError: true };
+            if (no.wants && no.page) emit({ type: 'wants', lane: id, page: no.page, action: no.wants });
+            return { content: [{ type: 'text', text: `### Error\n${no.text}` }], isError: true };
           }
-          const result = await call(name, args, signal);
+          // A step under way is never resized under it: a panel's new size
+          // waits for the step to finish (`applyFit`).
+          lane.busy++;
+          let result;
+          try {
+            result = await call(name, args, signal);
+          } finally {
+            lane.busy--;
+            if (!lane.busy) for (const page of tabsOf(id)) if (page.__equipeFitWaits) applyFit(page).catch(() => {});
+          }
           const page = backend._context?.currentTab?.()?.page;
           if (page && owner.get(page) === id) {
             const pid = idOf(page);
@@ -483,6 +593,8 @@ const address = (text) => {
     report(id);
     hush(id);
     await restack();
+    // On this Mac's screen the window's size rules; out of it, a panel's again.
+    for (const page of tabsOf(id)) await applyFit(page);
   };
   const close = async ({ id }) => {
     for (const page of tabsOf(id)) await page.close().catch(() => {});
@@ -540,24 +652,35 @@ const address = (text) => {
     cdp.on('Page.screencastFrame', w.onFrame);
     watches.set(pid, w);
     await cdp.send('Page.startScreencast', { format: 'jpeg', quality, maxWidth: maxW, maxHeight: maxH, everyNthFrame: 1, maxFramesInFlight: 1 }).catch(() => stopWatch(pid));
+    await restage();
   };
-  const unwatch = ({ page }) => stopWatch(page);
+  const unwatch = async ({ page }) => {
+    stopWatch(page);
+    await restage();
+  };
 
   // ── the size a page is laid out at ──
 
-  // A page the person drives — their own tab, or a member's in their hands —
-  // is laid out at the panel's picture, so it fills it, crisp at the screen's
-  // scale. A member's page its member drives keeps the member's size (the panel
-  // fits its picture), and so does a page out in a real window.
-  const drives = (page) => {
-    const id = owner.get(page);
-    return id === PERSON || lanes.get(id)?.control === 'person';
-  };
+  // A page a panel watches — the person's own tab, a member's in their hands,
+  // or a member's it drives itself — is laid out at the panel's picture (the
+  // largest, with several screens watching), so it fills it, readable and
+  // crisp at the screen's scale, rather than the member's wide window shrunk
+  // into it. The member's tools work at whatever size the page has. Nobody
+  // watching, its own size comes back; a page out in a real window, or a
+  // member's window on this Mac's screen, keeps the window's. A member's step
+  // under way is never resized under it: the size waits for the step's end.
+  const inWindow = (page) => personShown === page || lanes.get(owner.get(page))?.shown === true;
   const applyFit = async (page) => {
     if (!page || page.isClosed()) return;
+    const lane = lanes.get(owner.get(page));
+    if (lane?.busy && lane.control !== 'person') {
+      page.__equipeFitWaits = true;
+      return;
+    }
+    page.__equipeFitWaits = false;
     const f = fits.get(idOf(page));
     const cdp = await cdpOf(page);
-    if (f && drives(page) && personShown !== page) {
+    if (f && !inWindow(page) && staged !== page) {
       const key = `${f.w}x${f.h}@${f.dpr}`;
       if (page.__equipeFit === key) return;
       page.__equipeFit = key;
@@ -580,16 +703,31 @@ const address = (text) => {
     if (!(w >= 64 && h >= 64)) return;
     fits.set(pid, { w: Math.round(w), h: Math.round(h), dpr: Math.min(4, Math.max(1, Number(dpr) || 2)) });
     await applyFit(pages.get(pid));
+    if (staged && pages.get(pid) === staged) await sizeStage(staged, (await windowOf(staged).catch(() => ({}))).windowId);
+  };
+  const unfit = async ({ page: pid }) => {
+    if (!fits.delete(pid)) return;
+    await applyFit(pages.get(pid));
   };
 
   // ── the person's hand on a page ──
 
   // `why` 'check': equipe puts it in the person's hands for a page waiting for
   // a person; anything else, the person took it.
-  const setControl = async (laneId, by, why) => {
+  const setControl = async (laneId, by, why, page) => {
     const lane = lanes.get(laneId);
     if (!lane) return;
     if (by && why !== 'check') lane.touched = true;
+    // What the hold is about: the page that waits (from the daemon), else the
+    // one the person is on — its member's, as the panel shows it.
+    if (by) {
+      if (page) lane.page = page;
+      else if (lane.control !== by || !lane.page) lane.page = lane.agent;
+      if (lane.control !== by) lane.since = Date.now();
+    } else {
+      lane.page = null;
+      lane.since = 0;
+    }
     if (lane.control === by) return;
     lane.control = by;
     lane.lastInput = Date.now();
@@ -602,12 +740,16 @@ const address = (text) => {
       lane.touched = false;
     }
     lane.refused = false;
+    // The in-page "… is working in this browser" label says nothing while the
+    // person drives: one state at a time.
+    hush(laneId);
     for (const page of tabsOf(laneId)) {
       const cdp = await cdpOf(page);
       await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
       await applyFit(page);
     }
     emit({ type: 'control', lane: laneId, by, refused: !by && refused });
+    await restage();
   };
   setInterval(() => {
     for (const [id, lane] of lanes) {
@@ -622,17 +764,43 @@ const address = (text) => {
     if (!page || !ev) return;
     const laneId = owner.get(page);
     const lane = lanes.get(laneId);
+    // Only a press or a key takes a member's page into the person's hands.
+    // Before that nothing of theirs reaches it — not the pointer passing over
+    // the picture, nor a wheel — and moves never count as a hand on it (nor
+    // keep it from going back when idle).
+    const move = ev.t === 'mouse' && ev.type === 'mouseMoved';
+    const takes = (ev.t === 'mouse' && ev.type === 'mousePressed') || ['key', 'ime', 'insert'].includes(ev.t);
     if (lane) {
-      if (lane.control !== 'person') await setControl(laneId, 'person');
-      lane.touched = true;
-      lane.lastInput = Date.now();
+      if (lane.control !== 'person') {
+        if (!takes) return undefined;
+        await setControl(laneId, 'person', undefined, pid);
+        // The moves that brought the pointer here weren't sent: it moves to
+        // where it presses first, as a mouse does.
+        if (ev.t === 'mouse') {
+          await (await cdpOf(page)).send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: ev.x, y: ev.y, button: 'none', buttons: 0, modifiers: ev.modifiers || 0, pointerType: 'mouse' }).catch(() => {});
+        }
+      }
+      if (!move) {
+        lane.touched = true;
+        lane.lastInput = Date.now();
+        // Their hand is on this tab: it is the one that is theirs.
+        lane.page = pid;
+      }
+    } else if (laneId === PERSON && !move && !page.__equipeHand) {
+      page.__equipeHand = true;
+      await restage();
     }
     const cdp = await cdpOf(page);
     switch (ev.t) {
       case 'mouse':
+        // As a mouse is: a pointer of type "mouse" whose pressure, while a
+        // button is down, is the 0.5 the Pointer Events spec gives a device
+        // that can't tell pressure (DevTools' default is 0, which no mouse
+        // reports). The person's own press; members' clicks are Playwright's.
         return cdp.send('Input.dispatchMouseEvent', {
           type: ev.type, x: ev.x, y: ev.y, button: ev.button || 'none', buttons: ev.buttons || 0,
-          clickCount: ev.clickCount || 0, modifiers: ev.modifiers || 0,
+          clickCount: ev.clickCount || 0, modifiers: ev.modifiers || 0, pointerType: 'mouse',
+          force: Number.isFinite(ev.force) ? ev.force : (ev.buttons ? 0.5 : 0),
         });
       case 'wheel':
         return cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: ev.x, y: ev.y, deltaX: ev.dx || 0, deltaY: ev.dy || 0, modifiers: ev.modifiers || 0 });
@@ -673,9 +841,9 @@ const address = (text) => {
   const closetab = async ({ page }) => pages.get(page)?.close().catch(() => {});
   // `ifUntouched`: handed back only if the person never put a hand on it (a
   // check that passed by itself).
-  const control = ({ lane, by, why, ifUntouched }) => {
+  const control = ({ lane, by, why, ifUntouched, page }) => {
     if (!by && ifUntouched && lanes.get(lane)?.touched) return undefined;
-    return setControl(lane, by || null, why);
+    return setControl(lane, by || null, why, page);
   };
   const dialog = async ({ page, accept, text }) => {
     const d = dialogs.get(page);
@@ -726,7 +894,7 @@ const address = (text) => {
 
   await ensureParking();
 
-  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, input, nav, goto, newtab, closetab, control, dialog, popout };
+  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout };
   // Input goes in order, each after the one before; so do watching and sizing
   // (two screencasts of a page started at once would leave one running
   // unseen); the rest as they come.
@@ -737,7 +905,7 @@ const address = (text) => {
     try { request = JSON.parse(line); } catch { return; }
     const run = () => Promise.resolve(ops[request.op]?.(request)).catch((err) => console.error(`equipe browser host: ${request.op}: ${err && err.message}`));
     if (request.op === 'input') inputs = inputs.then(run);
-    else if (['watch', 'unwatch', 'fit'].includes(request.op)) pictures = pictures.then(run);
+    else if (['watch', 'unwatch', 'fit', 'unfit'].includes(request.op)) pictures = pictures.then(run);
     else run();
   });
   // The daemon gone, the browser goes with it.

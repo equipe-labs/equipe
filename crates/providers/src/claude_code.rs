@@ -696,6 +696,7 @@ fn board_target(name: &str, input: Option<&Value>) -> Option<String> {
             });
             needs.into_iter().collect()
         }
+        "propose_team_change" => [text("change"), text("name").or_else(|| text("role"))].into_iter().flatten().collect(),
         _ => Vec::new(),
     };
     (!parts.is_empty()).then(|| parts.join(" · "))

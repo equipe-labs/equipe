@@ -89,6 +89,8 @@ pub struct Core {
     /// Ticket statuses per squad, to push only on a change.
     tickets: BTreeMap<String, HashMap<TicketId, TicketStatus>>,
     following: HashSet<(String, String)>,
+    /// Members' browsers handed to the person, by lane: pushed once each.
+    handed: HashSet<String>,
 }
 
 /// The pairing slot for a secret: what the relay knows it by.
@@ -113,7 +115,8 @@ pub fn pairing_url(relay: &str, id: &str, public: &str, secret: &[u8], name: &st
 
 /// The commands a phone may send, as it may send them: from a phone a request
 /// is allowed once, never always; a member's questions are the person's to
-/// answer or close from anywhere; starting, closing, merging and changing
+/// answer or close from anywhere, and so is a change to the team the PM
+/// proposed to approve or decline; starting, closing, merging and changing
 /// modes stay at the console — and so does writing, editing and rearranging
 /// tickets (the phone answers what the board asks; it doesn't plan it yet).
 pub fn allowed(command: Command) -> Option<Command> {
@@ -128,6 +131,8 @@ pub fn allowed(command: Command) -> Option<Command> {
         | Command::Decide { .. }
         | Command::AnswerQuestions { .. }
         | Command::DismissQuestions { .. }
+        | Command::ApproveTeamChange { .. }
+        | Command::DeclineTeamChange { .. }
         | Command::Focus { .. }
         | Command::Refresh { .. }) => Some(c),
         _ => None,
@@ -147,6 +152,8 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::Decide { squad, .. }
         | Command::AnswerQuestions { squad, .. }
         | Command::DismissQuestions { squad, .. }
+        | Command::ApproveTeamChange { squad, .. }
+        | Command::DeclineTeamChange { squad, .. }
         | Command::Scale { squad, .. }
         | Command::Focus { squad, .. }
         | Command::ShowBrowser { squad, .. } => Some(squad),
@@ -569,6 +576,17 @@ impl Core {
                     Event::QuestionsAsked { squad: squad.to_owned(), questions: short },
                 )
             }
+            Event::TeamChangeProposed { change, .. } => {
+                let mut short = change.clone();
+                short.reason = short.reason.chars().take(PUSH_ACTION).collect();
+                let title = match change.change {
+                    equipe_core::protocol::team::Change::Add => t!("remote.push_team_add", member = change.by, role = change.role, count = change.count),
+                    equipe_core::protocol::team::Change::Remove => {
+                        t!("remote.push_team_remove", member = change.by, name = change.member.clone().unwrap_or_else(|| change.role.clone()))
+                    }
+                };
+                (title, squad.to_owned(), "team", format!("team-{}", change.id), Event::TeamChangeProposed { squad: squad.to_owned(), change: short })
+            }
             Event::TicketChanged { ticket, .. } => {
                 // A demo phone's board is its own.
                 let board = only.map_or_else(|| squad.to_owned(), |device| format!("{squad}/{device}"));
@@ -586,6 +604,27 @@ impl Core {
                 short.body = String::new();
                 short.note = short.note.map(|n| n.chars().take(PUSH_ACTION).collect());
                 (title, format!("T-{} · {squad}", ticket.id), category, format!("ticket-{}", ticket.id), Event::TicketChanged { squad: squad.to_owned(), ticket: short })
+            }
+            // A member handed the person its browser (to sign in, a code, a
+            // human check): the phone can't drive it — the push says where to.
+            Event::BrowserControl { lane, by, why, check, .. } => {
+                let key = format!("{}/{lane}", only.unwrap_or_default());
+                if by.is_none() {
+                    self.handed.remove(&key);
+                    return vec![];
+                }
+                if (why.is_none() && check.is_none()) || !self.handed.insert(key) {
+                    return vec![];
+                }
+                let member = lane.split_once('/').map_or(lane.as_str(), |(_, key)| key);
+                let member = member.split_once('@').map_or(member, |(name, _)| name);
+                (
+                    t!("remote.push_browser", member = member),
+                    t!("remote.push_browser_body", squad = squad),
+                    "browser",
+                    format!("browser-{lane}"),
+                    event.clone(),
+                )
             }
             _ => return vec![],
         };
@@ -789,6 +828,14 @@ pub(crate) mod tests {
         assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), dismiss, now), now)[..], [Action::Command { command: Command::DismissQuestions { .. }, .. }]));
         let elsewhere = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "dismiss_questions", "squad": "zeta", "id": 5 } });
         assert!(core.on_relay(&phone.send(&c, Some("acme"), elsewhere, now), now).is_empty(), "only the frame's squad");
+        // A change to the team the PM proposed: the person's to approve or decline from a phone too.
+        let approve = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "approve_team_change", "squad": "acme", "id": 6 } });
+        let out = core.on_relay(&phone.send(&c, Some("acme"), approve, now), now);
+        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::ApproveTeamChange { squad: "acme".into(), id: 6 } }]);
+        let decline = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decline_team_change", "squad": "acme", "id": 6 } });
+        assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), decline, now), now)[..], [Action::Command { command: Command::DeclineTeamChange { .. }, .. }]));
+        let elsewhere = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "approve_team_change", "squad": "zeta", "id": 6 } });
+        assert!(core.on_relay(&phone.send(&c, Some("acme"), elsewhere, now), now).is_empty(), "only the frame's squad");
         // Merging stays at the console; another squad than the frame's is refused.
         let merge = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "merge", "squad": "acme", "ticket": 1, "push": true } });
         assert!(core.on_relay(&phone.send(&c, Some("acme"), merge, now), now).is_empty());
@@ -856,6 +903,23 @@ pub(crate) mod tests {
         let questions = &opened["rpc"]["params"]["questions"]["questions"];
         assert_eq!(questions[0]["question"].as_str().unwrap().chars().count(), 200);
         assert_eq!((questions[0]["options"][0]["label"].as_str(), questions[0]["options"][0].get("description")), (Some("Postgres"), None));
+        // A member hands the person its browser: who, and that it's the Mac's app to do it in — what for travels sealed.
+        let why = "Umbriles Inc. 계정 소유자 Apple ID로 로그인해 주세요";
+        let handed = Event::BrowserControl { squad: Some("acme".into()), lane: "acme/pm".into(), by: Some("person".into()), why: Some(why.into()), check: None };
+        let out = core.on_squad_event("acme", &handed);
+        let Action::Relay(push) = &out[0] else { panic!("{out:?}") };
+        assert_eq!((push["title"].as_str(), push["category"].as_str()), (Some("pm is waiting for you in its browser"), Some("browser")));
+        assert!(push["body"].as_str().unwrap().contains("equipe app on your Mac") && push["body"].as_str().unwrap().contains("acme"), "{push}");
+        assert!(!push.to_string().contains("Umbriles"), "what for travels sealed only");
+        assert_eq!(phone.open(&c, &out[0])["rpc"]["params"]["why"].as_str(), Some(why));
+        assert!(core.on_squad_event("acme", &handed).is_empty(), "told again (a screen attached): pushed once");
+        let taken = Event::BrowserControl { squad: Some("acme".into()), lane: "acme/qa".into(), by: Some("person".into()), why: None, check: None };
+        assert!(core.on_squad_event("acme", &taken).is_empty(), "the person taking it themselves is no news");
+        let back = Event::BrowserControl { squad: Some("acme".into()), lane: "acme/pm".into(), by: None, why: None, check: None };
+        assert!(core.on_squad_event("acme", &back).is_empty());
+        let check = Event::BrowserControl { squad: Some("acme".into()), lane: "acme/pm@site".into(), by: Some("person".into()), why: None, check: Some(equipe_core::protocol::HumanCheck::SignIn) };
+        assert!(matches!(&core.on_squad_event("acme", &check)[..], [Action::Relay(p)] if p["title"] == "pm is waiting for you in its browser"));
+        assert_eq!(core.on_squad_event("acme", &handed).len(), 1, "handed over again after it came back");
     }
 
     #[test]

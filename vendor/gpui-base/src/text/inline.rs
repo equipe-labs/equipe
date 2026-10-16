@@ -24,7 +24,7 @@ use crate::{
     text::range_highlight::RevealAt,
     text::selection::word_range_at,
     text::state::LineSpan,
-    text::text_view::{LinkClickHandlerFn, handle_link_click},
+    text::text_view::{LinkClickHandlerFn, handle_link_click, handle_link_hover},
     text_selection::text_rows_extent,
 };
 
@@ -480,6 +480,24 @@ impl Inline {
         }
 
         None
+    }
+
+    /// equipe: where a link's text is on the row under `position` — the whole
+    /// link when it is on one row; else from its start, or to its end.
+    fn link_row_bounds(layout: &TextLayout, range: &Range<usize>, position: Point<Pixels>) -> Bounds<Pixels> {
+        let line = layout.line_height();
+        let whole = layout.bounds();
+        let start = layout.position_for_index(range.start).unwrap_or(whole.origin);
+        let end = layout.position_for_index(range.end).unwrap_or(point(whole.right(), start.y));
+        let on_start_row = position.y < start.y + line;
+        let (left, right, top) = if (end.y - start.y).abs() < px(1.) {
+            (start.x, end.x, start.y)
+        } else if on_start_row {
+            (start.x, whole.right(), start.y)
+        } else {
+            (whole.left(), end.x, end.y)
+        };
+        Bounds::from_corners(point(left, top), point(right.max(left + px(1.)), top + line))
     }
 
     /// Get the range of the link at given mouse position.
@@ -1116,6 +1134,14 @@ impl Element for Inline {
                         Self::link_range_for_position(&text_layout, &links, event.position);
                     if hovered_link != updated {
                         hovered_link = updated;
+                        // equipe: the link the pointer came onto, and its row under it.
+                        if event.pressed_button.is_none()
+                            && let Some(range) = hovered_link.clone()
+                            && let Some((_, link)) = links.iter().find(|(r, _)| *r == range)
+                        {
+                            let bounds = Self::link_row_bounds(&text_layout, &range, event.position);
+                            handle_link_hover(&link.url, bounds, window, cx);
+                        }
                         cx.notify(current_view);
                     }
                 }
