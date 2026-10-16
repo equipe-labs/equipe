@@ -25,7 +25,9 @@ use super::commands;
 use super::composer::Composer;
 
 mod decide;
+mod turn;
 pub use decide::Picking;
+pub use turn::{TurnForm, Typing};
 
 /// How long a turn goes on before equipe's guess at its end shows.
 const GUESS_SHOWN_AFTER: Duration = Duration::from_secs(60);
@@ -668,6 +670,10 @@ pub struct App {
     pub questions: Vec<equipe_core::protocol::decide::QuestionSet>,
     /// Where the person is in each set, by its id.
     pub picking: HashMap<u64, Picking>,
+    /// A waiting ticket's asks, being answered (`/answer`, r on the board).
+    pub turn_form: Option<TurnForm>,
+    /// Cards put away with Esc, as they were left, by ticket.
+    turn_drafts: HashMap<TicketId, TurnForm>,
     /// Lines a page key moves: half the conversation's height on screen.
     pub page: usize,
     /// How far the selected conversation and the board can scroll, as last drawn.
@@ -812,6 +818,8 @@ impl App {
             approvals: snapshot.approvals,
             questions: snapshot.questions,
             picking: HashMap::new(),
+            turn_form: None,
+            turn_drafts: HashMap::new(),
             page: 10,
             conversation_max: usize::MAX,
             board_max: usize::MAX,
@@ -1476,6 +1484,10 @@ impl App {
             }
             KeyCode::Char('r') if ticket.as_ref().is_some_and(|t| t.status == TicketStatus::Waiting) => {
                 let ticket = ticket?;
+                // Asked item by item: its card, to answer each.
+                if self.open_turn(ticket.id) {
+                    return Some(Vec::new());
+                }
                 self.composer.insert_str(&format!("/resume T-{} ", ticket.id));
                 self.flash = Some(t!("app.resume_prompt").into());
             }
@@ -2137,6 +2149,10 @@ impl App {
                 return Vec::new();
             }
         }
+        // A waiting ticket's card, open: its letters, ↑↓, s — while nothing else is typed.
+        if let Some(commands) = self.on_turn_key(key.code, ctrl, alt) {
+            return commands;
+        }
         // A member's questions on screen: numbers pick, o for their own words,
         // Enter on — while nothing else is typed.
         if let Some(commands) = self.on_decide_key(key.code, ctrl, alt) {
@@ -2524,6 +2540,23 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 }
             },
             "accept" | "merge" | "reopen" | "resume" | "cancel" => self.decide(name, rest),
+            "answer" => {
+                match board::parse_ticket_id(rest.trim()).filter(|_| !rest.trim().is_empty()) {
+                    Some(id) => {
+                        if !self.open_turn(id) && self.flash.is_none() {
+                            self.flash = Some(t!("app.turn_not_waiting", id = id));
+                        }
+                    }
+                    None => {
+                        let waiting: Vec<String> = self.tickets.iter().filter(|t| t.status == TicketStatus::Waiting).map(|t| format!("T-{}", t.id)).collect();
+                        self.flash = Some(match waiting.as_slice() {
+                            [] => t!("app.which_ticket", verb = "answer"),
+                            ids => t!("app.which_ticket_of", what = t!("app.waiting_on_you"), ids = ids.join(", ")),
+                        });
+                    }
+                }
+                Vec::new()
+            }
             "new" => self.new_ticket(rest),
             "title" => self.retitle(rest),
             "mode" => self.set_mode(rest),
@@ -3470,13 +3503,13 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
     }
 
-    fn type_text(app: &mut App, text: &str) {
+    pub(super) fn type_text(app: &mut App, text: &str) {
         for c in text.chars() {
             app.on_key(key(KeyCode::Char(c)), Instant::now());
         }
     }
 
-    fn enter(app: &mut App) -> Vec<Command> {
+    pub(super) fn enter(app: &mut App) -> Vec<Command> {
         app.on_key(key(KeyCode::Enter), Instant::now())
     }
 
@@ -3526,7 +3559,7 @@ mod tests {
         }
     }
 
-    fn ticket(id: TicketId, status: TicketStatus) -> Ticket {
+    pub(super) fn ticket(id: TicketId, status: TicketStatus) -> Ticket {
         Ticket {
             id,
             title: format!("ticket {id}"),
@@ -3544,13 +3577,14 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
+            remaining: Vec::new(),
             updated_at: None,
             priority: Default::default(), rank: 0,
         }
     }
 
     /// The PM (selected) and a frontend engineer, both ready.
-    fn team() -> (App, SessionId, SessionId) {
+    pub(super) fn team() -> (App, SessionId, SessionId) {
         let snapshot = Snapshot { sessions: vec![info(1, member("pm", "pm")), info(2, member("frontend", "frontend"))], ..empty() };
         let (app, _) = App::from_snapshot("/repo".into(), snapshot, &[]);
         (app, 1, 2)
@@ -4793,11 +4827,20 @@ mod tests {
         assert_eq!(enter(&mut app), vec![Command::Resume { squad: "acme".into(), ticket: 6, note: String::new() }]);
         type_text(&mut app, "/resume 6 both in .env.local");
         assert_eq!(enter(&mut app), vec![Command::Resume { squad: "acme".into(), ticket: 6, note: "both in .env.local".into() }]);
-        // On the board, r on it starts the same.
+        // On the board, r on it opens its card, to answer item by item.
         app.pane = Pane::Board;
         assert_eq!(app.selected_ticket().map(|t| t.id), Some(6), "it sits at the top, with what waits for the person");
         app.on_key(KeyEvent::from(KeyCode::Char('r')), Instant::now());
-        assert_eq!(app.composer.text(), "/resume T-6 ");
+        assert_eq!(app.turn_form.as_ref().map(|f| (f.ticket, f.asks.len())), Some((6, 2)));
+        assert!(app.composer.is_empty());
+        // One that asks nothing item by item: the words box, as before.
+        app.on_key(KeyEvent::from(KeyCode::Esc), Instant::now());
+        let plain = ticket(7, TicketStatus::Waiting);
+        app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: plain });
+        app.board_selected = Some(7);
+        app.on_key(KeyEvent::from(KeyCode::Char('r')), Instant::now());
+        assert!(app.turn_form.is_none());
+        assert_eq!(app.composer.text(), "/resume T-7 ");
     }
 
     #[test]

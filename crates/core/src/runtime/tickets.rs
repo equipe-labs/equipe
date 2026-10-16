@@ -175,6 +175,7 @@ impl Runtime {
             created_by: "you".into(),
             note: None,
             asks: Vec::new(),
+            remaining: Vec::new(),
             priority: draft.priority,
             rank,
             updated_at: None,

@@ -213,6 +213,11 @@ fn ids_str(ids: &[TicketId]) -> String {
     ids.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
 }
 
+/// What a ticket leaves open, as kept: a JSON list, or nothing.
+fn remaining_str(asks: &[String]) -> Option<String> {
+    (!asks.is_empty()).then(|| serde_json::to_string(asks).unwrap_or_default())
+}
+
 fn ids_from(s: &str) -> Vec<TicketId> {
     s.split(',').filter_map(|id| id.trim().parse().ok()).collect()
 }
@@ -330,6 +335,8 @@ impl Journal {
         // for tickets from before.
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'", []);
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN rank INTEGER NOT NULL DEFAULT 0", []);
+        // What the person left open when they answered a wait (JSON list).
+        let _ = conn.execute("ALTER TABLE tickets ADD COLUMN remaining TEXT", []);
         // Tickets from before kinds: `code` with a project, `task` without — once,
         // when the column arrives.
         if conn.execute("ALTER TABLE tickets ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'", []).is_ok() {
@@ -599,7 +606,7 @@ impl Journal {
         self.conn.execute(
             "UPDATE tickets SET title = ?1, body = ?2, status = ?3, owner = ?4, assignee = ?5, project = ?6,
                                 depends_on = ?7, branch = ?8, note = ?9, updated_at = ?10, merged = ?12, kind = ?13,
-                                off_main = ?14, priority = ?15, rank = ?16
+                                off_main = ?14, priority = ?15, rank = ?16, remaining = ?17
              WHERE id = ?11",
             params![
                 t.title,
@@ -618,6 +625,7 @@ impl Journal {
                 t.off_main.as_ref().and_then(|o| serde_json::to_string(o).ok()),
                 t.priority.label(),
                 t.rank,
+                remaining_str(&t.remaining),
             ],
         )?;
         Ok(())
@@ -655,7 +663,7 @@ impl Journal {
     fn query_tickets(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<Ticket>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree, merged, kind, off_main, updated_at,
-                    priority, rank
+                    priority, rank, remaining
              FROM tickets {filter} ORDER BY id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -675,6 +683,7 @@ impl Journal {
                 merged: r.get(12)?,
                 kind: TicketKind::parse(&r.get::<_, String>(13)?).unwrap_or_default(),
                 asks: Vec::new(),
+                remaining: r.get::<_, Option<String>>(18)?.and_then(|r| serde_json::from_str(&r).ok()).unwrap_or_default(),
                 priority: Priority::parse(&r.get::<_, String>(16)?).unwrap_or_default(),
                 rank: r.get(17)?,
                 off_main: r.get::<_, Option<String>>(14)?.and_then(|o| serde_json::from_str(&o).ok()),
@@ -1165,6 +1174,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
+            remaining: Vec::new(),
             updated_at: None,
             priority: Default::default(), rank: 0,
             kind: TicketKind::Code,
@@ -1197,6 +1207,21 @@ mod tests {
         let j = Journal::for_squad(&home, "acme").unwrap();
         let kinds: Vec<TicketKind> = j.tickets().unwrap().iter().map(|t| t.kind).collect();
         assert_eq!(kinds, [TicketKind::Task, TicketKind::Code, TicketKind::Task]);
+    }
+
+    #[test]
+    fn what_the_person_left_open_is_kept() {
+        let home = temp_home();
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        j.create_ticket(&ticket("App Store")).unwrap();
+        let mut t = j.ticket(1).unwrap().unwrap();
+        assert!(t.remaining.is_empty());
+        t.remaining = vec!["EU DSA 상태를 trader로 바꿔 주세요.".into()];
+        j.save_ticket(&t).unwrap();
+        assert_eq!(j.ticket(1).unwrap().unwrap().remaining, t.remaining);
+        t.remaining.clear();
+        j.save_ticket(&t).unwrap();
+        assert!(j.ticket(1).unwrap().unwrap().remaining.is_empty());
     }
 
     #[test]

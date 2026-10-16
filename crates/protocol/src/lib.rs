@@ -275,6 +275,11 @@ pub struct Ticket {
     /// ([`Ticket::asks`] reads an older daemon's note when this is empty).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub asks: Vec<String>,
+    /// What the person left open when they last answered its asks — not yet
+    /// answered, or put off till later ([`asks::still_open`]): the member goes
+    /// on without it, and it is asked again with its next wait.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remaining: Vec<String>,
     /// How soon it should be done; normal unless the person said.
     #[serde(default, skip_serializing_if = "Priority::is_normal")]
     pub priority: Priority,
@@ -1400,6 +1405,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
+            remaining: Vec::new(),
             updated_at: None,
             priority: Default::default(), rank: 0,
         }

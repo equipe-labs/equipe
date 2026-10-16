@@ -8,51 +8,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use equipe_core::protocol::asks::{self, Reply};
+use equipe_core::protocol::asks;
+pub use equipe_core::protocol::asks::{Pick, Want, answers, can_send, picks_for, toggle, want_of};
 use equipe_core::protocol::{Ticket, TicketId, TicketStatus};
-
-// ── what an ask wants ──
-
-/// What the person gives back to an ask.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Want {
-    /// Words: a name, a number, a choice, a date.
-    Answer,
-    /// A look and an OK — or words where it isn't OK.
-    Confirm,
-    /// A thing to do, ticked off when done.
-    Do,
-}
-
-/// Words that ask for a look and an OK, in the languages equipe speaks.
-const CONFIRMS: &[&str] = &[
-    "괜찮", "확인해", "확인 부탁", "검토해", "맞는지", "봐 주세요", "봐주세요", "confirm", "looks good", "look over", "check that", "check the",
-    "review the", "is it ok", "ok?", "approve", "確認", "确认", "確認して", "問題な", "没问题", "沒問題", "bestätig", "prüf", "passt", "vérifi",
-    "confirme", "valide", "c'est bon", "revisa", "comprueba", "está bien", "de acuerdo",
-];
-
-/// Words that ask for words back.
-const ANSWERS: &[&str] = &[
-    "알려", "정해", "골라", "선택해", "적어", "답해", "말해", "보내 주", "주세요:", "무엇", "어떤", "언제", "누가", "어디", "얼마", "?", "？", "tell me",
-    "let me know", "which", "what ", "when ", "who ", "where ", "how many", "how much", "decide", "choose", "pick", "provide", "share", "send me",
-    "give me", "name the", "教え", "決め", "選ん", "どの", "いつ", "誰", "告诉", "告訴", "决定", "決定", "选择", "選擇", "提供", "哪", "什么", "什麼",
-    "teile", "nenne", "sag mir", "gib mir", "entscheide", "wähle", "welche", "wann", "wer ", "dites", "indiquez", "choisissez", "donnez", "quel",
-    "quand", "dime", "indica", "elige", "decide", "cuál", "cuándo", "quién",
-];
-
-/// What `ask` wants back: an OK when it asks for a look (and says what an OK
-/// would be), words when it asks something, else a thing to do.
-pub fn want_of(ask: &str) -> Want {
-    let lower = ask.to_lowercase();
-    let has = |words: &[&str]| words.iter().any(|w| lower.contains(w));
-    if has(CONFIRMS) {
-        Want::Confirm
-    } else if has(ANSWERS) {
-        Want::Answer
-    } else {
-        Want::Do
-    }
-}
 
 // ── files it names ──
 
@@ -289,27 +247,9 @@ pub fn answered_count(a: &Answered) -> Option<usize> {
     asks::answered_count(&a.text)
 }
 
-/// The replies a card holds, as the message builder takes them: words typed,
-/// or a thing ticked off.
-pub fn replies(wants: &[Want], typed: &[String], ticked: &std::collections::BTreeSet<usize>) -> Vec<Reply> {
-    wants
-        .iter()
-        .enumerate()
-        .map(|(n, want)| match want {
-            Want::Do if ticked.contains(&n) => Reply::Done,
-            Want::Do => Reply::Empty,
-            _ => match typed.get(n).map(|t| t.trim()) {
-                Some(t) if !t.is_empty() => Reply::Text(t.to_owned()),
-                _ => Reply::Empty,
-            },
-        })
-        .collect()
-}
-
-/// Whether the card can be sent: something answered — or nothing to answer
-/// in words, only things to do (then sending says they are done).
-pub fn can_send(wants: &[Want], replies: &[Reply]) -> bool {
-    replies.iter().any(|r| !r.is_empty()) || wants.iter().all(|w| *w == Want::Do)
+/// What it left open, when it says (not yet, or later).
+pub fn open_count(a: &Answered) -> usize {
+    asks::read(&a.text).map_or(0, |r| r.open())
 }
 
 /// The conversation's cards brought up to date: each ticket's latest is
@@ -432,13 +372,25 @@ mod tests {
     }
 
     #[test]
-    fn the_card_sends_what_was_answered_and_ticked() {
-        let wants = [Want::Answer, Want::Do, Want::Confirm];
-        let typed = vec!["홍길동".to_owned(), String::new(), " ".to_owned()];
-        let ticked = [1].into_iter().collect();
-        assert_eq!(replies(&wants, &typed, &ticked), [Reply::Text("홍길동".into()), Reply::Done, Reply::Empty]);
-        assert!(can_send(&wants, &replies(&wants, &typed, &ticked)));
-        assert!(!can_send(&wants, &replies(&wants, &[], &Default::default())), "nothing answered yet");
-        assert!(can_send(&[Want::Do, Want::Do], &[Reply::Empty, Reply::Empty]), "only things to do: sending says they're done");
+    fn the_card_sends_what_was_set_and_says_what_it_left_open() {
+        let asks: Vec<String> = vec!["App Review 연락처를 알려 주세요.".into(), "EU DSA 상태를 trader로 바꿔 주세요.".into()];
+        let wants: Vec<Want> = asks.iter().map(|a| want_of(a)).collect();
+        assert_eq!(wants, [Want::Answer, Want::Do]);
+        let typed = vec!["+82 10 1234 5678".to_owned(), String::new()];
+        let none = HashMap::new();
+        assert!(!can_send(&answers(&wants, &[], &none, &[], "")), "nothing set yet");
+        // Partly answered: what is left goes as not yet, and the card says it stayed open.
+        let partial = answers(&wants, &typed, &none, &[], "");
+        assert!(can_send(&partial));
+        let a = Answered { text: asks::answer_message(&asks, &partial), at: Some(1), here: true, settled: true };
+        assert_eq!((answered_count(&a), open_count(&a)), (Some(1), 1));
+        // Handed back with a note: nothing left open.
+        let picks: HashMap<usize, Pick> = [(1, Pick::Yours)].into_iter().collect();
+        let whole = answers(&wants, &typed, &picks, &[String::new(), "2FA는 제 폰으로 와요".into()], "");
+        let a = Answered { text: asks::answer_message(&asks, &whole), ..a };
+        assert_eq!((answered_count(&a), open_count(&a)), (Some(2), 0));
+        // An older screen's answer leaves nothing it can tell open.
+        let old = Answered { text: "1. 키\n→ sk_test_1\n\n2. ✓ Vercel".into(), ..a };
+        assert_eq!((answered_count(&old), open_count(&old)), (Some(2), 0));
     }
 }
