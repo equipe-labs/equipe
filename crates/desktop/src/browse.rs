@@ -258,6 +258,76 @@ impl Hand {
     }
 }
 
+// ── a browser handed to the person ──
+
+/// What a lane put in the person's hands was handed over for, if it was —
+/// its member's words, or the check its page waits for; `None` for the
+/// person taking it themselves, or giving it back.
+pub fn handed_for(by_person: bool, why: Option<&str>, check: Option<HumanCheck>) -> Option<String> {
+    if !by_person {
+        return None;
+    }
+    why.map(str::to_owned).or_else(|| check.map(|c| format!("{c:?}")))
+}
+
+/// Where the panel opens for a hand-over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Open {
+    /// On this tab of the lane, the person driving.
+    Now(String, u64),
+    /// Its tabs aren't told yet (the lane just opened): when they are.
+    Later,
+}
+
+/// The members' browsers handed to the person that a panel opened itself
+/// for — every screen's panel does, on the tab its member works in — once
+/// each: the same hand-over told again (a screen attaching again) doesn't
+/// open it again after the person closed the panel.
+#[derive(Debug, Default)]
+pub struct Handovers {
+    opened: std::collections::HashSet<(String, String)>,
+    waiting: Option<String>,
+}
+
+impl Handovers {
+    /// The daemon says who has `lane` now. `page`: the tab its member works
+    /// in, if the lane's tabs are known.
+    pub fn on_control(&mut self, lane: &str, by_person: bool, why: Option<&str>, check: Option<HumanCheck>, page: Option<u64>) -> Option<Open> {
+        let Some(what) = handed_for(by_person, why, check) else {
+            if !by_person {
+                self.given_back(lane);
+            }
+            return None;
+        };
+        if lane.is_empty() || !self.opened.insert((lane.to_owned(), what)) {
+            return None;
+        }
+        Some(match page {
+            Some(page) => Open::Now(lane.to_owned(), page),
+            None => {
+                self.waiting = Some(lane.to_owned());
+                Open::Later
+            }
+        })
+    }
+
+    /// A lane's tabs told (`page`, the tab its member works in): a hand-over
+    /// waiting for them opens now.
+    pub fn on_tabs(&mut self, lane: &str, page: Option<u64>) -> Option<(String, u64)> {
+        let page = page.filter(|_| self.waiting.as_deref() == Some(lane))?;
+        self.waiting = None;
+        Some((lane.to_owned(), page))
+    }
+
+    /// Back to its member (here, or on another screen): a next hand-over opens again.
+    pub fn given_back(&mut self, lane: &str) {
+        self.opened.retain(|(l, _)| l != lane);
+        if self.waiting.as_deref() == Some(lane) {
+            self.waiting = None;
+        }
+    }
+}
+
 // ── the page's size ──
 
 /// The box the page shows in, as the stream is asked for it: CSS pixels and
@@ -429,6 +499,38 @@ mod tests {
         // Their hand on it doesn't forget why.
         h.on_control(true, None, None);
         assert_eq!(h.mode(None, true), Mode::Asked("로그인해 주세요".into()));
+    }
+
+    /// What every attached screen's panel does with the daemon's word that
+    /// a member handed the person its browser: each runs this, so each opens.
+    #[test]
+    fn a_hand_over_opens_the_panel_on_its_members_tab_in_the_persons_hands_once() {
+        let why = "Umbriles Inc. 계정 소유자 Apple ID로 로그인해 주세요";
+        let screens = [Handovers::default(), Handovers::default()];
+        for mut panel in screens {
+            assert_eq!(panel.on_control("acme/pm", true, Some(why), None, Some(7)), Some(Open::Now("acme/pm".into(), 7)), "on the tab pm works in");
+            // The person driving it, its banner saying what pm asked.
+            let mut hand = Hand::default();
+            hand.on_control(true, Some(why.into()), None);
+            hand.take();
+            assert_eq!(hand.mode(None, false), Mode::Asked(why.into()));
+            // Told again (this screen attached again), with or without the words: not opened again.
+            assert_eq!(panel.on_control("acme/pm", true, Some(why), None, Some(7)), None);
+            assert_eq!(panel.on_control("acme/pm", true, None, None, Some(7)), None, "the host saying the person has it");
+            // Given back — here or on another screen — the next hand-over opens again.
+            assert_eq!(panel.on_control("acme/pm", false, None, None, Some(7)), None);
+            assert_eq!(panel.on_control("acme/pm", true, Some(why), None, Some(7)), Some(Open::Now("acme/pm".into(), 7)));
+        }
+        // Handed over as its lane opens, before its tabs are told: when they are.
+        let mut panel = Handovers::default();
+        assert_eq!(panel.on_control("acme/qa", true, Some("2단계 코드를 넣어 주세요"), None, None), Some(Open::Later));
+        assert_eq!(panel.on_tabs("acme/pm", Some(3)), None, "another lane's tabs");
+        assert_eq!(panel.on_tabs("acme/qa", Some(9)), Some(("acme/qa".into(), 9)));
+        assert_eq!(panel.on_tabs("acme/qa", Some(9)), None, "once");
+        // A page waiting for a person opens it too; the person taking a tab themselves doesn't.
+        assert!(matches!(panel.on_control("acme/backend", true, None, Some(HumanCheck::SignIn), Some(4)), Some(Open::Now(_, 4))));
+        assert_eq!(panel.on_control("acme/frontend", true, None, None, Some(5)), None);
+        assert_eq!(panel.on_control("", true, Some("x"), None, Some(1)), None, "the person's own tabs");
     }
 
     #[test]

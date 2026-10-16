@@ -313,6 +313,12 @@ pub struct Model {
     /// human" check, a sign-in, a code: in 나에게 until they pass or the
     /// browser is handed back.
     pub browser_waits: Vec<BrowserWait>,
+    /// Members' browsers handed to the person (`show_my_browser`), by lane,
+    /// with what to do there: waiting for their tabs to be told, then in
+    /// `browser_waits`, until handed back.
+    browser_asked: HashMap<String, String>,
+    /// Each member's browser's tabs as last told, by lane.
+    browser_tabs: HashMap<String, LaneTabs>,
     /// Tickets' records, as the daemon last sent them (a ticket page asks).
     pub histories: HashMap<TicketId, Vec<TicketEntry>>,
     /// Bumped whenever a ticket or a record changes, so the screens draw again.
@@ -322,7 +328,8 @@ pub struct Model {
 }
 
 /// A member's browser page that waits for the person. No member decides it,
-/// and none can do it.
+/// and none can do it: a page that asks for a person (`check`), or a browser
+/// its member handed them, saying what to do (`why`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowserWait {
     pub page: u64,
@@ -330,7 +337,18 @@ pub struct BrowserWait {
     pub session: Option<SessionId>,
     pub member: String,
     pub site: String,
-    pub check: HumanCheck,
+    pub check: Option<HumanCheck>,
+    /// Its member handed it over, for this — in its own words.
+    pub why: Option<String>,
+}
+
+/// A member's browser's tabs, as last told.
+#[derive(Debug, Clone, Default)]
+struct LaneTabs {
+    session: Option<SessionId>,
+    member: Option<String>,
+    pages: Vec<equipe_core::protocol::BrowserPage>,
+    agent_page: Option<u64>,
 }
 
 impl Model {
@@ -365,6 +383,8 @@ impl Model {
             desktop_stopped: false,
             answers: HashMap::new(),
             browser_waits: Vec::new(),
+            browser_asked: HashMap::new(),
+            browser_tabs: HashMap::new(),
             histories: HashMap::new(),
             board_rev: 0,
             squad_errors: 0,
@@ -624,6 +644,8 @@ impl Model {
     fn load(&mut self, hello: Hello) {
         // The daemon tells its browser's tabs again right after.
         self.browser_waits.clear();
+        self.browser_asked.clear();
+        self.browser_tabs.clear();
         let version = hello.version;
         let snapshot = hello.snapshot;
         self.squad = snapshot.squad;
@@ -980,8 +1002,9 @@ impl Model {
     }
 
     /// One of the daemon's browser events (the panel's, told here too): a
-    /// member's page that starts waiting for the person goes into 나에게 and
-    /// is announced; one that passed, or a browser handed back, leaves.
+    /// member's page that starts waiting for the person, or a browser its
+    /// member hands them, goes into 나에게 and is announced; one that passed,
+    /// or a browser handed back, leaves.
     pub fn on_browser(&mut self, event: &Event) -> bool {
         let before = self.browser_waits.clone();
         match event {
@@ -989,30 +1012,75 @@ impl Model {
                 if lane.is_empty() || squad.as_deref().is_some_and(|s| s != self.squad) {
                     return false;
                 }
-                let waiting = pages.iter().filter(|p| p.check.is_some()).min_by_key(|p| Some(p.id) != *agent_page);
-                let kept = waiting.and_then(|p| self.browser_waits.iter().find(|w| w.lane == *lane && w.page == p.id).cloned());
-                self.browser_waits.retain(|w| w.lane != *lane);
-                if let Some(page) = waiting {
-                    let name = session
-                        .and_then(|s| self.members.iter().find(|m| m.session == s).or_else(|| self.lanes.iter().find(|l| l.session == s).and_then(|l| self.members.iter().find(|m| m.session == l.of))))
-                        .map(|m| m.name.clone())
-                        .or_else(|| member.as_deref().map(|m| m.split_once(" (").map_or(m, |(n, _)| n).to_owned()))
-                        .unwrap_or_else(|| lane.rsplit('/').next().unwrap_or(lane).to_owned());
-                    let site = crate::browse::site(&page.url).unwrap_or_default();
-                    let wait = BrowserWait { page: page.id, lane: lane.clone(), session: *session, member: name, site, check: page.check.unwrap_or(HumanCheck::Challenge) };
-                    if kept.is_none() {
-                        self.alerts.push(Alert::Browser { page: wait.page, session: wait.session, member: wait.member.clone(), site: wait.site.clone() });
-                    }
-                    self.browser_waits.push(wait);
+                if pages.is_empty() {
+                    self.browser_tabs.remove(lane);
+                } else {
+                    self.browser_tabs.insert(lane.clone(), LaneTabs { session: *session, member: member.clone(), pages: pages.clone(), agent_page: *agent_page });
                 }
+                // Handed over by its member: that says what waits, below.
+                if !self.browser_asked.contains_key(lane) {
+                    let waiting = pages.iter().filter(|p| p.check.is_some()).min_by_key(|p| Some(p.id) != *agent_page);
+                    let kept = waiting.and_then(|p| self.browser_waits.iter().find(|w| w.lane == *lane && w.page == p.id).cloned());
+                    self.browser_waits.retain(|w| w.lane != *lane);
+                    if let Some(page) = waiting {
+                        let name = self.lane_member(lane);
+                        let site = crate::browse::site(&page.url).unwrap_or_default();
+                        let wait = BrowserWait { page: page.id, lane: lane.clone(), session: *session, member: name, site, check: page.check, why: None };
+                        if kept.is_none() {
+                            self.alerts.push(Alert::Browser { page: wait.page, session: wait.session, member: wait.member.clone(), site: wait.site.clone(), check: wait.check, why: None });
+                        }
+                        self.browser_waits.push(wait);
+                    }
+                }
+            }
+            // A member hands the person its browser, saying what for.
+            Event::BrowserControl { squad, lane, by: Some(_), why: Some(why), .. } if squad.as_deref().is_none_or(|s| s == self.squad) && !lane.is_empty() => {
+                self.browser_asked.insert(lane.clone(), why.clone());
             }
             // Handed back to its member: not the person's to do any more.
             Event::BrowserControl { squad, lane, by: None, .. } if squad.as_deref().is_none_or(|s| s == self.squad) => {
+                self.browser_asked.remove(lane);
                 self.browser_waits.retain(|w| w.lane != *lane);
             }
             _ => {}
         }
+        self.settle_handed();
         before != self.browser_waits
+    }
+
+    /// The browsers handed to the person whose tabs are known: in 나에게, on
+    /// the tab its member works in, announced the first time.
+    fn settle_handed(&mut self) {
+        let mut asked: Vec<(String, String)> = self.browser_asked.iter().map(|(l, w)| (l.clone(), w.clone())).collect();
+        asked.sort();
+        for (lane, why) in asked {
+            let Some(tabs) = self.browser_tabs.get(&lane) else { continue };
+            let Some(page) = tabs.agent_page.and_then(|a| tabs.pages.iter().find(|p| p.id == a)).or(tabs.pages.last()).cloned() else { continue };
+            let session = tabs.session;
+            let site = crate::browse::site(&page.url).unwrap_or_default();
+            let had = self.browser_waits.iter().any(|w| w.lane == lane && w.why.is_some());
+            let member = self.lane_member(&lane);
+            self.browser_waits.retain(|w| w.lane != lane);
+            let wait = BrowserWait { page: page.id, lane, session, member, site, check: page.check, why: Some(why.clone()) };
+            if !had {
+                self.alerts.push(Alert::Browser { page: wait.page, session: wait.session, member: wait.member.clone(), site: wait.site.clone(), check: wait.check, why: Some(why) });
+            }
+            self.browser_waits.push(wait);
+        }
+    }
+
+    /// Whose a member's browser is, by name: its conversation's member, else
+    /// the host's label (`pm (site)`), else the lane's key.
+    fn lane_member(&self, lane: &str) -> String {
+        let tabs = self.browser_tabs.get(lane);
+        tabs.and_then(|t| t.session)
+            .and_then(|s| self.members.iter().find(|m| m.session == s).or_else(|| self.lanes.iter().find(|l| l.session == s).and_then(|l| self.members.iter().find(|m| m.session == l.of))))
+            .map(|m| m.name.clone())
+            .or_else(|| tabs.and_then(|t| t.member.as_deref()).map(|m| m.split_once(" (").map_or(m, |(n, _)| n).to_owned()))
+            .unwrap_or_else(|| {
+                let key = lane.rsplit('/').next().unwrap_or(lane);
+                key.split_once('@').map_or(key, |(n, _)| n).to_owned()
+            })
     }
 
     pub fn take_alerts(&mut self) -> Vec<Alert> {
@@ -1311,6 +1379,45 @@ mod tests {
             *squad = Some("side".into());
         }
         assert!(!model.on_browser(&other));
+    }
+
+    #[test]
+    fn a_browser_its_member_hands_over_is_the_persons_to_do_until_it_comes_back() {
+        use equipe_core::protocol::{BrowserPage, HumanCheck};
+        let mut model = Model::new("acme");
+        let why = "Umbriles Inc. 계정 소유자 Apple ID로 App Store Connect에 로그인해 주세요";
+        let tabs = |url: &str, check: Option<HumanCheck>| Event::BrowserTabs {
+            squad: Some("acme".into()),
+            lane: "acme/pm".into(),
+            session: None,
+            member: Some("pm".into()),
+            color: None,
+            pages: vec![BrowserPage { id: 7_000_001, url: url.into(), title: "App Store Connect".into(), check, ..Default::default() }],
+            agent_page: Some(7_000_001),
+        };
+        let handed = Event::BrowserControl { squad: Some("acme".into()), lane: "acme/pm".into(), by: Some("person".into()), why: Some(why.into()), check: None };
+        // Handed over before its tabs are told (the lane just opened): waits for them.
+        assert!(!model.on_browser(&handed));
+        assert!(model.needs_you().is_empty() && model.take_alerts().is_empty());
+        assert!(model.on_browser(&tabs("https://appstoreconnect.apple.com/", None)));
+        assert!(model.needs_you().contains(&(Section::Waiting, Need::Browser(7_000_001))), "in 나에게");
+        let wait = &model.browser_waits[0];
+        assert_eq!((wait.member.as_str(), wait.why.as_deref(), wait.check), ("pm", Some(why), None));
+        assert!(matches!(&model.take_alerts()[..], [Alert::Browser { page: 7_000_001, why: Some(_), .. }]), "announced once");
+        // On to Apple's sign-in: the same hand-over, now known to be a sign-in — not announced again.
+        model.on_browser(&tabs("https://idmsa.apple.com/appleauth/auth/signin", Some(HumanCheck::SignIn)));
+        assert_eq!(model.browser_waits.len(), 1);
+        assert_eq!((model.browser_waits[0].check, model.browser_waits[0].site.as_str()), (Some(HumanCheck::SignIn), "idmsa.apple.com"));
+        assert!(model.take_alerts().is_empty());
+        // The host saying the person has it (no words this time) changes nothing.
+        assert!(!model.on_browser(&Event::BrowserControl { squad: Some("acme".into()), lane: "acme/pm".into(), by: Some("person".into()), why: None, check: None }));
+        // Signed in, the page waits no more — but it is still theirs until handed back.
+        model.on_browser(&tabs("https://appstoreconnect.apple.com/apps", None));
+        assert_eq!(model.needs_you().len(), 1);
+        assert!(model.on_browser(&Event::BrowserControl { squad: Some("acme".into()), lane: "acme/pm".into(), by: None, why: None, check: None }));
+        assert!(model.needs_you().is_empty(), "handed back: gone from 나에게");
+        model.on_browser(&tabs("https://appstoreconnect.apple.com/apps", None));
+        assert!(model.needs_you().is_empty(), "and it stays gone");
     }
 
     fn session(id: SessionId, role: &str, name: &str, state: SessionState) -> SessionInfo {

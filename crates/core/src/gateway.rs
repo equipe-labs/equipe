@@ -325,15 +325,18 @@ where
                 Some(StreamIn::Watch { page, fps, max_w, max_h, fit }) => {
                     watching = Some(page);
                     pacer.watch(fps);
-                    // The box it is shown in: a page the person drives is laid out at it.
-                    if let Some(fit) = fit.filter(|f| f.w >= 64 && f.h >= 64) {
+                    // The box it is shown in: the page is laid out at it — the largest
+                    // any panel shows it in — whoever drives it.
+                    let fit = fit.filter(|f| f.w >= 64 && f.h >= 64).map(|fit| {
                         let dpr = if fit.dpr.is_finite() { fit.dpr.clamp(1., 4.) } else { 2. };
-                        hub.op(&serde_json::json!({ "op": "fit", "page": page, "w": fit.w.min(4096), "h": fit.h.min(4096), "dpr": dpr }));
-                    }
+                        (page, crate::browser::Fit { w: fit.w.min(4096), h: fit.h.min(4096), dpr })
+                    });
+                    hub.fit(watcher, fit);
                     hub.watch(watcher, crate::browser::Want { page, fps: fps.clamp(1, 60), max_w: max_w.clamp(64, 4096), max_h: max_h.clamp(64, 4096), quality });
                 }
                 Some(StreamIn::Unwatch) => {
                     watching = None;
+                    hub.fit(watcher, None);
                     hub.unwatch(watcher);
                 }
                 Some(StreamIn::Credit { n }) => pacer.credit(n),

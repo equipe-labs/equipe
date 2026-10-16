@@ -3,9 +3,13 @@
 //! stopped at a "Just a moment…" wall (paused for the person, as the daemon
 //! pauses a member at a human check), and one tab of the person's own. The
 //! `browser_stream` connection gets drawn pictures of the tab watched: at the
-//! panel's size (`fit`) when the person drives it, else at the member's own
-//! 1280×800. A press on the wall passes it, as a person's click would.
-//! `FAKE_BROWSER=empty`: no tabs at all.
+//! panel's size (`fit`), as the daemon lays out any page a panel watches —
+//! or, with `FAKE_FIT=driving` (how 0.47 did it), only when the person drives
+//! it, a member's own at its 1280×800. A press on the wall passes it, as a person's click would.
+//! `FAKE_BROWSER=empty`: no tabs at all. `FAKE_BROWSER=handover`: besides,
+//! the PM has handed the person its browser at Apple's sign-in, asking them
+//! to sign in to App Store Connect (`show_my_browser`, as a daemon on another
+//! Mac would put it in the app's panel); given back, the PM carries on.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
@@ -19,11 +23,20 @@ use tokio::sync::broadcast;
 const SQUAD: &str = "demo";
 const FRONTEND: &str = "demo/frontend@squad";
 const BACKEND: &str = "demo/backend@squad";
+/// The PM's own browser, with `FAKE_BROWSER=handover`.
+pub const PM: &str = "demo/pm";
+/// What the PM asked the person to do in it.
+pub const PM_WHY: &str = "App Store Connect(Umbriles Inc. 계정 소유자 Apple ID)에 로그인해 주세요. 끝나면 DSA '거래자' 신고는 제가 이어서 합니다.";
 /// Ids as a host started now would give them: far from 1.
 const FIRST: u64 = 1_879_000_000_000_001;
 
 pub fn enabled() -> bool {
     std::env::var("FAKE_BROWSER").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+/// `FAKE_BROWSER=handover`: the PM's browser is in the person's hands.
+pub fn handover() -> bool {
+    std::env::var("FAKE_BROWSER").is_ok_and(|v| v == "handover")
 }
 
 struct Lane {
@@ -51,7 +64,7 @@ fn state() -> &'static Mutex<State> {
     static STATE: OnceLock<Mutex<State>> = OnceLock::new();
     STATE.get_or_init(|| {
         let empty = std::env::var("FAKE_BROWSER").is_ok_and(|v| v == "empty");
-        let lanes = if empty {
+        let mut lanes = if empty {
             Vec::new()
         } else {
             vec![
@@ -76,7 +89,20 @@ fn state() -> &'static Mutex<State> {
             ]
         };
         // Backend stopped at the wall: in the person's hands, as the daemon puts it.
-        let held = if empty { HashSet::new() } else { HashSet::from([BACKEND.to_owned()]) };
+        let mut held = if empty { HashSet::new() } else { HashSet::from([BACKEND.to_owned()]) };
+        if handover() {
+            lanes.insert(
+                0,
+                Lane {
+                    id: PM,
+                    session: Some(1),
+                    member: Some("pm"),
+                    color: Some("232, 190, 120"),
+                    pages: vec![page(FIRST + 4, "https://idmsa.apple.com/appleauth/auth/signin?widgetKey=appstoreconnect", "Sign In - Apple", Some(HumanCheck::SignIn))],
+                },
+            );
+            held.insert(PM.to_owned());
+        }
         Mutex::new(State { lanes, held, next: FIRST + 10, seq: HashMap::new() })
     })
 }
@@ -102,6 +128,11 @@ pub fn replay() -> Vec<Event> {
     let s = state().lock().unwrap();
     let mut out: Vec<Event> = s.lanes.iter().map(tabs).collect();
     for lane in &s.held {
+        // The PM's was handed over, saying what for; the daemon tells it so to every screen.
+        if lane == PM {
+            out.push(Event::BrowserControl { squad: Some(SQUAD.into()), lane: lane.clone(), by: Some("person".into()), why: Some(PM_WHY.into()), check: None });
+            continue;
+        }
         let check = s.lanes.iter().find(|l| l.id == lane).and_then(|l| l.pages.iter().find_map(|p| p.check));
         out.push(Event::BrowserControl { squad: Some(SQUAD.into()), lane: lane.clone(), by: Some("person".into()), why: None, check });
     }
@@ -122,6 +153,15 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
                 s.held.remove(lane);
             }
             let _ = events.send(Event::BrowserControl { squad: Some(SQUAD.into()), lane: lane.clone(), by: take.then(|| "person".into()), why: None, check: None });
+            // The PM's handed back: the person signed in, and it is on App Store Connect.
+            if !*take
+                && lane == PM
+                && let Some(pm) = s.lanes.iter_mut().find(|l| l.id == PM)
+            {
+                pm.pages = vec![page(FIRST + 4, "https://appstoreconnect.apple.com/business/eu-dsa", "App Store Connect", None)];
+                let _ = events.send(tabs(pm));
+                *s.seq.entry(FIRST + 4).or_default() += 1;
+            }
         }
         Command::BrowserNewTab { url } => {
             let id = s.next;
@@ -219,8 +259,10 @@ pub async fn serve_stream(mut reader: impl AsyncRead + Unpin, mut writer: impl A
         if sent == Some((page, version, drives, fit)) {
             continue;
         }
-        // At the panel's size when the person drives it; the member's own otherwise.
-        let (css_w, css_h, scale) = match fit.filter(|_| drives) {
+        // At the panel's size, as the daemon lays out a page a panel watches; with
+        // `FAKE_FIT=driving`, only one the person drives — the member's own otherwise.
+        let old_rule = std::env::var("FAKE_FIT").is_ok_and(|v| v == "driving");
+        let (css_w, css_h, scale) = match fit.filter(|_| drives || !old_rule) {
             Some(f) => (f.w as f64, f.h as f64, f.dpr as f64),
             None => (1280., 800., 1.),
         };
@@ -254,7 +296,7 @@ fn draw(page: u64, w: u32, h: u32) -> Option<Vec<u8>> {
             }
         }
     };
-    if check.is_some() {
+    if matches!(check, Some(HumanCheck::Challenge | HumanCheck::Captcha)) {
         // The wall: a plain page, the site's name, a box to tick, a footer.
         rect(0.08, 0.16, 0.42, 0.05, [40, 40, 40]);
         rect(0.08, 0.26, 0.6, 0.025, [120, 120, 120]);
@@ -265,6 +307,18 @@ fn draw(page: u64, w: u32, h: u32) -> Option<Vec<u8>> {
         rect(0.45, 0.395, 0.1, 0.04, [243, 128, 32]);
         rect(0.08, 0.86, 0.84, 0.002, [220, 220, 220]);
         rect(0.35, 0.89, 0.3, 0.02, [170, 170, 170]);
+    } else if url.contains("idmsa.apple.com") {
+        // Apple's sign-in: the mark, a heading, two fields, a button.
+        rect(0., 0., 1., 0.06, [245, 245, 247]);
+        rect(0.46, 0.14, 0.08, 0.1, [29, 29, 31]);
+        rect(0.3, 0.3, 0.4, 0.04, [29, 29, 31]);
+        rect(0.32, 0.4, 0.36, 0.07, [250, 250, 252]);
+        rect(0.32, 0.4, 0.36, 0.003, [210, 210, 215]);
+        rect(0.32, 0.467, 0.36, 0.003, [210, 210, 215]);
+        rect(0.32, 0.5, 0.36, 0.07, [250, 250, 252]);
+        rect(0.32, 0.567, 0.36, 0.003, [210, 210, 215]);
+        rect(0.4, 0.62, 0.2, 0.06, [0, 113, 227]);
+        rect(0.36, 0.75, 0.28, 0.02, [0, 102, 204]);
     } else if url.contains("appstoreconnect") {
         rect(0., 0., 1., 0.07, [245, 245, 247]);
         rect(0.03, 0.02, 0.18, 0.03, [30, 30, 30]);

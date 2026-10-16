@@ -198,15 +198,30 @@ const freePort = () => new Promise((resolve) => {
   op({ op: 'control', lane, by: null, ifUntouched: true });
   await sleep(800);
   check(!messages.some((m) => m.type === 'control' && m.lane === lane), 'a page the person touched isn\'t handed back by itself');
-  // In their hands, laid out at the panel's picture; given back, at its own size again.
+  // Watched by a panel, laid out at its picture — in the person's hands or its member's.
   const own = frames.at(-1)?.header;
   op({ op: 'fit', page, w: 500, h: 700, dpr: 2 });
   const fitted = await until('a frame at the panel\'s size', () => frames.slice(-3).find((f) => f.header.page === page && f.header.cssW === 500 && f.header.cssH === 700));
   if (!fitted) console.log(JSON.stringify(frames.slice(-3).map((f) => f.header)));
   check(!!fitted, `a page the person drives fills the panel (${fitted?.header.cssW}×${fitted?.header.cssH} css, ${fitted?.header.w}×${fitted?.header.h} px)`);
   op({ op: 'control', lane, by: null });
+  await until('given back', () => [...messages].reverse().find((m) => m.type === 'control' && m.lane === lane)?.by === null);
+  const width = await mcp('browser_evaluate', { function: '() => innerWidth' });
+  check(/500/.test(width.content.map((c) => c.text).join('')), 'given back and still watched, its member works at the panel\'s size');
+  // A member's step under way is never resized under it: the size waits for its end.
+  const step = mcp('browser_evaluate', { function: '() => new Promise((r) => setTimeout(() => r(innerWidth), 2000))' });
+  await sleep(500);
+  op({ op: 'fit', page, w: 640, h: 720, dpr: 1 });
+  await sleep(800);
+  check(!frames.slice(-3).some((f) => f.header.page === page && f.header.cssW === 640), 'a new size waits while its member\'s step is under way');
+  const during = (await step).content.map((c) => c.text).join('');
+  check(/Result\n500/.test(during), 'the step saw the page at one size from start to end');
+  const resized = await until('the new size after the step', () => frames.slice(-3).find((f) => f.header.page === page && f.header.cssW === 640 && f.header.cssH === 720));
+  check(!!resized, 'and comes once the step is done');
+  // Nobody watching any more: its own size again.
+  op({ op: 'unfit', page });
   const unfitted = await until('its own size again', () => frames.slice(-3).find((f) => f.header.page === page && f.header.cssW === own?.cssW));
-  check(!!unfitted, 'given back, the member\'s page is at its own size again');
+  check(!!unfitted, 'unwatched, the member\'s page is at its own size again');
   await mcp('browser_navigate', { url: `${base}/signin` });
   const signin = await until('the sign-in page', () => lastTabs(lane)?.pages.find((p) => p.url.endsWith('/signin') && p.signals?.password));
   check(signin?.favicon === `${base}/icon.png`, 'a page\'s own icon is told');

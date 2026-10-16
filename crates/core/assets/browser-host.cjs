@@ -25,7 +25,8 @@
 //   {"op":"person","url":"https://…"}
 //   {"op":"watch","page":3,"maxW":1200,"maxH":900,"quality":70,"fps":30}  {"op":"unwatch","page":3}
 //   {"op":"input","page":3,"ev":{…}}   {"op":"nav","page":3,"action":"back|forward|reload|stop|go","url":"…"}
-//   {"op":"fit","page":3,"w":600,"h":800,"dpr":2}  (lay a page the person drives out at the panel's picture)
+//   {"op":"fit","page":3,"w":600,"h":800,"dpr":2}  (lay a page a panel watches out at its picture — the largest panel's)
+//   {"op":"unfit","page":3}  (no panel watches it: its own size again)
 //   {"op":"newtab","url":"…"}  {"op":"closetab","page":3}
 //   {"op":"control","lane":"squad/name","by":"person"|null,"why":"check"?,"ifUntouched":true?}
 //   {"op":"goto","lane":"squad/name","url":"…"}  {"op":"dialog","page":3,"accept":true,"text":"…"}
@@ -141,7 +142,7 @@ const address = (text) => {
   const cdps = new Map(); // page -> CDP session, for watching and input
   const dialogs = new Map(); // page id -> the dialog waiting for an answer
   const watches = new Map(); // page id -> { cdp, quality, maxW, maxH, fps, seq, lastAck }
-  const fits = new Map(); // page id -> { w, h, dpr }: the panel's box, for a page the person drives
+  const fits = new Map(); // page id -> { w, h, dpr }: the largest box a panel shows it in
   // Ids go on from where the daemon says (from the clock): a host started again
   // never names a tab with an id a screen still holds for another.
   let nextId = Math.max(1, Number(process.env.EQUIPE_FIRST_PAGE) || 1);
@@ -439,7 +440,7 @@ const address = (text) => {
     // it in their hands for a page that waits for a person, 'hand' when they took
     // it; `touched`, they put a hand on it since; `refused`, its tools were
     // turned away meanwhile.
-    const lane = { events: new EventEmitter(), member, color, shown: !!shown, control: null, reason: null, touched: false, refused: false, lastInput: 0, agent: null };
+    const lane = { events: new EventEmitter(), member, color, shown: !!shown, control: null, reason: null, touched: false, refused: false, lastInput: 0, agent: null, busy: 0 };
     lanes.set(id, lane);
     const config = await tools.resolveCLIConfigForMCP({ outputDir: output }, process.env);
     const toolset = tools.filteredTools(config);
@@ -459,7 +460,16 @@ const address = (text) => {
             lane.refused = true;
             return { content: [{ type: 'text', text: `### Error\n${lane.reason === 'check' ? BUSY_CHECK : BUSY}` }], isError: true };
           }
-          const result = await call(name, args, signal);
+          // A step under way is never resized under it: a panel's new size
+          // waits for the step to finish (`applyFit`).
+          lane.busy++;
+          let result;
+          try {
+            result = await call(name, args, signal);
+          } finally {
+            lane.busy--;
+            if (!lane.busy) for (const page of tabsOf(id)) if (page.__equipeFitWaits) applyFit(page).catch(() => {});
+          }
           const page = backend._context?.currentTab?.()?.page;
           if (page && owner.get(page) === id) {
             const pid = idOf(page);
@@ -483,6 +493,8 @@ const address = (text) => {
     report(id);
     hush(id);
     await restack();
+    // On this Mac's screen the window's size rules; out of it, a panel's again.
+    for (const page of tabsOf(id)) await applyFit(page);
   };
   const close = async ({ id }) => {
     for (const page of tabsOf(id)) await page.close().catch(() => {});
@@ -545,19 +557,26 @@ const address = (text) => {
 
   // ── the size a page is laid out at ──
 
-  // A page the person drives — their own tab, or a member's in their hands —
-  // is laid out at the panel's picture, so it fills it, crisp at the screen's
-  // scale. A member's page its member drives keeps the member's size (the panel
-  // fits its picture), and so does a page out in a real window.
-  const drives = (page) => {
-    const id = owner.get(page);
-    return id === PERSON || lanes.get(id)?.control === 'person';
-  };
+  // A page a panel watches — the person's own tab, a member's in their hands,
+  // or a member's it drives itself — is laid out at the panel's picture (the
+  // largest, with several screens watching), so it fills it, readable and
+  // crisp at the screen's scale, rather than the member's wide window shrunk
+  // into it. The member's tools work at whatever size the page has. Nobody
+  // watching, its own size comes back; a page out in a real window, or a
+  // member's window on this Mac's screen, keeps the window's. A member's step
+  // under way is never resized under it: the size waits for the step's end.
+  const inWindow = (page) => personShown === page || lanes.get(owner.get(page))?.shown === true;
   const applyFit = async (page) => {
     if (!page || page.isClosed()) return;
+    const lane = lanes.get(owner.get(page));
+    if (lane?.busy && lane.control !== 'person') {
+      page.__equipeFitWaits = true;
+      return;
+    }
+    page.__equipeFitWaits = false;
     const f = fits.get(idOf(page));
     const cdp = await cdpOf(page);
-    if (f && drives(page) && personShown !== page) {
+    if (f && !inWindow(page)) {
       const key = `${f.w}x${f.h}@${f.dpr}`;
       if (page.__equipeFit === key) return;
       page.__equipeFit = key;
@@ -579,6 +598,10 @@ const address = (text) => {
   const fit = async ({ page: pid, w, h, dpr }) => {
     if (!(w >= 64 && h >= 64)) return;
     fits.set(pid, { w: Math.round(w), h: Math.round(h), dpr: Math.min(4, Math.max(1, Number(dpr) || 2)) });
+    await applyFit(pages.get(pid));
+  };
+  const unfit = async ({ page: pid }) => {
+    if (!fits.delete(pid)) return;
     await applyFit(pages.get(pid));
   };
 
@@ -726,7 +749,7 @@ const address = (text) => {
 
   await ensureParking();
 
-  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, input, nav, goto, newtab, closetab, control, dialog, popout };
+  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout };
   // Input goes in order, each after the one before; so do watching and sizing
   // (two screencasts of a page started at once would leave one running
   // unseen); the rest as they come.
@@ -737,7 +760,7 @@ const address = (text) => {
     try { request = JSON.parse(line); } catch { return; }
     const run = () => Promise.resolve(ops[request.op]?.(request)).catch((err) => console.error(`equipe browser host: ${request.op}: ${err && err.message}`));
     if (request.op === 'input') inputs = inputs.then(run);
-    else if (['watch', 'unwatch', 'fit'].includes(request.op)) pictures = pictures.then(run);
+    else if (['watch', 'unwatch', 'fit', 'unfit'].includes(request.op)) pictures = pictures.then(run);
     else run();
   });
   // The daemon gone, the browser goes with it.

@@ -552,6 +552,10 @@ pub enum Block {
     /// A stretch about other projects folded into a row, saying how many
     /// things were said there; open, they follow it in place.
     Elsewhere { key: u64, said: usize, open: bool },
+    /// A member handed the person its browser, asking `why`: a row to open
+    /// it from, and give it back; `live` on the member's latest (an earlier
+    /// one is past).
+    HandOver { name: String, why: String, live: bool },
 }
 
 impl Block {
@@ -563,6 +567,7 @@ impl Block {
             Block::Reply { text: t, .. } | Block::Note(t) => Some(t.clone()),
             Block::News(lines) => Some(lines.iter().map(|n| n.text.clone()).collect::<Vec<_>>().join("\n")),
             Block::YourTurn { news, .. } => Some(news.clone()),
+            Block::HandOver { name, why, .. } => Some(format!("{name}\n{why}")),
             Block::Worked(_) => None,
             Block::Steps(lines) => Some(lines.iter().map(|l| format!("{} {}", verb_word(&l.verb), l.targets.join(" "))).collect::<Vec<_>>().join("\n")),
             Block::Error { message, .. } => Some(message.clone()),
@@ -678,6 +683,10 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
                     Some(Block::Reply { worked: slot, .. }) => *slot = Some(worked),
                     _ => blocks.push(Block::Worked(worked)),
                 },
+                (None, None) if crate::activity::handed_of(text).is_some() => {
+                    let (name, why) = crate::activity::handed_of(text).unwrap_or_default();
+                    blocks.push(Block::HandOver { name, why, live: false });
+                }
                 (None, None) => match crate::activity::news_of(text) {
                     // A ticket waiting for the person: their card, not a line.
                     Some(news) if news.kind == crate::activity::NewsKind::Waiting && ticket_ref(&news.text).is_some() => {
@@ -701,6 +710,17 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
         blocks.extend(crate::activity::groups(run).into_iter().map(Block::Steps));
     }
     blocks
+}
+
+/// The conversation's hand-over rows brought up to date: each member's
+/// latest is live (it can be opened and given back), the rest past.
+pub fn mark_handed(blocks: &mut [Block]) {
+    let mut seen = HashSet::new();
+    for block in blocks.iter_mut().rev() {
+        if let Block::HandOver { name, live, .. } = block {
+            *live = seen.insert(name.clone());
+        }
+    }
 }
 
 /// The member's auto memory, which equipe keeps under the squad's members.
@@ -898,6 +918,28 @@ mod tests {
         assert_eq!(run.iter().map(|n| n.kind).collect::<Vec<_>>(), [crate::activity::NewsKind::HandedIn, crate::activity::NewsKind::Accepted]);
         assert_eq!(blocks[1], Block::Note("plain".into()));
         assert!(matches!(&blocks[2], Block::News(run) if run.len() == 1));
+    }
+
+    #[test]
+    fn a_browser_handed_over_is_a_row_to_act_on_in_any_language_its_latest_live() {
+        let why = "App Store Connect(Umbriles Inc. 계정 소유자 Apple ID)에 로그인해 주세요. 끝나면 DSA '거래자' 신고는 제가 이어서 합니다.";
+        let mut c = convo(true);
+        feed(
+            &mut c,
+            &[
+                // From a daemon that spoke English, popping the window on its own Mac.
+                Event::Notice { session: 1, text: format!("🖥 pm's browser comes up on this Mac's screen: {why}") },
+                Event::Notice { session: 1, text: "You accepted T-58 · 헤더.".into() },
+                // Into the panel, worded in Korean.
+                Event::Notice { session: 1, text: "🖥 pm의 브라우저가 브라우저 패널에 열립니다: 2단계 인증 코드를 입력해 주세요".into() },
+            ],
+        );
+        let mut blocks = c.blocks();
+        mark_handed(&mut blocks);
+        assert_eq!(blocks[0], Block::HandOver { name: "pm".into(), why: why.into(), live: false }, "{blocks:?}");
+        assert!(matches!(&blocks[1], Block::News(_)));
+        assert_eq!(blocks[2], Block::HandOver { name: "pm".into(), why: "2단계 인증 코드를 입력해 주세요".into(), live: true });
+        assert_eq!(blocks[2].searchable().as_deref(), Some("pm\n2단계 인증 코드를 입력해 주세요"));
     }
 
     #[test]

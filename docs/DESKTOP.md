@@ -331,9 +331,27 @@ signed in once, so the person sees exactly what the members see.
   `Input.imeSetComposition`, commits as `insertText`, editing keys carry the
   Mac's editing commands. Touching a member's page takes it (its browser tools
   answer "The person is using this browser…" meanwhile); 돌려주기, Esc or two
-  idle minutes give it back. A member's `show_my_browser` opens the panel on
-  its browser in the person's hands instead of raising a window when a panel is
-  attached; handing back tells the member "The person finished in the browser."
+  idle minutes give it back.
+- **A member hands the person its browser** (`show_my_browser`: sign in, a
+  code, something only they can do). The app says in its `hello` that it has a
+  browser panel (`browser_panel`); while any such screen is attached — on this
+  Mac or another over SSH, its panel open or not — the daemon never raises a
+  Chrome window: the browser goes into the person's hands and every attached
+  screen opens the panel on the tab its member works in, already driving,
+  with a strip over the page in the member's own words and **다 했어요 — pm에게
+  돌려주기**. The window on the daemon's Mac comes up only with no app attached
+  (the terminal alone), or when the person asks for it (Chrome에서 열기; over
+  SSH it reads "<host> 화면에서 열기"). On the daemon's own Mac the panel is
+  preferred too: it is where the person already is, it says what to do, and
+  it hands back. Handing back starts the member's turn again ("The person
+  finished in your browser (you asked: …)") — nobody types "됐어". The panel
+  opens once per hand-over (closing it sticks across reconnects), the window
+  isn't pulled forward — out of sight, a notification ("pm이 브라우저에서
+  로그인을 기다려요") opens it there — and 나에게 lists it under 내 차례 until
+  it comes back. In the conversation the news line is a row: "pm이 브라우저를
+  넘겼어요" with 브라우저 열기 / 돌려주기 on the latest (old lines, the English
+  "comes up on this Mac's screen" included, read as rows too). A phone away
+  gets a push saying to do it in the app on the Mac.
 - JS dialogs show as a card over the page; what a picture can't do (passkeys,
   permission prompts, a `<select>`'s list, file choosers) goes through
   Chrome에서 열기.
@@ -345,10 +363,14 @@ signed in once, so the person sees exactly what the members see.
   tabs it held — so an id from an old browser never names a new tab (the bug
   where one member's tab showed another's Cloudflare wall).
 - **Size.** The panel sends its picture box (CSS px and scale) with `watch`,
-  once it has held still for 250 ms; a page the person drives (their own tab,
-  a member's in their hands) is laid out at it (`Emulation.setDeviceMetricsOverride`),
-  so it fills the box, crisp. A member's page its member drives keeps its own
-  size and is fitted, its shape kept, on a neutral ground.
+  once it has held still for 250 ms; the page it watches is laid out at it
+  (`Emulation.setDeviceMetricsOverride`) whoever drives it — a member's too, so
+  its page reads at the panel's size instead of its wide window shrunk into a
+  strip — at the largest box when several screens watch (`browser::Hub::fit`).
+  A member's step under way is never resized under it: the size waits for the
+  step to finish. Nobody watching (`unfit`), its own size comes back; a page
+  out in a real window keeps the window's. A frame of another size is fitted,
+  its shape kept, on a neutral ground.
 - **Who has it.** The control bar says who drives and what (`frontend ·
   App Store Connect에서 작업 중`), with one button: 직접 하기 / 돌려주기. The
   person driving shows as an accent outline and `내가 쓰는 중 · Esc로 돌려주기`;
@@ -372,7 +394,10 @@ Snapshot steps: `browser`, `bopen:<url>`, `bpick:<n>`, `btake`, `bgive`,
 `breveal:<page>`, `bclick:<fx>,<fy>`, `bkeys:<text>`, `bime:ㅎ|하|한`. The fake
 daemon has a browser with `FAKE_BROWSER=1` (frontend on an App Store
 Connect–like page, backend paused at a "Just a moment…" wall that a click
-passes, a tab of the person's own; `FAKE_BROWSER=empty` for none). The host's
+passes, a tab of the person's own; `FAKE_BROWSER=empty` for none;
+`FAKE_BROWSER=handover`, the PM's browser handed over at Apple's sign-in, its
+old English news line in the PM's conversation; `FAKE_FIT=driving` draws
+members' pages as 0.47 did, for a before shot). The host's
 ops have a smoke test, a stand-in Cloudflare wall included:
 `npx -y -p playwright@1.64.0 node scripts/browser-host-smoke.cjs`.
 

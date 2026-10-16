@@ -163,6 +163,8 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     let appearance = if arg == "light" { WindowAppearance::Light } else { WindowAppearance::Dark };
                     shell.palette = crate::theme::Palette::new(appearance);
                     shell.palette.apply_to_kit(appearance, cx);
+                    // As the app does on a change of appearance: the browser panel too.
+                    shell.sync_browser(window, cx);
                     cx.notify();
                 }),
                 "undrag" => shell.update(cx, |shell, cx| {
