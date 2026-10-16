@@ -113,9 +113,10 @@ The bytes come only through the daemon, with the request `read_image`
 `result` `{ "mime", "size", "width"?, "height"?, "data", "scaled"? }` — `data` base64 of the
 picture, or of a copy no bigger than `max` pixels on its longer side (`scaled: true`, PNG when
 it has transparency, else JPEG); `width`/`height` are the file's own (absent for an SVG, which
-goes as it is, at most 1 MB). The daemon answers only for a path a waiting question set or one
-of the squad's tickets names now, that is still an image file (by name and by its first bytes)
-inside the squad's folder or a ticket's worktree once links are resolved — no `..`, at most
+goes as it is, at most 1 MB). The daemon answers only for a path a waiting question set, one
+of the squad's tickets or one of its design systems (an asset, see below) names now, that is
+still an image file (by name and by its first bytes) inside the squad's folder, a ticket's
+worktree or a design folder once links are resolved — no `..`, at most
 30 MB read, a copy made past 6 MB — and refuses an SVG with a script, an embedded page or a link
 to anything but itself. For a phone the daemon makes the copy at most 720 pixels on a side,
 smaller again until it fits one relay frame. Errors: `-32002` (not following that squad),
@@ -194,6 +195,21 @@ closes the card. Either way every screen then gets `engine_proposal_closed` `{ "
 "applied" }`. Members move only between turns, at their next ticket. A push goes only for an
 engine out of its plan with its reset hours away (`why: "exhausted"`), category `engines`, once.
 `show_engine_setup` `{ "squad" }` proposes the recommended setup for both engines again.
+
+### The design system
+
+The squad's design system (`docs/DESIGN-SYSTEM.md`) is asked for with the command `design`
+`{ "squad" }`. Every screen following the squad then gets the event `design`
+`{ "squad", "systems": [ … ], "folder" }` — and again whenever one of the folders changes, for as
+long as any screen follows the squad. `systems` lists the squad's own first (no `project`), then each
+project's that has one (`project`: its name), then the drafts tickets in review hand in (`draft`:
+`{ "ticket", "title" }`) — empty when there is none yet, `folder` being where the squad's would be.
+Each system is `{ "project"?, "dir", "draft"?, "modes"?: ["light", "dark"], "tokens"?: [{ "name",
+"type", "value", "modes"?: { "<mode>": <value> }, "description"?, "alias"? }], "problems"?: [<line>],
+"guidelines"?: "<markdown>", "assets"?: [{ "path", "name", "kind": "logo" | "icon" | "illustration" |
+"component" | "other", "size" }], "stamp" }`. Token values are DTCG's JSON with every alias resolved
+(`value` in the first mode, `modes` every mode's when they differ). An asset's picture is read with
+`read_image` by its `path`. A phone may send `design`; nothing in it changes anything.
 
 ### Attachments
 
@@ -509,6 +525,8 @@ The daemon follows a device like one more screen, with less reach than the termi
 
   `decline_team_change`, `apply_engine_proposal`, `dismiss_engine_proposal`,
   `undo_engine_proposal`, `focus`, `refresh`.
+
+  `decline_team_change`, `focus`, `refresh`, `design`; and `read_image`.
 - `submit` and `answer_questions` may say what the message is about: `about` — the project the
   phone shows, or `null` for the whole squad. Left out, the daemon takes the project in focus
   (the last `focus` any screen sent). Said while the member works, a message steers it

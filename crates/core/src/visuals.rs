@@ -208,8 +208,9 @@ pub fn read(path: &Path, roots: &[PathBuf], max: Option<u32>) -> Result<ImageRea
     Ok(ImageRead { mime: mime.into(), size, width: Some(width), height: Some(height), data: encode(&out.into_inner()), scaled: true })
 }
 
-/// What a squad shows now: the pictures its waiting decisions and its
-/// tickets name, and where they may be — its folder, its tickets' worktrees.
+/// What a squad shows now: the pictures its waiting decisions, its tickets
+/// and its design systems name, and where they may be — its folder, its
+/// tickets' worktrees, its design folders (`crate::design`).
 #[derive(Debug, Default)]
 pub struct Shown {
     pub paths: HashSet<String>,
@@ -231,6 +232,9 @@ pub fn shown(home: &Path, squad: &str) -> Shown {
         out.paths.extend(ticket.images.iter().cloned());
         out.roots.extend(ticket.worktree);
     }
+    let (design, folders) = crate::design::folder::shown(home, squad);
+    out.paths.extend(design);
+    out.roots.extend(folders);
     out
 }
 
@@ -481,6 +485,28 @@ mod tests {
         // A phone's cap holds whatever it asks.
         let capped = serve(&home, &ask(&shown_path, Some(4000)), Some(16)).unwrap();
         assert!(capped.scaled && decoded(&capped).width() <= 32, "never below the smallest, never above the cap asked: {capped:?}");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_screen_gets_a_design_systems_pictures_and_nothing_else_of_its_folder() {
+        let home = dir("design");
+        crate::journal::Journal::for_squad(&home, "acme").unwrap();
+        let design = crate::squad_home::path(&home, "acme").join("design");
+        std::fs::create_dir_all(design.join("assets/logo")).unwrap();
+        std::fs::write(design.join("tokens.json"), "{}").unwrap();
+        png(&design.join("assets/logo/mark.png"), 20, 10, true);
+        png(&design.join("loose.png"), 4, 4, false);
+        png(&home.join("secret.png"), 4, 4, false);
+        std::os::unix::fs::symlink(home.join("secret.png"), design.join("assets/logo/sneaky.png")).unwrap();
+        let ask = |path: &Path| ReadImage { squad: "acme".into(), path: path.canonicalize().map_or_else(|_| path.to_string_lossy().into_owned(), |p| p.to_string_lossy().into_owned()), max: None };
+        assert_eq!(serve(&home, &ask(&design.join("assets/logo/mark.png")), None).unwrap().width, Some(20));
+        for refused in [design.join("loose.png"), design.join("tokens.json"), home.join("secret.png"), design.join("assets/logo/sneaky.png"), design.join("assets/logo/../../loose.png")] {
+            assert!(serve(&home, &ask(&refused), None).is_err(), "{}", refused.display());
+        }
+        let mut climbing = ask(&design.join("assets/logo/mark.png"));
+        climbing.path = format!("{}/assets/logo/../logo/mark.png", design.display());
+        assert!(serve(&home, &climbing, None).is_err(), "asked by another name, with `..`");
         std::fs::remove_dir_all(home).unwrap();
     }
 

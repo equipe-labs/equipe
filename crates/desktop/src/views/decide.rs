@@ -149,7 +149,7 @@ impl Shell {
                 },
                 _ => return Took::Pass,
             },
-            Screen::Settings => return Took::Pass,
+            Screen::Settings | Screen::Design => return Took::Pass,
         };
         if self.decide.drafts.get(&id).is_none_or(|d| d.collapsed) {
             return Took::Pass;

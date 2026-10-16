@@ -51,6 +51,7 @@ impl Shell {
         match effect {
             Effect::Select(session) => self.select_member(session, window, cx),
             Effect::ShowBoard => self.show(Screen::Board, cx),
+            Effect::ShowDesign => self.open_design(cx),
             Effect::Find(words) => self.board_find(&words, cx),
             Effect::Focus(project) => self.set_focus(project, window, cx),
             Effect::SwitchSquad(name) => self.select_squad(&name, window, cx),

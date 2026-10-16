@@ -13,7 +13,7 @@
             "type": "accept"
           }
         },
-        "seq": 30,
+        "seq": 32,
         "squad": "home",
         "ts": 1760000000000
       }
@@ -30,7 +30,7 @@
             "type": "accept"
           }
         },
-        "seq": 29,
+        "seq": 31,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -83,7 +83,7 @@
             "type": "accept"
           }
         },
-        "seq": 18,
+        "seq": 20,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -207,7 +207,7 @@
             "type": "apply_engine_proposal"
           }
         },
-        "seq": 15,
+        "seq": 17,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -235,7 +235,7 @@
             "type": "approve_team_change"
           }
         },
-        "seq": 13,
+        "seq": 15,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -353,6 +353,48 @@
             "type": "decline_team_change"
           }
         },
+        "seq": 16,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "design": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "squad": "acme",
+            "type": "design"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "squad": "acme",
+            "type": "design"
+          }
+        },
+        "seq": 13,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "design: another squad than the frame's": {
+      "daemon": "nothing: dropped without an answer",
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "squad": "home",
+            "type": "design"
+          }
+        },
         "seq": 14,
         "squad": "acme",
         "ts": 1760000000000
@@ -381,7 +423,7 @@
             "type": "dismiss_engine_proposal"
           }
         },
-        "seq": 16,
+        "seq": 18,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -425,7 +467,7 @@
             "type": "sign_in"
           }
         },
-        "seq": 26,
+        "seq": 28,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -441,7 +483,7 @@
             "type": "sign_out"
           }
         },
-        "seq": 27,
+        "seq": 29,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -465,7 +507,7 @@
             "type": "engines"
           }
         },
-        "seq": 25,
+        "seq": 27,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -511,6 +553,195 @@
         "ts": 1760000000000
       }
     },
+    "event: design": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "folder": "/Users/you/.equipe/squads/acme/home/design",
+            "squad": "acme",
+            "systems": [
+              {
+                "assets": [
+                  {
+                    "kind": "logo",
+                    "name": "assets/logo/mark.svg",
+                    "path": "/Users/you/.equipe/squads/acme/home/design/assets/logo/mark.svg",
+                    "size": 1204
+                  }
+                ],
+                "dir": "/Users/you/.equipe/squads/acme/home/design",
+                "guidelines": "# 브랜드 가이드라인\n\n## 1. 로고\n\n점은 브랜드 파랑 `#3F6FF5`.\n",
+                "modes": [
+                  "light",
+                  "dark"
+                ],
+                "stamp": 7001,
+                "tokens": [
+                  {
+                    "modes": {
+                      "dark": "#0A0A0C",
+                      "light": "#F6F5F1"
+                    },
+                    "name": "color.bg",
+                    "type": "color",
+                    "value": "#F6F5F1"
+                  },
+                  {
+                    "modes": {
+                      "dark": "#8FB0FF",
+                      "light": "#1D4ED8"
+                    },
+                    "name": "color.accent",
+                    "type": "color",
+                    "value": "#1D4ED8"
+                  },
+                  {
+                    "alias": "{color.accent}",
+                    "modes": {
+                      "dark": "#8FB0FF",
+                      "light": "#1D4ED8"
+                    },
+                    "name": "color.link",
+                    "type": "color",
+                    "value": "#1D4ED8"
+                  },
+                  {
+                    "name": "space.2",
+                    "type": "dimension",
+                    "value": "8px"
+                  },
+                  {
+                    "name": "type.body",
+                    "type": "typography",
+                    "value": {
+                      "fontFamily": [
+                        "Inter",
+                        "Pretendard Variable"
+                      ],
+                      "fontSize": "15px",
+                      "fontWeight": 400,
+                      "lineHeight": 1.65
+                    }
+                  },
+                  {
+                    "name": "motion.ease-out",
+                    "type": "cubicBezier",
+                    "value": [
+                      0,
+                      0,
+                      0.58,
+                      1
+                    ]
+                  }
+                ]
+              },
+              {
+                "assets": [
+                  {
+                    "kind": "logo",
+                    "name": "assets/logo/mark.svg",
+                    "path": "/Users/you/.equipe/worktrees/acme.home/t144-5e6f7a8b/design/assets/logo/mark.svg",
+                    "size": 1204
+                  }
+                ],
+                "dir": "/Users/you/.equipe/worktrees/acme.home/t144-5e6f7a8b/design",
+                "draft": {
+                  "ticket": 144,
+                  "title": "브랜드 가이드라인"
+                },
+                "guidelines": "# 브랜드 가이드라인\n\n## 1. 로고\n\n점은 브랜드 파랑 `#3F6FF5`.\n",
+                "modes": [
+                  "light",
+                  "dark"
+                ],
+                "stamp": 7002,
+                "tokens": [
+                  {
+                    "modes": {
+                      "dark": "#0A0A0C",
+                      "light": "#F6F5F1"
+                    },
+                    "name": "color.bg",
+                    "type": "color",
+                    "value": "#F6F5F1"
+                  },
+                  {
+                    "modes": {
+                      "dark": "#8FB0FF",
+                      "light": "#1D4ED8"
+                    },
+                    "name": "color.accent",
+                    "type": "color",
+                    "value": "#1D4ED8"
+                  },
+                  {
+                    "alias": "{color.accent}",
+                    "modes": {
+                      "dark": "#8FB0FF",
+                      "light": "#1D4ED8"
+                    },
+                    "name": "color.link",
+                    "type": "color",
+                    "value": "#1D4ED8"
+                  },
+                  {
+                    "name": "space.2",
+                    "type": "dimension",
+                    "value": "8px"
+                  },
+                  {
+                    "name": "type.body",
+                    "type": "typography",
+                    "value": {
+                      "fontFamily": [
+                        "Inter",
+                        "Pretendard Variable"
+                      ],
+                      "fontSize": "15px",
+                      "fontWeight": 400,
+                      "lineHeight": 1.65
+                    }
+                  },
+                  {
+                    "name": "motion.ease-out",
+                    "type": "cubicBezier",
+                    "value": [
+                      0,
+                      0,
+                      0.58,
+                      1
+                    ]
+                  }
+                ]
+              }
+            ],
+            "type": "design"
+          }
+        },
+        "seq": 17,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: design, none yet": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "folder": "/Users/you/.equipe/squads/acme/home/design",
+            "squad": "acme",
+            "systems": [],
+            "type": "design"
+          }
+        },
+        "seq": 18,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "event: disk level": {
       "receives": {
         "rpc": {
@@ -526,7 +757,7 @@
             "type": "disk_level"
           }
         },
-        "seq": 41,
+        "seq": 43,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -567,7 +798,7 @@
             "type": "engine_proposed"
           }
         },
-        "seq": 22,
+        "seq": 24,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -607,7 +838,7 @@
             "type": "engine_proposed"
           }
         },
-        "seq": 21,
+        "seq": 23,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -624,7 +855,7 @@
             "type": "engine_proposal_closed"
           }
         },
-        "seq": 23,
+        "seq": 25,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -640,7 +871,7 @@
             "type": "engine_switching_changed"
           }
         },
-        "seq": 24,
+        "seq": 26,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -677,7 +908,7 @@
             "type": "engines"
           }
         },
-        "seq": 42,
+        "seq": 44,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -694,7 +925,7 @@
             "type": "error"
           }
         },
-        "seq": 38,
+        "seq": 40,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -711,7 +942,7 @@
             "type": "message_queued"
           }
         },
-        "seq": 27,
+        "seq": 29,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -727,7 +958,7 @@
             "type": "notice"
           }
         },
-        "seq": 37,
+        "seq": 39,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -752,7 +983,7 @@
             }
           }
         },
-        "seq": 20,
+        "seq": 22,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -777,7 +1008,7 @@
             }
           }
         },
-        "seq": 35,
+        "seq": 37,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -799,7 +1030,7 @@
             }
           }
         },
-        "seq": 36,
+        "seq": 38,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -918,7 +1149,7 @@
             "type": "queue_sent"
           }
         },
-        "seq": 40,
+        "seq": 42,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -935,7 +1166,7 @@
             "type": "steer_queued"
           }
         },
-        "seq": 39,
+        "seq": 41,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -951,7 +1182,7 @@
             "type": "subagent_ended"
           }
         },
-        "seq": 32,
+        "seq": 34,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -968,7 +1199,7 @@
             "what": "Compare the two login flows"
           }
         },
-        "seq": 30,
+        "seq": 32,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -985,7 +1216,7 @@
             "type": "subagent_step"
           }
         },
-        "seq": 31,
+        "seq": 33,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1005,7 +1236,7 @@
             "type": "team_change_closed"
           }
         },
-        "seq": 18,
+        "seq": 20,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1022,7 +1253,7 @@
             "type": "team_change_closed"
           }
         },
-        "seq": 19,
+        "seq": 21,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1049,7 +1280,7 @@
             "type": "team_change_proposed"
           }
         },
-        "seq": 17,
+        "seq": 19,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1065,7 +1296,7 @@
             "type": "text_delta"
           }
         },
-        "seq": 28,
+        "seq": 30,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1096,7 +1327,7 @@
             "type": "ticket_changed"
           }
         },
-        "seq": 25,
+        "seq": 27,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1179,7 +1410,7 @@
             "type": "tool_use"
           }
         },
-        "seq": 29,
+        "seq": 31,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1199,7 +1430,7 @@
             }
           }
         },
-        "seq": 33,
+        "seq": 35,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1216,7 +1447,7 @@
             "usage": null
           }
         },
-        "seq": 34,
+        "seq": 36,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1232,7 +1463,7 @@
             "type": "user_message"
           }
         },
-        "seq": 26,
+        "seq": 28,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1640,7 +1871,7 @@
             "type": "interrupt"
           }
         },
-        "seq": 21,
+        "seq": 23,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1658,7 +1889,7 @@
             "type": "merge"
           }
         },
-        "seq": 28,
+        "seq": 30,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2066,7 +2297,7 @@
             "type": "reopen"
           }
         },
-        "seq": 19,
+        "seq": 21,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2100,7 +2331,7 @@
             "type": "send_now"
           }
         },
-        "seq": 24,
+        "seq": 26,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2162,7 +2393,7 @@
             "type": "submit"
           }
         },
-        "seq": 20,
+        "seq": 22,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2192,7 +2423,7 @@
             "type": "submit"
           }
         },
-        "seq": 22,
+        "seq": 24,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2222,7 +2453,7 @@
             "type": "submit"
           }
         },
-        "seq": 23,
+        "seq": 25,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2250,7 +2481,7 @@
             "type": "undo_engine_proposal"
           }
         },
-        "seq": 17,
+        "seq": 19,
         "squad": "acme",
         "ts": 1760000000000
       }

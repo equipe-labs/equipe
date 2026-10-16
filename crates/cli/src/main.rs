@@ -1432,7 +1432,8 @@ impl App {
                 | Event::EngineProposed { .. }
                 | Event::EngineProposalClosed { .. }
                 | Event::EngineSwitchingChanged { .. }
-                | Event::Allowed { .. } => {}
+                | Event::Allowed { .. }
+                | Event::Design { .. } => {}
                 Event::Error { message, next, .. } => {
                     failure.get_or_insert(Failure { message, next });
                     // A session that never opened won't send anything more.

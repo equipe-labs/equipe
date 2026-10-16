@@ -46,6 +46,8 @@ pub(super) struct Engines {
     applying: bool,
     /// Whether Claude Code was signed in, and when that was looked at.
     claude_ready: Option<(std::time::Instant, bool)>,
+    /// A look at Claude's sign-in is under way, off the loop.
+    claude_looking: bool,
 }
 
 #[derive(Default)]
@@ -492,11 +494,22 @@ impl Runtime {
     // ── at the boundary ──
 
     /// Each minute: whether Claude Code is signed in (now and then), and every squad looked at again.
+    /// Claude's sign-in, as just looked at.
+    pub(super) fn claude_ready(&mut self, ok: bool) {
+        self.engines.claude_looking = false;
+        self.engines.claude_ready = Some((std::time::Instant::now(), ok));
+    }
+
     pub(super) async fn engines_tick(&mut self) {
-        if self.engines.claude_ready.is_none_or(|(at, _)| at.elapsed() >= READY_FOR) {
-            let binary = self.config.claude_binary.clone();
-            let ok = matches!(tokio::time::timeout(SERVER_WAIT, claude_code::auth_status(&binary)).await, Ok(Ok(Some(status))) if status.logged_in);
-            self.engines.claude_ready = Some((std::time::Instant::now(), ok));
+        // Whether Claude is signed in, asked of `claude auth status` off the
+        // loop: it can take seconds (or hang), and the loop answers screens.
+        if !self.engines.claude_looking && self.engines.claude_ready.is_none_or(|(at, _)| at.elapsed() >= READY_FOR) {
+            self.engines.claude_looking = true;
+            let (binary, internal) = (self.config.claude_binary.clone(), self.internal.clone());
+            tokio::spawn(async move {
+                let ok = matches!(tokio::time::timeout(SERVER_WAIT, claude_code::auth_status(&binary)).await, Ok(Ok(Some(status))) if status.logged_in);
+                let _ = internal.send(super::Internal::ClaudeReady(ok));
+            });
         }
         for squad in self.squads_with_members() {
             self.consider_engines(&squad);

@@ -697,6 +697,38 @@ fn visual_questions() -> QuestionSet {
     }
 }
 
+/// Where the squad's design system lives, on the daemon's machine.
+const DESIGN: &str = "/Users/you/.equipe/squads/acme/home/design";
+
+/// The squad's design system — or, `draft`, the one T-144 hands in.
+fn design_system(draft: bool) -> equipe_core::protocol::design::DesignSystem {
+    use equipe_core::protocol::design::{Asset, AssetKind, DesignSystem, DraftOf};
+    let tokens = equipe_core::design::tokens::parse(
+        r##"{
+          "color": {
+            "light": { "bg": { "$type": "color", "$value": "#F6F5F1" }, "accent": { "$type": "color", "$value": "#1D4ED8" } },
+            "dark": { "bg": { "$type": "color", "$value": "#0A0A0C" }, "accent": { "$type": "color", "$value": "#8FB0FF" } },
+            "link": { "$value": "{color.accent}" }
+          },
+          "space": { "$type": "dimension", "2": { "$value": "8px" } },
+          "type": { "body": { "$type": "typography", "$value": { "fontFamily": ["Inter", "Pretendard Variable"], "fontSize": "15px", "fontWeight": 400, "lineHeight": 1.65 } } },
+          "motion": { "ease-out": { "$type": "cubicBezier", "$value": [0, 0, 0.58, 1] } }
+        }"##,
+    );
+    let dir = if draft { "/Users/you/.equipe/worktrees/acme.home/t144-5e6f7a8b/design" } else { DESIGN };
+    DesignSystem {
+        project: None,
+        dir: dir.into(),
+        draft: draft.then(|| DraftOf { ticket: 144, title: "브랜드 가이드라인".into() }),
+        modes: tokens.modes,
+        tokens: tokens.tokens,
+        problems: vec![],
+        guidelines: Some("# 브랜드 가이드라인\n\n## 1. 로고\n\n점은 브랜드 파랑 `#3F6FF5`.\n".into()),
+        assets: vec![Asset { path: format!("{dir}/assets/logo/mark.svg"), name: "assets/logo/mark.svg".into(), kind: AssetKind::Logo, size: 1_204 }],
+        stamp: if draft { 7_002 } else { 7_001 },
+    }
+}
+
 /// The PM proposes one more backend for T-41, which waits while backend is on T-38.
 fn team_change() -> TeamChange {
     TeamChange {
@@ -940,6 +972,12 @@ fn message_vectors() -> Value {
     let mut shown = ticket(TicketStatus::Review);
     shown.images = vec![LOGO_A.into(), LOGO_B.into()];
     tell(&mut core, &mut examples, "event: ticket handed in with pictures", Event::TicketChanged { squad: SQUAD.into(), ticket: shown });
+
+    // The squad's design system: asked for, sent as it is (and again when the designer saves), its pictures read like any other.
+    ask(&mut core, &mut examples, "design", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "design", "squad": SQUAD } }));
+    tell(&mut core, &mut examples, "event: design", Event::Design { squad: SQUAD.into(), systems: vec![design_system(false), design_system(true)], folder: DESIGN.into() });
+    tell(&mut core, &mut examples, "event: design, none yet", Event::Design { squad: SQUAD.into(), systems: vec![], folder: DESIGN.into() });
+    ask(&mut core, &mut examples, "design: another squad than the frame's", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "design", "squad": "home" } }));
 
     // A change to the team the PM proposed: approved or declined by the person.
     tell(&mut core, &mut examples, "event: team change proposed", Event::TeamChangeProposed { squad: SQUAD.into(), change: team_change() });

@@ -62,6 +62,7 @@ macro_rules! say {
 mod decide;
 mod room;
 mod engines;
+mod design;
 mod team;
 mod tickets;
 
@@ -400,6 +401,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         next_sign_in: 1,
         codex_binary: crate::engines::codex_binary(),
         engines: Default::default(),
+        design_watch: HashMap::new(),
+        design_busy: std::collections::HashSet::new(),
     };
     let mut memos = Vec::new();
     if runtime.config.persist {
@@ -648,6 +651,11 @@ enum Internal {
     Engines(Vec<equipe_protocol::EngineStatus>),
     /// A sign-in (the one numbered so) ended.
     SignInEnded(Engine, u64),
+    /// Whether Claude is signed in, as just looked at off the loop.
+    ClaudeReady(bool),
+    /// A squad's design systems looked at off the loop: their stamp, and —
+    /// when they changed or were asked for — what they are.
+    Design(String, u64, Option<design::Catalog>),
 }
 
 /// A request for permission waiting for the person, and the engine waiting on it.
@@ -766,6 +774,10 @@ struct Runtime {
     codex_binary: String,
     /// Both engines' plans, and members moving between them (`engines`).
     engines: engines::Engines,
+    /// Squads whose design systems a screen looks at, and their stamp as
+    /// last sent; those being looked at off the loop now (`design`).
+    design_watch: HashMap<String, u64>,
+    design_busy: std::collections::HashSet<String>,
 }
 
 /// What woke the loop.
@@ -777,6 +789,7 @@ enum Wake {
     DesktopTick,
     Frames,
     Minute,
+    DesignTick,
 }
 
 impl Wake {
@@ -815,11 +828,14 @@ impl Wake {
             Wake::Request(Some(Request::DiskClean(..))) => Borrowed("a clean of the disk"),
             Wake::Internal(Internal::Engines(_)) => Borrowed("where the engines stand"),
             Wake::Internal(Internal::SignInEnded(..)) => Borrowed("a sign-in's end"),
+            Wake::Internal(Internal::ClaudeReady(_)) => Borrowed("whether Claude is signed in"),
+            Wake::Internal(Internal::Design(..)) => Borrowed("a design system's look"),
             Wake::Host(_) => Borrowed("the browser host's news"),
             Wake::Daily => Borrowed("daily prune"),
             Wake::DesktopTick => Borrowed("desktop tick"),
             Wake::Frames => Borrowed("browser pictures"),
             Wake::Minute => Borrowed("minute tick"),
+            Wake::DesignTick => Borrowed("design tick"),
         }
     }
 }
@@ -837,9 +853,11 @@ async fn run(
     // A screen held by a member that stopped using it goes to the next in line.
     let mut desktop_tick = tokio::time::interval(Duration::from_secs(5));
     let mut frames = tokio::time::interval(FRAME_EVERY);
+    // A design system on a screen follows what its designer saves.
+    let mut design_tick = tokio::time::interval(design::LOOK_EVERY);
     // A loop held up never catches up on the ticks it missed in a burst: that
     // only holds it up again.
-    for tick in [&mut daily, &mut minute, &mut desktop_tick, &mut frames] {
+    for tick in [&mut daily, &mut minute, &mut desktop_tick, &mut frames, &mut design_tick] {
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     }
     daily.tick().await; // the first tick is immediate; pruning already ran at start
@@ -852,6 +870,7 @@ async fn run(
             _ = desktop_tick.tick() => Wake::DesktopTick,
             _ = frames.tick() => Wake::Frames,
             _ = minute.tick() => Wake::Minute,
+            _ = design_tick.tick(), if !rt.design_watch.is_empty() => Wake::DesignTick,
         };
         pulse.begin(wake.doing());
         let go_on = rt.wake(wake, &pulse).await;
@@ -973,11 +992,13 @@ impl Runtime {
                     }
                 }
                 Internal::Engines(engines) => self.publish_engines(engines),
+                Internal::ClaudeReady(ok) => self.claude_ready(ok),
                 Internal::SignInEnded(engine, id) => {
                     if self.sign_ins.get(&engine).is_some_and(|(at, _)| *at == id) {
                         self.sign_ins.remove(&engine);
                     }
                 }
+                Internal::Design(squad, stamp, catalog) => self.on_design(squad, stamp, catalog),
             },
             Wake::Host(said) => self.on_host(said).await,
             Wake::Daily => self.prune(),
@@ -987,6 +1008,7 @@ impl Runtime {
                 }
             }
             Wake::Frames => self.take_frames(),
+            Wake::DesignTick => self.design_tick(),
             Wake::Minute => {
                 pulse.step("minute tick: idle lanes");
                 self.fold_idle_lanes();
@@ -1392,6 +1414,7 @@ impl Runtime {
             Command::DismissEngineProposal { squad, id } => self.dismiss_engine_proposal(&squad, id),
             Command::UndoEngineProposal { squad, id } => self.undo_engine_proposal(&squad, id).await,
             Command::ShowEngineSetup { squad } => self.show_engine_setup(&squad),
+            Command::Design { squad } => self.design_asked(squad),
         }
     }
 

@@ -3397,3 +3397,31 @@ async fn the_desktop_is_only_for_members_the_person_turned_it_on_for() {
     assert!(helper.is_error && helper.text.contains("equipe desktop setup"), "{}", helper.text);
     assert!(handle.desktop(desktop("nobody")).await.text.contains("off for nobody"));
 }
+
+// ── the design system ──
+
+#[tokio::test]
+async fn a_screen_asking_for_the_design_system_gets_it_and_then_what_the_designer_saves() {
+    let project = repo();
+    let home = squad_home(&[&project]);
+    let (handle, _all) = runtime::start(config(&fake_claude(true, &answering("hi")), &home, true));
+    let design = squad_home::path(&home, "acme").join("design");
+    std::fs::create_dir_all(&design).unwrap();
+    std::fs::write(design.join("tokens.json"), r##"{ "color": { "$type": "color", "light": { "bg": { "$value": "#F6F5F1" } }, "dark": { "bg": { "$value": "#0A0A0C" } } } }"##).unwrap();
+    std::fs::write(design.join("guidelines.md"), "# Brand\n").unwrap();
+    let (_, mut screen) = handle.subscribe("acme").await.unwrap();
+    handle.send(Command::Design { squad: "acme".into() });
+    let seen = until(&mut screen, |e| matches!(e, Event::Design { .. })).await;
+    let Some(Event::Design { squad, systems, folder }) = seen.last() else { unreachable!() };
+    assert_eq!((squad.as_str(), folder.as_str()), ("acme", design.to_str().unwrap()));
+    assert_eq!(systems.len(), 1);
+    assert_eq!(systems[0].modes, ["light", "dark"]);
+    assert_eq!(systems[0].tokens[0].value_in(Some("dark")), "#0A0A0C");
+    assert_eq!(systems[0].guidelines.as_deref(), Some("# Brand\n"));
+    // The designer saves: the screen hears it without asking again.
+    std::fs::write(design.join("tokens.json"), r##"{ "color": { "$type": "color", "bg": { "$value": "#FFFFFF" }, "accent": { "$value": "#1D4ED8" } } }"##).unwrap();
+    let seen = until(&mut screen, |e| matches!(e, Event::Design { .. })).await;
+    let Some(Event::Design { systems, .. }) = seen.last() else { unreachable!() };
+    assert_eq!(systems[0].tokens.len(), 2);
+    assert!(systems[0].modes.is_empty());
+}

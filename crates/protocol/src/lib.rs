@@ -16,6 +16,7 @@ pub mod asks;
 pub mod decide;
 pub mod disk;
 pub mod engines;
+pub mod design;
 pub mod rpc;
 pub mod stream;
 pub mod tags;
@@ -765,6 +766,10 @@ pub enum Command {
     UndoEngineProposal { squad: SquadName, id: u64 },
     /// Propose the squad's recommended setup for both engines again.
     ShowEngineSetup { squad: SquadName },
+    /// Show the squad's design systems (`design::DesignSystem`): answered by
+    /// [`Event::Design`], and again whenever one of them changes while a
+    /// screen follows the squad.
+    Design { squad: SquadName },
 }
 
 /// Where an engine stands on the daemon's machine ([`Event::Engines`]).
@@ -1367,6 +1372,17 @@ pub enum Event {
     },
     /// How the squad moves members between engines changed.
     EngineSwitchingChanged { squad: SquadName, mode: engines::Switching },
+    /// The squad's design systems, as they are now ([`Command::Design`]):
+    /// its own first, then each project's that has one, then the drafts
+    /// tickets in review hand in. None: there is none yet, and `folder` is
+    /// where the squad's would be.
+    Design {
+        squad: SquadName,
+        #[serde(default)]
+        systems: Vec<design::DesignSystem>,
+        #[serde(default)]
+        folder: String,
+    },
 }
 
 impl Event {
@@ -1385,7 +1401,8 @@ impl Event {
             | Event::Allowed { squad, .. }
             | Event::EngineProposed { squad, .. }
             | Event::EngineProposalClosed { squad, .. }
-            | Event::EngineSwitchingChanged { squad, .. } => Some(squad),
+            | Event::EngineSwitchingChanged { squad, .. }
+            | Event::Design { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             _ => None,
         }
@@ -1436,6 +1453,7 @@ impl Event {
             | Event::EngineProposed { .. }
             | Event::EngineProposalClosed { .. }
             | Event::EngineSwitchingChanged { .. }
+            | Event::Design { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
             // A browser's own: never part of a conversation.

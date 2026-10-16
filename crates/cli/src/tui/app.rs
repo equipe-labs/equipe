@@ -681,6 +681,8 @@ pub struct App {
     pub mode: Mode,
     /// Guesses at the person's next message, after a member answers them.
     pub suggestions: bool,
+    /// `/design` was typed: the design system's summary goes in the flash line when it comes.
+    pub design_asked: bool,
     /// The Claude plan's usage windows, as last reported.
     pub plan: Option<equipe_core::protocol::PlanUsage>,
     /// Who has the Mac's screen and who waits for it.
@@ -843,6 +845,7 @@ impl App {
             question: None,
             mode: snapshot.mode,
             suggestions: !snapshot.suggestions_off,
+            design_asked: false,
             plan: snapshot.plan,
             desktop: snapshot.desktop,
             disk: snapshot.disk,
@@ -1622,6 +1625,13 @@ impl App {
 
     pub fn on_event(&mut self, event: Event) -> Vec<Command> {
         match event {
+            // The design system: a line of what it holds, when `/design` asked.
+            Event::Design { squad, systems, folder } if squad == self.squad => {
+                if std::mem::take(&mut self.design_asked) {
+                    self.flash = Some(design_summary(&systems, &folder));
+                }
+                return Vec::new();
+            }
             // A member that leaves the squad leaves its list: a helper by the
             // same name may join later, and must not show twice.
             Event::SessionClosed { session } if self.agents.iter().any(|a| a.id == session && a.member.is_some()) => {
@@ -2721,6 +2731,12 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 Vec::new()
             }
             "project" => self.focus_on(rest),
+            // The squad's design system, in a line: what the desktop app shows in full.
+            "design" => {
+                self.design_asked = true;
+                self.flash = Some(t!("app.design_asking").into());
+                vec![Command::Design { squad: self.squad.clone() }]
+            }
             "suggest" => {
                 let on = match rest.trim() {
                     "" => !self.suggestions,
@@ -3587,6 +3603,38 @@ pub fn relative(target: &str, base: &std::path::Path) -> String {
         .filter(|rel| !rel.as_os_str().is_empty())
         .map(|rel| rel.display().to_string())
         .unwrap_or_else(|| target.to_owned())
+}
+
+/// `/design`'s line: how many tokens of each kind the squad's design system
+/// has, how many pictures, where it is — and that the desktop app shows it.
+pub fn design_summary(systems: &[equipe_core::protocol::design::DesignSystem], folder: &str) -> String {
+    let Some(main) = systems.iter().find(|s| s.draft.is_none() && s.project.is_none()).or_else(|| systems.first()) else {
+        return t!("app.design_none", folder = folder);
+    };
+    let count = |kinds: &[&str]| main.tokens.iter().filter(|t| kinds.contains(&t.kind.as_str())).count();
+    let mut parts = vec![t!("app.design_tokens", count = main.tokens.len())];
+    let (colors, type_styles, sizes, motion) = (count(&["color"]), count(&["typography", "fontFamily", "fontWeight"]), count(&["dimension"]), count(&["duration", "cubicBezier", "transition"]));
+    if colors > 0 {
+        parts.push(t!("app.design_colors", count = colors));
+    }
+    if type_styles > 0 {
+        parts.push(t!("app.design_type", count = type_styles));
+    }
+    if sizes > 0 {
+        parts.push(t!("app.design_sizes", count = sizes));
+    }
+    if motion > 0 {
+        parts.push(t!("app.design_motion", count = motion));
+    }
+    if !main.assets.is_empty() {
+        parts.push(t!("app.design_assets", count = main.assets.len()));
+    }
+    let drafts: Vec<String> = systems.iter().filter_map(|s| s.draft.as_ref()).map(|d| t!("app.design_draft", id = d.ticket)).collect();
+    parts.extend(drafts);
+    if !main.problems.is_empty() {
+        parts.push(t!("app.design_problems", count = main.problems.len()));
+    }
+    format!("{} · {} · {}", parts.join(" · "), main.dir, t!("app.design_open_in_app"))
 }
 
 #[cfg(test)]

@@ -174,7 +174,8 @@ pub fn allowed(command: Command) -> Option<Command> {
         | Command::UndoEngineProposal { .. }
         | Command::Focus { .. }
         | Command::Refresh { .. }
-        | Command::Engines) => Some(c),
+        | Command::Engines
+        | Command::Design { .. }) => Some(c),
         _ => None,
     }
 }
@@ -201,7 +202,8 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::ShowEngineSetup { squad }
         | Command::Scale { squad, .. }
         | Command::Focus { squad, .. }
-        | Command::ShowBrowser { squad, .. } => Some(squad),
+        | Command::ShowBrowser { squad, .. }
+        | Command::Design { squad } => Some(squad),
         _ => None,
     }
 }
