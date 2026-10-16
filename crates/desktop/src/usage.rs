@@ -1,4 +1,4 @@
-//! `/usage`: the Claude plan's windows and each member's context and tokens,
+//! `/usage`: both engines' plan windows, the squad's engine switching, and each member's context and tokens,
 //! as the console's usage screen words them (`tui/view.rs` `render_usage`) —
 //! rows of text, without a window.
 
@@ -19,6 +19,10 @@ pub struct Row {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct View {
     pub plan: Vec<Row>,
+    /// Codex's plan, as last read.
+    pub codex: Vec<Row>,
+    /// How the squad moves members between engines.
+    pub switching: Row,
     pub members: Vec<Row>,
 }
 
@@ -52,7 +56,13 @@ pub fn view(model: &Model, when: impl Fn(i64) -> String) -> View {
             Row { label: m.name.clone(), text: format!("{context} · {} tokens{cache}", short_count(spent.tokens)), percent }
         })
         .collect();
-    View { plan: plan_rows(model.plan, when), members }
+    let codex = match model.engines.plan(equipe_core::protocol::Engine::Codex) {
+        Some(p) => plan_rows(Some(p.usage), &when),
+        None => vec![Row { label: "—".into(), text: equipe_core::t!("engines.codex_not_read").into(), percent: None }],
+    };
+    let mode = model.engines.mode;
+    let switching = Row { label: crate::engines::mode_word(mode).into(), text: format!("{} · /engines", crate::engines::mode_about(mode)), percent: None };
+    View { plan: plan_rows(model.plan, &when), codex, switching, members }
 }
 
 /// 8400 → "8.4k", 2_800_000 → "2.8M".
@@ -124,7 +134,7 @@ mod tests {
         let mut m = model();
         let when = |t: i64| format!("@{t}");
         assert_eq!(view(&m, when).plan[0].text, "reported after a member's next turn on Claude Code");
-        m.apply(Update::Event(Event::PlanUsage { usage: PlanUsage { five_hour: Some(PlanWindow { used_percent: 42, resets_at: 100 }), seven_day: None } }), T0);
+        m.apply(Update::Event(Event::PlanUsage { usage: PlanUsage { five_hour: Some(PlanWindow { used_percent: 42, resets_at: 100 }), seven_day: None }, engine: Engine::Claude }), T0);
         let plan = view(&m, when).plan;
         assert_eq!(plan.len(), 1);
         assert_eq!((plan[0].label.as_str(), plan[0].text.as_str(), plan[0].percent), ("5-hour", "42% used · starts over @100", Some(42)));

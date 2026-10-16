@@ -80,6 +80,10 @@ pub fn usage_sheet(view: &usage::View) -> Sheet {
     let row = |r: &usage::Row| Row { bar: r.percent, ..Row::text(r.label.clone(), r.text.clone()) };
     let rows = std::iter::once(Row::heading("CLAUDE 플랜"))
         .chain(view.plan.iter().map(row))
+        .chain(std::iter::once(Row::heading(equipe_core::t!("engines.codex_heading"))))
+        .chain(view.codex.iter().map(row))
+        .chain(std::iter::once(Row::heading(equipe_core::t!("engines.settings_section"))))
+        .chain(std::iter::once(row(&view.switching)))
         .chain(std::iter::once(Row::heading("멤버")))
         .chain(view.members.iter().map(row))
         .collect();
@@ -190,10 +194,14 @@ mod tests {
 
     #[test]
     fn usage_and_help_are_sheets_of_headed_rows() {
-        let u = usage_sheet(&usage::View { plan: vec![usage::Row { label: "5-hour".into(), text: "42% used".into(), percent: Some(42) }], members: vec![] });
+        let row = |label: &str, percent| usage::Row { label: label.into(), text: String::new(), percent };
+        let u = usage_sheet(&usage::View { plan: vec![row("5-hour", Some(42))], codex: vec![row("week", Some(18))], switching: row("제안", None), members: vec![] });
         assert_eq!(u.rows[0], Row::heading("CLAUDE 플랜"));
         assert_eq!(u.rows[1].bar, Some(42));
-        assert!(u.rows[2].heading);
+        // Both engines' plans, then how the squad moves members between them.
+        assert_eq!((u.rows[2].clone(), u.rows[3].bar), (Row::heading("CODEX 플랜"), Some(18)));
+        assert_eq!((u.rows[4].clone(), u.rows[5].head.as_str()), (Row::heading("엔진 자동 전환"), "제안"));
+        assert!(u.rows[6].heading);
         let h = help_sheet();
         assert!(h.rows.iter().filter(|r| r.heading).count() >= 5);
         assert!(h.rows.iter().any(|r| r.head.starts_with("/usage")));

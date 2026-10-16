@@ -502,7 +502,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 .w_full()
                 .max_w(px(COLUMN))
                 .px_4()
-                .child(v_flex().children(approvals::for_you(shell, cx)).children(approvals::approval(shell, cx)).children(super::decide::docked(shell, cx)).children(super::team::docked(shell, cx)).children(super::asklist::hint(shell, cx)))
+                .child(v_flex().children(approvals::for_you(shell, cx)).children(approvals::approval(shell, cx)).children(super::decide::docked(shell, cx)).children(super::team::docked(shell, cx)).children(super::engines::docked(shell, cx)).children(super::asklist::hint(shell, cx)))
                 .child(composer::render(shell, cx)),
         )
         .children(lightbox(shell, cx));

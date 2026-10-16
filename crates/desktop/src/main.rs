@@ -12,6 +12,7 @@ mod board;
 mod browse;
 mod commands;
 mod diffs;
+mod engines;
 mod export;
 mod compose;
 mod activity;

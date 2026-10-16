@@ -292,6 +292,8 @@ pub struct Model {
     pub asked: crate::decide::Asked,
     /// Changes to the team the PM proposed, waiting for the person, oldest first.
     pub team: crate::team::Proposals,
+    /// Both engines' plans, the squad's switching and its cards (`engines`).
+    pub engines: crate::engines::Engines,
     /// Things that need the person and have not been announced yet: the shell
     /// takes them and tells the person if the window is out of sight.
     alerts: Vec<Alert>,
@@ -412,6 +414,7 @@ impl Model {
             approvals: Queue::default(),
             asked: Default::default(),
             team: Default::default(),
+            engines: Default::default(),
             alerts: Vec::new(),
             flash: None,
             convos: HashMap::new(),
@@ -664,6 +667,7 @@ impl Model {
                 self.approvals.forget_answers();
                 self.asked.forget_sent();
                 self.team.forget_sent();
+                self.engines.forget_sent();
                 let next = match &self.conn {
                     // Already down: only the reason may have moved on, and it
                     // is not shown while the banner is up.
@@ -715,6 +719,7 @@ impl Model {
         self.browser_tabs.clear();
         let version = hello.version;
         let snapshot = hello.snapshot;
+        self.engines.load(&snapshot, self.unix as i64);
         self.squad = snapshot.squad;
         // When each came to where it stands: what the journal says, unless it
         // was seen here already in that state.
@@ -807,7 +812,17 @@ impl Model {
 
     fn on_event(&mut self, event: Event, now: Clock) {
         match &event {
-            Event::PlanUsage { usage } => self.plan = Some(*usage),
+            Event::PlanUsage { usage, engine } => {
+                if *engine == Engine::Claude {
+                    self.plan = Some(*usage);
+                }
+                self.engines.read(*engine, *usage, self.unix as i64);
+            }
+            Event::EngineProposed { squad, proposal } if *squad == self.squad => {
+                self.engines.propose(proposal.clone());
+            }
+            Event::EngineProposalClosed { squad, id, .. } if *squad == self.squad => self.engines.close(*id),
+            Event::EngineSwitchingChanged { squad, mode } if *squad == self.squad => self.engines.mode = *mode,
             Event::TurnEnded { session, usage: Some(u), .. } if !self.lanes.iter().any(|l| l.session == *session) => {
                 let spent = self.spent.entry(*session).or_default();
                 spent.tokens += u.total();

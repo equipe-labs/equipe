@@ -13,7 +13,7 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-pub const COMMANDS: [Spec; 27] = [
+pub const COMMANDS: [Spec; 28] = [
     Spec { name: "usage", args: "", about: "commands.about_usage" },
     Spec { name: "scale", args: "[0-6|off]", about: "commands.about_scale" },
     Spec { name: "compact", args: "[member]", about: "commands.about_compact" },
@@ -37,6 +37,7 @@ pub const COMMANDS: [Spec; 27] = [
     Spec { name: "browser", args: "[show|hide [member] · max <n>]", about: "commands.about_browser" },
     Spec { name: "send-apps", args: "[add|remove <app> · reset]", about: "commands.about_send_apps" },
     Spec { name: "desktop", args: "stop|resume", about: "commands.about_desktop" },
+    Spec { name: "engines", args: "[auto|suggest|off|setup]", about: "commands.about_engines" },
     Spec { name: "export", args: "", about: "commands.about_export" },
     Spec { name: "mouse", args: "", about: "commands.about_mouse" },
     Spec { name: "help", args: "", about: "commands.about_help" },
@@ -294,6 +295,16 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             .filter(|(w, _)| starts(w))
             .map(|(w, about)| word(w, about, ""))
             .collect(),
+        ("engines", 1) => [
+            ("suggest", t!("engines.mode_suggest_about")),
+            ("auto", t!("engines.mode_auto_about")),
+            ("off", t!("engines.mode_off_about")),
+            ("setup", t!("engines.settings_setup")),
+        ]
+        .iter()
+        .filter(|(w, _)| starts(w))
+        .map(|(w, about)| word(w, about, ""))
+        .collect(),
         ("desktop", 1) => [("stop", t!("commands.desktop_stop")), ("resume", t!("commands.desktop_resume"))]
             .iter()
             .filter(|(w, _)| starts(w))

@@ -296,7 +296,7 @@ impl Mate {
     /// It may move now: not pinned, not waiting, an hour since it last moved and no move in three.
     fn may_move(&self, now: i64) -> bool {
         let last = self.switched.iter().max().copied();
-        !self.pinned && !self.waiting && last.is_none_or(|t| now - t >= MIN_STAY && now - t >= COOLDOWN)
+        !self.pinned && !self.waiting && last.is_none_or(|t| now - t >= MIN_STAY.max(COOLDOWN))
     }
 }
 

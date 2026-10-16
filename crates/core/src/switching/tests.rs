@@ -10,6 +10,9 @@ const NOW: i64 = 1_760_000_000;
 const M: i64 = 60;
 const H: i64 = 3600;
 
+/// A window as a case gives it: used, and seconds left.
+type Win = Option<(u8, i64)>;
+
 fn win(used: u8, left: i64) -> Option<PlanWindow> {
     Some(PlanWindow { used_percent: used, resets_at: NOW + left })
 }
@@ -76,7 +79,7 @@ fn level(five: Option<(u8, i64)>, week: Option<(u8, i64)>) -> (Level, bool) {
 #[test]
 fn every_threshold_on_its_edge() {
     use Level::*;
-    let cases: &[(&str, Option<(u8, i64)>, Option<(u8, i64)>, Level, bool)] = &[
+    let cases: &[(&str, Win, Win, Level, bool)] = &[
         ("nothing read", None, None, Ok, false),
         ("five hours 69", Some((69, 3 * H)), None, Ok, false),
         ("five hours 70", Some((70, 3 * H)), None, Watch, false),
@@ -419,7 +422,7 @@ fn between_the_way_out_and_the_way_back_there_is_room_so_nobody_flaps() {
 fn a_stale_reading_shows_recovery_only_once_its_limits_started_over() {
     let mates = away();
     let codex_ok = codex(20, 20);
-    let cases: &[(&str, Option<(u8, i64)>, Option<(u8, i64)>, bool)] = &[
+    let cases: &[(&str, Win, Win, bool)] = &[
         ("five hours started over 15 minutes ago, week 60", Some((90, -15 * M)), Some((60, 3 * 24 * H)), true),
         ("started over 5 minutes ago", Some((90, -5 * M)), Some((60, 3 * 24 * H)), false),
         ("the week at 70 may be higher now", Some((90, -15 * M)), Some((70, 3 * 24 * H)), false),
