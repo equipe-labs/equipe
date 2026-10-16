@@ -1239,5 +1239,9 @@
   "turn.tip_your_call": "{name} decides, and says what it chose",
   "turn.tip_yours": "Hand it back: {name} does it — and calls you to the browser if it needs your sign-in",
   "turn.waiting": "{name} is waiting — once you send, it picks up where it left off",
-  "update.new_version": "New version"
+  "update.new_version": "New version",
+  "header.screen_holder": "{name} is using the Mac's screen",
+  "header.screen_waiting_one": "{name} waiting",
+  "header.screen_waiting_more": "{name} +{n} waiting",
+  "header.screen_stopped": "Mac screen taken back · /desktop resume"
 }

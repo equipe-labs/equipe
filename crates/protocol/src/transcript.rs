@@ -285,6 +285,55 @@ pub mod scope {
     }
 }
 
+/// A conversation as Markdown, for a file the person can search and copy —
+/// the same text on every screen that exports one.
+pub fn markdown(entries: &[Entry], heading: &str) -> String {
+    let mut out = format!("# {heading}\n\n");
+    for entry in entries {
+        match entry {
+            Entry::User { text } => out.push_str(&format!("**You:** {text}\n\n")),
+            Entry::Reply { text } => out.push_str(&format!("{text}\n\n")),
+            Entry::Tool { tool, target, .. } => {
+                out.push_str(&format!("- {} {}\n", tool_verb(tool), target.as_deref().unwrap_or("")));
+            }
+            Entry::Note { text } => out.push_str(&format!("_{text}_\n\n")),
+            Entry::Thread { project } => out.push_str(&format!("## {}\n\n", project.as_deref().unwrap_or("The whole squad"))),
+            Entry::Error { message, next } => {
+                out.push_str(&format!("> ✗ {message}{}\n\n", next.as_ref().map(|n| format!(" → `{n}`")).unwrap_or_default()))
+            }
+            Entry::Landed { branch, stat } => out.push_str(&format!("✓ Landed on `{branch}`\n\n```\n{stat}\n```\n\n")),
+        }
+    }
+    out
+}
+
+/// How a tool use reads in one word.
+pub fn tool_verb(name: &str) -> &str {
+    match name {
+        "Read" => "read",
+        "Edit" | "MultiEdit" | "NotebookEdit" => "edit",
+        "Write" => "write",
+        "Bash" => "run",
+        "Glob" | "Grep" => "search",
+        "WebFetch" | "WebSearch" => "fetch",
+        // A subagent the member handed side work to.
+        "Agent" | "Task" => "delegate",
+        other => match other.strip_prefix("mcp__equipe__") {
+            // equipe's own board tools read as what they do.
+            Some("board") => "board",
+            Some("create_ticket") => "ticket",
+            Some("update_ticket") => "ticket",
+            Some("comment") => "comment",
+            Some("submit_for_review") => "hand in",
+            Some("block_on_person") => "wait on you",
+            Some("ask_person") => "ask you",
+            // The member's browser: every step reads as browsing.
+            _ if other.starts_with("mcp__browser__") => "browse",
+            _ => other,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -87,7 +87,7 @@ for arch in $archs; do
   if ! "$rustup" target list --installed 2>/dev/null | grep -qx "$triple"; then
     "$rustup" target add "$triple"
   fi
-  MACOSX_DEPLOYMENT_TARGET="$min_macos" "$cargo" build --release --locked -p equipe-desktop --target "$triple"
+  MACOSX_DEPLOYMENT_TARGET="$min_macos" CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16}" "$cargo" build --release --locked -p equipe-desktop --target "$triple"
   binaries+=("$target_dir/$triple/release/equipe-desktop")
 done
 

@@ -3349,32 +3349,7 @@ pub fn transcript_markdown(agent: &Agent, squad: &str) -> String {
     out
 }
 
-/// How a tool use reads in one word.
-pub fn tool_verb(name: &str) -> &str {
-    match name {
-        "Read" => "read",
-        "Edit" | "MultiEdit" | "NotebookEdit" => "edit",
-        "Write" => "write",
-        "Bash" => "run",
-        "Glob" | "Grep" => "search",
-        "WebFetch" | "WebSearch" => "fetch",
-        // A subagent the member handed side work to.
-        "Agent" | "Task" => "delegate",
-        other => match other.strip_prefix("mcp__equipe__") {
-            // equipe's own board tools read as what they do.
-            Some("board") => "board",
-            Some("create_ticket") => "ticket",
-            Some("update_ticket") => "ticket",
-            Some("comment") => "comment",
-            Some("submit_for_review") => "hand in",
-            Some("block_on_person") => "wait on you",
-            Some("ask_person") => "ask you",
-            // The member's browser: every step reads as browsing.
-            _ if other.starts_with("mcp__browser__") => "browse",
-            _ => other,
-        },
-    }
-}
+pub use equipe_core::protocol::transcript::tool_verb;
 
 /// An upload arriving from iTerm2 as typed input: a status line (`ok` or
 /// `abort`), then base64 lines, then an empty line.

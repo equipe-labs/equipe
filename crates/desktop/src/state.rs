@@ -8,8 +8,8 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use equipe_core::protocol::rpc::Hello;
-use equipe_core::protocol::{Engine, Entry, Estimate, Event, HumanCheck, Mode, OffMain, SessionId, SessionState, Ticket, TicketEntry, TicketId, TicketKind, TicketStatus, TurnOutcome};
+use equipe_core::protocol::rpc::{Hello, SquadEntry};
+use equipe_core::protocol::{DesktopState, Engine, Entry, Estimate, Event, HumanCheck, Mode, OffMain, PlanUsage, SessionId, SessionState, Ticket, TicketEntry, TicketId, TicketKind, TicketStatus, TurnOutcome};
 
 use crate::convo::Convo;
 use crate::daemon::Update;
@@ -249,6 +249,17 @@ pub enum Conn {
     },
 }
 
+/// What a member's turns have used, for `/usage`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Spent {
+    /// Everything its turns processed, cached history included.
+    pub tokens: u64,
+    /// Of `seen.0` tokens, `seen.1` came from the prompt cache.
+    pub seen: (u64, u64),
+    /// (used, window) tokens of its context, once known.
+    pub context: Option<(u64, u64)>,
+}
+
 type CardHint = (Vec<u64>, Vec<(TicketId, TicketStatus, Option<String>)>, Option<String>);
 
 #[derive(Debug, Clone)]
@@ -263,6 +274,16 @@ pub struct Model {
     pub projects: Vec<PathBuf>,
     /// The squad's mode, for completion's sake.
     pub mode: Mode,
+    /// The Claude plan's usage windows, as last reported.
+    pub plan: Option<PlanUsage>,
+    /// The daemon is on another machine (SSH): its folders aren't on this disk.
+    pub remote: bool,
+    /// Whether a guess at the next message is offered after an answer (`/suggest`).
+    pub suggestions: bool,
+    /// What each member's turns have used.
+    pub spent: HashMap<SessionId, Spent>,
+    /// The daemon machine's squads: where each one's folder is.
+    pub squad_list: Vec<SquadEntry>,
     /// Open permission requests, oldest first.
     pub approvals: Queue,
     /// Members' questions waiting for the person, oldest first.
@@ -306,6 +327,8 @@ pub struct Model {
     pub browsers_shown: bool,
     /// The person took the Mac's screen back from the members.
     pub desktop_stopped: bool,
+    /// Who has the Mac's screen, and who waits for it.
+    pub desktop: DesktopState,
     /// What the person answered tickets that waited for them with, here or on
     /// another screen (`crate::yourturn`), for the cards that asked.
     pub answers: HashMap<TicketId, crate::yourturn::Answered>,
@@ -333,6 +356,22 @@ pub struct BrowserWait {
     pub check: HumanCheck,
 }
 
+/// The header's line about the Mac's screen; `None` when nobody is on it.
+pub fn screen_line(desktop: &DesktopState, here: &str) -> Option<String> {
+    let name = |m: &equipe_core::protocol::MemberRef| if m.squad == here { m.member.clone() } else { m.to_string() };
+    if desktop.stopped {
+        return Some(t!("header.screen_stopped").into());
+    }
+    let holder = desktop.holder.as_ref().map(|m| t!("header.screen_holder", name = name(m)));
+    let waiting = match desktop.queue.as_slice() {
+        [] => None,
+        [one] => Some(t!("header.screen_waiting_one", name = name(one))),
+        [first, rest @ ..] => Some(t!("header.screen_waiting_more", name = name(first), n = rest.len())),
+    };
+    let parts: Vec<String> = holder.into_iter().chain(waiting).collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 impl Model {
     pub fn new(squad: &str) -> Self {
         Self {
@@ -343,6 +382,11 @@ impl Model {
             tickets: Vec::new(),
             projects: Vec::new(),
             mode: Mode::default(),
+            plan: None,
+            remote: false,
+            suggestions: true,
+            spent: HashMap::new(),
+            squad_list: Vec::new(),
             approvals: Queue::default(),
             asked: Default::default(),
             alerts: Vec::new(),
@@ -363,6 +407,7 @@ impl Model {
             suggestions_off: false,
             browsers_shown: false,
             desktop_stopped: false,
+            desktop: DesktopState::default(),
             answers: HashMap::new(),
             browser_waits: Vec::new(),
             histories: HashMap::new(),
@@ -595,8 +640,13 @@ impl Model {
                 self.conn = next;
                 changed
             }
-            // The shell reads these two itself: the squad list and the bridge's greeting.
-            Update::Squads(_) | Update::Bridge(_) => false,
+            // The shell reads the bridge's greeting itself; the squad list is kept for
+            // `/home` (where the folder is) and `/squad` (what to switch to).
+            Update::Squads(list) => {
+                self.squad_list = list.squads;
+                false
+            }
+            Update::Bridge(_) => false,
             Update::Event(event) => {
                 let before = (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint());
                 self.on_event(event, now);
@@ -638,6 +688,14 @@ impl Model {
         self.tickets = snapshot.tickets.clone();
         self.projects = snapshot.projects.clone();
         self.mode = snapshot.mode;
+        self.plan = snapshot.plan;
+        self.suggestions = !snapshot.suggestions_off;
+        self.spent = snapshot
+            .sessions
+            .iter()
+            .filter(|s| s.lane.is_none())
+            .map(|s| (s.session, Spent { tokens: s.tokens, seen: (0, 0), context: s.context }))
+            .collect();
         self.approvals.load(snapshot.approvals.clone());
         self.asked.load(snapshot.questions.clone());
         if let Some(note) = crate::notify::stale_daemon(&version, env!("CARGO_PKG_VERSION")) {
@@ -650,6 +708,7 @@ impl Model {
         self.suggestions_off = snapshot.suggestions_off;
         self.browsers_shown = snapshot.browsers_shown;
         self.desktop_stopped = snapshot.desktop.stopped;
+        self.desktop = snapshot.desktop.clone();
         let (lanes, own): (Vec<&_>, Vec<&_>) = snapshot.sessions.iter().partition(|s| s.lane.is_some());
         self.lanes = lanes
             .iter()
@@ -707,6 +766,19 @@ impl Model {
     }
 
     fn on_event(&mut self, event: Event, now: Clock) {
+        match &event {
+            Event::PlanUsage { usage } => self.plan = Some(*usage),
+            Event::TurnEnded { session, usage: Some(u), .. } if !self.lanes.iter().any(|l| l.session == *session) => {
+                let spent = self.spent.entry(*session).or_default();
+                spent.tokens += u.total();
+                spent.seen.0 += u.total();
+                spent.seen.1 += u.cache_tokens.unwrap_or(0);
+                if let (Some(used), Some(window)) = (u.context_tokens, u.context_window) {
+                    spent.context = Some((used, window));
+                }
+            }
+            _ => {}
+        }
         // The conversation first: what the selected one shows decides redraws.
         if let Some(id) = event.session() {
             if let Event::SessionStarted { squad, member, project, .. } = &event {
@@ -765,7 +837,10 @@ impl Model {
                 }
             },
             Event::Allowed { squad, rules } if squad == self.squad => self.allowed = rules,
-            Event::Desktop { desktop } => self.desktop_stopped = desktop.stopped,
+            Event::Desktop { desktop } => {
+                self.desktop_stopped = desktop.stopped;
+                self.desktop = desktop;
+            }
             Event::LaneOpened { session, of, project } => self.open_lane(session, of, project),
             // Taken back, or sent at once: the member's count follows its conversation's.
             Event::MemoWithdrawn { session, .. } | Event::QueueSent { session, .. } => {
@@ -1964,4 +2039,21 @@ mod tests {
         assert!(model.convo().unwrap().queue.is_empty());
         assert_eq!(model.members[0].memos, 0);
     }
+
+    #[test]
+    fn the_screen_line_says_who_is_on_it() {
+        use equipe_core::protocol::MemberRef;
+        let m = |squad: &str, member: &str| MemberRef { squad: squad.into(), member: member.into() };
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        assert_eq!(screen_line(&model.desktop, "acme"), None);
+        let busy = DesktopState { holder: Some(m("acme", "frontend")), queue: vec![m("tax", "pm"), m("acme", "qa")], stopped: false };
+        assert!(model.apply(Update::Event(Event::Desktop { desktop: busy }), T0));
+        let line = screen_line(&model.desktop, "acme").unwrap();
+        assert!(line.contains("frontend") && line.contains("tax/pm"), "{line}");
+        assert!(!line.contains("acme"), "a member of this squad goes by name alone: {line}");
+        let stopped = DesktopState { stopped: true, ..Default::default() };
+        assert!(screen_line(&stopped, "acme").is_some());
+    }
+
 }

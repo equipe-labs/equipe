@@ -1239,5 +1239,9 @@
   "turn.tip_your_call": "{name} decide y dice qué eligió",
   "turn.tip_yours": "Devuélvelo: {name} lo hace, y te llama al navegador si hace falta tu inicio de sesión",
   "turn.waiting": "{name} está esperando: al enviar, sigue donde lo dejó",
-  "update.new_version": "Nueva versión"
+  "update.new_version": "Nueva versión",
+  "header.screen_holder": "{name} está usando la pantalla del Mac",
+  "header.screen_waiting_one": "{name} espera",
+  "header.screen_waiting_more": "{name} y {n} más esperan",
+  "header.screen_stopped": "Pantalla del Mac recuperada · /desktop resume"
 }
