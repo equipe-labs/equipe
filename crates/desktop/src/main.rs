@@ -24,6 +24,7 @@ mod media;
 mod mem;
 mod notify;
 mod pair;
+mod quote;
 mod ssh;
 #[cfg(feature = "snapshot")]
 mod snapshot;
@@ -114,6 +115,8 @@ pub struct Shell {
     pub decide: views::decide::DecideUi,
     /// A reply's list of questions, answered in place.
     pub asklist: views::asklist::AskListUi,
+    /// Words selected in the conversation, asked about (`views/quote.rs`).
+    pub quote: views::quote::QuoteUi,
     pub settings: views::settings::SettingsUi,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
     pub browser: Entity<BrowserPanel>,
@@ -201,6 +204,7 @@ impl Shell {
             turn: Default::default(),
             decide: Default::default(),
             asklist: Default::default(),
+            quote: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
             browser,
             board_ticket: None,
@@ -331,6 +335,16 @@ impl Shell {
                     cx.stop_propagation();
                 }
                 return;
+            }
+            // Words selected in the conversation: ⏎ or ⌘⇧R asks about them; in
+            // the box that opens, ⏎ sends and Esc closes.
+            match this.update(cx, |shell, cx| shell.on_quote_key(key, &modifiers, window, cx)).unwrap_or(views::decide::Took::Pass) {
+                views::decide::Took::Taken => {
+                    cx.stop_propagation();
+                    return;
+                }
+                views::decide::Took::Typing => return,
+                views::decide::Took::Pass => {}
             }
             // Settings has the page's keys: Esc, ↑↓, ⌘F.
             if this.update(cx, |shell, cx| shell.on_settings_key(key, &modifiers, window, cx)).unwrap_or(false) {
@@ -1024,6 +1038,7 @@ impl Render for Shell {
             // sidebar or the header alike: the same place whatever slides.
             .child(views::sidebar::title_buttons(self, cx))
             // Over everything: the chooser, then a question from ssh above it.
+            .children(views::quote::layer(self, window, cx))
             .children(views::composer::drop_overlay(self, cx))
             .children(views::composer::lightbox(self, cx))
             .children(views::attached::gallery(self, cx))

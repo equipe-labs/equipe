@@ -11,6 +11,7 @@
 //! ticket) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
 //! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `settings[:<category>]` (settings, at general · squad · team · permissions · projects · browser · keys · about) · `ssearch:<words>` (its search) · `spop:<language|squad>` (a pop-up) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
 //! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
+//! `sdrag:<x1>,<y1>,<x2>,<y2>` (a selection dragged out) · `peekw:<px>` (the peek held that wide) · `quote:<open|copy|type:<words>|send|close|jump>` (asking about the words selected) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
 //! `answer:<ticket>,<n>,<words>` / `aok:<ticket>,<n>` / `atick:<ticket>,<n>` / `apick:<ticket>,<n>,<done|yours|later|call|unknown>` / `anote:<ticket>,<n>,<words>` / `afree:<ticket>,<words>` / `asend:<ticket>` / `asent:<ticket>` (a waiting ticket's card: type in box n, its quick OK, tick thing n off, a pick, a note, the words to the member, send; open what was sent) ·
 //! `dkey:<key>` (a member's questions' card: `1`–`9`, `up`, `down`, `space`, `enter`, `cmd-enter`, `tab`, `left`, `escape`) · `dtype:<words>` (in its box for the person's own words) · `decided` (open the latest decided row) · `dpick:<id>` (a set in 나에게, peeking) ·
@@ -368,6 +369,44 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     let up = window.input_from_platform(PlatformInput::MouseUp(up));
                     window.dispatch_event(up, cx);
                 }
+                // A selection dragged out with the pointer, from `x1,y1` to `x2,y2`.
+                "sdrag" => {
+                    let n: Vec<f32> = arg.split(',').map(|v| v.trim().parse().unwrap_or(0.)).collect();
+                    let [x1, y1, x2, y2] = n[..] else { return };
+                    let (from, to) = (point(px(x1), px(y1)), point(px(x2), px(y2)));
+                    let down = MouseDownEvent { button: MouseButton::Left, position: from, modifiers: Modifiers::default(), click_count: 1, first_mouse: false };
+                    let down = window.input_from_platform(PlatformInput::MouseDown(down));
+                    window.dispatch_event(down, cx);
+                    for step in 1..=8 {
+                        let t = step as f32 / 8.;
+                        let at = point(px(x1 + (x2 - x1) * t), px(y1 + (y2 - y1) * t));
+                        let moved = MouseMoveEvent { position: at, pressed_button: Some(MouseButton::Left), modifiers: Modifiers::default() };
+                        let moved = window.input_from_platform(PlatformInput::MouseMove(moved));
+                        window.dispatch_event(moved, cx);
+                    }
+                    let up = MouseUpEvent { button: MouseButton::Left, position: to, modifiers: Modifiers::default(), click_count: 1 };
+                    let up = window.input_from_platform(PlatformInput::MouseUp(up));
+                    window.dispatch_event(up, cx);
+                }
+                // The peek held at a width (`peekw:` alone lets it go).
+                "peekw" => shell.update(cx, |shell, cx| {
+                    shell.board.peek_held = arg.parse().ok();
+                    cx.notify();
+                }),
+                // Asking about words selected: `quote:open` (the bar's button), `quote:copy`,
+                // `quote:type:<words>`, `quote:send`, `quote:close`, `quote:jump` (the latest quote in a message of yours).
+                "quote" => shell.update(cx, |shell, cx| {
+                    let (what, words) = arg.split_once(':').unwrap_or((arg.as_str(), ""));
+                    match what {
+                        "open" => shell.quote_open(window, cx),
+                        "copy" => shell.quote_copy(cx),
+                        "type" => shell.quote_type(words, window, cx),
+                        "send" => shell.quote_send(window, cx),
+                        "close" => shell.quote_close(window, cx),
+                        "jump" => shell.quote_jump_latest(cx),
+                        _ => {}
+                    }
+                }),
                 // 티켓: the layout, the sheet, a menu, the page, a choice, a drag by hand.
                 "layout" => shell.update(cx, |shell, cx| shell.set_layout(if arg == "board" { crate::tickets::Layout::Board } else { crate::tickets::Layout::List }, cx)),
                 "tsheet" => shell.update(cx, |shell, cx| shell.open_sheet(window, cx)),

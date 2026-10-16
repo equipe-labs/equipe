@@ -28,6 +28,8 @@ opt-level = 2
 #   the drawing and maps the viewport, input and IME positions (`zoom.rs`).
 # - gpui-base: a text view's link underline and the room between list items
 #   are the style's to set (`TextViewStyle`).
+# - gpui-base: where the window's selection ends are drawn, for what floats
+#   over it (`TextSelection::ends`, `is_selecting`; `views/quote.rs`).
 [patch.crates-io]
 gpui-pre = { path = "vendor/gpui-pre" }
 gpui-base = { path = "vendor/gpui-base" }

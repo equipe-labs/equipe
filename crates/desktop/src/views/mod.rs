@@ -14,6 +14,7 @@ pub mod header;
 pub mod icons;
 pub mod pair;
 pub mod peek;
+pub mod quote;
 pub mod settings;
 pub mod sidebar;
 pub mod tickets;
