@@ -2737,6 +2737,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         let in_work = session.work.as_ref().is_some_and(|w| Some(w.ticket) == done.ticket);
         if let Some(reply) = &done.reply
             && session.engine == Engine::Codex
+            && session.codex.is_some()
         {
             let history = match &mut session.work {
                 Some(work) if in_work => &mut work.history,

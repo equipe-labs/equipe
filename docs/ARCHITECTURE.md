@@ -73,9 +73,21 @@ what they show. Codex's `core` / `tui` / `exec` / `app-server` split is the mode
 
 | Kind | What runs a turn | Today |
 |---|---|---|
-| `llm` | A thin provider call — no tools, no loop | **Codex Responses** (`openai::responses`): one streamed turn on the ChatGPT backend. For roles that read and report (PM, QA, data) |
-| `cli` | A local coding-agent CLI, driven headless | **Claude Code** (`claude_code`): `claude -p --output-format stream-json`, reporting text and tool use as it works |
-| `acp` | An external coding agent over the Agent Client Protocol | **Planned** for Codex edits via `codex-acp`; later any ACP agent |
+| `llm` | A thin provider call — no tools, no loop | **Codex Responses** (`openai::responses`): one streamed turn on the ChatGPT backend — the fallback only where the Codex CLI isn't installed |
+| `cli` | A local coding-agent CLI, driven headless | **Claude Code** (`claude_code`): `claude -p --output-format stream-json`; **Codex** (`codex_app`): `codex app-server`, the JSON-RPC protocol OpenAI's IDE extension speaks — each reporting text and tool use as it works |
+| `acp` | An external coding agent over the Agent Client Protocol | **Planned** for other agents (Copilot, Gemini, Cursor) |
+
+A Codex turn runs one `codex app-server` in the turn's directory: it starts or
+resumes the member's thread (the id kept as Claude Code's session id is), runs one
+turn and exits. Its items come back as Claude Code's tools are named — a command
+`Bash` (or `Read`/`Grep`/`Glob` when it only reads), a patch `Write`/`Edit` per
+file with its diff, `mcp__<server>__<tool>`, `WebSearch`, its plan `TodoWrite` — so
+screens show both alike. Access maps to Codex's sandbox and approval policy:
+read-only → `read-only` / `never`; edit → `workspace-write` (the worktree and the
+member's build cache, no network) / `on-request`; ask → `workspace-write` /
+`untrusted`; full → `danger-full-access` / `never`. Codex's approval requests go to
+the person exactly as Claude Code's permission prompts do (`approve`), squad "always
+allow" rules included; Esc sends `turn/interrupt` and Codex winds the turn down.
 
 Engine access is explicit. A Claude Code turn is `ReadOnly` (`--permission-mode
 dontAsk`) unless the caller asks for `EditFiles` (`acceptEdits`): file writes inside
@@ -90,9 +102,15 @@ a later option.
 
 ## Sign-in
 
-### Codex: equipe signs in
+### Codex: bring your own, as Claude Code
 
-The mechanism OpenAI's own open-source Codex CLI uses:
+With the Codex CLI installed, equipe treats it as it treats Claude Code: the person
+signs it in (`codex login`, which `equipe login codex` runs), equipe asks `codex login
+status` and reads only how it is signed in, and never reads `~/.codex/auth.json` or
+stores or injects a token. `equipe status` says which path Codex takes.
+
+Without the CLI, equipe signs in to the ChatGPT plan itself — the mechanism OpenAI's
+own open-source Codex CLI uses — and Codex only answers, without tools:
 
 - Public Codex OAuth client + PKCE (S256) against `auth.openai.com`, with a state
   value against CSRF. The loopback callback listens on **both** `127.0.0.1` and
@@ -110,9 +128,6 @@ The mechanism OpenAI's own open-source Codex CLI uses:
 - Credentials live in `~/.equipe/credentials/openai.json` (0600 in a 0700
   directory, replaced atomically), refreshed 60 s before expiry.
 
-When Codex edits arrive over `codex-acp`, the adapter would ask for its own login.
-Under principle 5, equipe will give it a private `CODEX_HOME` seeded from the login
-it holds, and fall back to the adapter's own sign-in only if that fails.
 
 ### Claude Code: bring your own
 
@@ -126,8 +141,7 @@ provided that product doesn't remove or restrict its sign-in methods and each us
 is billed under their own agreement. So equipe:
 
 - runs the user's installed `claude` and never ships, patches or wraps a copy;
-- never reads, stores or forwards Claude credentials, and never injects a token —
-  the private-home trick planned for Codex is **not** used here;
+- never reads, stores or forwards Claude credentials, and never injects a token;
 - asks `claude auth status --json` for status (non-secret fields only) and starts
   `claude auth login` when the user chooses to sign in;
 - passes the environment through unchanged rather than stripping auth variables,
@@ -231,9 +245,9 @@ model says.
 
 `--strict-mcp-config` keeps the person's own MCP servers (mail, calendar…) away
 from the squad, and `--allowedTools mcp__equipe` lets a headless run use equipe's
-tools without a prompt. Codex members have no tools until Codex runs over ACP,
-whose `session/new` carries MCP servers; until then a Codex member says when it is
-done and the person accepts.
+tools without a prompt. A Codex member's thread gets the same servers through its
+config (`mcp_servers`, the board's tools approved), and the person's own — which a
+config override adds to rather than replaces — switched off by name.
 
 ### Desktop tools (experimental, macOS)
 
@@ -626,10 +640,11 @@ itself in conversation, puts bigger work on the board, and when no member fits
 owns it or suggests `/add`.
 
 - **Engines and models.** A tier is resolved against what the person's plan
-  offers: Claude Code by alias (top `opus`, otherwise `sonnet`), Codex from its live
-  catalog (its first model, or a `mini` one for the mid tier). Editing roles run on
-  Claude Code for now; the others prefer Codex — which also puts QA on a different
-  engine from the engineers, so a second model checks the first one's work.
+  offers: Claude Code by alias (`roles::CLAUDE_MODELS`: `opus` for judgment, design
+  and review, `sonnet` for everyday building), Codex from its live `model/list` by
+  family (the latest Sol, else Astra; Luna for light work; a reviewer never below Sol).
+  Claude writes and Codex reviews (`roles::DEFAULT_ENGINES`) — which puts QA on a
+  different engine from the engineers, so a second model checks the first one's work.
 - **Charters** are added to the engine's own instructions, never replacing them:
   `--append-system-prompt` for Claude Code, `instructions` for Codex. A charter names
   the member, its teammates and who keeps the plan, and is rebuilt every turn, so it
