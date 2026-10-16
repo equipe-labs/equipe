@@ -260,38 +260,6 @@ fn chip(ctx: &Ctx, n: u64, tag: &Tag, cx: &mut App) -> AnyElement {
     if gone { tip(face, p, t!("sent.gone_tip"), None).into_any_element() } else { face.into_any_element() }
 }
 
-/// On the memo rail: up to three small faces of what a memo attached, and
-/// how many more.
-pub fn mini(ctx: &Ctx, key: u64, tags: &[Tag], cx: &mut App) -> Option<AnyElement> {
-    if tags.is_empty() {
-        return None;
-    }
-    let p = ctx.p;
-    let mut faces: Vec<AnyElement> = Vec::new();
-    for (n, tag) in tags.iter().take(3).enumerate() {
-        let shown = match tag.kind {
-            TagKind::Image | TagKind::Video => sent::want_of(tag).map(|(path, want)| ctx.ask(path, want, cx)),
-            _ => None,
-        };
-        let face = div().size(px(22.)).flex_none().rounded(px(5.)).overflow_hidden().bg(p.wash).border_1().border_color(p.hair);
-        faces.push(match shown {
-            Some(Shown::Picture(picture)) => face.child(img(picture.thumb.clone()).size_full().object_fit(ObjectFit::Cover)).into_any_element(),
-            Some(Shown::Loading) => face.child(placeholder(p, ElementId::NamedInteger("mini-wait".into(), key << 6 | n as u64), cx.reduce_motion())).into_any_element(),
-            _ => face
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(px(7.5))
-                .font_weight(FontWeight::BOLD)
-                .text_color(super::composer::kind_color(p, kind_of(tag)))
-                .child(attach::badge(tag.name(), kind_of(tag)).chars().take(3).collect::<String>())
-                .into_any_element(),
-        });
-    }
-    let more = tags.len().saturating_sub(3);
-    Some(h_flex().flex_none().gap_1().items_center().children(faces).when(more > 0, |r| r.child(div().text_size(px(11.)).text_color(p.muted).child(format!("+{more}")))).into_any_element())
-}
-
 // ── the lightbox ──
 
 /// A picture of a message shown big over the window: ←/→ through the

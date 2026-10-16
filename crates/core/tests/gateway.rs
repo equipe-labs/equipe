@@ -127,7 +127,7 @@ async fn the_squad_outlives_its_screens_and_its_daemon() {
     assert!(hello.snapshot.sessions.is_empty());
     a.send(Command::Start { session: 11, spec: spec(&project) });
     until(&mut a, |e| matches!(e, Event::SessionStarted { .. })).await;
-    a.send(Command::Submit { session: 11, text: "keep going without me".into() });
+    a.send(Command::Submit { session: 11, text: "keep going without me".into(), about: None });
     until(&mut a, |e| matches!(e, Event::UserMessage { .. })).await;
     drop(a);
 
@@ -154,7 +154,7 @@ async fn the_squad_outlives_its_screens_and_its_daemon() {
         session.recent,
         vec![Entry::User { text: "keep going without me".into() }, Entry::Reply { text: "fresh".into() }]
     );
-    c.send(Command::Submit { session: 11, text: "and now?".into() });
+    c.send(Command::Submit { session: 11, text: "and now?".into(), about: None });
     let turn = until(&mut c, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(turn.iter().any(|e| matches!(e, Event::TextDelta { text, .. } if text == "resumed")));
     gateway::shutdown(&socket).await.unwrap();
@@ -172,7 +172,7 @@ async fn two_screens_watch_the_same_team() {
     until(&mut a, |e| matches!(e, Event::SessionStarted { .. })).await;
     // B sees a session it didn't open, and the message A typed.
     until(&mut b, |e| matches!(e, Event::SessionStarted { session: 21, .. })).await;
-    a.send(Command::Submit { session: 21, text: "from A".into() });
+    a.send(Command::Submit { session: 21, text: "from A".into(), about: None });
     let seen_by_b = until(&mut b, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(seen_by_b.iter().any(|e| matches!(e, Event::UserMessage { text, .. } if text == "from A")));
     gateway::shutdown(&socket).await.unwrap();
@@ -313,7 +313,7 @@ async fn the_daemon_says_who_is_mid_turn() {
     let (mut screen, _) = Client::connect(&socket, "test", "acme").await.unwrap();
     screen.send(Command::Start { session: 4, spec: spec(&project) });
     until(&mut screen, |e| matches!(e, Event::SessionStarted { .. })).await;
-    screen.send(Command::Submit { session: 4, text: "a long job".into() });
+    screen.send(Command::Submit { session: 4, text: "a long job".into(), about: None });
     until(&mut screen, |e| matches!(e, Event::UserMessage { .. })).await;
     let busy = gateway::busy(&socket).await.unwrap().unwrap();
     assert_eq!(busy.working, ["acme/designer"]);

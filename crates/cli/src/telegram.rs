@@ -470,7 +470,7 @@ impl Bridge {
     /// Ask `session` in `squad`, and hear its answer here.
     fn submit(&mut self, squad: &str, session: SessionId, text: &str, message: i64) -> (Vec<(String, Command)>, Vec<Out>) {
         self.hearing.insert(session, (squad.to_owned(), Hearing::Waiting(text.to_owned())));
-        (vec![(squad.to_owned(), Command::Submit { session, text: text.to_owned() })], vec![Out::Seen { message }])
+        (vec![(squad.to_owned(), Command::Submit { session, text: text.to_owned(), about: None })], vec![Out::Seen { message }])
     }
 
     /// The person wrote `text` (message `message`), maybe in reply to `reply_to`.
@@ -975,6 +975,7 @@ mod tests {
             queued_project: None,
             queued_in: vec![],
             steering: vec![],
+            steering_in: vec![],
             lane: None,
             estimate: None,
             work: None,
@@ -1090,7 +1091,7 @@ mod tests {
     fn messages_go_to_the_pm_or_a_named_member_and_their_answer_comes_back() {
         let mut b = bridge();
         let (commands, said) = b.on_text("Ship the site today?", None, 10);
-        assert_eq!(commands, vec![("acme".to_owned(), Command::Submit { session: 1, text: "Ship the site today?".into() })]);
+        assert_eq!(commands, vec![("acme".to_owned(), Command::Submit { session: 1, text: "Ship the site today?".into(), about: None })]);
         assert_eq!(said, vec![Out::Seen { message: 10 }]);
         // What the PM was saying before the person's message isn't the answer.
         b.on_event("acme", &Event::TextDelta { session: 1, text: "earlier work".into() });
@@ -1104,8 +1105,8 @@ mod tests {
         let Out::Send { key: Some(key), .. } = &outs[0] else { panic!() };
         b.sent(key.clone(), 11);
         // A reply to it goes on talking with the PM; `@name` writes to a member.
-        assert_eq!(b.on_text("Great", Some(11), 12).0, vec![("acme".to_owned(), Command::Submit { session: 1, text: "Great".into() })]);
-        assert_eq!(b.on_text("@frontend how's T-3?", None, 13).0, vec![("acme".to_owned(), Command::Submit { session: 2, text: "how's T-3?".into() })]);
+        assert_eq!(b.on_text("Great", Some(11), 12).0, vec![("acme".to_owned(), Command::Submit { session: 1, text: "Great".into(), about: None })]);
+        assert_eq!(b.on_text("@frontend how's T-3?", None, 13).0, vec![("acme".to_owned(), Command::Submit { session: 2, text: "how's T-3?".into(), about: None })]);
         assert!(b.on_text("@nobody hi", None, 14).0.is_empty());
         // A turn the person didn't start from here isn't sent.
         assert!(b.on_event("acme", &Event::TurnEnded { session: 2, outcome: TurnOutcome::Completed, usage: None }).is_empty());
@@ -1127,7 +1128,7 @@ mod tests {
         let status = text(&b.on_text("/status", None, 1).1[0]);
         assert!(status.contains("<b>acme</b> ← you write here") && status.contains("1 to review"), "{status}");
         assert!(text(&b.on_text("/squad zeta", None, 2).1[0]).contains("Now writing to <b>zeta</b>"));
-        assert_eq!(b.on_text("hello", None, 3).0, vec![("zeta".to_owned(), Command::Submit { session: 5, text: "hello".into() })]);
+        assert_eq!(b.on_text("hello", None, 3).0, vec![("zeta".to_owned(), Command::Submit { session: 5, text: "hello".into(), about: None })]);
         assert!(text(&b.on_text("/board@my_bot", None, 4).1[0]).contains("<b>zeta</b>"));
         assert!(text(&b.on_text("/nope", None, 5).1[0]).contains("No command /nope"));
     }

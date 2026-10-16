@@ -1198,7 +1198,7 @@ impl App {
                         }
                         None => eprintln!("{}\n", e.dim(&format!("{}{model}", engine.label()))),
                     }
-                    core.send(Cmd::Submit { session: ID, text: prompt.to_owned() });
+                    core.send(Cmd::Submit { session: ID, text: prompt.to_owned(), about: None });
                 }
                 Event::TextDelta { text, .. } => printer.text(&text),
                 Event::ToolUse { tool, target, .. } => printer.tool(&tool, target),
@@ -1206,7 +1206,7 @@ impl App {
                 // Work handed to a subagent shows as it starts and as it hands back.
                 Event::SubagentStarted { what, .. } => eprintln!("{}", e.dim(&format!("  ↳ {what}"))),
                 Event::SubagentEnded { .. } => eprintln!("{}", e.dim(&format!("  ↳ {}", t!("main.handed_back")))),
-                Event::SubagentStep { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::Estimated { .. } | Event::MemoWithdrawn { .. } => {}
+                Event::SubagentStep { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::Estimated { .. } | Event::MemoWithdrawn { .. } | Event::QueueSent { .. } => {}
                 Event::ToolResult { .. } | Event::Thinking { .. } => {}
                 Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. }
                 | Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. } => {}

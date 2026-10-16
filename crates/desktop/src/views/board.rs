@@ -802,7 +802,7 @@ impl Shell {
                 // A proposal's answer goes to the PM; work under way, to its member.
                 let to = if t.status == TicketStatus::Proposed { self.model.pm() } else { self.model.member_on(id).map(|m| m.session).or(self.model.pm()) };
                 if let Some(session) = to {
-                    self.send_command(Command::Submit { session, text: format!("T-{id}: {note}") });
+                    self.send_command(Command::Submit { session, text: format!("T-{id}: {note}"), about: Some(t.project.as_deref().map(equipe_core::board::project_name)) });
                     self.say(t!("board.replied", id = id));
                 }
                 self.board.flow = None;

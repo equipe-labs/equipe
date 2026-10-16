@@ -163,7 +163,7 @@ async fn a_member_asks_the_person_decides_and_the_answers_start_its_next_turn() 
 
     // The person answers: Postgres; Auth and Payments, with a note.
     let answers = vec![Answer { picked: vec![0], other: None }, Answer { picked: vec![1, 0], other: Some("SSO later".into()) }];
-    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers });
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers, about: None });
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
     let closed = seen.iter().find_map(|e| if let Event::QuestionsClosed { id, answers, .. } = e { Some((*id, answers.clone())) } else { None });
     assert_eq!(closed, Some((set.id, Some(vec![Answer { picked: vec![0], other: None }, Answer { picked: vec![0, 1], other: Some("SSO later".into()) }]))));
@@ -174,8 +174,8 @@ async fn a_member_asks_the_person_decides_and_the_answers_start_its_next_turn() 
     assert!(handle.snapshot("acme").await.questions.is_empty(), "no longer waiting");
 
     // Answered again from another screen: nothing more happens.
-    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![] });
-    handle.send(Command::Submit { session: 1, text: "status?".into() });
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![], about: None });
+    handle.send(Command::Submit { session: 1, text: "status?".into(), about: None });
     let after = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     assert!(!after.iter().any(|e| matches!(e, Event::QuestionsClosed { .. } | Event::UserMessage { session: 2, .. } | Event::Error { .. })), "{after:#?}");
     handle.shutdown().await;
@@ -191,7 +191,7 @@ async fn skipped_questions_say_so_and_a_closed_set_tells_the_member_to_go_on() {
     // The PM asks; the person skips both.
     tool(&handle, "pm", "ask_decision", two_questions()).await;
     let set = asked(&until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await);
-    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![Answer::skipped()] });
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![Answer::skipped()], about: None });
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     let text = seen.iter().find_map(|e| if let Event::UserMessage { text, .. } = e { Some(text.clone()) } else { None }).unwrap();
     assert_eq!(text, "Answers to your questions:\n1) Which database should the API use? → skipped — your call\n2) Which features ship first? → skipped — your call");
@@ -241,7 +241,7 @@ async fn a_member_with_equipes_tools_has_no_engine_question_tool() {
     let (home, project) = squad_home();
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     add(&handle, &mut events, 1, member(&project, "pm")).await;
-    handle.send(Command::Submit { session: 1, text: "hi".into() });
+    handle.send(Command::Submit { session: 1, text: "hi".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     let call = calls(&recorded).pop().unwrap();
     let at = call.iter().position(|a| a == "--disallowedTools").expect("disallowed tools");

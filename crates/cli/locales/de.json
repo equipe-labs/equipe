@@ -724,7 +724,6 @@
   "view.longer_than_usual": "länger als üblich",
   "view.members": "{open} Mitglieder",
   "view.members_working": "{open} Mitglieder · {working} arbeiten",
-  "view.memo_note": "Notiz · gelesen, wenn diese Runde endet",
   "view.elsewhere.one": "{count} Nachricht aus anderen Projekten · /project all zeigt sie",
   "view.elsewhere.other": "{count} Nachrichten aus anderen Projekten · /project all zeigt sie",
   "view.memos": "{n} Notizen",
@@ -757,7 +756,6 @@
   "view.side_recent_done_today": "Kürzlich erledigt · heute {n}",
   "view.side_shared_folder": "Gemeinsamer Squad-Ordner",
   "view.side_squad": "SQUAD",
-  "view.steering_note": "Anweisung · beim nächsten Schritt gelesen, nichts gestoppt",
   "view.the_squad": "der Squad",
   "view.time_hours": "{h} Std.",
   "view.time_hours_minutes": "{h} Std. {m} Min.",
@@ -842,5 +840,12 @@
   "commands.new": "Ein eigenes Ticket aufs Board setzen (⇧N im Board)",
   "commands.new_args": "<Titel>",
   "commands.title": "Den Titel eines Tickets ändern (⇧E im Board)",
-  "commands.title_args": "T-n <Titel>"
+  "commands.title_args": "T-n <Titel>",
+  "view.pending_steer": "(nächster Schritt)",
+  "view.pending_memo": "(am Ende)",
+  "commands.unqueue": "Die letzte wartende Nachricht zurücknehmen, ins Eingabefeld",
+  "commands.now": "Die Arbeit anhalten und das Wartende jetzt als eine Nachricht senden",
+  "app.nothing_waiting": "Nichts wartet",
+  "app.unqueued": "Zurückgenommen — es steht im Eingabefeld",
+  "app.sent_now": "Jetzt gesendet — die Arbeit wurde angehalten"
 }

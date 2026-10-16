@@ -724,7 +724,6 @@
   "view.longer_than_usual": "más de lo habitual",
   "view.members": "{open} miembros",
   "view.members_working": "{open} miembros · {working} trabajando",
-  "view.memo_note": "nota · se lee al terminar este turno",
   "view.elsewhere.one": "{count} mensaje de otros proyectos · /project all lo muestra",
   "view.elsewhere.other": "{count} mensajes de otros proyectos · /project all los muestra",
   "view.memos": "{n} notas",
@@ -757,7 +756,6 @@
   "view.side_recent_done_today": "Hechos recientemente · {n} hoy",
   "view.side_shared_folder": "Carpeta compartida del squad",
   "view.side_squad": "SQUAD",
-  "view.steering_note": "indicación · se lee en su siguiente paso, sin detener nada",
   "view.the_squad": "el squad",
   "view.time_hours": "{h}h",
   "view.time_hours_minutes": "{h}h {m}m",
@@ -842,5 +840,12 @@
   "commands.new": "Pon un ticket tuyo en el tablero (⇧N en el tablero)",
   "commands.new_args": "<título>",
   "commands.title": "Cambiar el título de un ticket (⇧E en el tablero)",
-  "commands.title_args": "T-n <título>"
+  "commands.title_args": "T-n <título>",
+  "view.pending_steer": "(siguiente paso)",
+  "view.pending_memo": "(al terminar)",
+  "commands.unqueue": "Retirar el último mensaje en espera, de vuelta al cuadro",
+  "commands.now": "Detener el trabajo y enviar ya lo que espera, como un solo mensaje",
+  "app.nothing_waiting": "No hay nada en espera",
+  "app.unqueued": "Retirado — está en el cuadro",
+  "app.sent_now": "Enviado ahora — el trabajo se detuvo"
 }

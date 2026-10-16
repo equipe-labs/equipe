@@ -177,7 +177,7 @@ impl App {
         self.questions.retain(|s| s.id != set.id);
         self.picking.remove(&set.id);
         self.flash = Some(t!("app.decide_sent", name = set.member));
-        vec![Command::AnswerQuestions { squad: self.squad.clone(), id: set.id, answers }]
+        vec![Command::AnswerQuestions { squad: self.squad.clone(), id: set.id, answers, about: None }]
     }
 }
 
@@ -207,6 +207,7 @@ mod tests {
             queued_project: None,
             queued_in: Vec::new(),
             steering: Vec::new(),
+            steering_in: vec![],
             estimate: None,
             lane: None,
             work: None,
@@ -267,6 +268,7 @@ mod tests {
                 squad: "acme".into(),
                 id: 7,
                 answers: vec![Answer { picked: vec![0], other: None }, Answer { picked: vec![2], other: Some("SSO later".into()) }],
+                about: None,
             }]
         );
         assert!(app.composer.is_empty() && app.shown_questions().is_none(), "sent: out of sight at once");
@@ -283,7 +285,7 @@ mod tests {
         app.composer.clear();
         assert!(press(&mut app, KeyCode::Char('-')).is_empty());
         let sent = press(&mut app, KeyCode::Char('-'));
-        assert_eq!(sent, vec![Command::AnswerQuestions { squad: "acme".into(), id: 7, answers: vec![Answer::skipped(), Answer::skipped()] }]);
+        assert_eq!(sent, vec![Command::AnswerQuestions { squad: "acme".into(), id: 7, answers: vec![Answer::skipped(), Answer::skipped()], about: None }]);
     }
 
     #[test]

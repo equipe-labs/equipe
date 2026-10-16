@@ -24,6 +24,7 @@ mod media;
 mod mem;
 mod notify;
 mod pair;
+mod queue;
 mod ssh;
 #[cfg(feature = "snapshot")]
 mod snapshot;

@@ -724,7 +724,6 @@
   "view.longer_than_usual": "longer than usual",
   "view.members": "{open} members",
   "view.members_working": "{open} members · {working} working",
-  "view.memo_note": "memo · read when this turn ends",
   "view.elsewhere.one": "{count} message from other projects · /project all shows it",
   "view.elsewhere.other": "{count} messages from other projects · /project all shows them",
   "view.memos": "{n} memos",
@@ -757,7 +756,6 @@
   "view.side_recent_done_today": "Recently done · {n} today",
   "view.side_shared_folder": "Squad shared folder",
   "view.side_squad": "SQUAD",
-  "view.steering_note": "steering · read at its next step, nothing stopped",
   "view.the_squad": "the squad",
   "view.time_hours": "{h}h",
   "view.time_hours_minutes": "{h}h {m}m",
@@ -842,5 +840,12 @@
   "commands.new": "Put a ticket of your own on the board (⇧N on the board)",
   "commands.new_args": "<title>",
   "commands.title": "Change a ticket's title (⇧E on the board)",
-  "commands.title_args": "T-n <title>"
+  "commands.title_args": "T-n <title>",
+  "view.pending_steer": "(next step)",
+  "view.pending_memo": "(when done)",
+  "commands.unqueue": "Take back the last message waiting, into the box",
+  "commands.now": "Stop the work and send what waits now, as one message",
+  "app.nothing_waiting": "Nothing is waiting",
+  "app.unqueued": "Taken back — it's in the box",
+  "app.sent_now": "Sent now — the work was stopped"
 }

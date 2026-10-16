@@ -204,7 +204,7 @@ async fn a_turn_streams_text_and_ends() {
     let started = until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
     assert!(matches!(started.last(), Some(Event::SessionStarted { engine: Engine::Claude, workspace: None, .. })));
 
-    handle.send(Command::Submit { session: 1, text: "ping".into() });
+    handle.send(Command::Submit { session: 1, text: "ping".into(), about: None });
     let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert_eq!(text_of(&turn), "pong");
     assert!(turn.iter().any(|e| matches!(e, Event::ModelKnown { model, .. } if model == "claude-test")));
@@ -222,9 +222,9 @@ async fn the_second_turn_continues_the_conversation() {
     handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
     until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
 
-    handle.send(Command::Submit { session: 1, text: "one".into() });
+    handle.send(Command::Submit { session: 1, text: "one".into(), about: None });
     let first = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
-    handle.send(Command::Submit { session: 1, text: "two".into() });
+    handle.send(Command::Submit { session: 1, text: "two".into(), about: None });
     let second = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert_eq!(text_of(&first), "fresh");
     assert_eq!(text_of(&second), "resumed");
@@ -243,7 +243,7 @@ async fn an_editing_session_lands_its_changes_on_a_branch() {
     };
     assert!(workspace.branch.starts_with("equipe/try-"));
 
-    handle.send(Command::Submit { session: 1, text: "leave a note".into() });
+    handle.send(Command::Submit { session: 1, text: "leave a note".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     handle.send(Command::Close { session: 1 });
     let closed = until(&mut events, |e| matches!(e, Event::SessionClosed { .. })).await;
@@ -268,7 +268,7 @@ async fn an_editing_session_that_changes_nothing_keeps_no_branch() {
     let (handle, mut events) = start(&claude);
     handle.send(Command::Start { session: 1, spec: spec(&repo, Access::EditFiles) });
     until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
-    handle.send(Command::Submit { session: 1, text: "look around".into() });
+    handle.send(Command::Submit { session: 1, text: "look around".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     handle.send(Command::Close { session: 1 });
     let closed = until(&mut events, |e| matches!(e, Event::SessionClosed { .. })).await;
@@ -283,7 +283,7 @@ async fn esc_stops_a_running_turn_right_away() {
     handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
     until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
 
-    handle.send(Command::Submit { session: 1, text: "take forever".into() });
+    handle.send(Command::Submit { session: 1, text: "take forever".into(), about: None });
     tokio::time::sleep(Duration::from_millis(200)).await;
     let asked = std::time::Instant::now();
     handle.send(Command::Interrupt { session: 1 });
@@ -299,10 +299,10 @@ async fn a_message_sent_mid_turn_waits_as_a_memo() {
     let (handle, mut events) = start(&claude);
     handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
     until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
-    handle.send(Command::Submit { session: 1, text: "first".into() });
+    handle.send(Command::Submit { session: 1, text: "first".into(), about: None });
     // For after this turn: they don't steer it.
-    handle.send(Command::SubmitLater { session: 1, text: "also this".into() });
-    handle.send(Command::SubmitLater { session: 1, text: "and this".into() });
+    handle.send(Command::SubmitLater { session: 1, text: "also this".into(), about: None });
+    handle.send(Command::SubmitLater { session: 1, text: "and this".into(), about: None });
 
     let first = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     let memos: Vec<_> = first
@@ -326,9 +326,9 @@ async fn a_memo_taken_back_is_never_delivered() {
     let (handle, mut events) = start(&claude);
     handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
     until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
-    handle.send(Command::Submit { session: 1, text: "first".into() });
-    handle.send(Command::SubmitLater { session: 1, text: "keep this".into() });
-    handle.send(Command::SubmitLater { session: 1, text: "never mind".into() });
+    handle.send(Command::Submit { session: 1, text: "first".into(), about: None });
+    handle.send(Command::SubmitLater { session: 1, text: "keep this".into(), about: None });
+    handle.send(Command::SubmitLater { session: 1, text: "never mind".into(), about: None });
     handle.send(Command::Unqueue { session: 1, text: "never mind".into() });
     // A memo nobody left: nothing happens.
     handle.send(Command::Unqueue { session: 1, text: "not a memo".into() });
@@ -347,7 +347,7 @@ async fn the_effort_asked_for_reaches_claude_code() {
     handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
     until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
     handle.send(Command::SetEffort { session: 1, effort: Some(" XHigh ".into()) });
-    handle.send(Command::Submit { session: 1, text: "think".into() });
+    handle.send(Command::Submit { session: 1, text: "think".into(), about: None });
     let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(turn.iter().any(|e| matches!(e, Event::Notice { text, .. } if text.contains("effort xhigh"))), "{turn:#?}");
     let args = calls(&recorded).pop().expect("a turn ran");
@@ -386,9 +386,9 @@ EOF"#;
     let (handle, mut events) = start(&claude);
     handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
     until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
-    handle.send(Command::Submit { session: 1, text: "fix the page".into() });
+    handle.send(Command::Submit { session: 1, text: "fix the page".into(), about: None });
     until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
-    handle.send(Command::Submit { session: 1, text: "skip the footer".into() });
+    handle.send(Command::Submit { session: 1, text: "skip the footer".into(), about: None });
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(seen.iter().any(|e| matches!(e, Event::SteerQueued { text, .. } if text == "skip the footer")), "{seen:#?}");
     let read = seen.iter().position(|e| matches!(e, Event::Steered { text, .. } if text == "skip the footer")).expect("read");
@@ -408,9 +408,9 @@ async fn esc_delivers_waiting_memos_at_once() {
     let (handle, mut events) = start(&claude);
     handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
     until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
-    handle.send(Command::Submit { session: 1, text: "take forever".into() });
+    handle.send(Command::Submit { session: 1, text: "take forever".into(), about: None });
     // Sent while it works: it would read it at its next step; Esc stops it first.
-    handle.send(Command::Submit { session: 1, text: "stop, do this instead".into() });
+    handle.send(Command::Submit { session: 1, text: "stop, do this instead".into(), about: None });
     until(&mut events, |e| matches!(e, Event::SteerQueued { .. })).await;
 
     let asked = std::time::Instant::now();
@@ -419,6 +419,220 @@ async fn esc_delivers_waiting_memos_at_once() {
     assert!(seen.iter().any(|e| matches!(e, Event::TurnEnded { outcome: TurnOutcome::Interrupted, .. })));
     assert!(matches!(seen.last(), Some(Event::UserMessage { text, .. }) if text == "stop, do this instead"));
     assert!(asked.elapsed() < Duration::from_secs(2));
+}
+
+/// A turn that waits for two messages more, writes down what came in on
+/// stdin, and echoes both as read at its next step — together, or (`merged`)
+/// as one — before it answers.
+fn reading_two(dir: &Path, merged: bool) -> String {
+    let echo = if merged {
+        r#"{"type":"user","isReplay":true,"message":{"role":"user","content":$both}}"#.to_owned()
+    } else {
+        "{\"type\":\"user\",\"isReplay\":true,\"message\":{\"role\":\"user\",\"content\":$ta}}\n{\"type\":\"user\",\"isReplay\":true,\"message\":{\"role\":\"user\",\"content\":$tb}}".to_owned()
+    };
+    format!(
+        r#"IFS= read -r a; IFS= read -r b
+printf '%s\n%s\n' "$a" "$b" > '{dir}/stdin'
+ta=$(printf '%s' "$a" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["message"]["content"]))')
+tb=$(printf '%s' "$b" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["message"]["content"]))')
+both=$(printf '%s\n%s' "$a" "$b" | python3 -c 'import json,sys; print(json.dumps("\n\n".join(json.loads(l)["message"]["content"] for l in sys.stdin)))')
+cat <<EOF
+{{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}}
+{{"type":"user","isReplay":true,"message":{{"role":"user","content":"the prompt"}}}}
+{echo}
+{{"type":"stream_event","event":{{"type":"content_block_delta","delta":{{"type":"text_delta","text":"ok"}}}}}}
+{{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{{"input_tokens":3,"output_tokens":1}}}}
+EOF"#,
+        dir = dir.display()
+    )
+}
+
+fn steered(events: &[Event]) -> Vec<&str> {
+    events.iter().filter_map(|e| if let Event::Steered { text, .. } = e { Some(text.as_str()) } else { None }).collect()
+}
+
+#[tokio::test]
+async fn several_steers_faster_than_its_steps_are_each_read_in_order_with_their_project() {
+    use equipe_core::protocol::transcript::scope;
+    let site = named("site");
+    let app = named("app");
+    let dir = scratch("stdin");
+    let claude = fake_claude(true, &reading_two(&dir, false));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
+    handle.send(Command::Submit { session: 1, text: "work on the site".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
+    // Said looking at another project, then at all of them: two steers before its next step.
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("app".into()) });
+    handle.send(Command::Submit { session: 1, text: "mobile 한 명 더 추가하는거 승인할게.".into(), about: None });
+    handle.send(Command::Focus { squad: "acme".into(), project: None });
+    handle.send(Command::Submit { session: 1, text: "and how is everything?".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    let queued: Vec<(&str, Option<&str>)> =
+        seen.iter().filter_map(|e| if let Event::SteerQueued { text, project, .. } = e { Some((text.as_str(), project.as_deref())) } else { None }).collect();
+    assert_eq!(queued, [("mobile 한 명 더 추가하는거 승인할게.", Some("app")), ("and how is everything?", None)]);
+    assert_eq!(steered(&seen), ["mobile 한 명 더 추가하는거 승인할게.", "and how is everything?"], "each, in order, as said: {seen:#?}");
+    // Each went in with the project it is about.
+    let stdin = std::fs::read_to_string(dir.join("stdin")).unwrap();
+    let lines: Vec<&str> = stdin.lines().collect();
+    assert!(lines[0].contains("looking at the project app") && lines[0].contains("mobile"), "{stdin}");
+    assert!(lines[1].contains("looking at the whole squad") && lines[1].contains("how is everything"), "{stdin}");
+    // In the conversation, each where it was said about; the turn stays the site's.
+    let recent = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 1).unwrap().recent;
+    let about: Vec<(String, Option<String>)> = recent.iter().zip(scope::of(&recent)).filter_map(|(e, about)| match e {
+        Entry::User { text } => Some((text.clone(), about)),
+        Entry::Reply { text } => Some((format!("reply: {text}"), about)),
+        _ => None,
+    }).collect();
+    assert_eq!(about, [
+        ("work on the site".to_owned(), Some("site".to_owned())),
+        ("mobile 한 명 더 추가하는거 승인할게.".to_owned(), Some("app".to_owned())),
+        ("and how is everything?".to_owned(), None),
+        ("reply: ok".to_owned(), Some("site".to_owned())),
+    ]);
+    // Read: nothing waits, nothing comes again as a memo.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while let Ok(e) = events.try_recv() {
+        assert!(!matches!(e, Event::MessageQueued { .. } | Event::UserMessage { .. }), "{e:?}");
+    }
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn each_screen_s_message_is_about_the_project_that_screen_shows() {
+    let site = named("site");
+    let app = named("app");
+    let (claude, recorded) = recording_claude(&answering_per_call("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    // The phone looks at the app last; the desktop shows the site, then every project.
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("app".into()) });
+    let mut seen = Vec::new();
+    for (about, text) in [(Some(Some("site")), "from the desktop on site"), (Some(None), "from the desktop on all"), (None, "from an older screen")] {
+        handle.send(Command::Submit { session: 1, text: text.into(), about: about.map(|a| a.map(str::to_owned)) });
+        seen.extend(until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await);
+    }
+    let all = calls(&recorded);
+    assert!(arg(&all[0], "-p").unwrap().contains("looking at the project site"), "{:?}", arg(&all[0], "-p"));
+    assert!(arg(&all[1], "-p").unwrap().contains("looking at the whole squad"));
+    assert!(arg(&all[2], "-p").unwrap().contains("looking at the project app"), "no word from the screen: the focus");
+    let marked: Vec<Option<&str>> = seen.iter().filter_map(|e| if let Event::Thread { session: 1, project } = e { Some(project.as_deref()) } else { None }).collect();
+    assert_eq!(marked, [Some("site"), None, Some("app")], "{seen:#?}");
+    // On the wire: left out, said as null, or named.
+    let json = |about: Option<Option<&str>>| serde_json::to_value(Command::Submit { session: 1, text: "x".into(), about: about.map(|a| a.map(str::to_owned)) }).unwrap();
+    assert!(json(None).get("about").is_none());
+    assert_eq!(json(Some(None))["about"], serde_json::Value::Null);
+    let back: Command = serde_json::from_value(json(Some(None))).unwrap();
+    assert!(matches!(back, Command::Submit { about: Some(None), .. }));
+    let old: Command = serde_json::from_value(serde_json::json!({ "type": "submit", "session": 1, "text": "x" })).unwrap();
+    assert!(matches!(old, Command::Submit { about: None, .. }));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_steer_and_a_memo_are_about_what_their_screen_shows() {
+    let site = named("site");
+    let app = named("app");
+    let dir = scratch("stdin");
+    let claude = fake_claude(true, &reading_two(&dir, false));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    handle.send(Command::Focus { squad: "acme".into(), project: Some("app".into()) });
+    handle.send(Command::Submit { session: 1, text: "work".into(), about: Some(Some("site".into())) });
+    until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
+    handle.send(Command::SubmitLater { session: 1, text: "memo on site".into(), about: Some(Some("site".into())) });
+    handle.send(Command::Submit { session: 1, text: "steer on all".into(), about: Some(None) });
+    handle.send(Command::Submit { session: 1, text: "steer on site".into(), about: Some(Some("site".into())) });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::MessageQueued { text, project: Some(p), .. } if text == "memo on site" && p == "site")), "{seen:#?}");
+    let steers: Vec<(&str, Option<&str>)> = seen.iter().filter_map(|e| if let Event::SteerQueued { text, project, .. } = e { Some((text.as_str(), project.as_deref())) } else { None }).collect();
+    assert_eq!(steers, [("steer on all", None), ("steer on site", Some("site"))]);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn steers_read_as_one_are_still_each_their_own() {
+    let dir = scratch("stdin");
+    let claude = fake_claude(true, &reading_two(&dir, true));
+    let (handle, mut events) = start(&claude);
+    handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
+    until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "fix the page".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "skip the footer".into(), about: None });
+    handle.send(Command::Submit { session: 1, text: "and the nav".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert_eq!(steered(&seen), ["skip the footer", "and the nav"], "{seen:#?}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while let Ok(e) = events.try_recv() {
+        assert!(!matches!(e, Event::MessageQueued { .. } | Event::UserMessage { .. }), "none lost, none twice: {e:?}");
+    }
+}
+
+#[tokio::test]
+async fn send_now_stops_the_turn_and_sends_what_waits_as_one_message() {
+    let claude = fake_claude(true, &format!("case \"$*\" in *\"take forever\"*) exec sleep 30;; esac\n{}", answering("ok")));
+    let (handle, mut events) = start(&claude);
+    handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
+    until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "take forever".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "steer one".into(), about: None });
+    handle.send(Command::SubmitLater { session: 1, text: "a memo".into(), about: None });
+    handle.send(Command::Submit { session: 1, text: "steer two".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::SteerQueued { text, .. } if text == "steer two")).await;
+    // In the order the screen shows them.
+    handle.send(Command::SendNow { session: 1, texts: vec!["steer one".into(), "a memo".into(), "steer two".into()] });
+    let seen = until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
+    let sent = seen.iter().position(|e| matches!(e, Event::QueueSent { texts, .. } if *texts == ["steer one", "a memo", "steer two"])).expect("said what went");
+    let stopped = seen.iter().position(|e| matches!(e, Event::TurnEnded { outcome: TurnOutcome::Interrupted, .. })).expect("stopped");
+    assert!(sent < stopped);
+    assert!(matches!(seen.last(), Some(Event::UserMessage { text, .. }) if text == "steer one\n\na memo\n\nsteer two"), "{seen:#?}");
+    assert!(!seen.iter().any(|e| matches!(e, Event::MessageQueued { .. })), "nothing waits again: {seen:#?}");
+    let after = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(!after.iter().any(|e| matches!(e, Event::UserMessage { .. } | Event::Steered { .. })), "once: {after:#?}");
+    // Nothing waits: nothing to send.
+    handle.send(Command::SendNow { session: 1, texts: vec![] });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while let Ok(e) = events.try_recv() {
+        assert!(!matches!(e, Event::QueueSent { .. } | Event::TurnEnded { .. }), "{e:?}");
+    }
+}
+
+#[tokio::test]
+async fn send_now_without_an_order_sends_the_steers_then_the_memos() {
+    let claude = fake_claude(true, &format!("case \"$*\" in *\"take forever\"*) exec sleep 30;; esac\n{}", answering("ok")));
+    let (handle, mut events) = start(&claude);
+    handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
+    until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "take forever".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
+    handle.send(Command::SubmitLater { session: 1, text: "memo".into(), about: None });
+    handle.send(Command::Submit { session: 1, text: "steer".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::SteerQueued { .. })).await;
+    handle.send(Command::SendNow { session: 1, texts: vec![] });
+    let seen = until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::UserMessage { text, .. }) if text == "steer\n\nmemo"), "{seen:#?}");
+}
+
+#[tokio::test]
+async fn a_steer_taken_back_before_it_is_read_is_never_delivered() {
+    let claude = fake_claude(true, &format!("case \"$*\" in *\"take forever\"*) exec sleep 30;; esac\n{}", answering("ok")));
+    let (handle, mut events) = start(&claude);
+    handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
+    until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "take forever".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "oops".into(), about: None });
+    handle.send(Command::Submit { session: 1, text: "keep".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::SteerQueued { text, .. } if text == "keep")).await;
+    handle.send(Command::Unqueue { session: 1, text: "oops".into() });
+    until(&mut events, |e| matches!(e, Event::MemoWithdrawn { text, .. } if text == "oops")).await;
+    // Stopped: what is still unread is delivered, what was taken back isn't.
+    handle.send(Command::Interrupt { session: 1 });
+    let seen = until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::UserMessage { text, .. }) if text == "keep"), "{seen:#?}");
 }
 
 #[tokio::test]
@@ -480,7 +694,7 @@ async fn a_squad_with_no_project_yet_gets_its_pm_and_the_pm_answers() {
     assert_eq!(pm.member.map(|m| m.name).as_deref(), Some("pm"));
     assert_eq!(pm.project, squad_home::path(&home, "acme"), "its desk is the squad's home");
 
-    handle.send(Command::Submit { session: 1, text: "hi".into() });
+    handle.send(Command::Submit { session: 1, text: "hi".into(), about: None });
     let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     assert!(text_of(&turn).contains("hello"));
 }
@@ -496,7 +710,7 @@ async fn a_member_gets_its_charter_a_recommended_model_and_its_own_memory() {
     assert!(matches!(started.last(), Some(Event::SessionStarted { member: Some(m), squad: Some(s), .. })
         if m.name == "pm" && s == "acme"));
 
-    handle.send(Command::Submit { session: 1, text: "plan the site".into() });
+    handle.send(Command::Submit { session: 1, text: "plan the site".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     let call = &calls(&recorded)[0];
     let charter = arg(call, "--append-system-prompt").expect("a charter");
@@ -523,7 +737,7 @@ async fn members_are_named_by_role_and_told_who_else_is_on_the_team() {
     let names: Vec<_> = handle.snapshot("acme").await.sessions.into_iter().map(|s| s.member.unwrap().name).collect();
     assert_eq!(names, ["pm", "qa", "qa-2"]);
 
-    handle.send(Command::Submit { session: 3, text: "hi".into() });
+    handle.send(Command::Submit { session: 3, text: "hi".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 3, .. })).await;
     let charter = arg(&calls(&recorded)[0], "--append-system-prompt").unwrap().to_owned();
     assert!(charter.starts_with("You are qa-2, the QA engineer"), "{charter}");
@@ -543,7 +757,7 @@ async fn at_its_desk_a_member_reads_every_project_and_gets_only_equipes_tools() 
     config.equipe_binary = Some("/opt/equipe".into());
     let (handle, mut events) = runtime::start(config);
     add(&handle, &mut events, 1, member(&site, "frontend")).await;
-    handle.send(Command::Submit { session: 1, text: "what's in app?".into() });
+    handle.send(Command::Submit { session: 1, text: "what's in app?".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
 
     let call = &calls(&recorded)[0];
@@ -572,7 +786,7 @@ async fn talking_to_a_member_directly_keeps_the_pm_in_the_loop() {
     add(&handle, &mut events, 2, member(&cwd, "backend")).await;
 
     // The person goes straight to backend…
-    handle.send(Command::Submit { session: 2, text: "use Postgres".into() });
+    handle.send(Command::Submit { session: 2, text: "use Postgres".into(), about: None });
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
     // …and every screen on the PM sees it happen,
     assert!(
@@ -583,7 +797,7 @@ async fn talking_to_a_member_directly_keeps_the_pm_in_the_loop() {
     assert_eq!(calls(&recorded).len(), 1);
 
     // The PM's next message carries what it missed; the person sees only theirs.
-    handle.send(Command::Submit { session: 1, text: "where are we?".into() });
+    handle.send(Command::Submit { session: 1, text: "where are we?".into(), about: None });
     let pm_turn = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     assert!(matches!(&pm_turn[0], Event::UserMessage { text, .. } if text == "where are we?"));
     let prompt = arg(&calls(&recorded)[1], "-p").unwrap().to_owned();
@@ -592,7 +806,7 @@ async fn talking_to_a_member_directly_keeps_the_pm_in_the_loop() {
     assert!(prompt.ends_with("where are we?"), "{prompt}");
 
     // Told once: the turn after that carries no briefing.
-    handle.send(Command::Submit { session: 1, text: "thanks".into() });
+    handle.send(Command::Submit { session: 1, text: "thanks".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     assert_eq!(arg(&calls(&recorded)[2], "-p"), Some("thanks"));
 }
@@ -605,7 +819,7 @@ async fn the_squad_writes_for_the_person_in_their_language() {
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
     add(&handle, &mut events, 2, member(&repo, "frontend")).await;
-    handle.send(Command::Submit { session: 1, text: "랜딩 페이지 만들자".into() });
+    handle.send(Command::Submit { session: 1, text: "랜딩 페이지 만들자".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     assert_eq!(Journal::for_squad(&home, "acme").unwrap().language().as_deref(), Some("Korean"));
     // The PM's own turn already knows, and so does a member handed a ticket.
@@ -1094,7 +1308,7 @@ async fn what_the_person_leaves_open_stays_on_the_ticket_and_is_asked_again_next
     // Put down again: what was left is asked again, after the new asks.
     let blocked = tool(&handle, "backend", "block_on_person", serde_json::json!({ "needs": ["빌드 번호를 알려 주세요."] })).await;
     assert!(blocked.text.contains("left 1 thing(s) open last time"), "{blocked:?}");
-    handle.send(Command::Submit { session: 2, text: "end your turn".into() });
+    handle.send(Command::Submit { session: 2, text: "end your turn".into(), about: None });
     let waiting = until(&mut events, |e| is_waiting(e, 1)).await;
     let again = ticket_changed(&waiting).pop().unwrap();
     assert_eq!(again.asks, ["빌드 번호를 알려 주세요.", needs[1]]);
@@ -1115,7 +1329,7 @@ async fn a_waiting_ticket_stays_put_through_a_restart_until_the_pm_resumes_it() 
         until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
         tool(&handle, "backend", "block_on_person", serde_json::json!({ "needs": "a Vercel token" })).await;
         // The turn may already be over: a new message makes sure one ends after the tool call.
-        handle.send(Command::Submit { session: 2, text: "end your turn".into() });
+        handle.send(Command::Submit { session: 2, text: "end your turn".into(), about: None });
         until(&mut events, |e| is_waiting(e, 1)).await;
         handle.shutdown().await;
     }
@@ -1161,7 +1375,7 @@ async fn a_restarted_runtime_brings_the_squad_back_pm_first() {
         // Session ids are random; the PM need not have the smallest.
         add(&handle, &mut events, 9, member(&cwd, "designer")).await;
         add(&handle, &mut events, 5, member(&cwd, "pm")).await;
-        handle.send(Command::Submit { session: 5, text: "remember me".into() });
+        handle.send(Command::Submit { session: 5, text: "remember me".into(), about: None });
         until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
         handle.shutdown().await;
     }
@@ -1176,7 +1390,7 @@ async fn a_restarted_runtime_brings_the_squad_back_pm_first() {
     assert_eq!(snapshot.projects, [cwd]);
 
     // The next turn continues Claude Code's conversation.
-    handle.send(Command::Submit { session: 5, text: "again".into() });
+    handle.send(Command::Submit { session: 5, text: "again".into(), about: None });
     let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert_eq!(text_of(&turn), "resumed");
 }
@@ -1222,9 +1436,9 @@ async fn memos_and_the_pms_briefing_survive_a_restart() {
         let (handle, mut events) = runtime::start(config(&claude, &home, true));
         add(&handle, &mut events, 1, member(&cwd, "pm")).await;
         add(&handle, &mut events, 2, member(&cwd, "designer")).await;
-        handle.send(Command::Submit { session: 2, text: "long job".into() });
+        handle.send(Command::Submit { session: 2, text: "long job".into(), about: None });
         until(&mut events, |e| matches!(e, Event::UserMessage { session: 2, .. })).await;
-        handle.send(Command::SubmitLater { session: 2, text: "and the footer".into() });
+        handle.send(Command::SubmitLater { session: 2, text: "and the footer".into(), about: None });
         until(&mut events, |e| matches!(e, Event::MessageQueued { .. })).await;
         handle.shutdown().await;
     }
@@ -1236,7 +1450,7 @@ async fn memos_and_the_pms_briefing_survive_a_restart() {
     assert!(designer.queued.is_empty(), "{:?}", designer.queued);
     assert!(text_entries(&designer.recent).contains(&"user: and the footer".to_owned()), "{:?}", designer.recent);
     // And the PM still hears what the person told the designer.
-    handle.send(Command::Submit { session: 1, text: "status?".into() });
+    handle.send(Command::Submit { session: 1, text: "status?".into(), about: None });
     let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     assert_eq!(text_of(&turn), "briefed");
 }
@@ -1258,7 +1472,7 @@ EOF"#,
     let home = squad_home(&[&cwd]);
     let (handle, mut events) = runtime::start(config(&claude, &home, true));
     add(&handle, &mut events, 7, member(&cwd, "pm")).await;
-    handle.send(Command::Submit { session: 7, text: "count".into() });
+    handle.send(Command::Submit { session: 7, text: "count".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     handle.shutdown().await;
 
@@ -1273,7 +1487,7 @@ async fn a_screen_attaching_mid_turn_sees_the_member_working() {
     let cwd = scratch("cwd");
     let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), true));
     add(&handle, &mut events, 3, member(&cwd, "pm")).await;
-    handle.send(Command::Submit { session: 3, text: "long job".into() });
+    handle.send(Command::Submit { session: 3, text: "long job".into(), about: None });
     until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
 
     let snapshot = handle.snapshot("acme").await;
@@ -1304,7 +1518,7 @@ async fn every_screen_sees_what_was_typed() {
     let (handle, mut events) = start(&claude);
     handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
     until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
-    handle.send(Command::Submit { session: 1, text: "hello team".into() });
+    handle.send(Command::Submit { session: 1, text: "hello team".into(), about: None });
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(seen.iter().any(|e| matches!(e, Event::UserMessage { text, .. } if text == "hello team")));
 }
@@ -1374,7 +1588,7 @@ async fn members_browse_from_the_start_and_as_the_person_once_signed_in() {
     let (handle, mut events) = runtime::start(Config { npx: Some(npx), ..with_tools(&claude, &home) });
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
     let turn = async |handle: &Handle, events: &mut UnboundedReceiver<Event>| {
-        handle.send(Command::Submit { session: 1, text: "go".into() });
+        handle.send(Command::Submit { session: 1, text: "go".into(), about: None });
         until(events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
         calls(&recorded).pop().unwrap()
     };
@@ -1433,7 +1647,7 @@ async fn the_browser_shows_on_screen_when_asked_and_its_code_tool_follows_the_mo
     add(&handle, &mut events, 2, member(&repo, "frontend")).await;
     // A turn, and the arguments of the browser that turn used.
     let turn = async |handle: &Handle, events: &mut UnboundedReceiver<Event>, session: u64| {
-        handle.send(Command::Submit { session, text: "go".into() });
+        handle.send(Command::Submit { session, text: "go".into(), about: None });
         until(events, |e| matches!(e, Event::TurnEnded { session: s, .. } if *s == session)).await;
         let call = calls(&recorded).pop().unwrap();
         let port = browser_of(&call)["url"].as_str().unwrap().rsplit(':').next().unwrap().trim_end_matches("/mcp").to_owned();
@@ -1502,13 +1716,13 @@ async fn the_project_in_focus_travels_with_the_persons_message() {
     let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&site, &app]), false));
     add(&handle, &mut events, 1, member(&site, "pm")).await;
     handle.send(Command::Focus { squad: "acme".into(), project: Some("app".into()) });
-    handle.send(Command::Submit { session: 1, text: "add an onboarding screen".into() });
+    handle.send(Command::Submit { session: 1, text: "add an onboarding screen".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     let prompt = arg(&calls(&recorded)[0], "-p").unwrap().to_owned();
     assert!(prompt.contains("looking at the project app") && prompt.ends_with("add an onboarding screen"), "{prompt}");
     // Back to all: about the whole squad, in the same conversation.
     handle.send(Command::Focus { squad: "acme".into(), project: None });
-    handle.send(Command::Submit { session: 1, text: "and the site?".into() });
+    handle.send(Command::Submit { session: 1, text: "and the site?".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     let last = calls(&recorded).last().unwrap().clone();
     let prompt = arg(&last, "-p").unwrap().to_owned();
@@ -1535,7 +1749,7 @@ async fn a_desk_conversation_grown_too_full_starts_afresh_from_a_summary() {
     let (handle, mut events) = runtime::start(Config { persist: true, ..with_tools(&claude, &home) });
     add(&handle, &mut events, 1, member(&cwd, "pm")).await;
     let turn = async |handle: &Handle, events: &mut UnboundedReceiver<Event>, text: &str| {
-        handle.send(Command::Submit { session: 1, text: text.into() });
+        handle.send(Command::Submit { session: 1, text: text.into(), about: None });
         until(events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await
     };
 
@@ -1563,11 +1777,11 @@ async fn the_person_can_start_a_members_conversation_clean() {
     let (claude, recorded) = recording_claude(&answering("ok"));
     let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&cwd])));
     add(&handle, &mut events, 1, member(&cwd, "pm")).await;
-    handle.send(Command::Submit { session: 1, text: "first".into() });
+    handle.send(Command::Submit { session: 1, text: "first".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     handle.send(Command::Refresh { session: 1, summary: false });
     until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("starts clean"))).await;
-    handle.send(Command::Submit { session: 1, text: "second".into() });
+    handle.send(Command::Submit { session: 1, text: "second".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     let call = calls(&recorded).pop().unwrap();
     assert_eq!(arg(&call, "--resume"), None);
@@ -1674,7 +1888,7 @@ async fn the_mode_decides_how_a_ticket_runs_and_a_member_can_differ_from_the_squ
 
     handle.send(Command::SetMode { squad: "acme".into(), member: Some("frontend".into()), mode: Some(Mode::Ask) });
     until(&mut events, |e| matches!(e, Event::ModeChanged { member: Some(_), .. })).await;
-    handle.send(Command::Submit { session: 2, text: "go on".into() });
+    handle.send(Command::Submit { session: 2, text: "go on".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
     let call = calls(&recorded).pop().unwrap();
     assert_eq!(arg(&call, "--permission-mode"), Some("manual"), "ask me: every change is asked");
@@ -1862,7 +2076,7 @@ async fn at_its_desk_a_member_writes_the_squads_home_each_change_saved_and_taken
     add(&handle, &mut events, 1, member(&site, "pm")).await;
     // The person edits in Finder before the turn: that is theirs, kept apart.
     std::fs::write(folder.join("notes/mine.md"), "mine\n").unwrap();
-    handle.send(Command::Submit { session: 1, text: "세금 마감일 메모해줘".into() });
+    handle.send(Command::Submit { session: 1, text: "세금 마감일 메모해줘".into(), about: None });
     let seen = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.starts_with("✎"))).await;
     assert!(
         seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text }
@@ -1901,7 +2115,7 @@ async fn at_its_desk_the_projects_are_only_read_and_other_squads_folders_not_at_
     let (handle, mut events) = runtime::start(with_tools(&claude, &home));
     add(&handle, &mut events, 1, member(&site, "pm")).await;
     add(&handle, &mut events, 2, member(&site, "frontend")).await;
-    handle.send(Command::Submit { session: 2, text: "look around".into() });
+    handle.send(Command::Submit { session: 2, text: "look around".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
 
     let call = &calls(&recorded)[0];
@@ -1948,7 +2162,7 @@ async fn a_squad_from_before_homes_gets_one_and_its_desks_move_there_afresh() {
     {
         let (handle, mut events) = runtime::start(config(&claude, &home, true));
         add(&handle, &mut events, 1, member(&site, "pm")).await;
-        handle.send(Command::Submit { session: 1, text: "hello".into() });
+        handle.send(Command::Submit { session: 1, text: "hello".into(), about: None });
         until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
         handle.shutdown().await;
     }
@@ -1959,7 +2173,7 @@ async fn a_squad_from_before_homes_gets_one_and_its_desks_move_there_afresh() {
     let (handle, mut events) = runtime::start(config(&claude, &home, true));
     assert!(folder.join(".git").is_dir() && folder.join("notes").is_dir(), "made on start");
     assert_eq!(handle.snapshot("acme").await.sessions[0].project, folder);
-    handle.send(Command::Submit { session: 1, text: "again".into() });
+    handle.send(Command::Submit { session: 1, text: "again".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     let call = calls(&recorded).pop().unwrap();
     assert_eq!(arg(&call, "--resume"), None, "a conversation begun in the project can't go on in the home");
@@ -2097,7 +2311,7 @@ async fn what_one_member_learns_the_next_one_knows_and_the_person_has_the_last_w
     add(&handle, &mut events, 1, member(&site, "pm")).await;
 
     // The person tells pm in conversation; pm keeps it for the squad, as its engine would through equipe's tool.
-    handle.send(Command::Submit { session: 1, text: "나는 매년 5월에 종합소득세를 직접 신고해".into() });
+    handle.send(Command::Submit { session: 1, text: "나는 매년 5월에 종합소득세를 직접 신고해".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     let fact = serde_json::json!({
         "name": "tax-filing",
@@ -2117,7 +2331,7 @@ async fn what_one_member_learns_the_next_one_knows_and_the_person_has_the_last_w
 
     // backend joins later, in a session of its own, and knows it from its first turn.
     add(&handle, &mut events, 2, member(&site, "backend")).await;
-    handle.send(Command::Submit { session: 2, text: "5월에 할 일 있어?".into() });
+    handle.send(Command::Submit { session: 2, text: "5월에 할 일 있어?".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
     let charter = arg(&calls(&recorded).pop().unwrap(), "--append-system-prompt").unwrap().to_owned();
     assert!(charter.contains("- [tax-filing](tax-filing.md) (deadline, "), "{charter}");
@@ -2128,7 +2342,7 @@ async fn what_one_member_learns_the_next_one_knows_and_the_person_has_the_last_w
     let file = folder.join("memory/tax-filing.md");
     let fixed = std::fs::read_to_string(&file).unwrap().replace("직접 신고한다", "세무사에게 맡긴다");
     std::fs::write(&file, fixed).unwrap();
-    handle.send(Command::Submit { session: 2, text: "다시 확인해줘".into() });
+    handle.send(Command::Submit { session: 2, text: "다시 확인해줘".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
     let charter = arg(&calls(&recorded).pop().unwrap(), "--append-system-prompt").unwrap().to_owned();
     assert!(charter.contains("사람은 매년 5월에 종합소득세를 세무사에게 맡긴다") && !charter.contains("직접 신고한다"), "{charter}");
@@ -2140,7 +2354,7 @@ async fn what_one_member_learns_the_next_one_knows_and_the_person_has_the_last_w
 
     // The person deletes it: gone from the next turn, and from the index.
     std::fs::remove_file(&file).unwrap();
-    handle.send(Command::Submit { session: 2, text: "또?".into() });
+    handle.send(Command::Submit { session: 2, text: "또?".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
     let charter = arg(&calls(&recorded).pop().unwrap(), "--append-system-prompt").unwrap().to_owned();
     assert!(!charter.contains("tax-filing") && charter.contains("The squad remembers nothing yet."), "{charter}");
@@ -2164,7 +2378,7 @@ async fn a_secret_value_is_refused_and_another_squad_never_sees_the_memory() {
     // beta's member gets beta's memory — empty — and acme's home is denied it.
     let beta = SessionSpec { squad: Some("beta".into()), ..member(&site, "pm") };
     add(&handle, &mut events, 2, beta).await;
-    handle.send(Command::Submit { session: 2, text: "hi".into() });
+    handle.send(Command::Submit { session: 2, text: "hi".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
     let call = calls(&recorded).pop().unwrap();
     let charter = arg(&call, "--append-system-prompt").unwrap();
@@ -2269,7 +2483,7 @@ async fn a_squad_of_only_a_pm_researches_tax_deadlines_into_its_folder_and_memor
     add(&handle, &mut events, 1, member(&scratch("elsewhere"), "pm")).await;
 
     // The person asks the PM — the only member — for something that isn't code.
-    handle.send(Command::Submit { session: 1, text: "올해 내가 챙겨야 할 세금 마감을 조사해서 정리해줘".into() });
+    handle.send(Command::Submit { session: 1, text: "올해 내가 챙겨야 할 세금 마감을 조사해서 정리해줘".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     let charter = arg(&calls(&recorded)[0], "--append-system-prompt").unwrap().to_owned();
     for part in ["Not every request needs a ticket", "do yourself, right in the conversation", "`task` for finding out", "own it yourself", "`/add <role>`", "marked unconfirmed"] {
@@ -2307,7 +2521,7 @@ async fn a_squad_of_only_a_pm_researches_tax_deadlines_into_its_folder_and_memor
     let kept = std::fs::read_to_string(folder.join(file)).unwrap();
     assert!(kept.contains("https://www.nts.go.kr/income-tax") && kept.contains("확인되지 않음"), "{kept}");
     assert!(std::fs::read_to_string(folder.join("memory/INDEX.md")).unwrap().contains("income-tax-deadline"));
-    handle.send(Command::Submit { session: 1, text: "다음 마감은?".into() });
+    handle.send(Command::Submit { session: 1, text: "다음 마감은?".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     let charter = arg(&calls(&recorded).pop().unwrap(), "--append-system-prompt").unwrap().to_owned();
     assert!(charter.contains("종합소득세 신고·납부는 매년 5월 31일까지"), "{charter}");
@@ -2357,7 +2571,7 @@ async fn a_member_says_when_its_work_is_done_and_when_what_it_ships_is_live() {
     let (claude, _) = recording_claude(&format!("sleep 1\n{}", answering("ok")));
     let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&repo])));
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
-    handle.send(Command::Submit { session: 1, text: "ship it".into() });
+    handle.send(Command::Submit { session: 1, text: "ship it".into(), about: None });
     until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let said = tool(&handle, "pm", "estimate", serde_json::json!({
@@ -2395,7 +2609,7 @@ async fn without_a_members_word_equipe_guesses_from_how_long_such_turns_took() {
     let (handle, mut events) = runtime::start(with_tools(&claude, &home));
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    handle.send(Command::Submit { session: 1, text: "look into it".into() });
+    handle.send(Command::Submit { session: 1, text: "look into it".into(), about: None });
     let seen = until(&mut events, |e| matches!(e, Event::Estimated { .. })).await;
     let Some(Event::Estimated { estimate: Some(e), .. }) = seen.last() else { panic!("{seen:#?}") };
     assert!(e.guessed && e.done_at.unwrap().abs_diff(now + 600) < 5, "the median, 10 minutes: {e:?}");
@@ -2420,7 +2634,7 @@ async fn a_member_keeps_one_conversation_whatever_project_is_in_view() {
     let mut seen = Vec::new();
     for (project, text) in [(Some("app"), "app one"), (Some("site"), "site one"), (None, "squad one")] {
         handle.send(Command::Focus { squad: "acme".into(), project: project.map(str::to_owned) });
-        handle.send(Command::Submit { session: 1, text: text.into() });
+        handle.send(Command::Submit { session: 1, text: text.into(), about: None });
         seen.extend(until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await);
     }
     let all = calls(&recorded);
@@ -2447,7 +2661,7 @@ async fn each_message_its_reply_and_its_steps_are_about_the_project_in_focus_whe
     let mut seen = Vec::new();
     for (project, text) in [(Some("app"), "app one"), (Some("app"), "app two"), (Some("site"), "site one"), (None, "squad one")] {
         handle.send(Command::Focus { squad: "acme".into(), project: project.map(str::to_owned) });
-        handle.send(Command::Submit { session: 1, text: text.into() });
+        handle.send(Command::Submit { session: 1, text: text.into(), about: None });
         seen.extend(until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await);
     }
     // A marker only where the project changes.
@@ -2491,7 +2705,7 @@ async fn news_in_the_pms_conversation_is_about_its_tickets_project() {
     let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
     add(&handle, &mut events, 1, member(&site, "pm")).await;
     handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
-    handle.send(Command::Submit { session: 1, text: "hi".into() });
+    handle.send(Command::Submit { session: 1, text: "hi".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     // A teammate proposes work for the app: the news is about the app.
     add(&handle, &mut events, 2, member(&site, "designer")).await;
@@ -2518,7 +2732,7 @@ async fn news_of_another_project_mid_turn_leaves_the_reply_about_its_own() {
     add(&handle, &mut events, 1, member(&site, "pm")).await;
     add(&handle, &mut events, 2, member(&site, "designer")).await;
     handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
-    handle.send(Command::Submit { session: 1, text: "hi".into() });
+    handle.send(Command::Submit { session: 1, text: "hi".into(), about: None });
     until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, .. })).await;
     let made = tool(&handle, "designer", "create_ticket", serde_json::json!({ "title": "App icon", "body": "x", "project": "app" })).await;
     assert!(!made.is_error, "{made:?}");
@@ -2539,9 +2753,9 @@ async fn a_memo_carries_the_project_it_was_left_about() {
     let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
     add(&handle, &mut events, 1, member(&site, "pm")).await;
     handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
-    handle.send(Command::Submit { session: 1, text: "site one".into() });
+    handle.send(Command::Submit { session: 1, text: "site one".into(), about: None });
     until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
-    handle.send(Command::SubmitLater { session: 1, text: "about the site".into() });
+    handle.send(Command::SubmitLater { session: 1, text: "about the site".into(), about: None });
     until(&mut events, |e| matches!(e, Event::MessageQueued { .. })).await;
     // Looking elsewhere by the time it goes in: it is still about site.
     handle.send(Command::Focus { squad: "acme".into(), project: Some("app".into()) });
@@ -2571,7 +2785,7 @@ async fn the_pm_on_a_ticket_of_its_own_is_still_reached_beside_it() {
 
     // The PM's own ticket runs; what the person says opens its conversation beside it.
     handle.send(Command::Focus { squad: "acme".into(), project: None });
-    handle.send(Command::Submit { session: 1, text: "how is everything?".into() });
+    handle.send(Command::Submit { session: 1, text: "how is everything?".into(), about: None });
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     let lane = seen
         .iter()
@@ -2604,11 +2818,11 @@ async fn a_members_model_changes_between_turns_and_its_conversation_carries_on()
     let (claude, recorded) = recording_claude(&answering("ok"));
     let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&cwd])));
     add(&handle, &mut events, 1, member(&cwd, "frontend")).await;
-    handle.send(Command::Submit { session: 1, text: "one".into() });
+    handle.send(Command::Submit { session: 1, text: "one".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     handle.send(Command::SetModel { session: 1, model: "opus".into() });
     until(&mut events, |e| matches!(e, Event::ModelKnown { session: 1, model } if model == "opus")).await;
-    handle.send(Command::Submit { session: 1, text: "two".into() });
+    handle.send(Command::Submit { session: 1, text: "two".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     let all = calls(&recorded);
     assert_eq!(arg(&all[0], "--model"), Some("sonnet"));
@@ -2691,7 +2905,7 @@ async fn two_members_at_the_screen_take_turns_and_desktop_stop_refuses_both() {
 
     // The first one's turn ends: the one waiting carries on.
     let session = if first.member == "frontend" { 1 } else { 2 };
-    handle.send(Command::Submit { session, text: "go".into() });
+    handle.send(Command::Submit { session, text: "go".into(), about: None });
     shows(&mut events, DesktopState { holder: Some(second.clone()), queue: vec![], stopped: false }).await;
     assert!(handle.desktop_ask(second.clone(), Use::Input).await.is_ok());
     assert!(handle.desktop_ask(first.clone(), Use::Input).await.is_err());
@@ -2760,7 +2974,7 @@ async fn after_a_member_answers_the_person_their_next_message_is_guessed() {
     let (handle, mut events) = runtime::start(Config { suggest: true, ..config(&claude, &home, false) });
     add(&handle, &mut events, 1, member(&cwd, "frontend")).await;
 
-    handle.send(Command::Submit { session: 1, text: "fix the button".into() });
+    handle.send(Command::Submit { session: 1, text: "fix the button".into(), about: None });
     let seen = until(&mut events, |e| matches!(e, Event::Suggestion { .. })).await;
     assert!(
         seen.iter().any(|e| matches!(e, Event::Suggestion { session: 1, text } if text == "yes, tidy them")),
@@ -2779,7 +2993,7 @@ async fn after_a_member_answers_the_person_their_next_message_is_guessed() {
 
     // Turned off, none is guessed.
     handle.send(Command::Suggestions { squad: "acme".into(), on: false });
-    handle.send(Command::Submit { session: 1, text: "and the footer".into() });
+    handle.send(Command::Submit { session: 1, text: "and the footer".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(calls(&recorded).len(), 3, "the turn, its guess, the next turn");
@@ -2834,7 +3048,7 @@ async fn the_person_writes_a_ticket_its_owner_takes_it_and_the_pm_hears_with_its
     // With no owner, the PM is asked to give it one — with its next message.
     handle.send(Command::CreateTicket { squad: "acme".into(), draft: draft("Release notes", None) });
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2)).await;
-    handle.send(Command::Submit { session: 1, text: "what's next?".into() });
+    handle.send(Command::Submit { session: 1, text: "what's next?".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     let prompt = calls(&recorded).into_iter().filter_map(|c| arg(&c, "-p").map(str::to_owned)).find(|p| p.contains("what's next?")).unwrap();
     assert!(prompt.contains("The person put T-1 on the board for qa, high priority: Test plan."), "{prompt}");
@@ -2976,7 +3190,7 @@ async fn the_desktop_is_only_for_members_the_person_turned_it_on_for() {
     };
 
     // Off by default: no tools, and a call made anyway is refused.
-    handle.send(Command::Submit { session: 1, text: "go".into() });
+    handle.send(Command::Submit { session: 1, text: "go".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(servers(&calls(&recorded)[0]).get("desktop").is_none());
     let refused = handle.desktop(desktop("frontend")).await;
@@ -2984,7 +3198,7 @@ async fn the_desktop_is_only_for_members_the_person_turned_it_on_for() {
 
     // Turned on: the next turn has them, and a call goes on to the helper — not installed here.
     Journal::for_squad(&home, "acme").unwrap().set_desktop("frontend", true).unwrap();
-    handle.send(Command::Submit { session: 1, text: "go".into() });
+    handle.send(Command::Submit { session: 1, text: "go".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     let call = calls(&recorded).pop().unwrap();
     if cfg!(target_os = "macos") {

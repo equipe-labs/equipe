@@ -13,7 +13,7 @@
             "type": "accept"
           }
         },
-        "seq": 17,
+        "seq": 20,
         "squad": "home",
         "ts": 1760000000000
       }
@@ -30,7 +30,7 @@
             "type": "accept"
           }
         },
-        "seq": 16,
+        "seq": 19,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -493,6 +493,42 @@
         "ts": 1760000000000
       }
     },
+    "event: queue sent": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "session": 1001,
+            "texts": [
+              "푸터는 빼 줘",
+              "그리고 테스트도"
+            ],
+            "type": "queue_sent"
+          }
+        },
+        "seq": 22,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: steer queued": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "project": "web",
+            "session": 1001,
+            "text": "푸터는 빼 줘",
+            "type": "steer_queued"
+          }
+        },
+        "seq": 21,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "event: text delta": {
       "receives": {
         "rpc": {
@@ -915,7 +951,7 @@
             "type": "merge"
           }
         },
-        "seq": 15,
+        "seq": 18,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1124,6 +1160,40 @@
         "ts": 1760000000000
       }
     },
+    "send now": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "session": 1001,
+            "texts": [
+              "푸터는 빼 줘",
+              "그리고 테스트도"
+            ],
+            "type": "send_now"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "session": 1001,
+            "texts": [
+              "푸터는 빼 줘",
+              "그리고 테스트도"
+            ],
+            "type": "send_now"
+          }
+        },
+        "seq": 17,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "squads": {
       "daemon": {
         "answers": {
@@ -1182,6 +1252,66 @@
           }
         },
         "seq": 13,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "submit: about a project": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "about": "web",
+            "session": 1001,
+            "text": "웹사이트는 어떻게 되어가?",
+            "type": "submit"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "about": "web",
+            "session": 1001,
+            "text": "웹사이트는 어떻게 되어가?",
+            "type": "submit"
+          }
+        },
+        "seq": 15,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "submit: about the whole squad": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "about": null,
+            "session": 1001,
+            "text": "전체 상황은?",
+            "type": "submit"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "about": null,
+            "session": 1001,
+            "text": "전체 상황은?",
+            "type": "submit"
+          }
+        },
+        "seq": 16,
         "squad": "acme",
         "ts": 1760000000000
       }

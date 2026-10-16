@@ -268,8 +268,13 @@ its secrets. Without them configured, a push answers `push_result` `ok: false`.
 
 The daemon follows a device like one more screen, with less reach than the terminal:
 
-- **may:** `hello`, `squads`, and the commands `submit`, `interrupt`, `accept`, `reopen`,
+- **may:** `hello`, `squads`, and the commands `submit`, `interrupt`, `send_now`, `accept`, `reopen`,
   `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `focus`, `refresh`.
+- `submit` and `answer_questions` may say what the message is about: `about` — the project the
+  phone shows, or `null` for the whole squad. Left out, the daemon takes the project in focus
+  (the last `focus` any screen sent). Said while the member works, a message steers it
+  (`steer_queued`, with its `project`); `send_now` stops the turn and sends what waits — the
+  `texts` first, in that order — as one message (`queue_sent`, then the turn's end).
 - **may not:** `start`, `close`, `merge`, `set_mode`, `scale`, `show_browser` — nor the person's
   own hand on the board: `create_ticket`, `edit_ticket`, `edit_tickets`, `move_ticket`,
   `comment_ticket`, `ticket_history` (the phone answers what the board asks; planning stays at a

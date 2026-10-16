@@ -762,6 +762,31 @@ pub fn message(typed: &str, tags: &str) -> String {
     if typed.is_empty() { tags.trim_end().to_owned() } else { format!("{typed} {}", tags.trim_end()) }
 }
 
+/// What a sent message attached, as the strip keeps it, from its tags: for a
+/// message taken back whose sending this app didn't see (another screen, a
+/// restart). No thumbnail — the chip shows its kind.
+pub fn saved_of(text: &str) -> Vec<Saved> {
+    use equipe_core::protocol::tags::TagKind;
+    equipe_core::protocol::tags::find(text)
+        .into_iter()
+        .map(|tag| {
+            let name = tag.name().to_owned();
+            let kind = match tag.kind {
+                TagKind::Image => Kind::Image,
+                TagKind::Video => Kind::Video,
+                TagKind::Audio => Kind::Audio,
+                TagKind::Pdf => Kind::Pdf,
+                TagKind::File => match Kind::of(Path::new(&name)) {
+                    k @ (Kind::Text | Kind::Doc) => k,
+                    _ => Kind::File,
+                },
+            };
+            let meta = Meta { pages: tag.pages, lines: tag.lines, dims: tag.dims, ..Meta::default() };
+            Saved { kind, name, size: 0, meta, ready: Ready { path: tag.path.clone(), tag: text[tag.range.clone()].to_owned() }, thumb: None, origin: None }
+        })
+        .collect()
+}
+
 /// What was typed, without the characters that can't be seen or that turn
 /// text around (zero-width spaces, bidi overrides, a stray BOM) — the joiners
 /// emoji need stay.

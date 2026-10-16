@@ -91,6 +91,15 @@ impl History {
         }
     }
 
+    /// The line sent as `message` (its words and what it attached), the
+    /// latest such: what a message taken back puts back in the box.
+    pub fn sent_as(&self, message: &str) -> Option<&Said> {
+        self.lines.iter().rev().find(|said| {
+            let tags: String = said.attachments.iter().map(|a| format!("{} ", a.ready.tag)).collect();
+            crate::attach::message(&said.text, &tags) == message.trim()
+        })
+    }
+
     /// Whether ↑↓ is walking.
     pub fn walking(&self) -> bool {
         self.at.is_some()
@@ -460,23 +469,23 @@ pub fn plan(model: &Model, text: &str, later: bool) -> Plan {
         Presence::Closed => Plan { restore: Some(text.to_owned()), ..Plan::say(t!("compose.member_gone", name = target.name)) },
         // A memo: the core holds it until the turn ends. Only Claude can be steered.
         Presence::Working if later || target.engine != Some(Engine::Claude) => Plan {
-            commands: vec![Command::SubmitLater { session: target.session, text: text.to_owned() }],
+            commands: vec![Command::SubmitLater { session: target.session, text: text.to_owned(), about: Some(model.focus.clone()) }],
             flash: Some(t!("compose.memo_left", name = target.name)),
             ..Plan::default()
         },
         // Steering: read at its next step, the work carrying on.
         Presence::Working => Plan {
-            commands: vec![Command::Submit { session: target.session, text: text.to_owned() }],
+            commands: vec![Command::Submit { session: target.session, text: text.to_owned(), about: Some(model.focus.clone()) }],
             flash: Some(t!("compose.steered", name = target.name)),
             ..Plan::default()
         },
         Presence::Ready if !away && model.opens_lane() => Plan {
-            commands: vec![Command::Submit { session: target.session, text: text.to_owned() }],
+            commands: vec![Command::Submit { session: target.session, text: text.to_owned(), about: Some(model.focus.clone()) }],
             flash: Some(t!("compose.answers_alongside", name = target.name)),
             ..Plan::default()
         },
         Presence::Ready => Plan {
-            commands: vec![Command::Submit { session: target.session, text: text.to_owned() }],
+            commands: vec![Command::Submit { session: target.session, text: text.to_owned(), about: Some(model.focus.clone()) }],
             flash: away.then(|| t!("compose.sent_to", name = target.name)),
             ..Plan::default()
         },
@@ -515,6 +524,7 @@ fn slash(model: &Model, command: &str) -> Plan {
                 text: "Look the board over for tickets that have gone stale, overlap or no longer fit, and propose \
 what to do with each — close, merge into another, or keep, and why. Don't cancel anything yourself; I'll decide."
                     .into(),
+                about: None,
             }),
             None => Plan::say(t!("compose.no_pm")),
         },
@@ -694,6 +704,7 @@ mod tests {
             queued_project: None,
             queued_in: vec![],
             steering: vec![],
+            steering_in: vec![],
             lane: None,
             estimate: None,
         }
@@ -715,7 +726,26 @@ mod tests {
     }
 
     fn submit(session: SessionId, text: &str) -> Command {
-        Command::Submit { session, text: text.into() }
+        Command::Submit { session, text: text.into(), about: Some(None) }
+    }
+
+    #[test]
+    fn a_message_says_the_project_this_screen_shows() {
+        let mut model = team();
+        model.focus = Some("site".into());
+        assert_eq!(plan(&model, "how is it going?").commands, vec![Command::Submit { session: 1, text: "how is it going?".into(), about: Some(Some("site".into())) }]);
+    }
+
+    #[test]
+    fn a_message_taken_back_finds_what_it_attached() {
+        let mut history = History::default();
+        let shot = crate::attach::saved_of("[image: /up/1792073093606-paste.png]");
+        assert_eq!((shot.len(), shot[0].kind, shot[0].name.as_str()), (1, crate::attach::Kind::Image, "paste.png"));
+        history.push(Said { text: "look".into(), attachments: shot });
+        history.push(Said::text("plain"));
+        assert_eq!(history.sent_as("look [image: /up/1792073093606-paste.png]").map(|s| s.text.as_str()), Some("look"));
+        assert_eq!(history.sent_as("plain").map(|s| s.attachments.len()), Some(0));
+        assert!(history.sent_as("never sent").is_none());
     }
 
     #[test]
@@ -779,7 +809,7 @@ mod tests {
     fn tab_leaves_a_working_member_a_memo() {
         let model = team();
         let p = super::plan(&model, "@backend 이것도", true);
-        assert_eq!(p.commands, vec![Command::SubmitLater { session: 3, text: "이것도".into() }]);
+        assert_eq!(p.commands, vec![Command::SubmitLater { session: 3, text: "이것도".into(), about: Some(None) }]);
         assert!(p.flash.unwrap().contains("메모를 남겼"));
         // A member at rest is simply told: there is nothing to wait for.
         assert_eq!(super::plan(&model, "@frontend 안녕", true).commands, vec![submit(2, "안녕")]);
@@ -791,7 +821,7 @@ mod tests {
         codex.engine = Engine::Codex;
         let model = squad(vec![session(1, "pm", SessionState::Ready), codex]);
         let p = plan(&model, "@backend 이것도");
-        assert_eq!(p.commands, vec![Command::SubmitLater { session: 3, text: "이것도".into() }]);
+        assert_eq!(p.commands, vec![Command::SubmitLater { session: 3, text: "이것도".into(), about: Some(None) }]);
     }
 
     #[test]

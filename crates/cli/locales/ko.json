@@ -719,7 +719,6 @@
   "view.longer_than_usual": "평소보다 오래 걸림",
   "view.members": "멤버 {open}명",
   "view.members_working": "멤버 {open}명 · {working}명 작업 중",
-  "view.memo_note": "메모 · 이번 턴이 끝나면 읽어요",
   "view.elsewhere.other": "다른 프로젝트 대화 {count}개 · /project all 로 모두 보기",
   "view.memos": "메모 {n}개",
   "view.mode_hint": "/mode {member} full이면 {member}가 묻지 않아요 · 모든 모드는 /mode",
@@ -751,7 +750,6 @@
   "view.side_recent_done_today": "최근 끝남 · 오늘 {n}",
   "view.side_shared_folder": "스쿼드 공용 폴더",
   "view.side_squad": "스쿼드",
-  "view.steering_note": "방향 지시 · 다음 단계에서 읽어요, 멈추지 않아요",
   "view.the_squad": "스쿼드",
   "view.time_hours": "{h}시간",
   "view.time_hours_minutes": "{h}시간 {m}분",
@@ -835,5 +833,12 @@
   "commands.new": "내 티켓을 보드에 올리기 (보드에서 ⇧N)",
   "commands.new_args": "<제목>",
   "commands.title": "티켓 제목 고치기 (보드에서 ⇧E)",
-  "commands.title_args": "T-n <제목>"
+  "commands.title_args": "T-n <제목>",
+  "view.pending_steer": "(다음 단계)",
+  "view.pending_memo": "(끝나고)",
+  "commands.unqueue": "기다리는 마지막 메시지를 되돌려 입력창으로 가져오기",
+  "commands.now": "하던 일을 멈추고 기다리는 메시지를 한 번에 지금 보내기",
+  "app.nothing_waiting": "기다리는 메시지가 없어요",
+  "app.unqueued": "되돌렸어요 — 입력창에 있어요",
+  "app.sent_now": "지금 보냈어요 — 하던 일은 멈췄어요"
 }

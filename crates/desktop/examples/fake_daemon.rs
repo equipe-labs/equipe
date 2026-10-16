@@ -76,6 +76,7 @@ fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
         queued_project: None,
         queued_in: vec![],
         steering: vec![],
+        steering_in: vec![],
         lane: None,
         estimate: None,
         recent,
@@ -642,6 +643,14 @@ mod torture;
 
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
+/// What waits for each member at work: its words and project, in order.
+type Waits = Mutex<HashMap<SessionId, Vec<(String, Option<String>)>>>;
+
+fn waiting() -> &'static Waits {
+    static WAITING: std::sync::OnceLock<Waits> = std::sync::OnceLock::new();
+    WAITING.get_or_init(Mutex::default)
+}
+
 /// Where a message goes, as the daemon decides: the project in focus, each
 /// member's current conversation, and the lanes opened beside them.
 #[derive(Default)]
@@ -833,7 +842,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         let command: Command = message.params_as().unwrap();
                         eprintln!("command: {command:?}");
                         match command {
-                            Command::Submit { session, text } => {
+                            Command::Submit { session, text, about } => {
                                 let working = |id: SessionId| {
                                     let turns = turns.clone();
                                     async move { turns.lock().await.get(&id).is_some_and(|t| !t.is_finished()) }
@@ -841,7 +850,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 // Route like the daemon: the conversation about the project in focus,
                                 // beside the member's other work if it is at work in another.
                                 let mut r = routes.lock().await;
-                                let wanted = r.focus.clone();
+                                // What the screen that sent it shows, else the focus.
+                                let wanted = about.clone().unwrap_or_else(|| r.focus.clone());
                                 let lane = r.lanes.iter().find(|(_, of, project)| *of == session && *project == wanted).map(|l| l.0);
                                 let session = match lane {
                                     Some(lane) => lane,
@@ -867,7 +877,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 let busy = working(session).await;
                                 if busy {
                                     // Like the daemon: said to a member at work, it steers.
-                                    let _ = events.send(Event::SteerQueued { session, text });
+                                    waiting().lock().await.entry(session).or_default().push((text.clone(), wanted.clone()));
+                                    let _ = events.send(Event::SteerQueued { session, text, project: wanted.clone() });
                                 } else {
                                     // `torture <n>`: a part of the Markdown torture test (see `torture.rs`).
                                     let part = text.strip_prefix("torture").and_then(|n| n.trim().parse::<usize>().ok());
@@ -879,11 +890,39 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     turns.lock().await.insert(session, task);
                                 }
                             }
-                            Command::SubmitLater { session, text } => {
-                                let _ = events.send(Event::MessageQueued { session, text, project: None });
+                            Command::SubmitLater { session, text, about } => {
+                                let project = match about { Some(about) => about, None => routes.lock().await.focus.clone() };
+                                waiting().lock().await.entry(session).or_default().push((text.clone(), project.clone()));
+                                let _ = events.send(Event::MessageQueued { session, text, project });
                             }
                             Command::Unqueue { session, text } => {
+                                if let Some(w) = waiting().lock().await.get_mut(&session)
+                                    && let Some(at) = w.iter().position(|(t, _)| *t == text)
+                                {
+                                    w.remove(at);
+                                }
                                 let _ = events.send(Event::MemoWithdrawn { session, text });
+                            }
+                            // Like the daemon: the turn stops and what waits goes as one message.
+                            Command::SendNow { session, texts } => {
+                                let mut all = waiting().lock().await.remove(&session).unwrap_or_default();
+                                let mut order: Vec<String> = Vec::new();
+                                for text in texts {
+                                    if let Some(at) = all.iter().position(|(t, _)| *t == text) {
+                                        order.push(all.remove(at).0);
+                                    }
+                                }
+                                order.extend(all.into_iter().map(|(t, _)| t));
+                                if order.is_empty() {
+                                    continue;
+                                }
+                                let _ = events.send(Event::QueueSent { session, texts: order.clone() });
+                                if let Some(task) = turns.lock().await.remove(&session) {
+                                    task.abort();
+                                }
+                                let _ = events.send(Event::TurnEnded { session, outcome: TurnOutcome::Interrupted, usage: None });
+                                let _ = events.send(Event::UserMessage { session, text: order.join("\n\n") });
+                                turns.lock().await.insert(session, tokio::spawn(turn(session, events.clone(), seconds)));
                             }
                             Command::Interrupt { session } => {
                                 if let Some(task) = turns.lock().await.remove(&session) {

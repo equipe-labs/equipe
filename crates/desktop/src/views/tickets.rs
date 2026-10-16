@@ -649,7 +649,7 @@ impl Shell {
     pub fn shape_quick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let line = self.board.tk.quick_input.read(cx).value().trim().to_owned();
         let Some(pm) = self.model.pm().filter(|_| !line.is_empty() && self.can_act()) else { return };
-        self.send_command(Command::Submit { session: pm, text: tickets::shape_request(&line) });
+        self.send_command(Command::Submit { session: pm, text: tickets::shape_request(&line), about: Some(self.model.focus.clone()) });
         self.say(t!("tickets.shaping"));
         self.close_quick(window, cx);
     }
