@@ -541,7 +541,12 @@ One command on a Mac, from the repo root; ~5 min cold (two architectures).
 - **Notarization**: when signed and given credentials — `EQUIPE_NOTARY_PROFILE`
   (a `xcrun notarytool store-credentials` profile in the keychain) or
   `EQUIPE_NOTARY_KEY` (.p8 path) + `EQUIPE_NOTARY_KEY_ID` + `EQUIPE_NOTARY_ISSUER`
-  — `notarytool submit --wait`, then `stapler staple` on the DMG.
+  — the app first (zipped with `ditto`, `notarytool submit --wait`, `stapler
+  staple` on `equipe.app`, then `stapler validate` and `spctl -t exec`), so the
+  copy dragged to Applications opens on an offline Mac too; then the DMG built
+  from it, the same way. The summary ends with `signed: YES/NO` and
+  `notarized: YES/NO`; CI's "Check the DMG" step runs `stapler validate` and
+  `spctl` on the app inside the DMG.
 - **Updates** ([Sparkle](https://sparkle-project.org) 2.10.0, fetched once into
   `$CARGO_TARGET_DIR/sparkle/` and checked against a pinned SHA-256): only when the
   update key's public half is known (`SPARKLE_PUBLIC_ED_KEY`, else
