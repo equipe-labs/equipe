@@ -18,11 +18,15 @@
 //! ```
 //! `FAKE_SECONDS` (default 4) is how long a reply streams; `FAKE_SAID` adds a
 //! last message of the person's to the PM's history (attachment tags and all).
+//! `FAKE_ASKLIST=1` ends the PM's history on a reply asking three things in a
+//! numbered list of its own words, as a member does that skips `ask_decision`.
 //!
-//! `FAKE_TURN=1` puts T-117 down for the person — three asks, one naming a
-//! folder with spaces and a file it made under the app's repository — with
-//! its news last in the PM's conversation; `FAKE_TURN=elsewhere` also answers
-//! it from "another screen" after `FAKE_TURN_AFTER` ms (default 5000).
+//! `FAKE_TURN=1` puts T-117 down for the person — a question (the App Review
+//! contact) and a thing to do (the EU DSA status in App Store Connect), as the
+//! person once saw it — with its news last in the PM's conversation;
+//! `FAKE_TURN=files` asks the older three, one naming a folder with spaces and
+//! a file it made under the app's repository; `FAKE_TURN=elsewhere` also
+//! answers it from "another screen" after `FAKE_TURN_AFTER` ms (default 5000).
 //!
 //! `FAKE_DECIDE=1` has the PM put a decision to the person — two questions,
 //! the second several-pick — and backend one more about T-70;
@@ -52,6 +56,9 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, broadcast};
 
 const REPLY: &str = "네, 확인했습니다. 지금 보드를 살펴보고 **T-12**를 먼저 처리하겠습니다.\n\n진행 순서는 다음과 같습니다.\n\n- 헤더 컴포넌트 정리\n- 입력창 한글 조합 확인\n- 스트리밍 표시 점검 (`T-13`)\n\n| 항목 | 상태 | 담당 |\n|---|---|---|\n| 헤더 | 진행 중 | frontend |\n| 입력창 | 대기 | frontend |\n| 데몬 연결 | 완료 | backend |\n\n```rust\nfn main() {\n    println!(\"안녕, equipe\");\n}\n```\n\n끝나면 다시 알려 드리겠습니다.";
+
+/// `FAKE_ASKLIST`'s reply: what the PM needs to know, as a numbered list in prose.
+const ASKLIST: &str = "EU 디지털 서비스법(DSA) 때문에 EU 스토어에 앱을 내려면 판매자 연락처를 공개해야 합니다. App Store Connect에 아직 비어 있어서 **T-117** 제출이 여기서 멈춰 있어요.\n\n## 알려 주세요\n\n1. EU 스토어에 공개할 전화번호: 국가번호 포함 (예: +82 10-1234-5678)\n2. 공개할 이메일: 스토어 페이지에 그대로 보입니다\n3. T-117 심사 연락처: 위와 같은 번호와 메일을 써도 되는지\n\n받으면 바로 입력합니다.";
 
 fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
     SessionInfo {
@@ -379,8 +386,14 @@ fn your_turn() -> Option<String> {
     std::env::var("FAKE_TURN").ok().filter(|v| !v.is_empty() && v != "0")
 }
 
-/// What T-117 asks: as the person once saw it joined into one line.
-const TURN_ASKS: [&str; 3] = [
+/// What T-117 asks: as the person saw it — one question, one thing to do.
+const TURN_ASKS: [&str; 2] = [
+    "App Review 연락처를 알려 주세요: 전화번호(국가번호 포함)와 이메일. 심사팀만 보고 공개되지 않습니다.",
+    "App Store Connect에서 EU DSA 상태를 trader(사업자)로 바꿔 주세요 — 앱 정보 › 디지털 서비스법.",
+];
+
+/// What T-117 asked before (`FAKE_TURN=files`): as the person once saw it joined into one line.
+const TURN_ASKS_FILES: [&str; 3] = [
     "심사 연락처(App Review Information)를 알려 주세요: 이름, 전화번호(국가번호 포함), 이메일. 심사팀만 보고 공개되지 않습니다.",
     "회사 iOS 엔지니어 리뷰를 언제, 누가 할지 정해 주세요. equipe-app 규칙상 스토어 출시 전에 꼭 받아야 합니다.",
     "스크린샷과 문구를 확인해 주세요: outputs/T-117 앱스토어 제출/screenshots-6.9/ (en·ko 5장씩, 실제 앱 화면) 와 listing.json. ko 스크린샷 속 티켓 제목은 데모 데이터라 영어입니다. 그대로 둬도 되면 '괜찮음'이라고만 답해 주세요.",
@@ -391,7 +404,8 @@ fn turn_ticket() -> Ticket {
     let shots = repo("app").join("outputs/T-117 앱스토어 제출/screenshots-6.9");
     let _ = std::fs::create_dir_all(&shots);
     let _ = std::fs::write(repo("app").join("listing.json"), "{ \"name\": \"equipe\" }\n");
-    let asks: Vec<String> = TURN_ASKS.iter().map(|a| (*a).to_owned()).collect();
+    let files = your_turn().as_deref() == Some("files");
+    let asks: Vec<String> = if files { TURN_ASKS_FILES.iter().map(|a| (*a).to_owned()).collect() } else { TURN_ASKS.iter().map(|a| (*a).to_owned()).collect() };
     let note = equipe_core::protocol::asks::waiting_note(&asks, Some("앱스토어 심사 제출에 필요합니다"));
     let mut t = ticket(117, "waiting", "app", "frontend", "앱스토어 제출", "App Store Connect에 1.0을 제출합니다.", &[], None, Some(&note));
     t.kind = equipe_core::protocol::TicketKind::Task;
@@ -595,6 +609,8 @@ fn on_ticket_command(command: &Command) -> Option<Ticket> {
             t.note = Some(note.clone());
         }
         Command::Resume { note, .. } => {
+            // What the answers leave open stays on the ticket, as the daemon keeps it.
+            t.remaining = equipe_core::protocol::asks::still_open(&t.asks(), note);
             t.status = TicketStatus::InProgress;
             t.note = Some(if note.trim().is_empty() { "Resumed: the person did what you were waiting for.".into() } else { format!("Resumed: {note}") });
             t.asks.clear();
@@ -695,6 +711,12 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             routes.lock().await.thread.insert(1, Some("app".into()));
                         }
                         history.extend(std::env::var("FAKE_SAID").ok().filter(|s| !s.is_empty()).map(|text| Entry::User { text }));
+                        // `FAKE_ASKLIST=1`: the PM's last reply asks three things in a list of its own words.
+                        if std::env::var("FAKE_ASKLIST").is_ok_and(|v| v == "1") {
+                            history.push(Entry::User { text: "EU 스토어에도 바로 낼 수 있어?".into() });
+                            history.push(Entry::Tool { tool: "WebFetch".into(), target: Some("https://developer.apple.com/help/app-store-connect/manage-compliance-information/manage-european-union-digital-services-act-trader-requirements".into()), outcome: None });
+                            history.push(Entry::Reply { text: ASKLIST.into() });
+                        }
                         if let Some(how) = your_turn() {
                             history.push(Entry::Note { text: "frontend handed in T-63 for your review · 경쟁 앱 온보딩 조사.".into() });
                             history.push(Entry::Note { text: "T-117 waits for you — frontend needs something only you can do · 앱스토어 제출.".into() });
@@ -707,7 +729,11 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                         let mut all = tickets().lock().unwrap();
                                         all.iter_mut().find(|t| t.id == 117 && t.status == TicketStatus::Waiting).map(|t| {
                                             t.status = TicketStatus::InProgress;
-                                            t.note = Some("Resumed: 1. 심사 연락처(App Review Information)를 알려 주세요: 이름, 전화번호(국가번호 포함), 이메일. 심사팀만…\n→ 고아벨, +82 10 1234 5678, review@equipe.im\n\n3. 스크린샷과 문구를 확인해 주세요: outputs/T-117 앱스토어 제출/screenshots-6.9/ (en·ko 5장씩…\n→ 괜찮음".into());
+                                            use equipe_core::protocol::asks::{self, Answers, Reply};
+                                            let answers = Answers { replies: vec![Reply::Text("+82 10 1234 5678, review@equipe.im".into()), Reply::Later], ..Answers::default() };
+                                            let message = asks::answer_message(&t.asks(), &answers);
+                                            t.remaining = asks::still_open(&t.asks(), &message);
+                                            t.note = Some(format!("Resumed: {message}"));
                                             t.asks.clear();
                                             t.clone()
                                         })

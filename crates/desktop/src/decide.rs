@@ -258,6 +258,11 @@ impl Draft {
                 _ => Effect::Nothing,
             };
         }
+        // A question answered in their own words only: ⏎ and Space go to its box.
+        if rows == 0 && matches!(key, Key::Enter | Key::Space) && !self.answered(others) {
+            self.cursor = 0;
+            return Effect::FocusOther;
+        }
         match key {
             Key::Pick(n) => {
                 if self.pick(set, n) {
@@ -405,6 +410,18 @@ mod tests {
         assert_eq!(d.picks[1].iter().copied().collect::<Vec<_>>(), [1, 2]);
         let sent = d.key(&s, Key::Next, &none, false);
         assert_eq!(sent, Effect::Send(vec![Answer { picked: vec![0], other: None }, Answer { picked: vec![1, 2], other: None }]));
+    }
+
+    #[test]
+    fn a_question_without_options_is_answered_in_its_box() {
+        let mut s = set();
+        s.questions = vec![Question { question: "EU 스토어에 공개할 전화번호는?".into(), header: String::new(), options: Vec::new(), multi_select: false }];
+        let mut d = Draft::new(&s);
+        assert_eq!(d.other_row(&s), 0);
+        assert_eq!(d.key(&s, Key::Enter, &others(1), false), Effect::FocusOther, "⏎ goes to the box");
+        assert_eq!(d.key(&s, Key::Pick(0), &others(1), false), Effect::Nothing, "nothing to pick");
+        let typed = vec!["+82 10-1234-5678".to_owned()];
+        assert_eq!(d.key(&s, Key::Next, &typed, true), Effect::Send(vec![Answer { picked: vec![], other: Some("+82 10-1234-5678".into()) }]));
     }
 
     #[test]

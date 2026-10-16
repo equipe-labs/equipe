@@ -776,6 +776,7 @@ async fn work_not_on_main_says_why_can_be_kept_on_its_branch_and_settles_when_no
                     created_by: "pm".into(),
                     note: None,
                     asks: vec![],
+                    remaining: Vec::new(),
                     updated_at: None,
                     priority: Default::default(), rank: 0,
                 })
@@ -852,6 +853,7 @@ async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
                     created_by: "pm".into(),
                     note: None,
                     asks: vec![],
+                    remaining: Vec::new(),
                     updated_at: None,
                     priority: Default::default(), rank: 0,
                 })
@@ -1059,6 +1061,45 @@ async fn a_member_waiting_on_the_person_takes_its_next_ticket_and_comes_back_to_
     let prompt = arg(&call, "-p").unwrap();
     assert!(prompt.contains("it is back. both are in .env.local"), "{prompt}");
     assert_eq!(arg(&call, "--resume"), Some("sess-1"), "it continues the ticket's conversation");
+}
+
+#[tokio::test]
+async fn what_the_person_leaves_open_stays_on_the_ticket_and_is_asked_again_next_time() {
+    use equipe_core::protocol::asks::{self, Answers, Reply};
+    let repo = repo();
+    let (claude, recorded) = recording_claude(&working_turn("WIP.md"));
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&repo]), false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "backend")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "App Store", "body": "-", "owner": "backend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let needs = ["App Review 연락처를 알려 주세요.", "EU DSA 상태를 trader로 바꿔 주세요.", "가격을 정해 주세요."];
+    tool(&handle, "backend", "block_on_person", serde_json::json!({ "needs": needs })).await;
+    until(&mut events, |e| is_waiting(e, 1)).await;
+
+    // Answered in part: one in words, one put off, one handed back.
+    let asked: Vec<String> = needs.iter().map(|n| (*n).to_owned()).collect();
+    let answers = Answers { replies: vec![Reply::Text("+82 10 1234 5678".into()), Reply::Later, Reply::Yours], notes: vec![], free: "급하지 않아요".into() };
+    handle.send(Command::Resume { squad: "acme".into(), ticket: 1, note: asks::answer_message(&asked, &answers) });
+    let back = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let resumed = ticket_changed(&back).into_iter().rfind(|t| t.id == 1).unwrap();
+    assert_eq!(resumed.remaining, [needs[1]], "what was put off stays open on the ticket");
+    assert!(resumed.asks.is_empty(), "not waiting: nothing asked now");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let call = calls(&recorded).pop().unwrap();
+    let prompt = arg(&call, "-p").unwrap();
+    assert!(prompt.contains("→ do it yourself") && prompt.contains("From the person: 급하지 않아요"), "{prompt}");
+    assert!(prompt.contains(equipe_core::roles::ANSWERS_GUIDE), "what each answer means: {prompt}");
+
+    // Put down again: what was left is asked again, after the new asks.
+    let blocked = tool(&handle, "backend", "block_on_person", serde_json::json!({ "needs": ["빌드 번호를 알려 주세요."] })).await;
+    assert!(blocked.text.contains("left 1 thing(s) open last time"), "{blocked:?}");
+    handle.send(Command::Submit { session: 2, text: "end your turn".into() });
+    let waiting = until(&mut events, |e| is_waiting(e, 1)).await;
+    let again = ticket_changed(&waiting).pop().unwrap();
+    assert_eq!(again.asks, ["빌드 번호를 알려 주세요.", needs[1]]);
+    assert!(again.remaining.is_empty(), "asked again, not left open twice");
+    handle.shutdown().await;
 }
 
 #[tokio::test]

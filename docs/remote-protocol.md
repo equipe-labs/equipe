@@ -84,7 +84,8 @@ and its `description` left out (the snapshot has them whole).
 A member puts a decision to the person as a `questions_asked` event: `questions` is
 `{ "id", "session", "member", "ticket"?, "asked_at", "questions": [{ "question", "header"?,
 "options": [{ "label", "description"? }], "multi_select"? }] }` — 1 to 4 questions, 2 to 4 options
-each, the recommended option first. The snapshot lists the ones still waiting in `questions`
+each, the recommended option first — or `"options": []`, a plain question the person answers in
+words of their own (`other`) only. The snapshot lists the ones still waiting in `questions`
 (absent when none). The phone answers with the command `answer_questions`
 `{ "squad", "id", "answers": [{ "picked"?: [<option index>…], "other"?: "<their words>" }, …] }`,
 one answer per question in order (`{}` skips one; one pick only unless `multi_select`), or
@@ -276,3 +277,13 @@ The daemon follows a device like one more screen, with less reach than the termi
 - `decide` with `always` counts as `allow`: from a phone a request is allowed once.
 
 The app asks for Face ID / fingerprint before it sends a `decide`.
+
+### Answering a waiting ticket
+
+A `waiting` ticket carries what it asks as `asks` (one string an item). `resume`'s `note` is
+the person's words — or, to answer item by item as the desktop card and the terminal do, the
+message `equipe_protocol::asks::answer_message` writes (every ask numbered, each with words,
+`done ✓`, `do it yourself …`, `later …`, `your call …`, `the person doesn't know …` or
+`— (not yet …)`, a `Note:` under it, `From the person:` last). The daemon reads that message
+back: what it leaves open (not yet, or later) stays on the ticket as `remaining` — additive,
+left out when empty — and is asked again the next time the member waits on the person.

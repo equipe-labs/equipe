@@ -75,7 +75,9 @@ impl Shell {
                 if self.decide.fields.contains_key(&k) {
                     continue;
                 }
-                let field = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 4).submit_on_enter(false).placeholder(t!("decide.other_placeholder")));
+                // A question without options is answered in this box alone.
+                let placeholder = if set.questions[n].options.is_empty() { t!("decide.free_placeholder") } else { t!("decide.other_placeholder") };
+                let field = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 4).submit_on_enter(false).placeholder(placeholder));
                 let id = set.id;
                 let subscription = cx.subscribe_in(&field, window, move |this, _, event: &InputEvent, window, cx| match event {
                     InputEvent::PressEnter { secondary: true, .. } => {
@@ -466,7 +468,12 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
     if more > 0 {
         said.push(div().child(format!("· {}", t!("decide.more", count = more))).into_any_element());
     }
-    let keys = if place == Place::Docked { if q.multi_select { t!("decide.keys_multi") } else { t!("decide.keys") } } else { t!("decide.keys_peek") };
+    let keys = match place {
+        _ if q.options.is_empty() => t!("decide.keys_free"),
+        Place::Docked if q.multi_select => t!("decide.keys_multi"),
+        Place::Docked => t!("decide.keys"),
+        Place::Peek => t!("decide.keys_peek"),
+    };
     let foot = h_flex()
         .w_full()
         .pt_3()

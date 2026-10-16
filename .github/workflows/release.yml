@@ -60,9 +60,13 @@ jobs:
         if: contains(matrix.target, 'linux-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
+      # Tag runs can read main's caches but what they save stays with the tag,
+      # where no later release finds it: main's CI keeps these warm instead
+      # (ci.yml, warm-release), under the same shared key.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          shared-key: release-${{ matrix.target }}
+          save-if: false
 
       - name: Build
         run: cargo build --release --locked -p equipe --target ${{ matrix.target }}
@@ -108,11 +112,16 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: desktop-${{ matrix.arch }}
+          shared-key: release-desktop-${{ matrix.arch }}
+          # The vendored GPUI is a path crate: kept too, or it builds from scratch.
+          cache-workspace-crates: true
+          save-if: false
 
       - name: Build
         env:
           MACOSX_DEPLOYMENT_TARGET: "12.0"
+          # The app in 16 pieces: twice as fast to build, 7% larger.
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: cargo build --release --locked -p equipe-desktop --target ${{ matrix.arch }}-apple-darwin
 
       - uses: actions/upload-artifact@v5
@@ -317,9 +326,51 @@ jobs:
             end
           end
           EOF
+          # The Mac app as a cask beside the formula: brew install --cask
+          # equipe-labs/tap/equipe. It updates itself (Sparkle), so brew
+          # leaves its updates to it.
+          mkdir -p tap/Casks
+          cat > tap/Casks/equipe.rb <<EOF
+          cask "equipe" do
+            version "${version}"
+            sha256 "$(cut -d' ' -f1 dist/equipe.dmg.sha256)"
+
+            url "${url}/equipe.dmg"
+            name "equipe"
+            desc "Desktop app for a squad of AI agents on your own Claude Code and Codex plans"
+            homepage "https://equipe.im"
+
+            auto_updates true
+            depends_on macos: ">= :monterey"
+
+            app "equipe.app"
+
+            zap trash: [
+              "~/Library/Caches/im.equipe.desktop",
+              "~/Library/HTTPStorages/im.equipe.desktop",
+              "~/Library/Preferences/im.equipe.desktop.plist",
+              "~/Library/Saved Application State/im.equipe.desktop.savedState",
+            ]
+          end
+          EOF
+          sed -i 's/^          //' tap/Casks/equipe.rb
           cd tap
           git config user.name "equipe release"
           git config user.email "release@equipe.im"
-          git add Formula/equipe.rb
+          git add Formula/equipe.rb Casks/equipe.rb
           git commit -m "equipe ${version}"
           git push
+
+  # Old caches out, so the repository stays under GitHub's 10 GB and the ones
+  # releases need aren't evicted.
+  prune-caches:
+    needs: homebrew
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@v5
+      - run: scripts/prune-caches.sh
+        env:
+          GH_TOKEN: ${{ github.token }}

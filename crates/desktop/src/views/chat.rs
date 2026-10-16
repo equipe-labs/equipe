@@ -77,7 +77,7 @@ type Shown = (SessionId, Option<u32>, Option<Option<String>>);
 
 pub struct Chat {
     scroller: Entity<MessageScrollerState>,
-    blocks: Rc<Vec<Block>>,
+    pub blocks: Rc<Vec<Block>>,
     /// Whose conversation `blocks` are, the ticket it shows the work of, and
     /// the slice of it.
     shown: Option<Shown>,
@@ -314,6 +314,13 @@ impl Chat {
         });
     }
 
+    /// Row `ix` is measured again (what it shows grew or shrank in place).
+    pub fn remeasure_at(&self, ix: usize, cx: &mut App) {
+        if ix < self.blocks.len() {
+            self.scroller.update(cx, |s, cx| s.remeasure_items(ix..ix + 1, cx));
+        }
+    }
+
     fn remeasure_row(&self, row: u64, cx: &mut App) {
         if row >> 24 != self.serial {
             return;
@@ -469,7 +476,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 .w_full()
                 .max_w(px(COLUMN))
                 .px_4()
-                .child(v_flex().children(approvals::for_you(shell, cx)).children(approvals::approval(shell, cx)).children(super::decide::docked(shell, cx)))
+                .child(v_flex().children(approvals::for_you(shell, cx)).children(approvals::approval(shell, cx)).children(super::decide::docked(shell, cx)).children(super::asklist::hint(shell, cx)))
                 .child(composer::render(shell, cx)),
         )
         .children(lightbox(shell, cx));
@@ -538,6 +545,9 @@ struct Rows {
     about: Rc<Vec<Option<String>>>,
     projects: Rc<Vec<String>>,
     focus: Option<String>,
+    /// The latest reply, when it asks the person things in a list: its row,
+    /// the list, and the form it turns into.
+    asking: Option<Rc<super::asklist::Shown>>,
 }
 
 impl Rows {
@@ -607,6 +617,7 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         about: shell.chat.about.clone(),
         projects: Rc::new(if every { names } else { Vec::new() }),
         focus: slice.flatten(),
+        asking: super::asklist::shown(shell, cx),
         turns: shell
             .chat
             .blocks
@@ -621,27 +632,17 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     // A reply about another project came: a pill to go there, the view stays.
     let answered = shell.chat.answered_in.clone().map(|about| answered_pill(p, about, cx));
     let pulse = (replying && following && answered.is_none()).then(|| pulse_pill(p));
-    let scroller = div().flex_1().min_h_0().w_full().relative().children(pulse).child(
+    // Our own pill, not the kit's jump button: the kit's put a tooltip with the
+    // same word on it, in its own white, over the conversation.
+    let jump = (!following && answered.is_none()).then(|| jump_pill(p, shell.chat.scroller.clone()));
+    let scroller = div().flex_1().min_h_0().w_full().relative().children(pulse).children(jump).child(
         MessageScroller::new("conversation", shell.chat.scroller.clone(), move |ix, window, cx| row(&rows, ix, window, cx))
-            // It fades and slides up into place, bottom-centre over the composer.
-            .with_jump_button_transition(motion::BASE)
+            .jump_button(false)
             .with_row_style(StyleRefinement::default().pb(px(8.)).pl(px(TEXT_INSET)).pr(px(TEXT_INSET)))
             // Room under the last line, so it never sits on the composer's
             // edge; read back, the rows fade out there under the jump pill.
             .with_list_style(StyleRefinement::default().pt(px(8.)).pb(px(TAIL_ROOM)))
             .with_bottom_fade(p.bg)
-            .with_jump_button_label(t!("chat.jump_to_bottom"))
-            // A pill in the app's colours, with its words beside the arrow: on
-            // its own the arrow sat white on white.
-            .with_jump_button_style(
-                StyleRefinement::default()
-                    .h(px(32.))
-                    .bg(Hsla::from(p.popover()))
-                    .text_color(Hsla::from(p.text))
-                    .border_color(Hsla::from(p.hair))
-                    .shadow(motion::float_shadow(0.8)),
-            )
-            .with_jump_button_renderer(|button| button.label(t!("chat.jump_to_bottom")).px_3()),
     );
     // The pill has its own room under the list, so it covers nothing.
     let list = v_flex().flex_1().min_h_0().w_full().max_w(px(COLUMN)).px_4().child(scroller).children(answered);
@@ -839,10 +840,35 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
 #[allow(clippy::too_many_arguments)]
 fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bool, worked: Option<&crate::convo::Worked>, _window: &mut Window, cx: &mut App) -> AnyElement {
     let p = rows.p;
-    let (markdown, full) = view::prepare(text, live, &|n| rows.opened.contains(&(key, n as u32)));
-    let state = rows.views.borrow_mut().get(view_key(key, 0), &markdown, cx);
     let look = Look { size: BODY, line: BODY_LINE, color: p.prose, live };
-    let body = view::configure(TextView::new(&state), p, look, key, Arc::new(full));
+    // A part of the reply's words, drawn in text view `kind`.
+    let words = |part: &str, kind: u64, cx: &mut App| {
+        let (markdown, full) = view::prepare(part, live, &|n| rows.opened.contains(&(key, n as u32)));
+        let state = rows.views.borrow_mut().get(view_key(key, kind), &markdown, cx);
+        view::configure(TextView::new(&state), p, look, key, Arc::new(full))
+    };
+    // A reply that ends asking things in a list: a way to answer them under
+    // the list — or, open, the list as a form, the rest of the words around it.
+    let body: AnyElement = match rows.asking.as_ref().filter(|a| a.ix == ix && !live) {
+        Some(asking) => {
+            let span = asking.asked.span.clone();
+            let (above, below) = match &asking.open {
+                Some(_) => (&text[..span.start], &text[span.end..]),
+                None => (&text[..span.end], &text[span.end..]),
+            };
+            let middle = match &asking.open {
+                Some(open) => super::asklist::form(p, rows.tones, asking, open, key, &rows.handle, cx),
+                None => super::asklist::button(p, key, &rows.handle),
+            };
+            v_flex()
+                .w_full()
+                .when(!above.trim().is_empty(), |c| c.child(words(above, 0, cx)))
+                .child(middle)
+                .when(!below.trim().is_empty(), |c| c.child(words(below.trim_start(), 1, cx)))
+                .into_any_element()
+        }
+        None => words(text, 0, cx).into_any_element(),
+    };
     let group: SharedString = format!("reply-{key}").into();
     // After a group of calls or the news, a little air before the words.
     let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::Thought { .. } | Block::Worked(_));
@@ -1418,6 +1444,31 @@ fn tool_button(p: Palette, id: (&'static str, u64), glyph: Icon, label: &'static
 }
 
 /// Three dots that pulse while a reply streams, over the composer.
+/// Read back up the conversation: a pill over the composer to the latest,
+/// fading and rising into place.
+fn jump_pill(p: Palette, scroller: Entity<MessageScrollerState>) -> impl IntoElement {
+    let pill = h_flex()
+        .id("jump-to-latest")
+        .h(px(32.))
+        .pl(px(10.))
+        .pr_3()
+        .gap(px(6.))
+        .items_center()
+        .rounded_full()
+        .bg(p.popover())
+        .border_1()
+        .border_color(p.hair)
+        .shadow(motion::float_shadow(0.8))
+        .text_size(px(13.))
+        .text_color(p.text)
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.wash))
+        .child(icon(Icon::ArrowDown, 14., p.text2))
+        .child(t!("chat.jump_to_bottom"))
+        .on_click(move |_, _, cx| scroller.update(cx, |state, cx| state.scroll_to_end(cx)));
+    div().absolute().bottom(px(12.)).left_0().right_0().flex().justify_center().child(motion::rise(pill, "jump-to-latest-in"))
+}
+
 fn pulse_pill(p: Palette) -> impl IntoElement {
     let dot = move |n: usize| {
         div().size(px(5.)).rounded_full().bg(p.muted).with_animation(
@@ -1592,6 +1643,15 @@ impl Shell {
             _ => PART_GROUP,
         };
         self.chat_toggle(row, part, cx);
+    }
+
+    /// Open or close the latest answered card of `ticket` (the snapshot script's).
+    #[cfg(feature = "snapshot")]
+    pub fn chat_open_turn(&mut self, ticket: u32, cx: &mut Context<Self>) {
+        let at = self.chat.blocks.iter().rposition(|b| matches!(b, Block::YourTurn { ticket: t, .. } if *t == ticket));
+        if let Some(ix) = at {
+            self.chat_turn(ix, None, cx);
+        }
     }
 
     /// Open or close the conversation's latest decided row (the snapshot script's).
