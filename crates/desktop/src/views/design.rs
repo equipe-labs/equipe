@@ -25,7 +25,8 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::design::{self as ds, Pic, Section};
+use crate::design::{self as ds, Section};
+use crate::visuals::{Look as Shown, Size};
 use crate::icons::{Icon, icon};
 use crate::render::view::Look;
 use crate::theme::{BODY, BODY_LINE, CONTROL, ICON, ICON_SM, MEASURE, MONO, META, Palette, R_LG, R_MD, SMALL, UI};
@@ -994,10 +995,11 @@ fn checkerboard(dark: bool) -> Arc<Image> {
 
 /// A picture of the system's as it stands: drawn, still coming, or why not.
 fn picture(shell: &Shell, path: &str, quiet: Rgba) -> AnyElement {
-    match shell.design.pictures.get(path) {
-        Some(Pic::Ready { image, .. }) => img(image.clone()).max_w_full().max_h_full().object_fit(ObjectFit::Contain).into_any_element(),
-        Some(Pic::Gone(_)) => icon(Icon::Alert, ICON, quiet).into_any_element(),
-        _ => motion::spinner(14., quiet),
+    let shots = shell.shots.borrow();
+    match shots.best(path) {
+        Some(shot) => img(shot.image).max_w_full().max_h_full().object_fit(ObjectFit::Contain).into_any_element(),
+        None if shots.is_gone(path) => icon(Icon::Alert, ICON, quiet).into_any_element(),
+        None => motion::spinner(14., quiet),
     }
 }
 
@@ -1082,9 +1084,9 @@ fn assets(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyE
                         }),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| this.design_lightbox(Some(ix), cx)));
-            let dims = match shell.design.pictures.get(&asset.path) {
-                Some(Pic::Ready { dims: Some((w, h)), .. }) => format!(" · {w}×{h}"),
-                _ => String::new(),
+            let dims = match shell.shots.borrow().best(&asset.path).and_then(|s| s.dims) {
+                Some((w, h)) => format!(" · {w}×{h}"),
+                None => String::new(),
             };
             grid = grid.child(
                 v_flex()
@@ -1383,31 +1385,24 @@ impl Shell {
         cx.notify();
     }
 
-    /// Read the pictures the system on screen shows that aren't here yet,
-    /// through the daemon, off the UI thread.
+    /// Ask for the pictures the system on screen shows — a thumbnail each,
+    /// the one in the lightbox whole — through the window's pictures
+    /// (`crate::visuals`), which read them through the daemon off the UI thread.
     fn design_load_pictures(&mut self, cx: &mut Context<Self>) {
         let Some(system) = self.design.current() else { return };
-        let wanted: Vec<String> = system.assets.iter().map(|a| a.path.clone()).filter(|path| !self.design.pictures.contains_key(path)).collect();
-        if wanted.is_empty() {
-            return;
-        }
-        let Some(uploader) = self.link.as_ref().map(|l| l.uploader()) else { return };
-        let squad = self.model.squad.clone();
-        for path in wanted {
-            self.design.pictures.insert(path.clone(), Pic::Loading);
-            let (uploader, squad, asked) = (uploader.clone(), squad.clone(), path.clone());
-            let loaded = cx.background_spawn(async move { uploader.read_image(&squad, &asked, Some(ds::PICTURE_SIDE)).and_then(|read| ds::picture(&read)) });
-            cx.spawn(async move |this, cx| {
-                let pic = loaded.await.unwrap_or_else(Pic::Gone);
-                let _ = this.update(cx, |this, cx| {
-                    // Still wanted (another connection may have let it go).
-                    if let Some(kept) = this.design.pictures.get_mut(&path) {
-                        *kept = pic;
-                        cx.notify();
-                    }
-                });
-            })
-            .detach();
+        let big = self.design.lightbox.and_then(|at| system.assets.get(at)).map(|a| a.path.clone());
+        let wanted = {
+            let mut shots = self.shots.borrow_mut();
+            for asset in &system.assets {
+                let _: Shown = shots.look(&asset.path, Size::Thumb);
+            }
+            if let Some(path) = &big {
+                let _ = shots.look(path, Size::Full);
+            }
+            shots.has_wanted() && !shots.scheduled
+        };
+        if wanted {
+            self.load_shots(cx);
         }
     }
 

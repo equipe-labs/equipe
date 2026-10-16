@@ -54,6 +54,11 @@ pub enum Action {
     Local(Value),
     /// The config changed: keep it.
     Save,
+    /// A piece of a file from `device` (`upload`): keep it, then answer `id`
+    /// with [`Core::answer`].
+    Upload { device: String, id: u64, piece: Box<super::upload::Piece> },
+    /// Throw away what came of a file from `device` so far.
+    UploadCancel { device: String, upload_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -549,8 +554,24 @@ impl Core {
                     None => vec![],
                 }
             }
+            Some(rpc::UPLOAD) => {
+                let Some(id) = id else { return vec![] };
+                match message.params_as::<super::upload::Piece>() {
+                    Some(piece) => vec![Action::Upload { device: device.to_owned(), id, piece: Box::new(piece) }],
+                    None => fail(self, -32602, "upload needs { upload_id, name, kind, total, offset, data }"),
+                }
+            }
+            Some("upload_cancel") => match message.params.as_ref().and_then(|p| p["upload_id"].as_str()) {
+                Some(upload_id) if id.is_none() => vec![Action::UploadCancel { device: device.to_owned(), upload_id: upload_id.to_owned() }],
+                _ => vec![],
+            },
             _ => fail(self, -32601, "not something a device may ask"),
         }
+    }
+
+    /// The answer to a device's request, made elsewhere (an `upload`'s).
+    pub fn answer(&mut self, device: &str, message: &Message) -> Vec<Action> {
+        self.frame_for(device, None, message).into_iter().collect()
     }
 
     /// The squad a device asked for is followed: answer its `hello`.
@@ -572,7 +593,10 @@ impl Core {
                         break;
                     }
                 }
-                Message::response(id, hello)
+                // A phone learns here that this daemon takes its files, and how big.
+                let mut result = serde_json::to_value(&hello).unwrap_or_default();
+                result["uploads"] = super::upload::limits();
+                Message::response(id, result)
             }
             Err(why) => {
                 self.following.remove(&(device.to_owned(), squad.to_owned()));
@@ -776,6 +800,11 @@ pub(crate) mod tests {
     impl Phone {
         pub fn new() -> Self {
             Self { keys: seal::generate(), id: String::new(), seq: 0 }
+        }
+
+        /// A new socket: its frames count from 1 again.
+        pub fn reconnect(&mut self) {
+            self.seq = 0;
         }
 
         pub fn send(&mut self, config: &Config, squad: Option<&str>, rpc: Value, ts: u64) -> Value {

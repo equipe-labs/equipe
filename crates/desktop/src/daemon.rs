@@ -144,9 +144,8 @@ impl Uploader {
 }
 
 impl Uploader {
-    /// A picture the squad shows, read through the daemon (`read_image`) —
-    /// on this Mac or another, the daemon checks it may be given. Blocks:
-    /// call it off the UI thread.
+    /// A member's picture, from the daemon — wherever it runs; it gives only
+    /// what `squad` shows. Blocks: call it off the UI thread.
     pub fn read_image(&self, squad: &str, path: &str, max: Option<u32>) -> Result<equipe_core::protocol::rpc::ImageRead, String> {
         let door = self.0.lock().unwrap().clone().ok_or(t!("daemon.not_connected"))?;
         match door.read_image(squad, path, max).recv_timeout(Duration::from_secs(60)) {

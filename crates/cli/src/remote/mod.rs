@@ -7,6 +7,7 @@
 //! - `link`: in the daemon, the relay connection and the local socket `equipe
 //!   pair` and `equipe devices` talk to.
 //! - `cli`: `equipe pair`, `equipe devices`, `equipe demo`.
+//! - `upload`: files a phone attaches, received in pieces.
 //! - `demo`: the scripted squad `equipe demo serve` shows store reviewers.
 
 pub mod cli;
@@ -14,6 +15,7 @@ pub mod core;
 pub mod demo;
 pub mod link;
 pub mod seal;
+pub mod upload;
 
 use std::path::{Path, PathBuf};
 

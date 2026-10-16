@@ -2,7 +2,9 @@
 //! composer in the asking member's conversation (and the PM's) — "1/2" and
 //! the question, fold ⌄ and close ✕; each option a row with its label, a
 //! line on what it means and its number key; a last row for words of the
-//! person's own; Skip, Back and Next ⌘↵ (Submit on the last). The same card
+//! person's own; Skip, Back and Next ⌘↵ (Submit on the last). A visual
+//! question's options are a grid of their pictures instead, side by side as
+//! they fit (one column when narrow), each opening big. The same card
 //! answers a set picked in 나에게's peek. Sent, the answers' message folds in
 //! the conversation to one line, "결정함 · 2개", that opens to each question
 //! and what was decided. The rules are `crate::decide`'s.
@@ -10,7 +12,7 @@
 use std::collections::HashMap;
 
 use equipe_core::protocol::Command;
-use equipe_core::protocol::decide::{Answer, QuestionSet};
+use equipe_core::protocol::decide::{Answer, Question, QuestionSet};
 use equipe_core::t;
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::*;
@@ -25,7 +27,10 @@ use crate::state::Need;
 use crate::theme::{MONO, Palette, R_LG, R_MD, R_SM, SMALL, look};
 use crate::tips::tip;
 use crate::ui::{self, Kind};
+use crate::visuals::{self as visual, Size, Viewer};
 use crate::{Screen, Shell};
+
+use super::visuals::Shots;
 
 /// The disclosure of a decided row.
 pub const PART_DECIDED: u32 = (1 << 20) + 9;
@@ -103,6 +108,13 @@ impl Shell {
         self.model.asked.in_conversation(&member.name, is_pm).first().map(|s| s.id)
     }
 
+    /// The decision waiting about ticket `ticket`, shown in its peek — not
+    /// while it waits on the person, whose number keys tick its asks off.
+    pub fn ticket_question(&self, ticket: u32) -> Option<u64> {
+        let waiting = self.model.tickets.iter().any(|t| t.id == ticket && t.status == equipe_core::protocol::TicketStatus::Waiting);
+        (!waiting).then(|| self.model.asked.open().find(|s| s.ticket == Some(ticket)).map(|s| s.id)).flatten()
+    }
+
     /// The words typed in each of a set's boxes, by question.
     fn decide_others(&self, id: u64, cx: &App) -> Vec<String> {
         let count = self.model.asked.get(id).map_or(0, |s| s.questions.len());
@@ -130,6 +142,11 @@ impl Shell {
             },
             Screen::Board => match self.picked_need() {
                 Some(Need::Questions(id)) if self.board.view.peek => (id, true),
+                // A ticket's peek showing the decision its member waits on.
+                Some(Need::Ticket(t)) if self.board.view.peek && self.board.flow.is_none() => match self.ticket_question(t) {
+                    Some(id) => (id, true),
+                    None => return Took::Pass,
+                },
                 _ => return Took::Pass,
             },
             Screen::Settings | Screen::Design => return Took::Pass,
@@ -345,6 +362,15 @@ pub fn peek(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> AnyElement {
         .into_any_element()
 }
 
+/// A decision its member waits on about ticket `ticket`, in the ticket's
+/// peek: the same card, under its own heading.
+pub fn for_ticket(shell: &Shell, ticket: u32, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let id = shell.ticket_question(ticket)?;
+    let p = shell.palette;
+    let body = card(shell, id, Place::Peek, 0, cx)?;
+    Some(v_flex().gap_2().child(div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child(t!("state.section_decide"))).child(body).into_any_element())
+}
+
 /// Who asks: their dot and name.
 fn who(shell: &Shell, set: &QuestionSet) -> (String, Rgba) {
     let role = shell.model.members.iter().find(|m| m.name == set.member).map_or(set.member.as_str(), |m| m.role.as_str());
@@ -406,8 +432,30 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
         .child(div().flex_1().min_w_0().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(q.question.clone()))
         .child(h_flex().flex_none().mt(px(-3.)).mr(px(-6.)).gap_0p5().children(fold).child(close));
 
-    // The options, then the box for their own words.
-    let rows: Vec<AnyElement> = q.options.iter().enumerate().map(|(n, option)| option_row(p, id, n, &option.label, &option.description, draft.picked(n), draft.cursor == n, q.multi_select, &handle)).collect();
+    // The question's own pictures; then the options — those with pictures
+    // as a grid of them, side by side as they fit, the rest as rows — then
+    // the box for their own words.
+    let shots = Shots::of(shell, handle.clone(), cx);
+    let own = (!q.images.is_empty()).then(|| question_pictures(&shots, id, draft.step, &q, cx));
+    let grid = q.is_visual().then(|| {
+        let key = render::hash_of(("decide-grid", id, place == Place::Docked));
+        let guess = match place {
+            Place::Docked => GRID_GUESS,
+            Place::Peek => shell.board.peek_width - 34.,
+        };
+        let width = shots.width(key, guess);
+        let shown: Vec<usize> = (0..q.options.len()).filter(|&n| !q.options[n].images.is_empty()).collect();
+        let w = visual::tile_width(width, visual::columns(width, shown.len()));
+        let tiles = shown.into_iter().map(|n| option_tile(&shots, id, draft.step, n, &q, draft.picked(n), draft.cursor == n, w, &handle, cx));
+        shots.measured(h_flex().w_full().flex_wrap().items_stretch().gap(px(visual::GAP)).children(tiles.collect::<Vec<_>>()), key)
+    });
+    let rows: Vec<AnyElement> = q
+        .options
+        .iter()
+        .enumerate()
+        .filter(|(_, option)| grid.is_none() || option.images.is_empty())
+        .map(|(n, option)| option_row(p, id, n, &option.label, &option.description, draft.picked(n), draft.cursor == n, q.multi_select, &handle))
+        .collect();
     let other_on = draft.cursor >= q.options.len() || typing;
     let other = field.map(|field| {
         h_flex()
@@ -429,7 +477,7 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
     let multi = q.multi_select.then(|| div().text_size(px(12.)).text_color(p.muted).child(t!("decide.multi_hint")));
     let reduce = cx.reduce_motion();
     let went = f32::from(draft.went);
-    let body = v_flex().w_full().gap_2().child(head).children(multi).child(v_flex().w_full().gap_1p5().children(rows).children(other));
+    let body = v_flex().w_full().gap_2().child(head).children(own).children(multi).children(grid.map(|g| div().w_full().pt_1().pb_0p5().child(g))).child(v_flex().w_full().gap_1p5().children(rows).children(other));
     // Each step slides in from the side it came from.
     let body: AnyElement = if reduce || draft.went == 0 {
         body.into_any_element()
@@ -470,6 +518,7 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
     }
     let keys = match place {
         _ if q.options.is_empty() => t!("decide.keys_free"),
+        Place::Docked if q.is_visual() => t!("decide.keys_visual"),
         Place::Docked if q.multi_select => t!("decide.keys_multi"),
         Place::Docked => t!("decide.keys"),
         Place::Peek => t!("decide.keys_peek"),
@@ -585,6 +634,123 @@ fn option_row(p: Palette, id: u64, n: usize, label: &str, description: &str, pic
             handle.update(cx, |shell, cx| shell.decide_pick(id, n, cx)).ok();
         });
     row.into_any_element()
+}
+
+/// How wide the grid of a card above the composer is, before it was drawn.
+const GRID_GUESS: f32 = 640.;
+
+/// An option shown as its picture: the picture whole in the grid's 4:3 box
+/// (a click opens it big, among the others), "추천" on it when it is the one
+/// recommended, then its label, what it means and its number key. Picked:
+/// outlined and ringed in the accent; under the pointer, it lifts.
+#[allow(clippy::too_many_arguments)]
+fn option_tile(shots: &Shots, id: u64, step: usize, n: usize, q: &Question, picked: bool, cursor: bool, w: f32, handle: &WeakEntity<Shell>, cx: &mut App) -> AnyElement {
+    let p = shots.p;
+    let option = &q.options[n];
+    let (label, recommended) = visual::recommended(&option.label);
+    let key = render::hash_of(("decide-tile", id, step, n));
+    let path = option.images[0].clone();
+    let h = (w * visual::RATIO).floor();
+    let more = option.images.len() - 1;
+    let look = shots.ask(&path, Size::Thumb, cx);
+    let face = super::visuals::picture(shots, key, &path, look, w - 2., h, R_LG - 1., true, 12.)
+        .when(recommended, |f| f.child(div().absolute().top(px(8.)).left(px(8.)).child(super::visuals::badge(p, false))))
+        .when(more > 0, |f| f.child(div().absolute().top(px(8.)).right(px(8.)).h(px(18.)).px(px(6.)).flex().items_center().rounded(px(9.)).bg(rgba(0x0000008C)).text_size(px(10.5)).text_color(rgb(0xFFFFFF)).child(format!("+{more}"))));
+    let open = {
+        let (handle, viewer) = (handle.clone(), Viewer::of_question(id, step, q, &path));
+        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+            cx.stop_propagation();
+            if let Some(viewer) = viewer.clone() {
+                handle.update(cx, |shell, cx| shell.open_viewer(viewer, cx)).ok();
+            }
+        }
+    };
+    let face = tip(div().id(("decide-shot", key)).cursor_pointer().child(face).on_click(open), p, t!("visuals.open"), None);
+    let check = q.multi_select.then(|| {
+        div()
+            .flex_none()
+            .mt(px(2.))
+            .size(px(16.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.))
+            .border_1()
+            .border_color(if picked { p.accent } else { p.muted })
+            .when(picked, |c| c.bg(p.accent).child(icon(Icon::Check, 11., p.bg)))
+    });
+    let caption = v_flex()
+        .flex_1()
+        .px(px(10.))
+        .pt(px(8.))
+        .pb(px(9.))
+        .gap_0p5()
+        .border_t_1()
+        .border_color(p.hair)
+        .child(
+            h_flex()
+                .gap_2()
+                .items_start()
+                .children(check)
+                .child(div().flex_1().min_w_0().text_size(px(13.5)).line_height(px(19.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).line_clamp(2).child(label))
+                .child(key_badge(p, &(n + 1).to_string(), picked)),
+        )
+        .when(!option.description.is_empty(), |c| c.child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.muted).line_clamp(2).child(option.description.clone())));
+    let border = if picked {
+        p.accent
+    } else if cursor {
+        Rgba { a: (p.accent.a * 0.5).max(0.35), ..p.accent }
+    } else {
+        p.hair
+    };
+    let handle = handle.clone();
+    let tile = v_flex()
+        .id(("decide-option-tile", key))
+        .relative()
+        .w(px(w))
+        .rounded(px(R_LG))
+        .border_1()
+        .border_color(border)
+        .bg(if picked { p.accent_bg } else { p.bg })
+        .overflow_hidden()
+        .cursor_pointer()
+        .child(face)
+        .child(caption)
+        .on_click(move |_, _, cx| {
+            handle.update(cx, |shell, cx| shell.decide_pick(id, n, cx)).ok();
+        });
+    super::visuals::lift(tile, ("decide-lift", key), p, picked).into_any_element()
+}
+
+/// The question's own pictures (what is there now, say): a row of them, a
+/// click opens one big.
+fn question_pictures(shots: &Shots, id: u64, step: usize, q: &Question, cx: &mut App) -> AnyElement {
+    let p = shots.p;
+    let (w, h) = (148., 111.);
+    let tiles: Vec<AnyElement> = q
+        .images
+        .iter()
+        .map(|path| {
+            let key = render::hash_of(("decide-own", id, step, path));
+            let viewer = Viewer::of_question(id, step, q, path);
+            let handle = shots.handle();
+            let face = super::visuals::picture(shots, key, path, shots.ask(path, Size::Thumb, cx), w, h, R_MD, false, 8.);
+            div()
+                .id(("decide-own", key))
+                .rounded(px(R_MD))
+                .border_1()
+                .border_color(p.hair)
+                .cursor_pointer()
+                .child(face)
+                .on_click(move |_, _, cx| {
+                    if let Some(viewer) = viewer.clone() {
+                        handle.update(cx, |shell, cx| shell.open_viewer(viewer, cx)).ok();
+                    }
+                })
+                .into_any_element()
+        })
+        .collect();
+    h_flex().flex_wrap().gap_2().children(tiles).into_any_element()
 }
 
 /// The card folded (Esc, ⌄): one line, who asks and how many; a click opens it.

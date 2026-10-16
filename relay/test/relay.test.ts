@@ -77,6 +77,25 @@ describe("forwarding", () => {
     expect(await daemon.next("recv")).toEqual({ type: "recv", device, data: "sealed-for-daemon" });
   });
 
+  it("passes a phone's file piece and refuses one the daemon couldn't get whole", async () => {
+    const { id, daemon, device, deviceToken } = await setup();
+    const phone = await open(devicePath(id, device), deviceToken);
+    await daemon.next("presence");
+
+    // A 384 KiB piece, sealed: about 700 KB.
+    const piece = "A".repeat(700_000);
+    phone.send({ type: "send", data: piece });
+    expect((await daemon.next("recv")).data.length).toBe(piece.length);
+
+    // Fits as the device sent it, but not once the relay names the device for the daemon.
+    const edge = "A".repeat(MAX_FRAME_BYTES - JSON.stringify({ type: "send", data: "" }).length);
+    phone.send({ type: "send", data: edge });
+    expect((await phone.next("error")).message).toBe("frame is too large");
+
+    phone.send({ type: "send", data: "still-works" });
+    expect(await daemon.next("recv")).toEqual({ type: "recv", device, data: "still-works" });
+  });
+
   it("only delivers to the addressed device", async () => {
     const { id, daemon, device, deviceToken } = await setup();
     const other = newId();

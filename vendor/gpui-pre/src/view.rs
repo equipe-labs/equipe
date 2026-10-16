@@ -8,7 +8,6 @@ use crate::{Empty, Window};
 use anyhow::Result;
 use collections::FxHashSet;
 use refineable::Refineable;
-use std::mem;
 use std::{
     any::{TypeId, type_name},
     fmt,
@@ -297,6 +296,10 @@ struct ViewElementState {
     paint_range: Range<PaintIndex>,
     cache_key: ViewElementCacheKey,
     accessed_entities: FxHashSet<EntityId>,
+    // equipe: the frame its ranges are of (`Window::frames_drawn`). A cached
+    // view in a cached view that was reused wasn't visited, so its ranges are
+    // of an older frame than the one reuse copies from: it can't be reused then.
+    drawn_in: u64,
 }
 
 struct ViewElementCacheKey {
@@ -481,13 +484,47 @@ fn prepaint_view(
                 let content_mask = window.content_mask();
                 let text_style = window.text_style();
 
+                // equipe: what it read while drawn and was notified since
+                // (`Window::notified_entities`): it is drawn again.
+                let read: Vec<EntityId> = element_state.as_ref().map_or_else(Vec::new, |state| {
+                    window
+                        .notified_entities
+                        .iter()
+                        .filter(|entity| state.accessed_entities.contains(entity))
+                        .copied()
+                        .collect()
+                });
+                // equipe: `EQUIPE_PERF=3` — why a cached view is drawn again.
+                if let Some(state) = element_state.as_ref() {
+                    crate::window::equipe_perf::note(|| {
+                        let why = if window.refreshing {
+                            "the window refreshed".to_string()
+                        } else if window.dirty_views.contains(&entity_id) {
+                            "notified, or a view in it".to_string()
+                        } else if !read.is_empty() {
+                            format!("it read {read:?}")
+                        } else if state.drawn_in + 1 != window.frames_drawn {
+                            "not visited last frame".to_string()
+                        } else if state.cache_key.bounds != bounds {
+                            "moved or resized".to_string()
+                        } else if state.cache_key.content_mask != content_mask || state.cache_key.text_style != text_style {
+                            "its mask or text style changed".to_string()
+                        } else {
+                            return format!("view {entity_id:?} reused");
+                        };
+                        format!("view {entity_id:?} drawn again: {why}")
+                    });
+                }
                 if let Some(mut element_state) = element_state
                     && element_state.cache_key.bounds == bounds
                     && element_state.cache_key.content_mask == content_mask
                     && element_state.cache_key.text_style == text_style
                     && !window.dirty_views.contains(&entity_id)
+                    && read.is_empty()
+                    && element_state.drawn_in + 1 == window.frames_drawn
                     && !window.refreshing
                 {
+                    element_state.drawn_in = window.frames_drawn;
                     let prepaint_start = window.prepaint_index();
                     window.reuse_prepaint(element_state.prepaint_range.clone());
                     cx.entities
@@ -498,7 +535,12 @@ fn prepaint_view(
                     return (None, element_state);
                 }
 
-                let refreshing = mem::replace(&mut window.refreshing, true);
+                // equipe: the cached views in it are still reused when nothing
+                // of theirs changed and they were visited last frame (`drawn_in`)
+                // — as in an uncached view (the window's root) — rather than all
+                // drawn again with it: the conversation's own pane stays laid out
+                // when the screen around it is drawn again for the composer's
+                // cursor. (Upstream: `refreshing` set here.)
                 let prepaint_start = window.prepaint_index();
                 let (element, accessed_entities) = cx.detect_accessed_entities(|cx| {
                     let mut element = render(window, cx);
@@ -508,12 +550,12 @@ fn prepaint_view(
                 });
 
                 let prepaint_end = window.prepaint_index();
-                window.refreshing = refreshing;
 
                 (
                     Some(element),
                     ViewElementState {
                         accessed_entities,
+                        drawn_in: window.frames_drawn,
                         prepaint_range: prepaint_start..prepaint_end,
                         paint_range: PaintIndex::default()..PaintIndex::default(),
                         cache_key: ViewElementCacheKey {
@@ -561,9 +603,7 @@ fn paint_view(
                     let paint_start = window.paint_index();
 
                     if let Some(element) = element {
-                        let refreshing = mem::replace(&mut window.refreshing, true);
-                        element.paint(window, cx);
-                        window.refreshing = refreshing;
+                        element.paint(window, cx); // equipe: see `prepaint_view`
                     } else {
                         window.reuse_paint(element_state.paint_range.clone());
                     }

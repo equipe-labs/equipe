@@ -42,6 +42,8 @@ enum Input {
     Squad(String, Event),
     /// A member's picture a device asked for, read (`read_image`).
     ImageRead(String, String, u64, Result<equipe_core::protocol::rpc::ImageRead, String>),
+    /// The answer to a device's request, made off the loop (an `upload`'s).
+    Answer(String, equipe_core::protocol::rpc::Message),
 }
 
 /// A member's picture for a phone: no bigger than `visuals::PHONE_SIDE`,
@@ -69,6 +71,8 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
         return;
     }
     let mut core = Core::new(super::load(&home));
+    // Pieces are written off the loop, one file's after another.
+    let uploads = std::sync::Arc::new(std::sync::Mutex::new(super::upload::Uploads::new(&home)));
     let mut relay: Option<UnboundedSender<Ws>> = None;
     let mut retry_at = tokio::time::Instant::now();
     let mut backoff = Duration::from_secs(2);
@@ -89,6 +93,10 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
         match input {
             None => {
                 actions.extend(core.tick(now));
+                // Not while a piece is being written: the next tick will do.
+                if let Ok(mut uploads) = uploads.try_lock() {
+                    uploads.sweep(now);
+                }
                 core.squads = equipe_core::squads::list(&home)
                     .into_iter()
                     .map(|s| (s.name, s.projects.iter().map(|p| equipe_core::board::project_name(p)).collect()))
@@ -216,6 +224,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
             }
             Some(Input::Squad(squad, event)) => actions.extend(core.on_squad_event(&squad, &event)),
             Some(Input::ImageRead(device, squad, id, read)) => actions.extend(core.image_read(&device, &squad, id, read)),
+            Some(Input::Answer(device, message)) => actions.extend(core.answer(&device, &message)),
         }
         for action in actions {
             match action {
@@ -287,6 +296,22 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                         equipe_core::daemon_log!("remote: couldn't keep the devices: {err}");
                     }
                 }
+                Action::Upload { device, id, piece } => {
+                    let uploads = uploads.clone();
+                    let tx = input_tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let taken = uploads.lock().unwrap_or_else(|e| e.into_inner()).piece(&device, *piece, super::now_ms());
+                        let answer = match taken {
+                            Ok(result) => equipe_core::protocol::rpc::Message::response(id, result),
+                            Err(refusal) => refusal.answer(id),
+                        };
+                        let _ = tx.send(Input::Answer(device, answer));
+                    });
+                }
+                Action::UploadCancel { device, upload_id } => {
+                    let uploads = uploads.clone();
+                    tokio::task::spawn_blocking(move || uploads.lock().unwrap_or_else(|e| e.into_inner()).cancel(&device, &upload_id));
+                }
             }
         }
         // The relay, when there's someone to reach through it.
@@ -335,6 +360,8 @@ pub async fn serve_demo(home: PathBuf, version: String) -> Result<(), String> {
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Input>();
     listen_demo(&home, input_tx.clone()).map_err(|err| t!("link.couldnt_open", path = home.join("demo.sock").display(), err = err))?;
     let mut demo = super::demo::Demo::default();
+    // A reviewer may attach a file too: kept in the demo's own home, swept like any.
+    let mut uploads = super::upload::Uploads::new(&home);
     let mut relay: Option<UnboundedSender<Ws>> = None;
     let mut retry_at = tokio::time::Instant::now();
     let mut backoff = Duration::from_secs(2);
@@ -414,6 +441,14 @@ pub async fn serve_demo(home: PathBuf, version: String) -> Result<(), String> {
                     Action::ReadImage { device, squad, id, .. } => {
                         actions.extend(core.image_read(&device, &squad, id, Err("the demo has no pictures".into())));
                     }
+                    Action::Upload { device, id, piece } => {
+                        let answer = match uploads.piece(&device, *piece, now) {
+                            Ok(result) => equipe_core::protocol::rpc::Message::response(id, result),
+                            Err(refusal) => refusal.answer(id),
+                        };
+                        actions.extend(core.answer(&device, &answer));
+                    }
+                    Action::UploadCancel { device, upload_id } => uploads.cancel(&device, &upload_id),
                     Action::Close { .. } | Action::Local(_) => {}
                 }
             }

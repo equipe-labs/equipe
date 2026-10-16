@@ -560,6 +560,7 @@
   "decide.keys_free": "⏎ 답 적기 · ⌘⏎ 다음 · Esc 접기",
   "decide.keys_multi": "1–9·Space 고르기 · ↑↓ 이동 · ⌘⏎ 다음 · Tab 직접 입력 · Esc 접기",
   "decide.keys_peek": "1–9 고르기 · Tab 직접 입력 · ⌘⏎ 다음",
+  "decide.keys_visual": "1–9 고르기 · 이미지를 누르면 크게 보기 · ⏎ 다음 · Tab 직접 입력 · Esc 접기",
   "decide.more.other": "{count}개 더 기다림",
   "decide.multi_hint": "해당하는 것을 모두 고르세요",
   "decide.next": "다음",
@@ -1405,5 +1406,11 @@
   "update.why_move": "디스크 이미지나 다운로드 폴더에서 연 앱은 스스로 업데이트할 수 없어요 — Applications 폴더로 옮긴 뒤 거기서 여세요",
   "update.why_other": "업데이트 중 오류가 났어요 (코드 {code}) — 로그에 자세한 내용이 있어요",
   "update.why_permission": "앱이 있는 폴더에 쓸 권한이 없어 업데이트를 설치하지 못했어요 — Applications 폴더에 있는지 확인해 주세요",
-  "update.why_signature": "받은 업데이트의 서명을 확인하지 못해 설치하지 않았어요"
+  "update.why_signature": "받은 업데이트의 서명을 확인하지 못해 설치하지 않았어요",
+  "visuals.gone": "이미지를 찾을 수 없어요",
+  "visuals.open": "크게 보기",
+  "visuals.pick": "이 안으로 고르기",
+  "visuals.picked": "골랐어요",
+  "visuals.pictures.other": "이미지 {count}개",
+  "visuals.recommended": "추천"
 }

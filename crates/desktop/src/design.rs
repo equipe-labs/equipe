@@ -1,19 +1,19 @@
 //! The design system screen's state (`views/design.rs` draws it): what the
 //! daemon last said the squad's design systems are (`Event::Design`), which
 //! one is on screen and which section, what changed since the person last
-//! looked, and the pictures, read through the daemon (`read_image`) on this
-//! Mac or another. No UI types beyond the image here, so the rules can be tested.
+//! looked. Its pictures are the window's (`crate::visuals`, read through the
+//! daemon's `read_image` on this Mac or another, as a decision's are). No UI
+//! types here, so the rules can be tested.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Instant;
 
 use equipe_core::design::contrast;
 use equipe_core::design::diff::{self, Change, Seen};
 use equipe_core::design::values;
 use equipe_core::protocol::design::{AssetKind, DesignSystem, Token};
-use gpui_kit::{Image, ImageFormat, ScrollHandle};
+use gpui_kit::ScrollHandle;
 
 /// The screen's sections, in their order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -263,35 +263,6 @@ pub fn resolve_font(stack: &[String], installed: &HashSet<String>) -> (String, b
     (crate::theme::SANS.to_owned(), stack.is_empty())
 }
 
-// ── pictures ──
-
-/// What is known of a picture.
-#[derive(Clone)]
-pub enum Pic {
-    Loading,
-    Ready { image: Arc<Image>, dims: Option<(u32, u32)> },
-    Gone(String),
-}
-
-/// The pixels a picture is asked for on its longer side: enough for the
-/// lightbox on a Retina screen, small enough for a phone's daemon to send.
-pub const PICTURE_SIDE: u32 = 1600;
-
-/// A picture's bytes as the daemon gave them, ready to draw.
-pub fn picture(read: &equipe_core::protocol::rpc::ImageRead) -> Result<Pic, String> {
-    use base64::Engine as _;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(read.data.as_bytes()).map_err(|e| e.to_string())?;
-    let format = match read.mime.as_str() {
-        "image/png" => ImageFormat::Png,
-        "image/jpeg" => ImageFormat::Jpeg,
-        "image/webp" => ImageFormat::Webp,
-        "image/gif" => ImageFormat::Gif,
-        "image/svg+xml" => ImageFormat::Svg,
-        other => return Err(other.to_owned()),
-    };
-    Ok(Pic::Ready { image: Arc::new(Image::from_bytes(format, bytes)), dims: read.width.zip(read.height) })
-}
-
 // ── what the person has seen ──
 
 /// Where what the person last saw is kept: by daemon, squad and system.
@@ -332,7 +303,6 @@ pub struct DesignUi {
     pub seen_loaded: bool,
     pub changes_open: bool,
     pub sources_open: bool,
-    pub pictures: HashMap<String, Pic>,
     /// The asset shown big, by its place in the system's assets.
     pub lightbox: Option<usize>,
     /// What was copied last, and when — its swatch says so for a moment.
@@ -364,7 +334,6 @@ impl Default for DesignUi {
             seen_loaded: false,
             changes_open: false,
             sources_open: false,
-            pictures: HashMap::new(),
             lightbox: None,
             copied: None,
             playing: None,
@@ -434,9 +403,6 @@ impl DesignUi {
                 self.baseline.insert(key, seen.clone());
             }
         }
-        // A picture no system shows any more is let go.
-        let shown: HashSet<&str> = self.systems.iter().flat_map(|s| s.assets.iter().map(|a| a.path.as_str())).collect();
-        self.pictures.retain(|path, _| shown.contains(path.as_str()));
         if let Some(at) = self.lightbox
             && self.current().is_none_or(|s| at >= s.assets.len())
         {

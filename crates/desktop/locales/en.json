@@ -584,6 +584,7 @@
   "decide.keys_free": "⏎ write · ⌘⏎ next · Esc collapse",
   "decide.keys_multi": "1–9 or Space pick · ↑↓ move · ⌘⏎ next · Tab your own · Esc collapse",
   "decide.keys_peek": "1–9 pick · Tab your own · ⌘⏎ next",
+  "decide.keys_visual": "1–9 pick · click a picture to enlarge · ⏎ next · Tab your own · Esc collapse",
   "decide.more.one": "{count} more waiting",
   "decide.more.other": "{count} more waiting",
   "decide.multi_hint": "Pick any that apply",
@@ -1443,5 +1444,12 @@
   "update.why_move": "An app opened from the disk image or a download folder can’t update itself — move it to Applications and open it there",
   "update.why_other": "The update hit an error (code {code}) — the log has the details",
   "update.why_permission": "No permission to write where the app is, so the update couldn’t be installed — check that it’s in Applications",
-  "update.why_signature": "The downloaded update’s signature couldn’t be verified, so it wasn’t installed"
+  "update.why_signature": "The downloaded update’s signature couldn’t be verified, so it wasn’t installed",
+  "visuals.gone": "Picture not found",
+  "visuals.open": "View larger",
+  "visuals.pick": "Choose this",
+  "visuals.picked": "Chosen",
+  "visuals.pictures.one": "{count} image",
+  "visuals.pictures.other": "{count} images",
+  "visuals.recommended": "Recommended"
 }

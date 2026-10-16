@@ -221,7 +221,7 @@ impl<'a, T: 'static> Context<'a, T> {
     #[track_caller]
     pub fn notify(&mut self) {
         let at = std::panic::Location::caller();
-        crate::window::equipe_perf::note(|| format!("notify {at}")); // equipe: `EQUIPE_PERF=3`
+        crate::window::equipe_perf::note(|| format!("notify {at} {:?}", self.entity_state.entity_id)); // equipe: `EQUIPE_PERF=3`
         self.app.notify(self.entity_state.entity_id);
     }
 
