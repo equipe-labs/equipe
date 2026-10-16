@@ -57,6 +57,7 @@ macro_rules! say {
 }
 
 mod decide;
+mod team;
 mod tickets;
 
 /// How many recent lines a snapshot carries per session.
@@ -314,6 +315,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         show_url: HashMap::new(),
         plan: None,
         questions: HashMap::new(),
+        team_changes: HashMap::new(),
     };
     let mut memos = Vec::new();
     if runtime.config.persist {
@@ -591,6 +593,8 @@ struct Runtime {
     desktop: desktop::Desktop,
     /// Members' questions waiting for the person, by squad (`decide`).
     questions: HashMap<String, Vec<equipe_protocol::decide::QuestionSet>>,
+    /// Changes to the team the PM proposed, waiting for the person, by squad (`team`).
+    team_changes: HashMap<String, Vec<equipe_protocol::team::TeamChange>>,
 }
 
 async fn run(mut rt: Runtime, mut requests: UnboundedReceiver<Request>, mut internal: UnboundedReceiver<Internal>, mut host: UnboundedReceiver<browser::HostEvent>) {
@@ -941,6 +945,8 @@ impl Runtime {
             }
             Command::AnswerQuestions { squad, id, answers } => self.answer_questions(&squad, id, answers).await,
             Command::DismissQuestions { squad, id } => self.dismiss_questions(&squad, id).await,
+            Command::ApproveTeamChange { squad, id } => self.approve_team_change(&squad, id).await,
+            Command::DeclineTeamChange { squad, id } => self.decline_team_change(&squad, id),
             Command::Disallow { squad, rule } => {
                 let taken = self.journals.get(&squad).and_then(|j| j.disallow(&rule).ok()).unwrap_or(false);
                 if taken {
@@ -2298,6 +2304,8 @@ for one project goes to it as tickets for its owners, with that project — and 
         }
         if let (Some(squad), Some(name)) = (&squad, leaving) {
             self.drop_questions(squad, |set| set.member == name);
+            // Letting it go no longer waits on the person: it left.
+            self.drop_team_changes(squad, |c| c.member.as_deref() == Some(name.as_str()));
         }
         if let Some(sandbox) = self.sessions.get(&id).and_then(|s| s.sandbox.clone()) {
             self.land_plain_session(id, &sandbox);
@@ -3804,7 +3812,11 @@ there, end your turn, and carry on when they say they're done."
                 }
                 let staffed = |o: &str| self.member_id(&squad, o).is_some() || self.team(&squad).iter().any(|(_, _, r)| r == o);
                 if let Some(owner) = owner.filter(|o| !staffed(o)) {
-                    reply.push_str(&format!(" Nobody on the squad is {owner} yet — the person can add one with /add {owner}."));
+                    if is_pm {
+                        reply.push_str(&format!(" Nobody on the squad is {owner} yet — propose one with propose_team_change (role {owner}): the person approves it on a card."));
+                    } else {
+                        reply.push_str(&format!(" Nobody on the squad is {owner} yet — the PM can propose adding one."));
+                    }
                 }
                 Ok(reply)
             }
@@ -3918,6 +3930,7 @@ it back there once they have done it.{again} End your turn now with a short line
                 ))
             }
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
+            crate::team::PROPOSE_TEAM_CHANGE => self.propose_team_change(&squad, &member, id, &args),
             board::ESTIMATE => {
                 let minutes = |key: &str| args.get(key).and_then(Value::as_f64).map(|m| m.max(0.0));
                 let (done, live) = (minutes("done_in_minutes"), minutes("live_in_minutes"));
@@ -4041,7 +4054,9 @@ it back there once they have done it.{again} End your turn now with a short line
         let allowed = self.journals.get(squad).and_then(|j| j.allowed().ok()).unwrap_or_default();
         let browsers_shown = self.journals.get(squad).is_some_and(Journal::browsers_all_shown);
         let questions = self.question_sets(squad).clone();
+        let team_changes = self.team_changes(squad).clone();
         Snapshot {
+            team_changes,
             squad: squad.to_owned(),
             projects,
             sessions,

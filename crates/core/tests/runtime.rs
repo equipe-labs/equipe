@@ -965,7 +965,7 @@ async fn tools_refuse_what_does_not_make_sense() {
     assert!(nothing.is_error && nothing.text.contains("not on a ticket"), "{nothing:?}");
     let unstaffed =
         tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "x", "project": "app", "owner": "designer" })).await;
-    assert!(!unstaffed.is_error && unstaffed.text.contains("/add designer"), "{unstaffed:?}");
+    assert!(!unstaffed.is_error && unstaffed.text.contains("propose_team_change (role designer)"), "{unstaffed:?}");
     let board = tool(&handle, "pm", "board", serde_json::json!({})).await;
     assert_eq!(board.text, "T-1 [todo] x — code, owner designer, project app\n");
     // Without a kind or a project, with several projects, it is a task for the squad's folder.
@@ -2272,7 +2272,7 @@ async fn a_squad_of_only_a_pm_researches_tax_deadlines_into_its_folder_and_memor
     handle.send(Command::Submit { session: 1, text: "올해 내가 챙겨야 할 세금 마감을 조사해서 정리해줘".into() });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
     let charter = arg(&calls(&recorded)[0], "--append-system-prompt").unwrap().to_owned();
-    for part in ["Not every request needs a ticket", "do yourself, right in the conversation", "`task` for finding out", "own it yourself", "`/add <role>`", "marked unconfirmed"] {
+    for part in ["Not every request needs a ticket", "do yourself, right in the conversation", "`task` for finding out", "own it yourself", "`propose_team_change`", "marked unconfirmed"] {
         assert!(charter.contains(part), "{part}: {charter}");
     }
     assert!(!charter.contains("You don't write code or edit files") && !charter.contains("software squad"), "{charter}");
