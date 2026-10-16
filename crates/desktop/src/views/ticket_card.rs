@@ -460,6 +460,15 @@ fn with_card<R>(cx: &mut App, f: impl FnOnce(&mut TicketCard, &mut Context<Ticke
     Some(card.update(cx, f))
 }
 
+/// Something opened over the window (a picture shown big): the card goes.
+pub fn put_away(cx: &mut App) {
+    with_card(cx, |card, cx| {
+        if card.hover.close() {
+            card.changed(cx);
+        }
+    });
+}
+
 /// The pointer came onto a link to ticket `id`, at `bounds`.
 pub fn enter(id: TicketId, bounds: Bounds<Pixels>, prefer: Side, cx: &mut App) {
     with_card(cx, |card, cx| {
@@ -666,20 +675,25 @@ impl Render for TicketCard {
                 shell.fetch(t.id, source, false);
             }
         }
+        let shots = super::visuals::Shots::of(shell, self.shell.clone(), cx);
+        let held = shell.shots.clone();
         let body = match found {
-            Some(t) => content(shell, t, self.result.clone(), &self.shell, &this),
+            Some(t) => content(shell, t, self.result.clone(), &self.shell, &this, &shots),
             None => missing(p, target.id),
         };
+        let found = found.is_some();
+        // Its pictures, asked for once the window's state is let go.
+        super::visuals::flush(&held, &self.shell, cx);
         // Placed by its size as last drawn; drawn again when that changes.
         let viewport = window.viewport_size();
-        let size = self.drawn.get().map_or(if found.is_some() { GUESS } else { (200., 36.) }, |r| (r.w, r.h));
+        let size = self.drawn.get().map_or(if found { GUESS } else { (200., 36.) }, |r| (r.w, r.h));
         let (x, y, side) = place(target.anchor, size, (f32::from(viewport.width), f32::from(viewport.height)), target.prefer);
         let drawn = self.drawn.clone();
         let card = div()
             .id(("ticket-card", target.id as u64))
             .relative()
             .occlude()
-            .w(px(if found.is_some() { WIDTH } else { 220. }))
+            .w(px(if found { WIDTH } else { 220. }))
             .rounded(px(10.))
             .bg(p.raised)
             .border_1()
@@ -728,7 +742,7 @@ fn missing(p: Palette, id: TicketId) -> AnyElement {
 
 /// The card's inside: where it stands and whose it is, its title, what was
 /// said of it, its size and links, and what can be done now.
-fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &WeakEntity<Shell>, card: &WeakEntity<TicketCard>) -> AnyElement {
+fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &WeakEntity<Shell>, card: &WeakEntity<TicketCard>, shots: &super::visuals::Shots) -> AnyElement {
     let p = shell.palette;
     let model = &shell.model;
     let id = t.id;
@@ -844,11 +858,14 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
                 .into_any_element()
         }
     };
+    // A hand-in's pictures, small, over what was said of it.
+    let pictures = matches!(t.status, TicketStatus::Review | TicketStatus::Done).then(|| super::visuals::strip(shots, crate::render::hash_of(("card-shots", id)), id, &t.images, None)).flatten();
     v_flex()
         .p_3()
         .gap_2()
         .child(head)
         .child(title)
+        .children(pictures)
         .children(excerpt)
         .children(facts)
         .child(div().pt_1().child(foot))

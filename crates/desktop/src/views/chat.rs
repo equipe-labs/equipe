@@ -561,6 +561,9 @@ struct Rows {
     step_since: Option<std::time::Instant>,
     base: std::path::PathBuf,
     arrived: Rc<HashMap<u64, std::time::Instant>>,
+    /// A hand-in's pictures, under the news of it: what they are drawn with, and whose.
+    shots: super::visuals::Shots,
+    pictures: HashMap<u32, Rc<Vec<String>>>,
     /// What your messages attached, drawn with.
     attached: attached::Ctx,
     /// The cards of tickets waiting for the person, as things stand.
@@ -649,6 +652,8 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         base: render::base_dir(shell),
         arrived: shell.chat.arrived.clone(),
         attached: attached::Ctx::of(shell, cx.entity().downgrade(), COLUMN - 120.),
+        shots: super::visuals::Shots::of(shell, cx.entity().downgrade(), cx),
+        pictures: shell.model.tickets.iter().filter(|t| !t.images.is_empty() && matches!(t.status, equipe_core::protocol::TicketStatus::Review | equipe_core::protocol::TicketStatus::Done)).map(|t| (t.id, Rc::new(t.images.clone()))).collect(),
         about: shell.chat.about.clone(),
         projects: Rc::new(if every { names } else { Vec::new() }),
         focus: slice.flatten(),
@@ -1329,19 +1334,26 @@ fn news_rows(rows: &Rows, key: u64, news: &[crate::activity::News], window: &mut
     let p = rows.p;
     // While every project shows: a dot of the project the news is about.
     let project = rows.project_of((key & 0xFF_FFFF) as usize);
-    let line = |n: usize, item: &crate::activity::News| {
-        h_flex()
+    let line = |n: usize, item: &crate::activity::News, cx: &mut App| {
+        let line = h_flex()
             .h(px(24.))
             .gap(px(8.))
             .items_center()
             .text_size(px(SMALL))
             .child(news_icon(rows, item.kind))
             .children(project.as_ref().map(|(name, color)| tip(div().id(("news-project", key << 8 | n as u64)).child(super::board::dot(*color, 6.)), p, name.clone(), None)))
-            .child(linked(rows, ("news", key << 8 | n as u64), &item.text, p.muted, false))
-            .into_any_element()
+            .child(linked(rows, ("news", key << 8 | n as u64), &item.text, p.muted, false));
+        // Work handed in with pictures: small ones under its line.
+        let ticket = (item.kind == crate::activity::NewsKind::HandedIn).then(|| crate::convo::ticket_ref(&item.text)).flatten().and_then(|(at, len)| item.text[at + 2..at + len].parse::<u32>().ok());
+        let pictures = ticket.and_then(|t| rows.pictures.get(&t).map(|images| (t, images.clone())));
+        match pictures.and_then(|(t, images)| super::visuals::strip(&rows.shots, key << 8 | n as u64, t, &images, Some(cx))) {
+            Some(strip) => v_flex().child(line).child(div().pl(px(21.)).pt(px(2.)).pb_1().child(strip)).into_any_element(),
+            None => line.into_any_element(),
+        }
     };
     if news.len() <= crate::activity::NEWS_FOLDS_PAST {
-        return v_flex().children(news.iter().enumerate().map(|(n, item)| line(n, item))).into_any_element();
+        let lines: Vec<AnyElement> = news.iter().enumerate().map(|(n, item)| line(n, item, cx)).collect();
+        return v_flex().children(lines).into_any_element();
     }
     let open = rows.expanded || rows.is_open(key, PART_NEWS, false);
     let progress = motion::openness(("news-open", key), open, window, cx);
@@ -1350,7 +1362,8 @@ fn news_rows(rows: &Rows, key: u64, news: &[crate::activity::News], window: &mut
         .child(icon(Icon::Inbox, 13., p.muted))
         .child(t!("chat.news_count", count = news.len()))
         .child(chevron(p.muted, progress));
-    let body = (progress > 0.).then(|| motion::Reveal::new(("news-body", key), progress, v_flex().opacity(progress).pl(px(21.)).children(news.iter().enumerate().map(|(n, item)| line(n, item))).into_any_element()));
+    let lines: Vec<AnyElement> = if progress > 0. { news.iter().enumerate().map(|(n, item)| line(n, item, cx)).collect() } else { Vec::new() };
+    let body = (progress > 0.).then(|| motion::Reveal::new(("news-body", key), progress, v_flex().opacity(progress).pl(px(21.)).children(lines).into_any_element()));
     v_flex().child(head).children(body).into_any_element()
 }
 

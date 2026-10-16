@@ -583,6 +583,7 @@
   "decide.keys_free": "⏎ écrire · ⌘⏎ suivant · Esc replier",
   "decide.keys_multi": "1–9 ou Espace choisir · ↑↓ se déplacer · ⌘⏎ suivant · Tab votre réponse · Échap replier",
   "decide.keys_peek": "1–9 choisir · Tab votre réponse · ⌘⏎ suivant",
+  "decide.keys_visual": "1–9 choisir · cliquez une image pour l’agrandir · ⏎ suivant · Tab votre réponse · Échap replier",
   "decide.more.one": "{count} autre en attente",
   "decide.more.other": "{count} autres en attente",
   "decide.multi_hint": "Choisissez tout ce qui s'applique",
@@ -1364,5 +1365,12 @@
   "update.why_move": "Une app ouverte depuis l’image disque ou un dossier de téléchargements ne peut pas se mettre à jour — placez-la dans Applications et ouvrez-la de là",
   "update.why_other": "La mise à jour a rencontré une erreur (code {code}) — le journal donne les détails",
   "update.why_permission": "Pas la permission d’écrire là où se trouve l’app, la mise à jour n’a donc pas pu être installée — vérifiez qu’elle est dans Applications",
-  "update.why_signature": "La signature de la mise à jour téléchargée n’a pas pu être vérifiée : elle n’a pas été installée"
+  "update.why_signature": "La signature de la mise à jour téléchargée n’a pas pu être vérifiée : elle n’a pas été installée",
+  "visuals.gone": "Image introuvable",
+  "visuals.open": "Agrandir",
+  "visuals.pick": "Choisir celle-ci",
+  "visuals.picked": "Choisie",
+  "visuals.pictures.one": "{count} image",
+  "visuals.pictures.other": "{count} images",
+  "visuals.recommended": "Recommandée"
 }

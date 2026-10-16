@@ -559,6 +559,7 @@
   "decide.keys_free": "⏎ 入力 · ⌘⏎ 次へ · Esc 折りたたむ",
   "decide.keys_multi": "1–9・Space 選択 · ↑↓ 移動 · ⌘⏎ 次へ · Tab 自由入力 · Esc 折りたたむ",
   "decide.keys_peek": "1–9 選択 · Tab 自由入力 · ⌘⏎ 次へ",
+  "decide.keys_visual": "1–9 選択 · 画像をクリックで拡大 · ⏎ 次へ · Tab 自由入力 · Esc 折りたたむ",
   "decide.more.other": "ほか {count} 件待ち",
   "decide.multi_hint": "当てはまるものをすべて選んでください",
   "decide.next": "次へ",
@@ -1328,5 +1329,11 @@
   "update.why_move": "ディスクイメージやダウンロードフォルダから開いたアプリは自分でアップデートできません — アプリケーションフォルダに移動してそこから開いてください",
   "update.why_other": "アップデート中にエラーが起きました（コード {code}）— 詳しくはログにあります",
   "update.why_permission": "アプリのあるフォルダに書き込む権限がないため、アップデートをインストールできませんでした — アプリケーションフォルダにあるか確認してください",
-  "update.why_signature": "ダウンロードしたアップデートの署名を確認できなかったため、インストールしませんでした"
+  "update.why_signature": "ダウンロードしたアップデートの署名を確認できなかったため、インストールしませんでした",
+  "visuals.gone": "画像が見つかりません",
+  "visuals.open": "拡大して見る",
+  "visuals.pick": "この案にする",
+  "visuals.picked": "選択済み",
+  "visuals.pictures.other": "画像 {count}枚",
+  "visuals.recommended": "おすすめ"
 }

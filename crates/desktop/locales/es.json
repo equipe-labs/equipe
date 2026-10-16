@@ -583,6 +583,7 @@
   "decide.keys_free": "⏎ escribir · ⌘⏎ siguiente · Esc contraer",
   "decide.keys_multi": "1–9 o Espacio elegir · ↑↓ moverse · ⌘⏎ siguiente · Tab tu respuesta · Esc contraer",
   "decide.keys_peek": "1–9 elegir · Tab tu respuesta · ⌘⏎ siguiente",
+  "decide.keys_visual": "1–9 elegir · clic en una imagen para ampliarla · ⏎ siguiente · Tab tu respuesta · Esc contraer",
   "decide.more.one": "{count} más esperando",
   "decide.more.other": "{count} más esperando",
   "decide.multi_hint": "Elige todas las que apliquen",
@@ -1364,5 +1365,12 @@
   "update.why_move": "Una app abierta desde la imagen de disco o una carpeta de descargas no puede actualizarse sola — muévela a Aplicaciones y ábrela desde ahí",
   "update.why_other": "La actualización dio un error (código {code}) — el registro tiene los detalles",
   "update.why_permission": "No hay permiso para escribir donde está la app, así que no se pudo instalar la actualización — comprueba que esté en Aplicaciones",
-  "update.why_signature": "No se pudo verificar la firma de la actualización descargada, así que no se instaló"
+  "update.why_signature": "No se pudo verificar la firma de la actualización descargada, así que no se instaló",
+  "visuals.gone": "No se encuentra la imagen",
+  "visuals.open": "Ver en grande",
+  "visuals.pick": "Elegir esta",
+  "visuals.picked": "Elegida",
+  "visuals.pictures.one": "{count} imagen",
+  "visuals.pictures.other": "{count} imágenes",
+  "visuals.recommended": "Recomendada"
 }

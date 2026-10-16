@@ -52,6 +52,7 @@ mod settings;
 mod update;
 mod usage;
 mod views;
+mod visuals;
 mod wire;
 mod yourturn;
 mod zoom;
@@ -167,6 +168,9 @@ pub struct Shell {
     pub turn: views::yourturn::TurnUi,
     /// Members' questions: where the person is in each set, and its boxes.
     pub decide: views::decide::DecideUi,
+    /// Members' pictures — decisions' options, hand-ins — and the one shown big.
+    pub shots: std::rc::Rc<std::cell::RefCell<visuals::Visuals>>,
+    pub viewer: Option<visuals::Viewer>,
     /// A reply's list of questions, answered in place.
     pub asklist: views::asklist::AskListUi,
     /// Words selected in the conversation, asked about (`views/quote.rs`).
@@ -266,6 +270,8 @@ impl Shell {
             board: BoardUi::new(window, cx, fetched_tx),
             turn: Default::default(),
             decide: Default::default(),
+            shots: Default::default(),
+            viewer: None,
             asklist: Default::default(),
             quote: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
@@ -419,6 +425,11 @@ impl Shell {
                     this.update(cx, |shell, cx| shell.answer_question(true, window, cx)).ok();
                     cx.stop_propagation();
                 }
+                return;
+            }
+            // A member's picture shown big: ←/→, a pick, Esc — and nothing typed underneath.
+            if this.update(cx, |shell, cx| shell.on_viewer_key(key, &modifiers, window, cx)).unwrap_or(false) {
+                cx.stop_propagation();
                 return;
             }
             // Words selected in the conversation: ⏎ or ⌘⇧R asks about them; in
@@ -593,6 +604,8 @@ impl Shell {
         // Another machine: its files aren't the ones known.
         self.chat.sent.borrow_mut().clear();
         self.chat.gallery = None;
+        self.shots.borrow_mut().clear();
+        self.viewer = None;
         // Questions still open were for the connection being left.
         self.ask.queue.clear();
         let backoff = if target.endpoint.is_remote() { Backoff::remote() } else { Backoff::default() };
@@ -669,6 +682,7 @@ impl Shell {
                             // Back on the line: what a message attached that couldn't be had is asked again.
                             daemon::Update::Attached(_) => {
                                 this.chat.sent.borrow_mut().retry_gone();
+                                this.shots.borrow_mut().retry_gone();
                                 // The daemon tells its browser's tabs afresh: none held from before.
                                 this.browser.update(cx, |b, cx| b.reattached(window, cx));
                             }
@@ -1158,6 +1172,7 @@ impl Render for Shell {
             .children(views::composer::drop_overlay(self, cx))
             .children(views::composer::lightbox(self, cx))
             .children(views::attached::gallery(self, cx))
+            .children(views::visuals::viewer(self, window, cx))
             .children(views::sheet::sheet(self, cx))
             .children(views::sheet::question(self, cx))
             .children(self.connect.open.then(|| views::connect::chooser(self, cx)))

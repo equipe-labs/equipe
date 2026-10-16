@@ -68,6 +68,7 @@ Plaintext is UTF-8 JSON:
 |---|---|
 | `{ "id", "method": "squads" }` (no `squad`) | `result`: `[{ "name", "projects": [<project names>] }]` |
 | `{ "id", "method": "hello", "params": { "version", "squad" } }`, `squad` set too | `result`: `{ "version", "snapshot" }`; from then on the squad's `event`s, with `squad` set. A device may follow several squads; a second `hello` for one replaces the first. Error `-32602` "no such squad"; `-32000` when the daemon couldn't follow it |
+| `{ "id", "method": "read_image", "params": { "squad", "path", "max"? } }`, `squad` set too | `result`: a member's picture — see "A member's pictures" |
 | `{ "method": "command", "params": <Command> }` — a notification, no `id` | none: what it did shows in events. Dropped without a word when it isn't one a device may send, its squad isn't the frame's, or the frame's squad isn't followed |
 | anything else with an `id` | error `-32601` "not something a device may ask" |
 
@@ -93,6 +94,30 @@ closes them unanswered with `dismiss_questions` `{ "squad", "id" }`. Either way 
 `questions_closed` `{ "squad", "id", "answers"? }` — `answers` only when answered — and the
 member gets the answers as the person's next message, which shows in its conversation as a
 `user_message` starting `Answers to your question`.
+
+### A member's pictures
+
+A visual choice carries its pictures: a question may have `"images": [<path>…]` (what it
+shows as a whole), and each option `"images": [<path>…]` — at most 6 and 4, absent when none.
+A ticket handed in for review may carry `"images": [<path>…]` too (at most 12): the pictures
+its member named, then the images its branch changed. All three are additive; an older
+screen ignores them. A path is the picture's on the daemon's machine, already checked when the
+member named it: a PNG, JPG, WebP, GIF or SVG inside the squad's folder or the member's
+worktree. A screen that shows options as pictures should lay them out side by side and let the
+person pick from them; the pick is the same `answer_questions` as ever.
+
+The bytes come only through the daemon, with the request `read_image`
+`{ "squad", "path", "max"? }` (`id` set, the frame's `squad` the same and followed):
+`result` `{ "mime", "size", "width"?, "height"?, "data", "scaled"? }` — `data` base64 of the
+picture, or of a copy no bigger than `max` pixels on its longer side (`scaled: true`, PNG when
+it has transparency, else JPEG); `width`/`height` are the file's own (absent for an SVG, which
+goes as it is, at most 1 MB). The daemon answers only for a path a waiting question set or one
+of the squad's tickets names now, that is still an image file (by name and by its first bytes)
+inside the squad's folder or a ticket's worktree once links are resolved — no `..`, at most
+30 MB read, a copy made past 6 MB — and refuses an SVG with a script, an embedded page or a link
+to anything but itself. For a phone the daemon makes the copy at most 720 pixels on a side,
+smaller again until it fits one relay frame. Errors: `-32002` (not following that squad),
+`-32000` with why (not shown, gone, not a picture).
 
 ### A change to the team
 
@@ -282,7 +307,7 @@ its secrets. Without them configured, a push answers `push_result` `ok: false`.
 
 The daemon follows a device like one more screen, with less reach than the terminal:
 
-- **may:** `hello`, `squads`, and the commands `submit`, `interrupt`, `send_now`, `accept`, `reopen`,
+- **may:** `hello`, `squads`, `read_image`, and the commands `submit`, `interrupt`, `send_now`, `accept`, `reopen`,
   `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `approve_team_change`,
   `decline_team_change`, `focus`, `refresh`.
 - `submit` and `answer_questions` may say what the message is about: `about` — the project the
