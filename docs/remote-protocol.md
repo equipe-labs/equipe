@@ -84,7 +84,8 @@ and its `description` left out (the snapshot has them whole).
 A member puts a decision to the person as a `questions_asked` event: `questions` is
 `{ "id", "session", "member", "ticket"?, "asked_at", "questions": [{ "question", "header"?,
 "options": [{ "label", "description"? }], "multi_select"? }] }` — 1 to 4 questions, 2 to 4 options
-each, the recommended option first. The snapshot lists the ones still waiting in `questions`
+each, the recommended option first — or `"options": []`, a plain question the person answers in
+words of their own (`other`) only. The snapshot lists the ones still waiting in `questions`
 (absent when none). The phone answers with the command `answer_questions`
 `{ "squad", "id", "answers": [{ "picked"?: [<option index>…], "other"?: "<their words>" }, …] }`,
 one answer per question in order (`{}` skips one; one pick only unless `multi_select`), or

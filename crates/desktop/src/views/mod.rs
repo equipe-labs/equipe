@@ -1,6 +1,7 @@
 //! One module per screen, so each ticket edits its own file.
 
 pub mod approvals;
+pub mod asklist;
 pub mod attached;
 pub mod board;
 pub mod browser;
