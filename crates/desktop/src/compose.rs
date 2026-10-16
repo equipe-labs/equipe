@@ -424,6 +424,8 @@ pub enum Effect {
     Ask(Ask),
     /// `/suggest` was switched.
     Suggest(bool),
+    /// The 디스크 panel (`/disk`).
+    Disk,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -533,6 +535,7 @@ fn slash(model: &Model, command: &str) -> Plan {
     match name {
         "accept" | "merge" | "reopen" | "resume" | "cancel" => decide(model, name, rest),
         "board" => Plan { effect: Some(Effect::ShowBoard), ..Plan::default() },
+        "disk" => Plan { effect: Some(Effect::Disk), ..Plan::default() },
         "find" => Plan { effect: Some(Effect::Find(rest.to_owned())), ..Plan::default() },
         "project" => {
             let wanted = rest;

@@ -72,6 +72,7 @@ impl Shell {
                 self.confirm = Some(ask);
             }
             Effect::Suggest(on) => self.model.suggestions = on,
+            Effect::Disk => self.open_disk(window, cx),
         }
         cx.notify();
     }

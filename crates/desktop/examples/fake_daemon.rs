@@ -52,6 +52,9 @@
 //! `FAKE_BROWSER=handover`, the PM's browser handed to the person to sign in
 //! (its news line, as an English daemon wrote it, last in the PM's history).
 //!
+//! `FAKE_DISK=low|critical|full`: the disk runs short, with a realistic look
+//! at what takes it and a clean that gives it back (`fake_daemon/disk.rs`).
+//!
 //! Pairing a phone: a code at once, and two phones paired already.
 //! `FAKE_PAIR=ask` has a phone ask 1.5 s after the code shows (`allow` pairs
 //! it); `relay` fails as an unreachable relay would; `silent` never answers,
@@ -768,6 +771,9 @@ mod pictures;
 #[path = "fake_daemon/team.rs"]
 mod team;
 
+#[path = "fake_daemon/disk.rs"]
+mod disk;
+
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
 /// What waits for each member at work: its words and project, in order.
@@ -919,6 +925,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         let mut backend = backend;
                         backend.effort = Some("high".into());
                         let mut frontend = frontend;
+                        frontend.recent.extend(disk::failed_build());
                         if subagents_on() {
                             for member in [&mut frontend, &mut backend] {
                                 let (subs, calls) = subagents_of(member.session);
@@ -949,6 +956,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             tickets: tickets().lock().unwrap().clone(),
                             allowed: allowed().lock().unwrap().clone(),
                             browsers_shown: true,
+                            disk: disk::status(),
                             ..Default::default()
                         };
                         team::on_hello(&events);
@@ -1144,7 +1152,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     let _ = events.send(Event::Notice { session: 1, text: "🖐 브라우저를 돌려줬습니다.".into() });
                                     turns.lock().await.insert(1, tokio::spawn(turn(1, events.clone(), seconds)));
                                 }
-                                if browser::on_command(&other, &events) || team::on_command(&other, &events) {
+                                if browser::on_command(&other, &events) || team::on_command(&other, &events) || disk::on_command(&other, &events) {
                                     continue;
                                 }
                                 if let Some(said) = on_board_command(&other) {

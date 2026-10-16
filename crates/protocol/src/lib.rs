@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod asks;
 pub mod decide;
+pub mod disk;
 pub mod rpc;
 pub mod stream;
 pub mod tags;
@@ -722,6 +723,12 @@ pub enum Command {
     /// Forget a paired phone (its `id` in [`Event::Devices`]): it can't reach
     /// the daemon again. Answered by [`Event::Devices`].
     Unpair { device: String },
+    /// Look at what uses the disk ([`disk`]): answered by [`Event::DiskReport`].
+    DiskScan,
+    /// Give back the space of these items of the daemon's last look (their
+    /// `id`s): only the ones it may remove, looked at again first. Answered by
+    /// [`Event::DiskCleaned`], then a fresh [`Event::DiskReport`].
+    DiskClean { ids: Vec<String> },
 }
 
 /// A phone paired with the daemon's machine.
@@ -1176,6 +1183,13 @@ pub enum Event {
         #[serde(default)]
         connected: bool,
     },
+    /// The disk's room changed level ([`disk::DiskLevel`]), told to every
+    /// screen, only when it changes (and in each snapshot).
+    DiskLevel { status: disk::DiskStatus },
+    /// What uses the disk, as [`Command::DiskScan`] asked.
+    DiskReport { report: disk::DiskReport },
+    /// What a [`Command::DiskClean`] gave back.
+    DiskCleaned { cleaned: disk::DiskCleaned },
 }
 
 impl Event {
@@ -1252,7 +1266,10 @@ impl Event {
             | Event::PairAsked { .. }
             | Event::Paired { .. }
             | Event::PairEnded { .. }
-            | Event::Devices { .. } => None,
+            | Event::Devices { .. }
+            | Event::DiskLevel { .. }
+            | Event::DiskReport { .. }
+            | Event::DiskCleaned { .. } => None,
         }
     }
 
@@ -1262,6 +1279,9 @@ impl Event {
             self,
             Event::PlanUsage { .. }
                 | Event::Desktop { .. }
+                | Event::DiskLevel { .. }
+                | Event::DiskReport { .. }
+                | Event::DiskCleaned { .. }
                 | Event::BrowserDialogClosed { .. }
                 | Event::BrowserTabs { squad: None, .. }
                 | Event::BrowserControl { squad: None, .. }
@@ -1485,6 +1505,9 @@ pub struct Snapshot {
     /// everyone), rather than hidden.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub browsers_shown: bool,
+    /// The disk's room, when it is short ([`disk::DiskLevel::Low`] or worse).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk: Option<disk::DiskStatus>,
 }
 
 #[cfg(test)]
@@ -1789,6 +1812,7 @@ mod tests {
             }],
             allowed: vec!["Bash(npm install:*)".into()],
             browsers_shown: true,
+            disk: None,
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert_eq!(serde_json::from_str::<Snapshot>(&json).unwrap(), snapshot);

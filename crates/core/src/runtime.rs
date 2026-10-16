@@ -59,6 +59,7 @@ macro_rules! say {
 }
 
 mod decide;
+mod room;
 mod team;
 mod tickets;
 
@@ -90,9 +91,6 @@ const SERVER_WAIT: Duration = Duration::from_secs(30);
 /// How often the sweep looks for done work that reached main outside equipe.
 const SETTLE_EVERY: Duration = Duration::from_secs(10 * 60);
 
-/// Below this much free space the disk counts as full; above `DISK_ROOM_AGAIN`, no longer.
-const DISK_FULL_BELOW: u64 = 256 << 20;
-const DISK_ROOM_AGAIN: u64 = 1 << 30;
 
 /// How long a member waits for the person to answer a request for permission
 /// before it is declined.
@@ -174,6 +172,10 @@ enum Request {
     /// May this member use the desktop: equipe's home if so.
     DesktopTool(ToolCall, oneshot::Sender<Result<PathBuf, ToolResult>>),
     Busy(oneshot::Sender<equipe_protocol::rpc::Busy>),
+    /// What uses the disk (`equipe disk`).
+    Disk(oneshot::Sender<crate::disk::DiskReport>),
+    /// Give back these items of the disk (`equipe disk clean`).
+    DiskClean(Vec<String>, oneshot::Sender<crate::disk::DiskCleaned>),
     PersonWindow(String, oneshot::Sender<bool>),
     BrowserHub(oneshot::Sender<std::sync::Arc<browser::Hub>>),
     Desktop(DesktopRequest),
@@ -290,6 +292,21 @@ impl Handle {
         }
     }
 
+    /// What uses the disk, looked at now (off the loop; within its time
+    /// budget). `None` when the daemon doesn't answer.
+    pub async fn disk_report(&self) -> Option<crate::disk::DiskReport> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.requests.send(Request::Disk(tx));
+        tokio::time::timeout(crate::disk::SCAN_BUDGET * 2, rx).await.ok()?.ok()
+    }
+
+    /// Give back these items of the disk, those still safe to remove.
+    pub async fn disk_clean(&self, ids: Vec<String>) -> Option<crate::disk::DiskCleaned> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.requests.send(Request::DiskClean(ids, tx));
+        tokio::time::timeout(Duration::from_secs(600), rx).await.ok()?.ok()
+    }
+
     /// The loop's step under way, however short; `None` between steps.
     pub fn stall(&self) -> Option<equipe_protocol::rpc::Stall> {
         self.pulse.stall(Duration::ZERO)
@@ -349,7 +366,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         settle_again: false,
         settled_at: None,
         merging: std::collections::HashSet::new(),
-        disk_full: None,
+        disk: Default::default(),
     };
     let mut memos = Vec::new();
     if runtime.config.persist {
@@ -577,8 +594,14 @@ enum Internal {
     /// A merge the person asked for, worked out off the loop: main's name and,
     /// when a push was asked for, how it went — or why nothing was merged.
     Merged { squad: String, ticket: TicketId, result: MergeResult },
-    /// The free space on equipe's disk, as just looked at.
-    Disk(Option<u64>, std::time::Instant),
+    /// The free space on equipe's disk, as a look begun then found it.
+    Disk(Option<crate::disk::DiskStatus>, std::time::Instant),
+    /// What uses the disk, as a look begun then found it.
+    DiskReport(Box<crate::disk::DiskReport>, std::time::Instant),
+    /// What a clean gave back, the free space after it, and who asked.
+    DiskCleaned(Box<crate::disk::DiskCleaned>, Option<crate::disk::DiskStatus>, std::time::Instant, Option<oneshot::Sender<crate::disk::DiskCleaned>>),
+    /// Hand ready work out in every squad again (the disk has room once more).
+    Dispatch,
 }
 
 /// A request for permission waiting for the person, and the engine waiting on it.
@@ -679,8 +702,8 @@ struct Runtime {
     settled_at: Option<std::time::Instant>,
     /// Merges under way off the loop, by squad and ticket.
     merging: std::collections::HashSet<(String, TicketId)>,
-    /// The disk is full, as last looked at or as a write said: the screens were told.
-    disk_full: Option<std::time::Instant>,
+    /// The disk's room, as last looked at or as a write said (`room.rs`).
+    disk: room::DiskWatch,
 }
 
 /// What woke the loop.
@@ -720,6 +743,11 @@ impl Wake {
             Wake::Internal(Internal::Settled { .. }) => Borrowed("settling merged work"),
             Wake::Internal(Internal::Merged { .. }) => Borrowed("a merge's end"),
             Wake::Internal(Internal::Disk(..)) => Borrowed("the disk's free space"),
+            Wake::Internal(Internal::DiskReport(..)) => Borrowed("what uses the disk"),
+            Wake::Internal(Internal::DiskCleaned(..)) => Borrowed("a clean of the disk"),
+            Wake::Internal(Internal::Dispatch) => Borrowed("handing out work again"),
+            Wake::Request(Some(Request::Disk(_))) => Borrowed("a look at the disk"),
+            Wake::Request(Some(Request::DiskClean(..))) => Borrowed("a clean of the disk"),
             Wake::Host(_) => Borrowed("the browser host's news"),
             Wake::Daily => Borrowed("daily prune"),
             Wake::DesktopTick => Borrowed("desktop tick"),
@@ -792,7 +820,7 @@ impl Runtime {
                         }
                     }
                     // A disk found full is told to each screen as it comes.
-                    if self.disk_full.is_some() {
+                    if self.disk.status.level == crate::disk::DiskLevel::Full {
                         let _ = tx.send(Event::Error { session: None, message: say!(self, "error.disk_full"), next: None });
                     }
                     self.subscribers.push((Some(squad.clone()), tx));
@@ -821,6 +849,8 @@ impl Runtime {
                     let _ = reply.send(busy);
                 }
                 Some(Request::Desktop(request)) => self.on_desktop(request),
+                Some(Request::Disk(reply)) => self.disk_report(Some(reply), false),
+                Some(Request::DiskClean(ids, reply)) => self.disk_clean(ids, Some(reply)),
                 Some(Request::Shutdown(reply)) => {
                     self.stop_all_turns();
                     let _ = reply.send(());
@@ -835,7 +865,14 @@ impl Runtime {
                 Internal::Event(event) => match *event {
                     // What the engine echoes as it reads the person's steers: each said as it was.
                     Event::Steered { session, text } => self.steered(session, &text),
-                    event => self.publish(event),
+                    event => {
+                        // A build that failed for want of room says so plainly.
+                        let no_room = room::says_no_room(&event).then(|| event.session()).flatten();
+                        self.publish(event);
+                        if let Some(id) = no_room {
+                            self.member_out_of_room(id);
+                        }
+                    }
                 },
                 Internal::Done(done) => self.on_turn_done(done).await,
                 Internal::ApprovalTimedOut(id) => self.answer(id, Decision::Deny, "Nobody answered in time."),
@@ -849,7 +886,15 @@ impl Runtime {
                 }
                 Internal::Settled { merged, cache } => self.on_settled(merged, cache),
                 Internal::Merged { squad, ticket, result } => self.on_merged(&squad, ticket, result),
-                Internal::Disk(free, asked) => self.on_disk(free, asked),
+                Internal::Disk(status, asked) => self.on_disk(status, asked),
+                Internal::DiskReport(report, asked) => self.on_disk_report(*report, asked),
+                Internal::DiskCleaned(cleaned, status, asked, reply) => self.on_disk_cleaned(*cleaned, status, asked, reply),
+                Internal::Dispatch => {
+                    let squads: Vec<String> = self.journals.keys().cloned().collect();
+                    for squad in squads {
+                        self.dispatch(&squad).await;
+                    }
+                }
             },
             Wake::Host(said) => self.on_host(said).await,
             Wake::Daily => self.prune(),
@@ -973,46 +1018,6 @@ impl Runtime {
         });
         if no_room {
             self.disk_is_full();
-        }
-    }
-
-    // ── a full disk ──
-
-    /// How much room the disk has, looked at off the loop.
-    fn look_at_disk(&mut self) {
-        let (home, internal) = (self.config.home.clone(), self.internal.clone());
-        tokio::task::spawn_blocking(move || {
-            let asked = std::time::Instant::now();
-            let _ = internal.send(Internal::Disk(free_space(&home), asked));
-        });
-    }
-
-    fn on_disk(&mut self, free: Option<u64>, asked: std::time::Instant) {
-        let Some(free) = free else { return };
-        if free < DISK_FULL_BELOW {
-            self.disk_is_full();
-        } else if self.disk_full.is_some_and(|since| asked > since) && free > DISK_ROOM_AGAIN {
-            self.disk_full = None;
-            crate::daemon_log!("equipe: the disk has room again ({} MB free)", free >> 20);
-            let message = say!(self, "notice.disk_room");
-            for squad in self.followed_squads() {
-                self.squad_error(&squad, message.clone());
-            }
-        }
-    }
-
-    /// The disk is full: said once — to the log, and to every screen — and
-    /// the daemon goes on serving; what it couldn't save is lost, nothing more.
-    fn disk_is_full(&mut self) {
-        if self.disk_full.is_some() {
-            return;
-        }
-        self.disk_full = Some(std::time::Instant::now());
-        let free = free_space(&self.config.home).map_or_else(|| "?".to_owned(), |f| format!("{} MB", f >> 20));
-        crate::daemon_log!("equipe: the disk is full ({free} free): conversations and tickets aren't saved until there's room");
-        let message = say!(self, "error.disk_full");
-        for squad in self.followed_squads() {
-            self.squad_error(&squad, message.clone());
         }
     }
 
@@ -1219,6 +1224,8 @@ impl Runtime {
             // Phones are paired by the gateway, per screen, with the daemon's
             // phone link (`crate::pairing`); they never reach the runtime.
             Command::PairStart | Command::PairAnswer { .. } | Command::PairCancel | Command::Devices | Command::Unpair { .. } => {}
+            Command::DiskScan => self.disk_report(None, true),
+            Command::DiskClean { ids } => self.disk_clean(ids, None),
         }
     }
 
@@ -2241,7 +2248,13 @@ for one project goes to it as tickets for its owners, with that project — and 
         if let Some(dir) = &builds {
             let _ = std::fs::create_dir_all(dir);
         }
-        let env: Vec<(String, String)> = builds.iter().map(|d| ("CARGO_TARGET_DIR".to_owned(), d.to_string_lossy().into_owned())).collect();
+        let mut env: Vec<(String, String)> = builds.iter().map(|d| ("CARGO_TARGET_DIR".to_owned(), d.to_string_lossy().into_owned())).collect();
+        // Leaner Rust builds unless the squad says otherwise: debug info is most of a target's size.
+        if builds.is_some()
+            && let Some(debug) = squad.as_deref().and_then(|s| self.journals.get(s)).map(Journal::build_debug).and_then(|d| d.cargo_value())
+        {
+            env.push(("CARGO_PROFILE_DEV_DEBUG".to_owned(), debug.to_owned()));
+        }
         let writable: Vec<String> = builds.iter().map(|d| d.to_string_lossy().into_owned()).collect();
         let fenced = member_rules && access == claude_code::Access::EditFiles && mode == Mode::Auto;
         // Directories added for reading stay read-only in every mode, and no other
@@ -2796,6 +2809,10 @@ for one project goes to it as tickets for its owners, with that project — and 
         let candidates: Vec<Candidate> =
             members.iter().map(|(name, role, free)| Candidate { name, role, free: *free }).collect();
         for (ticket, name) in board::assignments(&tickets, &candidates, single_project) {
+            // Short of room: code work, which builds, waits; the PM was told.
+            if tickets.iter().find(|t| t.id == ticket).is_some_and(|t| self.held_for_room(t.kind)) {
+                continue;
+            }
             if let Some(id) = self.member_id(squad, &name) {
                 self.begin_work(id, ticket);
             }
@@ -3348,6 +3365,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             let _ = journal.save_ticket(&found);
             let _ = journal.ticket_event(ticket, "you", "merged", &main);
         }
+        self.clear_finished_builds(squad, &found);
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: found });
         // Work it was built on came along with it.
         self.settle_all_merged();
@@ -3413,6 +3431,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 let _ = journal.save_ticket(&t);
                 let _ = journal.ticket_event(t.id, "equipe", "merged", "nothing left to merge: its work is in main");
             }
+            self.clear_finished_builds(&squad, &t);
             self.publish(Event::TicketChanged { squad, ticket: t });
         }
         if std::mem::take(&mut self.settle_again) {
@@ -3528,8 +3547,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                 self.stop_turn(id);
                 self.end_work(id, WorkEnd::Cancelled);
             }
-            None => self.close_ticket(squad, found, TicketStatus::Cancelled),
+            None => self.close_ticket(squad, found.clone(), TicketStatus::Cancelled),
         }
+        self.clear_finished_builds(squad, &found);
         self.drop_questions(squad, |set| set.ticket == Some(ticket));
         self.dispatch(squad).await;
     }
@@ -4633,6 +4653,7 @@ it back there once they have done it.{again} End your turn now with a short line
             desktop: self.desktop.state(),
             allowed,
             browsers_shown,
+            disk: self.disk_for_snapshot(),
         }
     }
 
@@ -5413,19 +5434,6 @@ fn record(journal: &Journal, id: SessionId, event: &Event, finished: &[Entry], t
         _ => {}
     }
     room
-}
-
-/// The space free on the disk `path` is on, for whoever isn't root.
-fn free_space(path: &Path) -> Option<u64> {
-    use std::os::unix::ffi::OsStrExt as _;
-    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
-    // SAFETY: statvfs writes only the struct it is given, and `c` is a valid C string.
-    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::statvfs(c.as_ptr(), &mut stat) } != 0 {
-        return None;
-    }
-    #[allow(clippy::unnecessary_cast)]
-    Some(stat.f_bavail as u64 * stat.f_frsize as u64)
 }
 
 fn workspace_of(sandbox: &Sandbox) -> Workspace {

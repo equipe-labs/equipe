@@ -151,7 +151,8 @@ fn a_screen_over_ssh_says_hello_gets_the_snapshot_and_follows_events() {
     assert_eq!(hello.version, first.bridge);
 
     bridge.send(&Message::command(&Cmd::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::Ask) }));
-    let event = bridge.until(|m| m.method.as_deref() == Some(rpc::EVENT));
+    // The disk's level may come first, told to every screen: whatever this disk has.
+    let event = bridge.until(|m| m.method.as_deref() == Some(rpc::EVENT) && !matches!(m.params_as::<Event>(), Some(Event::DiskLevel { .. })));
     assert_eq!(
         event.params_as::<Event>(),
         Some(Event::ModeChanged { squad: "acme".into(), member: None, mode: Some(Mode::Ask) })

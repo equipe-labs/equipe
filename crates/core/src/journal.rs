@@ -510,6 +510,16 @@ impl Journal {
         self.set_meta("scale", &extra.to_string())
     }
 
+    /// How much debug information members' Rust builds carry: lean unless
+    /// the person said (`equipe disk debug`).
+    pub fn build_debug(&self) -> crate::disk::BuildDebug {
+        self.meta("build_debug").and_then(|v| crate::disk::BuildDebug::parse(&v)).unwrap_or_default()
+    }
+
+    pub fn set_build_debug(&self, debug: crate::disk::BuildDebug) -> Result<()> {
+        self.set_meta("build_debug", debug.word())
+    }
+
     /// The person turned off guesses at their next message.
     pub fn suggestions_off(&self) -> bool {
         self.meta("suggestions").as_deref() == Some("off")
