@@ -19,7 +19,6 @@ use equipe_core::protocol::asks::{self, Reply};
 use equipe_core::protocol::{Command, Ticket, TicketId, TicketStatus};
 use equipe_core::t;
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -592,7 +591,7 @@ fn settled(card: &Card, d: Draw<'_>, cx: &mut App) -> AnyElement {
     let count = card.answered.as_ref().and_then(rules::answered_count);
     let open = card.answered.as_ref().map_or(0, rules::open_count);
     let (mark, words): (AnyElement, String) = match card.phase {
-        Phase::Sending if !cx.reduce_motion() => (Spinner::new().with_size(px(12.)).color(Hsla::from(p.muted)).into_any_element(), t!("turn.sending").to_owned()),
+        Phase::Sending if !cx.reduce_motion() => (crate::motion::spinner(12., p.muted), t!("turn.sending").to_owned()),
         Phase::Sending => (div().child("◌").into_any_element(), t!("turn.sending").to_owned()),
         Phase::Closed => (icon(Icon::XCircle, 13., p.muted).into_any_element(), t!("turn.closed").to_owned()),
         Phase::Answered { here } => {

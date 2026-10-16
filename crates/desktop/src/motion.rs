@@ -83,6 +83,24 @@ pub fn fade<E: IntoElement + Styled + 'static>(el: E, id: impl Into<ElementId>, 
     el.with_animation(id, Animation::new(duration).with_easing(ease_out), move |el, t| el.opacity(t))
 }
 
+/// A turning loader — GPUI Kit's `Spinner` (its icon, its 0.8 s turn and
+/// curve) at no more than 30 steps a second. At the display's rate a call
+/// running for minutes redrew the whole window 60–120 times a second all
+/// along (`docs/PERF-2026-10.md`); the sidebar's turns at 10.
+pub fn spinner(size: f32, color: impl Into<Hsla>) -> AnyElement {
+    use gpui_kit::component::{Icon, IconName, Sizable as _};
+    div()
+        .child(
+            Icon::new(IconName::Loader)
+                .with_size(px(size))
+                .text_color(color.into())
+                .with_animation("circle", Animation::new(Duration::from_secs_f64(0.8)).repeat().with_easing(ease_in_out).with_max_fps(30.), |this, delta| {
+                    this.transform(Transformation::rotate(percentage(delta)))
+                }),
+        )
+        .into_any_element()
+}
+
 // ── hover, eased ──
 
 /// Where an eased value stands: from, to, since when.

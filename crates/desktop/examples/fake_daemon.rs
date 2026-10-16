@@ -37,6 +37,9 @@
 //! `FAKE_DECIDE_AFTER` ms (default 5000). Answered here, the answers go to the
 //! member as the person's message and it replies.
 //!
+//! `FAKE_HISTORY=<n>`: the PM's history is a long day's, `n` lines of it
+//! (`fake_daemon/history.rs`); `FAKE_LONG_REPLY=1`: its answers are long too.
+//!
 //! `FAKE_TEAM=1`: the PM proposes one more frontend, for the person to
 //! approve on a card (`fake_daemon/team.rs`; `remove`, `elsewhere`).
 //!
@@ -738,6 +741,8 @@ mod browser;
 
 #[path = "fake_daemon/torture.rs"]
 mod torture;
+#[path = "fake_daemon/history.rs"]
+mod history;
 
 #[path = "fake_daemon/team.rs"]
 mod team;
@@ -819,6 +824,10 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         if std::env::var_os("FAKE_SCOPED").is_some() {
                             history = scoped_history();
                             routes.lock().await.thread.insert(1, Some("app".into()));
+                        }
+                        // `FAKE_HISTORY=<n>`: a long day's history, `n` lines (`fake_daemon/history.rs`).
+                        if let Some(n) = std::env::var("FAKE_HISTORY").ok().and_then(|n| n.parse().ok()) {
+                            history = history::history(n);
                         }
                         history.extend(std::env::var("FAKE_SAID").ok().filter(|s| !s.is_empty()).map(|text| Entry::User { text }));
                         // `FAKE_ASKLIST=1`: the PM's last reply asks three things in a list of its own words.
@@ -1159,7 +1168,8 @@ async fn turn(session: SessionId, events: broadcast::Sender<Event>, seconds: f32
         let _ = events.send(step);
         tokio::time::sleep(Duration::from_millis(120)).await;
     }
-    let chars: Vec<char> = REPLY.chars().collect();
+    let long = std::env::var("FAKE_LONG_REPLY").is_ok_and(|v| v == "1").then(history::long_reply);
+    let chars: Vec<char> = long.as_deref().unwrap_or(REPLY).chars().collect();
     let chunks = chars.chunks(4).count().max(1);
     let gap = Duration::from_secs_f32(seconds / chunks as f32);
     for chunk in chars.chunks(4) {

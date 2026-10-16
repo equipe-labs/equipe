@@ -1388,6 +1388,7 @@ fn main() {
         // The notification centre's delegate, before a click can come back.
         notify::start();
         tips::init(cx);
+        render::code::warm();
         cx.bind_keys(window_bindings());
         app_menu(cx);
         views::composer::bind_keys(cx);

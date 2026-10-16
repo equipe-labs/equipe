@@ -200,6 +200,10 @@ pub struct BrowserPanel {
     /// The page `pointer` is of: another tab picked, it starts over.
     pointer_page: Option<u64>,
     _move_wake: Option<Task<()>>,
+    /// Wheel turns not sent yet, when the last went, and the send to come.
+    wheel: Option<InputEvent>,
+    last_wheel: Instant,
+    _wheel_flush: Option<Task<()>>,
     last_click: Option<Point<Pixels>>,
     _pump: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -294,6 +298,9 @@ impl BrowserPanel {
             pointer: browse::Pointer::new(MOVE_EVERY),
             pointer_page: None,
             _move_wake: None,
+            wheel: None,
+            last_wheel: Instant::now(),
+            _wheel_flush: None,
             last_click: None,
             _pump: None,
             _subscriptions: subscriptions,
@@ -914,6 +921,8 @@ impl BrowserPanel {
         }
     }
 
+    /// A turn of the wheel: sent at once, then — as a trackpad sends 60–120
+    /// a second — the turns that follow added up and sent a frame apart.
     fn scroll(&mut self, e: &ScrollWheelEvent, cx: &mut Context<Self>) {
         let Some((x, y)) = self.to_page(e.position) else { return };
         // A member's page it drives: the wheel doesn't take it (only a click or a
@@ -927,13 +936,38 @@ impl BrowserPanel {
         }
         let delta = e.delta.pixel_delta(px(20.));
         let k = self.css_per_point();
-        self.send_input(InputEvent::Wheel {
-            x,
-            y,
-            dx: -f64::from(f32::from(delta.x)) * k,
-            dy: -f64::from(f32::from(delta.y)) * k,
-            modifiers: keys::modifier_bits(&e.modifiers),
-        });
+        let (dx, dy, modifiers) = (-f64::from(f32::from(delta.x)) * k, -f64::from(f32::from(delta.y)) * k, keys::modifier_bits(&e.modifiers));
+        match &mut self.wheel {
+            Some(InputEvent::Wheel { x: at_x, y: at_y, dx: sum_x, dy: sum_y, modifiers: held }) if *held == modifiers => {
+                (*at_x, *at_y) = (x, y);
+                *sum_x += dx;
+                *sum_y += dy;
+            }
+            _ => {
+                self.flush_wheel();
+                self.wheel = Some(InputEvent::Wheel { x, y, dx, dy, modifiers });
+            }
+        }
+        let since = self.last_wheel.elapsed();
+        if since >= MOVE_EVERY {
+            self.flush_wheel();
+        } else if self._wheel_flush.is_none() {
+            let wait = MOVE_EVERY - since;
+            self._wheel_flush = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                let _ = this.update(cx, |this, _| {
+                    this._wheel_flush = None;
+                    this.flush_wheel();
+                });
+            }));
+        }
+    }
+
+    fn flush_wheel(&mut self) {
+        if let Some(wheel) = self.wheel.take() {
+            self.last_wheel = Instant::now();
+            self.send_input(wheel);
+        }
     }
 
     /// The person drives the tab on screen: their own, or a member's in their hands.

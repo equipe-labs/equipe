@@ -851,14 +851,35 @@ pub fn relative(target: &str, base: &Path) -> String {
     let path = Path::new(target);
     // macOS reports temp dirs under /private; compare canonical forms.
     // A file not there (yet, or on another machine) compares as written.
-    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
     path.strip_prefix(base)
         .ok()
         .map(Path::to_owned)
-        .or_else(|| canon(path).strip_prefix(canon(base)).ok().map(Path::to_owned))
+        .or_else(|| canonical(path).strip_prefix(canonical(base)).ok().map(Path::to_owned))
         .filter(|rel| !rel.as_os_str().is_empty())
         .map(|rel| rel.display().to_string())
         .unwrap_or_else(|| target.to_owned())
+}
+
+/// `p`'s canonical form (or `p`, when it isn't there), as the disk had it in
+/// the last couple of seconds. Every call of every tool in the conversation is
+/// made relative each time it is drawn anew — while a reply streams, ten
+/// times a second — and asking the disk each time cost a long day's
+/// conversation a few thousand `realpath`s a tick (`docs/PERF-2026-10.md`).
+fn canonical(p: &Path) -> PathBuf {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    const FRESH: Duration = Duration::from_secs(2);
+    thread_local! {
+        static KNOWN: RefCell<(Option<Instant>, HashMap<PathBuf, PathBuf>)> = RefCell::new((None, HashMap::new()));
+    }
+    KNOWN.with_borrow_mut(|(since, known)| {
+        let now = Instant::now();
+        if since.is_none_or(|at| now.duration_since(at) > FRESH) || known.len() > 8192 {
+            known.clear();
+            *since = Some(now);
+        }
+        known.entry(p.to_owned()).or_insert_with(|| p.canonicalize().unwrap_or_else(|_| p.to_owned())).clone()
+    })
 }
 
 /// The first `T-<digits>` in `text` that stands as a word: where, and how long.
@@ -1486,5 +1507,24 @@ mod tests {
         assert_eq!(tool_verb("mcp__equipe__submit_for_review"), "hand in");
         assert_eq!(tool_verb("mcp__browser__browser_click"), "browse");
         assert_eq!(tool_verb("Odd"), "Odd");
+    }
+
+    #[test]
+    fn a_path_is_shown_from_where_the_agent_works_however_it_is_spelled() {
+        let dir = std::env::temp_dir().join(format!("equipe-relative-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/a.rs"), "").unwrap();
+        let base = dir.canonicalize().unwrap();
+        // As written, and through a link to the same place (macOS's temp dir is under /private).
+        assert_eq!(relative(&base.join("src/a.rs").display().to_string(), &base), "src/a.rs");
+        let linked = dir.join("src/a.rs").display().to_string();
+        for _ in 0..2 {
+            assert_eq!(relative(&linked, &base), "src/a.rs");
+        }
+        // Outside it, a command, the place itself: as written.
+        assert_eq!(relative("/elsewhere/b.rs", &base), "/elsewhere/b.rs");
+        assert_eq!(relative("cargo test -p api", &base), "cargo test -p api");
+        assert_eq!(relative(&base.display().to_string(), &base), base.display().to_string());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

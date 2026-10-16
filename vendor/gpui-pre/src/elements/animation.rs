@@ -346,6 +346,7 @@ impl<E: IntoElement + 'static> Element for SpringAnimationElement<E> {
             let mut element = animator(element, state.spring.position).into_any_element();
 
             if !done {
+                crate::window::equipe_perf::note(|| "spring animation".into()); // equipe: `EQUIPE_PERF=3`
                 window.request_animation_frame();
             }
 
@@ -465,7 +466,10 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                                 .detach();
                         }
                     }
-                    _ => window.request_animation_frame(),
+                    _ => {
+                        crate::window::equipe_perf::note(|| format!("animation {:?}", self.id)); // equipe: `EQUIPE_PERF=3`
+                        window.request_animation_frame()
+                    }
                 }
             }
 

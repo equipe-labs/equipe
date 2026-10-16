@@ -23,7 +23,6 @@ use gpui_kit::base::text::{RangeHighlight, TextView, TextViewState};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 use gpui_kit::component::shimmer::ShimmerText;
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -1142,7 +1141,7 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
     let progress = motion::openness(("group-open", key), open, window, cx);
     let tone = if failed { t.danger } else { p.muted };
     let mark: Option<AnyElement> = match status {
-        Status::Running if !cx.reduce_motion() => Some(Spinner::new().with_size(px(12.)).color(Hsla::from(p.muted)).into_any_element()),
+        Status::Running if !cx.reduce_motion() => Some(motion::spinner(12., p.muted)),
         Status::Running => Some(div().child("◌").into_any_element()),
         Status::Failed => Some(icon(Icon::Alert, 13., t.danger).into_any_element()),
         _ => None,
@@ -1222,7 +1221,7 @@ fn call_row(rows: &Rows, key: u64, at: u32, line: &ToolLine, rule: bool, window:
         .px_3()
         .gap_2()
         .when(!more, |h| h.cursor_default())
-        .children(running.then(|| Spinner::new().with_size(px(11.)).color(Hsla::from(p.muted))))
+        .children(running.then(|| motion::spinner(11., p.muted)))
         .children(failed.then(|| icon(Icon::Alert, 12., t.danger)))
         .child(div().flex_none().text_color(if failed { t.danger } else { p.muted }).child(activity::phrase(&line.verb, running)))
         .child(linked(rows, ("call-object", key << 8 | at as u64), &line.text(), p.text2, true))
@@ -1655,7 +1654,10 @@ fn pulse_pill(p: Palette) -> impl IntoElement {
     let dot = move |n: usize| {
         div().size(px(5.)).rounded_full().bg(p.muted).with_animation(
             ("pulse-dot", n),
-            Animation::new(std::time::Duration::from_millis(1200)).repeat(),
+            // A soft pulse needs no more than this many steps a second; at the
+            // display's rate it redrew the whole window 60–120 times a second
+            // for as long as a reply streamed (`docs/PERF-2026-10.md`).
+            Animation::new(std::time::Duration::from_millis(1200)).repeat().with_max_fps(20.),
             move |d, t| {
                 // Each dot a third of the way behind the one before.
                 let phase = (t - n as f32 / 3.).rem_euclid(1.);
