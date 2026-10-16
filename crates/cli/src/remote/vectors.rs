@@ -19,7 +19,7 @@ use equipe_core::protocol::{
 };
 use serde_json::{Value, json};
 
-use super::super::{Config, Device, b64, sha256_hex, unb64};
+use super::super::{Config, Device, b64, plaintext as canonical, sha256_hex, unb64};
 use super::seal::{self, Keys, Kind};
 use super::{Action, Core, Pairing, Request, slot};
 
@@ -384,12 +384,12 @@ fn qr_vectors() -> Value {
 // ─── pairing.json ────────────────────────────────────────────────────────
 
 fn pair_request_plaintext() -> String {
-    json!({ "type": "pair_request", "name": PHONE, "platform": "ios", "key": key("device").public }).to_string()
+    canonical(json!({ "type": "pair_request", "name": PHONE, "platform": "ios", "key": key("device").public }))
 }
 
 /// The answer `answer_pairing` seals, with the vectors' device id, token and name.
 fn paired_plaintext() -> String {
-    json!({ "type": "paired", "device": device_id(), "token": token(), "name": MACHINE }).to_string()
+    canonical(json!({ "type": "paired", "device": device_id(), "token": token(), "name": MACHINE }))
 }
 
 /// A daemon registered with the relay, as the vectors have it.
@@ -428,7 +428,7 @@ fn pairing_vectors() -> Value {
     let s = secret();
     let request = seal_fixed("pair-request", Kind::PairRequest, "daemon", None, true, &d, &pair_request_plaintext());
     let paired = seal_fixed("pair-answer", Kind::PairAnswer, "device", Some("daemon"), true, &d, &paired_plaintext());
-    let refused = seal_fixed("pair-refused", Kind::PairAnswer, "device", Some("daemon"), true, &d, &json!({ "type": "refused" }).to_string());
+    let refused = seal_fixed("pair-refused", Kind::PairAnswer, "device", Some("daemon"), true, &d, &canonical(json!({ "type": "refused" })));
     let slot = slot(&s);
     let recv = json!({ "type": "pair_recv", "slot": slot, "data": request.sealed });
 
@@ -450,7 +450,7 @@ fn pairing_vectors() -> Value {
     opened["device"] = json!(device_id());
     opened["token"] = json!(token());
     opened["name"] = json!(MACHINE);
-    assert_eq!(opened.to_string(), paired.plaintext, "the answer's shape");
+    assert_eq!(canonical(opened), paired.plaintext, "the answer's shape");
     let added = json!({ "type": "device_add", "device": device_id(), "token_hash": sha256_hex(token().as_bytes()) });
     // No: refused, sealed the same way.
     let mut core = pairing_core();
@@ -542,7 +542,7 @@ fn phone_frame(name: &str, sender: &'static str, ts: u64, seq: u64, squad: Optio
     if let Some(squad) = squad {
         plain["squad"] = json!(squad);
     }
-    let sealed = seal_fixed(name, Kind::ToDaemon, "daemon", Some(sender), false, &link_aad(), &plain.to_string());
+    let sealed = seal_fixed(name, Kind::ToDaemon, "daemon", Some(sender), false, &link_aad(), &canonical(plain.clone()));
     let recv = json!({ "type": "recv", "device": device_id(), "data": sealed.sealed });
     (sealed, recv)
 }
@@ -597,7 +597,7 @@ fn frame_vectors() -> Value {
         assert_eq!(plain["seq"], seq);
         from_daemon.push(plain);
     }
-    let seal_down = |name: &str, plain: &Value, sender: &'static str| seal_fixed(name, Kind::ToDevice, "device", Some(sender), false, &link_aad(), &plain.to_string());
+    let seal_down = |name: &str, plain: &Value, sender: &'static str| seal_fixed(name, Kind::ToDevice, "device", Some(sender), false, &link_aad(), &canonical(plain.clone()));
     let mut stale = from_daemon[2].clone();
     stale["seq"] = json!(4);
     stale["ts"] = json!(NOW - skew - 1);
@@ -620,7 +620,7 @@ fn frame_vectors() -> Value {
     let pushed = relay_frames(&core.on_squad_event(SQUAD, &Event::ApprovalRequested { squad: SQUAD.into(), approval: approval() }));
     let push_plain = opened(&pushed[0]);
     assert_eq!(push_plain["seq"], 0);
-    let push = seal_fixed("push data", Kind::ToDevice, "device", Some("daemon"), false, &link_aad(), &push_plain.to_string());
+    let push = seal_fixed("push data", Kind::ToDevice, "device", Some("daemon"), false, &link_aad(), &canonical(push_plain.clone()));
     let mut push_frame = pushed[0].clone();
     push_frame["data"] = json!(push.sealed);
 
@@ -1002,7 +1002,7 @@ fn upload_vectors() -> Value {
     let photo = steps[3]["daemon_answers"]["rpc"]["result"]["tag"].as_str().unwrap().to_owned();
     let voice = steps[5]["daemon_answers"]["rpc"]["result"]["tag"].as_str().unwrap().to_owned();
     let submit = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "submit", "squad": SQUAD, "session": 1001, "text": format!("이거 봐 주세요 {photo} {voice}") } });
-    let sealed = seal_fixed("an upload piece", Kind::ToDaemon, "daemon", Some("device"), false, &link_aad(), &steps[0]["sends"].to_string());
+    let sealed = seal_fixed("an upload piece", Kind::ToDaemon, "daemon", Some("device"), false, &link_aad(), &canonical(steps[0]["sends"].clone()));
     json!({
         "about": "A phone's files, a piece at a time (docs/remote-protocol.md, Attachments). Run in order on one daemon whose uploads are at /Users/abel/.equipe/uploads and whose clock is now — paths and stamps put back to those; checked against the daemon. sends: the plaintext the phone seals (device_to_daemon). daemon_answers: what it sealed back, opened; null when there is no answer. The video ran without ffmpeg, so it has no frames and the notice says so; with ffmpeg its tag carries `1920×1080 · frames: <path>@0:02, …` after the length.",
         "now": NOW,
@@ -1023,6 +1023,8 @@ fn files() -> Vec<(&'static str, Value)> {
 fn vectors_are_what_the_daemon_makes() {
     let write = std::env::var_os("EQUIPE_WRITE_VECTORS").is_some();
     for (name, value) in files() {
+        let mut value = value;
+        value.sort_all_objects();
         let text = serde_json::to_string_pretty(&value).unwrap() + "\n";
         let path = dir().join(name);
         if write {
