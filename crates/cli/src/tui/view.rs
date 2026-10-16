@@ -1084,6 +1084,11 @@ fn header(app: &App, theme: Theme, narrow: bool, width: usize) -> (Vec<Span<'sta
     if let Some(desktop) = label::desktop(crate::i18n::lang(), &app.desktop, Some(&app.squad)) {
         spans.push(Span::styled(format!("   ▣ {desktop}"), theme.accent()));
     }
+    // The disk running short: before builds fail, with what to run.
+    if let Some(line) = app.disk.as_ref().and_then(|d| label::disk_line(crate::i18n::lang(), d)) {
+        let style = if app.disk.as_ref().is_some_and(|d| d.level.holds_builds()) { theme.accent().add_modifier(Modifier::BOLD) } else { theme.dim() };
+        spans.push(Span::styled(format!("   ⚠ {line} · equipe disk"), style));
+    }
     let mut hits = Vec::new();
     let used = |spans: &[Span]| spans.iter().map(Span::width).sum::<usize>();
     let mut chips: Vec<Span<'static>> = Vec::new();

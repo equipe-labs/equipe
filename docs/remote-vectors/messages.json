@@ -399,6 +399,26 @@
         "ts": 1760000000000
       }
     },
+    "event: disk level": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "status": {
+              "free": 4200000000,
+              "level": "critical",
+              "path": "/Users/abel/.equipe",
+              "total": 494384795648
+            },
+            "type": "disk_level"
+          }
+        },
+        "seq": 29,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "event: error": {
       "receives": {
         "rpc": {
@@ -871,6 +891,12 @@
                   "queue": [],
                   "stopped": false
                 },
+                "disk": {
+                  "free": 4200000000,
+                  "level": "critical",
+                  "path": "/Users/abel/.equipe",
+                  "total": 494384795648
+                },
                 "mode": "auto",
                 "plan": null,
                 "projects": [
@@ -1242,6 +1268,35 @@
             },
             "squad": "acme",
             "type": "questions_asked"
+          }
+        },
+        "seq": 0,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "push: disk": {
+      "daemon_sends": {
+        "body": "Builds may fail · free space in equipe on the Mac",
+        "category": "disk",
+        "collapse": "disk",
+        "data": "<sealed daemon-to-device frame: data_opened>",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "title": "Only 4.2 GB left on the disk",
+        "type": "push"
+      },
+      "data_opened": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "status": {
+              "free": 4200000000,
+              "level": "critical",
+              "path": "/Users/abel/.equipe",
+              "total": 494384795648
+            },
+            "type": "disk_level"
           }
         },
         "seq": 0,

@@ -496,6 +496,83 @@ pub mod label {
         let parts: Vec<String> = holder.into_iter().chain(waiting).collect();
         (!parts.is_empty()).then(|| parts.join(" · "))
     }
+
+    /// `fine`, `low`, `nearly full`, `full`.
+    pub fn disk_level(lang: Lang, level: crate::disk::DiskLevel) -> &'static str {
+        use crate::disk::DiskLevel as L;
+        core(lang).get(match level {
+            L::Ok => "disk.level.ok",
+            L::Low => "disk.level.low",
+            L::Critical => "disk.level.critical",
+            L::Full => "disk.level.full",
+        })
+    }
+
+    /// The one line a screen shows while the disk is short: `디스크 여유 4.2 GB — 곧
+    /// 빌드가 실패할 수 있어요`. `None` while it's fine.
+    pub fn disk_line(lang: Lang, status: &crate::disk::DiskStatus) -> Option<String> {
+        use crate::disk::DiskLevel as L;
+        let key = match status.level {
+            L::Ok => return None,
+            L::Low => "disk.line.low",
+            L::Critical => "disk.line.critical",
+            L::Full => "disk.line.full",
+        };
+        Some(core(lang).fill(key, &[("free", crate::disk::size(status.free))]))
+    }
+
+    /// Where an item is: `members' worktrees`, `the Mac's caches`…
+    pub fn disk_group(lang: Lang, group: crate::disk::DiskGroup) -> &'static str {
+        use crate::disk::DiskGroup as G;
+        core(lang).get(match group {
+            G::Worktrees => "disk.group.worktrees",
+            G::Builds => "disk.group.builds",
+            G::Projects => "disk.group.projects",
+            G::Equipe => "disk.group.equipe",
+            G::Caches => "disk.group.caches",
+        })
+    }
+
+    /// What an item is: `build output`, `worktree`, `log`…
+    pub fn disk_kind(lang: Lang, kind: crate::disk::DiskKind) -> &'static str {
+        use crate::disk::DiskKind as K;
+        core(lang).get(match kind {
+            K::WorktreeBuild | K::ProjectBuild => "disk.kind.build_output",
+            K::Worktree => "disk.kind.worktree",
+            K::BuildCache => "disk.kind.build_cache",
+            K::Log => "disk.kind.log",
+            K::Browser => "disk.kind.browser",
+            K::Journals => "disk.kind.journals",
+            K::Uploads => "disk.kind.uploads",
+            K::DerivedData => "disk.kind.derived_data",
+            K::Simulators => "disk.kind.simulators",
+            K::LibraryCache => "disk.kind.library_cache",
+            K::Cargo => "disk.kind.cargo",
+            K::Npm => "disk.kind.npm",
+            K::Pnpm => "disk.kind.pnpm",
+            K::Yarn => "disk.kind.yarn",
+            K::Docker => "disk.kind.docker",
+        })
+    }
+
+    /// Why an item may go, or stays: `done · in main`, `changes not committed`…
+    pub fn disk_why(lang: Lang, why: crate::disk::DiskWhy) -> &'static str {
+        use crate::disk::DiskWhy as W;
+        core(lang).get(match why {
+            W::Merged => "disk.why.merged",
+            W::Cancelled => "disk.why.cancelled",
+            W::NoTicket => "disk.why.no_ticket",
+            W::OpenTicket => "disk.why.open_ticket",
+            W::NotMerged => "disk.why.not_merged",
+            W::Uncommitted => "disk.why.uncommitted",
+            W::InUse => "disk.why.in_use",
+            W::Stale => "disk.why.stale",
+            W::Rebuildable => "disk.why.rebuildable",
+            W::OldLog => "disk.why.old_log",
+            W::Needed => "disk.why.needed",
+            W::NotEquipes => "disk.why.not_equipes",
+        })
+    }
 }
 
 /// The ticket a line of news says waits for the person (`news.waiting`, in

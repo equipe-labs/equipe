@@ -715,6 +715,11 @@ fn ticket(status: TicketStatus) -> Ticket {
     }
 }
 
+fn disk_status() -> equipe_core::protocol::disk::DiskStatus {
+    use equipe_core::protocol::disk::{DiskLevel, DiskStatus};
+    DiskStatus { level: DiskLevel::Critical, free: 4_200_000_000, total: 494_384_795_648, path: "/Users/abel/.equipe".into(), container_free: None }
+}
+
 fn snapshot() -> Snapshot {
     Snapshot {
         squad: SQUAD.into(),
@@ -783,6 +788,7 @@ fn snapshot() -> Snapshot {
         desktop: Default::default(),
         allowed: vec![],
         browsers_shown: false,
+        disk: Some(disk_status()),
     }
 }
 
@@ -881,6 +887,9 @@ fn message_vectors() -> Value {
     ask(&mut core, &mut examples, "send now", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "send_now", "session": pm, "texts": ["푸터는 빼 줘", "그리고 테스트도"] } }));
     tell(&mut core, &mut examples, "event: queue sent", Event::QueueSent { session: pm, texts: vec!["푸터는 빼 줘".into(), "그리고 테스트도".into()] });
 
+    // The disk's room, told on a change of level (and in the snapshot while it's short).
+    tell(&mut core, &mut examples, "event: disk level", Event::DiskLevel { status: disk_status() });
+
     // Not from a phone.
     ask(&mut core, &mut examples, "merge is refused", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "merge", "squad": SQUAD, "ticket": 38, "push": true } }));
     ask(&mut core, &mut examples, "a command for another squad than the frame's", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "accept", "squad": "home", "ticket": 1 } }));
@@ -894,6 +903,7 @@ fn message_vectors() -> Value {
         ("push: waiting", Event::TicketChanged { squad: SQUAD.into(), ticket: ticket(TicketStatus::Waiting) }),
         ("push: decision", Event::QuestionsAsked { squad: SQUAD.into(), questions: questions() }),
         ("push: team change", Event::TeamChangeProposed { squad: SQUAD.into(), change: team_change() }),
+        ("push: disk", Event::DiskLevel { status: disk_status() }),
     ] {
         let out = relay_frames(&core.on_squad_event(SQUAD, &event));
         let mut push = out[0].clone();

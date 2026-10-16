@@ -110,6 +110,28 @@ never an agent: the phone approves with the command `approve_team_change` `{ "sq
 change became moot (its member left anyway). A push for a proposal carries the event with
 `reason` cut to 800 characters, category `team`.
 
+### The disk
+
+When the disk the daemon writes to runs short, every followed squad gets a `disk_level` event —
+only when the level changes — and the snapshot carries the same `disk` while it is short (absent
+when there is room):
+
+```json
+{ "type": "disk_level", "status": { "level": "critical", "free": 4200000000, "total": 494384795648, "path": "/Users/abel/.equipe" } }
+```
+
+`level` is `ok`, `low` (under 15 GB free, or a tenth of the disk if that is less), `critical`
+(under 5 GB: equipe holds new code tickets back so builds don't fail) or `full` (under 1 GB, or a
+write just failed for want of room). A level is left only with a fifth more room than it took to
+enter it, so a disk at an edge says so once. `free` and `total` are bytes (show them in decimal
+units, as macOS does: `4.2 GB`); `path` is a folder on that volume. Additive: an older app ignores
+it. Going `critical` or `full` is also pushed, once each way down (category `disk`, collapse
+`disk`): "Only 4.2 GB left on the disk" / "Builds may fail · free space in equipe on the Mac".
+
+What uses the space, and cleaning it up, stay at the Mac's screens: a device may not send
+`disk_scan` or `disk_clean`, and the `disk_report` and `disk_cleaned` events those answer are not
+forwarded to it.
+
 ### Attachments
 
 A phone attaches a photo, a file, a sound or a video the way a screen does: it puts the file
@@ -375,7 +397,8 @@ relay → device `{ "type": "recv", "data" }`.
 
 The daemon asks for a push when something needs the person and the device isn't connected:
 a request for permission (`approval`), work to review (`review`), a ticket waiting on them
-(`waiting`), a decision to make (`decision`), a member's answer to them (`message`).
+(`waiting`), a decision to make (`decision`), a member's answer to them (`message`), the disk
+getting critical or full (`disk`).
 
 `title`, `body` and `category` are plain strings of at most 200 characters. `title` and `body` are what the lock screen shows — who needs what, never the command or
 content ("frontend asks to run a command"). `data` is a sealed frame (daemon → device) the

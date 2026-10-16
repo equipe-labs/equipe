@@ -684,6 +684,8 @@ pub struct App {
     pub plan: Option<equipe_core::protocol::PlanUsage>,
     /// Who has the Mac's screen and who waits for it.
     pub desktop: equipe_core::protocol::DesktopState,
+    /// The disk's room, while it is short: a warning in the header.
+    pub disk: Option<equipe_core::protocol::disk::DiskStatus>,
     /// The usage screen is open over the conversation.
     pub usage_open: bool,
     /// Requests for permission waiting for the person, oldest first.
@@ -838,6 +840,7 @@ impl App {
             suggestions: !snapshot.suggestions_off,
             plan: snapshot.plan,
             desktop: snapshot.desktop,
+            disk: snapshot.disk,
             usage_open: false,
             approvals: snapshot.approvals,
             questions: snapshot.questions,
@@ -1645,6 +1648,10 @@ impl App {
             }
             Event::Desktop { desktop } => {
                 self.desktop = desktop;
+                return Vec::new();
+            }
+            Event::DiskLevel { status } => {
+                self.disk = status.level.is_warning().then_some(status);
                 return Vec::new();
             }
             Event::TicketChanged { ticket, .. } => {
@@ -2772,6 +2779,15 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 self.pane = Pane::Conversation;
                 self.help_open = false;
                 self.usage_open = true;
+                Vec::new()
+            }
+            // The whole look is a command of its own; here, where things stand.
+            "disk" => {
+                let line = self.disk.as_ref().and_then(|d| equipe_core::i18n::label::disk_line(crate::i18n::lang(), d));
+                self.flash = Some(match line {
+                    Some(line) => t!("app.disk_short", line = line),
+                    None => t!("app.disk_fine").to_owned(),
+                });
                 Vec::new()
             }
             "quit" | "exit" => {

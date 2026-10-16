@@ -1338,6 +1338,24 @@ fn news_rows(rows: &Rows, key: u64, news: &[crate::activity::News], window: &mut
             .child(news_icon(rows, item.kind))
             .children(project.as_ref().map(|(name, color)| tip(div().id(("news-project", key << 8 | n as u64)).child(super::board::dot(*color, 6.)), p, name.clone(), None)))
             .child(linked(rows, ("news", key << 8 | n as u64), &item.text, p.muted, false))
+            // The disk ran short: the way to make room, in a click.
+            .when(item.kind == crate::activity::NewsKind::DiskShort, |r| {
+                let handle = rows.handle.clone();
+                r.child(
+                    div()
+                        .id(("news-disk", key << 8 | n as u64))
+                        .flex_none()
+                        .cursor_pointer()
+                        .text_color(p.accent)
+                        .font_weight(FontWeight::MEDIUM)
+                        .hover(|d| d.underline())
+                        .child(format!("· {}", t!("chat.news_disk_clean")))
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            handle.update(cx, |shell, cx| shell.open_disk(window, cx)).ok();
+                        }),
+                )
+            })
             .into_any_element()
     };
     if news.len() <= crate::activity::NEWS_FOLDS_PAST {
@@ -1406,6 +1424,8 @@ fn news_icon(rows: &Rows, kind: crate::activity::NewsKind) -> impl IntoElement {
         K::DeskSaved => (Icon::Pencil, p.muted),
         K::YouTold => (Icon::Message, p.muted),
         K::Stale => (Icon::Info, p.muted),
+        K::DiskShort => (Icon::Warning, t.warning),
+        K::DiskRoom => (Icon::Check, t.added),
     };
     icon(glyph, 13., color)
 }

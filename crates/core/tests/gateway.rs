@@ -207,6 +207,8 @@ async fn a_screen_sees_only_its_own_squad() {
     until(&mut beta, |e| matches!(e, Event::SessionStarted { .. })).await;
     acme.send(Command::Start { session: 32, spec: spec(&project) });
     let seen = until(&mut acme, |e| matches!(e, Event::SessionStarted { .. })).await;
+    // The disk's level is every screen's, whichever squad: whatever this disk has.
+    let seen: Vec<Event> = seen.into_iter().filter(|e| !matches!(e, Event::DiskLevel { .. })).collect();
     assert!(matches!(seen.as_slice(), [Event::SessionStarted { session: 32, .. }]), "{seen:#?}");
     gateway::shutdown(&socket).await.unwrap();
 }

@@ -18,6 +18,7 @@ mod activity;
 mod convo;
 mod decide;
 mod daemon;
+mod disk;
 mod failure;
 mod help;
 mod install;
@@ -189,6 +190,8 @@ pub struct Shell {
     pub pairing: pair::Pairing,
     /// The paired phone whose "연결 끊기" was pressed once, asking to be sure.
     pub forgetting: Option<String>,
+    /// "디스크": the banner while it runs short, and the panel (`disk.rs`).
+    pub disk: disk::DiskUi,
     /// The window's size, shown for a moment after it changes (`zoom.rs`).
     pub zoom_hud: Option<zoom::Hud>,
     _pair_tick: Option<Task<()>>,
@@ -279,6 +282,7 @@ impl Shell {
             ask,
             pairing: pair::Pairing::default(),
             forgetting: None,
+            disk: Default::default(),
             zoom_hud: None,
             _pair_tick: None,
             notices,
@@ -647,8 +651,17 @@ impl Shell {
                             }
                             continue;
                         }
+                        // The disk: the banner's and the panel's, never the model's.
+                        if let daemon::Update::Event(event @ (Event::DiskLevel { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. })) = &update {
+                            changed |= this.disk.on_event(event);
+                            continue;
+                        }
                         if let daemon::Update::Down(_) = &update {
                             this.pairing.disconnected();
+                            this.disk.disconnected();
+                        }
+                        if let daemon::Update::Attached(hello) = &update {
+                            this.disk.attached(hello.snapshot.disk.clone());
                         }
                         match &update {
                             // The daemon's own list, asked on every attach: a squad
@@ -787,7 +800,7 @@ impl Shell {
     // ── questions from ssh ──
 
     pub fn overlay_open(&self) -> bool {
-        self.connect.open || !self.ask.queue.is_empty() || self.pairing.open || self.confirm.is_some() || self.sheet.is_some() || self.bell.sheet
+        self.connect.open || !self.ask.queue.is_empty() || self.pairing.open || self.disk.open || self.confirm.is_some() || self.sheet.is_some() || self.bell.sheet
     }
 
     fn escape_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -795,6 +808,8 @@ impl Shell {
             self.answer_prompt(askpass::Answer::Cancel, window, cx);
         } else if self.pairing.open {
             self.close_pairing(window, cx);
+        } else if self.disk.open {
+            self.close_disk(window, cx);
         } else if self.bell.sheet {
             self.notify_later(window, cx);
         } else if self.connect.open {
@@ -949,7 +964,7 @@ impl Shell {
                     Screen::Board => views::board::render(self, cx).into_any_element(),
                     Screen::Settings => views::settings::render(self, cx),
                 };
-                v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).child(screen).into_any_element()
+                v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).child(screen).into_any_element()
             }
         }
     }
@@ -1142,6 +1157,7 @@ impl Render for Shell {
                 .child(h_flex().flex_1().min_h_0().child(views::settings::render(self, cx)))
                 .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
                 .children(views::pair::sheet(self, cx))
+                .children(views::disk::sheet(self, cx))
                 .children(views::bell::sheet(self, cx))
                 .children(views::connect::question(self, cx))
                 .children(self.zoom_chip(window, cx))
@@ -1162,6 +1178,7 @@ impl Render for Shell {
             .children(views::sheet::question(self, cx))
             .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
             .children(views::pair::sheet(self, cx))
+            .children(views::disk::sheet(self, cx))
             .children(views::bell::sheet(self, cx))
             .children(views::connect::question(self, cx))
             .children(self.zoom_chip(window, cx))

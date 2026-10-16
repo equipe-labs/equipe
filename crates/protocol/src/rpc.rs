@@ -9,6 +9,9 @@
 //! - `desktop` (request): a member's desktop tool call (`equipe mcp --server
 //!   desktop`) → [`ToolResult`], answered by the desktop helper
 //! - `shutdown` (request): stop the daemon; sessions stay restorable
+//! - `disk` (request): → [`crate::disk::DiskReport`], what uses the disk
+//! - `disk_clean` (request): [`DiskClean`] → [`crate::disk::DiskCleaned`], give
+//!   back items of a look at the disk — those still safe to remove
 //! - `version` (request): → [`Version`], the daemon's build and wire version
 //! - `squads` (request): → [`Squads`], the squads on the daemon's machine
 //! - `upload` (request): [`Upload`] → [`Uploaded`], an image (with a `kind`,
@@ -48,6 +51,11 @@ pub const PROTOCOL: u32 = 1;
 pub const DESKTOP: &str = "desktop";
 /// Who is busy: members mid-turn and requests waiting for the person.
 pub const BUSY: &str = "busy";
+/// What uses the disk (`equipe disk`): → [`crate::disk::DiskReport`].
+pub const DISK: &str = "disk";
+/// Give back items of the daemon's look at the disk: [`DiskClean`] →
+/// [`crate::disk::DiskCleaned`].
+pub const DISK_CLEAN: &str = "disk_clean";
 /// A window for the person in the members' shared Chrome, at a page (`equipe
 /// browser`): `true` when there is such a Chrome.
 pub const BROWSER_WINDOW: &str = "browser_window";
@@ -78,6 +86,12 @@ pub struct RpcError {
     /// More about it, when the error says what to do next (an upload's `received`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
+}
+
+/// The items of a look at the disk to give back, by id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiskClean {
+    pub ids: Vec<String>,
 }
 
 /// What a screen says when it attaches.
