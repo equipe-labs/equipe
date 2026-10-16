@@ -85,6 +85,22 @@ pub struct Palette {
 }
 
 impl Palette {
+    /// Give the kit's text fields this palette's caret and selection, and its
+    /// light or dark: left alone they drew the kit's default caret, which on
+    /// our dark fields hardly showed.
+    pub fn apply_to_kit(&self, appearance: WindowAppearance, cx: &mut gpui_kit::App) {
+        use gpui_kit::component::{Theme, ThemeMode};
+        let dark = matches!(appearance, WindowAppearance::Dark | WindowAppearance::VibrantDark);
+        let caret: gpui_kit::Hsla = self.text.into();
+        let mut selection: gpui_kit::Hsla = self.accent.into();
+        selection.a = if dark { 0.38 } else { 0.28 };
+        Theme::change(if dark { ThemeMode::Dark } else { ThemeMode::Light }, None, cx);
+        Theme::update(cx, |theme| {
+            theme.colors.caret = caret;
+            theme.colors.selection = selection;
+        });
+    }
+
     pub fn new(appearance: WindowAppearance) -> Self {
         match appearance {
             WindowAppearance::Light | WindowAppearance::VibrantLight => Self::light(),

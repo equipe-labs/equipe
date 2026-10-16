@@ -160,7 +160,9 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     eprintln!("pastelong: taken = {taken}");
                 }),
                 "theme" => shell.update(cx, |shell, cx| {
-                    shell.palette = crate::theme::Palette::new(if arg == "light" { WindowAppearance::Light } else { WindowAppearance::Dark });
+                    let appearance = if arg == "light" { WindowAppearance::Light } else { WindowAppearance::Dark };
+                    shell.palette = crate::theme::Palette::new(appearance);
+                    shell.palette.apply_to_kit(appearance, cx);
                     cx.notify();
                 }),
                 "undrag" => shell.update(cx, |shell, cx| {
@@ -183,7 +185,9 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 // The conversation's: light or dark whatever the system says,
                 // ⌘F with words, a row scrolled to.
                 "appearance" => shell.update(cx, |shell, cx| {
-                    shell.palette = crate::theme::Palette::new(if arg == "light" { WindowAppearance::Light } else { WindowAppearance::Dark });
+                    let appearance = if arg == "light" { WindowAppearance::Light } else { WindowAppearance::Dark };
+                    shell.palette = crate::theme::Palette::new(appearance);
+                    shell.palette.apply_to_kit(appearance, cx);
                     cx.notify();
                 }),
                 "seek" => shell.update(cx, |shell, cx| {

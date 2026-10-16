@@ -1118,7 +1118,9 @@ impl Shell {
         self.remembered.appearance = appearance;
         self.remembered.save(&equipe_providers::credentials::equipe_home());
         appearance.apply();
-        self.palette = Palette::new(appearance.resolve(window.appearance()));
+        let resolved = appearance.resolve(window.appearance());
+        self.palette = Palette::new(resolved);
+        self.palette.apply_to_kit(resolved, cx);
         self.sync_browser(window, cx);
         cx.notify();
     }

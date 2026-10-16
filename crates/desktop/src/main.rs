@@ -162,7 +162,9 @@ impl Shell {
         })
         .detach();
         cx.observe_window_appearance(window, |this, window, cx| {
-            this.palette = Palette::new(this.remembered.appearance.resolve(window.appearance()));
+            let appearance = this.remembered.appearance.resolve(window.appearance());
+            this.palette = Palette::new(appearance);
+            this.palette.apply_to_kit(appearance, cx);
             this.sync_browser(window, cx);
             cx.notify();
         })
@@ -180,7 +182,9 @@ impl Shell {
         let ask = AskUi::new(window, cx);
         // Light or dark as the person picked, else as the Mac is.
         remembered.appearance.apply();
-        let palette = Palette::new(remembered.appearance.resolve(window.appearance()));
+        let appearance = remembered.appearance.resolve(window.appearance());
+        let palette = Palette::new(appearance);
+        palette.apply_to_kit(appearance, cx);
         let browser_width = remembered.browser_width;
         let browser = cx.new(|cx| BrowserPanel::new(browser_width, palette, window, cx));
         let mut shell = Self {
