@@ -12,6 +12,7 @@ pub mod composer;
 pub mod connect;
 pub mod decide;
 pub mod diffview;
+pub mod disk;
 pub mod header;
 pub mod icons;
 pub mod pair;

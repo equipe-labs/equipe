@@ -235,6 +235,10 @@ pub enum NewsKind {
     DeskSaved,
     YouTold,
     Stale,
+    /// The disk ran short, or a build failed for want of room: 정리하기 beside it.
+    DiskShort,
+    /// The disk has room again.
+    DiskRoom,
 }
 
 /// A line of news, worded in the language in use.
@@ -265,6 +269,9 @@ const NEWS: &[(&str, NewsKind)] = &[
     ("news.you_told", NewsKind::YouTold),
     ("news.stale.one", NewsKind::Stale),
     ("news.stale.other", NewsKind::Stale),
+    ("news.disk_build_failed", NewsKind::DiskShort),
+    ("news.disk_critical", NewsKind::DiskShort),
+    ("news.disk_room", NewsKind::DiskRoom),
 ];
 
 /// A transcript line read as news, if it is: matched against every

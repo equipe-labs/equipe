@@ -111,6 +111,9 @@ pub struct Core {
     too_large: HashSet<String>,
     /// How often the relay said each thing went wrong.
     relay_errors: HashMap<String, u64>,
+    /// The disk's level as last heard (every squad hears it): pushed once
+    /// as it gets critical or full.
+    disk: equipe_core::protocol::disk::DiskLevel,
 }
 
 /// 1, 10, 100…
@@ -615,8 +618,9 @@ impl Core {
 
     /// An event of a squad a device follows: on to the device.
     pub fn on_event(&mut self, device: &str, squad: &str, event: &Event) -> Vec<Action> {
-        // Pictures of a browser someone at the Mac watches stay on the Mac.
-        if !self.online.contains(device) || matches!(event, Event::BrowserFrame { .. }) {
+        // Pictures of a browser someone at the Mac watches stay on the Mac, and
+        // so does the disk panel's look (the phone gets the disk's level).
+        if !self.online.contains(device) || matches!(event, Event::BrowserFrame { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. }) {
             return vec![];
         }
         self.frame_for(device, Some(squad), &Message::event(event)).into_iter().collect()
@@ -727,6 +731,19 @@ impl Core {
                     format!("browser-{lane}"),
                     event.clone(),
                 )
+            }
+            // The disk getting critical or full: every squad hears it, the phone once.
+            Event::DiskLevel { status } => {
+                let before = std::mem::replace(&mut self.disk, status.level);
+                if status.level == before || !status.level.holds_builds() || status.level < before {
+                    return vec![];
+                }
+                let free = equipe_core::disk::size(status.free);
+                let title = match status.level {
+                    equipe_core::protocol::disk::DiskLevel::Full => t!("remote.push_disk_full", free = free),
+                    _ => t!("remote.push_disk_critical", free = free),
+                };
+                (title, t!("remote.push_disk_body").into(), "disk", "disk".to_owned(), event.clone())
             }
             _ => return vec![],
         };

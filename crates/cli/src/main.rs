@@ -9,6 +9,7 @@ mod attach;
 mod clip;
 mod daemon;
 mod desktop;
+mod disk;
 mod home;
 mod i18n;
 mod lang;
@@ -226,6 +227,19 @@ enum Command {
         /// A language's code, or `auto`
         lang: Option<String>,
     },
+    /// How much room the disk has, what uses it, and what to do about it:
+    /// `clean` gives back what equipe may remove, after your yes; `debug
+    /// lines|off|full` sets how lean members' Rust builds are
+    Disk {
+        /// `clean`, or `debug [lines|off|full]`
+        words: Vec<String>,
+        /// The squad, for `debug` (default: the one this folder belongs to, else your first)
+        #[arg(long)]
+        squad: Option<String>,
+        /// Clean without asking
+        #[arg(long, short)]
+        yes: bool,
+    },
     /// The background daemon the team lives in
     Daemon {
         #[command(subcommand)]
@@ -396,6 +410,7 @@ async fn main() -> ExitCode {
         Command::Status => app.status().await,
         Command::Try { prompt, engine, model, edit } => app.run_try(&prompt, engine, model.as_deref(), edit).await,
         Command::Daemon { action } => daemon_command(action).await,
+        Command::Disk { words, squad, yes } => disk::command(&words, squad, yes).await.map_err(Failure::new),
         Command::Update => update().await,
         Command::Lang { lang } => match lang::command(&equipe_providers::credentials::equipe_home(), lang.as_deref()) {
             Ok(lines) => {
@@ -1291,7 +1306,8 @@ impl App {
                 Event::ToolResult { .. } | Event::Thinking { .. } => {}
                 Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. }
                 | Event::BrowserWants { .. }
-                | Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. } => {}
+                | Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. }
+                | Event::DiskLevel { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. } => {}
                 Event::TurnEnded { outcome, usage, .. } => {
                     printer.end(outcome, usage);
                     core.send(Cmd::Close { session: ID });

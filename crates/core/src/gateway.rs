@@ -308,6 +308,29 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
             (Some(rpc::BUSY), Some(id)) => {
                 let _ = out_tx.send(Message::response(id, core.busy().await));
             }
+            // A look at the disk, and a clean: their own task, a look takes seconds.
+            (Some(rpc::DISK), Some(id)) => {
+                let (core, out) = (core.clone(), out_tx.clone());
+                tokio::spawn(async move {
+                    let _ = out.send(match core.disk_report().await {
+                        Some(report) => Message::response(id, report),
+                        None => Message::failure(id, -32000, "the daemon didn't answer"),
+                    });
+                });
+            }
+            (Some(rpc::DISK_CLEAN), Some(id)) => {
+                let Some(ask) = message.params_as::<rpc::DiskClean>() else {
+                    let _ = out_tx.send(Message::failure(id, -32602, "disk_clean needs { ids }"));
+                    continue;
+                };
+                let (core, out) = (core.clone(), out_tx.clone());
+                tokio::spawn(async move {
+                    let _ = out.send(match core.disk_clean(ask.ids).await {
+                        Some(cleaned) => Message::response(id, cleaned),
+                        None => Message::failure(id, -32000, "the daemon didn't answer"),
+                    });
+                });
+            }
             (Some(rpc::BROWSER_WINDOW), Some(id)) => {
                 let url: String = message.params_as().unwrap_or_default();
                 let _ = out_tx.send(Message::response(id, core.person_window(url).await));
@@ -733,6 +756,39 @@ pub async fn busy(socket: &Path) -> io::Result<Option<rpc::Busy>> {
         };
         if message.id == Some(1) {
             return Ok(message.result_as::<rpc::Busy>());
+        }
+    }
+    Ok(None)
+}
+
+/// What uses the disk, as the daemon at `socket` looks at it; `None` when
+/// none answers.
+pub async fn disk_report(socket: &Path) -> io::Result<Option<crate::disk::DiskReport>> {
+    ask_once(socket, rpc::DISK, ()).await
+}
+
+/// Have the daemon at `socket` give back these items of its look.
+pub async fn disk_clean(socket: &Path, ids: Vec<String>) -> io::Result<Option<crate::disk::DiskCleaned>> {
+    ask_once(socket, rpc::DISK_CLEAN, rpc::DiskClean { ids }).await
+}
+
+/// One request to the daemon at `socket`, and its answer.
+async fn ask_once<P: serde::Serialize, R: serde::de::DeserializeOwned>(socket: &Path, method: &str, params: P) -> io::Result<Option<R>> {
+    let Ok(stream) = UnixStream::connect(socket).await else {
+        return Ok(None);
+    };
+    let (reader, mut writer) = stream.into_split();
+    write_line(&mut writer, &Message::request(1, method, params)).await?;
+    let mut lines = BufReader::new(reader).lines();
+    while let Some(line) = lines.next_line().await? {
+        let Ok(message) = Message::from_line(&line) else {
+            continue;
+        };
+        if message.id == Some(1) {
+            if let Some(error) = message.error {
+                return Err(io::Error::other(error.message));
+            }
+            return Ok(message.result_as::<R>());
         }
     }
     Ok(None)

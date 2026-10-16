@@ -452,13 +452,20 @@ fn squad(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let stale = crate::notify::stale_daemon(&model.daemon_version, env!("CARGO_PKG_VERSION"));
     let daemon_version = Line::new(t!("settings.daemon_version"), stale.clone().unwrap_or_else(|| t!("settings.daemon_version_desc", app = env!("CARGO_PKG_VERSION")))).warn(stale.is_some()).words("version").control(value(p, version));
     let restart = Line::new(t!("settings.restart_daemon"), t!("settings.restart_daemon_desc")).words("daemon restart update").control(command_chip(p, "copy-restart", "equipe daemon restart --when-idle"));
+    // The daemon machine's disk: how much room, and the panel to make more.
+    let short = shell.disk.status.as_ref().filter(|s| s.level.is_warning());
+    let disk_desc = short.and_then(|s| equipe_core::i18n::label::disk_line(crate::i18n::lang(), s)).unwrap_or_else(|| t!("settings.disk_desc").to_owned());
+    let disk = Line::new(t!("settings.disk"), disk_desc)
+        .warn(short.is_some_and(|s| s.level.holds_builds()))
+        .words("disk space storage clean target build 디스크 용량 정리 /disk")
+        .control(ui::button(p, "open-disk", Kind::Secondary, t!("settings.disk_open")).icon(Icon::Server).disabled(!connected).on_click(cx.listener(|this, _, window, cx| this.open_disk(window, cx))));
 
     let suggestions = Line::new(t!("settings.suggestions"), t!("settings.suggestions_desc")).words("suggest").control(switch(shell, "suggestions", !model.suggestions_off, connected, |this, on, _, _| this.set_suggestions(on), cx));
     let screen = Line::new(t!("settings.mac_screen"), t!("settings.mac_screen_desc")).words("desktop computer use /desktop").control(switch(shell, "desktop", !model.desktop_stopped, connected, |this, on, _, _| this.set_desktop_open(on), cx));
     vec![
         Section::new(t!("settings.section_connection"), vec![squad, machine, connection]).foot(t!("settings.connection_foot")),
         phones(shell, connected, cx),
-        Section::new(t!("settings.section_daemon"), vec![daemon_version, restart]),
+        Section::new(t!("settings.section_daemon"), vec![daemon_version, restart, disk]),
         Section::new(t!("settings.section_squad"), vec![suggestions, screen]).foot(t!("settings.squad_foot")),
     ]
 }
