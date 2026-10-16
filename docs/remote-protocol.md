@@ -157,6 +157,16 @@ Answers to `devices` and `remove` carry `"op"`; a device row is `{ id, name, pla
 online, seen? }`, `seen` being when it last connected or left (kept in `remote.json`). The code
 reaches the screen only in `pair_offer` and is never logged or kept on either side.
 
+### A phone forgets itself
+
+A phone can also forget itself ("Erase this phone" in the app, for account deletion): it sends
+`unpair` on its device socket. The relay forgets its token and push token, answers `unpaired`
+and closes the socket (1000); a connection with the old token gets `401`. It tells the daemon
+`device_unpaired` — at once, and again on each daemon connection until the daemon answers
+`device_remove` — and the daemon forgets the device as `equipe devices remove` would. An app
+that gets no `unpaired` within a few seconds (an older relay answers `error`) erases itself
+anyway and tells the person to run `equipe devices remove` on the Mac.
+
 ## Demo pairing (store review)
 
 App Review and Google Play reviewers have no Mac to pair with. For them equipe-labs runs a
@@ -210,7 +220,7 @@ daemon → relay
 | `pair_send` | `slot`, `data` | the sealed pairing answer |
 | `pair_close` | `slot` | |
 | `device_add` | `device`, `token_hash` (hex SHA-256 of the device token) | |
-| `device_remove` | `device` | closes its socket, forgets its push token |
+| `device_remove` | `device` | closes its socket, forgets its push token; also the answer to `device_unpaired` |
 | `push` | `device`, `title`, `body`, `category`, `data`, `collapse?` | see Push |
 
 relay → daemon
@@ -222,13 +232,16 @@ relay → daemon
 | `pair_recv` | `slot`, `data` | a sealed pairing request |
 | `presence` | `device`, `online` | a device connected or left; on connecting, the daemon gets one for each device already there |
 | `push_result` | `device`, `ok`, `error?` | |
+| `device_unpaired` | `device` | the phone erased itself (`unpair`); sent again on each connection until the daemon answers `device_remove` |
 | `error` | `message` | |
 
 ### Device socket: `GET /v1/daemons/<id>/devices/<device>/connect` (WebSocket), `Authorization: Bearer <device token>`
 
-device → relay: `{ "type": "send", "data" }`; `{ "type": "push_token", "platform": "apns" | "fcm", "token", "sandbox"? }`
+device → relay: `{ "type": "send", "data" }`; `{ "type": "push_token", "platform": "apns" | "fcm", "token", "sandbox"? }`;
+`{ "type": "unpair" }` (forget this device — see Pairing)
 
-relay → device: `{ "type": "recv", "data" }`; `{ "type": "presence", "online" }` (the daemon's)
+relay → device: `{ "type": "recv", "data" }`; `{ "type": "presence", "online" }` (the daemon's);
+`{ "type": "unpaired" }` (the answer to `unpair`, just before the socket closes)
 
 ### Pairing socket: `GET /v1/daemons/<id>/pair/<slot>` (WebSocket), no auth
 

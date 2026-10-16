@@ -258,6 +258,15 @@ describe("push without a token", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("forgets the push token when the phone unpairs", async () => {
+    const ctx = await deviceWithToken("apns", APNS_TOKEN);
+    const phone = await open(devicePath(ctx.id, ctx.device), ctx.deviceToken);
+    phone.send({ type: "unpair" });
+    await phone.next("unpaired");
+    expect(await storedPush(ctx.id, ctx.device)).toBeUndefined();
+    expect(await pushOnce(ctx)).toMatchObject({ ok: false });
+  });
+
   it("forgets the push token with the device", async () => {
     const ctx = await deviceWithToken("apns", APNS_TOKEN);
     ctx.daemon.send({ type: "device_remove", device: ctx.device });
