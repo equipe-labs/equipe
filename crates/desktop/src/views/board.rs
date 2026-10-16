@@ -442,7 +442,7 @@ impl Shell {
         self.composer.flash = Some(text.into());
     }
 
-    fn project_of(&self, t: &Ticket) -> String {
+    pub(crate) fn project_of(&self, t: &Ticket) -> String {
         self.model.ticket_project_name(t).unwrap_or_else(|| t!("board.squad_folder").into())
     }
 
@@ -556,7 +556,7 @@ impl Shell {
         self.land(&t, Some(way), cx);
     }
 
-    fn land(&mut self, t: &Ticket, way: Option<MergeWay>, cx: &mut Context<Self>) {
+    pub(crate) fn land(&mut self, t: &Ticket, way: Option<MergeWay>, cx: &mut Context<Self>) {
         self.land_with(t, way, "", cx);
     }
 
@@ -590,7 +590,7 @@ impl Shell {
 
     /// Act on a ticket in five seconds, unless taken back (U); out of the
     /// list at once, and on to the next thing.
-    fn hold(&mut self, id: TicketId, text: String, commands: Vec<Command>, cx: &mut Context<Self>) {
+    pub(crate) fn hold(&mut self, id: TicketId, text: String, commands: Vec<Command>, cx: &mut Context<Self>) {
         let before = board::items(&self.board_rows());
         self.model.act_on(id);
         self.board.undo.push(id, text, commands, Instant::now());
@@ -1869,10 +1869,13 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                         .justify_end()
                         .overflow_hidden()
                         .children(m.flags.into_iter().enumerate().map(|(i, (text, color, tip))| {
+                            // What it waits on: that ticket's card, not a tooltip.
+                            let dep = text.strip_prefix("⛔ T-").and_then(|n| n.parse().ok());
                             let chip = div().id(("flag", i)).flex_none().px(px(6.)).h(px(18.)).flex().items_center().rounded(px(4.)).bg(p.wash).text_size(px(11.)).text_color(color).child(text);
-                            match tip {
-                                Some(tip) => chip.tip(p, tip, None).into_any_element(),
-                                None => chip.into_any_element(),
+                            match (dep, tip) {
+                                (Some(dep), _) => super::ticket_card::hover_link(chip, dep, super::ticket_card::Side::Below).into_any_element(),
+                                (None, Some(tip)) => chip.tip(p, tip, None).into_any_element(),
+                                (None, None) => chip.into_any_element(),
                             }
                         })),
                 )

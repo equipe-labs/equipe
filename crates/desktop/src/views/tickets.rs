@@ -1701,7 +1701,7 @@ fn card(shell: &Shell, id: TicketId, status: TicketStatus, next: Option<TicketId
                         .text_color(p.muted)
                         .when(t.status.is_closed() && status == TicketStatus::Done, |h| h.child(icons::status(p, t.status, 11.)))
                         .child(h_flex().gap(px(5.)).items_center().min_w_0().child(dot(hue_of(p, model, t).unwrap_or(p.muted), 6.)).child(div().truncate().child(project.unwrap_or_else(|| t!("board.squad_folder").into()))))
-                        .when_some(blocked, |h, dep| h.child(div().px(px(5.)).rounded(px(4.)).bg(p.wash).text_color(p.orange).child(format!("⛔ T-{dep}"))))
+                        .when_some(blocked, |h, dep| h.child(super::ticket_card::hover_link(div().id(("card-blocked", id as u64)).px(px(5.)).rounded(px(4.)).bg(p.wash).text_color(p.orange).child(format!("⛔ T-{dep}")), dep, super::ticket_card::Side::Below)))
                         .when(unblocks > 0 && !t.status.is_closed(), |h| h.child(div().px(px(5.)).rounded(px(4.)).bg(p.wash).child(format!("→ {unblocks}"))))
                         .when(t.not_on_main(), |h| h.child(div().px(px(5.)).rounded(px(4.)).bg(p.wash).text_color(p.accent).child(t!("state.chip_not_on_main")))),
                 ),
@@ -2308,8 +2308,8 @@ pub fn properties(shell: &Shell, t: &Ticket, compact: bool, cx: &mut Context<She
     }
     let link = |dep: TicketId, removable: bool, cx: &mut Context<Shell>| {
         let found = model.tickets.iter().find(|x| x.id == dep);
-        h_flex()
-            .id(SharedString::from(format!("prop-link-{id}-{dep}-{removable}")))
+        let row = h_flex().id(SharedString::from(format!("prop-link-{id}-{dep}-{removable}")));
+        super::ticket_card::hover_link(row, dep, super::ticket_card::Side::Below)
             .group(SharedString::from(format!("prop-link-{dep}")))
             .h(px(26.))
             .px(px(6.))

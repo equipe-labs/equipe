@@ -1050,6 +1050,8 @@ fn linked(rows: &Rows, id: impl Into<ElementId>, text: &str, color: Rgba, grow: 
     let style = HighlightStyle { color: Some(p.text.into()), underline: Some(UnderlineStyle { thickness: px(1.), color: Some(p.hair.into()), wavy: false }), ..Default::default() };
     let styled = StyledText::new(text.to_owned()).with_highlights(ranges.iter().map(|r| (r.clone(), style)));
     let handle = rows.handle.clone();
+    // Each number's card on the pointer.
+    let (layout, hovered, named) = (styled.layout().clone(), ranges.clone(), tickets.clone());
     div()
         .min_w_0()
         .when(grow, |d| d.flex_1())
@@ -1057,13 +1059,24 @@ fn linked(rows: &Rows, id: impl Into<ElementId>, text: &str, color: Rgba, grow: 
         .whitespace_nowrap()
         .text_ellipsis()
         .text_color(color)
-        .child(InteractiveText::new(id, styled).on_click(ranges, move |n, _, cx| {
-            if let Some(&ticket) = tickets.get(n) {
-                cx.stop_propagation();
-                handle.update(cx, |shell, cx| shell.side_open(ticket, cx)).ok();
-            }
-        }))
+        .child(
+            InteractiveText::new(id, styled)
+                .on_click(ranges, move |n, _, cx| {
+                    if let Some(&ticket) = tickets.get(n) {
+                        cx.stop_propagation();
+                        handle.update(cx, |shell, cx| shell.side_open(ticket, cx)).ok();
+                    }
+                })
+                .on_hover(move |ix, event, _, cx| super::ticket_card::text_hover(&layout, &hovered, &named, ix, &event, cx)),
+        )
         .into_any_element()
+}
+
+/// The ticket a line names first, for its card on Space.
+fn named_ticket(text: Option<String>) -> Option<u32> {
+    let text = text?;
+    let (at, len) = crate::convo::ticket_ref(&text)?;
+    text[at + 2..at + len].parse().ok()
 }
 
 /// A group of tool calls: one quiet line — the call under way, the one call,
@@ -1114,6 +1127,7 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
         )
         .when(openable, |h| h.child(chevron(p.muted, progress)));
     let head = if !openable { head.cursor_default() } else { head };
+    let head = super::ticket_card::space_opens(head, named_ticket(one.map(|l| l.text())));
     let body = (progress > 0.).then(|| {
         let inner = match one {
             Some(line) => call_body(rows, key, 0, line, failed, window, cx),
@@ -1169,6 +1183,7 @@ fn call_row(rows: &Rows, key: u64, at: u32, line: &ToolLine, rule: bool, window:
         .children(line.exit.filter(|_| failed).map(|code| div().flex_none().px_1().rounded(px(4.)).bg(t.danger_bg).text_size(px(META)).text_color(t.danger).child(t!("chat.exit_code", code = code))))
         .children(line.ms.filter(|_| !running).map(|ms| div().flex_none().text_size(px(META)).text_color(p.muted).child(tools::duration(ms))))
         .when(more, |h| h.child(chevron(p.muted, progress)));
+    let head = super::ticket_card::space_opens(head, named_ticket(Some(line.text())));
     let body = (progress > 0.).then(|| motion::Reveal::new(("call-body", key << 8 | at as u64), progress, div().opacity(progress).px_3().pb_2().child(call_body(rows, key, at, line, failed, window, cx)).into_any_element()));
     v_flex().when(rule, |c| c.border_t_1().border_color(p.hair)).child(head).children(body).into_any_element()
 }
@@ -1358,7 +1373,7 @@ fn user_row(rows: &Rows, key: u64, raw: &str, open: bool, project: Option<(Strin
     let look = Look { size: BODY, line: BODY_LINE, color: p.prose, live: false };
     let body = (!text.is_empty()).then(|| {
         let state = rows.views.borrow_mut().get(view_key(key, 2), &escape_markdown(text), cx);
-        TextView::new(&state).style(view::style(p, &look)).selectable(true).when(clamped, |v| v.max_lines(USER_LINES))
+        TextView::new(&state).style(view::style(p, &look)).selectable(true).on_link_click(|url, event, _, cx| view::follow(url, event.modifiers(), 0, cx)).when(clamped, |v| v.max_lines(USER_LINES))
     });
     let files = attached::attachments(&rows.attached, key, &parts.tags, parts.more, true, cx);
     let group: SharedString = format!("user-{key}").into();
@@ -1420,11 +1435,23 @@ pub fn escape_markdown(text: &str) -> String {
     for (n, line) in lines.iter().enumerate() {
         let trimmed = line.trim_start_matches(' ');
         out.extend(std::iter::repeat_n('\u{A0}', line.len() - trimmed.len()));
-        for c in trimmed.chars() {
-            if c.is_ascii_punctuation() {
-                out.push('\\');
+        // A ticket number is a link to it, as in a reply.
+        let mut rest = trimmed;
+        while !rest.is_empty() {
+            let (plain, link) = match crate::convo::ticket_ref(rest) {
+                Some((at, len)) => (&rest[..at], Some(&rest[at..at + len])),
+                None => (rest, None),
+            };
+            for c in plain.chars() {
+                if c.is_ascii_punctuation() {
+                    out.push('\\');
+                }
+                out.push(c);
             }
-            out.push(c);
+            if let Some(link) = link {
+                out.push_str(&format!("[{}](ticket:{})", link.replace('-', "\\-"), &link[2..]));
+            }
+            rest = &rest[plain.len() + link.map_or(0, str::len)..];
         }
         if n + 1 < lines.len() {
             // A hard break, unless the next line is blank (a paragraph break).
@@ -1841,6 +1868,8 @@ mod tests {
         assert_eq!(escape_markdown("    indented"), "\u{A0}\u{A0}\u{A0}\u{A0}indented");
         assert_eq!(escape_markdown("1. first"), "1\\. first");
         assert_eq!(escape_markdown("한국어 그대로"), "한국어 그대로");
+        assert_eq!(escape_markdown("T-12 먼저, 그다음 T-3."), "[T\\-12](ticket:12) 먼저\\, 그다음 [T\\-3](ticket:3)\\.");
+        assert_eq!(escape_markdown("AT-1 no"), "AT\\-1 no", "not a word of its own");
     }
 
     #[test]
