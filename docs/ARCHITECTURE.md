@@ -34,7 +34,8 @@ An all-Rust workspace. The domain lives in one core that every front end shares.
 | `equipe-protocol` (`crates/protocol`) | The contract between the brain and every screen: `Command`s in, `Event`s out | — |
 | `equipe-core` (`crates/core`) | The brain: the `runtime` that runs members on engines; squads, roles and the board's rules; the journal in SQLite; the daemon's socket; the MCP board tools; worktree sandboxes | protocol, providers |
 | `equipe-providers` (`crates/providers`) | Sign-in and engines: Codex (OAuth, models, Responses turns), the user's Claude Code | — |
-| `equipe` (`crates/cli`) | Screens: the command line and the terminal UI | protocol, core |
+| `equipe-desktop-control` (`crates/desktop-control`) | Members working the Mac's desktop apps: the tools and their aiming checks, the helper's socket, installing and signing the helper, the macOS calls (ScreenCaptureKit, CGEvent, Accessibility) | protocol |
+| `equipe` (`crates/cli`) | Screens: the command line and the terminal UI | protocol, core, desktop-control |
 | `equipe-desktop` (`crates/desktop`) | The desktop app on GPUI Kit — see [DESKTOP.md](./DESKTOP.md) | core |
 
 ### The brain and the screens
@@ -233,6 +234,57 @@ from the squad, and `--allowedTools mcp__equipe` lets a headless run use equipe'
 tools without a prompt. Codex members have no tools until Codex runs over ACP,
 whose `session/new` carries MCP servers; until then a Codex member says when it is
 done and the person accepts.
+
+### Desktop tools (experimental, macOS)
+
+Members can work the Mac's desktop apps the way they work the browser — the
+design and what the T-20 spike proved are in [DESKTOP-CONTROL.md](./DESKTOP-CONTROL.md).
+Off for everyone until the person runs `equipe desktop on <member>
+--experimental`; until the screen lease (T-22) and the send approval (T-23)
+exist, it stays behind that flag.
+
+```
+member's claude ──stdio──▶ equipe mcp --server desktop ──socket: desktop──▶ daemon
+                                                     (is this member allowed?)
+daemon ──~/.equipe/desktop/helper.sock + token──▶ equipe Desktop Helper.app
+                                                   (LaunchAgent im.equipe.desktop-helper, Aqua)
+```
+
+- **Only the helper holds the permissions.** A TCC grant belongs to the process
+  launchd started and every child inherits it: granted to the daemon, every
+  member's Bash could capture the screen. The helper is an app bundle
+  (`im.equipe.desktop-helper`) whose executable is a copy of `equipe` that runs
+  `desktop serve` and nothing else, signed with a fixed identity so a rebuilt
+  helper keeps its grants: a self-signed certificate made on the Mac, in a
+  keychain of its own under `~/.equipe/desktop/signing`, until there is a
+  Developer ID (`equipe desktop setup --sign "<identity>"` switches; `Signer` in
+  `install.rs`). The bundle lives in `~/Applications` — System Settings lists
+  only apps Launch Services knows, not bundles in hidden folders like
+  `~/.equipe` — and a new build is staged beside it and swapped in, since App
+  Management blocks rewriting a bundle in place.
+- **Reached through the daemon.** The helper answers only requests carrying the
+  token beside its socket, which fenced members can't read (`deny_read`, like the
+  credentials). The runtime checks the member is turned on; the call itself runs
+  outside the runtime's loop. The helper serves one request at a time.
+- **Aimed, not just placed.** Coordinates are pixels of the member's last
+  screenshot (captured at the model's size, ≤1568 px and ≈1.15 MP); the helper
+  maps them to points. Before a click it brings the app forward (AX
+  `AXFrontmost`/`AXRaise`) and asks Accessibility's hit test what the point
+  reaches — the window list lies under BetterDisplay's overlay — and refuses if
+  it isn't the app the member means. Typing and keys are refused unless the
+  keyboard focus (`AXFocusedApplication`) is in that app, and typing stops the
+  moment it moves. An element from `elements` is pressed through Accessibility
+  where it can be. These rules are tested against a fake desktop
+  (`controller.rs`).
+- **No images kept.** A screenshot is a JPEG in memory, passed back as the tool
+  result; the journal records the tool call's one line. (Claude Code's own
+  transcript keeps tool-result images — equipe can't stop that.)
+- `equipe desktop setup` installs the helper, asks macOS for the permissions,
+  opens the two Settings panes and checks: a GUI session, the daemon as a login
+  service there, Screen Recording, Accessibility (which takes the person's
+  password or Touch ID to switch on), sending input, the display. `equipe
+  desktop status` checks without changing anything; members without the
+  permissions are told to ask the person for `equipe desktop setup`.
 
 ### Plans are notes; tickets are commitments
 

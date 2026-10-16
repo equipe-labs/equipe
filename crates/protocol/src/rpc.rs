@@ -6,6 +6,8 @@
 //! - `event` (notification, daemon → screen): an [`Event`](crate::Event)
 //! - `tool` (request): a member's board tool call, from the MCP server equipe
 //!   gives its engine → [`ToolResult`]
+//! - `desktop` (request): a member's desktop tool call (`equipe mcp --server
+//!   desktop`) → [`ToolResult`], answered by the desktop helper
 //! - `shutdown` (request): stop the daemon; sessions stay restorable
 //! - `version` (request): → [`Version`], the daemon's build and wire version
 //! - `squads` (request): → [`Squads`], the squads on the daemon's machine
@@ -43,6 +45,7 @@ pub const READ_UPLOAD: &str = "read_upload";
 /// changed). Added methods, events and optional fields don't bump it.
 pub const PROTOCOL: u32 = 1;
 
+pub const DESKTOP: &str = "desktop";
 /// Who is busy: members mid-turn and requests waiting for the person.
 pub const BUSY: &str = "busy";
 /// A window for the person in the members' shared Chrome, at a page (`equipe
@@ -98,11 +101,31 @@ pub struct ToolCall {
     pub arguments: Value,
 }
 
-/// What a tool call returns: text for the model, and whether it failed.
+/// What a tool call returns: text for the model, whether it failed, and — for
+/// a desktop screenshot — an image, which is never written anywhere.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolResult {
     pub text: String,
     pub is_error: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<Image>,
+}
+
+impl ToolResult {
+    pub fn ok(text: impl Into<String>) -> Self {
+        Self { text: text.into(), is_error: false, image: None }
+    }
+
+    pub fn error(text: impl Into<String>) -> Self {
+        Self { text: text.into(), is_error: true, image: None }
+    }
+}
+
+/// An image in a tool result: its MIME type and its bytes in base64.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Image {
+    pub mime: String,
+    pub data: String,
 }
 
 /// The daemon's answer to `hello`.
