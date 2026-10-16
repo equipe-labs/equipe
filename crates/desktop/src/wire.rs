@@ -90,6 +90,12 @@ impl Commands {
         self.ask(rpc::READ_UPLOAD, rpc::ReadUpload { path: path.into(), size_only })
     }
 
+    /// Ask for a picture the squad shows (`read_image`) — a design system's,
+    /// a decision's — at most `max` pixels on a side when given.
+    pub fn read_image(&self, squad: &str, path: &str, max: Option<u32>) -> std::sync::mpsc::Receiver<Result<serde_json::Value, String>> {
+        self.ask(rpc::READ_IMAGE, rpc::ReadImage { squad: squad.into(), path: path.into(), max })
+    }
+
     fn ask(&self, method: &str, params: impl serde::Serialize) -> std::sync::mpsc::Receiver<Result<serde_json::Value, String>> {
         let (tx, rx) = std::sync::mpsc::channel();
         let id = self.next.fetch_add(1, Ordering::Relaxed);

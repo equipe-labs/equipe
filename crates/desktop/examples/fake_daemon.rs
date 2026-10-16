@@ -312,7 +312,7 @@ fn deciding() -> Option<String> {
 fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
     static QUESTIONS: std::sync::OnceLock<std::sync::Mutex<Vec<QuestionSet>>> = std::sync::OnceLock::new();
     QUESTIONS.get_or_init(|| {
-        let choice = |label: &str, description: &str| Choice { label: label.into(), description: description.into() };
+        let choice = |label: &str, description: &str| Choice { label: label.into(), description: description.into(), images: Vec::new() };
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         let sets = vec![
             QuestionSet {
@@ -330,6 +330,7 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
                             choice("이메일 + 비밀번호", "익숙하지만 재설정 흐름까지 만들어야 합니다"),
                         ],
                         multi_select: false,
+                        images: Vec::new(),
                     },
                     Question {
                         question: "첫 릴리스에 어떤 화면을 넣을까요?".into(),
@@ -340,6 +341,7 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
                             choice("설정", "알림·계정 관리"),
                         ],
                         multi_select: true,
+                        images: Vec::new(),
                     },
                 ],
                 asked_at: now.saturating_sub(90),
@@ -354,6 +356,7 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
                     header: "페이지".into(),
                     options: vec![choice("20개 (추천)", "앱 목록 화면 한 번에 맞습니다"), choice("50개", "요청은 줄지만 첫 화면이 느려집니다")],
                     multi_select: false,
+                    images: Vec::new(),
                 }],
                 asked_at: now.saturating_sub(30),
             },

@@ -18,6 +18,7 @@ mod activity;
 mod convo;
 mod decide;
 mod daemon;
+mod design;
 mod failure;
 mod help;
 mod install;
@@ -153,6 +154,8 @@ pub enum Screen {
     Board,
     /// Settings (⌘,): its own list in the sidebar's place.
     Settings,
+    /// 디자인 시스템: the squad's design system (`views/design.rs`).
+    Design,
 }
 
 pub struct Shell {
@@ -172,6 +175,8 @@ pub struct Shell {
     /// Words selected in the conversation, asked about (`views/quote.rs`).
     pub quote: views::quote::QuoteUi,
     pub settings: views::settings::SettingsUi,
+    /// 디자인 시스템's state: what the daemon said, what is on screen.
+    pub design: design::DesignUi,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
     pub browser: Entity<BrowserPanel>,
     /// The ticket a `T-n` link asked the board to open.
@@ -269,6 +274,7 @@ impl Shell {
             asklist: Default::default(),
             quote: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
+            design: Default::default(),
             browser,
             board_ticket: None,
             bell: Default::default(),
@@ -466,6 +472,11 @@ impl Shell {
                 cx.stop_propagation();
                 return;
             }
+            // 디자인 시스템's keys: sections, the lightbox.
+            if this.update(cx, |shell, cx| shell.on_design_key(key, &modifiers, cx)).unwrap_or(false) {
+                cx.stop_propagation();
+                return;
+            }
             // The work screens' keys: A R N…, moving, the peek, search.
             if this.update(cx, |shell, cx| shell.on_board_key(key, &modifiers, window, cx)).unwrap_or(false) {
                 cx.stop_propagation();
@@ -582,6 +593,7 @@ impl Shell {
     fn attach(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
         self.model = Model::new(target.prefer.as_deref().unwrap_or(""));
         self.model.remote = target.endpoint.is_remote();
+        self.design.reset();
         self.sheet = None;
         self.confirm = None;
         self.connecting_shown = false;
@@ -620,6 +632,14 @@ impl Shell {
                     this.model.unix = state::now_unix();
                     let mut changed = false;
                     for update in batch {
+                        // The squad's design system: the design screen's, never the model's.
+                        let update = match update {
+                            daemon::Update::Event(Event::Design { squad, systems, folder }) => {
+                                changed |= this.design_arrived(squad, systems, folder);
+                                continue;
+                            }
+                            other => other,
+                        };
                         // The shared Chrome's tabs and hands: the browser panel's.
                         if let daemon::Update::Event(
                             event @ (Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. } | Event::BrowserWants { .. }),
@@ -683,6 +703,8 @@ impl Shell {
                         }
                         if attached {
                             this.start_team();
+                            // A new connection: the design system is asked for again, if on screen.
+                            this.design.reset();
                         }
                     }
                     // Told while the window is out of sight; in sight, the cards say it.
@@ -948,6 +970,7 @@ impl Shell {
                     // 나에게, 작업 중, 모든 일, a saved view: the menu item chosen.
                     Screen::Board => views::board::render(self, cx).into_any_element(),
                     Screen::Settings => views::settings::render(self, cx),
+                    Screen::Design => views::design::render(self, cx),
                 };
                 v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).child(screen).into_any_element()
             }
@@ -1065,6 +1088,7 @@ impl Render for Shell {
         }
         self.board.relocalize(window, cx);
         self.board_prepare(window, cx);
+        self.design_prepare(window, cx);
         // What the person did here (accepted, answered, a project in focus) changes 나에게 too.
         self.sync_badge();
         self.renders += 1;
@@ -1157,6 +1181,7 @@ impl Render for Shell {
             .children(views::quote::layer(self, window, cx))
             .children(views::composer::drop_overlay(self, cx))
             .children(views::composer::lightbox(self, cx))
+            .children(views::design::lightbox(self, cx))
             .children(views::attached::gallery(self, cx))
             .children(views::sheet::sheet(self, cx))
             .children(views::sheet::question(self, cx))
