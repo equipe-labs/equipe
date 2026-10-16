@@ -65,10 +65,14 @@ fn config(home: &Path, claude: &Path) -> Config {
 }
 
 async fn daemon(home: &Path, claude: &Path) -> (PathBuf, tokio::task::JoinHandle<std::io::Result<()>>) {
-    let socket = gateway::socket_path(home);
+    daemon_with(config(home, claude)).await
+}
+
+async fn daemon_with(config: Config) -> (PathBuf, tokio::task::JoinHandle<std::io::Result<()>>) {
+    let socket = gateway::socket_path(&config.home);
     let task = tokio::spawn({
-        let (home, claude, socket) = (home.to_owned(), claude.to_owned(), socket.clone());
-        async move { gateway::serve(config(&home, &claude), &socket, "test").await }
+        let socket = socket.clone();
+        async move { gateway::serve(config, &socket, "test").await }
     });
     for _ in 0..100 {
         if gateway::is_running(&socket).await {
@@ -229,6 +233,46 @@ async fn a_members_tool_call_reaches_the_board_over_the_socket() {
 
     let stranger = ToolCall { member: "nobody".into(), ..call };
     assert!(gateway::call_tool(&socket, &stranger).await.unwrap().is_error);
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+/// A screen that says it has a browser panel — the app, here or on another
+/// Mac — gets a member's browser handed to it rather than a window on the
+/// daemon's screen, for as long as it stays attached.
+#[tokio::test]
+async fn while_the_app_is_attached_a_handed_over_browser_goes_to_its_panel_not_this_macs_screen() {
+    use equipe_core::protocol::rpc::{self, HelloParams, Message};
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+    let (home, project) = squad();
+    let claude = fake_claude(&slow_answer("0"));
+    // The browser host: a Chrome that never says anything.
+    let npx = scratch("npx").join("npx");
+    write_script(&npx, "#!/bin/sh\nexec cat > /dev/null\n");
+    let (socket, _daemon) = daemon_with(Config { npx: Some(npx), browser_host: true, ..config(&home, &claude) }).await;
+    let (mut screen, _) = Client::connect(&socket, "test", "acme").await.unwrap();
+    screen.send(Command::Start { session: 51, spec: SessionSpec { role: Some("pm".into()), ..spec(&project) } });
+    until(&mut screen, |e| matches!(e, Event::SessionStarted { .. })).await;
+    let call = ToolCall { squad: "acme".into(), member: "pm".into(), name: "show_my_browser".into(), arguments: serde_json::json!({ "why": "Sign in to App Store Connect" }) };
+
+    // The app attaches, saying it has a panel (closed for now).
+    let app = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    let (reader, mut writer) = app.into_split();
+    let hello = HelloParams { version: "app".into(), squad: "acme".into(), lang: None, browser_panel: true };
+    writer.write_all(Message::request(1, rpc::HELLO, hello).to_line().as_bytes()).await.unwrap();
+    let mut lines = tokio::io::BufReader::new(reader).lines();
+    while let Some(line) = lines.next_line().await.unwrap() {
+        if Message::from_line(&line).is_ok_and(|m| m.id == Some(1)) {
+            break;
+        }
+    }
+    let result = gateway::call_tool(&socket, &call).await.unwrap();
+    assert!(result.text.contains("browser panel"), "to the app's panel: {result:?}");
+
+    // The app gone: the window on this Mac, as before.
+    drop((lines, writer));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let result = gateway::call_tool(&socket, &call).await.unwrap();
+    assert!(result.text.contains("comes up on the person's screen"), "{result:?}");
     gateway::shutdown(&socket).await.unwrap();
 }
 

@@ -89,6 +89,8 @@ pub struct Core {
     /// Ticket statuses per squad, to push only on a change.
     tickets: BTreeMap<String, HashMap<TicketId, TicketStatus>>,
     following: HashSet<(String, String)>,
+    /// Members' browsers handed to the person, by lane: pushed once each.
+    handed: HashSet<String>,
 }
 
 /// The pairing slot for a secret: what the relay knows it by.
@@ -603,6 +605,27 @@ impl Core {
                 short.note = short.note.map(|n| n.chars().take(PUSH_ACTION).collect());
                 (title, format!("T-{} · {squad}", ticket.id), category, format!("ticket-{}", ticket.id), Event::TicketChanged { squad: squad.to_owned(), ticket: short })
             }
+            // A member handed the person its browser (to sign in, a code, a
+            // human check): the phone can't drive it — the push says where to.
+            Event::BrowserControl { lane, by, why, check, .. } => {
+                let key = format!("{}/{lane}", only.unwrap_or_default());
+                if by.is_none() {
+                    self.handed.remove(&key);
+                    return vec![];
+                }
+                if (why.is_none() && check.is_none()) || !self.handed.insert(key) {
+                    return vec![];
+                }
+                let member = lane.split_once('/').map_or(lane.as_str(), |(_, key)| key);
+                let member = member.split_once('@').map_or(member, |(name, _)| name);
+                (
+                    t!("remote.push_browser", member = member),
+                    t!("remote.push_browser_body", squad = squad),
+                    "browser",
+                    format!("browser-{lane}"),
+                    event.clone(),
+                )
+            }
             _ => return vec![],
         };
         let Some(config) = self.config.as_ref() else { return vec![] };
@@ -880,6 +903,23 @@ pub(crate) mod tests {
         let questions = &opened["rpc"]["params"]["questions"]["questions"];
         assert_eq!(questions[0]["question"].as_str().unwrap().chars().count(), 200);
         assert_eq!((questions[0]["options"][0]["label"].as_str(), questions[0]["options"][0].get("description")), (Some("Postgres"), None));
+        // A member hands the person its browser: who, and that it's the Mac's app to do it in — what for travels sealed.
+        let why = "Umbriles Inc. 계정 소유자 Apple ID로 로그인해 주세요";
+        let handed = Event::BrowserControl { squad: Some("acme".into()), lane: "acme/pm".into(), by: Some("person".into()), why: Some(why.into()), check: None };
+        let out = core.on_squad_event("acme", &handed);
+        let Action::Relay(push) = &out[0] else { panic!("{out:?}") };
+        assert_eq!((push["title"].as_str(), push["category"].as_str()), (Some("pm is waiting for you in its browser"), Some("browser")));
+        assert!(push["body"].as_str().unwrap().contains("equipe app on your Mac") && push["body"].as_str().unwrap().contains("acme"), "{push}");
+        assert!(!push.to_string().contains("Umbriles"), "what for travels sealed only");
+        assert_eq!(phone.open(&c, &out[0])["rpc"]["params"]["why"].as_str(), Some(why));
+        assert!(core.on_squad_event("acme", &handed).is_empty(), "told again (a screen attached): pushed once");
+        let taken = Event::BrowserControl { squad: Some("acme".into()), lane: "acme/qa".into(), by: Some("person".into()), why: None, check: None };
+        assert!(core.on_squad_event("acme", &taken).is_empty(), "the person taking it themselves is no news");
+        let back = Event::BrowserControl { squad: Some("acme".into()), lane: "acme/pm".into(), by: None, why: None, check: None };
+        assert!(core.on_squad_event("acme", &back).is_empty());
+        let check = Event::BrowserControl { squad: Some("acme".into()), lane: "acme/pm@site".into(), by: Some("person".into()), why: None, check: Some(equipe_core::protocol::HumanCheck::SignIn) };
+        assert!(matches!(&core.on_squad_event("acme", &check)[..], [Action::Relay(p)] if p["title"] == "pm is waiting for you in its browser"));
+        assert_eq!(core.on_squad_event("acme", &handed).len(), 1, "handed over again after it came back");
     }
 
     #[test]

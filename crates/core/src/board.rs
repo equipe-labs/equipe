@@ -400,14 +400,16 @@ backticks (`outputs/T-12/shots/`). In the person's language.",
     ];
     tools.push(json!({
         "name": SHOW_BROWSER,
-        "description": "Put your browser on the person's screen — for them to sign in, to look at something with \
-you, or to do a step only they can (a code, a CAPTCHA). Give the page to open. It comes up when this turn ends; \
-say what they should do there, then end your turn and wait for them. Never run `equipe browser` yourself.",
+        "description": "Hand your browser to the person — for them to sign in, to look at something with you, or \
+to do a step only they can (a code, a CAPTCHA). Always use this rather than only asking in words. Give the page to \
+open and, as `why`, exactly what to do there. It opens in their hands in equipe's browser panel (or on their \
+screen when this turn ends), with `why` over it; end your turn then. When they hand it back you get a message and \
+carry on by yourself. Never run `equipe browser` yourself.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "url": { "type": "string", "description": "The page to open for them." },
-                "why": { "type": "string", "description": "What they should do there, in one line — in the person's language." },
+                "why": { "type": "string", "description": "Exactly what they should do there, in one line — which site, which account, which button — in the person's language. Shown to them over the page." },
             },
             "required": ["why"],
         },

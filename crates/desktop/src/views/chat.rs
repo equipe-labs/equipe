@@ -203,6 +203,7 @@ impl Chat {
         }
         let mut view = model.conversation(self.follow, &self.elsewhere);
         crate::yourturn::mark(&mut view.blocks, looks);
+        crate::convo::mark_handed(&mut view.blocks);
         self.about = Rc::new(view.about);
         self.answered_in = view.answered_in;
         let old = std::mem::replace(&mut self.blocks, Rc::new(view.blocks));
@@ -548,6 +549,10 @@ struct Rows {
     /// The latest reply, when it asks the person things in a list: its row,
     /// the list, and the form it turns into.
     asking: Option<Rc<super::asklist::Shown>>,
+    /// The squad, and the members whose browser is in the person's hands
+    /// now: what a live hand-over row offers.
+    squad: String,
+    held: HashSet<String>,
 }
 
 impl Rows {
@@ -618,6 +623,11 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         projects: Rc::new(if every { names } else { Vec::new() }),
         focus: slice.flatten(),
         asking: super::asklist::shown(shell, cx),
+        held: {
+            let browser = shell.browser.read(cx);
+            shell.chat.blocks.iter().filter_map(|b| if let Block::HandOver { name, live: true, .. } = b { Some(name.clone()) } else { None }).filter(|name| browser.held_by_person(&format!("{}/{name}", shell.model.squad))).collect()
+        },
+        squad: shell.model.squad.clone(),
         turns: shell
             .chat
             .blocks
@@ -831,6 +841,7 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
         Block::Memo(text) => waiting(rows, key, "memo", text, p.muted, t!("chat.memo_note"), cx),
         Block::Steering(text) => waiting(rows, key, "steering", text, p.accent, t!("chat.steering_note"), cx),
         Block::Elsewhere { key: fold, said, open } => elsewhere_row(rows, *fold, *said, *open, window, cx),
+        Block::HandOver { name, why, live } => handed_row(rows, key, name, why, *live),
     }
 }
 
@@ -871,7 +882,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
     };
     let group: SharedString = format!("reply-{key}").into();
     // After a group of calls or the news, a little air before the words.
-    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::Thought { .. } | Block::Worked(_));
+    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::HandOver { .. } | Block::Thought { .. } | Block::Worked(_));
     let actions = (!live && rows.turn_ends.contains(&ix)).then(|| {
         let raw = text.to_owned();
         let mut items: Vec<AnyElement> = vec![action_button(p, ("reply-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))).into_any_element()];
@@ -1281,6 +1292,43 @@ fn news_rows(rows: &Rows, key: u64, news: &[crate::activity::News], window: &mut
         .child(chevron(p.muted, progress));
     let body = (progress > 0.).then(|| motion::Reveal::new(("news-body", key), progress, v_flex().opacity(progress).pl(px(21.)).children(news.iter().enumerate().map(|(n, item)| line(n, item))).into_any_element()));
     v_flex().child(head).children(body).into_any_element()
+}
+
+/// A member handed the person its browser: who, and what it asked in its
+/// own words; on its latest, while the browser is in their hands, the way to
+/// it — and to give it back, which starts the member again.
+fn handed_row(rows: &Rows, key: u64, name: &str, why: &str, live: bool) -> AnyElement {
+    let p = rows.p;
+    let lane = format!("{}/{name}", rows.squad);
+    let held = live && rows.held.contains(name);
+    let open = {
+        let (handle, lane) = (rows.handle.clone(), lane.clone());
+        crate::ui::button(p, ("handed-open", key), if held { crate::ui::Kind::Primary } else { crate::ui::Kind::Secondary }, t!("chat.handed_open")).icon(Icon::Globe).on_click(move |_, _, cx| {
+            handle.update(cx, |shell, cx| shell.reveal_handed(&lane, cx)).ok();
+        })
+    };
+    let back = {
+        let (handle, lane) = (rows.handle.clone(), lane.clone());
+        crate::ui::button(p, ("handed-back", key), crate::ui::Kind::Secondary, t!("chat.handed_back")).tip(t!("chat.handed_back_tip", name = name), None).on_click(move |_, _, cx| {
+            handle.update(cx, |shell, cx| shell.give_back_handed(&lane, cx)).ok();
+        })
+    };
+    v_flex()
+        .gap(px(2.))
+        .child(
+            h_flex()
+                .min_h(px(28.))
+                .gap(px(8.))
+                .items_center()
+                .text_size(px(SMALL))
+                .child(icon(Icon::Globe, 13., if live { p.accent } else { p.muted }))
+                .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).text_color(if live { p.text } else { p.muted }).child(t!("chat.handed", name = name)))
+                .when(live, |r| r.child(open))
+                .when(held, |r| r.child(back))
+                .when(live && !held, |r| r.child(div().text_size(px(12.)).text_color(p.muted).child(t!("chat.handed_done")))),
+        )
+        .child(div().pl(px(21.)).text_size(px(SMALL)).line_height(px(SMALL_LINE)).text_color(p.muted).child(SelectableText::new(("handed-why", key), why.to_owned())))
+        .into_any_element()
 }
 
 fn news_icon(rows: &Rows, kind: crate::activity::NewsKind) -> impl IntoElement {

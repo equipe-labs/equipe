@@ -879,6 +879,7 @@ impl Runtime {
             }
             Command::BrowserCloseTab { page } => {
                 self.hub.op(&json!({ "op": "closetab", "page": page }));
+                self.closed_by_person(page).await;
             }
             Command::BrowserControl { lane, take } => {
                 self.hub.op(&json!({ "op": "control", "lane": lane, "by": take.then_some("person") }));
@@ -3062,8 +3063,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                     self.publish(Event::Notice { session: id, text });
                 }
                 let _ = reply.send(ToolResult {
-                    text: "Your browser is open in the person's browser panel, at that page, in their hands. Tell them what \
-to do there and end your turn: you'll be told when they hand it back."
+                    text: "Your browser is open in the person's browser panel, at that page, in their hands, with your `why` \
+shown over it as what to do. Say in one line what they should do there, then end your turn. When they press \"done\" \
+and hand it back you get a message and carry on by yourself — don't ask them to tell you."
                         .into(),
                     is_error: false,
                     image: None,
@@ -3606,7 +3608,8 @@ there, end your turn, and carry on when they say they're done."
                 // and its turn ended: it carries on now.
                 if checked.is_some() && asked.is_none() {
                     if refused && !working {
-                        self.submit(session, "The person handled the page that needed them in your browser (a human check or a sign-in) and handed it back. Carry on where you were.".into()).await;
+                        let text = say!(self, "notice.browser_given_back");
+                        self.carry_on(session, text, "[equipe: the person handled the page that needed them in your browser (a human check or a sign-in) and handed it back. Carry on where you were.]".into()).await;
                     } else if working {
                         let text = say!(self, "notice.browser_given_back");
                         self.publish(Event::Notice { session, text });
@@ -3614,15 +3617,20 @@ there, end your turn, and carry on when they say they're done."
                     return;
                 }
                 match (by.is_some(), asked.is_some()) {
-                    // Put in their hands for a page that waits for them: told when it was.
-                    (true, _) if check.is_some() => {}
+                    // Put in their hands for a page that waits for them, or because
+                    // its member asked: told when it was.
+                    (true, _) if check.is_some() || self.asked_in.contains_key(&lane) => {}
                     // Only a turn under way needs telling: between turns nothing waits on it.
                     (true, _) if working => {
                         let text = say!(self, "notice.browser_taken");
                         self.publish(Event::Notice { session, text });
                     }
                     // Done with what it asked of them: it carries on.
-                    (false, true) => self.submit(session, "The person finished in the browser.".into()).await,
+                    (false, true) => {
+                        let why = asked.unwrap_or_default();
+                        let text = say!(self, "notice.browser_given_back");
+                        self.carry_on(session, text, handed_back(&why)).await;
+                    }
                     (false, false) if working => {
                         let text = say!(self, "notice.browser_given_back");
                         self.publish(Event::Notice { session, text });
@@ -3635,6 +3643,10 @@ there, end your turn, and carry on when they say they're done."
                 self.publish(Event::BrowserDialog { squad, lane, page, kind, message, default });
             }
             HostEvent::DialogClosed { page } => self.publish(Event::BrowserDialogClosed { page }),
+            HostEvent::Wants { lane, page, action } => {
+                let (squad, _) = self.lane_session(&lane);
+                self.publish(Event::BrowserWants { squad, lane, page, action });
+            }
             HostEvent::Exited => {
                 // Its tabs went with it.
                 for (lane, tabs) in std::mem::take(&mut self.tabs) {
@@ -3661,7 +3673,7 @@ there, end your turn, and carry on when they say they're done."
         let let_go = |page: u64, url: &str| self.let_go.contains(&(lane.to_owned(), page, url.to_owned()));
         match browser::check_step(pages, agent, self.checking.contains_key(lane), self.held.contains_key(lane), let_go) {
             browser::CheckStep::Pause { page, url, check } => {
-                self.hub.op(&json!({ "op": "control", "lane": lane, "by": "person", "why": "check" }));
+                self.hub.op(&json!({ "op": "control", "lane": lane, "by": "person", "why": "check", "page": page }));
                 if let Some(session) = session {
                     let site = browser::site_of(&url).to_owned();
                     let text = say!(self, "notice.browser_check", site = site);
@@ -3674,6 +3686,51 @@ there, end your turn, and carry on when they say they're done."
             }
             browser::CheckStep::Nothing => {}
         }
+    }
+
+    /// The person closed a tab of a member's browser: its member is told —
+    /// at its next step if it is at work, else in its conversation.
+    async fn closed_by_person(&mut self, page: u64) {
+        let found = self.tabs.iter().find_map(|(lane, tabs)| match tabs {
+            Event::BrowserTabs { pages, .. } if !lane.is_empty() => pages.iter().find(|p| p.id == page).map(|p| (lane.clone(), p.url.clone())),
+            _ => None,
+        });
+        let Some((lane, url)) = found else { return };
+        let (_, Some(session)) = self.lane_session(&lane) else { return };
+        let text = say!(self, "notice.browser_tab_closed", url = url);
+        if self.sessions.get(&session).is_some_and(Session::is_working) {
+            let prompt = format!("[equipe: the person closed your browser tab {url}. Don't open it again unless they ask; carry on without it.]");
+            self.carry_on(session, text, prompt).await;
+        } else {
+            self.publish(Event::Notice { session, text });
+        }
+    }
+
+    /// equipe tells a member something on the person's behalf — their browser
+    /// came back, a tab of it was closed: a notice in the conversation
+    /// (`notice`, in the person's language), never a message of theirs, and
+    /// `prompt` to the member — read at its next step if it is at work, else
+    /// starting a turn of its own.
+    async fn carry_on(&mut self, id: SessionId, notice: String, prompt: String) {
+        self.publish(Event::Notice { session: id, text: notice });
+        let Some(session) = self.sessions.get(&id) else { return };
+        if session.is_working() {
+            if let Some(steer) = session.steer.clone() {
+                let _ = steer.send(prompt);
+            }
+            return;
+        }
+        if !self.ensure_codex(id).await {
+            return;
+        }
+        let Some(session) = self.sessions.get_mut(&id) else { return };
+        // What it missed travels with it, as with the person's own messages.
+        let prompt = match std::mem::take(&mut session.briefing) {
+            briefing if briefing.is_empty() => prompt,
+            briefing => format!("[equipe: since your last turn —\n{}]\n\n{prompt}", briefing.iter().map(|line| format!("- {line}")).collect::<Vec<_>>().join("\n")),
+        };
+        self.save_waiting(id);
+        self.start_turn(id, prompt);
     }
 
     /// Whether `page` of `lane` waits for a person, as last told.
@@ -4659,6 +4716,17 @@ const REFRESH_FULL_PERCENT: u64 = 60;
 /// again whole once the prompt cache has expired.
 const REFRESH_COLD_TOKENS: u64 = 60_000;
 const REFRESH_COLD_AFTER: Duration = Duration::from_secs(60 * 60);
+/// What a member is told when the person hands back the browser it handed
+/// them (`show_my_browser`, in the panel): its turn starts again on it.
+fn handed_back(why: &str) -> String {
+    let why = why.trim();
+    let what = if why.is_empty() { String::new() } else { format!(" (you asked: {why})") };
+    format!(
+        "[equipe: the person finished in your browser{what} and handed it back to you. Look at the page as it is now \
+and carry on where you left off.]"
+    )
+}
+
 /// How many of the last messages a fresh conversation is handed.
 const REFRESH_TAIL: usize = 12;
 

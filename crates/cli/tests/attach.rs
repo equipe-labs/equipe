@@ -145,7 +145,7 @@ fn a_screen_over_ssh_says_hello_gets_the_snapshot_and_follows_events() {
     assert_eq!(first.protocol, rpc::PROTOCOL);
     assert_eq!(first.daemon.as_deref(), Some(first.bridge.as_str()), "the daemon it started is this build");
 
-    bridge.send(&Message::request(1, rpc::HELLO, HelloParams { version: "remote-screen".into(), squad: "acme".into(), lang: None }));
+    bridge.send(&Message::request(1, rpc::HELLO, HelloParams { version: "remote-screen".into(), squad: "acme".into(), lang: None, browser_panel: false }));
     let hello = bridge.until(|m| m.id == Some(1)).result_as::<Hello>().expect("a hello back");
     assert_eq!(hello.snapshot.squad, "acme");
     assert_eq!(hello.version, first.bridge);
@@ -184,7 +184,7 @@ fn a_screen_over_ssh_says_hello_gets_the_snapshot_and_follows_events() {
     // A second screen finds the daemon up, and the mode the first one set.
     let mut again = Bridge::start(&home, "--no-start");
     assert!(!attached(&again).started);
-    again.send(&Message::request(1, rpc::HELLO, HelloParams { version: "remote-screen".into(), squad: "acme".into(), lang: None }));
+    again.send(&Message::request(1, rpc::HELLO, HelloParams { version: "remote-screen".into(), squad: "acme".into(), lang: None, browser_panel: false }));
     assert!(again.until(|m| m.id == Some(1)).result_as::<Hello>().is_some());
     assert!(again.hang_up().success());
 }

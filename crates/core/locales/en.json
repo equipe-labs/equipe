@@ -142,6 +142,7 @@
   "notice.browser_given_back": "🖐 The person gave the browser back.",
   "notice.browser_in_panel": "🖥 {name}'s browser opens in the person's browser panel: {why}",
   "notice.browser_on_screen": "🖥 {name}'s browser comes up on this Mac's screen: {why}",
+  "notice.browser_tab_closed": "🖐 The person closed this browser tab: {url}",
   "notice.browser_taken": "🖐 The person took this browser in hand; its browser tools wait for them.",
   "notice.declined": "✗ You declined: {action}",
   "notice.declined_why": "✗ {why} Declined: {action}",

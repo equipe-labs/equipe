@@ -49,6 +49,10 @@ fn ensure_state(home: &Path) -> PathBuf {
 /// written into both browser scripts.
 const DRIVING: &str = include_str!("../assets/driving.js");
 
+/// Whether a member's tool call may go ahead while its browser is in the
+/// person's hands: written into the browser host.
+const GATE: &str = include_str!("../assets/gate.js");
+
 /// The script that hands a member's sign-ins back, with the state file's path
 /// written in. Written next to the state when it changed.
 const KEEP_SIGN_INS: &str = include_str!("../assets/keep-sign-ins.ts");
@@ -233,6 +237,9 @@ pub enum HostEvent {
         default: Option<String>,
     },
     DialogClosed { page: u64 },
+    /// A member's tool call was refused on a tab the person is on, for
+    /// something the person can allow at a click (`close`).
+    Wants { lane: String, page: u64, action: String },
     /// The host is gone (its Chrome closed, or it failed).
     #[serde(skip)]
     Exited,
@@ -443,7 +450,7 @@ impl Host {
         use std::os::unix::process::CommandExt as _;
         let state = ensure_state(home);
         let script = home.join("browser").join("browser-host.cjs");
-        let text = HOST.replace("__DRIVING__", DRIVING);
+        let text = HOST.replace("__DRIVING__", DRIVING).replace("__GATE__", GATE);
         if std::fs::read_to_string(&script).ok().as_deref() != Some(text.as_str()) {
             std::fs::write(&script, text)?;
         }
@@ -569,6 +576,34 @@ struct HubInner {
     next: u64,
     /// Browser panels connected now.
     panels: usize,
+    /// Screens attached now that have a browser panel (the desktop app, on
+    /// this Mac or another), whether or not the panel is open yet.
+    screens: usize,
+    /// The box each panel shows its page in, by watcher: the page is laid
+    /// out at the largest — and the host was told this, by page.
+    fits: std::collections::HashMap<u64, (u64, Fit)>,
+    fitted: std::collections::HashMap<u64, Fit>,
+}
+
+/// A browser panel's picture box: CSS pixels and the screen's scale. A page
+/// a panel watches is laid out at it — whoever drives — so it reads at the
+/// panel's size rather than as the member's wide window shrunk into it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Fit {
+    pub w: u32,
+    pub h: u32,
+    pub dpr: f32,
+}
+
+/// The size each page should be laid out at: for each page panels watch,
+/// the largest of their boxes (several screens at once: the biggest panel).
+fn fitted(fits: impl IntoIterator<Item = (u64, Fit)>) -> std::collections::HashMap<u64, Fit> {
+    let mut out: std::collections::HashMap<u64, Fit> = std::collections::HashMap::new();
+    for (page, fit) in fits {
+        let area = |f: &Fit| u64::from(f.w) * u64::from(f.h);
+        out.entry(page).and_modify(|a| if (area(&fit), fit.dpr) > (area(a), a.dpr) { *a = fit }).or_insert(fit);
+    }
+    out
 }
 
 /// What the host should be drawing: for each watched page, the most any
@@ -600,6 +635,7 @@ impl Hub {
         inner.host = host;
         inner.frames.clear();
         inner.asked.clear();
+        inner.fitted.clear();
         Self::apply(&mut inner);
     }
 
@@ -628,9 +664,27 @@ impl Hub {
 
     pub fn unwatch(&self, watcher: u64) {
         let mut inner = self.inner.lock().expect("hub");
-        if inner.watchers.remove(&watcher).is_some() {
+        let fitted = inner.fits.remove(&watcher).is_some();
+        if inner.watchers.remove(&watcher).is_some() || fitted {
             Self::apply(&mut inner);
         }
+    }
+
+    /// The box `watcher`'s panel shows `page` in (`None`: it shows none): the
+    /// page is laid out at the largest box any panel shows it in, and at its
+    /// member's own size again once none does. The panel asks only once its
+    /// box holds still; the host waits for a member's step under way.
+    pub fn fit(&self, watcher: u64, fit: Option<(u64, Fit)>) {
+        let mut inner = self.inner.lock().expect("hub");
+        let before = inner.fits.get(&watcher).copied();
+        if before == fit {
+            return;
+        }
+        match fit {
+            Some(fit) => inner.fits.insert(watcher, fit),
+            None => inner.fits.remove(&watcher),
+        };
+        Self::apply(&mut inner);
     }
 
     /// Tell the host what changed in what it should draw.
@@ -647,6 +701,16 @@ impl Hub {
         }
         inner.frames.retain(|page, _| now.contains_key(page));
         inner.asked = now;
+        let sizes = fitted(inner.fits.values().copied());
+        for (page, fit) in &sizes {
+            if inner.fitted.get(page) != Some(fit) {
+                requests.push(json!({ "op": "fit", "page": page, "w": fit.w, "h": fit.h, "dpr": fit.dpr }));
+            }
+        }
+        for page in inner.fitted.keys().filter(|p| !sizes.contains_key(p)) {
+            requests.push(json!({ "op": "unfit", "page": page }));
+        }
+        inner.fitted = sizes;
         if let Some(host) = &inner.host
             && let Ok(mut host) = host.lock()
         {
@@ -685,10 +749,24 @@ impl Hub {
         inner.panels = if connected { inner.panels + 1 } else { inner.panels.saturating_sub(1) };
     }
 
+    /// A screen with a browser panel attached (`true`) or left — its panel
+    /// open or not: it opens the panel when a member hands the person its
+    /// browser.
+    pub fn screen(&self, attached: bool) {
+        let mut inner = self.inner.lock().expect("hub");
+        inner.screens = if attached { inner.screens + 1 } else { inner.screens.saturating_sub(1) };
+    }
+
     /// Whether a screen with a browser panel is attached: then a member's
-    /// browser the person is asked into shows there, not on the Mac's screen.
+    /// browser the person is handed shows there, in their hands — never as a
+    /// window on the daemon's Mac, which may be a machine nobody is looking at
+    /// (the app attached over SSH). On the daemon's own Mac too: the panel is
+    /// where the person already is, and it says what to do and hands back.
+    /// The raw window only comes up with no such screen attached, or when the
+    /// person asks for it (the panel's "open in Chrome").
     pub fn has_panel(&self) -> bool {
-        self.inner.lock().expect("hub").panels > 0
+        let inner = self.inner.lock().expect("hub");
+        inner.panels > 0 || inner.screens > 0
     }
 }
 
@@ -1048,6 +1126,142 @@ mod tests {
         assert!(hub.has_panel());
         hub.panel(false);
         hub.panel(false);
+        assert!(!hub.has_panel());
+    }
+
+    /// The host's requests, as a hub sends them: a fake host that writes them down.
+    fn recording_hub() -> (std::sync::Arc<Hub>, PathBuf) {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let hub = Hub::new();
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let log = std::env::temp_dir().join(format!("equipe-hub-{}-{n}", std::process::id()));
+        use std::os::unix::process::CommandExt as _;
+        // In a group of its own, as the real host is: dropped, the group is ended.
+        let mut child = std::process::Command::new("sh").arg("-c").arg(format!("exec cat > '{}'", log.display())).stdin(std::process::Stdio::piped()).process_group(0).spawn().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        hub.set_host(Some(std::sync::Arc::new(std::sync::Mutex::new(Host { child, stdin, lanes: Default::default() }))));
+        (hub, log)
+    }
+
+    /// The sizes the host was asked for, once `wait_for` of them came.
+    fn sizes_sent(log: &Path, wait_for: usize) -> Vec<Value> {
+        let read = || -> Vec<Value> {
+            let text = std::fs::read_to_string(log).unwrap_or_default();
+            text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|r| r["op"] == "fit" || r["op"] == "unfit").collect()
+        };
+        for _ in 0..100 {
+            if read().len() >= wait_for {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        read()
+    }
+
+    #[test]
+    fn a_watched_members_page_is_laid_out_at_the_largest_panel_and_its_own_size_once_unwatched() {
+        let small = Fit { w: 520, h: 640, dpr: 2. };
+        let large = Fit { w: 900, h: 1000, dpr: 1. };
+        assert_eq!(fitted([(1, small), (1, large), (2, small)]), std::collections::HashMap::from([(1, large), (2, small)]), "the biggest box wins");
+        assert!(fitted([]).is_empty());
+
+        let (hub, log) = recording_hub();
+        let (a, b) = (hub.watcher(), hub.watcher());
+        hub.fit(a, Some((7, small)));
+        hub.fit(a, Some((7, small)));
+        hub.fit(b, Some((7, large)));
+        hub.fit(b, Some((7, small)));
+        hub.unwatch(b);
+        hub.fit(a, None);
+        let ops = sizes_sent(&log, 4);
+        hub.set_host(None);
+        let _ = std::fs::remove_file(&log);
+        let shown: Vec<String> = ops.iter().map(|o| format!("{}:{}x{}", o["op"].as_str().unwrap(), o["w"], o["h"])).collect();
+        assert_eq!(
+            shown,
+            ["fit:520x640", "fit:900x1000", "fit:520x640", "unfit:nullxnull"],
+            "once each change: the first panel; a bigger one; back to the first; nobody watching — the member's own size"
+        );
+        assert!(ops.iter().all(|o| o["page"] == 7));
+    }
+
+    /// The gate a member's browser tools pass while the person has its
+    /// browser (`assets/gate.js`), run in Node as the browser host runs it.
+    #[test]
+    fn a_check_nobody_touched_never_stops_its_member_and_a_persons_hand_keeps_only_its_own_tab() {
+        let Some(node) = std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|d| d.join("node")).find(|p| p.is_file())) else {
+            return; // No Node here: the smoke test covers it where there is.
+        };
+        let since = 1_792_000_000_000u64;
+        let check = json!({ "control": "person", "reason": "check", "touched": false, "page": 7, "since": since });
+        let hand = json!({ "control": "person", "reason": "hand", "touched": true, "page": 7, "since": since });
+        let touched_check = json!({ "control": "person", "reason": "check", "touched": true, "page": 7, "since": since });
+        let call = |tool: &str, args: Value, targets: &[u64]| json!({ "tool": tool, "args": args, "targets": targets });
+        let close = |targets: &[u64]| call("browser_tabs", json!({ "action": "close", "index": 0 }), targets);
+        // (lane, call, what should come of it: "go", "no", or "ask" — refused, the person asked to let it close)
+        let cases = [
+            (json!({ "control": null }), call("browser_click", json!({}), &[7]), "go"),
+            // A hold from detection alone: leaving the page, and other tabs, are the member's.
+            (check.clone(), close(&[7]), "go"),
+            (check.clone(), call("browser_close", json!({}), &[7, 8]), "go"),
+            (check.clone(), call("browser_navigate", json!({ "url": "https://example.com" }), &[7]), "go"),
+            (check.clone(), call("browser_navigate_back", json!({}), &[7]), "go"),
+            (check.clone(), call("browser_tabs", json!({ "action": "new" }), &[]), "go"),
+            (check.clone(), call("browser_click", json!({}), &[8]), "go"),
+            (check.clone(), call("browser_click", json!({}), &[7]), "no"),
+            // The person's hand: that tab is theirs, closing it is theirs to allow; the rest stays the member's.
+            (hand.clone(), call("browser_snapshot", json!({}), &[7]), "no"),
+            (hand.clone(), call("browser_navigate", json!({ "url": "https://example.com" }), &[7]), "no"),
+            (hand.clone(), close(&[7]), "ask"),
+            (hand.clone(), call("browser_close", json!({}), &[7, 8]), "ask"),
+            (hand.clone(), close(&[8]), "go"),
+            (hand.clone(), call("browser_navigate", json!({ "url": "https://example.com" }), &[8]), "go"),
+            (hand.clone(), call("browser_tabs", json!({ "action": "new" }), &[]), "go"),
+            (touched_check.clone(), close(&[7]), "ask"),
+            (touched_check, call("browser_navigate", json!({ "url": "https://example.com" }), &[7]), "no"),
+        ];
+        let input: Vec<Value> = cases.iter().map(|(lane, call, _)| json!({ "lane": lane, "call": call })).collect();
+        let script = format!("{GATE}\nconst cases = {};\nprocess.stdout.write(JSON.stringify(cases.map((c) => gate(c.lane, c.call))));", Value::Array(input));
+        let out = std::process::Command::new(node).arg("-e").arg(script).output().expect("node runs");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let said: Vec<Value> = serde_json::from_slice(&out.stdout).unwrap();
+        for ((lane, call, want), got) in cases.iter().zip(&said) {
+            let came = match (got.is_null(), got["wants"].as_str()) {
+                (true, _) => "go",
+                (false, Some("close")) => "ask",
+                (false, _) => "no",
+            };
+            assert_eq!(came, *want, "{lane} {call}: {got}");
+            if came != "go" {
+                assert_eq!(got["page"], 7, "{got}");
+            }
+        }
+        // What the member is told says why, since when, and what it can do.
+        let refused = said[8]["text"].as_str().unwrap();
+        assert!(regex_lite_like(refused), "{refused}");
+        assert!(said[7]["text"].as_str().unwrap().contains("close this tab or go elsewhere"), "{}", said[7]);
+        assert!(said[10]["text"].as_str().unwrap().contains("asked whether to let you close it"), "{}", said[10]);
+    }
+
+    /// `The person is using this tab since HH:MM — ask them in words, or wait.`
+    fn regex_lite_like(text: &str) -> bool {
+        let Some(rest) = text.strip_prefix("The person is using this tab since ") else { return false };
+        let b = rest.as_bytes();
+        b.len() > 5 && b[0].is_ascii_digit() && b[1].is_ascii_digit() && b[2] == b':' && b[3].is_ascii_digit() && b[4].is_ascii_digit() && rest[5..].starts_with(" — ask them in words, or wait.")
+    }
+
+    #[test]
+    fn a_screen_with_a_panel_attached_counts_before_its_panel_opens() {
+        let hub = Hub::new();
+        assert!(!hub.has_panel(), "nobody attached: the window on this Mac");
+        // The app on another Mac, its panel closed: the hand-over goes to it.
+        hub.screen(true);
+        assert!(hub.has_panel());
+        hub.panel(true);
+        hub.screen(false);
+        assert!(hub.has_panel(), "its panel's line still up");
+        hub.panel(false);
+        hub.screen(false);
         assert!(!hub.has_panel());
     }
 

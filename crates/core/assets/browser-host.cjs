@@ -25,7 +25,8 @@
 //   {"op":"person","url":"https://…"}
 //   {"op":"watch","page":3,"maxW":1200,"maxH":900,"quality":70,"fps":30}  {"op":"unwatch","page":3}
 //   {"op":"input","page":3,"ev":{…}}   {"op":"nav","page":3,"action":"back|forward|reload|stop|go","url":"…"}
-//   {"op":"fit","page":3,"w":600,"h":800,"dpr":2}  (lay a page the person drives out at the panel's picture)
+//   {"op":"fit","page":3,"w":600,"h":800,"dpr":2}  (lay a page a panel watches out at its picture — the largest panel's)
+//   {"op":"unfit","page":3}  (no panel watches it: its own size again)
 //   {"op":"newtab","url":"…"}  {"op":"closetab","page":3}
 //   {"op":"control","lane":"squad/name","by":"person"|null,"why":"check"?,"ifUntouched":true?}
 //   {"op":"goto","lane":"squad/name","url":"…"}  {"op":"dialog","page":3,"accept":true,"text":"…"}
@@ -56,6 +57,8 @@ const [profile, STATE] = process.argv.slice(2);
 
 __DRIVING__
 
+__GATE__
+
 // Google's sign-in is this browser's own; the sign-ins file never carries it.
 const own = (domain) => /(^|\.)(google\.[a-z]{2,3}(\.[a-z]{2})?|youtube\.com|googleusercontent\.com)$/.test(String(domain).replace(/^\./, ''));
 
@@ -64,10 +67,6 @@ const PLACEHOLDER = 'data:text/html;charset=utf-8,' + encodeURIComponent(
   '<!doctype html><title>equipe</title><meta name="color-scheme" content="light dark">'
   + '<body style="font: 14px -apple-system, system-ui; display: grid; place-items: center; height: 90vh; color: #888">'
   + 'equipe — members’ tabs are behind this one</body>');
-const BUSY = 'The person is using this browser; wait or ask them.';
-const BUSY_CHECK = 'A page in this browser waits for a person (a "verify you are human" check, a sign-in or a code from their phone), '
-  + 'and the person was asked to do it. Don\'t try to get around it: stop using the browser and end your turn, saying you wait for them. '
-  + 'You\'ll be told when they hand the browser back.';
 // A person who stops touching a member's page hands it back after this long.
 const IDLE_CONTROL_MS = 120000;
 
@@ -141,7 +140,7 @@ const address = (text) => {
   const cdps = new Map(); // page -> CDP session, for watching and input
   const dialogs = new Map(); // page id -> the dialog waiting for an answer
   const watches = new Map(); // page id -> { cdp, quality, maxW, maxH, fps, seq, lastAck }
-  const fits = new Map(); // page id -> { w, h, dpr }: the panel's box, for a page the person drives
+  const fits = new Map(); // page id -> { w, h, dpr }: the largest box a panel shows it in
   // Ids go on from where the daemon says (from the clock): a host started again
   // never names a tab with an id a screen still holds for another.
   let nextId = Math.max(1, Number(process.env.EQUIPE_FIRST_PAGE) || 1);
@@ -252,7 +251,7 @@ const address = (text) => {
   // on the person's screen: in the panel, the panel says who drives it.
   const onScreen = (page) => {
     const lane = lanes.get(owner.get(page));
-    return !!lane && (lane.shown || personShown === page);
+    return !!lane && (lane.shown || personShown === page) && lane.control !== 'person';
   };
   await context.exposeBinding('__equipeWho', ({ page }) => {
     const lane = lanes.get(owner.get(page));
@@ -510,13 +509,34 @@ const address = (text) => {
     });
   };
 
+  // The tabs a member's tool call acts on, by page id: a tab closed by its
+  // index, every tab for closing the browser, none for listing or opening one,
+  // else the tab it is on.
+  const targetsOf = (laneId, backend, name, args) => {
+    let current = null;
+    try {
+      const page = backend._context?.currentTab?.()?.page;
+      if (page && !page.isClosed()) current = idOf(page);
+    } catch {}
+    const tabs = tabsOf(laneId).map(idOf);
+    // A turn's first call has no tab of its own yet: Playwright starts it on the first.
+    current = current ?? tabs[0] ?? null;
+    if (name === 'browser_close') return tabs;
+    if (name === 'browser_tabs') {
+      if (args?.action !== 'close') return [];
+      return typeof args.index === 'number' ? [tabs[args.index]].filter((p) => p !== undefined) : [current].filter((p) => p !== null);
+    }
+    return current !== null ? [current] : [];
+  };
+
   const openLane = async ({ id, member, color, port, output, shown }) => {
     if (lanes.has(id)) return show({ id, shown });
     // control: 'person' while the person has it — `reason` 'check' when equipe put
     // it in their hands for a page that waits for a person, 'hand' when they took
     // it; `touched`, they put a hand on it since; `refused`, its tools were
-    // turned away meanwhile.
-    const lane = { events: new EventEmitter(), member, color, shown: !!shown, control: null, reason: null, touched: false, refused: false, lastInput: 0, agent: null };
+    // turned away meanwhile; `page`, the tab the hold is about (the waiting page,
+    // or the one the person is on) and `since`, when it began (`gate.js`).
+    const lane = { events: new EventEmitter(), member, color, shown: !!shown, control: null, reason: null, touched: false, refused: false, lastInput: 0, agent: null, busy: 0, page: null, since: 0 };
     lanes.set(id, lane);
     const config = await tools.resolveCLIConfigForMCP({ outputDir: output }, process.env);
     const toolset = tools.filteredTools(config);
@@ -528,15 +548,28 @@ const address = (text) => {
       toolSchemas: toolset.map((t) => t.schema),
       create: async () => {
         const backend = new tools.BrowserBackend(config, ctx, toolset);
-        // While the person uses this member's browser its tools wait for them;
-        // after each call, the tab it worked in is the one the screen follows.
+        // While the person uses a tab of this member's browser its tools wait
+        // for them there (`gate.js`: a hold from detection alone never stops it
+        // leaving the page, and its other tabs stay its own); after each call,
+        // the tab it worked in is the one the screen follows.
         const call = backend.callTool.bind(backend);
         backend.callTool = async (name, args, signal) => {
-          if (lane.control === 'person') {
+          const no = gate(lane, { tool: name, args, targets: targetsOf(id, backend, name, args) });
+          if (no) {
             lane.refused = true;
-            return { content: [{ type: 'text', text: `### Error\n${lane.reason === 'check' ? BUSY_CHECK : BUSY}` }], isError: true };
+            if (no.wants && no.page) emit({ type: 'wants', lane: id, page: no.page, action: no.wants });
+            return { content: [{ type: 'text', text: `### Error\n${no.text}` }], isError: true };
           }
-          const result = await call(name, args, signal);
+          // A step under way is never resized under it: a panel's new size
+          // waits for the step to finish (`applyFit`).
+          lane.busy++;
+          let result;
+          try {
+            result = await call(name, args, signal);
+          } finally {
+            lane.busy--;
+            if (!lane.busy) for (const page of tabsOf(id)) if (page.__equipeFitWaits) applyFit(page).catch(() => {});
+          }
           const page = backend._context?.currentTab?.()?.page;
           if (page && owner.get(page) === id) {
             const pid = idOf(page);
@@ -560,6 +593,8 @@ const address = (text) => {
     report(id);
     hush(id);
     await restack();
+    // On this Mac's screen the window's size rules; out of it, a panel's again.
+    for (const page of tabsOf(id)) await applyFit(page);
   };
   const close = async ({ id }) => {
     for (const page of tabsOf(id)) await page.close().catch(() => {});
@@ -626,19 +661,26 @@ const address = (text) => {
 
   // ── the size a page is laid out at ──
 
-  // A page the person drives — their own tab, or a member's in their hands —
-  // is laid out at the panel's picture, so it fills it, crisp at the screen's
-  // scale. A member's page its member drives keeps the member's size (the panel
-  // fits its picture), and so does a page out in a real window.
-  const drives = (page) => {
-    const id = owner.get(page);
-    return id === PERSON || lanes.get(id)?.control === 'person';
-  };
+  // A page a panel watches — the person's own tab, a member's in their hands,
+  // or a member's it drives itself — is laid out at the panel's picture (the
+  // largest, with several screens watching), so it fills it, readable and
+  // crisp at the screen's scale, rather than the member's wide window shrunk
+  // into it. The member's tools work at whatever size the page has. Nobody
+  // watching, its own size comes back; a page out in a real window, or a
+  // member's window on this Mac's screen, keeps the window's. A member's step
+  // under way is never resized under it: the size waits for the step's end.
+  const inWindow = (page) => personShown === page || lanes.get(owner.get(page))?.shown === true;
   const applyFit = async (page) => {
     if (!page || page.isClosed()) return;
+    const lane = lanes.get(owner.get(page));
+    if (lane?.busy && lane.control !== 'person') {
+      page.__equipeFitWaits = true;
+      return;
+    }
+    page.__equipeFitWaits = false;
     const f = fits.get(idOf(page));
     const cdp = await cdpOf(page);
-    if (f && drives(page) && personShown !== page && staged !== page) {
+    if (f && !inWindow(page) && staged !== page) {
       const key = `${f.w}x${f.h}@${f.dpr}`;
       if (page.__equipeFit === key) return;
       page.__equipeFit = key;
@@ -663,15 +705,29 @@ const address = (text) => {
     await applyFit(pages.get(pid));
     if (staged && pages.get(pid) === staged) await sizeStage(staged, (await windowOf(staged).catch(() => ({}))).windowId);
   };
+  const unfit = async ({ page: pid }) => {
+    if (!fits.delete(pid)) return;
+    await applyFit(pages.get(pid));
+  };
 
   // ── the person's hand on a page ──
 
   // `why` 'check': equipe puts it in the person's hands for a page waiting for
   // a person; anything else, the person took it.
-  const setControl = async (laneId, by, why) => {
+  const setControl = async (laneId, by, why, page) => {
     const lane = lanes.get(laneId);
     if (!lane) return;
     if (by && why !== 'check') lane.touched = true;
+    // What the hold is about: the page that waits (from the daemon), else the
+    // one the person is on — its member's, as the panel shows it.
+    if (by) {
+      if (page) lane.page = page;
+      else if (lane.control !== by || !lane.page) lane.page = lane.agent;
+      if (lane.control !== by) lane.since = Date.now();
+    } else {
+      lane.page = null;
+      lane.since = 0;
+    }
     if (lane.control === by) return;
     lane.control = by;
     lane.lastInput = Date.now();
@@ -684,6 +740,9 @@ const address = (text) => {
       lane.touched = false;
     }
     lane.refused = false;
+    // The in-page "… is working in this browser" label says nothing while the
+    // person drives: one state at a time.
+    hush(laneId);
     for (const page of tabsOf(laneId)) {
       const cdp = await cdpOf(page);
       await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
@@ -714,7 +773,7 @@ const address = (text) => {
     if (lane) {
       if (lane.control !== 'person') {
         if (!takes) return undefined;
-        await setControl(laneId, 'person');
+        await setControl(laneId, 'person', undefined, pid);
         // The moves that brought the pointer here weren't sent: it moves to
         // where it presses first, as a mouse does.
         if (ev.t === 'mouse') {
@@ -724,6 +783,8 @@ const address = (text) => {
       if (!move) {
         lane.touched = true;
         lane.lastInput = Date.now();
+        // Their hand is on this tab: it is the one that is theirs.
+        lane.page = pid;
       }
     } else if (laneId === PERSON && !move && !page.__equipeHand) {
       page.__equipeHand = true;
@@ -780,9 +841,9 @@ const address = (text) => {
   const closetab = async ({ page }) => pages.get(page)?.close().catch(() => {});
   // `ifUntouched`: handed back only if the person never put a hand on it (a
   // check that passed by itself).
-  const control = ({ lane, by, why, ifUntouched }) => {
+  const control = ({ lane, by, why, ifUntouched, page }) => {
     if (!by && ifUntouched && lanes.get(lane)?.touched) return undefined;
-    return setControl(lane, by || null, why);
+    return setControl(lane, by || null, why, page);
   };
   const dialog = async ({ page, accept, text }) => {
     const d = dialogs.get(page);
@@ -833,7 +894,7 @@ const address = (text) => {
 
   await ensureParking();
 
-  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, input, nav, goto, newtab, closetab, control, dialog, popout };
+  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout };
   // Input goes in order, each after the one before; so do watching and sizing
   // (two screencasts of a page started at once would leave one running
   // unseen); the rest as they come.
@@ -844,7 +905,7 @@ const address = (text) => {
     try { request = JSON.parse(line); } catch { return; }
     const run = () => Promise.resolve(ops[request.op]?.(request)).catch((err) => console.error(`equipe browser host: ${request.op}: ${err && err.message}`));
     if (request.op === 'input') inputs = inputs.then(run);
-    else if (['watch', 'unwatch', 'fit'].includes(request.op)) pictures = pictures.then(run);
+    else if (['watch', 'unwatch', 'fit', 'unfit'].includes(request.op)) pictures = pictures.then(run);
     else run();
   });
   // The daemon gone, the browser goes with it.

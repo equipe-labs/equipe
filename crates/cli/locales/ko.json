@@ -447,6 +447,8 @@
   "remote.push_asks_fetch": "{member}이(가) 페이지 가져오기 허가를 요청해요",
   "remote.push_asks_permission": "{member}이(가) 권한을 요청해요",
   "remote.push_asks_run": "{member}이(가) 명령 실행 허가를 요청해요",
+  "remote.push_browser": "{member}이(가) 브라우저에서 기다려요",
+  "remote.push_browser_body": "{squad} · Mac의 equipe 앱에서 해 주세요 — 브라우저는 휴대폰에서 다룰 수 없어요",
   "remote.push_decision.other": "{member}이(가) {count}가지 결정을 부탁해요",
   "remote.push_review": "{who}이(가) 검토할 작업을 제출했어요",
   "remote.push_waiting": "{who}에게 도움이 필요해요",

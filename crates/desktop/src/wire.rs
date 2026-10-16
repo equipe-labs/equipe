@@ -200,7 +200,7 @@ where
         return Err(Failure::NoSquads.into());
     };
 
-    let hello = Message::request(HELLO_ID, rpc::HELLO, HelloParams { version: opts.version.clone(), squad, lang: Some(crate::i18n::lang().code().to_owned()) });
+    let hello = Message::request(HELLO_ID, rpc::HELLO, HelloParams { version: opts.version.clone(), squad, lang: Some(crate::i18n::lang().code().to_owned()), browser_panel: true });
     send(&mut writer, &hello).await?;
     let hello = response(&mut lines, HELLO_ID, opts.step, "hello").await?.result_as::<Hello>().ok_or_else(|| Failure::Other(t!("failure.hello_refused").into()))?;
 

@@ -321,9 +321,13 @@ they sign in once, in your window, and it holds for the whole squad. Before anyt
 that can't easily be taken back — creating an account, accepting terms, starting a trial or a paid plan, inviting \
 someone, deleting or transferring, changing security or billing settings — call `ask_person` with exactly what \
 and why, and go ahead only on their yes. Never type a card number or a password you weren't given, and never try \
-to get past a CAPTCHA. When the person has to do a step — sign in, a code, a CAPTCHA — or should see something, \
-call `show_my_browser` with the page: your own browser comes up on their screen when your turn ends, and they do \
-it there while you wait; their sign-ins are kept as they go, no window to close. Never run `equipe browser` \
+to get past a CAPTCHA. When the person has to do a step in your browser — sign in, a code, a CAPTCHA — or should \
+see something, hand it to them with `show_my_browser`: never only ask in words (\"please log in\"), which leaves \
+them looking for a browser they can't see. Give the page, and as `why` exactly what to do there, in their \
+language — which site, which account, which button (\"Sign in to App Store Connect with the Umbriles Inc. \
+account holder's Apple ID\"). Then say it in one line and end your turn: it opens in their hands in equipe's \
+browser panel (or on their screen), and when they hand it back you are told and carry on by yourself — don't ask \
+them to tell you they're done. Their sign-ins are kept as they go, no window to close. Never run `equipe browser` \
 yourself — it stops your turn until a window is closed. A one-time code the person sends you you may type. Your \
 windows are yours alone, but sign-ins are shared by everyone's: don't sign out of a site, or switch it to another \
 account, team or workspace, without saying so first — the rest of the squad works signed in there too."
@@ -495,6 +499,18 @@ mod tests {
         assert!(screen.contains("in the language they write in; until they have written, in Japanese"), "{screen}");
         let both = charter(role(PM).unwrap(), "pm", &Context { language: Some("Korean"), screen_language: Some("Japanese"), ..ctx(&team, &[], true) });
         assert!(both.contains("writes in Korean") && !both.contains("Japanese"), "what they write wins: {both}");
+    }
+
+    #[test]
+    fn a_member_hands_its_browser_over_with_what_to_do_and_carries_on_when_it_comes_back() {
+        let team = [Teammate { name: "pm", role: "pm" }];
+        let text = charter(role(PM).unwrap(), "pm", &Context { browser: true, ..ctx(&team, &[], true) });
+        for part in ["hand it to them with `show_my_browser`", "never only ask in words", "exactly what to do there", "end your turn", "carry on by yourself"] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+        let tools = crate::board::tools(true);
+        let show = tools.iter().find(|t| t["name"] == crate::board::SHOW_BROWSER).expect("the hand-over tool");
+        assert!(show["description"].as_str().unwrap().contains("rather than only asking in words"), "{show}");
     }
 
     #[test]

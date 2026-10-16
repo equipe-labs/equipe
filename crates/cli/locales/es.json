@@ -449,6 +449,8 @@
   "remote.push_asks_fetch": "{member} pide abrir una página",
   "remote.push_asks_permission": "{member} pide permiso",
   "remote.push_asks_run": "{member} pide ejecutar un comando",
+  "remote.push_browser": "{member} te espera en su navegador",
+  "remote.push_browser_body": "{squad} · hazlo en la app equipe de tu Mac — el navegador no se puede usar desde el teléfono",
   "remote.push_decision.one": "{member} te pide que decidas",
   "remote.push_decision.other": "{member} te pide que decidas {count} cosas",
   "remote.push_review": "{who} entregó trabajo para revisar",

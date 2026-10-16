@@ -141,6 +141,7 @@
   "notice.browser_given_back": "🖐 브라우저를 돌려줬습니다.",
   "notice.browser_in_panel": "🖥 {name}의 브라우저가 브라우저 패널에 열립니다: {why}",
   "notice.browser_on_screen": "🖥 {name}의 브라우저가 이 Mac 화면에 뜹니다: {why}",
+  "notice.browser_tab_closed": "🖐 브라우저 탭을 닫았습니다: {url}",
   "notice.browser_taken": "🖐 이 브라우저를 직접 잡았습니다. 브라우저 도구는 내가 돌려줄 때까지 기다립니다.",
   "notice.declined": "✗ 거절함: {action}",
   "notice.declined_why": "✗ {why} 거절됨: {action}",

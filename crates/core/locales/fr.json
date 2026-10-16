@@ -142,6 +142,7 @@
   "notice.browser_given_back": "🖐 Vous avez rendu le navigateur.",
   "notice.browser_in_panel": "🖥 Le navigateur de {name} s'ouvre dans votre panneau de navigateur : {why}",
   "notice.browser_on_screen": "🖥 Le navigateur de {name} apparaît sur l'écran de ce Mac : {why}",
+  "notice.browser_tab_closed": "🖐 Onglet du navigateur fermé : {url}",
   "notice.browser_taken": "🖐 Vous avez pris ce navigateur en main ; ses outils de navigateur vous attendent.",
   "notice.declined": "✗ Vous avez refusé : {action}",
   "notice.declined_why": "✗ {why} Refusé : {action}",

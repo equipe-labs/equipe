@@ -38,7 +38,9 @@
 //! approve on a card (`fake_daemon/team.rs`; `remove`, `elsewhere`).
 //!
 //! `FAKE_BROWSER=1`: the shared Chrome's tabs and a picture stream for the
-//! browser panel (`fake_daemon/browser.rs`); `FAKE_BROWSER=empty`, no tabs.
+//! browser panel (`fake_daemon/browser.rs`); `FAKE_BROWSER=empty`, no tabs;
+//! `FAKE_BROWSER=handover`, the PM's browser handed to the person to sign in
+//! (its news line, as an English daemon wrote it, last in the PM's history).
 //!
 //! Pairing a phone: a code at once, and two phones paired already.
 //! `FAKE_PAIR=ask` has a phone ask 1.5 s after the code shows (`allow` pairs
@@ -723,6 +725,11 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history.push(Entry::Tool { tool: "WebFetch".into(), target: Some("https://developer.apple.com/help/app-store-connect/manage-compliance-information/manage-european-union-digital-services-act-trader-requirements".into()), outcome: None });
                             history.push(Entry::Reply { text: ASKLIST.into() });
                         }
+                        if browser::handover() {
+                            history.push(Entry::User { text: "App Store Connect에서 EU DSA 거래자 상태를 바꿔 줘".into() });
+                            history.push(Entry::Reply { text: "제 브라우저는 App Store Connect에 로그인되어 있지 않아서, 로그인만 먼저 해 주셔야 합니다.".into() });
+                            history.push(Entry::Note { text: format!("🖥 pm's browser comes up on this Mac's screen: {}", browser::PM_WHY) });
+                        }
                         if let Some(how) = your_turn() {
                             history.push(Entry::Note { text: "frontend handed in T-63 for your review · 경쟁 앱 온보딩 조사.".into() });
                             history.push(Entry::Note { text: "T-117 waits for you — frontend needs something only you can do · 앱스토어 제출.".into() });
@@ -932,6 +939,14 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 tokio::spawn(async move { pairing(&pair, &events).await });
                             }
                             other => {
+                                // The PM's browser given back: it carries on, told so, as the daemon does.
+                                if let Command::BrowserControl { lane, take: false } = &other
+                                    && browser::handover()
+                                    && lane == browser::PM
+                                {
+                                    let _ = events.send(Event::Notice { session: 1, text: "🖐 브라우저를 돌려줬습니다.".into() });
+                                    turns.lock().await.insert(1, tokio::spawn(turn(1, events.clone(), seconds)));
+                                }
                                 if browser::on_command(&other, &events) || team::on_command(&other, &events) {
                                     continue;
                                 }

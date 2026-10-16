@@ -5,7 +5,7 @@
 //! `send` touches the system.
 
 use equipe_core::t;
-use equipe_core::protocol::{Approval, SessionId, TicketId};
+use equipe_core::protocol::{Approval, HumanCheck, SessionId, TicketId};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::views::approvals::noun;
@@ -24,8 +24,9 @@ pub enum Alert {
     /// A member puts a decision to the person: `count` questions.
     Decision { session: SessionId, member: String, count: usize },
     /// A member's browser page waits for the person's own hand (a "verify you
-    /// are human" check, a sign-in): `page`, on `site`.
-    Browser { page: u64, session: Option<SessionId>, member: String, site: String },
+    /// are human" check, a sign-in): `page`, on `site` — or its member handed
+    /// them the browser, saying what to do (`why`).
+    Browser { page: u64, session: Option<SessionId>, member: String, site: String, check: Option<HumanCheck>, why: Option<String> },
 }
 
 /// What the person wants to be told of (settings → 알림), kept with the
@@ -108,8 +109,16 @@ pub fn toasts(alerts: &[Alert], squad: &str, titles: bool) -> Vec<Toast> {
             Alert::Failed { session, member } => Toast { title: t!("notify.failed_title", member = member), body: t!("notify.failed_body", squad = squad), go: Go::Member(*session) },
             // Who asks and how many — never the questions.
             Alert::Decision { session, member, count } => Toast { title: t!("notify.decision_title", member = member, count = count), body: squad.to_owned(), go: Go::Member(*session) },
-            // Who and where — the page itself stays in the panel.
-            Alert::Browser { page, member, site, .. } => Toast { title: t!("notify.browser_title", member = member), body: t!("notify.browser_body", site = site, squad = squad), go: Go::Browser(*page) },
+            // Who and where — the page itself, and what the member asked, stay in the panel.
+            Alert::Browser { page, member, site, check, why, .. } => {
+                let title = match (check, why) {
+                    (Some(HumanCheck::SignIn), _) => t!("notify.browser_sign_in_title", member = member),
+                    (_, Some(_)) => t!("notify.browser_handed_title", member = member),
+                    _ => t!("notify.browser_title", member = member),
+                };
+                let body = if why.is_some() { t!("notify.browser_handed_body", site = site, squad = squad) } else { t!("notify.browser_body", site = site, squad = squad) };
+                Toast { title, body, go: Go::Browser(*page) }
+            }
         })
         .collect()
 }
@@ -201,12 +210,25 @@ mod tests {
 
     #[test]
     fn a_page_waiting_for_the_person_says_who_and_where_and_opens_the_panel_on_it() {
-        let t = toasts(&[Alert::Browser { page: 42, session: Some(3), member: "backend".into(), site: "dash.cloudflare.com".into() }], "acme", true);
+        let t = toasts(&[Alert::Browser { page: 42, session: Some(3), member: "backend".into(), site: "dash.cloudflare.com".into(), check: Some(HumanCheck::Challenge), why: None }], "acme", true);
         assert_eq!(t[0].title, "backend: 사람 확인이 필요해요");
         assert_eq!(t[0].body, "dash.cloudflare.com · 브라우저 패널에서 직접 눌러 주세요 · acme");
         assert_eq!(t[0].go, Go::Browser(42));
         let pings = Pings::default();
-        assert_eq!(pings.wants(&Alert::Browser { page: 1, session: None, member: String::new(), site: String::new() }), pings.waiting);
+        assert_eq!(pings.wants(&Alert::Browser { page: 1, session: None, member: String::new(), site: String::new(), check: None, why: None }), pings.waiting);
+    }
+
+    #[test]
+    fn a_browser_handed_over_says_who_waits_and_for_a_sign_in_says_so_but_never_what_was_asked() {
+        let why = "Umbriles Inc. 계정 소유자 Apple ID로 로그인해 주세요";
+        let handed = |check| Alert::Browser { page: 7, session: Some(1), member: "pm".into(), site: "idmsa.apple.com".into(), check, why: Some(why.into()) };
+        let t = toasts(&[handed(Some(HumanCheck::SignIn))], "acme", true);
+        assert_eq!(t[0].title, "pm이(가) 브라우저에서 로그인을 기다려요");
+        assert_eq!(t[0].body, "idmsa.apple.com · 눌러서 앱의 브라우저 패널에서 해 주세요 · acme");
+        assert_eq!(t[0].go, Go::Browser(7), "a click opens the panel on that tab");
+        let t = toasts(&[handed(None)], "acme", true);
+        assert_eq!(t[0].title, "pm이(가) 브라우저에서 기다려요");
+        assert!(!t[0].body.contains("Umbriles"));
     }
 
     #[test]

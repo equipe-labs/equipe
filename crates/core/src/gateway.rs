@@ -100,6 +100,8 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
     // Pairing a phone: this screen's line to the phone link, opened when it asks.
     let mut pairing: Option<crate::pairing::Bridge> = None;
     let mut lang: Option<crate::i18n::Lang> = None;
+    // A screen with a browser panel, counted while it is attached.
+    let mut panel_screen: Option<std::sync::Arc<crate::browser::Hub>> = None;
     while let Ok(Some(line)) = lines.next_line().await {
         let Ok(message) = Message::from_line(&line) else {
             continue;
@@ -114,6 +116,13 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
                 if let Some(code) = params.lang.clone() {
                     lang = crate::i18n::Lang::parse(&code);
                     core.send(Command::Language { lang: code });
+                }
+                if params.browser_panel
+                    && panel_screen.is_none()
+                    && let Some(hub) = core.browser_hub().await
+                {
+                    hub.screen(true);
+                    panel_screen = Some(hub);
                 }
                 let Some((snapshot, mut events)) = core.subscribe(&params.squad).await else {
                     break;
@@ -249,6 +258,9 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
     if let Some(forwarder) = forwarder {
         forwarder.abort();
     }
+    if let Some(hub) = panel_screen {
+        hub.screen(false);
+    }
     // Its line to the phone link closes, and any code it had open with it.
     drop(pairing);
     drop(out_tx);
@@ -313,15 +325,18 @@ where
                 Some(StreamIn::Watch { page, fps, max_w, max_h, fit }) => {
                     watching = Some(page);
                     pacer.watch(fps);
-                    // The box it is shown in: a page the person drives is laid out at it.
-                    if let Some(fit) = fit.filter(|f| f.w >= 64 && f.h >= 64) {
+                    // The box it is shown in: the page is laid out at it — the largest
+                    // any panel shows it in — whoever drives it.
+                    let fit = fit.filter(|f| f.w >= 64 && f.h >= 64).map(|fit| {
                         let dpr = if fit.dpr.is_finite() { fit.dpr.clamp(1., 4.) } else { 2. };
-                        hub.op(&serde_json::json!({ "op": "fit", "page": page, "w": fit.w.min(4096), "h": fit.h.min(4096), "dpr": dpr }));
-                    }
+                        (page, crate::browser::Fit { w: fit.w.min(4096), h: fit.h.min(4096), dpr })
+                    });
+                    hub.fit(watcher, fit);
                     hub.watch(watcher, crate::browser::Want { page, fps: fps.clamp(1, 60), max_w: max_w.clamp(64, 4096), max_h: max_h.clamp(64, 4096), quality });
                 }
                 Some(StreamIn::Unwatch) => {
                     watching = None;
+                    hub.fit(watcher, None);
                     hub.unwatch(watcher);
                 }
                 Some(StreamIn::Credit { n }) => pacer.credit(n),
@@ -546,7 +561,7 @@ impl Client {
     pub async fn connect_in(socket: &Path, version: &str, squad: &str, lang: Option<crate::i18n::Lang>) -> io::Result<(Self, Hello)> {
         let stream = UnixStream::connect(socket).await?;
         let (reader, mut writer) = stream.into_split();
-        let params = HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: lang.map(|l| l.code().to_owned()) };
+        let params = HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: lang.map(|l| l.code().to_owned()), browser_panel: false };
         let hello = Message::request(1, rpc::HELLO, params);
         write_line(&mut writer, &hello).await?;
 
