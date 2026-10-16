@@ -922,10 +922,115 @@ fn message_vectors() -> Value {
     })
 }
 
+// ─── uploads.json: a phone's files, a piece at a time ────────────────────
+
+/// Where the vectors say the daemon keeps uploads, and the stamp it names them with.
+const UPLOADS_HOME: &str = "/Users/abel/.equipe";
+
+/// A daemon's answer with this run's home and clock put back to the vectors'.
+fn kept_as_vectors(value: &Value, home: &Path) -> Value {
+    let text = value.to_string().replace(&home.display().to_string(), UPLOADS_HOME);
+    let mut out = String::new();
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find("/uploads/") {
+        let (head, tail) = rest.split_at(at + "/uploads/".len());
+        out.push_str(head);
+        let digits = tail.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 13 && tail[digits..].starts_with('-') {
+            out.push_str(&NOW.to_string());
+            rest = &tail[digits..];
+        } else {
+            rest = tail;
+        }
+    }
+    out.push_str(rest);
+    serde_json::from_str(&out).unwrap()
+}
+
+/// Run `steps` (`[name, rpc]`) through a daemon with a home of its own: what
+/// the phone sealed for each, and what came back, opened.
+fn run_uploads(steps: &[(String, Value)]) -> Vec<Value> {
+    let home = std::env::temp_dir().join(format!("equipe-upload-vectors-{}-{:?}", std::process::id(), std::thread::current().id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let mut core = connected_core();
+    // No ffmpeg: the video's answer is the same on every machine.
+    let mut uploads = super::super::upload::Uploads::with_tools(&home, vec![]);
+    let mut out = Vec::new();
+    for (seq, (name, rpc)) in steps.iter().enumerate() {
+        let (sealed, recv) = phone_frame(name, "device", NOW, seq as u64 + 1, None, rpc.clone());
+        let mut answer = Value::Null;
+        for action in core.on_relay(&recv, NOW) {
+            match action {
+                Action::Upload { device, id, piece } => {
+                    let message = match uploads.piece(&device, *piece, NOW) {
+                        Ok(result) => Message::response(id, result),
+                        Err(refusal) => refusal.answer(id),
+                    };
+                    let frames = relay_frames(&core.answer(&device, &message));
+                    answer = kept_as_vectors(&opened(&frames[0]), &home);
+                }
+                Action::UploadCancel { device, upload_id } => uploads.cancel(&device, &upload_id),
+                other => panic!("{name}: {other:?}"),
+            }
+        }
+        out.push(json!({ "name": name, "sends": serde_json::from_str::<Value>(&sealed.plaintext).unwrap(), "daemon_answers": answer }));
+    }
+    let _ = std::fs::remove_dir_all(&home);
+    out
+}
+
+fn upload_steps() -> Vec<(String, Value)> {
+    use base64::Engine as _;
+    let data = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+    let mut id = 0;
+    let mut up = |name: &str, params: Value| {
+        id += 1;
+        (name.to_owned(), json!({ "jsonrpc": "2.0", "id": id, "method": "upload", "params": params }))
+    };
+    let photo = b"\xff\xd8\xff\xe0 a tiny JPEG \xff\xd9";
+    let piece = |offset: usize, len: usize| json!({ "upload_id": "3f1c2a9e-0d4b-4c55-9a7e-61b2c8e0aa01", "name": "IMG_0421.JPG", "kind": "image", "total": photo.len(), "offset": offset, "data": data(&photo[offset..offset + len]) });
+    vec![
+        up("a photo: the first piece", piece(0, 10)),
+        up("the first piece again (its answer was lost)", piece(0, 10)),
+        up("a piece past where the daemon is", piece(15, 4)),
+        up("the last piece: kept, with its tag", piece(10, photo.len() - 10)),
+        up("the last piece again: the same answer", piece(10, photo.len() - 10)),
+        up("a sound with what the phone heard", json!({ "upload_id": "voice-memo-0001", "name": "Voice memo.m4a", "kind": "file", "total": 4, "offset": 0, "data": data(b"\0\0\0\x18"), "transcript": "내일 회의는 3시로 옮겨 주세요.\n자료는 금요일까지.", "duration": 31.4 })),
+        up("a video, on a Mac without ffmpeg", json!({ "upload_id": "clip-0001", "name": "IMG_0500.MOV", "kind": "video", "total": 4, "offset": 0, "data": data(b"\0\0\0\x14"), "transcript": "여기 버튼이 안 눌려요", "duration": 12.0 })),
+        up("a PDF", json!({ "upload_id": "spec-0001", "name": "기획서 v2.pdf", "kind": "pdf", "total": 8, "offset": 0, "data": data(b"%PDF-1.7"), "pages": 12 })),
+        up("a text file: its lines counted", json!({ "upload_id": "notes-0001", "name": "notes.md", "kind": "file", "total": 14, "offset": 0, "data": data(b"one\ntwo\nthree\n") })),
+        up("an image too large", json!({ "upload_id": "big-0001", "name": "a.png", "kind": "image", "total": super::super::upload::IMAGE_MAX + 1, "offset": 0, "data": data(b"x") })),
+        up("a file too large", json!({ "upload_id": "big-0002", "name": "a.zip", "kind": "file", "total": super::super::upload::FILE_MAX + 1, "offset": 0, "data": data(b"x") })),
+        up("a piece going past the total", json!({ "upload_id": "big-0003", "name": "a.zip", "kind": "file", "total": 1, "offset": 0, "data": data(b"xy") })),
+        up("a name the kind doesn't take", json!({ "upload_id": "bad-0001", "name": "run.sh", "kind": "image", "total": 1, "offset": 0, "data": data(b"x") })),
+        up("a piece for a file the daemon doesn't know", json!({ "upload_id": "gone-0001", "name": "a.zip", "kind": "file", "total": 20, "offset": 10, "data": data(b"x") })),
+        up("a file under way", json!({ "upload_id": "cancel-0001", "name": "a.zip", "kind": "file", "total": 20, "offset": 0, "data": data(b"0123456789") })),
+        ("cancelled".to_owned(), json!({ "jsonrpc": "2.0", "method": "upload_cancel", "params": { "upload_id": "cancel-0001" } })),
+        up("its next piece, after the cancel", json!({ "upload_id": "cancel-0001", "name": "a.zip", "kind": "file", "total": 20, "offset": 10, "data": data(b"0123456789") })),
+    ]
+}
+
+fn upload_vectors() -> Value {
+    let steps = run_uploads(&upload_steps());
+    let photo = steps[3]["daemon_answers"]["rpc"]["result"]["tag"].as_str().unwrap().to_owned();
+    let voice = steps[5]["daemon_answers"]["rpc"]["result"]["tag"].as_str().unwrap().to_owned();
+    let submit = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "submit", "squad": SQUAD, "session": 1001, "text": format!("이거 봐 주세요 {photo} {voice}") } });
+    let sealed = seal_fixed("an upload piece", Kind::ToDaemon, "daemon", Some("device"), false, &link_aad(), &steps[0]["sends"].to_string());
+    json!({
+        "about": "A phone's files, a piece at a time (docs/remote-protocol.md, Attachments). Run in order on one daemon whose uploads are at /Users/abel/.equipe/uploads and whose clock is now — paths and stamps put back to those; checked against the daemon. sends: the plaintext the phone seals (device_to_daemon). daemon_answers: what it sealed back, opened; null when there is no answer. The video ran without ffmpeg, so it has no frames and the notice says so; with ffmpeg its tag carries `1920×1080 · frames: <path>@0:02, …` after the length.",
+        "now": NOW,
+        "limits": super::super::upload::limits(),
+        "steps": steps,
+        "then_submit": { "about": "Each finished tag, then a space, after what was typed (the desktop's attach::message): sent as submit's text.", "sends": submit },
+        "sealed_piece": sealed.to_json(),
+    })
+}
+
 // ─── the files ───────────────────────────────────────────────────────────
 
 fn files() -> Vec<(&'static str, Value)> {
-    vec![("seal.json", seal_vectors()), ("qr.json", qr_vectors()), ("pairing.json", pairing_vectors()), ("frames.json", frame_vectors()), ("messages.json", message_vectors())]
+    vec![("seal.json", seal_vectors()), ("qr.json", qr_vectors()), ("pairing.json", pairing_vectors()), ("frames.json", frame_vectors()), ("messages.json", message_vectors()), ("uploads.json", upload_vectors())]
 }
 
 #[test]
@@ -983,6 +1088,11 @@ fn the_daemon_passes_the_kept_vectors() {
     assert_eq!(core.on_relay(&pairing["3_daemon_receives"], NOW), vec![Action::Local(pairing["4_daemon_asks_the_person"].clone())]);
     let unpair = &pairing["7_unpair"];
     assert_eq!(Value::Array(relay_frames(&connected_core().on_relay(&unpair["daemon_receives"], NOW))), unpair["daemon_sends"]);
+    let uploads = read("uploads.json");
+    let steps: Vec<(String, Value)> = uploads["steps"].as_array().unwrap().iter().map(|s| (s["name"].as_str().unwrap().to_owned(), s["sends"]["rpc"].clone())).collect();
+    for (ran, kept) in run_uploads(&steps).iter().zip(uploads["steps"].as_array().unwrap()) {
+        assert_eq!(ran["daemon_answers"], kept["daemon_answers"], "{}", kept["name"]);
+    }
     let frames = read("frames.json");
     let mut core = connected_core();
     for step in frames["device_to_daemon"].as_array().unwrap() {

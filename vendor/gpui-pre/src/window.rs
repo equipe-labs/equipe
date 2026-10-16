@@ -124,6 +124,8 @@ struct WindowInvalidatorInner {
     pub dirty: bool,
     pub draw_phase: DrawPhase,
     pub dirty_views: FxHashSet<EntityId>,
+    // equipe: what was notified between frames, views or not (see `Window::notified_entities`).
+    pub notified: FxHashSet<EntityId>,
     pub update_count: usize,
     #[cfg(feature = "profiler")]
     pub frame_dirty: FrameDirtyAccumulator,
@@ -165,6 +167,7 @@ impl WindowInvalidator {
                 dirty: true,
                 draw_phase: DrawPhase::None,
                 dirty_views: FxHashSet::default(),
+                notified: FxHashSet::default(),
                 update_count: 0,
                 #[cfg(feature = "profiler")]
                 frame_dirty: FrameDirtyAccumulator::default(),
@@ -178,6 +181,9 @@ impl WindowInvalidator {
         inner.update_count += 1;
         inner.dirty_views.insert(entity);
         if inner.draw_phase == DrawPhase::None {
+            // equipe: only between frames — what an element notifies while it
+            // is drawn (an input registering itself) would redraw it every frame.
+            inner.notified.insert(entity);
             #[cfg(feature = "profiler")]
             let dirty_at = Self::record_frame_dirty(&mut inner);
             let became_dirty = !inner.dirty;
@@ -272,6 +278,11 @@ impl WindowInvalidator {
 
     pub fn replace_views(&self, views: FxHashSet<EntityId>) {
         self.inner.borrow_mut().dirty_views = views;
+    }
+
+    // equipe: see `Window::notified_entities`.
+    pub fn take_notified(&self) -> FxHashSet<EntityId> {
+        mem::take(&mut self.inner.borrow_mut().notified)
     }
 
     pub fn not_drawing(&self) -> bool {
@@ -1300,6 +1311,14 @@ pub struct Window {
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
     pub(crate) next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
     pub(crate) dirty_views: FxHashSet<EntityId>,
+    // equipe: the entities notified since the last frame — views or not. A
+    // cached view is drawn again when one it read while drawn is among them
+    // (`view.rs`), not only when it is notified itself or a view in it is: a
+    // view drawn from another entity's state follows it without observing it,
+    // and an input's text or a list's scroll inside it redraws it.
+    pub(crate) notified_entities: FxHashSet<EntityId>,
+    // equipe: frames drawn so far (see `ViewElementState::drawn_in`, `view.rs`).
+    pub(crate) frames_drawn: u64,
     focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
     pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
     focus_lost_path: SmallVec<[FocusId; 8]>,
@@ -2202,6 +2221,8 @@ impl Window {
             next_tooltip_id: TooltipId::default(),
             tooltip_bounds: None,
             dirty_views: FxHashSet::default(),
+            notified_entities: FxHashSet::default(),
+            frames_drawn: 0,
             focus_listeners: SubscriberSet::new(),
             focus_lost_listeners: SubscriberSet::new(),
             focus_lost_path: SmallVec::new(),
@@ -3558,6 +3579,7 @@ impl Window {
             self.refresh();
         }
         self.invalidate_entities();
+        self.frames_drawn += 1; // equipe
         cx.entities.clear_accessed();
         debug_assert!(self.rendered_entity_stack.is_empty());
         self.invalidator.set_dirty(false);
@@ -3594,6 +3616,7 @@ impl Window {
             }
         }
         self.dirty_views.clear();
+        self.notified_entities.clear(); // equipe
         self.next_frame.window_active = self.active.get();
 
         // Register requested input handler with the platform window.
@@ -3713,6 +3736,7 @@ impl Window {
     }
 
     fn invalidate_entities(&mut self) {
+        self.notified_entities = self.invalidator.take_notified(); // equipe
         let mut views = self.invalidator.take_views();
         for entity in views.drain() {
             self.mark_view_dirty(entity);

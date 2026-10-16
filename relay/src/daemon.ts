@@ -15,12 +15,14 @@
 //   "unpaired:<id>"    a device that unpaired itself, until the daemon says `device_remove`
 
 import { DurableObject } from "cloudflare:workers";
+import { Budget } from "./budget";
 import { tokenMatches } from "./encoding";
 import type { Env } from "./env";
 import {
   DAEMON_FRAMES,
   DEVICE_FRAMES,
   FrameError,
+  MAX_FRAME_BYTES,
   PAIR_FRAMES,
   parseFrame,
   type DaemonFrame,
@@ -45,6 +47,8 @@ const CLOSE_REPLACED = 4000;
 const CLOSE_REMOVED = 4001;
 
 export class Daemon extends DurableObject<Env> {
+  private budget = new Budget();
+
   /** Called once by the Worker when the relay hands out this daemon's id. */
   async register(tokenHash: string): Promise<void> {
     await this.ctx.storage.put("token_hash", tokenHash);
@@ -194,8 +198,15 @@ export class Daemon extends DurableObject<Env> {
 
   private async fromDevice(ws: WebSocket, device: string, frame: DeviceFrame): Promise<void> {
     switch (frame.type) {
-      case "send":
-        return this.toDaemon({ type: "recv", device, data: frame.data });
+      case "send": {
+        const recv = { type: "recv", device, data: frame.data };
+        // What the daemon gets is a little bigger than what the device sent: it must fit too.
+        const size = JSON.stringify(recv).length;
+        if (size > MAX_FRAME_BYTES) throw new FrameError("frame is too large");
+        const spent = this.budget.spend(device, frame.data.length);
+        if (!spent.ok) return send(ws, { type: "error", message: "slow down", retry_ms: spent.retryMs });
+        return this.toDaemon(recv);
+      }
       case "push_token": {
         const record = await this.device(device);
         if (!record) return;

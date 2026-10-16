@@ -146,7 +146,7 @@ fn placeholder(p: Palette, id: ElementId, reduce: bool) -> AnyElement {
     if reduce {
         return base.into_any_element();
     }
-    base.with_animation(id, Animation::new(Duration::from_millis(1400)).repeat().with_easing(bounce(ease_in_out)), |el, t| el.opacity(1. - 0.45 * t)).into_any_element()
+    base.with_animation(id, Animation::new(Duration::from_millis(1400)).repeat().with_easing(bounce(ease_in_out)).with_max_fps(20.), |el, t| el.opacity(1. - 0.45 * t)).into_any_element()
 }
 
 #[allow(clippy::too_many_arguments)]

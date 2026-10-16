@@ -31,6 +31,7 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
         (_, Ok(path)) => format!("wait:{};shot:{path};quit", std::env::var("EQUIPE_SNAPSHOT_MS").unwrap_or_else(|_| "3000".into())),
         _ => return,
     };
+    let started = std::time::Instant::now();
     cx.spawn(async move |cx| {
         for step in script.split(';').map(str::trim).filter(|s| !s.is_empty()) {
             let (verb, arg) = step.split_once(':').unwrap_or((step, ""));
@@ -43,9 +44,10 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 cx.update(|cx| cx.quit());
                 return;
             }
-            // A line in the log the measurements are cut at (`docs/PERF-2026-10.md`).
+            // A line in the log the measurements are cut at (`docs/PERF-2026-10.md`),
+            // with the process's CPU time so far and the clock, to divide one by the other.
             if verb == "mark" {
-                eprintln!("perf mark {arg}");
+                eprintln!("perf mark {arg} cpu {}ms at {}ms", process_cpu().as_millis(), started.elapsed().as_millis());
                 continue;
             }
             // `scroll:<n>,<dy>`: n turns of the wheel, a frame apart, by dy points
@@ -585,4 +587,13 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// The process's CPU time so far, user and system, every thread.
+fn process_cpu() -> Duration {
+    // SAFETY: `usage` is a valid rusage for the call to fill.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+    let time = |t: libc::timeval| Duration::new(t.tv_sec as u64, t.tv_usec as u32 * 1000);
+    time(usage.ru_utime) + time(usage.ru_stime)
 }

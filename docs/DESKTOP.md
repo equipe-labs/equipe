@@ -53,7 +53,10 @@ Screen design: the squad's `outputs/T-54 데스크톱 화면 설계/spec.md`.
   window, the daemon pump and the connected / banner / daemon-off bodies.
 - **Drawing.** Updates that land within 100 ms are applied together; a frame is
   requested only if what is on screen differs (`Model::apply` returns whether it
-  does). `EQUIPE_LOG_RENDER=1` prints a line per frame with the memory footprint.
+  does). `EQUIPE_LOG_RENDER=1` prints a line per frame with the memory footprint
+  (and one per pane drawn). The sidebar, the screen and the conversation are cached
+  views (`pane.rs`); what turns or counts asks one clock to draw its own view again
+  (`beat.rs`) — nothing turning, no frames (docs/PERF-2026-10.md, 6).
   The daemon-off screen says to run `equipe`; the app does not start the daemon.
   When there is nothing to attach to *and* no `equipe` command on this Mac
   (`install::find_cli` — only for the target "this Mac": PATH, then `~/.local/bin`, `/opt/homebrew/bin`,
@@ -564,7 +567,12 @@ One command on a Mac, from the repo root; ~5 min cold (two architectures).
 - **Notarization**: when signed and given credentials — `EQUIPE_NOTARY_PROFILE`
   (a `xcrun notarytool store-credentials` profile in the keychain) or
   `EQUIPE_NOTARY_KEY` (.p8 path) + `EQUIPE_NOTARY_KEY_ID` + `EQUIPE_NOTARY_ISSUER`
-  — `notarytool submit --wait`, then `stapler staple` on the DMG.
+  — the app first (zipped with `ditto`, `notarytool submit --wait`, `stapler
+  staple` on `equipe.app`, then `stapler validate` and `spctl -t exec`), so the
+  copy dragged to Applications opens on an offline Mac too; then the DMG built
+  from it, the same way. The summary ends with `signed: YES/NO` and
+  `notarized: YES/NO`; CI's "Check the DMG" step runs `stapler validate` and
+  `spctl` on the app inside the DMG.
 - **Updates** ([Sparkle](https://sparkle-project.org) 2.10.0, fetched once into
   `$CARGO_TARGET_DIR/sparkle/` and checked against a pinned SHA-256): only when the
   update key's public half is known (`SPARKLE_PUBLIC_ED_KEY`, else
