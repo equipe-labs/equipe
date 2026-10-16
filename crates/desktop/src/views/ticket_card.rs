@@ -700,6 +700,18 @@ impl Render for TicketCard {
     }
 }
 
+/// About how many lines `text` takes on the card: a wide (CJK) letter is two
+/// narrow ones, and a line holds about 50 narrow ones.
+fn wrapped_lines(text: &str) -> usize {
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let units: usize = l.chars().map(|c| if c.len_utf8() > 2 { 2 } else { 1 }).sum();
+            units.div_ceil(50).max(1)
+        })
+        .sum()
+}
+
 /// "T-999 · 찾을 수 없어요": a number the squad has no ticket for.
 fn missing(p: Palette, id: TicketId) -> AnyElement {
     h_flex()
@@ -758,7 +770,7 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
     // What was said of it: the hand-in, what it asks, else what it is.
     let said = t.note.as_deref().filter(|n| !n.trim().is_empty() && !matches!(t.status, TicketStatus::Todo | TicketStatus::InProgress | TicketStatus::Proposed)).unwrap_or(&t.body);
     let excerpt = (!said.trim().is_empty()).then(|| {
-        let long = said.lines().filter(|l| !l.trim().is_empty()).count() > EXCERPT_LINES as usize || said.chars().count() > 220;
+        let long = wrapped_lines(said) > EXCERPT_LINES as usize;
         let fade_to = p.raised;
         let clear: Hsla = Rgba { a: 0., ..fade_to }.into();
         div()
@@ -1177,6 +1189,13 @@ mod tests {
         assert_eq!(act_for_key("a", &acts(TicketStatus::Done, true, true)), Some(Act::Merge));
         assert_eq!(act_for_key("r", &acts(TicketStatus::Waiting, false, false)), Some(Act::Answer));
         assert_eq!(act_for_key("x", &review), None);
+    }
+
+    #[test]
+    fn a_long_excerpt_is_told_by_its_wrapped_lines() {
+        assert_eq!(super::wrapped_lines("short\n\nline"), 2);
+        assert_eq!(super::wrapped_lines(&"가".repeat(30)), 2, "Korean is wide");
+        assert!(super::wrapped_lines("- [ ] App Review 연락처를 알려 주세요: 전화번호(국가번호 포함)와 이메일. 심사팀만 보고 공개되지 않습니다.\n- [ ] App Store Connect에서 EU DSA 상태를 trader(사업자)로 바꿔 주세요 — 앱 정보 › 디지털 서비스법.\nWaiting on you:") > 5);
     }
 
     #[test]
