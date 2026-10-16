@@ -34,6 +34,9 @@ pub(super) fn lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>>
     }
     out.push(Line::from(head));
     out.extend(wrapped(Vec::new(), &q.question, theme.bold(), 0, width));
+    if let Some(line) = pictures_line(&q.images, "", theme, width) {
+        out.push(line);
+    }
     if q.multi_select {
         out.push(Line::from(Span::styled(t!("view.decide_multi").to_owned(), theme.dim())));
     }
@@ -53,6 +56,10 @@ pub(super) fn lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>>
             spans.push(Span::styled(format!(" — {}", ui::fit(&option.description, width - used - 3)), theme.dim()));
         }
         out.push(Line::from(spans));
+        // A visual option: how many pictures, and which — `v` opens them.
+        if let Some(line) = pictures_line(&option.images, "    ", theme, width) {
+            out.push(line);
+        }
     }
     let own = picking.others.get(step).map(|o| o.trim().to_owned()).unwrap_or_default();
     let other = if picking.typing {
@@ -79,6 +86,9 @@ pub(super) fn lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>>
     if step > 0 {
         keys.extend([Span::styled("   ←", theme.bold()), Span::styled(format!(" {}", t!("view.decide_back")), theme.dim())]);
     }
+    if q.images().next().is_some() {
+        keys.extend([Span::styled("   v", theme.bold()), Span::styled(format!(" {}", t!("view.decide_view_images")), theme.dim())]);
+    }
     let more = app.more_questions();
     if more > 0 {
         keys.push(Span::styled(format!("   · {}", t!("view.more_waiting", n = more)), theme.dim()));
@@ -92,6 +102,18 @@ pub(super) fn lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>>
             Line::from(spans)
         })
         .collect()
+}
+
+/// "이미지 2개 · logo-a.png, logo-b.png" under what shows them, indented
+/// by `indent`; `None` without pictures.
+fn pictures_line(images: &[String], indent: &str, theme: Theme, width: usize) -> Option<Line<'static>> {
+    if images.is_empty() {
+        return None;
+    }
+    let head = format!("{indent}{}", t!("view.decide_images", count = images.len()));
+    let names: Vec<&str> = images.iter().map(|p| std::path::Path::new(p).file_name().and_then(|n| n.to_str()).unwrap_or(p)).collect();
+    let room = width.saturating_sub(cols(&head) + 3);
+    Some(Line::from(vec![Span::styled(head, theme.accent()), Span::styled(format!(" · {}", ui::fit(&names.join(", "), room)), theme.dim())]))
 }
 
 /// The person's answers to a member, as their message shows in the
@@ -166,15 +188,15 @@ mod tests {
     }
 
     fn set() -> QuestionSet {
-        let choice = |label: &str, description: &str| Choice { label: label.into(), description: description.into() };
+        let choice = |label: &str, description: &str| Choice { label: label.into(), description: description.into(), ..Choice::default() };
         QuestionSet {
             id: 7,
             session: 1,
             member: "pm".into(),
             ticket: None,
             questions: vec![
-                Question { question: "Which login first?".into(), header: "Login".into(), options: vec![choice("Magic link (Recommended)", "no passwords"), choice("Google", "one tap")], multi_select: false },
-                Question { question: "Which screens ship?".into(), header: String::new(), options: vec![choice("Onboarding", ""), choice("Orders", ""), choice("Settings", "")], multi_select: true },
+                Question { question: "Which login first?".into(), header: "Login".into(), options: vec![choice("Magic link (Recommended)", "no passwords"), choice("Google", "one tap")], multi_select: false, ..Question::default() },
+                Question { question: "Which screens ship?".into(), header: String::new(), options: vec![choice("Onboarding", ""), choice("Orders", ""), choice("Settings", "")], multi_select: true, ..Question::default() },
             ],
             asked_at: 0,
         }
@@ -208,6 +230,28 @@ mod tests {
         for expected in ["· 2/2", "Pick any that apply", "1 [ ] Onboarding", "3 [x] Settings", "o type it below", "enter send", "← back"] {
             assert!(shot.contains(expected), "missing {expected:?} in:\n{shot}");
         }
+    }
+
+    #[test]
+    fn a_visual_choice_says_how_many_pictures_each_option_has_and_v_opens_them() {
+        let mut app = pm();
+        let mut visual = set();
+        visual.questions[0].options[0].images = vec!["/h/brand/logo-a.png".into(), "/h/brand/logo-a-dark.png".into()];
+        visual.questions[0].options[1].images = vec!["/h/brand/logo-b.svg".into()];
+        app.on_event(Event::QuestionsAsked { squad: "acme".into(), questions: visual });
+        let shot = screen(&app, 110, 30);
+        let lines: Vec<&str> = shot.lines().collect();
+        let at = |text: &str| lines.iter().position(|l| l.contains(text)).unwrap_or_else(|| panic!("no {text:?} in:\n{shot}"));
+        assert_eq!(at("2 images · logo-a.png, logo-a-dark.png"), at("1 ○ Magic link") + 1, "{shot}");
+        assert_eq!(at("1 image · logo-b.svg"), at("2 ○ Google") + 1, "{shot}");
+        assert!(lines[at("1–2 pick")].contains("v view images"), "{shot}");
+        press(&mut app, KeyCode::Char('v'));
+        let said = app.flash.clone().unwrap_or_default();
+        assert!(said.contains("3") && said.contains("/h/brand/logo-a.png"), "{said}");
+        // A question without pictures: no such key.
+        press(&mut app, KeyCode::Char('1'));
+        press(&mut app, KeyCode::Enter);
+        assert!(!screen(&app, 110, 30).contains("view images"));
     }
 
     #[test]
