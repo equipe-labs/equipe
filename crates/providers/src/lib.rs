@@ -4,6 +4,7 @@
 //! without a network or a login; the async functions only add I/O around them.
 
 pub mod claude_code;
+pub mod codex_app;
 pub mod credentials;
 pub mod error;
 pub mod openai;

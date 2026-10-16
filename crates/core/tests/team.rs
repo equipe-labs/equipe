@@ -46,6 +46,8 @@ fn config(claude: &Path, home: &Path, persist: bool) -> Config {
         home: home.to_owned(),
         client_version: "test".into(),
         claude_binary: claude.to_string_lossy().into_owned(),
+        // No Codex CLI either: the person's own must never run in a test.
+        codex_binary: "/nonexistent/codex".into(),
         persist,
         retention_days: 90,
         equipe_binary: Some("/opt/equipe".into()),

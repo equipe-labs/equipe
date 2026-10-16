@@ -157,6 +157,19 @@ What uses the space, and cleaning it up, stay at the Mac's screens: a device may
 `disk_scan` or `disk_clean`, and the `disk_report` and `disk_cleaned` events those answer are not
 forwarded to it.
 
+### The plans' usage
+
+Every screen, whichever squad it follows, gets `plan_usage` `{ "usage": { "five_hour",
+"seven_day" }, "engine": "claude" | "codex" }` when an engine reports its plan's usage: each
+window `{ "used_percent": 0–100, "resets_at": <unix seconds> }` or `null`. Windows are known
+by their length — five hours, seven days — never by the order an engine lists them in; a plan
+without one (Codex Pro has no five-hour window) sends `null` there, and a window of any other
+length is left out. Claude's comes with its members' turns; Codex's with theirs and, while a
+squad has Codex members, every five minutes besides. A `plan_usage` without `engine` (from an
+older daemon) is Claude's. The snapshot carries Claude's as `plan` and every engine's as
+`plans`: `[{ "engine", "usage", "plan_type"? ("max", "pro", "plus"…), "at" (unix seconds when
+read) }]` — absent from an older daemon's.
+
 ### Attachments
 
 A phone attaches a photo, a file, a sound or a video the way a screen does: it puts the file

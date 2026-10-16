@@ -272,49 +272,7 @@ pub struct Turn {
     pub session_id: Option<String>,
 }
 
-/// Something worth showing while a turn runs.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Activity {
-    /// A fragment of the answer.
-    Text(String),
-    /// Claude Code is using a tool, e.g. `Edit` on a file.
-    Tool { name: String, target: Option<String> },
-    /// A tool use came back (the `Tool` with this `name` and `target`).
-    ToolDone(ToolDone),
-    /// A fragment of the model's reasoning, as the engine shows it — not
-    /// part of the answer.
-    Thinking(String),
-    /// The model Claude Code is running, reported at startup.
-    Model(String),
-    /// The plan's usage windows: five-hour and seven-day, each as the share
-    /// used (0–1) and when it resets (Unix seconds).
-    Plan { five_hour: Option<(f64, i64)>, seven_day: Option<(f64, i64)> },
-    /// Output the turn has produced so far, in tokens.
-    Output(u64),
-    /// The member handed `what` to a subagent (Claude Code's Agent tool).
-    SubagentStarted { id: String, what: String },
-    /// A subagent's latest step: a tool and what it acts on.
-    SubagentStep { id: String, step: String },
-    /// A subagent finished and handed back what it found.
-    SubagentEnded { id: String },
-    /// A message sent while the turn ran was read, at this point of it.
-    Steered(String),
-}
-
-/// How a tool use ended, as Claude Code answered it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ToolDone {
-    pub name: String,
-    pub target: Option<String>,
-    pub ok: bool,
-    /// A command's exit code, when it said one.
-    pub exit: Option<i32>,
-    pub ms: u64,
-    /// What it printed (or answered), whole.
-    pub output: String,
-    /// An edit's or a write's change, as a unified diff headed `diff --git`.
-    pub diff: Option<String>,
-}
+pub use crate::turn::{Activity, ToolDone};
 
 /// A tool use waiting for its answer.
 struct Pending {
@@ -396,11 +354,14 @@ impl TurnCollector {
                 }
             }
             "rate_limit_event" => {
-                let windows = event.get("rate_limit_info").and_then(|i| i.get("unifiedWindows"));
-                let window = |name: &str| {
-                    let w = windows?.get(name)?;
-                    Some((w.get("utilization")?.as_f64()?, w.get("resetsAt")?.as_i64()?))
-                };
+                let info = event.get("rate_limit_info");
+                // Both windows at once — but `unifiedWindows` is Claude Code's
+                // own, outside its public types, so it may go away.
+                let windows = info.and_then(|i| i.get("unifiedWindows"));
+                let reading = |w: &Value| Some((w.get("utilization")?.as_f64()?, w.get("resetsAt")?.as_i64()?));
+                // The public fields: the one window Claude Code reports on now.
+                let public = |name: &str| info.filter(|i| i.get("rateLimitType").and_then(Value::as_str) == Some(name)).and_then(reading);
+                let window = |name: &str| windows.and_then(|w| w.get(name)).and_then(reading).or_else(|| public(name));
                 let (five_hour, seven_day) = (window("five_hour"), window("seven_day"));
                 if five_hour.is_none() && seven_day.is_none() {
                     return Vec::new();
@@ -592,7 +553,7 @@ fn tool_uses(event: &Value) -> Vec<Activity> {
 }
 
 /// The thing a tool use acts on, in one line.
-fn tool_target(name: &str, input: Option<&Value>) -> Option<String> {
+pub(crate) fn tool_target(name: &str, input: Option<&Value>) -> Option<String> {
     board_target(name, input).or_else(|| {
         // `element` and `text`: what a browser step clicks or types into, in words;
         // `app`, `keys`, `window`: a desktop step's.
@@ -676,7 +637,7 @@ fn with_newline(text: &str) -> String {
 }
 
 /// A diff no longer than [`DIFF_LINES`].
-fn cap_diff(diff: String) -> String {
+pub(crate) fn cap_diff(diff: String) -> String {
     match diff.match_indices('\n').nth(DIFF_LINES - 1) {
         Some((at, _)) => diff[..=at].to_owned(),
         None => diff,
@@ -1375,6 +1336,11 @@ mod tests {
             collector.on_event(&plan),
             vec![Activity::Plan { five_hour: Some((0.06, 1791871800)), seven_day: Some((0.03, 1792454400)) }]
         );
+        // Without the internal `unifiedWindows`, the public fields: the one window it reports on.
+        let public = json!({"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"seven_day","utilization":0.86,"resetsAt":1792454400}});
+        assert_eq!(collector.on_event(&public), vec![Activity::Plan { five_hour: None, seven_day: Some((0.86, 1792454400)) }]);
+        let model_window = json!({"type":"rate_limit_event","rate_limit_info":{"status":"allowed","rateLimitType":"seven_day_opus","utilization":0.5,"resetsAt":1}});
+        assert!(collector.on_event(&model_window).is_empty(), "a window the plan's usage has no place for");
         let delta = |n: u64| json!({"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":n}}});
         assert_eq!(collector.on_event(&delta(120)), vec![Activity::Output(120)]);
         assert_eq!(collector.on_event(&delta(30)), vec![Activity::Output(150)], "summed over the turn's requests");

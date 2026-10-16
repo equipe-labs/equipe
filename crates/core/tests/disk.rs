@@ -40,6 +40,7 @@ async fn a_look_and_a_clean_go_through_the_daemon_and_off_its_loop() {
         home: home.clone(),
         client_version: "test".into(),
         claude_binary: "/bin/false".into(),
+        codex_binary: "/nonexistent/codex".into(),
         persist: true,
         retention_days: 90,
         equipe_binary: None,
