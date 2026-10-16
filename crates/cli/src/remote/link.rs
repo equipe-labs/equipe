@@ -40,6 +40,25 @@ enum Input {
     Opened(String, String, Value, Result<(Commands, equipe_core::protocol::rpc::Hello), String>),
     /// An event of any squad, for pushes.
     Squad(String, Event),
+    /// A member's picture a device asked for, read (`read_image`).
+    ImageRead(String, String, u64, Result<equipe_core::protocol::rpc::ImageRead, String>),
+}
+
+/// A member's picture for a phone: no bigger than `visuals::PHONE_SIDE`,
+/// and smaller again until it fits one relay frame.
+fn phone_image(home: &Path, ask: &equipe_core::protocol::rpc::ReadImage) -> Result<equipe_core::protocol::rpc::ImageRead, String> {
+    use equipe_core::visuals;
+    let mut read = visuals::serve(home, ask, Some(visuals::PHONE_SIDE))?;
+    for side in [480, 320, 200] {
+        if read.data.len() <= super::core::PHONE_IMAGE_MAX {
+            break;
+        }
+        read = visuals::serve(home, ask, Some(side))?;
+    }
+    if read.data.len() > super::core::PHONE_IMAGE_MAX {
+        return Err("the picture is too big for the phone".into());
+    }
+    Ok(read)
 }
 
 /// Run in the daemon for as long as it lives.
@@ -196,6 +215,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                 actions.extend(core.opened(&device, &squad, &id, hello));
             }
             Some(Input::Squad(squad, event)) => actions.extend(core.on_squad_event(&squad, &event)),
+            Some(Input::ImageRead(device, squad, id, read)) => actions.extend(core.image_read(&device, &squad, id, read)),
         }
         for action in actions {
             match action {
@@ -234,6 +254,13 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                     if let Some(commands) = senders.get(&(device, squad)) {
                         commands.send(command);
                     }
+                }
+                Action::ReadImage { device, squad, id, ask } => {
+                    let (tx, home) = (input_tx.clone(), home.clone());
+                    tokio::spawn(async move {
+                        let read = tokio::task::spawn_blocking(move || phone_image(&home, &ask)).await.unwrap_or_else(|_| Err("the picture couldn't be read".into()));
+                        let _ = tx.send(Input::ImageRead(device, squad, id, read));
+                    });
                 }
                 Action::Close { device } => {
                     tasks.retain(|(d, _), task| {
@@ -382,6 +409,10 @@ pub async fn serve_demo(home: PathBuf, version: String) -> Result<(), String> {
                         {
                             equipe_core::daemon_log!("demo: couldn't keep the devices: {err}");
                         }
+                    }
+                    // The demo's squad shows no member's pictures.
+                    Action::ReadImage { device, squad, id, .. } => {
+                        actions.extend(core.image_read(&device, &squad, id, Err("the demo has no pictures".into())));
                     }
                     Action::Close { .. } | Action::Local(_) => {}
                 }

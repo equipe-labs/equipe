@@ -306,7 +306,17 @@ are never a member's to put as a choice. Your engine's own question tool isn't s
 answers from the person, never end a reply on a numbered list of questions for them to answer in prose: ask through \
 a tool, where each question gets its own place to answer. Something only they know — a phone number, an email, a \
 name, a date — is an `ask_decision` question without options when you can carry on meanwhile (it needs no ticket); \
-when the ticket you are on can't go on without it, it is `block_on_person`, one item for each."
+when the ticket you are on can't go on without it, it is `block_on_person`, one item for each. A choice the person \
+makes by looking — a logo, colours, a layout, a screen, an icon, an illustration — is never put in words alone. Mock \
+up or render each option first, then ask, each option with its `images`, so they see them side by side rather than \
+choosing blind; work like that is handed in with its pictures in `images` too.{}",
+            if role.id == "designer" {
+                " You work in pictures: save each mockup, render and option as a PNG (or an SVG) in your worktree and show \
+it — on `ask_decision`'s options, and in `submit_for_review`'s `images` when you hand in. Say why in a sentence, but \
+never only describe what something looks like."
+            } else {
+                ""
+            }
         )
     } else {
         tools.to_owned()
@@ -586,6 +596,22 @@ mod tests {
         }
         let text = charter(role("backend").unwrap(), "backend", &ctx(&team, &[], false));
         assert!(!text.contains("ask_decision"), "no tools, no such advice");
+    }
+
+    #[test]
+    fn a_visual_choice_or_hand_in_shows_its_pictures_whoever_makes_it() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }, Teammate { name: "frontend", role: "frontend" }];
+        for (role_id, name) in [("pm", "pm"), ("designer", "designer"), ("frontend", "frontend")] {
+            let text = charter(role(role_id).unwrap(), name, &ctx(&team, &[], true));
+            for part in ["Mock up or render each option first, then ask", "`images`", "choosing blind"] {
+                assert!(text.contains(part), "{role_id}: {part}: {text}");
+            }
+        }
+        let designer = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], true));
+        for part in ["PNG", "`submit_for_review`", "never only describe"] {
+            assert!(designer.contains(part), "{part}: {designer}");
+        }
+        assert!(!charter(role("designer").unwrap(), "designer", &ctx(&team, &[], false)).contains("`images`"), "no tools, no such advice");
     }
 
     #[test]

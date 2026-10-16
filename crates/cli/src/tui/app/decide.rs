@@ -151,6 +151,18 @@ impl App {
                 self.composer.insert_str(&kept);
                 Some(Vec::new())
             }
+            // The question's pictures in the system's viewer — on this machine only;
+            // from over SSH, where they are.
+            KeyCode::Char('v') if question.images().next().is_some() => {
+                let paths: Vec<&str> = question.images().collect();
+                let here = !cfg!(test) && std::env::var_os("SSH_CONNECTION").is_none() && std::env::var_os("EQUIPE_NO_OPEN").is_none();
+                if here {
+                    paths.iter().for_each(|p| crate::home::open(std::path::Path::new(p)));
+                }
+                let (count, list) = (paths.len(), paths.join(", "));
+                self.flash = Some(if here { t!("app.decide_images_opened", count = count, paths = list) } else { t!("app.decide_images_there", count = count, paths = list) });
+                Some(Vec::new())
+            }
             KeyCode::Char('-') => Some(self.decide_next(&set, true)),
             KeyCode::Enter => Some(self.decide_next(&set, false)),
             KeyCode::Left if picking.step > 0 => {
@@ -220,15 +232,15 @@ mod tests {
     }
 
     fn set(member: &str, session: u64) -> QuestionSet {
-        let options = |labels: &[&str]| labels.iter().map(|l| Choice { label: (*l).into(), description: String::new() }).collect();
+        let options = |labels: &[&str]| labels.iter().map(|l| Choice { label: (*l).into(), description: String::new(), ..Choice::default() }).collect();
         QuestionSet {
             id: 7,
             session,
             member: member.into(),
             ticket: None,
             questions: vec![
-                Question { question: "Which database?".into(), header: "DB".into(), options: options(&["Postgres (Recommended)", "SQLite"]), multi_select: false },
-                Question { question: "Which features first?".into(), header: String::new(), options: options(&["Auth", "Payments", "Search"]), multi_select: true },
+                Question { question: "Which database?".into(), header: "DB".into(), options: options(&["Postgres (Recommended)", "SQLite"]), multi_select: false, ..Question::default() },
+                Question { question: "Which features first?".into(), header: String::new(), options: options(&["Auth", "Payments", "Search"]), multi_select: true, ..Question::default() },
             ],
             asked_at: 0,
         }

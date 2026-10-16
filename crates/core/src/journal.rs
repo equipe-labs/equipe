@@ -360,6 +360,8 @@ impl Journal {
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN rank INTEGER NOT NULL DEFAULT 0", []);
         // What the person left open when they answered a wait (JSON list).
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN remaining TEXT", []);
+        // The pictures a hand-in shows (JSON list of paths).
+        let _ = conn.execute("ALTER TABLE tickets ADD COLUMN images TEXT", []);
         // Tickets from before kinds: `code` with a project, `task` without — once,
         // when the column arrives.
         if conn.execute("ALTER TABLE tickets ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'", []).is_ok() {
@@ -633,7 +635,7 @@ impl Journal {
         self.conn.execute(
             "UPDATE tickets SET title = ?1, body = ?2, status = ?3, owner = ?4, assignee = ?5, project = ?6,
                                 depends_on = ?7, branch = ?8, note = ?9, updated_at = ?10, merged = ?12, kind = ?13,
-                                off_main = ?14, priority = ?15, rank = ?16, remaining = ?17
+                                off_main = ?14, priority = ?15, rank = ?16, remaining = ?17, images = ?18
              WHERE id = ?11",
             params![
                 t.title,
@@ -653,6 +655,7 @@ impl Journal {
                 t.priority.label(),
                 t.rank,
                 remaining_str(&t.remaining),
+                remaining_str(&t.images),
             ],
         )?;
         Ok(())
@@ -690,7 +693,7 @@ impl Journal {
     fn query_tickets(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<Ticket>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree, merged, kind, off_main, updated_at,
-                    priority, rank, remaining
+                    priority, rank, remaining, images
              FROM tickets {filter} ORDER BY id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -711,6 +714,7 @@ impl Journal {
                 kind: TicketKind::parse(&r.get::<_, String>(13)?).unwrap_or_default(),
                 asks: Vec::new(),
                 remaining: r.get::<_, Option<String>>(18)?.and_then(|r| serde_json::from_str(&r).ok()).unwrap_or_default(),
+                images: r.get::<_, Option<String>>(19)?.and_then(|i| serde_json::from_str(&i).ok()).unwrap_or_default(),
                 priority: Priority::parse(&r.get::<_, String>(16)?).unwrap_or_default(),
                 rank: r.get(17)?,
                 off_main: r.get::<_, Option<String>>(14)?.and_then(|o| serde_json::from_str(&o).ok()),
@@ -1215,7 +1219,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
-            remaining: Vec::new(),
+            remaining: Vec::new(), images: Vec::new(),
             updated_at: None,
             priority: Default::default(), rank: 0,
             kind: TicketKind::Code,
@@ -1263,6 +1267,21 @@ mod tests {
         t.remaining.clear();
         j.save_ticket(&t).unwrap();
         assert!(j.ticket(1).unwrap().unwrap().remaining.is_empty());
+    }
+
+    #[test]
+    fn a_hand_ins_pictures_are_kept() {
+        let home = temp_home();
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        j.create_ticket(&ticket("Logo")).unwrap();
+        let mut t = j.ticket(1).unwrap().unwrap();
+        assert!(t.images.is_empty());
+        t.images = vec!["/h/worktrees/acme.home/1/brand/a.png".into(), "/h/worktrees/acme.home/1/brand/b.svg".into()];
+        j.save_ticket(&t).unwrap();
+        assert_eq!(j.ticket(1).unwrap().unwrap().images, t.images);
+        t.images.clear();
+        j.save_ticket(&t).unwrap();
+        assert!(j.ticket(1).unwrap().unwrap().images.is_empty());
     }
 
     #[test]
