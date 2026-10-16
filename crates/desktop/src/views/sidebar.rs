@@ -466,7 +466,7 @@ fn ticket_row(shell: &Shell, t: &Ticket, live: Live, on: bool, arrives: bool, cx
     let row = super::ticket_card::hover_link(row_shell(p, ("ticket", id as usize), on), id, super::ticket_card::Side::Right)
         .group(group.clone())
         .on_click(cx.listener(move |this, _, window, cx| this.open_ticket_row(id, window, cx)))
-        .child(mark_element(p, mark, shell.board.spin))
+        .child(mark_element(p, mark, if mark == Mark::Spinner { shell.spin(cx) } else { 0. }))
         .child(fading_title(p, t.title.clone(), on, false))
         .children(time.map(|time| div().flex_none().text_size(px(11.)).text_color(p.muted).when(yes, |d| d.group_hover(group.clone(), |s| s.invisible())).child(time)))
         .when(yes, |r| {
@@ -654,9 +654,9 @@ fn sub_row(shell: &Shell, member: SessionId, session: SessionId, sub: &Sub, arri
         .hover(move |s| s.bg(p.side_hover))
         .tip_at(p, sub.what.clone(), Some(&step), gpui_kit::base::Placement::Right)
         .on_click(cx.listener(move |this, _, window, cx| this.open_subagent(member, session, &id, window, cx)))
-        .child(sub_mark(p, shell.board.spin))
+        .child(sub_mark(p, shell.spin(cx)))
         .child(fading_title(p, sub.what.clone(), false, false).text_size(px(12.)))
-        .child(div().flex_none().text_size(px(11.)).text_color(p.muted).child(short_span(sub.since.elapsed().as_secs())));
+        .child(div().flex_none().text_size(px(11.)).text_color(p.muted).child(shell.counting(sub.since.elapsed(), cx)));
     if arrives {
         let key = ElementId::Name(SharedString::from(format!("sub-in-{}", sub.id)));
         row.with_animation(key, Animation::new(motion::BASE).with_easing(motion::ease_out), |el, t| el.h(px(SUB_ROW * t)).opacity(t)).into_any_element()
@@ -772,7 +772,7 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, cx: &mut Co
         .h(px(TEAM_ROW))
         .group(group.clone())
         .on_click(cx.listener(move |this, _, window, cx| this.select_member(session, window, cx)))
-        .child(mark_element(p, mark, shell.board.spin))
+        .child(mark_element(p, mark, if mark == Mark::Spinner { shell.spin(cx) } else { 0. }))
         .child(div().flex_none().max_w(px(120.)).truncate().text_size(px(TEXT)).text_color(if on { p.text } else { p.text2 }).child(member.name.clone()))
         .child(fading_title(p, state.words(), on, true).text_size(px(12.)).when(state.waits(), |d| d.text_color(p.orange)).group_hover(group.clone(), |s| s.invisible()))
         // No room for its subagents' rows: how many, which opens them all.
@@ -790,7 +790,7 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, cx: &mut Co
                     cx.stop_propagation();
                     this.toggle_subagents(session, cx);
                 }))
-                .child(sub_mark(p, shell.board.spin))
+                .child(sub_mark(p, shell.spin(cx)))
                 .child(n.to_string())
         }))
         .child(
@@ -1134,7 +1134,7 @@ fn subagents_popover(shell: &Shell, member: SessionId, cx: &mut Context<Shell>) 
             .cursor_pointer()
             .hover(move |s| s.bg(p.side_hover))
             .on_click(cx.listener(move |this, _, window, cx| this.open_subagent(member, session, &id, window, cx)))
-            .child(div().pt(px(3.)).child(sub_mark(p, shell.board.spin)))
+            .child(div().pt(px(3.)).child(sub_mark(p, shell.spin(cx))))
             .child(
                 v_flex()
                     .flex_1()
@@ -1142,7 +1142,7 @@ fn subagents_popover(shell: &Shell, member: SessionId, cx: &mut Context<Shell>) 
                     .child(div().text_size(px(12.5)).text_color(p.text).truncate().child(sub.what.clone()))
                     .child(div().text_size(px(11.5)).text_color(p.muted).truncate().child(step)),
             )
-            .child(div().flex_none().pt(px(1.)).text_size(px(11.)).text_color(p.muted).child(short_span(sub.since.elapsed().as_secs())))
+            .child(div().flex_none().pt(px(1.)).text_size(px(11.)).text_color(p.muted).child(shell.counting(sub.since.elapsed(), cx)))
     }).collect::<Vec<_>>();
     let surface = v_flex()
         .id("sub-popover")
@@ -1350,14 +1350,9 @@ pub struct Place {
     pub ticket: Option<TicketId>,
 }
 
-/// How far the spinner has turned, from a step count.
-pub fn spin(step: u32) -> f32 {
-    (step % 12) as f32 * std::f32::consts::TAU / 12.
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Leaving, SUB_ROW, SUBS_SHOWN, SideMotion, Shown, SubLeaving, SubMotion, SubShown, TEAM_ROW, TeamState, spin, sub_rows, subs_cap, team_height};
+    use super::{Leaving, SUB_ROW, SUBS_SHOWN, SideMotion, Shown, SubLeaving, SubMotion, SubShown, TEAM_ROW, TeamState, sub_rows, subs_cap, team_height};
     use crate::board::Live;
     use crate::state::{Member, Model, Presence, Verb};
     use equipe_core::protocol::Ticket;
@@ -1493,6 +1488,5 @@ mod tests {
         // Reduce motion: nothing moves.
         m.note(&[], t3 + Duration::from_millis(20), false);
         assert!(m.leaving(t3 + Duration::from_millis(20)).is_empty());
-        assert_eq!(spin(12), 0.);
     }
 }

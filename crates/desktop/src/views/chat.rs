@@ -458,11 +458,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             let (title, text) = hello(model, member.role.as_str(), member.name.as_str(), member.presence);
             empty(p, title, text).into_any_element()
         }
-        Some(member) => {
-            let (_, hue) = look(&member.role, &member.name);
-            let look = Who { name: member.name.clone(), color: p.member(hue) };
-            conversation(shell, look, cx).into_any_element()
-        }
+        // Its own pane: the composer's cursor, a card's box, the header don't
+        // lay a day's conversation out again (`pane.rs`).
+        Some(_) => shell.panes.conversation.clone().cached(StyleRefinement::default().flex_1().min_h_0().w_full().max_w(px(COLUMN))).into_any_element(),
     };
     // A ticket open: its number, title and where it stands, over its work.
     let banner = model.opened.and_then(|id| model.tickets.iter().find(|t| t.id == id)).map(|t| {
@@ -616,6 +614,16 @@ fn turn_ends(blocks: &[Block]) -> HashSet<usize> {
     }
     out.extend(last);
     out
+}
+
+/// The conversation with the member selected, in its pane.
+pub fn conversation_pane(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
+    let Some(member) = shell.model.selected_member().filter(|_| !shell.chat.blocks.is_empty()) else {
+        return Empty.into_any_element();
+    };
+    let (_, hue) = look(&member.role, &member.name);
+    let who = Who { name: member.name.clone(), color: shell.palette.member(hue) };
+    v_flex().size_full().items_center().child(conversation(shell, who, cx)).into_any_element()
 }
 
 fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoElement + use<> {

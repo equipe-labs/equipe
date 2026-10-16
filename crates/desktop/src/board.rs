@@ -814,6 +814,12 @@ impl Undo {
         let left = p.due.saturating_duration_since(now);
         left.as_millis().div_ceil(1000) as u64
     }
+
+    /// When [`Undo::seconds_left`] counts down next: its toast is drawn again then.
+    pub fn next_count(p: &Pending, now: Instant) -> Instant {
+        let left = Self::seconds_left(p, now);
+        p.due.checked_sub(Duration::from_secs(left.saturating_sub(1))).unwrap_or(p.due)
+    }
 }
 
 #[cfg(test)]
@@ -1032,6 +1038,12 @@ mod tests {
         undo.push(2, "T-2".into(), vec![Command::Cancel { squad: "s".into(), ticket: 2 }], t0 + Duration::from_secs(2));
         assert_eq!(Undo::seconds_left(undo.latest().unwrap(), t0 + Duration::from_secs(2)), 5);
         assert_eq!(Undo::seconds_left(undo.latest().unwrap(), t0 + Duration::from_millis(2500)), 5, "rounded up");
+        // The toast counts down at each whole second, and only then.
+        let p = undo.latest().unwrap();
+        let next = Undo::next_count(p, t0 + Duration::from_millis(2500));
+        assert_eq!(Undo::seconds_left(p, next), 4);
+        assert_eq!(Undo::seconds_left(p, next - Duration::from_millis(1)), 5);
+        assert_eq!(Undo::next_count(p, p.due), p.due, "sent then");
         assert!(undo.take_due(t0 + Duration::from_secs(4)).is_empty());
         let due = undo.take_due(t0 + Duration::from_secs(5));
         assert_eq!(due.iter().map(|p| p.ticket).collect::<Vec<_>>(), vec![1]);

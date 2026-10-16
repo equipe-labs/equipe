@@ -53,7 +53,10 @@ Screen design: the squad's `outputs/T-54 데스크톱 화면 설계/spec.md`.
   window, the daemon pump and the connected / banner / daemon-off bodies.
 - **Drawing.** Updates that land within 100 ms are applied together; a frame is
   requested only if what is on screen differs (`Model::apply` returns whether it
-  does). `EQUIPE_LOG_RENDER=1` prints a line per frame with the memory footprint.
+  does). `EQUIPE_LOG_RENDER=1` prints a line per frame with the memory footprint
+  (and one per pane drawn). The sidebar, the screen and the conversation are cached
+  views (`pane.rs`); what turns or counts asks one clock to draw its own view again
+  (`beat.rs`) — nothing turning, no frames (docs/PERF-2026-10.md, 6).
   The daemon-off screen says to run `equipe`; the app does not start the daemon.
   When there is nothing to attach to *and* no `equipe` command on this Mac
   (`install::find_cli` — only for the target "this Mac": PATH, then `~/.local/bin`, `/opt/homebrew/bin`,
