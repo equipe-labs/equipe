@@ -254,5 +254,8 @@
   "status.waiting": "wartet auf dich",
   "error.disk_full": "Die Festplatte ist voll: equipe kann Gespräche und Tickets erst wieder speichern, wenn Platz frei ist. Meist sind es die Build-Ordner der Mitglieder (target/).",
   "notice.disk_room": "Auf der Festplatte ist wieder Platz: equipe speichert Gespräche und Tickets wie zuvor.",
-  "error.stuck": "Der Daemon antwortet nicht: Er hängt seit {since} an {doing}. Versuche `equipe daemon restart`."
+  "error.stuck": "Der Daemon antwortet nicht: Er hängt seit {since} an {doing}. Versuche `equipe daemon restart`.",
+  "news.accept_declined": "{tickets} nicht angenommen — bleibt in der Prüfung",
+  "news.changes_declined": "{tickets} nicht zurückgeschickt — bleibt in der Prüfung",
+  "news.merge_declined": "{tickets} nicht angenommen und nicht gemergt — bleibt, wie es ist"
 }

@@ -254,5 +254,8 @@
   "status.waiting": "waiting",
   "error.disk_full": "The disk is full: equipe can't save conversations or tickets until there's room again. Members' build folders (target/) are the usual culprit.",
   "notice.disk_room": "The disk has room again: equipe saves conversations and tickets as before.",
-  "error.stuck": "The daemon isn't answering: it has been on {doing} since {since}. Try `equipe daemon restart`."
+  "error.stuck": "The daemon isn't answering: it has been on {doing} since {since}. Try `equipe daemon restart`.",
+  "news.accept_declined": "You didn't accept {tickets} — it stays in review",
+  "news.changes_declined": "You didn't send {tickets} back — it stays in review",
+  "news.merge_declined": "You didn't accept and merge {tickets} — it stays as it is"
 }

@@ -136,6 +136,25 @@ never an agent: the phone approves with the command `approve_team_change` `{ "sq
 change became moot (its member left anyway). A push for a proposal carries the event with
 `reason` cut to 800 characters, category `team`.
 
+### Accepting in words, confirmed on a card
+
+When the person says in words that they accept, merge or send back handed-in work ("전부 수락",
+"T-1이랑 T-3 수락해줘", "머지까지 해줘"), the PM — or the screen they typed it on, reading their
+own words — puts it to them on a card: an `accept_proposed` event whose `proposal` is `{ "id",
+"verdict": "accept" | "merge" | "changes", "tickets": [<ticket>…], "note"? (to send back: what to
+change, in their words), "summary"?, "by" (the member that proposed it, or `"you"` when a screen
+raised it from the person's words), "session" (the conversation it shows in), "proposed_at" }`.
+The snapshot lists the ones still waiting in `accepts` (absent when none). Their words are never
+the acceptance, an agent's even less: only the person's own command is. The phone confirms with
+`confirm_accept` `{ "squad", "id", "tickets": [{ "ticket", "merge"?: "merge" | "push" }…] }` —
+the tickets they kept — and the daemon runs, for each, what the board's buttons send (`accept`,
+then `merge` when asked; or `reopen` with the note). From a phone `merge` is dropped: the work is
+accepted, and merging stays at the console. It says no with `decline_accept` `{ "squad", "id" }`.
+Every screen then gets `accept_closed` `{ "squad", "id", "confirmed", "tickets"? }` — `tickets`:
+the ones acted on — also sent with `confirmed: false` when the card became moot (its tickets were
+decided otherwise). A phone doesn't raise cards (`propose_accept` is the screens' own). A push for
+a proposal carries the event with `summary` and `note` cut to 800 characters, category `accept`.
+
 ### The disk
 
 When the disk the daemon writes to runs short, every followed squad gets a `disk_level` event —
@@ -521,19 +540,16 @@ The daemon follows a device like one more screen, with less reach than the termi
 - **may:** `hello`, `squads`, `upload`, `upload_cancel` (files only: see Attachments), `read_image` (a member's
   pictures: see A member's pictures), and the commands `submit`, `interrupt`, `send_now`, `accept`, `reopen`,
   `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `approve_team_change`,
-  `decline_team_change`, `focus`, `refresh`, `engines` (where the engines stand; never signing one in or out).
-
-  `decline_team_change`, `apply_engine_proposal`, `dismiss_engine_proposal`,
-  `undo_engine_proposal`, `focus`, `refresh`.
-
-  `decline_team_change`, `focus`, `refresh`, `design`; and `read_image`.
+  `decline_team_change`, `confirm_accept` (accepting only: see Accepting in words), `decline_accept`,
+  `apply_engine_proposal`, `dismiss_engine_proposal`, `undo_engine_proposal`, `focus`, `refresh`,
+  `design`, `engines` (where the engines stand; never signing one in or out).
 - `submit` and `answer_questions` may say what the message is about: `about` — the project the
   phone shows, or `null` for the whole squad. Left out, the daemon takes the project in focus
   (the last `focus` any screen sent). Said while the member works, a message steers it
   (`steer_queued`, with its `project`); `send_now` stops the turn and sends what waits — the
   `texts` first, in that order — as one message (`queue_sent`, then the turn's end).
 - **may not:** `start`, `close`, `merge`, `set_mode`, `scale`, `show_browser`,
-  `set_engine_switching`, `show_engine_setup` — nor the person's
+  `set_engine_switching`, `show_engine_setup`, `propose_accept` — nor the person's
   own hand on the board: `create_ticket`, `edit_ticket`, `edit_tickets`, `move_ticket`,
   `comment_ticket`, `ticket_history` (the phone answers what the board asks; planning stays at a
   screen for now).

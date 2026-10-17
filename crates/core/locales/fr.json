@@ -254,5 +254,8 @@
   "status.waiting": "en attente de vous",
   "error.disk_full": "Le disque est plein : equipe ne peut plus enregistrer les conversations ni les tickets tant qu'il n'y a pas de place. Les dossiers de compilation des membres (target/) en sont souvent la cause.",
   "notice.disk_room": "Le disque a de nouveau de la place : equipe enregistre à nouveau les conversations et les tickets.",
-  "error.stuck": "Le démon ne répond pas : il est sur {doing} depuis {since}. Essayez `equipe daemon restart`."
+  "error.stuck": "Le démon ne répond pas : il est sur {doing} depuis {since}. Essayez `equipe daemon restart`.",
+  "news.accept_declined": "Vous n’avez pas accepté {tickets} : reste en revue",
+  "news.changes_declined": "Vous n’avez pas renvoyé {tickets} : reste en revue",
+  "news.merge_declined": "Vous n’avez ni accepté ni fusionné {tickets} : rien ne change"
 }

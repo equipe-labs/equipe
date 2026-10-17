@@ -662,6 +662,13 @@ fn board_target(name: &str, input: Option<&Value>) -> Option<String> {
             needs.into_iter().collect()
         }
         "propose_team_change" => [text("change"), text("name").or_else(|| text("role"))].into_iter().flatten().collect(),
+        "propose_accept" => {
+            let tickets = input.get("tickets").and_then(Value::as_array).map(|items| {
+                items.iter().filter_map(|v| v.as_u64().map(|n| format!("T-{n}")).or_else(|| v.as_str().map(str::to_owned))).collect::<Vec<_>>().join(", ")
+            });
+            let all = input.get("all").and_then(Value::as_bool).unwrap_or(false).then(|| "all".to_owned());
+            [text("verdict"), tickets.filter(|t| !t.is_empty()).or(all)].into_iter().flatten().collect()
+        }
         _ => Vec::new(),
     };
     (!parts.is_empty()).then(|| parts.join(" · "))

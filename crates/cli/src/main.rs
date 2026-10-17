@@ -1429,6 +1429,8 @@ impl App {
                 | Event::QuestionsClosed { .. }
                 | Event::TeamChangeProposed { .. }
                 | Event::TeamChangeClosed { .. }
+                | Event::AcceptProposed { .. }
+                | Event::AcceptClosed { .. }
                 | Event::EngineProposed { .. }
                 | Event::EngineProposalClosed { .. }
                 | Event::EngineSwitchingChanged { .. }

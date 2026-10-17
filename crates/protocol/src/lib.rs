@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub mod accept;
 pub mod asks;
 pub mod decide;
 pub mod disk;
@@ -642,6 +643,27 @@ pub enum Command {
     ApproveTeamChange { squad: SquadName, id: u64 },
     /// The person says no to it: nothing changes, and the PM is told.
     DeclineTeamChange { squad: SquadName, id: u64 },
+    /// A screen read the person's own words ("전부 수락", "accept T-1 and
+    /// T-3") as plainly accepting, merging or sending back handed-in work:
+    /// the card to confirm it goes up in the conversation `session` at once,
+    /// as [`Event::AcceptProposed`] — before the member there even answers,
+    /// and the PM then proposes nothing twice. Only a card: nothing is accepted.
+    ProposeAccept {
+        squad: SquadName,
+        session: SessionId,
+        verdict: accept::Verdict,
+        tickets: Vec<TicketId>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        note: String,
+    },
+    /// The person confirms a proposal to accept ([`Event::AcceptProposed`]),
+    /// for the tickets they kept on its card: the daemon runs, for each, what
+    /// the board's buttons send — [`Command::Accept`], then [`Command::Merge`]
+    /// when `merge` says so, or [`Command::Reopen`] with its note. Only ever
+    /// the person's: no agent sends it. Answered by [`Event::AcceptClosed`].
+    ConfirmAccept { squad: SquadName, id: u64, tickets: Vec<accept::Confirmed> },
+    /// The person says no to it: nothing changes, and the PM is told.
+    DeclineAccept { squad: SquadName, id: u64 },
     /// How many extra members of a role equipe may bring in when several of
     /// its tickets are ready at once; 0 brings in none.
     Scale { squad: SquadName, extra: usize },
@@ -1160,6 +1182,20 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         members: Vec<String>,
     },
+    /// Handed-in work the person said in words to accept, merge or send back,
+    /// put to them on a card (the PM's `propose_accept`, or a screen reading
+    /// their words): it waits for [`Command::ConfirmAccept`] or
+    /// [`Command::DeclineAccept`].
+    AcceptProposed { squad: SquadName, proposal: accept::AcceptProposal },
+    /// No longer waiting: confirmed (`tickets`: the ones acted on), declined,
+    /// or moot (its tickets were decided otherwise; `confirmed: false`).
+    AcceptClosed {
+        squad: SquadName,
+        id: u64,
+        confirmed: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tickets: Vec<TicketId>,
+    },
     /// The squad's "always allow" rules changed (one added by an answer of
     /// [`Decision::Always`], one taken back): all of them, oldest first.
     Allowed { squad: SquadName, rules: Vec<String> },
@@ -1398,6 +1434,8 @@ impl Event {
             | Event::QuestionsClosed { squad, .. }
             | Event::TeamChangeProposed { squad, .. }
             | Event::TeamChangeClosed { squad, .. }
+            | Event::AcceptProposed { squad, .. }
+            | Event::AcceptClosed { squad, .. }
             | Event::Allowed { squad, .. }
             | Event::EngineProposed { squad, .. }
             | Event::EngineProposalClosed { squad, .. }
@@ -1449,6 +1487,8 @@ impl Event {
             | Event::QuestionsClosed { .. }
             | Event::TeamChangeProposed { .. }
             | Event::TeamChangeClosed { .. }
+            | Event::AcceptProposed { .. }
+            | Event::AcceptClosed { .. }
             | Event::Allowed { .. }
             | Event::EngineProposed { .. }
             | Event::EngineProposalClosed { .. }
@@ -1692,6 +1732,9 @@ pub struct Snapshot {
     /// Changes to the team the PM proposed, waiting for the person, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub team_changes: Vec<team::TeamChange>,
+    /// Handed-in work put to the person to confirm accepting, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accepts: Vec<accept::AcceptProposal>,
     /// How many extra members of a role equipe may bring in when its work waits.
     #[serde(default)]
     pub scale: Option<usize>,
@@ -2024,6 +2067,16 @@ mod tests {
                 proposed_at: 2,
                 busy_on: None,
             }],
+            accepts: vec![accept::AcceptProposal {
+                id: 6,
+                verdict: accept::Verdict::Accept,
+                tickets: vec![1],
+                note: String::new(),
+                summary: String::new(),
+                by: "pm".into(),
+                session: 9,
+                proposed_at: 2,
+            }],
             scale: Some(2),
             suggestions_off: false,
             plan: None,
@@ -2089,6 +2142,44 @@ mod tests {
         let old: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[]}"#).unwrap();
         assert!(old.questions.is_empty());
         assert!(serde_json::to_value(&old).unwrap().get("questions").is_none(), "none: the wire as before");
+    }
+
+    #[test]
+    fn acceptances_are_proposed_confirmed_or_declined_as_json_and_older_snapshots_have_none() {
+        let confirm = Command::ConfirmAccept {
+            squad: "acme".into(),
+            id: 7,
+            tickets: vec![accept::Confirmed { ticket: 1, merge: Some(accept::Land::Merge) }, accept::Confirmed::only(3)],
+        };
+        assert_eq!(
+            serde_json::to_value(&confirm).unwrap(),
+            json!({ "type": "confirm_accept", "squad": "acme", "id": 7, "tickets": [{ "ticket": 1, "merge": "merge" }, { "ticket": 3 }] })
+        );
+        let decline = Command::DeclineAccept { squad: "acme".into(), id: 7 };
+        assert_eq!(serde_json::to_value(&decline).unwrap(), json!({ "type": "decline_accept", "squad": "acme", "id": 7 }));
+        let words = Command::ProposeAccept { squad: "acme".into(), session: 1, verdict: accept::Verdict::Accept, tickets: vec![1, 3], note: String::new() };
+        assert_eq!(serde_json::to_value(&words).unwrap(), json!({ "type": "propose_accept", "squad": "acme", "session": 1, "verdict": "accept", "tickets": [1, 3] }));
+        for command in [confirm, decline, words] {
+            assert_eq!(serde_json::from_str::<Command>(&serde_json::to_string(&command).unwrap()).unwrap(), command);
+        }
+        let proposal = accept::AcceptProposal { id: 7, verdict: accept::Verdict::Changes, tickets: vec![4], note: "헤더가 깨져요".into(), summary: String::new(), by: "pm".into(), session: 1, proposed_at: 3 };
+        let events = [
+            Event::AcceptProposed { squad: "acme".into(), proposal },
+            Event::AcceptClosed { squad: "acme".into(), id: 7, confirmed: true, tickets: vec![4] },
+            Event::AcceptClosed { squad: "acme".into(), id: 7, confirmed: false, tickets: vec![] },
+        ];
+        for event in events {
+            assert_eq!((event.squad(), event.session(), event.for_everyone()), (Some("acme"), None, false));
+            let json = serde_json::to_string(&event).unwrap();
+            assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event, "{json}");
+        }
+        assert_eq!(
+            serde_json::to_value(Event::AcceptClosed { squad: "a".into(), id: 1, confirmed: false, tickets: vec![] }).unwrap(),
+            json!({ "type": "accept_closed", "squad": "a", "id": 1, "confirmed": false })
+        );
+        let old: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[]}"#).unwrap();
+        assert!(old.accepts.is_empty());
+        assert!(serde_json::to_value(&old).unwrap().get("accepts").is_none(), "none: the wire as before");
     }
 
     #[test]

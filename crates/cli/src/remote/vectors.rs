@@ -749,6 +749,20 @@ fn team_change() -> TeamChange {
     }
 }
 
+/// The person told the PM "T-38 수락할게": the PM puts it to them on a card.
+fn accept_proposal() -> equipe_core::protocol::accept::AcceptProposal {
+    equipe_core::protocol::accept::AcceptProposal {
+        id: 8_000_001,
+        verdict: equipe_core::protocol::accept::Verdict::Accept,
+        tickets: vec![38],
+        note: String::new(),
+        summary: "로그인 API 에러 메시지".into(),
+        by: "pm".into(),
+        session: 1001,
+        proposed_at: NOW / 1000,
+    }
+}
+
 /// Claude's five hours at 86%: backend and frontend to Codex from their next ticket.
 fn engine_proposal(why: Why, applied: bool) -> Proposal {
     let mv = |name: &str, model: &str| Move {
@@ -878,6 +892,7 @@ fn snapshot() -> Snapshot {
         approvals: vec![approval()],
         questions: vec![questions()],
         team_changes: vec![team_change()],
+        accepts: vec![accept_proposal()],
         scale: Some(0),
         plan: Some(plan(Engine::Claude, 86, 41).usage),
         plans: vec![plan(Engine::Claude, 86, 41), plan(Engine::Codex, 12, 18)],
@@ -986,6 +1001,15 @@ fn message_vectors() -> Value {
     tell(&mut core, &mut examples, "event: team change approved", Event::TeamChangeClosed { squad: SQUAD.into(), id: 6_000_001, approved: true, members: vec!["backend-2".into()] });
     tell(&mut core, &mut examples, "event: team change declined", Event::TeamChangeClosed { squad: SQUAD.into(), id: 6_000_001, approved: false, members: vec![] });
 
+    // Handed-in work the person said in words to accept, on a card: confirmed (accepted, never
+    // merged from a phone) or declined by the person.
+    tell(&mut core, &mut examples, "event: accept proposed", Event::AcceptProposed { squad: SQUAD.into(), proposal: accept_proposal() });
+    ask(&mut core, &mut examples, "confirm accept", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "confirm_accept", "squad": SQUAD, "id": 8_000_001, "tickets": [{ "ticket": 38 }] } }));
+    ask(&mut core, &mut examples, "confirm accept: a merge asked from a phone is dropped", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "confirm_accept", "squad": SQUAD, "id": 8_000_001, "tickets": [{ "ticket": 38, "merge": "push" }] } }));
+    ask(&mut core, &mut examples, "decline accept", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decline_accept", "squad": SQUAD, "id": 8_000_001 } }));
+    tell(&mut core, &mut examples, "event: accept confirmed", Event::AcceptClosed { squad: SQUAD.into(), id: 8_000_001, confirmed: true, tickets: vec![38] });
+    tell(&mut core, &mut examples, "event: accept declined", Event::AcceptClosed { squad: SQUAD.into(), id: 8_000_001, confirmed: false, tickets: vec![] });
+
     // Both engines' plans, and members moving between them: the person makes, leaves or undoes the moves.
     tell(&mut core, &mut examples, "event: plan usage", Event::PlanUsage { usage: plan(Engine::Codex, 12, 18).usage, engine: Engine::Codex });
     tell(&mut core, &mut examples, "event: engine proposal", Event::EngineProposed { squad: SQUAD.into(), proposal: engine_proposal(Why::Shift, false) });
@@ -1059,6 +1083,7 @@ fn message_vectors() -> Value {
         ("push: waiting", Event::TicketChanged { squad: SQUAD.into(), ticket: ticket(TicketStatus::Waiting) }),
         ("push: decision", Event::QuestionsAsked { squad: SQUAD.into(), questions: questions() }),
         ("push: team change", Event::TeamChangeProposed { squad: SQUAD.into(), change: team_change() }),
+        ("push: accept", Event::AcceptProposed { squad: SQUAD.into(), proposal: accept_proposal() }),
         ("push: disk", Event::DiskLevel { status: disk_status() }),
         ("push: engine exhausted", Event::EngineProposed { squad: SQUAD.into(), proposal: engine_proposal(Why::Exhausted, false) }),
     ] {

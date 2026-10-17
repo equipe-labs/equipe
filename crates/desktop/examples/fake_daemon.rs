@@ -47,6 +47,9 @@
 //! `FAKE_TEAM=1`: the PM proposes one more frontend, for the person to
 //! approve on a card (`fake_daemon/team.rs`; `remove`, `elsewhere`).
 //!
+//! `FAKE_ACCEPT=1`: the PM puts T-42 and T-71 to the person on a card to
+//! confirm accepting them (`fake_daemon/accept.rs`; `merge`, `words`).
+//!
 //! `FAKE_USAGE=healthy|claude86|claude_out|both_low`: both engines' plans,
 //! and the card for moving members between them (`fake_daemon/engines.rs`;
 //! `FAKE_SWITCHING=auto|off`, `FAKE_SETUP=1`); `FAKE_ENGINES_MIXED=1` puts
@@ -781,6 +784,9 @@ mod history;
 mod pictures;
 #[path = "fake_daemon/team.rs"]
 mod team;
+
+#[path = "fake_daemon/accept.rs"]
+mod accept;
 #[path = "fake_daemon/engines.rs"]
 mod engines;
 
@@ -978,6 +984,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             approvals: asks().lock().unwrap().clone(),
                             questions: questions().lock().unwrap().clone(),
                             team_changes: team::changes(),
+                            accepts: accept::cards(),
                             tickets: tickets().lock().unwrap().clone(),
                             allowed: allowed().lock().unwrap().clone(),
                             browsers_shown: true,
@@ -1177,6 +1184,19 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 {
                                     let _ = events.send(Event::Notice { session: 1, text: "🖐 브라우저를 돌려줬습니다.".into() });
                                     turns.lock().await.insert(1, tokio::spawn(turn(1, events.clone(), seconds)));
+                                }
+                                // A card confirmed: what the board's buttons send, run as the board runs them.
+                                if let Some(commands) = accept::on_command(&other, &events) {
+                                    for command in commands {
+                                        if let Some(said) = on_board_command(&command) {
+                                            for event in said {
+                                                let _ = events.send(event);
+                                            }
+                                        } else if let Some(ticket) = on_ticket_command(&command) {
+                                            let _ = events.send(Event::TicketChanged { squad: "demo".into(), ticket });
+                                        }
+                                    }
+                                    continue;
                                 }
                                 if browser::on_command(&other, &events) || team::on_command(&other, &events) || disk::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) {
                                     continue;

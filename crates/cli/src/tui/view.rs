@@ -26,6 +26,7 @@ use super::markdown;
 use crate::ui;
 use equipe_core::t;
 
+mod accept;
 mod decide;
 mod engines;
 mod team;
@@ -378,6 +379,9 @@ fn rows(app: &App, theme: Theme, screen: Rect) -> Rows {
     }
     if asking.is_empty() {
         asking = decide::lines(app, theme, area.width.saturating_sub(2) as usize);
+    }
+    if asking.is_empty() {
+        asking = accept::lines(app, theme, area.width.saturating_sub(2) as usize);
     }
     if asking.is_empty() {
         asking = team::lines(app, theme, area.width.saturating_sub(2) as usize);

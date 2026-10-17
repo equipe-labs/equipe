@@ -1,4 +1,9 @@
 {
+  "app.accept_confirmed": "Bestätigt: {what}",
+  "app.accept_proposed": "Zu bestätigen: {what} — y/n im Gespräch dazu",
+  "app.accept_what": "{tickets} annehmen",
+  "app.accept_what_changes": "{tickets} zurückschicken",
+  "app.accept_what_merge": "{tickets} annehmen und mergen",
   "app.accepted": "T-{id} angenommen · /reopen T-{id} holt es zurück",
   "app.accepted_home": "T-{id} angenommen · die Arbeit kommt in den Squad-Ordner",
   "app.accepted_kept": "Angenommen · bleibt auf seinem Branch",
@@ -980,7 +985,21 @@
   "commands.disk": "Platz auf der Festplatte, und was sich freigeben lässt",
   "app.disk_short": "{line} · equipe disk im Terminal zeigt mehr, equipe disk clean räumt auf",
   "app.disk_fine": "Die Festplatte hat Platz · mehr mit equipe disk im Terminal",
+  "remote.push_accept": "Annahme von {tickets} bestätigen",
+  "remote.push_accept_changes": "Zurückschicken von {tickets} bestätigen",
+  "remote.push_accept_merge": "Annahme und Merge von {tickets} bestätigen",
   "remote.push_disk_critical": "Nur noch {free} frei auf der Festplatte",
   "remote.push_disk_full": "Die Festplatte ist voll ({free} übrig)",
-  "remote.push_disk_body": "Builds können scheitern · gib in equipe auf dem Mac Platz frei"
+  "remote.push_disk_body": "Builds können scheitern · gib in equipe auf dem Mac Platz frei",
+  "view.accept_ask": "{tickets} annehmen?",
+  "view.accept_ask_changes": "{tickets} zurückschicken?",
+  "view.accept_ask_merge": "{tickets} annehmen und mergen?",
+  "view.accept_by": "Vorschlag von {name}",
+  "view.accept_by_words": "aus deinen Worten",
+  "view.accept_no": "nein",
+  "view.accept_note": "Zu ändern: {note}",
+  "view.accept_starts": "Danach kann {tickets} starten",
+  "view.accept_yes": "annehmen",
+  "view.accept_yes_changes": "zurückschicken",
+  "view.accept_yes_merge": "annehmen und mergen"
 }

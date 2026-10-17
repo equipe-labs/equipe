@@ -1,4 +1,9 @@
 {
+  "app.accept_confirmed": "Confirmado: {what}",
+  "app.accept_proposed": "Para confirmar: {what} — y/n en su conversación",
+  "app.accept_what": "aceptar {tickets}",
+  "app.accept_what_changes": "devolver {tickets}",
+  "app.accept_what_merge": "aceptar y fusionar {tickets}",
   "app.accepted": "T-{id} aceptado · /reopen T-{id} lo reabre",
   "app.accepted_home": "T-{id} aceptado · su trabajo va a la carpeta del squad",
   "app.accepted_kept": "Aceptado · se queda en su rama",
@@ -980,7 +985,21 @@
   "commands.disk": "Espacio en el disco y lo que se puede liberar",
   "app.disk_short": "{line} · mira equipe disk en una terminal y equipe disk clean para liberar",
   "app.disk_fine": "El disco tiene espacio · más con equipe disk en una terminal",
+  "remote.push_accept": "Confirma que aceptas {tickets}",
+  "remote.push_accept_changes": "Confirma que devuelves {tickets}",
+  "remote.push_accept_merge": "Confirma que aceptas y fusionas {tickets}",
   "remote.push_disk_critical": "Solo quedan {free} en el disco",
   "remote.push_disk_full": "El disco está lleno (quedan {free})",
-  "remote.push_disk_body": "Las compilaciones pueden fallar · libera espacio en equipe en el Mac"
+  "remote.push_disk_body": "Las compilaciones pueden fallar · libera espacio en equipe en el Mac",
+  "view.accept_ask": "¿Aceptar {tickets}?",
+  "view.accept_ask_changes": "¿Devolver {tickets}?",
+  "view.accept_ask_merge": "¿Aceptar y fusionar {tickets}?",
+  "view.accept_by": "propuesta de {name}",
+  "view.accept_by_words": "de lo que dijiste",
+  "view.accept_no": "no",
+  "view.accept_note": "Qué cambiar: {note}",
+  "view.accept_starts": "Después puede empezar {tickets}",
+  "view.accept_yes": "aceptar",
+  "view.accept_yes_changes": "devolver",
+  "view.accept_yes_merge": "aceptar y fusionar"
 }

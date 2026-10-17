@@ -454,7 +454,26 @@ impl Plan {
 ///
 /// `later` (Tab, or the memo button) leaves a member at work a memo for when
 /// its turn ends instead of steering the work.
+///
+/// Words that plainly accept or merge handed-in work ("전부 수락", "T-1
+/// 수락") also raise the card to confirm it in that conversation, at once —
+/// sent before the words, so the member there finds it up. Only a card: the
+/// person's click on it is what accepts (`crate::accept`).
 pub fn plan(model: &Model, text: &str, later: bool) -> Plan {
+    let mut out = said(model, text, later);
+    let to = out.commands.iter().find_map(|c| match c {
+        Command::Submit { session, text, .. } | Command::SubmitLater { session, text, .. } => Some((*session, text.clone())),
+        _ => None,
+    });
+    if let Some((session, said)) = to
+        && let Some(raise) = crate::accept::raise(&model.squad, session, &said, &model.tickets)
+    {
+        out.commands.insert(0, raise);
+    }
+    out
+}
+
+fn said(model: &Model, text: &str, later: bool) -> Plan {
     let text = text.trim();
     if text.is_empty() {
         return Plan::default();
@@ -885,6 +904,13 @@ fn squad_command(model: &Model, rest: &str) -> Plan {
 /// `/cancel T-3`, `/merge T-3 [push]`: the person's calls, straight to equipe —
 /// never through a member.
 fn decide(model: &Model, verb: &str, rest: &str) -> Plan {
+    // `/accept T-1 T-3`: each, as the board's accept of each.
+    let many: Vec<TicketId> = rest.split(|c: char| c.is_whitespace() || c == ',').filter(|w| !w.is_empty()).map_while(parse_ticket_id).collect();
+    if verb == "accept" && many.len() > 1 && many.len() == rest.split(|c: char| c.is_whitespace() || c == ',').filter(|w| !w.is_empty()).count() {
+        let squad = model.squad.clone();
+        let tickets = many.iter().map(|id| format!("T-{id}")).collect::<Vec<_>>().join(", ");
+        return Plan { commands: many.into_iter().map(|ticket| Command::Accept { squad: squad.clone(), ticket }).collect(), flash: Some(t!("compose.accepted_many", tickets = tickets)), ..Plan::default() };
+    }
     let (id, note) = rest.split_once(' ').unwrap_or((rest, ""));
     let note = note.trim();
     let Some(ticket) = parse_ticket_id(id).filter(|_| !id.is_empty()) else {
@@ -1156,6 +1182,33 @@ mod tests {
         assert!(bare.commands.is_empty());
         assert_eq!(bare.restore.as_deref(), Some("/reopen T-3 "));
         assert!(plan(&model, "/accept").commands.is_empty());
+        // Several at once: each accepted, as from the board.
+        let accept = |ticket| Command::Accept { squad: "acme".into(), ticket };
+        assert_eq!(plan(&model, "/accept T-1 T-3").commands, vec![accept(1), accept(3)]);
+        assert_eq!(plan(&model, "/accept T-1, 3").commands, vec![accept(1), accept(3)]);
+    }
+
+    #[test]
+    fn plain_words_of_acceptance_raise_the_card_before_the_member_hears_them() {
+        use equipe_core::protocol::accept::Verdict;
+        let mut model = team();
+        let review: equipe_core::protocol::Ticket = serde_json::from_value(serde_json::json!({ "id": 1, "title": "로그인", "body": "", "status": "review", "kind": "code", "branch": "equipe/t-1", "depends_on": [], "created_by": "pm" })).unwrap();
+        model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: review }), T0);
+        model.selected = Some(1);
+        let p = plan(&model, "전부다 수락할게.");
+        assert_eq!(
+            p.commands,
+            vec![
+                Command::ProposeAccept { squad: "acme".into(), session: 1, verdict: Verdict::Accept, tickets: vec![1], note: String::new() },
+                Command::Submit { session: 1, text: "전부다 수락할게.".into(), about: Some(None) },
+            ],
+            "the card first, then the words, to the PM as ever"
+        );
+        // Said to another member, the card is in that conversation.
+        assert!(matches!(plan(&model, "@frontend T-1 수락").commands.first(), Some(Command::ProposeAccept { session: 2, .. })));
+        // Anything less plain is only words.
+        assert_eq!(plan(&model, "전부 수락할까?").commands.len(), 1);
+        assert_eq!(plan(&model, "T-1 수락하지 마").commands.len(), 1);
     }
 
     #[test]
