@@ -48,6 +48,9 @@ pub enum Action {
     /// Read a member's picture `device` asked for (`id`), of `squad`; the
     /// answer goes back through [`Core::image_read`].
     ReadImage { device: String, squad: String, id: u64, ask: rpc::ReadImage },
+    /// List the pictures of a folder a reply points at, which `device` asked
+    /// for (`id`); the answer goes back through [`Core::images_listed`].
+    ListImages { device: String, squad: String, id: u64, ask: rpc::ListImages },
     /// The device left: stop following squads for it.
     Close { device: String },
     /// For `equipe pair`, waiting at the terminal.
@@ -555,6 +558,18 @@ impl Core {
                 }
                 vec![Action::ReadImage { device: device.to_owned(), squad: ask.squad.clone(), id, ask }]
             }
+            // A folder's pictures a reply points at: of the squad the frame is about and the phone follows.
+            Some(rpc::LIST_IMAGES) => {
+                let Some(id) = id else { return vec![] };
+                let Some(ask) = message.params_as::<rpc::ListImages>() else {
+                    return fail(self, -32602, "list_images needs { squad, folder }");
+                };
+                let followed = self.following.contains(&(device.to_owned(), ask.squad.clone()));
+                if squad.as_deref() != Some(ask.squad.as_str()) || !followed {
+                    return fail(self, -32002, "say hello to that squad first");
+                }
+                vec![Action::ListImages { device: device.to_owned(), squad: ask.squad.clone(), id, ask }]
+            }
             Some(rpc::COMMAND) => {
                 let Some(command) = message.params_as::<Command>() else {
                     return vec![];
@@ -626,6 +641,15 @@ impl Core {
     pub fn image_read(&mut self, device: &str, squad: &str, id: u64, read: Result<rpc::ImageRead, String>) -> Vec<Action> {
         let message = match read {
             Ok(read) => Message::response(id, read),
+            Err(why) => Message::failure(id, -32000, why),
+        };
+        self.frame_for(device, Some(squad), &message).into_iter().collect()
+    }
+
+    /// A folder's pictures a device asked for (`list_images`), listed: back to it.
+    pub fn images_listed(&mut self, device: &str, squad: &str, id: u64, listed: Result<rpc::ImageList, String>) -> Vec<Action> {
+        let message = match listed {
+            Ok(list) => Message::response(id, list),
             Err(why) => Message::failure(id, -32000, why),
         };
         self.frame_for(device, Some(squad), &message).into_iter().collect()
@@ -1071,6 +1095,25 @@ pub(crate) mod tests {
         assert_eq!(phone.open(&c, &out[0])["rpc"]["result"]["mime"], "image/png");
         let out = core.image_read(&phone.id, "acme", 5, Err("gone".into()));
         assert_eq!(phone.open(&c, &out[0])["rpc"]["error"]["message"], "gone");
+    }
+
+    #[test]
+    fn a_phone_lists_a_folders_pictures_of_the_squad_it_follows_only() {
+        use equipe_core::protocol::rpc::{ImageList, ListImages};
+        let (mut core, mut phone, now) = core_with_phone();
+        let c = core.config.clone().unwrap();
+        let ask = |id: u64, squad: &str| json!({ "jsonrpc": "2.0", "id": id, "method": "list_images", "params": { "squad": squad, "folder": "/h/worktrees/site/t2/outputs/images" } });
+        let out = core.on_relay(&phone.send(&c, Some("acme"), ask(1, "acme"), now), now);
+        assert!(phone.open(&c, &out[0])["rpc"]["error"]["message"].as_str().unwrap().contains("hello"), "not followed yet");
+        core.on_relay(&phone.send(&c, Some("acme"), json!({ "jsonrpc": "2.0", "id": 2, "method": "hello", "params": { "version": "app", "squad": "acme" } }), now), now);
+        let out = core.on_relay(&phone.send(&c, Some("acme"), ask(3, "acme"), now), now);
+        let wanted = ListImages { squad: "acme".into(), folder: "/h/worktrees/site/t2/outputs/images".into(), max: None };
+        assert_eq!(out, vec![Action::ListImages { device: phone.id.clone(), squad: "acme".into(), id: 3, ask: wanted }]);
+        let out = core.on_relay(&phone.send(&c, Some("acme"), ask(4, "zeta"), now), now);
+        assert!(phone.open(&c, &out[0])["rpc"]["error"].is_object(), "another squad than the frame's");
+        let list = ImageList { folder: "/f".into(), images: vec!["/f/a.png".into()], total: 1 };
+        let out = core.images_listed(&phone.id, "acme", 3, Ok(list));
+        assert_eq!(phone.open(&c, &out[0])["rpc"]["result"]["total"], 1);
     }
 
     #[test]

@@ -961,6 +961,18 @@ impl Journal {
         self.entries(id, None)
     }
 
+    /// The latest `limit` lines of the squad's conversations that name a path
+    /// (a `/` in them), newest first, each with where its session works — what
+    /// a reply's pictures and folders are read from (`crate::visuals`).
+    pub fn said_with_paths(&self, limit: u64) -> Result<Vec<(PathBuf, Entry)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.cwd, e.body FROM entries e JOIN sessions s ON s.id = e.session
+             WHERE e.body LIKE '%/%' ORDER BY e.at DESC, e.seq DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        Ok(rows.filter_map(|row| row.ok()).filter_map(|(cwd, body)| Some((PathBuf::from(cwd), serde_json::from_str(&body).ok()?))).collect())
+    }
+
     pub fn open_sessions(&self) -> Result<Vec<SessionRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, engine, model, access, cwd, repo, branch, base, engine_session, title, tokens, open, role, name, mode

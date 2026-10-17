@@ -42,6 +42,8 @@ enum Input {
     Squad(String, Event),
     /// A member's picture a device asked for, read (`read_image`).
     ImageRead(String, String, u64, Result<equipe_core::protocol::rpc::ImageRead, String>),
+    /// A folder's pictures a device asked for, listed (`list_images`).
+    ImagesListed(String, String, u64, Result<equipe_core::protocol::rpc::ImageList, String>),
     /// The answer to a device's request, made off the loop (an `upload`'s).
     Answer(String, equipe_core::protocol::rpc::Message),
 }
@@ -224,6 +226,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
             }
             Some(Input::Squad(squad, event)) => actions.extend(core.on_squad_event(&squad, &event)),
             Some(Input::ImageRead(device, squad, id, read)) => actions.extend(core.image_read(&device, &squad, id, read)),
+            Some(Input::ImagesListed(device, squad, id, listed)) => actions.extend(core.images_listed(&device, &squad, id, listed)),
             Some(Input::Answer(device, message)) => actions.extend(core.answer(&device, &message)),
         }
         for action in actions {
@@ -269,6 +272,13 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                     tokio::spawn(async move {
                         let read = tokio::task::spawn_blocking(move || phone_image(&home, &ask)).await.unwrap_or_else(|_| Err("the picture couldn't be read".into()));
                         let _ = tx.send(Input::ImageRead(device, squad, id, read));
+                    });
+                }
+                Action::ListImages { device, squad, id, ask } => {
+                    let (tx, home) = (input_tx.clone(), home.clone());
+                    tokio::spawn(async move {
+                        let listed = tokio::task::spawn_blocking(move || equipe_core::visuals::list(&home, &ask)).await.unwrap_or_else(|_| Err("the folder couldn't be read".into()));
+                        let _ = tx.send(Input::ImagesListed(device, squad, id, listed));
                     });
                 }
                 Action::Close { device } => {
@@ -440,6 +450,9 @@ pub async fn serve_demo(home: PathBuf, version: String) -> Result<(), String> {
                     // The demo's squad shows no member's pictures.
                     Action::ReadImage { device, squad, id, .. } => {
                         actions.extend(core.image_read(&device, &squad, id, Err("the demo has no pictures".into())));
+                    }
+                    Action::ListImages { device, squad, id, .. } => {
+                        actions.extend(core.images_listed(&device, &squad, id, Err("the demo has no pictures".into())));
                     }
                     Action::Upload { device, id, piece } => {
                         let answer = match uploads.piece(&device, *piece, now) {

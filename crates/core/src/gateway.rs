@@ -293,6 +293,27 @@ async fn serve_client(stream: UnixStream, core: Handle, home: PathBuf, version: 
                     });
                 });
             }
+            (Some(rpc::LIST_IMAGES), Some(id)) => {
+                // A folder the conversation of the squad this screen follows points at.
+                let Some(ask) = message.params_as::<rpc::ListImages>() else {
+                    let _ = out_tx.send(Message::failure(id, -32602, "list_images needs { squad, folder }"));
+                    continue;
+                };
+                if followed.as_deref() != Some(ask.squad.as_str()) {
+                    let _ = out_tx.send(Message::failure(id, -32002, "say hello to that squad first"));
+                    continue;
+                }
+                let home = home.clone();
+                let out = out_tx.clone();
+                tokio::spawn(async move {
+                    let listed = tokio::task::spawn_blocking(move || crate::visuals::list(&home, &ask)).await;
+                    let _ = out.send(match listed {
+                        Ok(Ok(list)) => Message::response(id, list),
+                        Ok(Err(why)) => Message::failure(id, -32000, why),
+                        Err(_) => Message::failure(id, -32000, "the folder couldn't be read"),
+                    });
+                });
+            }
             (Some(rpc::DESKTOP), Some(id)) => {
                 let Some(call) = message.params_as::<ToolCall>() else {
                     let _ = out_tx.send(Message::failure(id, -32602, "desktop needs { squad, member, name, arguments }"));

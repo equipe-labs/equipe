@@ -8,12 +8,22 @@
 //! of another kind, nothing too big. Each is checked where it is named too,
 //! so a member hears at once what won't show. A thumbnail is made here, so a
 //! phone never gets the whole of a 6 MB render.
+//!
+//! A reply shows pictures too: each image its Markdown embeds, and the
+//! pictures right in a folder it points at (`markdown`) — given only when a
+//! line the daemon itself recorded for the squad names them, under the same
+//! rules. A ticket whose worktree went (accepted, its merge still to come)
+//! still shows its hand-in: the pictures are read from its branch, or from
+//! main once merged, by the paths the ticket recorded and no others.
 
-use std::collections::HashSet;
+pub mod markdown;
+
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use crate::protocol::decide::Question;
-use crate::protocol::rpc::{ImageRead, ReadImage};
+use crate::protocol::rpc::{self, ImageList, ImageRead, ListImages, ReadImage};
+use crate::protocol::{Entry, Ticket};
 
 /// The extensions a picture may have, and the type each is sent as.
 const KINDS: [(&str, &str); 6] =
@@ -36,6 +46,12 @@ pub const PHONE_SIDE: u32 = 720;
 pub const PER_OPTION: usize = 4;
 pub const PER_QUESTION: usize = 6;
 pub const HAND_IN: usize = 12;
+/// How many pictures of a folder a screen is given at most.
+pub const LIST_MAX: usize = 12;
+/// How many names in a folder are looked at, at most.
+const LIST_SCAN: usize = 2000;
+/// How many of the latest lines that name a path a reply's pictures are read from.
+const SAID: u64 = 400;
 
 /// The type a picture is sent as, by its name; `None` for anything else.
 pub fn mime_of(path: &Path) -> Option<&'static str> {
@@ -155,18 +171,34 @@ pub fn resolve_all(given: &[String], cwd: &Path, roots: &[PathBuf], most: usize)
 /// pixels on its longer side. One too big to send whole goes as a copy no
 /// bigger than [`BIG_SIDE`]; an SVG goes as it is.
 pub fn read(path: &Path, roots: &[PathBuf], max: Option<u32>) -> Result<ImageRead, String> {
-    use base64::Engine as _;
     use std::io::Read as _;
     let real = check(path, roots)?;
     let mut bytes = Vec::new();
     std::fs::File::open(&real).and_then(|f| f.take(FILE_MAX + 1).read_to_end(&mut bytes)).map_err(|_| refused(path, "couldn't be read"))?;
-    let size = bytes.len() as u64;
-    let named = mime_of(&real).unwrap_or_default();
+    picture(path, &real, bytes).and_then(|(bytes, mime)| sized(path, bytes, mime, max))
+}
+
+/// The bytes of picture `path` (named `named`, links resolved), when they
+/// are what its name says: the bytes and their type.
+fn picture(path: &Path, named: &Path, bytes: Vec<u8>) -> Result<(Vec<u8>, &'static str), String> {
+    if bytes.len() as u64 > FILE_MAX {
+        return Err(refused(path, &format!("bigger than {} MB", FILE_MAX >> 20)));
+    }
+    let named = mime_of(named).ok_or_else(|| refused(path, "not a picture — png, jpg, webp, gif or svg"))?;
     let mime = sniff(&bytes).ok_or_else(|| refused(path, "not a picture inside"))?;
-    let svg = named == "image/svg+xml";
-    if svg != (mime == "image/svg+xml") {
+    if (named == "image/svg+xml") != (mime == "image/svg+xml") {
         return Err(refused(path, "its name and what it holds differ"));
     }
+    Ok((bytes, mime))
+}
+
+/// A picture's bytes for a screen: whole, or no bigger than `max` pixels on
+/// its longer side; a copy no bigger than [`BIG_SIDE`] when too big to send
+/// whole; an SVG as it is.
+fn sized(path: &Path, bytes: Vec<u8>, mime: &'static str, max: Option<u32>) -> Result<ImageRead, String> {
+    use base64::Engine as _;
+    let size = bytes.len() as u64;
+    let svg = mime == "image/svg+xml";
     let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
     if svg {
         if size > SVG_MAX {
@@ -215,6 +247,48 @@ pub fn read(path: &Path, roots: &[PathBuf], max: Option<u32>) -> Result<ImageRea
 pub struct Shown {
     pub paths: HashSet<String>,
     pub roots: Vec<PathBuf>,
+    /// Folders the conversation points at: the pictures right in them show too.
+    pub folders: HashSet<String>,
+    /// A ticket's pictures whose worktree is gone: where git still has each.
+    pub kept: HashMap<String, Kept>,
+}
+
+/// Where git has a picture of a ticket whose worktree went: in `repo`, at
+/// `rel` from its top, on the ticket's branch — or on main, once merged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Kept {
+    pub repo: PathBuf,
+    pub rel: PathBuf,
+    pub branch: Option<String>,
+    pub merged: bool,
+}
+
+/// Where a picture of a ticket's hand-in was in its worktree (gone now): the
+/// repository and the path from its top — when it was in one of `repo`'s
+/// worktrees under `home` at all.
+fn in_worktree(image: &str, repo: &Path, home: &Path) -> Option<PathBuf> {
+    let homes = [home.to_owned(), home.canonicalize().unwrap_or_else(|_| home.to_owned())];
+    let rest = homes.iter().find_map(|h| Path::new(image).strip_prefix(crate::worktree::worktrees_of(repo, h)).ok())?;
+    let mut parts = rest.components();
+    let Some(Component::Normal(_)) = parts.next() else { return None };
+    let rel: PathBuf = parts.collect();
+    let clean = rel.components().all(|c| matches!(c, Component::Normal(_)));
+    (clean && !rel.as_os_str().is_empty()).then_some(rel)
+}
+
+/// What git has of a ticket's pictures, once its worktree is gone.
+fn kept_of(ticket: &Ticket, home: &Path, squad: &str) -> Vec<(String, Kept)> {
+    if ticket.images.is_empty() || ticket.worktree.as_ref().is_some_and(|w| w.is_dir()) {
+        return Vec::new();
+    }
+    let repo = if ticket.kind.in_home() { Some(crate::squad_home::path(home, squad)) } else { ticket.project.clone() };
+    let Some(repo) = repo else { return Vec::new() };
+    let merged = ticket.merged == Some(true) || (ticket.status == crate::protocol::TicketStatus::Done && ticket.branch.is_none());
+    ticket
+        .images
+        .iter()
+        .filter_map(|image| Some((image.clone(), Kept { repo: repo.clone(), rel: in_worktree(image, &repo, home)?, branch: ticket.branch.clone(), merged })))
+        .collect()
 }
 
 /// Read from the squad's journal; nothing for a squad that isn't there.
@@ -230,26 +304,183 @@ pub fn shown(home: &Path, squad: &str) -> Shown {
     }
     for ticket in journal.tickets().unwrap_or_default() {
         out.paths.extend(ticket.images.iter().cloned());
+        out.kept.extend(kept_of(&ticket, home, squad));
         out.roots.extend(ticket.worktree);
     }
     let (design, folders) = crate::design::folder::shown(home, squad);
     out.paths.extend(design);
     out.roots.extend(folders);
+    said(&journal, home, squad, &mut out);
     out
+}
+
+/// What the squad's latest lines show: each image their Markdown embeds (a
+/// relative one taken from where its member works, or the squad's folder),
+/// each folder they point at, and the member worktrees they were said in.
+fn said(journal: &crate::journal::Journal, home: &Path, squad: &str, out: &mut Shown) {
+    let folder = crate::squad_home::path(home, squad);
+    let mut cwds: HashSet<PathBuf> = HashSet::new();
+    for (cwd, entry) in journal.said_with_paths(SAID).unwrap_or_default() {
+        let (Entry::User { text } | Entry::Reply { text } | Entry::Note { text }) = &entry else { continue };
+        for image in markdown::local_images(text) {
+            for base in [&cwd, &folder] {
+                if let Some(path) = markdown::lexical(&image.path, base) {
+                    out.paths.insert(path.to_string_lossy().into_owned());
+                }
+            }
+        }
+        for named in markdown::folders(text) {
+            if let Some(path) = markdown::lexical(&named, &cwd) {
+                out.folders.insert(path.to_string_lossy().into_owned());
+            }
+        }
+        cwds.insert(cwd);
+    }
+    // A member's worktree it spoke from is where its pictures may be.
+    let Ok(worktrees) = home.join("worktrees").canonicalize() else { return };
+    for cwd in cwds {
+        if cwd.canonicalize().is_ok_and(|real| real.starts_with(&worktrees) && real.components().count() >= worktrees.components().count() + 2) && !out.roots.contains(&cwd) {
+            out.roots.push(cwd);
+        }
+    }
+}
+
+/// Whether `path` is a picture right in a folder the squad's conversation points at.
+fn in_folder(shown: &Shown, path: &str) -> bool {
+    is_image_name(path) && Path::new(path).parent().is_some_and(|dir| shown.folders.contains(dir.to_string_lossy().as_ref()))
+}
+
+/// A picture of a ticket whose worktree is gone, read from git: the
+/// project's checkout or main once merged, else the ticket's branch.
+fn read_kept(path: &Path, kept: &Kept, max: Option<u32>) -> Result<ImageRead, String> {
+    use crate::worktree::{self, Blob};
+    if mime_of(path).is_none() {
+        return Err(refused(path, "not a picture — png, jpg, webp, gif or svg"));
+    }
+    if kept.merged {
+        let file = kept.repo.join(&kept.rel);
+        if file.is_file()
+            && let Ok(read) = read(&file, std::slice::from_ref(&kept.repo), max)
+        {
+            return Ok(read);
+        }
+    }
+    let main = worktree::main_branch(&kept.repo).ok();
+    let revs: Vec<&String> = if kept.merged { main.iter().chain(kept.branch.iter()).collect() } else { kept.branch.iter().chain(main.iter()).collect() };
+    let mut failed = None;
+    for rev in revs {
+        match worktree::read_blob(&kept.repo, rev, &kept.rel, FILE_MAX) {
+            Ok(bytes) => return picture(path, path, bytes).and_then(|(bytes, mime)| sized(path, bytes, mime, max)),
+            Err(Blob::Missing) => {}
+            Err(Blob::TooBig(_)) => return Err(refused(path, &format!("bigger than {} MB", FILE_MAX >> 20))),
+            Err(Blob::Failed(why)) => failed = Some(why),
+        }
+    }
+    match failed {
+        Some(why) => Err(refused(path, &format!("couldn't be read from git: {why}"))),
+        None => Err(refused(path, rpc::IMAGE_NOT_ON_BRANCH)),
+    }
 }
 
 /// Answer a `read_image` for `ask.squad`, at most `cap` pixels on a side
 /// when given (a phone's).
 pub fn serve(home: &Path, ask: &ReadImage, cap: Option<u32>) -> Result<ImageRead, String> {
     let shown = shown(home, &ask.squad);
-    if !shown.paths.contains(&ask.path) {
+    if !shown.paths.contains(&ask.path) && !in_folder(&shown, &ask.path) {
         return Err(format!("{} isn't a picture {} shows", ask.path, ask.squad));
     }
     let max = match (ask.max, cap) {
         (Some(max), Some(cap)) => Some(max.min(cap)),
         (max, cap) => max.or(cap),
     };
-    read(Path::new(&ask.path), &shown.roots, max)
+    let path = Path::new(&ask.path);
+    match read(path, &shown.roots, max) {
+        // Its worktree went with its acceptance: git still has it.
+        Err(why) if std::fs::symlink_metadata(path).is_err() => match shown.kept.get(&ask.path) {
+            Some(kept) => read_kept(path, kept, max),
+            None => Err(why),
+        },
+        read => read,
+    }
+}
+
+/// Answer a `list_images`: the pictures right in a folder the squad's
+/// conversation points at — inside its folder or a member's worktree, each
+/// passing [`check`] — by name, at most [`LIST_MAX`].
+pub fn list(home: &Path, ask: &ListImages) -> Result<ImageList, String> {
+    let shown = shown(home, &ask.squad);
+    let folder = markdown::lexical(&ask.folder, Path::new("/")).filter(|_| Path::new(ask.folder.trim()).is_absolute()).ok_or_else(|| format!("{}: give the folder's full path, without `..`", ask.folder))?;
+    let key = folder.to_string_lossy().into_owned();
+    if !shown.folders.contains(&key) {
+        return Err(format!("{key} isn't a folder {} shows", ask.squad));
+    }
+    let real = folder.canonicalize().map_err(|_| format!("{key}: no such folder"))?;
+    let roots: Vec<PathBuf> = shown.roots.iter().filter_map(|r| r.canonicalize().ok()).collect();
+    if !roots.iter().any(|root| real.starts_with(root)) {
+        return Err(format!("{key}: outside the members' worktrees and the squad's folder"));
+    }
+    let entries = std::fs::read_dir(&real).map_err(|_| format!("{key}: not a folder it can read"))?;
+    let mut names: Vec<String> = entries.take(LIST_SCAN).filter_map(|e| e.ok()?.file_name().into_string().ok()).filter(|n| is_image_name(n) && !n.starts_with('.')).collect();
+    names.sort_by_key(|n| n.to_lowercase());
+    let images: Vec<String> = names.iter().map(|n| folder.join(n)).filter(|p| check(p, &shown.roots).is_ok()).map(|p| p.to_string_lossy().into_owned()).collect();
+    let most = ask.max.map_or(LIST_MAX, |m| (m as usize).min(LIST_MAX));
+    Ok(ImageList { folder: key, total: images.len() as u32, images: images.into_iter().take(most).collect() })
+}
+
+/// Folders a hand-in's source assets are kept in: shown after its work.
+const ASSET_DIRS: [&str; 8] = ["public", "assets", "textures", "static", "src", "res", "resources", "images"];
+
+/// Whether a picture reads as one of the project's source assets — a texture,
+/// a static file — rather than the work handed in (`outputs/`, a render).
+pub fn is_asset(path: &str) -> bool {
+    let parts: Vec<&str> = path.split('/').collect();
+    !parts.contains(&"outputs") && parts[..parts.len().saturating_sub(1)].iter().any(|p| ASSET_DIRS.contains(&p.to_ascii_lowercase().as_str()))
+}
+
+/// What a picture is whatever size it comes in — `earth_day_2048.jpg` and
+/// `earth_day_4096.jpg` are one — and the size it is in (0: none said).
+fn variant(path: &str) -> (String, u32) {
+    let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+    let (stem, ext) = name.rsplit_once('.').unwrap_or((name, ""));
+    let mut stem = stem.to_owned();
+    let mut size = 0;
+    if let Some(at) = stem.rfind('@').filter(|at| stem[at + 1..].strip_suffix('x').is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))) {
+        size = stem[at + 1..stem.len() - 1].parse().unwrap_or(0);
+        stem.truncate(at);
+    } else if let Some(at) = stem.rfind(['_', '-']) {
+        let tail = &stem[at + 1..];
+        let number = |t: &str| (3..=5).contains(&t.len()) && t.chars().all(|c| c.is_ascii_digit());
+        let pixels = tail.split_once('x').filter(|(w, h)| number(w) && number(h));
+        if number(tail) || pixels.is_some() {
+            size = pixels.map_or(tail, |(w, _)| w).parse().unwrap_or(0);
+            stem.truncate(at);
+        }
+    }
+    (format!("{dir}/{stem}.{}", ext.to_ascii_lowercase()), size)
+}
+
+/// A hand-in's pictures in the order they are worth a look: its work first,
+/// as it came — what its member named, what is under `outputs/`, a render —
+/// then the project's source assets ([`is_asset`]); a picture in several
+/// sizes once, its biggest.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Arranged {
+    pub work: Vec<String>,
+    pub assets: Vec<String>,
+}
+
+pub fn arrange(images: &[String]) -> Arranged {
+    let mut kept: Vec<(String, String, u32)> = Vec::new();
+    for image in images {
+        let (key, size) = variant(image);
+        match kept.iter_mut().find(|(_, k, _)| *k == key) {
+            Some(slot) if size > slot.2 => *slot = (image.clone(), key, size),
+            Some(_) => {}
+            None => kept.push((image.clone(), key, size)),
+        }
+    }
+    let (assets, work): (Vec<_>, Vec<_>) = kept.into_iter().map(|(image, ..)| image).partition(|i| is_asset(i));
+    Arranged { work, assets }
 }
 
 /// What a hand-in shows: the pictures its member named, then the images its
@@ -257,12 +488,12 @@ pub fn serve(home: &Path, ask: &ReadImage, cap: Option<u32>) -> Result<ImageRead
 /// at most [`HAND_IN`].
 pub fn hand_in(named: &[String], changed: &[String], worktree: &Path, roots: &[PathBuf]) -> Vec<String> {
     let mut out: Vec<String> = named.to_vec();
-    for rel in changed.iter().filter(|f| is_image_name(f)) {
-        if let Ok(real) = check(&worktree.join(rel), roots) {
-            let real = real.to_string_lossy().into_owned();
-            if !out.contains(&real) {
-                out.push(real);
-            }
+    let found: Vec<String> = changed.iter().filter(|f| is_image_name(f)).filter_map(|rel| check(&worktree.join(rel), roots).ok()).map(|real| real.to_string_lossy().into_owned()).collect();
+    // Its work, then its assets; a picture in several sizes once.
+    let arranged = arrange(&found);
+    for real in arranged.work.into_iter().chain(arranged.assets) {
+        if !out.iter().any(|o| *o == real || variant(o).0 == variant(&real).0) {
+            out.push(real);
         }
     }
     out.truncate(HAND_IN);
@@ -508,6 +739,225 @@ mod tests {
         climbing.path = format!("{}/assets/logo/../logo/mark.png", design.display());
         assert!(serve(&home, &climbing, None).is_err(), "asked by another name, with `..`");
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// A session of `squad` working in `cwd` that said `lines`.
+    fn conversation(journal: &crate::journal::Journal, id: u64, cwd: &Path, lines: &[Entry]) {
+        use crate::protocol::{Access, Engine};
+        let record = crate::journal::SessionRecord { id, member: None, mode: None, engine: Engine::Claude, model: None, access: Access::EditFiles, cwd: cwd.to_owned(), repo: None, branch: None, base: None, engine_session: None, title: None, tokens: 0, open: true };
+        journal.record_session(&record).unwrap();
+        for line in lines {
+            journal.append(id, line).unwrap();
+        }
+    }
+
+    fn reply(text: &str) -> Entry {
+        Entry::Reply { text: text.into() }
+    }
+
+    #[test]
+    fn a_reply_shows_the_pictures_it_embeds_and_nothing_it_doesnt() {
+        let home = dir("said");
+        let journal = crate::journal::Journal::for_squad(&home, "acme").unwrap();
+        let worktree = home.join("worktrees/photo-studio.home/t2-6ad338ba");
+        let images = worktree.join("outputs/T-2 갤러리 디자인/images");
+        std::fs::create_dir_all(&images).unwrap();
+        for name in ["평면도.png", "배치도.png", "단면.png", "unsaid.png"] {
+            png(&images.join(name), 40, 30, false);
+        }
+        std::fs::write(images.join("notes.txt"), "hi").unwrap();
+        let outside = home.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        png(&outside.join("secret.png"), 4, 4, false);
+        std::os::unix::fs::symlink(outside.join("secret.png"), images.join("link.png")).unwrap();
+        let abs = images.join("평면도.png").to_string_lossy().into_owned();
+        let text = format!(
+            "시안입니다.\n\n![평면도]({abs})\n![배치도](outputs/T-2 갤러리 디자인/images/배치도.png \"A안\")\n![x]({}/secret.png)\n![l](outputs/T-2 갤러리 디자인/images/link.png)\n![t](outputs/T-2 갤러리 디자인/images/notes.txt)\n![up](../t2-6ad338ba/outputs/T-2 갤러리 디자인/images/단면.png)",
+            outside.display()
+        );
+        conversation(&journal, 1, &worktree, &[Entry::User { text: "보여 주세요".into() }, reply(&text)]);
+        let ask = |path: &Path| ReadImage { squad: "acme".into(), path: path.to_string_lossy().into_owned(), max: Some(64) };
+        // Absolute, and relative to where the member works: given.
+        assert_eq!(serve(&home, &ask(&images.join("평면도.png")), None).unwrap().width, Some(40));
+        assert!(serve(&home, &ask(&images.join("배치도.png")), None).is_ok(), "relative, with spaces and a title");
+        // Never said: refused, though it is right there.
+        assert!(serve(&home, &ask(&images.join("unsaid.png")), None).unwrap_err().contains("isn't a picture"));
+        // Said, but outside every root; a link out; not a picture; climbing.
+        assert!(serve(&home, &ask(&outside.join("secret.png")), None).unwrap_err().contains("outside"));
+        assert!(serve(&home, &ask(&images.join("link.png")), None).unwrap_err().contains("outside"), "a link is followed");
+        assert!(serve(&home, &ask(&images.join("notes.txt")), None).is_err());
+        assert!(serve(&home, &ask(&images.join("단면.png")), None).is_err(), "`..` is never read");
+        let climbing = ReadImage { path: format!("{}/../t2-6ad338ba/outputs/T-2 갤러리 디자인/images/단면.png", worktree.display()), ..ask(&images) };
+        assert!(serve(&home, &climbing, None).is_err());
+        // Another squad's conversation names nothing of this one's.
+        assert!(serve(&home, &ReadImage { squad: "zeta".into(), ..ask(&images.join("평면도.png")) }, None).is_err());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_folder_a_reply_points_at_lists_its_pictures_and_they_show() {
+        let home = dir("folder");
+        let journal = crate::journal::Journal::for_squad(&home, "acme").unwrap();
+        let worktree = home.join("worktrees/photo-studio.home/t2-6ad338ba");
+        let images = worktree.join("outputs/T-2 갤러리 디자인/images");
+        std::fs::create_dir_all(images.join("sub")).unwrap();
+        for n in 0..15 {
+            png(&images.join(format!("{n:02}.png")), 4, 4, false);
+        }
+        png(&images.join("sub/deeper.png"), 4, 4, false);
+        std::fs::write(images.join("readme.md"), "#").unwrap();
+        std::fs::write(images.join(".hidden.png"), "x").unwrap();
+        let elsewhere = worktree.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        png(&elsewhere.join("a.png"), 4, 4, false);
+        let folder = images.to_string_lossy().into_owned();
+        conversation(&journal, 1, &worktree, &[reply(&format!("이미지가 화면에 안 보이면 이 폴더를 열어 보세요: {folder}/"))]);
+        let list_of = |folder: &str, max| list(&home, &ListImages { squad: "acme".into(), folder: folder.into(), max });
+        let listed = list_of(&folder, None).unwrap();
+        assert_eq!((listed.total, listed.images.len()), (15, LIST_MAX), "pictures only, at most twelve");
+        assert_eq!(listed.images[0], format!("{folder}/00.png"));
+        assert_eq!(list_of(&format!("{folder}/"), Some(3)).unwrap().images.len(), 3, "its slash, and fewer asked");
+        // Each listed picture shows; one in a folder under it doesn't, nor one in a folder never named.
+        let ask = |path: String| ReadImage { squad: "acme".into(), path, max: Some(32) };
+        assert!(serve(&home, &ask(listed.images[11].clone()), None).is_ok());
+        assert!(serve(&home, &ask(format!("{folder}/14.png")), None).is_ok(), "past the twelve, still in the folder");
+        assert!(serve(&home, &ask(format!("{folder}/sub/deeper.png")), None).is_err());
+        assert!(serve(&home, &ask(elsewhere.join("a.png").to_string_lossy().into_owned()), None).is_err());
+        // A folder never named, one climbing, one relative.
+        assert!(list_of(&elsewhere.to_string_lossy(), None).unwrap_err().contains("isn't a folder"));
+        assert!(list_of(&format!("{folder}/../images"), None).is_err());
+        assert!(list_of("outputs/images", None).is_err());
+        // Named, but outside every root.
+        let outside = home.join("outside/pics");
+        std::fs::create_dir_all(&outside).unwrap();
+        png(&outside.join("a.png"), 4, 4, false);
+        conversation(&journal, 2, &home, &[reply(&format!("see {}/", outside.display()))]);
+        assert!(list_of(&outside.to_string_lossy(), None).unwrap_err().contains("outside"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// Run git in `dir`, as a test does.
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// A project with a ticket's branch whose worktree is gone: its pictures
+    /// recorded where the worktree was. Returns the project and those paths.
+    fn accepted_unmerged(home: &Path) -> (PathBuf, Vec<String>) {
+        let project = home.join("code/gallery-y");
+        std::fs::create_dir_all(&project).unwrap();
+        git(&project, &["init", "-q", "-b", "main"]);
+        git(&project, &["config", "user.name", "T"]);
+        git(&project, &["config", "user.email", "t@example.com"]);
+        std::fs::write(project.join("README.md"), "#").unwrap();
+        git(&project, &["add", "."]);
+        git(&project, &["commit", "-qm", "start"]);
+        let worktree = crate::worktree::worktrees_of(&project, home).join("t4-6ad33ac5");
+        std::fs::create_dir_all(worktree.parent().unwrap()).unwrap();
+        git(&project, &["worktree", "add", "-q", "-b", "equipe/frontend-t4-6ad33ac5", &worktree.to_string_lossy()]);
+        std::fs::create_dir_all(worktree.join("outputs")).unwrap();
+        std::fs::create_dir_all(worktree.join("public/textures/earth")).unwrap();
+        png(&worktree.join("outputs/T-4-globe.png"), 60, 30, false);
+        png(&worktree.join("public/textures/earth/earth_day_2048.png"), 20, 10, false);
+        std::fs::write(worktree.join("outputs/fake.png"), "not a picture").unwrap();
+        git(&worktree, &["add", "."]);
+        git(&worktree, &["commit", "-qm", "T-4"]);
+        let images = ["outputs/T-4-globe.png", "public/textures/earth/earth_day_2048.png", "outputs/fake.png"].map(|f| worktree.canonicalize().unwrap().join(f).to_string_lossy().into_owned()).to_vec();
+        git(&project, &["worktree", "remove", "--force", &worktree.to_string_lossy()]);
+        assert!(!worktree.exists());
+        (project, images)
+    }
+
+    fn save_ticket(home: &Path, project: &Path, images: &[String], merged: Option<bool>, branch: Option<&str>) {
+        let journal = crate::journal::Journal::for_squad(home, "acme").unwrap();
+        let mut ticket = Ticket {
+            id: 0,
+            title: "Globe".into(),
+            body: "".into(),
+            status: crate::protocol::TicketStatus::Done,
+            kind: crate::protocol::TicketKind::Code,
+            owner: Some("frontend".into()),
+            assignee: Some("frontend".into()),
+            project: Some(project.to_owned()),
+            depends_on: vec![],
+            branch: branch.map(str::to_owned),
+            worktree: None,
+            merged,
+            off_main: None,
+            created_by: "pm".into(),
+            note: None,
+            asks: vec![],
+            remaining: vec![],
+            images: vec![],
+            priority: Default::default(),
+            rank: 0,
+            updated_at: None,
+        };
+        ticket.id = journal.create_ticket(&ticket).unwrap();
+        ticket.images = images.to_vec();
+        journal.save_ticket(&ticket).unwrap();
+    }
+
+    #[test]
+    fn an_accepted_tickets_pictures_come_from_its_branch_once_its_worktree_is_gone() {
+        let home = dir("kept");
+        let (project, images) = accepted_unmerged(&home);
+        save_ticket(&home, &project, &images, Some(false), Some("equipe/frontend-t4-6ad33ac5"));
+        let ask = |path: &str| ReadImage { squad: "acme".into(), path: path.into(), max: Some(32) };
+        let globe = serve(&home, &ask(&images[0]), None).unwrap();
+        assert_eq!((globe.width, globe.height, globe.scaled), (Some(60), Some(30), true), "from the branch, scaled as ever");
+        assert!(serve(&home, &ask(&images[1]), None).is_ok());
+        // The type is still checked on what git holds.
+        assert!(serve(&home, &ask(&images[2]), None).unwrap_err().contains("not a picture inside"));
+        // A path of that worktree the ticket never recorded: refused, though the branch has it.
+        let readme = images[0].replace("outputs/T-4-globe.png", "README.md");
+        assert!(serve(&home, &ask(&readme), None).unwrap_err().contains("isn't a picture"));
+        let unrecorded = images[0].replace("T-4-globe", "T-4-other");
+        assert!(serve(&home, &ask(&unrecorded), None).unwrap_err().contains("isn't a picture"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_merged_tickets_pictures_come_from_main_or_the_checkout_and_a_missing_one_says_so() {
+        let home = dir("merged");
+        let (project, images) = accepted_unmerged(&home);
+        git(&project, &["merge", "-q", "--no-ff", "-m", "T-4", "equipe/frontend-t4-6ad33ac5"]);
+        git(&project, &["branch", "-q", "-D", "equipe/frontend-t4-6ad33ac5"]);
+        let mut recorded = images.clone();
+        recorded.push(images[0].replace("T-4-globe", "T-4-gone"));
+        save_ticket(&home, &project, &recorded, Some(true), None);
+        let ask = |path: &str| ReadImage { squad: "acme".into(), path: path.into(), max: None };
+        assert_eq!(serve(&home, &ask(&recorded[0]), None).unwrap().width, Some(60), "the checkout's file");
+        // Gone from the checkout, still on main.
+        std::fs::remove_file(project.join("outputs/T-4-globe.png")).unwrap();
+        assert_eq!(serve(&home, &ask(&recorded[0]), None).unwrap().width, Some(60), "main's");
+        let missing = serve(&home, &ask(&recorded[3]), None).unwrap_err();
+        assert_eq!(rpc::ImageWhy::of(&missing), rpc::ImageWhy::Missing, "{missing}");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_hand_in_shows_its_work_before_its_assets_and_each_asset_once() {
+        let at = |f: &str| format!("/w/t4/{f}");
+        let images: Vec<String> = [
+            "public/textures/earth/earth_day_4096.jpg",
+            "outputs/T-4-globe.png",
+            "public/textures/earth/earth_day_2048.jpg",
+            "public/textures/earth/earth_night_2048.jpg",
+            "public/textures/earth/earth_night_4096.jpg",
+            "outputs/T-4-flying.png",
+            "src/assets/logo@2x.png",
+            "src/assets/logo.png",
+        ]
+        .map(at)
+        .to_vec();
+        let arranged = arrange(&images);
+        assert_eq!(arranged.work, [at("outputs/T-4-globe.png"), at("outputs/T-4-flying.png")]);
+        assert_eq!(arranged.assets, [at("public/textures/earth/earth_day_4096.jpg"), at("public/textures/earth/earth_night_4096.jpg"), at("src/assets/logo@2x.png")], "the biggest of each");
+        assert!(!is_asset("/w/t4/outputs/textures/a.png") && is_asset("/w/t4/static/a.png") && !is_asset("/w/t4/a.png"));
+        assert_eq!(variant("/w/a_1024x768.png"), ("/w/a.png".to_owned(), 1024));
+        assert_eq!(variant("/w/plan-2.png").1, 0, "a number that's no size stays");
     }
 
     #[test]

@@ -13,7 +13,7 @@
             "type": "accept"
           }
         },
-        "seq": 32,
+        "seq": 34,
         "squad": "home",
         "ts": 1760000000000
       }
@@ -30,7 +30,7 @@
             "type": "accept"
           }
         },
-        "seq": 31,
+        "seq": 33,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -83,7 +83,7 @@
             "type": "accept"
           }
         },
-        "seq": 20,
+        "seq": 22,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -207,7 +207,7 @@
             "type": "apply_engine_proposal"
           }
         },
-        "seq": 17,
+        "seq": 19,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -235,7 +235,7 @@
             "type": "approve_team_change"
           }
         },
-        "seq": 15,
+        "seq": 17,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -353,7 +353,7 @@
             "type": "decline_team_change"
           }
         },
-        "seq": 16,
+        "seq": 18,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -379,7 +379,7 @@
             "type": "design"
           }
         },
-        "seq": 13,
+        "seq": 15,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -395,7 +395,7 @@
             "type": "design"
           }
         },
-        "seq": 14,
+        "seq": 16,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -423,7 +423,7 @@
             "type": "dismiss_engine_proposal"
           }
         },
-        "seq": 18,
+        "seq": 20,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -467,7 +467,7 @@
             "type": "sign_in"
           }
         },
-        "seq": 28,
+        "seq": 30,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -483,7 +483,7 @@
             "type": "sign_out"
           }
         },
-        "seq": 29,
+        "seq": 31,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -507,7 +507,23 @@
             "type": "engines"
           }
         },
-        "seq": 27,
+        "seq": 29,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: a reply with pictures": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "session": 1001,
+            "text": "T-2 시안입니다.\n\n![평면도](/Users/you/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images/평면도.png)\n\n전체는 /Users/you/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images/ 에 있어요.",
+            "type": "text_delta"
+          }
+        },
+        "seq": 16,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -720,7 +736,7 @@
             "type": "design"
           }
         },
-        "seq": 17,
+        "seq": 21,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -737,7 +753,7 @@
             "type": "design"
           }
         },
-        "seq": 18,
+        "seq": 22,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -757,7 +773,7 @@
             "type": "disk_level"
           }
         },
-        "seq": 43,
+        "seq": 47,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -798,7 +814,7 @@
             "type": "engine_proposed"
           }
         },
-        "seq": 24,
+        "seq": 28,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -838,7 +854,7 @@
             "type": "engine_proposed"
           }
         },
-        "seq": 23,
+        "seq": 27,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -855,7 +871,7 @@
             "type": "engine_proposal_closed"
           }
         },
-        "seq": 25,
+        "seq": 29,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -871,7 +887,7 @@
             "type": "engine_switching_changed"
           }
         },
-        "seq": 26,
+        "seq": 30,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -908,7 +924,7 @@
             "type": "engines"
           }
         },
-        "seq": 44,
+        "seq": 48,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -925,7 +941,7 @@
             "type": "error"
           }
         },
-        "seq": 40,
+        "seq": 44,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -942,7 +958,7 @@
             "type": "message_queued"
           }
         },
-        "seq": 29,
+        "seq": 33,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -958,7 +974,7 @@
             "type": "notice"
           }
         },
-        "seq": 39,
+        "seq": 43,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -983,7 +999,7 @@
             }
           }
         },
-        "seq": 22,
+        "seq": 26,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1008,7 +1024,7 @@
             }
           }
         },
-        "seq": 37,
+        "seq": 41,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1030,7 +1046,7 @@
             }
           }
         },
-        "seq": 38,
+        "seq": 42,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1149,7 +1165,7 @@
             "type": "queue_sent"
           }
         },
-        "seq": 42,
+        "seq": 46,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1166,7 +1182,7 @@
             "type": "steer_queued"
           }
         },
-        "seq": 41,
+        "seq": 45,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1182,7 +1198,7 @@
             "type": "subagent_ended"
           }
         },
-        "seq": 34,
+        "seq": 38,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1199,7 +1215,7 @@
             "what": "Compare the two login flows"
           }
         },
-        "seq": 32,
+        "seq": 36,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1216,7 +1232,7 @@
             "type": "subagent_step"
           }
         },
-        "seq": 33,
+        "seq": 37,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1236,7 +1252,7 @@
             "type": "team_change_closed"
           }
         },
-        "seq": 20,
+        "seq": 24,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1253,7 +1269,7 @@
             "type": "team_change_closed"
           }
         },
-        "seq": 21,
+        "seq": 25,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1280,7 +1296,7 @@
             "type": "team_change_proposed"
           }
         },
-        "seq": 19,
+        "seq": 23,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1296,7 +1312,7 @@
             "type": "text_delta"
           }
         },
-        "seq": 30,
+        "seq": 34,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1327,7 +1343,7 @@
             "type": "ticket_changed"
           }
         },
-        "seq": 27,
+        "seq": 31,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1393,7 +1409,7 @@
             "type": "ticket_changed"
           }
         },
-        "seq": 16,
+        "seq": 20,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1410,7 +1426,7 @@
             "type": "tool_use"
           }
         },
-        "seq": 31,
+        "seq": 35,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1430,7 +1446,7 @@
             }
           }
         },
-        "seq": 35,
+        "seq": 39,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1447,7 +1463,7 @@
             "usage": null
           }
         },
-        "seq": 36,
+        "seq": 40,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1463,7 +1479,7 @@
             "type": "user_message"
           }
         },
-        "seq": 28,
+        "seq": 32,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1871,8 +1887,96 @@
             "type": "interrupt"
           }
         },
-        "seq": 23,
+        "seq": 25,
         "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "list images": {
+      "daemon": {
+        "answers": {
+          "rpc": {
+            "id": 23,
+            "jsonrpc": "2.0",
+            "result": {
+              "folder": "/Users/you/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images",
+              "images": [
+                "/Users/you/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images/단면·입면.png",
+                "/Users/you/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images/배치도.png",
+                "/Users/you/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images/평면도.png"
+              ],
+              "total": 3
+            }
+          },
+          "seq": 17,
+          "squad": "acme",
+          "ts": 1760000000000
+        },
+        "asked": {
+          "folder": "/Users/you/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images",
+          "squad": "acme"
+        },
+        "at_most": 12,
+        "lists_pictures_of": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "id": 23,
+          "jsonrpc": "2.0",
+          "method": "list_images",
+          "params": {
+            "folder": "/Users/you/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images",
+            "squad": "acme"
+          }
+        },
+        "seq": 13,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "list images: a folder no reply names": {
+      "receives": {
+        "rpc": {
+          "error": {
+            "code": -32000,
+            "message": "/Users/you/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images isn't a folder acme shows"
+          },
+          "id": 24,
+          "jsonrpc": "2.0"
+        },
+        "seq": 18,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "list images: a squad not followed": {
+      "daemon": {
+        "answers": {
+          "rpc": {
+            "error": {
+              "code": -32002,
+              "message": "say hello to that squad first"
+            },
+            "id": 25,
+            "jsonrpc": "2.0"
+          },
+          "seq": 19,
+          "squad": "home",
+          "ts": 1760000000000
+        }
+      },
+      "sends": {
+        "rpc": {
+          "id": 25,
+          "jsonrpc": "2.0",
+          "method": "list_images",
+          "params": {
+            "folder": "/Users/you/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images",
+            "squad": "home"
+          }
+        },
+        "seq": 14,
+        "squad": "home",
         "ts": 1760000000000
       }
     },
@@ -1889,7 +1993,7 @@
             "type": "merge"
           }
         },
-        "seq": 30,
+        "seq": 32,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2297,7 +2401,7 @@
             "type": "reopen"
           }
         },
-        "seq": 21,
+        "seq": 23,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2331,7 +2435,7 @@
             "type": "send_now"
           }
         },
-        "seq": 26,
+        "seq": 28,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2393,7 +2497,7 @@
             "type": "submit"
           }
         },
-        "seq": 22,
+        "seq": 24,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2423,7 +2527,7 @@
             "type": "submit"
           }
         },
-        "seq": 24,
+        "seq": 26,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2453,7 +2557,7 @@
             "type": "submit"
           }
         },
-        "seq": 25,
+        "seq": 27,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2481,7 +2585,7 @@
             "type": "undo_engine_proposal"
           }
         },
-        "seq": 19,
+        "seq": 21,
         "squad": "acme",
         "ts": 1760000000000
       }
