@@ -982,5 +982,7 @@
   "app.disk_fine": "Le disque a de la place · plus avec equipe disk dans un terminal",
   "remote.push_disk_critical": "Plus que {free} sur le disque",
   "remote.push_disk_full": "Le disque est plein ({free} restants)",
-  "remote.push_disk_body": "Les compilations risquent d'échouer · libérez de la place dans equipe sur le Mac"
+  "remote.push_disk_body": "Les compilations risquent d'échouer · libérez de la place dans equipe sur le Mac",
+  "app.reply_images_none": "Aucune image dans les dernières réponses",
+  "view.help_ctrl_g": "ouvrir les images de la dernière réponse — sur cette machine ; via SSH, indique où elles sont"
 }

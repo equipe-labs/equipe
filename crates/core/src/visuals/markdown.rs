@@ -125,9 +125,12 @@ fn unescape(text: &str) -> String {
     out
 }
 
-/// The image starting at `at` (`![`) in `line`, if it is one: its alt, its
-/// destination and title, and where it ends.
-fn image_at(line: &str, at: usize) -> Option<(String, Range<usize>, bool, Option<String>, usize)> {
+/// An image found in a line: its alt, its destination's range (and whether
+/// it was in `<…>`), its title, and where it ends.
+type Found = (String, Range<usize>, bool, Option<String>, usize);
+
+/// The image starting at `at` (`![`) in `line`, if it is one.
+fn image_at(line: &str, at: usize) -> Option<Found> {
     let bytes = line.as_bytes();
     // The alt, to its `]` (brackets inside it balanced).
     let mut depth = 0;

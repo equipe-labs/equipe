@@ -1012,6 +1012,7 @@ fn render_help(frame: &mut Frame, area: Rect, theme: Theme) {
         ("Ctrl-P", t!("view.help_ctrl_p")),
         (t!("view.help_scroll_key"), t!("view.help_scroll")),
         ("Ctrl-W", t!("view.help_ctrl_w")),
+        ("Ctrl-G", t!("view.help_ctrl_g")),
         (t!("view.help_click_drag_key"), t!("view.help_click_drag")),
     ]);
     let answer = pairs(&[

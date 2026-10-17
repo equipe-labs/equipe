@@ -982,5 +982,7 @@
   "app.disk_fine": "Die Festplatte hat Platz · mehr mit equipe disk im Terminal",
   "remote.push_disk_critical": "Nur noch {free} frei auf der Festplatte",
   "remote.push_disk_full": "Die Festplatte ist voll ({free} übrig)",
-  "remote.push_disk_body": "Builds können scheitern · gib in equipe auf dem Mac Platz frei"
+  "remote.push_disk_body": "Builds können scheitern · gib in equipe auf dem Mac Platz frei",
+  "app.reply_images_none": "Keine Bilder in den letzten Antworten",
+  "view.help_ctrl_g": "die Bilder der letzten Antwort öffnen — nur auf diesem Rechner; über SSH steht da, wo sie liegen"
 }

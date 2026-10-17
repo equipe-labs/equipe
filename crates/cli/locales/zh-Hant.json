@@ -959,5 +959,7 @@
   "app.disk_fine": "磁碟空間充足 · 詳情請在終端機執行 equipe disk",
   "remote.push_disk_critical": "磁碟只剩 {free}",
   "remote.push_disk_full": "磁碟已滿（剩餘 {free}）",
-  "remote.push_disk_body": "建置可能很快失敗 · 請在 Mac 上的 equipe 中清理"
+  "remote.push_disk_body": "建置可能很快失敗 · 請在 Mac 上的 equipe 中清理",
+  "app.reply_images_none": "最近的回覆裡沒有圖片",
+  "view.help_ctrl_g": "開啟最新回覆中的圖片 — 僅限本機；透過 SSH 時顯示它們的位置"
 }

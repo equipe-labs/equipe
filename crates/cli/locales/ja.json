@@ -959,5 +959,7 @@
   "app.disk_fine": "ディスクの空きは十分です · 詳しくはターミナルで equipe disk",
   "remote.push_disk_critical": "ディスクの空きが {free} しかありません",
   "remote.push_disk_full": "ディスクがいっぱいです（残り {free}）",
-  "remote.push_disk_body": "まもなくビルドが失敗するかもしれません · Mac の equipe で片付けてください"
+  "remote.push_disk_body": "まもなくビルドが失敗するかもしれません · Mac の equipe で片付けてください",
+  "app.reply_images_none": "最近の返信に画像はありません",
+  "view.help_ctrl_g": "最新の返信の画像を開く — このマシンでのみ。SSH 経由なら場所を表示します"
 }

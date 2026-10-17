@@ -69,6 +69,7 @@ Plaintext is UTF-8 JSON:
 | `{ "id", "method": "squads" }` (no `squad`) | `result`: `[{ "name", "projects": [<project names>] }]` |
 | `{ "id", "method": "hello", "params": { "version", "squad" } }`, `squad` set too | `result`: `{ "version", "snapshot" }`; from then on the squad's `event`s, with `squad` set. A device may follow several squads; a second `hello` for one replaces the first. Error `-32602` "no such squad"; `-32000` when the daemon couldn't follow it |
 | `{ "id", "method": "read_image", "params": { "squad", "path", "max"? } }`, `squad` set too | `result`: a member's picture — see "A member's pictures" |
+| `{ "id", "method": "list_images", "params": { "squad", "folder", "max"? } }`, `squad` set too | `result`: the pictures in a folder a reply names — see "A member's pictures" |
 | `{ "method": "command", "params": <Command> }` — a notification, no `id` | none: what it did shows in events. Dropped without a word when it isn't one a device may send, its squad isn't the frame's, or the frame's squad isn't followed |
 | `{ "id", "method": "upload", "params": <chunk> }` (no `squad` needed) | `result`: `{ "received" }`, and once the whole file is in, `path` and `tag` — see [Attachments](#attachments) |
 | `{ "method": "upload_cancel", "params": { "upload_id" } }` — a notification | none |
@@ -120,7 +121,36 @@ worktree or a design folder once links are resolved — no `..`, at most
 30 MB read, a copy made past 6 MB — and refuses an SVG with a script, an embedded page or a link
 to anything but itself. For a phone the daemon makes the copy at most 720 pixels on a side,
 smaller again until it fits one relay frame. Errors: `-32002` (not following that squad),
-`-32000` with why (not shown, gone, not a picture).
+`-32000` with why (not shown, gone, not a picture). The words say which: `no such file` (gone —
+`no such file on its branch` for a ticket's, see below), `bigger than` (too large), anything
+else (not shown, not a picture, unreadable); a screen should say it calmly in the person's
+language and collapse a gallery whose pictures all failed into one line with a retry.
+
+**A ticket whose worktree is gone.** Accepting a ticket removes its worktree even when the
+merge to main fails ("accepted, not in main yet"), so its pictures are no longer on disk. The
+daemon then reads each recorded path from git, in the ticket's project: from the ticket's
+branch while it isn't merged, from main (or the project's checkout, when the file is there)
+once it is — by the path relative to the worktree the ticket recorded, never a ref or a path a
+screen names. The same checks hold on the blob: an image by name and by its first bytes, at
+most 30 MB.
+
+**Pictures in the conversation.** A reply, a note or the person's own message may embed
+pictures with Markdown — `![평면도](/…/images/plan.png)`, a title after the path, a path
+relative to where its member works, spaces in it as members write them — and may name a folder
+of them (an absolute path ending in `/`, or in a code span). Members are told to show pictures
+this way, never to ask the person to open a folder. `read_image` gives such a picture too, by
+the absolute path a screen makes of it (`file://` and `%20` read, a relative one joined to the
+member's working directory, or the squad's folder; no `..`) — only when a line the daemon
+itself recorded for that squad, among its latest 400 that name a path, embeds it, and only
+inside the squad's folder or a worktree a member spoke from. A screen shows it inline (the
+desktop asks for 1280 pixels, the column's width at 2x) once the reply has finished
+streaming. The pictures of a folder a reply names come with `list_images`
+`{ "squad", "folder", "max"? }` (`id` set, the frame's `squad` the same and followed):
+`result` `{ "folder", "images": [<path>…], "total" }` — the image files right in the folder (not
+below it), by name, each passing the same checks, at most 12 (`max` fewer), `total` all of them
+(at most 2000 looked at); each path is one `read_image` then gives. Given only for a folder
+such a recorded line names, inside the same roots. Errors as for `read_image`. A daemon older
+than this answers `-32601`; a screen then shows no strip.
 
 ### A change to the team
 
@@ -518,8 +548,8 @@ its secrets. Without them configured, a push answers `push_result` `ok: false`.
 
 The daemon follows a device like one more screen, with less reach than the terminal:
 
-- **may:** `hello`, `squads`, `upload`, `upload_cancel` (files only: see Attachments), `read_image` (a member's
-  pictures: see A member's pictures), and the commands `submit`, `interrupt`, `send_now`, `accept`, `reopen`,
+- **may:** `hello`, `squads`, `upload`, `upload_cancel` (files only: see Attachments), `read_image` and
+  `list_images` (a member's pictures, of a squad it follows: see A member's pictures), and the commands `submit`, `interrupt`, `send_now`, `accept`, `reopen`,
   `resume`, `cancel`, `decide`, `answer_questions`, `dismiss_questions`, `approve_team_change`,
   `decline_team_change`, `focus`, `refresh`, `engines` (where the engines stand; never signing one in or out).
 

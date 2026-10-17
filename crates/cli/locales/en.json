@@ -982,5 +982,7 @@
   "app.disk_fine": "The disk has room · equipe disk at a terminal for more",
   "remote.push_disk_critical": "Only {free} left on the disk",
   "remote.push_disk_full": "The disk is full ({free} left)",
-  "remote.push_disk_body": "Builds may fail · free space in equipe on the Mac"
+  "remote.push_disk_body": "Builds may fail · free space in equipe on the Mac",
+  "app.reply_images_none": "No picture in the latest replies",
+  "view.help_ctrl_g": "open the pictures the latest reply shows — on this machine; over SSH, it says where they are"
 }

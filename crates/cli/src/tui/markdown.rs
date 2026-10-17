@@ -23,6 +23,8 @@ pub struct Styles {
 pub fn lines(text: &str, width: usize, styles: &Styles) -> Vec<Line<'static>> {
     let mut r = Renderer::new(width.max(10), *styles);
     let text = crate::ui::cell_safe(text);
+    // An image whose path has spaces, as members write them, read as one.
+    let text = equipe_core::visuals::markdown::bracketed(&text);
     for event in Parser::new_ext(&text, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH) {
         r.event(event);
     }
@@ -50,6 +52,8 @@ struct Renderer {
     italic: usize,
     strike: usize,
     link: Option<(String, usize)>,
+    /// An image being read: where it is, and where its alt text starts.
+    image: Option<(String, usize)>,
     /// One entry per open list: the next number, or `None` for bullets.
     lists: Vec<Option<u64>>,
     /// The marker of an item whose first line is still to come.
@@ -79,6 +83,7 @@ impl Renderer {
             italic: 0,
             strike: 0,
             link: None,
+            image: None,
             lists: Vec::new(),
             marker: None,
             indent: 0,
@@ -248,6 +253,16 @@ impl Renderer {
             Event::Start(Tag::Strong | Tag::Emphasis | Tag::Strikethrough)
             | Event::End(TagEnd::Strong | TagEnd::Emphasis | TagEnd::Strikethrough) => self.inline(event),
             Event::Start(Tag::Link { dest_url, .. }) => self.link = Some((dest_url.to_string(), self.runs.len())),
+            // A picture: what it is called and where — a terminal can't show it (Ctrl-G opens it).
+            Event::Start(Tag::Image { dest_url, .. }) => self.image = Some((dest_url.to_string(), self.runs.len())),
+            Event::End(TagEnd::Image) => {
+                if let Some((url, from)) = self.image.take() {
+                    let alt: String = self.runs.drain(from..).map(|(t, _)| t).collect();
+                    let name = if alt.trim().is_empty() { url.rsplit('/').next().unwrap_or(&url).to_owned() } else { alt };
+                    self.runs.push((format!("🖼 {name}"), self.style()));
+                    self.runs.push((format!(" ({url})"), self.styles.dim));
+                }
+            }
             Event::End(TagEnd::Link) => {
                 if let Some((url, from)) = self.link.take() {
                     let text: String = self.runs[from..].iter().map(|(t, _)| t.as_str()).collect();
@@ -590,6 +605,12 @@ mod tests {
         assert_eq!((colour(2), colour(3), colour(4)), (Some(Color::Red), Some(Color::Green), Some(Color::Cyan)));
         let plain = lines("```rust\n-1\n```", 40, &styles());
         assert_eq!(plain[1].spans.last().and_then(|s| s.style.fg), Some(Color::Cyan), "only a diff is coloured so");
+    }
+
+    #[test]
+    fn a_picture_shows_as_its_name_and_where_it_is_spaces_and_all() {
+        let out = lines("시안입니다.\n\n![평면도](/w/T-2 갤러리 디자인/images/plan.png \"A안\")\n\n![](/w/a.png)", 120, &styles());
+        assert_eq!(text(&out), ["시안입니다.", "", "🖼 평면도 (/w/T-2 갤러리 디자인/images/plan.png)", "", "🖼 a.png (/w/a.png)"]);
     }
 
     #[test]
