@@ -291,9 +291,15 @@ pub fn gallery(shell: &Shell, key: u64, ticket: TicketId, images: &[String], gue
         );
     }
     let width = shots.width(key, guess);
-    let columns = rules::columns(width, work.len().max(1));
-    let w = rules::tile_width(width, columns);
+    // Balanced rows (four: two and two), every tile one size.
+    let w = rules::grid(width, work.len().max(1)).tile;
     let h = (w * rules::RATIO).floor();
+    let rows_of = |tiles: Vec<AnyElement>| {
+        let n = tiles.len();
+        let mut tiles = tiles.into_iter();
+        let rows: Vec<AnyElement> = rules::balance(n, rules::per_row(width, w)).into_iter().map(|k| h_flex().gap(px(rules::GAP)).children(tiles.by_ref().take(k).collect::<Vec<_>>()).into_any_element()).collect();
+        v_flex().w_full().gap(px(rules::GAP)).children(rows)
+    };
     let tile = |path: &String, look: Look| -> AnyElement {
         let id = key ^ rules_hash(path);
         let face = picture(&shots, id, path, look, w, h, R_MD, true, 10.);
@@ -310,12 +316,12 @@ pub fn gallery(shell: &Shell, key: u64, ticket: TicketId, images: &[String], gue
             .child(face)
             .child(div().px_2().py(px(6.)).border_t_1().border_color(p.hair).overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(MONO).text_size(px(11.)).text_color(p.text2).child(rules::name_of(path).to_owned()))
             .on_click(opens(&shots.handle, Viewer::of_ticket(ticket, &shown, path)));
-        lift(tile, ("hand-in-lift", id), p, false).into_any_element()
+        lift(tile, ("hand-in-lift", id), p).into_any_element()
     };
     let mut looks = looks.into_iter();
     let work_tiles: Vec<AnyElement> = work.iter().map(|path| tile(path, looks.next().unwrap_or(Look::Loading))).collect();
     let asset_tiles: Vec<AnyElement> = assets.iter().filter(|_| unfolded).map(|path| tile(path, looks.next().unwrap_or(Look::Loading))).collect();
-    let grid = h_flex().w_full().flex_wrap().gap(px(rules::GAP)).children(work_tiles);
+    let grid = rows_of(work_tiles);
     let grid = shots.measured(grid, key);
     // The assets: under a hairline, folded until asked for.
     let fold = (!assets.is_empty()).then(|| {
@@ -339,7 +345,7 @@ pub fn gallery(shell: &Shell, key: u64, ticket: TicketId, images: &[String], gue
         v_flex()
             .gap_1p5()
             .child(h_flex().gap_2().items_center().child(toggle).child(div().flex_1().h(px(1.)).bg(p.hair)))
-            .when(unfolded, |c| c.child(h_flex().w_full().flex_wrap().gap(px(rules::GAP)).children(asset_tiles)))
+            .when(unfolded, |c| c.child(rows_of(asset_tiles)))
     });
     Some(
         v_flex()
@@ -514,22 +520,24 @@ fn rules_hash(path: &str) -> u64 {
     crate::render::hash_of(path)
 }
 
-/// A tile that lifts a little under the pointer (and while `on`), its
-/// shadow deepening with it; `ring`: the accent ring of one picked.
-pub fn lift<E: IntoElement + Styled + 'static>(el: E, id: impl Into<ElementId>, p: Palette, ring: bool) -> motion::Hover<E> {
-    let accent = p.accent;
+/// A tile under the pointer: its shadow deepens — paint only, so nothing
+/// beside it moves, and it doesn't grow or rise.
+pub fn lift<E: IntoElement + Styled + 'static>(el: E, id: impl Into<ElementId>, p: Palette) -> motion::Hover<E> {
     let dark = is_dark(p);
     motion::hover_with(el, id, false, move |el, t| {
-        let mut shadows = Vec::new();
-        if ring {
-            shadows.push(BoxShadow { color: Rgba { a: 0.28, ..accent }.into(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(3.), inset: false });
+        if t <= 0. {
+            return el;
         }
-        if t > 0. {
-            let ink = if dark { 0.45 } else { 0.14 };
-            shadows.push(BoxShadow { color: hsla(0., 0., 0., ink * t), offset: point(px(0.), px(6. * t)), blur_radius: px(16. * t), spread_radius: px(-4.), inset: false });
-        }
-        el.top(px(-2. * t)).shadow(shadows)
+        let ink = if dark { 0.45 } else { 0.14 };
+        el.shadow(vec![BoxShadow { color: hsla(0., 0., 0., ink * t), offset: point(px(0.), px(6. * t)), blur_radius: px(16. * t), spread_radius: px(-4.), inset: false }])
     })
+}
+
+/// The ring of something picked, drawn inside its box over what it holds
+/// (`radius`: its corners within the border), `width` points — it takes no
+/// room, so picking moves nothing.
+pub fn ring(p: Palette, radius: f32, width: f32) -> Div {
+    div().absolute().inset_0().rounded(px(radius)).border(px(width)).border_color(p.accent)
 }
 
 // ── the big view ──

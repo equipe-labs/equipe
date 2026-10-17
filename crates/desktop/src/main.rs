@@ -1163,6 +1163,7 @@ impl Render for Shell {
         // What the person did here (accepted, answered, a project in focus) changes 나에게 too.
         self.sync_badge();
         self.renders += 1;
+        self.decide.room = f32::from(window.viewport_size().height);
         if self.log_renders {
             let mb = mem::phys_footprint_bytes().map_or(0., |b| b as f64 / 1_048_576.);
             eprintln!("render #{} {:.1}s ({mb:.0} MB)", self.renders, self.started.elapsed().as_secs_f32());

@@ -303,6 +303,21 @@ impl RenderOnce for Switch {
     }
 }
 
+/// Words that grow heavier when their control is the one in use, as wide
+/// either way: a hidden copy at the heavy weight holds the room, so picking
+/// a tab or a segment moves nothing beside it. `cut`: one line, an ellipsis
+/// past the room it has.
+pub fn steady(label: impl Into<SharedString>, heavy: FontWeight, on: bool, cut: bool) -> Div {
+    let label: SharedString = label.into();
+    let line = |d: Div| if cut { d.min_w_0().truncate() } else { d.whitespace_nowrap() };
+    div()
+        .flex()
+        .flex_col()
+        .when(cut, |d| d.min_w_0())
+        .child(line(div()).when(on, |d| d.font_weight(heavy)).child(label.clone()))
+        .child(line(div()).h_0().overflow_hidden().invisible().font_weight(heavy).child(label))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Kind, SWITCH_W, knob_left, track};
@@ -367,3 +382,4 @@ mod tests {
         assert_eq!(track(&p, 1.), p.switch_on());
     }
 }
+

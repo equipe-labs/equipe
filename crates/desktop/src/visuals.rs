@@ -282,6 +282,129 @@ pub fn tile_width(width: f32, columns: usize) -> f32 {
     ((width - GAP * (columns - 1.)) / columns).clamp(1., TILE_MAX).floor()
 }
 
+/// How a grid of tiles lays out: how many each row has, top to bottom, and
+/// how wide every tile is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Grid {
+    pub rows: Vec<usize>,
+    pub tile: f32,
+}
+
+/// `n` tiles in `width`: as many a row as fit (at most four), the rows
+/// balanced so the last isn't left with one while another has room to give —
+/// 4 → 2+2, 5 → 3+2, 7 → 3+2+2. Every tile is one width: the row's share
+/// when all fit in one, else what the rows that fit allow — so wrapping
+/// never makes a tile bigger than its neighbours in a wider row would be.
+pub fn grid(width: f32, n: usize) -> Grid {
+    let fit = columns(width, n);
+    Grid { rows: balance(n, fit), tile: tile_width(width, fit) }
+}
+
+/// `n` tiles in rows of at most `per`, as even as they come: the fuller rows first.
+pub fn balance(n: usize, per: usize) -> Vec<usize> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let count = n.div_ceil(per.max(1));
+    let (base, extra) = (n / count, n % count);
+    (0..count).map(|r| base + usize::from(r < extra)).collect()
+}
+
+/// How many tiles `tile` wide fit a row `width` wide (one at least).
+pub fn per_row(width: f32, tile: f32) -> usize {
+    (((width + GAP) / (tile + GAP)).floor().max(1.) as usize).min(COLUMNS_MAX)
+}
+
+impl Grid {
+    /// Which tiles each row holds, by index.
+    pub fn spans(&self) -> Vec<std::ops::Range<usize>> {
+        let mut at = 0;
+        self.rows
+            .iter()
+            .map(|&k| {
+                at += k;
+                at - k..at
+            })
+            .collect()
+    }
+
+    /// Tile `ix`'s box, `(x, y, w, h)` from the grid's top left, `h` tall —
+    /// in any state: picked, under the pointer or the keys, it neither moves
+    /// nor grows ([`frame`]).
+    pub fn rect(&self, ix: usize, h: f32, state: TileState) -> Option<(f32, f32, f32, f32)> {
+        let row = self.spans().iter().position(|s| s.contains(&ix))?;
+        let col = ix - self.spans()[row].start;
+        let f = frame(state);
+        let (x, y) = (col as f32 * (self.tile + GAP), row as f32 * (h + GAP) - f.lift);
+        Some((x - f.outset, y - f.outset, self.tile + 2. * f.outset, h + 2. * f.outset))
+    }
+
+    /// How tall the grid is with tiles `h` tall.
+    pub fn height(&self, h: f32) -> f32 {
+        let n = self.rows.len() as f32;
+        (n * h + (n - 1.).max(0.) * GAP).max(0.)
+    }
+}
+
+/// A tile's state, as the person sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TileState {
+    pub picked: bool,
+    /// Where the keys are.
+    pub cursor: bool,
+    /// Under the pointer, 0 to 1 as it eases in.
+    pub hover: f32,
+}
+
+/// What a tile draws in a state, as far as its box goes: its border, the
+/// ring drawn inside it, how far it moves up and how far past its box it
+/// reaches. Only paint tells states apart — the border is always one point,
+/// the ring always inside, nothing lifts or spreads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Frame {
+    pub border: f32,
+    pub ring: f32,
+    pub lift: f32,
+    pub outset: f32,
+}
+
+/// The ring of a picked tile, inside its border: together, three points.
+pub const RING: f32 = 2.;
+
+pub fn frame(state: TileState) -> Frame {
+    Frame { border: 1., ring: if state.picked { RING } else { 0. }, lift: 0., outset: 0. }
+}
+
+/// A tile's caption: its label on one line, and — when any option of the
+/// question has one — two lines of what it means, room kept for them on
+/// every tile so a grid's tiles are one height.
+pub fn caption_height(described: bool) -> f32 {
+    const PAD: f32 = 8. + 9.;
+    const LINES: f32 = 2. + 2. * 17.;
+    PAD + CAPTION_TITLE + if described { LINES } else { 0. }
+}
+
+/// A decision's tile `tile` wide, all told: its picture's 4:3 box, its
+/// caption and the hairline over it, and its border — the same in every state.
+pub fn tile_height(tile: f32, described: bool) -> f32 {
+    (tile * RATIO).floor() + caption_height(described) + 1. + 2. * frame(TileState::default()).border
+}
+
+/// A caption's line for the label, as high as its number key.
+pub const CAPTION_TITLE: f32 = 20.;
+
+/// A question's own picture when its options have none: big over them, as
+/// wide as the card allows up to [`LEAD_WIDE`], 4:3 up to [`LEAD_HIGH`].
+pub fn lead_box(width: f32) -> (f32, f32) {
+    let w = width.clamp(1., LEAD_WIDE).floor();
+    (w, (w * RATIO).min(LEAD_HIGH).floor())
+}
+
+/// How wide a question's own picture is, at most, when shown big.
+pub const LEAD_WIDE: f32 = 480.;
+/// …and how high.
+pub const LEAD_HIGH: f32 = 300.;
+
 /// A picture of `dims` drawn whole inside `room` (contain): its size.
 pub fn contain(dims: (u32, u32), room: (f32, f32)) -> (f32, f32) {
     let (w, h) = (dims.0.max(1) as f32, dims.1.max(1) as f32);
@@ -492,6 +615,66 @@ mod tests {
         assert_eq!(tile_width(260., 1), 260.);
         // Every tile of a grid is the same 4:3 box.
         assert_eq!((w3 * RATIO).round(), (w3 * 0.75).round());
+    }
+
+    #[test]
+    fn a_grid_balances_its_rows_and_never_leaves_one_tile_alone_when_it_could_be_helped() {
+        let rows = |w: f32, n: usize| grid(w, n).rows;
+        assert_eq!(rows(640., 4), [2, 2], "not three and one");
+        assert_eq!(rows(640., 5), [3, 2]);
+        assert_eq!(rows(640., 3), [3]);
+        assert_eq!(rows(640., 7), [3, 2, 2]);
+        assert_eq!(rows(640., 8), [3, 3, 2]);
+        assert_eq!(rows(900., 8), [4, 4]);
+        assert_eq!(rows(900., 5), [3, 2]);
+        assert_eq!(rows(640., 1), [1]);
+        assert_eq!(rows(400., 4), [2, 2], "narrow: two a row");
+        assert_eq!(rows(300., 3), [1, 1, 1], "narrower: one");
+        assert!(rows(640., 0).is_empty());
+        // Wrapping keeps the tiles the size the rows that fit give them.
+        assert_eq!(grid(640., 4).tile, grid(640., 3).tile);
+        assert_eq!(grid(640., 2).tile, TILE_MAX, "all in one row: the row shared out");
+        for n in 1..=12 {
+            for w in [180., 300., 400., 520., 640., 760., 900., 1400.] {
+                let g = grid(w, n);
+                let (most, least) = (*g.rows.iter().max().unwrap(), *g.rows.iter().min().unwrap());
+                assert_eq!(g.rows.iter().sum::<usize>(), n);
+                assert!(most - least <= 1, "{w} {n}: {:?}", g.rows);
+                assert!(most as f32 * g.tile + (most as f32 - 1.) * GAP <= w, "{w} {n}: no wider than the card");
+                if columns(w, n) >= 3 && n > 1 {
+                    assert!(least >= 2, "{w} {n}: {:?}", g.rows);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn picking_a_tile_or_pointing_at_it_moves_nothing() {
+        let g = grid(640., 4);
+        let h = 200.;
+        let states = [
+            TileState::default(),
+            TileState { picked: true, ..TileState::default() },
+            TileState { cursor: true, ..TileState::default() },
+            TileState { hover: 1., ..TileState::default() },
+            TileState { picked: true, cursor: true, hover: 0.5 },
+        ];
+        for ix in 0..4 {
+            let at = g.rect(ix, h, TileState::default()).unwrap();
+            for state in states {
+                assert_eq!(g.rect(ix, h, state), Some(at), "tile {ix} in {state:?}");
+                assert_eq!(frame(state).border, 1., "the border is one point in every state");
+            }
+        }
+        assert_eq!(g.rect(2, h, states[1]), Some((0., h + GAP, g.tile, h)), "the third under the first");
+        assert_eq!(g.rect(4, h, states[0]), None);
+        assert!(frame(states[1]).ring > 0. && frame(states[0]).ring == 0., "picked: a ring, inside");
+        assert_eq!(g.height(h), 2. * h + GAP);
+        assert_eq!(g.spans(), [0..2, 2..4]);
+        // Every tile of a question is one height, described or not.
+        assert!(caption_height(true) > caption_height(false));
+        assert_eq!(lead_box(900.), (LEAD_WIDE, LEAD_HIGH));
+        assert_eq!(lead_box(320.), (320., 240.));
     }
 
     #[test]

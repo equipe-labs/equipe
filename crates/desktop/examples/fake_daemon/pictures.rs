@@ -5,6 +5,14 @@
 //! marks, the app icon, the palette. All drawn here, into
 //! `$TMPDIR/equipe-fake/pictures`, and read back as the daemon reads a
 //! member's pictures (`equipe_core::visuals`), from that folder only.
+//!
+//! `FAKE_DECIDE_CASE=<case>[,<case>…]` puts other logo questions to the
+//! person instead, one a step, for the grid's edge cases: `four` (the Gallery
+//! Y question — a picture of its own over four options, as a member once
+//! asked it), `five`, `eight` (several-pick), `mixed` (some options without a
+//! picture, long and mixed-language labels, emoji), `aspect` (a panorama, a
+//! tower, a square, an SVG) and `lead` (a picture of its own over options
+//! that have none).
 
 use std::path::{Path, PathBuf};
 
@@ -73,13 +81,49 @@ fn dot(u: f32, v: f32, cx: f32, cy: f32, r: f32) -> bool {
     (u - cx).powi(2) + (v - cy).powi(2) <= r * r
 }
 
+/// The pictures of the edge cases' options: a few plain marks, each its own,
+/// and the extreme shapes — drawn once.
+fn make_cases(dir: &Path) {
+    if dir.join("case-tower.png").exists() {
+        return;
+    }
+    let wall = |n: f32| move |u: f32, v: f32| {
+        let bars = (0..3).any(|i| {
+            let x = 0.22 + i as f32 * 0.22 + n * 0.02;
+            (x..x + 0.1).contains(&u) && (0.2 + i as f32 * 0.08..0.82).contains(&v)
+        });
+        bars.then_some(INK)
+    };
+    let _ = draw(800, 600, None, wall(0.)).save(dir.join("case-walls.png"));
+    // A cross of light through a dark wall.
+    let _ = draw(800, 600, Some([0x26, 0x24, 0x22, 0xFF]), |u, v| (((0.47..0.53).contains(&u) && (0.12..0.88).contains(&v)) || ((0.3..0.7).contains(&u) && (0.36..0.42).contains(&v))).then_some([0xFF, 0xF4, 0xD8, 0xFF])).save(dir.join("case-light.png"));
+    let _ = draw(800, 600, None, |u, v| {
+        let ring = ((u - 0.5) * 1.33).hypot(v - 0.5);
+        ((0.22..0.3).contains(&ring) || ((0.47..0.53).contains(&u) && (0.2..0.8).contains(&v))).then_some(BLUE)
+    })
+    .save(dir.join("case-tie.png"));
+    let _ = draw(800, 600, None, |u, v| if dot(u * 1.33, v, 0.5, 0.5, 0.18) { Some(BLUE) } else if (0.56..0.82).contains(&u) && (0.32..0.68).contains(&v) { Some(INK) } else { None }).save(dir.join("case-circle-square.png"));
+    let hues: [[u8; 4]; 4] = [[0xFF, 0x6B, 0x5A, 0xFF], [0x2C, 0xB6, 0x7D, 0xFF], [0xFF, 0xB0, 0x20, 0xFF], [0x8B, 0x5C, 0xF6, 0xFF]];
+    for (n, hue) in hues.iter().enumerate() {
+        let hue = *hue;
+        let _ = draw(800, 600, None, move |u, v| (dot(u * 1.33, v, 0.42 + n as f32 * 0.1, 0.5, 0.2) || ((0.18..0.82).contains(&u) && (0.78..0.84).contains(&v))).then_some(hue)).save(dir.join(format!("case-mark-{n}.png")));
+    }
+    // A panorama ten times its height, and a tower ten times its width.
+    let _ = draw(2400, 240, Some([0xF4, 0xF5, 0xF7, 0xFF]), |u, v| ((u * 12.).fract() < 0.5 && v > 0.3).then_some(BLUE)).save(dir.join("case-wide.png"));
+    let _ = draw(240, 2400, Some([0x16, 0x18, 0x1D, 0xFF]), |u, v| ((v * 12.).fract() < 0.5 && u > 0.3).then_some([0xFF, 0xB0, 0x20, 0xFF])).save(dir.join("case-tower.png"));
+    let _ = draw(600, 600, None, |u, v| dot(u, v, 0.5, 0.5, 0.4).then_some(INK)).save(dir.join("case-square.png"));
+    // What the site has now, the question's own.
+    let _ = draw(1200, 800, Some([0xFF, 0xFF, 0xFF, 0xFF]), |u, v| if (0.06..0.94).contains(&u) && (0.08..0.2).contains(&v) { Some([0xEE, 0xEF, 0xF2, 0xFF]) } else if e(u * 1.5, v, 0.3, 0.55, 0.16) { Some(INK) } else { None }).save(dir.join("case-now.png"));
+}
+
 /// The marks, the app icon and the palette, drawn once.
 pub fn make() {
     let dir = dir();
+    let _ = std::fs::create_dir_all(&dir);
+    make_cases(&dir);
     if dir.join("palette.png").exists() {
         return;
     }
-    let _ = std::fs::create_dir_all(&dir);
     let mark = |dot_colour: [u8; 4]| move |u: f32, v: f32| if e(u, v, 0.42, 0.52, 0.27) { Some(INK) } else if dot(u, v, 0.79, 0.74, 0.075) { Some(dot_colour) } else { None };
     let _ = draw(960, 960, None, mark(BLUE)).save(dir.join("logo-blue-dot.png"));
     let _ = draw(960, 960, None, mark(GREY)).save(dir.join("logo-grey-dot.png"));
@@ -135,9 +179,64 @@ pub fn make() {
     let _ = palette.save(dir.join("palette.png"));
 }
 
+/// One of `FAKE_DECIDE_CASE`'s questions.
+fn case(name: &str) -> Option<Question> {
+    let option = |label: &str, description: &str, image: &str| Choice { label: label.into(), description: description.into(), images: if image.is_empty() { Vec::new() } else { vec![at(image)] } };
+    let marks = |n: usize| (0..n).map(|i| option(&format!("{} 안", (b'A' + i as u8) as char), "모서리를 조금 더 둥글게 — 작은 크기에서도 읽힙니다", &format!("case-mark-{}.png", i % 4))).collect::<Vec<_>>();
+    Some(match name {
+        "four" => Question {
+            question: "Gallery Y 로고로 어느 안을 쓸까요?".into(),
+            header: "로고".into(),
+            images: vec![at("case-now.png")],
+            options: vec![
+                option("A 세 벽 (Recommended)", "세 개의 벽이 빛을 받아들이는 공간 — 16px 파비콘 어디서나 같은 모양으로 읽힙니다", "case-walls.png"),
+                option("B 빛의 교회", "벽을 가르는 십자형 빛 — 안도 다다오의 건축 언어예요. 다만 종교적인 연상이 강할 수 있습니다", "case-light.png"),
+                option("C 폼타이", "콘크리트 거푸집의 폼타이 구멍 — 재료의 흔적을 그대로 씁니다", "case-tie.png"),
+                option("D 원과 사각", "원과 사각의 대비 — 가장 단순하지만 다른 갤러리와 겹칠 수 있습니다", "case-circle-square.png"),
+            ],
+            ..Question::default()
+        },
+        "five" => Question { question: "다섯 안 가운데 어느 것으로 갈까요?".into(), header: "로고".into(), options: marks(5), ..Question::default() },
+        "eight" => Question { question: "스티커 세트에 넣을 마크를 모두 골라 주세요".into(), header: "스티커".into(), options: marks(8), multi_select: true, ..Question::default() },
+        "mixed" => Question {
+            question: "앱 아이콘 배경은 어떻게 할까요?".into(),
+            header: "아이콘".into(),
+            options: vec![
+                option("파란 바탕 (추천)", "스토어에서 눈에 띕니다", "app-icon.png"),
+                option("흰 바탕", "시안은 다음에 그려 드릴게요", ""),
+                option("🎨 Gradient — 파랑에서 보라로 이어지는 아주 긴 이름의 그라데이션 배경 안", "A long English description that keeps going, 한국어와 섞여서, past two lines of the tile so it has to end in an ellipsis somewhere", "case-mark-3.png"),
+                option("Dark 모드 전용", "", ""),
+                option("원과 사각", "원과 사각의 대비", "case-circle-square.png"),
+            ],
+            ..Question::default()
+        },
+        "aspect" => Question {
+            question: "배너 모양은 어느 쪽이 좋을까요?".into(),
+            header: "배너".into(),
+            options: vec![option("가로로 긴 띠", "2400×240", "case-wide.png"), option("세로로 긴 탑", "240×2400", "case-tower.png"), option("정사각", "600×600", "case-square.png"), option("SVG 4점", "크기를 말하지 않는 SVG", "logo-four-dots.svg")],
+            ..Question::default()
+        },
+        "lead" => Question {
+            question: "지금 사이트 머리글을 그대로 둘까요?".into(),
+            header: "머리글".into(),
+            images: vec![at("case-now.png")],
+            options: vec![Choice { label: "그대로 (추천)".into(), description: "이번 릴리스에서는 손대지 않습니다".into(), ..Choice::default() }, Choice { label: "로고만 바꾸기".into(), description: "새 마크로 바꾸고 나머지는 둡니다".into(), ..Choice::default() }],
+            ..Question::default()
+        },
+        _ => return None,
+    })
+}
+
 /// The designer's question: which mark is the master — each option its render.
+/// With `FAKE_DECIDE_CASE`, the edge cases' questions instead.
 pub fn question_set(now: u64) -> QuestionSet {
     let option = |label: &str, description: &str, image: &str| Choice { label: label.into(), description: description.into(), images: vec![at(image)] };
+    if let Some(cases) = std::env::var("FAKE_DECIDE_CASE").ok().filter(|c| !c.is_empty()) {
+        let questions: Vec<Question> = cases.split(',').filter_map(|c| case(c.trim())).collect();
+        if !questions.is_empty() {
+            return QuestionSet { id: 9003, session: 4, member: "designer".into(), ticket: Some(24), questions, asked_at: now.saturating_sub(300) };
+        }
+    }
     QuestionSet {
         id: 9003,
         session: 4,

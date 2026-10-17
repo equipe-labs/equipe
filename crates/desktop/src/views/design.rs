@@ -215,9 +215,8 @@ fn tabs(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> impl I
                         .rounded_t(px(6.))
                         .text_size(px(SMALL))
                         .text_color(if active { p.text } else { p.text2 })
-                        .when(active, |d| d.font_weight(FontWeight::MEDIUM))
                         .when(!active, |d| d.hover(move |s| s.text_color(p.text)))
-                        .child(section.label())
+                        .child(ui::steady(section.label(), FontWeight::MEDIUM, active, false))
                         .children(count.map(|c| div().text_size(px(META)).text_color(p.muted).child(c.to_string()))),
                 )
                 .child(div().h(px(2.)).mx_1().rounded(px(1.)).when(active, |d| d.bg(p.text)))

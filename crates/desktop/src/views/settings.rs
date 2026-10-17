@@ -212,13 +212,14 @@ fn segmented<T: Copy + PartialEq + 'static>(shell: &Shell, id: &str, options: Ve
                 .text_size(px(SMALL))
                 .whitespace_nowrap()
                 .text_color(if on { p.text } else { p.text2 })
-                .when(on, |s| s.bg(raised).font_weight(FontWeight::MEDIUM).shadow(motion::float_shadow(0.18)))
+                .when(on, |s| s.bg(raised).shadow(motion::float_shadow(0.18)))
                 .when(!on, |s| s.cursor_pointer())
                 .on_click(cx.listener(move |this, _, window, cx| {
                     set(this, value, window, cx);
                     cx.notify();
                 }))
-                .child(label);
+                // As wide picked as not: the pill doesn't shift under the pointer.
+                .child(ui::steady(label, FontWeight::MEDIUM, on, false));
             if on { seg.into_any_element() } else { motion::hover_fill(seg, SharedString::from(format!("{id}-{ix}-fill")), p.wash, false).into_any_element() }
         }))
         .into_any_element()

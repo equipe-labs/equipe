@@ -89,13 +89,12 @@ pub fn page(shell: &Shell, t: &Ticket, tab: Tab, cx: &mut Context<Shell>) -> imp
             .cursor_pointer()
             .border_b_2()
             .border_color(if on { p.text } else { transparent_black().into() })
-            .when(on, |d| d.font_weight(FontWeight::SEMIBOLD))
             .when(!on, |d| d.text_color(p.text2).hover(move |s| s.text_color(p.text)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.board.view.page = Some(which);
                 cx.notify();
             }))
-            .child(label)
+            .child(crate::ui::steady(label, FontWeight::SEMIBOLD, on, false))
     };
     let content: Vec<AnyElement> = match tab {
         Tab::Overview => std::iter::once(super::tickets::description(shell, t, cx)).chain(body(shell, t, true, Place::Peek, cx)).collect(),

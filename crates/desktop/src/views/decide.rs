@@ -3,13 +3,15 @@
 //! the question, fold ⌄ and close ✕; each option a row with its label, a
 //! line on what it means and its number key; a last row for words of the
 //! person's own; Skip, Back and Next ⌘↵ (Submit on the last). A visual
-//! question's options are a grid of their pictures instead, side by side as
-//! they fit (one column when narrow), each opening big. The same card
-//! answers a set picked in 나에게's peek. Sent, the answers' message folds in
-//! the conversation to one line, "결정함 · 2개", that opens to each question
-//! and what was decided. The rules are `crate::decide`'s.
+//! question's options are a grid of tiles instead — balanced rows of one
+//! size, fewer columns when narrow, nothing moving when one is picked — each
+//! picture opening big. The same card answers a set picked in 나에게's peek.
+//! Sent, the answers' message folds in the conversation to one line, "결정함 ·
+//! 2개", that opens to each question and what was decided. The rules are `crate::decide`'s.
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use equipe_core::protocol::Command;
 use equipe_core::protocol::decide::{Answer, Question, QuestionSet};
@@ -51,7 +53,15 @@ pub struct DecideUi {
     pub drafts: HashMap<u64, Draft>,
     pub fields: HashMap<(u64, usize), Entity<TextareaState>>,
     subscriptions: HashMap<(u64, usize), Subscription>,
+    /// How tall the window is, as last drawn: a card takes only part of it.
+    pub room: f32,
+    /// Each set's options, scrolled — and the step and key position last
+    /// brought into sight, so a key moving to a tile below the fold shows it.
+    scrolls: HashMap<u64, (ScrollHandle, Seen)>,
 }
+
+/// The step and key position last brought into sight.
+type Seen = Rc<Cell<Option<(usize, usize)>>>;
 
 /// What a keystroke came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,8 +83,10 @@ impl Shell {
         self.decide.drafts.retain(|id, _| live.contains(id));
         self.decide.fields.retain(|(id, _), _| live.contains(id));
         self.decide.subscriptions.retain(|(id, _), _| live.contains(id));
+        self.decide.scrolls.retain(|id, _| live.contains(id));
         for set in sets {
             self.decide.drafts.entry(set.id).or_insert_with(|| Draft::new(&set));
+            self.decide.scrolls.entry(set.id).or_default();
             for n in 0..set.questions.len() {
                 let k = (set.id, n);
                 if self.decide.fields.contains_key(&k) {
@@ -345,7 +357,7 @@ pub fn docked(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let member = shell.model.selected_member()?;
     let more = shell.model.asked.in_conversation(&member.name, crate::state::Model::is_pm(member)).len().saturating_sub(1);
     let body = card(shell, id, Place::Docked, more, cx)?;
-    Some(motion::rise(div().w_full().mb_3().child(body), ("decide-in", id)).into_any_element())
+    Some(motion::rise(v_flex().w_full().min_h_0().mb_3().child(body), ("decide-in", id)).into_any_element())
 }
 
 /// The card in 나에게's peek.
@@ -432,28 +444,38 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
         .child(div().flex_1().min_w_0().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(q.question.clone()))
         .child(h_flex().flex_none().mt(px(-3.)).mr(px(-6.)).gap_0p5().children(fold).child(close));
 
-    // The question's own pictures; then the options — those with pictures
-    // as a grid of them, side by side as they fit, the rest as rows — then
-    // the box for their own words.
+    // The question's own pictures; then the options — a visual question's
+    // as a grid of tiles, balanced rows of one size, those without a picture
+    // a quiet tile of their label among them; else rows — then the box for
+    // their own words.
     let shots = Shots::of(shell, handle.clone(), cx);
-    let own = (!q.images.is_empty()).then(|| question_pictures(&shots, id, draft.step, &q, cx));
+    let key = render::hash_of(("decide-grid", id, place == Place::Docked));
+    let guess = match place {
+        Place::Docked => GRID_GUESS,
+        Place::Peek => shell.board.peek_width - 34.,
+    };
+    let width = shots.width(key, guess);
+    let layout = visual::grid(width, q.options.len());
+    let own = (!q.images.is_empty()).then(|| question_pictures(&shots, id, draft.step, &q, width, &layout, cx));
+    let described = q.options.iter().any(|o| !o.description.trim().is_empty());
+    let tile_h = visual::tile_height(layout.tile, described);
     let grid = q.is_visual().then(|| {
-        let key = render::hash_of(("decide-grid", id, place == Place::Docked));
-        let guess = match place {
-            Place::Docked => GRID_GUESS,
-            Place::Peek => shell.board.peek_width - 34.,
-        };
-        let width = shots.width(key, guess);
-        let shown: Vec<usize> = (0..q.options.len()).filter(|&n| !q.options[n].images.is_empty()).collect();
-        let w = visual::tile_width(width, visual::columns(width, shown.len()));
-        let tiles = shown.into_iter().map(|n| option_tile(&shots, id, draft.step, n, &q, draft.picked(n), draft.cursor == n, w, &handle, cx));
-        shots.measured(h_flex().w_full().flex_wrap().items_stretch().gap(px(visual::GAP)).children(tiles.collect::<Vec<_>>()), key)
+        // Each tile where the layout puts it, in whatever state: nothing reflows.
+        let tiles: Vec<AnyElement> = (0..q.options.len())
+            .filter_map(|n| {
+                let state = visual::TileState { picked: draft.picked(n), cursor: draft.cursor == n, hover: 0. };
+                let (x, y, _, _) = layout.rect(n, tile_h, state)?;
+                let tile = option_tile(&shots, id, draft.step, n, &q, state.picked, state.cursor, layout.tile, described, &handle, cx);
+                Some(div().absolute().left(px(x)).top(px(y)).child(tile).into_any_element())
+            })
+            .collect();
+        div().relative().w_full().h(px(layout.height(tile_h))).children(tiles)
     });
     let rows: Vec<AnyElement> = q
         .options
         .iter()
         .enumerate()
-        .filter(|(_, option)| grid.is_none() || option.images.is_empty())
+        .filter(|_| !q.is_visual())
         .map(|(n, option)| option_row(p, id, n, &option.label, &option.description, draft.picked(n), draft.cursor == n, q.multi_select, &handle))
         .collect();
     let other_on = draft.cursor >= q.options.len() || typing;
@@ -477,7 +499,33 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
     let multi = q.multi_select.then(|| div().text_size(px(12.)).text_color(p.muted).child(t!("decide.multi_hint")));
     let reduce = cx.reduce_motion();
     let went = f32::from(draft.went);
-    let body = v_flex().w_full().gap_2().child(head).children(own).children(multi).children(grid.map(|g| div().w_full().pt_1().pb_0p5().child(g))).child(v_flex().w_full().gap_1p5().children(rows).children(other));
+    let visual = q.is_visual();
+    let anything = own.is_some() || multi.is_some() || visual || !rows.is_empty();
+    // Where the grid is among what scrolls, to bring the keys' tile into sight.
+    let grid_at = usize::from(own.is_some()) + usize::from(multi.is_some());
+    // What scrolls when the card has more than it has room for: the head and
+    // the foot (Skip, Submit) stay, whole.
+    let options = v_flex()
+        .id(("decide-scroll", id))
+        .w_full()
+        .min_h_0()
+        .overflow_y_scroll()
+        .gap_2()
+        .children(own)
+        .children(multi)
+        .children(grid.map(|g| div().w_full().when(visual, |d| d.pt_1().pb_0p5()).child(g)))
+        .when(!rows.is_empty(), |c| c.child(v_flex().w_full().gap_1p5().children(rows)));
+    let options = match shell.decide.scrolls.get(&id) {
+        Some((scroll, seen)) => {
+            follow(scroll, seen, &draft, visual.then_some((grid_at, &layout, tile_h)));
+            options.track_scroll(scroll)
+        }
+        None => options,
+    };
+    // Measured whether or not it is a grid: the question's own pictures size by it too.
+    let options = shots.measured(options, key);
+    // The box for their own words stays under the options, never scrolled away: Tab reaches it.
+    let body = v_flex().w_full().min_h_0().gap_2().child(div().flex_none().child(head)).when(anything, |b| b.child(options)).children(other.map(|o| div().flex_none().w_full().child(o)));
     // Each step slides in from the side it came from.
     let body: AnyElement = if reduce || draft.went == 0 {
         body.into_any_element()
@@ -544,11 +592,18 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
         .children(back)
         .child(skip)
         .child(next);
-    let inner = v_flex().w_full().gap_3().child(body).child(foot);
+    let inner = v_flex().w_full().min_h_0().gap_3().child(body).child(foot.flex_none());
+    // Never taller than the window has room for: past it, the options scroll.
+    let room = if shell.decide.room > 0. { shell.decide.room } else { 760. };
+    let tallest = match place {
+        Place::Docked => (room * 0.68).max(300.),
+        Place::Peek => (room - 140.).max(320.),
+    };
     Some(match place {
-        Place::Docked => div()
+        Place::Docked => v_flex()
             .id(("decide-card", id))
             .w_full()
+            .max_h(px(tallest))
             .p(px(14.))
             .rounded(px(R_LG))
             .bg(p.raised)
@@ -558,8 +613,40 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
             .overflow_hidden()
             .child(inner)
             .into_any_element(),
-        Place::Peek => div().id(("decide-card", id)).w_full().child(inner).into_any_element(),
+        Place::Peek => v_flex().id(("decide-card", id)).w_full().max_h(px(tallest)).child(inner).into_any_element(),
     })
+}
+
+/// The options scrolled to what the keys are on: a new question from its
+/// top; a tile the keys moved to, into sight — from where the grid (child
+/// `grid` of what scrolls) was drawn last, the tile where the layout puts it.
+fn follow(scroll: &ScrollHandle, seen: &Cell<Option<(usize, usize)>>, draft: &Draft, grid: Option<(usize, &visual::Grid, f32)>) {
+    let now = (draft.step, draft.cursor);
+    let before = seen.replace(Some(now));
+    if before == Some(now) {
+        return;
+    }
+    let offset = scroll.offset();
+    if before.is_none_or(|(step, _)| step != draft.step) {
+        scroll.set_offset(point(offset.x, px(0.)));
+        return;
+    }
+    let Some((at, layout, tile_h)) = grid else { return };
+    let (Some(bounds), Some((_, y, _, h))) = (scroll.bounds_for_item(at), layout.rect(draft.cursor, tile_h, visual::TileState::default())) else { return };
+    let view = scroll.bounds();
+    let scrolled = -f32::from(offset.y);
+    // The grid's top within what scrolls (a child's bounds are laid out
+    // unscrolled; 4 points of padding over it), then the tile's.
+    let top = f32::from(bounds.top() - view.top()) + 4. + y;
+    let (room, margin) = (f32::from(view.size.height), 8.);
+    let to = if top - margin < scrolled {
+        top - margin
+    } else if top + h + margin > scrolled + room {
+        top + h + margin - room
+    } else {
+        return;
+    };
+    scroll.set_offset(point(offset.x, px(-to.max(0.))));
 }
 
 /// A number key's badge, or a key's name: filled when its row is picked.
@@ -627,7 +714,7 @@ fn option_row(p: Palette, id: u64, n: usize, label: &str, description: &str, pic
                 .min_w_0()
                 .gap_0p5()
                 .child(div().text_size(px(14.)).line_height(px(20.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(label.to_owned()))
-                .when(!description.is_empty(), |c| c.child(div().text_size(px(12.5)).line_height(px(18.)).text_color(p.muted).child(description.to_owned()))),
+                .when(!description.is_empty(), |c| c.child(div().text_size(px(12.5)).line_height(px(18.)).text_color(if picked { p.text2 } else { p.muted }).child(description.to_owned()))),
         )
         .child(div().pt(px(1.)).child(key_badge(p, &(n + 1).to_string(), picked)))
         .on_click(move |_, _, cx| {
@@ -640,36 +727,64 @@ fn option_row(p: Palette, id: u64, n: usize, label: &str, description: &str, pic
 const GRID_GUESS: f32 = 640.;
 
 /// An option shown as its picture: the picture whole in the grid's 4:3 box
-/// (a click opens it big, among the others), "추천" on it when it is the one
-/// recommended, then its label, what it means and its number key. Picked:
-/// outlined and ringed in the accent; under the pointer, it lifts.
+/// (a click opens it big, among the others) — or, without one, a quiet box
+/// with its label — "추천" on it when it is the one recommended; under it
+/// its label on one line, two of what it means (both whole under the
+/// pointer) and its number key. Every tile of a grid is one size in every
+/// state (`visuals::frame`): picked, a ring inside its border, a check on its
+/// picture, its number filled and a faint tint, the words as legible as
+/// ever; under the pointer, a shadow. Nothing moves.
 #[allow(clippy::too_many_arguments)]
-fn option_tile(shots: &Shots, id: u64, step: usize, n: usize, q: &Question, picked: bool, cursor: bool, w: f32, handle: &WeakEntity<Shell>, cx: &mut App) -> AnyElement {
+fn option_tile(shots: &Shots, id: u64, step: usize, n: usize, q: &Question, picked: bool, cursor: bool, w: f32, described: bool, handle: &WeakEntity<Shell>, cx: &mut App) -> AnyElement {
     let p = shots.p;
     let option = &q.options[n];
     let (label, recommended) = visual::recommended(&option.label);
     let key = render::hash_of(("decide-tile", id, step, n));
-    let path = option.images[0].clone();
-    let h = (w * visual::RATIO).floor();
-    let more = option.images.len() - 1;
-    let look = shots.ask(&path, Size::Thumb, cx);
-    let face = super::visuals::picture(shots, key, &path, look, w - 2., h, R_LG - 1., true, 12.)
-        .when(recommended, |f| f.child(div().absolute().top(px(8.)).left(px(8.)).child(super::visuals::badge(p, false))))
-        .when(more > 0, |f| f.child(div().absolute().top(px(8.)).right(px(8.)).h(px(18.)).px(px(6.)).flex().items_center().rounded(px(9.)).bg(rgba(0x0000008C)).text_size(px(10.5)).text_color(rgb(0xFFFFFF)).child(format!("+{more}"))));
-    let open = {
-        let (handle, viewer) = (handle.clone(), Viewer::of_question(id, step, q, &path));
-        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-            cx.stop_propagation();
-            if let Some(viewer) = viewer.clone() {
-                handle.update(cx, |shell, cx| shell.open_viewer(viewer, cx)).ok();
-            }
+    let (fw, h) = (w - 2., (w * visual::RATIO).floor());
+    let frame = visual::frame(visual::TileState { picked, cursor, hover: 0. });
+    let face: AnyElement = match option.images.first() {
+        Some(path) => {
+            let more = option.images.len() - 1;
+            let look = shots.ask(path, Size::Thumb, cx);
+            let face = super::visuals::picture(shots, key, path, look, fw, h, R_LG - 1., true, 12.)
+                .when(more > 0, |f| f.child(div().absolute().bottom(px(8.)).right(px(8.)).h(px(18.)).px(px(6.)).flex().items_center().rounded(px(9.)).bg(rgba(0x0000008C)).text_size(px(10.5)).text_color(rgb(0xFFFFFF)).child(format!("+{more}"))));
+            let open = {
+                let (handle, viewer) = (handle.clone(), Viewer::of_question(id, step, q, path));
+                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                    cx.stop_propagation();
+                    if let Some(viewer) = viewer.clone() {
+                        handle.update(cx, |shell, cx| shell.open_viewer(viewer, cx)).ok();
+                    }
+                }
+            };
+            tip(div().id(("decide-shot", key)).cursor_pointer().child(face).on_click(open), p, t!("visuals.open"), None).into_any_element()
         }
+        // No picture: its label, quietly, in the same box — a pick like the others.
+        None => div()
+            .size_full()
+            .px_4()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_t(px(R_LG - 1.))
+            .bg(p.wash)
+            .child(div().max_w_full().text_center().text_size(px(14.)).line_height(px(20.)).font_weight(FontWeight::MEDIUM).text_color(p.text2).line_clamp(3).text_ellipsis().child(label.clone()))
+            .into_any_element(),
     };
-    let face = tip(div().id(("decide-shot", key)).cursor_pointer().child(face).on_click(open), p, t!("visuals.open"), None);
+    let face = div()
+        .relative()
+        .flex_none()
+        .w(px(fw))
+        .h(px(h))
+        .child(face)
+        .when(recommended, |f| f.child(div().absolute().top(px(8.)).left(px(8.)).child(super::visuals::badge(p, false))))
+        // One pick: a check on the picture (several: the box by the label says it).
+        .when(picked && !q.multi_select, |f| {
+            f.child(div().absolute().top(px(8.)).right(px(8.)).size(px(22.)).flex().items_center().justify_center().rounded_full().bg(p.accent).shadow_sm().child(icon(Icon::Check, 13., p.on_accent)))
+        });
     let check = q.multi_select.then(|| {
         div()
             .flex_none()
-            .mt(px(2.))
             .size(px(16.))
             .flex()
             .items_center()
@@ -679,23 +794,31 @@ fn option_tile(shots: &Shots, id: u64, step: usize, n: usize, q: &Question, pick
             .border_color(if picked { p.accent } else { p.muted })
             .when(picked, |c| c.bg(p.accent).child(icon(Icon::Check, 11., p.bg)))
     });
+    let caption_h = visual::caption_height(described);
+    let description = option.description.trim();
+    let whole = if description.is_empty() { label.clone() } else { format!("{label}\n{description}") };
     let caption = v_flex()
-        .flex_1()
+        .id(("decide-caption", key))
+        .flex_none()
+        .w_full()
+        .h(px(caption_h + 1.))
         .px(px(10.))
         .pt(px(8.))
         .pb(px(9.))
         .gap_0p5()
+        .overflow_hidden()
         .border_t_1()
         .border_color(p.hair)
         .child(
             h_flex()
+                .h(px(visual::CAPTION_TITLE))
                 .gap_2()
-                .items_start()
                 .children(check)
-                .child(div().flex_1().min_w_0().text_size(px(13.5)).line_height(px(19.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).line_clamp(2).child(label))
+                .child(div().flex_1().min_w_0().text_size(px(13.5)).line_height(px(19.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).truncate().child(label))
                 .child(key_badge(p, &(n + 1).to_string(), picked)),
         )
-        .when(!option.description.is_empty(), |c| c.child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.muted).line_clamp(2).child(option.description.clone())));
+        .when(!description.is_empty(), |c| c.child(div().w_full().text_size(px(12.)).line_height(px(17.)).text_color(p.text2).line_clamp(2).text_ellipsis().child(description.to_owned())));
+    let caption = tip(caption, p, whole, None);
     let border = if picked {
         p.accent
     } else if cursor {
@@ -707,26 +830,42 @@ fn option_tile(shots: &Shots, id: u64, step: usize, n: usize, q: &Question, pick
     let tile = v_flex()
         .id(("decide-option-tile", key))
         .relative()
+        .flex_none()
         .w(px(w))
+        .h(px(visual::tile_height(w, described)))
         .rounded(px(R_LG))
-        .border_1()
+        .border(px(frame.border))
         .border_color(border)
         .bg(if picked { p.accent_bg } else { p.bg })
         .overflow_hidden()
         .cursor_pointer()
         .child(face)
         .child(caption)
+        // The ring, inside the border: the tile is the size it was.
+        .when(frame.ring > 0., |t| t.child(super::visuals::ring(p, R_LG - frame.border, frame.ring)))
         .on_click(move |_, _, cx| {
             handle.update(cx, |shell, cx| shell.decide_pick(id, n, cx)).ok();
         });
-    super::visuals::lift(tile, ("decide-lift", key), p, picked).into_any_element()
+    super::visuals::lift(tile, ("decide-lift", key), p).into_any_element()
 }
 
-/// The question's own pictures (what is there now, say): a row of them, a
-/// click opens one big.
-fn question_pictures(shots: &Shots, id: u64, step: usize, q: &Question, cx: &mut App) -> AnyElement {
+/// The question's own pictures (what is there now, say), a click opens one
+/// big: beside a grid of options, each a tile's size, from the grid's left
+/// edge; over options without pictures, one big — several, tiles.
+#[allow(clippy::too_many_arguments)]
+fn question_pictures(shots: &Shots, id: u64, step: usize, q: &Question, width: f32, layout: &visual::Grid, cx: &mut App) -> AnyElement {
     let p = shots.p;
-    let (w, h) = (148., 111.);
+    let big = q.images.len() == 1 && !q.is_visual();
+    // Big, it is asked for at the column's size, not a thumbnail's.
+    let size = if big { Size::Inline } else { Size::Thumb };
+    let (w, h) = if big {
+        visual::lead_box(width)
+    } else if q.is_visual() {
+        (layout.tile, (layout.tile * visual::RATIO).floor())
+    } else {
+        let own = visual::grid(width, q.images.len());
+        (own.tile, (own.tile * visual::RATIO).floor())
+    };
     let tiles: Vec<AnyElement> = q
         .images
         .iter()
@@ -734,23 +873,25 @@ fn question_pictures(shots: &Shots, id: u64, step: usize, q: &Question, cx: &mut
             let key = render::hash_of(("decide-own", id, step, path));
             let viewer = Viewer::of_question(id, step, q, path);
             let handle = shots.handle();
-            let face = super::visuals::picture(shots, key, path, shots.ask(path, Size::Thumb, cx), w, h, R_MD, false, 8.);
-            div()
+            let face = super::visuals::picture(shots, key, path, shots.ask(path, size, cx), w - 2., h - 2., R_LG - 1., false, 10.);
+            let tile = div()
                 .id(("decide-own", key))
-                .rounded(px(R_MD))
+                .flex_none()
+                .rounded(px(R_LG))
                 .border_1()
                 .border_color(p.hair)
+                .overflow_hidden()
                 .cursor_pointer()
                 .child(face)
                 .on_click(move |_, _, cx| {
                     if let Some(viewer) = viewer.clone() {
                         handle.update(cx, |shell, cx| shell.open_viewer(viewer, cx)).ok();
                     }
-                })
-                .into_any_element()
+                });
+            super::visuals::lift(tip(tile, p, visual::name_of(path).to_owned(), None), ("decide-own-lift", key), p).into_any_element()
         })
         .collect();
-    h_flex().flex_wrap().gap_2().children(tiles).into_any_element()
+    h_flex().w_full().flex_wrap().gap(px(visual::GAP)).children(tiles).into_any_element()
 }
 
 /// The card folded (Esc, ⌄): one line, who asks and how many; a click opens it.

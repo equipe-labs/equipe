@@ -514,12 +514,15 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .children(find_bar(shell, cx))
         .child(body)
         .child(
-            div()
+            // The cards over the composer give way when the window is short:
+            // a member's question scrolls inside its card, its foot in sight.
+            v_flex()
                 .w_full()
+                .min_h_0()
                 .max_w(px(COLUMN))
                 .px_4()
-                .child(v_flex().children(approvals::for_you(shell, cx)).children(approvals::approval(shell, cx)).children(super::decide::docked(shell, cx)).children(super::accept::docked(shell, cx)).children(super::team::docked(shell, cx)).children(super::switching::docked(shell, cx)).children(super::asklist::hint(shell, cx)))
-                .child(composer::render(shell, cx)),
+                .child(v_flex().min_h_0().children(approvals::for_you(shell, cx)).children(approvals::approval(shell, cx)).children(super::decide::docked(shell, cx)).children(super::accept::docked(shell, cx)).children(super::team::docked(shell, cx)).children(super::switching::docked(shell, cx)).children(super::asklist::hint(shell, cx)))
+                .child(div().flex_none().child(composer::render(shell, cx))),
         )
         .children(lightbox(shell, cx));
     h_flex().flex_1().min_h_0().items_stretch().child(main).children(side_panel(shell, cx))

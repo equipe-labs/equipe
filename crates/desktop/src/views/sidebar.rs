@@ -342,7 +342,7 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, cx: &mut C
         .tip_at(p, name_tip, None, gpui_kit::base::Placement::Right)
         .on_click(cx.listener(move |this, _, window, cx| this.side_head_click(HeadClick::Name, name_project.clone(), window, cx)))
         .child(ident)
-        .child(div().min_w_0().truncate().text_color(name_color).when(focused, |d| d.font_weight(FontWeight::SEMIBOLD)).child(label));
+        .child(crate::ui::steady(label, FontWeight::SEMIBOLD, focused, true).text_color(name_color));
     let counts = (folded && !quiet).then(|| {
         h_flex()
             .flex_none()

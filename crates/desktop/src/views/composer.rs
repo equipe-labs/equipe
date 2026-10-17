@@ -2142,17 +2142,19 @@ fn chip(shell: &Shell, item: &attach::Item, n: usize, cx: &mut Context<Shell>) -
             .child(
                 div()
                     .id(("thumb", id))
+                    .relative()
                     .size_full()
                     .rounded(px(R_LG))
                     .overflow_hidden()
                     .bg(p.wash)
                     .border_1()
                     .border_color(if focused { p.accent } else { p.hair })
-                    .when(focused, |d| d.border_2())
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _, _, cx| this.show_big(Some(id), cx)))
                     .child(face)
-                    .children(progress),
+                    .children(progress)
+                    // Focused: a second point of the accent inside, over the picture — it doesn't move.
+                    .when(focused, |d| d.child(super::visuals::ring(p, R_LG - 1., 1.))),
             )
             .child(div().absolute().left(px(5.)).bottom(px(4.)).px_1().rounded(px(4.)).bg(rgba(0x0000008C)).text_size(px(10.)).text_color(rgb(0xFFFFFF)).child(if side > 60. { t!("composer.picture_number", n = number) } else { number.to_string() }))
             .child(remove_button(p, id, &item.name, cx).absolute().top(px(-6.)).right(px(-6.)))
@@ -2204,8 +2206,8 @@ fn chip(shell: &Shell, item: &attach::Item, n: usize, cx: &mut Context<Shell>) -
                 .overflow_hidden()
                 .bg(if failed { p.danger_bg() } else { p.bg })
                 .border_1()
+                .relative()
                 .border_color(if failed { p.danger() } else if focused { p.accent } else { p.hair })
-                .when(focused, |d| d.border_2())
                 .when(opens, |d| {
                     d.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| this.show_big(Some(id), cx)))
                 })
@@ -2217,7 +2219,9 @@ fn chip(shell: &Shell, item: &attach::Item, n: usize, cx: &mut Context<Shell>) -
                         .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.5)).line_height(px(17.)).text_color(p.text).child(if item.kind == Kind::Text && item.origin.is_none() { t!("composer.pasted_label").to_owned() } else { item.name.clone() }))
                         .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.)).line_height(px(15.)).text_color(if failed { p.danger() } else { p.muted }).child(detail)),
                 )
-                .children(progress),
+                .children(progress)
+                // Focused: a second point of the accent inside — the chip's words don't move.
+                .when(focused, |d| d.child(super::visuals::ring(p, R_LG - 1., 1.).when(failed, |r| r.border_color(p.danger())))),
         )
         .child(remove_button(p, id, &item.name, cx).absolute().top(px(16.)).right(px(5.)))
         .into_any_element()
