@@ -1,4 +1,9 @@
 {
+  "app.accept_confirmed": "확인했어요: {what}",
+  "app.accept_proposed": "확인 카드: {what} — 그 대화에서 y/n",
+  "app.accept_what": "{tickets} 수락",
+  "app.accept_what_changes": "{tickets} 반려",
+  "app.accept_what_merge": "{tickets} 수락하고 머지",
   "app.accepted": "T-{id} 승인 · /reopen T-{id}로 되돌려요",
   "app.accepted_home": "T-{id} 승인 · 작업이 스쿼드 폴더로 들어가요",
   "app.accepted_kept": "수락함 · 브랜치에 둠",
@@ -957,7 +962,21 @@
   "commands.disk": "디스크 여유와 정리할 수 있는 것",
   "app.disk_short": "{line} · 터미널에서 equipe disk 로 살펴보고 equipe disk clean 으로 정리하세요",
   "app.disk_fine": "디스크 여유는 충분해요 · 자세히는 터미널에서 equipe disk",
+  "remote.push_accept": "{tickets} 수락을 확인해 주세요",
+  "remote.push_accept_changes": "{tickets} 반려를 확인해 주세요",
+  "remote.push_accept_merge": "{tickets} 수락·머지를 확인해 주세요",
   "remote.push_disk_critical": "디스크 여유가 {free}뿐이에요",
   "remote.push_disk_full": "디스크가 가득 찼어요 ({free} 남음)",
-  "remote.push_disk_body": "곧 빌드가 실패할 수 있어요 · Mac의 equipe에서 정리하세요"
+  "remote.push_disk_body": "곧 빌드가 실패할 수 있어요 · Mac의 equipe에서 정리하세요",
+  "view.accept_ask": "{tickets} 수락할까요?",
+  "view.accept_ask_changes": "{tickets} 반려할까요?",
+  "view.accept_ask_merge": "{tickets} 수락하고 머지할까요?",
+  "view.accept_by": "{name}의 제안",
+  "view.accept_by_words": "내 말에서",
+  "view.accept_no": "아니요",
+  "view.accept_note": "고칠 점: {note}",
+  "view.accept_starts": "수락하면 {tickets} 작업이 시작돼요",
+  "view.accept_yes": "수락하기",
+  "view.accept_yes_changes": "반려하기",
+  "view.accept_yes_merge": "수락하고 머지"
 }

@@ -1,4 +1,9 @@
 {
+  "app.accept_confirmed": "已確認:{what}",
+  "app.accept_proposed": "確認卡片:{what} — 在該對話中按 y/n",
+  "app.accept_what": "接受 {tickets}",
+  "app.accept_what_changes": "退回 {tickets}",
+  "app.accept_what_merge": "接受並合併 {tickets}",
   "app.accepted": "已接受 T-{id} · /reopen T-{id} 可退回",
   "app.accepted_home": "已接受 T-{id} · 成果放入小隊資料夾",
   "app.accepted_kept": "已接受 · 留在分支",
@@ -957,7 +962,21 @@
   "commands.disk": "磁碟剩餘空間和可清理的內容",
   "app.disk_short": "{line} · 在終端機用 equipe disk 查看，用 equipe disk clean 清理",
   "app.disk_fine": "磁碟空間充足 · 詳情請在終端機執行 equipe disk",
+  "remote.push_accept": "請確認接受 {tickets}",
+  "remote.push_accept_changes": "請確認退回 {tickets}",
+  "remote.push_accept_merge": "請確認接受並合併 {tickets}",
   "remote.push_disk_critical": "磁碟只剩 {free}",
   "remote.push_disk_full": "磁碟已滿（剩餘 {free}）",
-  "remote.push_disk_body": "建置可能很快失敗 · 請在 Mac 上的 equipe 中清理"
+  "remote.push_disk_body": "建置可能很快失敗 · 請在 Mac 上的 equipe 中清理",
+  "view.accept_ask": "接受 {tickets}?",
+  "view.accept_ask_changes": "退回 {tickets}?",
+  "view.accept_ask_merge": "接受並合併 {tickets}?",
+  "view.accept_by": "{name} 的提議",
+  "view.accept_by_words": "來自你的話",
+  "view.accept_no": "不",
+  "view.accept_note": "要改的:{note}",
+  "view.accept_starts": "接受後 {tickets} 即可開始",
+  "view.accept_yes": "接受",
+  "view.accept_yes_changes": "退回",
+  "view.accept_yes_merge": "接受並合併"
 }

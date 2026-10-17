@@ -24,11 +24,13 @@ use equipe_core::t;
 use super::commands;
 use super::composer::Composer;
 
+mod accept;
 mod decide;
 pub mod engines;
 mod team;
 mod turn;
 pub use decide::Picking;
+pub use accept::ids as accept_ids;
 pub use team::describe as describe_team_change;
 pub use turn::{TurnForm, Typing};
 
@@ -699,6 +701,8 @@ pub struct App {
     pub picking: HashMap<u64, Picking>,
     /// Changes to the team the PM proposed, waiting for the person, oldest first (`team`).
     pub team_changes: Vec<equipe_core::protocol::team::TeamChange>,
+    /// Handed-in work put to the person to confirm, oldest first (`accept`).
+    pub accepts: Vec<equipe_core::protocol::accept::AcceptProposal>,
     /// Both engines' plans, the squad's switching, and its cards (`engines`).
     pub engines: engines::Engines,
     /// A waiting ticket's asks, being answered (`/answer`, r on the board).
@@ -854,6 +858,7 @@ impl App {
             questions: snapshot.questions,
             picking: HashMap::new(),
             team_changes: snapshot.team_changes,
+            accepts: snapshot.accepts,
             turn_form: None,
             turn_drafts: HashMap::new(),
             page: 10,
@@ -1698,6 +1703,10 @@ impl App {
                 self.on_team_change(event);
                 return Vec::new();
             }
+            event @ (Event::AcceptProposed { .. } | Event::AcceptClosed { .. }) => {
+                self.on_accept(event);
+                return Vec::new();
+            }
             Event::ModeChanged { member: None, mode: Some(mode), .. } => {
                 self.mode = mode;
                 return Vec::new();
@@ -2237,6 +2246,10 @@ impl App {
         // A member's questions on screen: numbers pick, o for their own words,
         // Enter on — while nothing else is typed.
         if let Some(commands) = self.on_decide_key(key.code, ctrl, alt) {
+            return commands;
+        }
+        // Work the person said in words to accept, in the conversation they said it: y confirms, n says no.
+        if let Some(commands) = self.on_accept_key(key.code, ctrl, alt) {
             return commands;
         }
         // A change to the team the PM proposed, in its conversation: y approves, n says no.

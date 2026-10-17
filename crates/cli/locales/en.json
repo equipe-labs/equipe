@@ -1,4 +1,9 @@
 {
+  "app.accept_confirmed": "Confirmed: {what}",
+  "app.accept_proposed": "To confirm: {what} — y/n in its conversation",
+  "app.accept_what": "accept {tickets}",
+  "app.accept_what_changes": "send {tickets} back",
+  "app.accept_what_merge": "accept and merge {tickets}",
   "app.accepted": "Accepted T-{id} · /reopen T-{id} brings it back",
   "app.accepted_home": "Accepted T-{id} · its work goes into the squad's folder",
   "app.accepted_kept": "Accepted · kept on its branch",
@@ -980,7 +985,21 @@
   "commands.disk": "Room on the disk, and what can be cleared",
   "app.disk_short": "{line} · see equipe disk at a terminal, and equipe disk clean to clear",
   "app.disk_fine": "The disk has room · equipe disk at a terminal for more",
+  "remote.push_accept": "Confirm accepting {tickets}",
+  "remote.push_accept_changes": "Confirm sending {tickets} back",
+  "remote.push_accept_merge": "Confirm accepting and merging {tickets}",
   "remote.push_disk_critical": "Only {free} left on the disk",
   "remote.push_disk_full": "The disk is full ({free} left)",
-  "remote.push_disk_body": "Builds may fail · free space in equipe on the Mac"
+  "remote.push_disk_body": "Builds may fail · free space in equipe on the Mac",
+  "view.accept_ask": "Accept {tickets}?",
+  "view.accept_ask_changes": "Send {tickets} back?",
+  "view.accept_ask_merge": "Accept and merge {tickets}?",
+  "view.accept_by": "{name} proposes",
+  "view.accept_by_words": "from your words",
+  "view.accept_no": "no",
+  "view.accept_note": "To change: {note}",
+  "view.accept_starts": "Then {tickets} can start",
+  "view.accept_yes": "accept",
+  "view.accept_yes_changes": "send back",
+  "view.accept_yes_merge": "accept and merge"
 }

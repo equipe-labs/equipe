@@ -1,4 +1,9 @@
 {
+  "app.accept_confirmed": "確認しました: {what}",
+  "app.accept_proposed": "確認カード: {what} — その会話で y/n",
+  "app.accept_what": "{tickets} を承認",
+  "app.accept_what_changes": "{tickets} を差し戻し",
+  "app.accept_what_merge": "{tickets} を承認してマージ",
   "app.accepted": "T-{id}を承認 · /reopen T-{id} で差し戻せます",
   "app.accepted_home": "T-{id}を承認 · 作業はスクワッドのフォルダに入ります",
   "app.accepted_kept": "承認済み · ブランチに保持",
@@ -957,7 +962,21 @@
   "commands.disk": "ディスクの空きと片付けられるもの",
   "app.disk_short": "{line} · ターミナルで equipe disk で確認し、equipe disk clean で片付けてください",
   "app.disk_fine": "ディスクの空きは十分です · 詳しくはターミナルで equipe disk",
+  "remote.push_accept": "{tickets} の承認を確認してください",
+  "remote.push_accept_changes": "{tickets} の差し戻しを確認してください",
+  "remote.push_accept_merge": "{tickets} の承認とマージを確認してください",
   "remote.push_disk_critical": "ディスクの空きが {free} しかありません",
   "remote.push_disk_full": "ディスクがいっぱいです（残り {free}）",
-  "remote.push_disk_body": "まもなくビルドが失敗するかもしれません · Mac の equipe で片付けてください"
+  "remote.push_disk_body": "まもなくビルドが失敗するかもしれません · Mac の equipe で片付けてください",
+  "view.accept_ask": "{tickets} を承認しますか?",
+  "view.accept_ask_changes": "{tickets} を差し戻しますか?",
+  "view.accept_ask_merge": "{tickets} を承認してマージしますか?",
+  "view.accept_by": "{name} の提案",
+  "view.accept_by_words": "あなたの言葉から",
+  "view.accept_no": "いいえ",
+  "view.accept_note": "直す点: {note}",
+  "view.accept_starts": "承認すると {tickets} が始まります",
+  "view.accept_yes": "承認する",
+  "view.accept_yes_changes": "差し戻す",
+  "view.accept_yes_merge": "承認してマージ"
 }

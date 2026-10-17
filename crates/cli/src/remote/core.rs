@@ -148,7 +148,9 @@ pub fn pairing_url(relay: &str, id: &str, public: &str, secret: &[u8], name: &st
 /// is allowed once, never always; a member's questions are the person's to
 /// answer or close from anywhere, and so is a change to the team the PM
 /// proposed to approve or decline, and moves between engines to make, leave
-/// or undo; starting, closing, merging and changing
+/// or undo; so is handed-in work put to them on a card to confirm or decline
+/// — confirmed from a phone it is accepted, never merged; starting, closing,
+/// merging and changing
 /// modes stay at the console — and so does writing, editing and rearranging
 /// tickets (the phone answers what the board asks; it doesn't plan it yet).
 /// A phone may ask where the engines stand, but never sign one in or out: a
@@ -157,6 +159,10 @@ pub fn pairing_url(relay: &str, id: &str, public: &str, secret: &[u8], name: &st
 pub fn allowed(command: Command) -> Option<Command> {
     match command {
         Command::Decide { squad, approval, decision: Decision::Always } => Some(Command::Decide { squad, approval, decision: Decision::Allow }),
+        // Merging stays at the console: confirmed from a phone, the work is accepted only.
+        Command::ConfirmAccept { squad, id, tickets } => {
+            Some(Command::ConfirmAccept { squad, id, tickets: tickets.into_iter().map(|c| equipe_core::protocol::accept::Confirmed::only(c.ticket)).collect() })
+        }
         c @ (Command::Submit { .. }
         | Command::Interrupt { .. }
         | Command::SendNow { .. }
@@ -169,6 +175,7 @@ pub fn allowed(command: Command) -> Option<Command> {
         | Command::DismissQuestions { .. }
         | Command::ApproveTeamChange { .. }
         | Command::DeclineTeamChange { .. }
+        | Command::DeclineAccept { .. }
         | Command::ApplyEngineProposal { .. }
         | Command::DismissEngineProposal { .. }
         | Command::UndoEngineProposal { .. }
@@ -195,6 +202,9 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::DismissQuestions { squad, .. }
         | Command::ApproveTeamChange { squad, .. }
         | Command::DeclineTeamChange { squad, .. }
+        | Command::ProposeAccept { squad, .. }
+        | Command::ConfirmAccept { squad, .. }
+        | Command::DeclineAccept { squad, .. }
         | Command::SetEngineSwitching { squad, .. }
         | Command::ApplyEngineProposal { squad, .. }
         | Command::DismissEngineProposal { squad, .. }
@@ -709,6 +719,19 @@ impl Core {
                 };
                 (title, squad.to_owned(), "team", format!("team-{}", change.id), Event::TeamChangeProposed { squad: squad.to_owned(), change: short })
             }
+            Event::AcceptProposed { proposal, .. } => {
+                use equipe_core::protocol::accept::Verdict;
+                let mut short = proposal.clone();
+                short.summary = short.summary.chars().take(PUSH_ACTION).collect();
+                short.note = short.note.chars().take(PUSH_ACTION).collect();
+                let tickets = proposal.tickets.iter().map(|id| format!("T-{id}")).collect::<Vec<_>>().join(", ");
+                let title = match proposal.verdict {
+                    Verdict::Accept => t!("remote.push_accept", tickets = tickets),
+                    Verdict::Merge => t!("remote.push_accept_merge", tickets = tickets),
+                    Verdict::Changes => t!("remote.push_accept_changes", tickets = tickets),
+                };
+                (title, squad.to_owned(), "accept", format!("accept-{}", proposal.id), Event::AcceptProposed { squad: squad.to_owned(), proposal: short })
+            }
             // An engine out of its plan, hours from its reset: the one move between
             // engines worth a push — once, not again as each member moves.
             Event::EngineProposed { proposal, .. } if proposal.why == equipe_core::protocol::engines::Why::Exhausted && proposal.moves.iter().all(|m| !m.done) => {
@@ -1036,6 +1059,18 @@ pub(crate) mod tests {
         let decline = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decline_team_change", "squad": "acme", "id": 6 } });
         assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), decline, now), now)[..], [Action::Command { command: Command::DeclineTeamChange { .. }, .. }]));
         let elsewhere = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "approve_team_change", "squad": "zeta", "id": 6 } });
+        assert!(core.on_relay(&phone.send(&c, Some("acme"), elsewhere, now), now).is_empty(), "only the frame's squad");
+        // Handed-in work on a card: the person's to confirm or decline from a phone — accepted, never merged.
+        let confirm = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "confirm_accept", "squad": "acme", "id": 8, "tickets": [{ "ticket": 1, "merge": "push" }, { "ticket": 3 }] } });
+        let out = core.on_relay(&phone.send(&c, Some("acme"), confirm, now), now);
+        let only = |t| equipe_core::protocol::accept::Confirmed::only(t);
+        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::ConfirmAccept { squad: "acme".into(), id: 8, tickets: vec![only(1), only(3)] } }]);
+        let decline = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decline_accept", "squad": "acme", "id": 8 } });
+        assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), decline, now), now)[..], [Action::Command { command: Command::DeclineAccept { .. }, .. }]));
+        // A phone doesn't raise cards itself: the person's words are read where they type them.
+        let raise = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "propose_accept", "squad": "acme", "session": 1, "verdict": "accept", "tickets": [1] } });
+        assert!(core.on_relay(&phone.send(&c, Some("acme"), raise, now), now).is_empty());
+        let elsewhere = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decline_accept", "squad": "zeta", "id": 8 } });
         assert!(core.on_relay(&phone.send(&c, Some("acme"), elsewhere, now), now).is_empty(), "only the frame's squad");
         // Merging stays at the console; another squad than the frame's is refused.
         let merge = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "merge", "squad": "acme", "ticket": 1, "push": true } });
