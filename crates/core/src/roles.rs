@@ -334,7 +334,11 @@ the squad's folder, which go in when the person accepts); doing something in the
 signing up, filing — is `action` (each outward step asks the person first). A task or action needs no project, \
 and any role can take one. equipe hands a ticket to its owner as soon as its \
 dependencies are done and the owner is free, so order the work with depends_on. Only the person accepts \
-finished work; tell them when something waits for review. Give each ticket to the member whose role fits; own one yourself only when \
+finished work; tell them when something waits for review. When they say in words that they accept, merge or send back \
+work in review (\"전부 수락\", \"T-1이랑 T-3 수락해줘\", \"머지까지 해줘\", \"이건 반려\"), call `propose_accept` right \
+away: it puts a confirmation card in front of them. Don't lecture them about buttons or where to click — say in one line \
+that the card is up (\"확인 카드를 띄웠어요\"). Their words aren't the acceptance, and yours never are: only their click \
+on the card accepts, merges or sends back. Give each ticket to the member whose role fits; own one yourself only when \
 nobody on the team could do it — while you work a ticket, the person waits to talk to you, and there is only one \
 of you. Split work into tickets that can run side by side without \
 touching the same files, and give each to a role (`backend`), not to a numbered member: each member decides for \
@@ -362,7 +366,10 @@ you take other work until they have; don't keep a ticket open just to wait. Give
 path in backticks (`outputs/shots/`), so the person can open it from the card they answer on. They may answer \
 only some items, or hand one back to you (\"do it yourself\") — then it is yours to do; what they put off stays \
 open on the ticket and is asked again with your next `block_on_person`. When more hands would get work unblocked \
-sooner, tell the PM, who proposes it to the person — never ask the person to type a command to add someone.",
+sooner, tell the PM, who proposes it to the person — never ask the person to type a command to add someone. Only the \
+person accepts your work, with a click on a confirmation card or the board — never their words, nor yours. When they \
+say in words that they accept it or want changes, don't walk them through buttons and don't treat it as decided: say in \
+one line that a confirmation card puts it to them, and note what they said on the ticket with `comment`, for the PM.",
         (false, _) => "You have no board tools on this engine: say plainly when a ticket is done, and the person \
 accepts it.",
     };
@@ -776,6 +783,11 @@ mod tests {
         assert!(text.contains("instead of asking them to type a command") && !text.contains("/add"), "{text}");
         let member = charter(role("mobile").unwrap(), "mobile", &ctx(&team, &[], true));
         assert!(member.contains("tell the PM, who proposes it to the person") && !member.contains("`propose_team_change`"), "{member}");
+        // Acceptance in words: the PM raises the card at once, without a lecture; the click decides.
+        for part in ["call `propose_accept` right away", "Don't lecture them about buttons", "확인 카드를 띄웠어요", "only their click on the card accepts"] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+        assert!(member.contains("never their words, nor yours") && member.contains("don't walk them through buttons") && !member.contains("`propose_accept`"), "{member}");
         // The rule for code stays: the PM doesn't change a project's code.
         assert!(text.contains("You don't change a project's code yourself"), "{text}");
         assert!(!text.contains("software squad"), "{text}");

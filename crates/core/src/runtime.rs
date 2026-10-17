@@ -63,6 +63,7 @@ mod decide;
 mod room;
 mod engines;
 mod design;
+mod accept;
 mod team;
 mod tickets;
 
@@ -392,6 +393,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         codex_models: None,
         questions: HashMap::new(),
         team_changes: HashMap::new(),
+        accepts: HashMap::new(),
+        accepts_declined: HashMap::new(),
         merged_cache: Some(worktree::MergedCache::default()),
         settle_again: false,
         settled_at: None,
@@ -757,6 +760,10 @@ struct Runtime {
     questions: HashMap<String, Vec<equipe_protocol::decide::QuestionSet>>,
     /// Changes to the team the PM proposed, waiting for the person, by squad (`team`).
     team_changes: HashMap<String, Vec<equipe_protocol::team::TeamChange>>,
+    /// Handed-in work put to the person to confirm, by squad (`accept`).
+    accepts: HashMap<String, Vec<equipe_protocol::accept::AcceptProposal>>,
+    /// Cards the person said no to lately, by squad: not put up again soon.
+    accepts_declined: HashMap<String, Vec<crate::accept::Declined>>,
     /// What the look at done work off main remembers; `None` while a look is
     /// under way off the loop, and `settle_again` when another was asked meanwhile.
     merged_cache: Option<worktree::MergedCache>,
@@ -1039,7 +1046,15 @@ impl Runtime {
     // ── events: one way out ──
 
     fn publish(&mut self, event: Event) {
+        let changed = match &event {
+            Event::TicketChanged { squad, ticket } => Some((squad.clone(), ticket.id)),
+            _ => None,
+        };
         self.publish_in(None, event);
+        // A card to confirm about it may have nothing left to confirm.
+        if let Some((squad, ticket)) = changed {
+            self.settle_accepts(&squad, ticket);
+        }
     }
 
     /// Fold an event into its session, journal what became final, and pass it to
@@ -1388,6 +1403,9 @@ impl Runtime {
             Command::DismissQuestions { squad, id } => self.dismiss_questions(&squad, id).await,
             Command::ApproveTeamChange { squad, id } => self.approve_team_change(&squad, id).await,
             Command::DeclineTeamChange { squad, id } => self.decline_team_change(&squad, id),
+            Command::ProposeAccept { squad, session, verdict, tickets, note } => self.propose_accept_from_words(&squad, session, verdict, &tickets, &note),
+            Command::ConfirmAccept { squad, id, tickets } => self.confirm_accept(&squad, id, tickets).await,
+            Command::DeclineAccept { squad, id } => self.decline_accept(&squad, id),
             Command::Disallow { squad, rule } => {
                 let taken = self.journals.get(&squad).and_then(|j| j.disallow(&rule).ok()).unwrap_or(false);
                 if taken {
@@ -4892,6 +4910,7 @@ it back there once they have done it.{again} End your turn now with a short line
             }
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
             crate::team::PROPOSE_TEAM_CHANGE => self.propose_team_change(&squad, &member, id, &args),
+            crate::accept::PROPOSE_ACCEPT => self.propose_accept(&squad, &member, id, &args),
             board::ESTIMATE => {
                 let minutes = |key: &str| args.get(key).and_then(Value::as_f64).map(|m| m.max(0.0));
                 let (done, live) = (minutes("done_in_minutes"), minutes("live_in_minutes"));
@@ -5022,8 +5041,10 @@ it back there once they have done it.{again} End your turn now with a short line
         let browsers_shown = self.journals.get(squad).is_some_and(Journal::browsers_all_shown);
         let questions = self.question_sets(squad).clone();
         let team_changes = self.team_changes(squad).clone();
+        let accepts = self.accepts(squad).clone();
         Snapshot {
             team_changes,
+            accepts,
             squad: squad.to_owned(),
             projects,
             sessions,

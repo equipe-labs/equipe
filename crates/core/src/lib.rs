@@ -10,6 +10,7 @@
 //!   UI memory. Writers append in batched transactions; a UI asks only for the
 //!   rows it is about to draw, addressed by a per-agent `seq`.
 
+pub mod accept;
 pub mod board;
 pub mod browser;
 pub mod design;

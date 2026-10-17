@@ -250,5 +250,8 @@
   "status.waiting": "あなたの番",
   "error.disk_full": "ディスクがいっぱいです。空きができるまで、equipe は会話とチケットを保存できません。たいていはメンバーのビルドフォルダ (target/) が原因です。",
   "notice.disk_room": "ディスクに空きが戻りました。equipe は会話とチケットを再び保存します。",
-  "error.stuck": "デーモンが応答しません。{since} から {doing} の処理で止まっています。`equipe daemon restart` を試してください。"
+  "error.stuck": "デーモンが応答しません。{since} から {doing} の処理で止まっています。`equipe daemon restart` を試してください。",
+  "news.accept_declined": "{tickets} は承認しませんでした — レビュー待ちのままです",
+  "news.changes_declined": "{tickets} は差し戻しませんでした — レビュー待ちのままです",
+  "news.merge_declined": "{tickets} の承認とマージはしませんでした — そのままです"
 }

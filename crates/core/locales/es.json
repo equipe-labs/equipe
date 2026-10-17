@@ -254,5 +254,8 @@
   "status.waiting": "esperándote",
   "error.disk_full": "El disco está lleno: equipe no puede guardar conversaciones ni tickets hasta que haya espacio. Suelen ser las carpetas de compilación de los miembros (target/).",
   "notice.disk_room": "El disco vuelve a tener espacio: equipe guarda conversaciones y tickets como antes.",
-  "error.stuck": "El daemon no responde: lleva en {doing} desde las {since}. Prueba `equipe daemon restart`."
+  "error.stuck": "El daemon no responde: lleva en {doing} desde las {since}. Prueba `equipe daemon restart`.",
+  "news.accept_declined": "No aceptaste {tickets}: sigue en revisión",
+  "news.changes_declined": "No devolviste {tickets}: sigue en revisión",
+  "news.merge_declined": "No aceptaste ni fusionaste {tickets}: queda como está"
 }

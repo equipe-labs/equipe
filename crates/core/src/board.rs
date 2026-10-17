@@ -585,6 +585,8 @@ once they have done what it needed. Work in progress and done work are the perso
         }));
         // The team is the person's to change: the PM only proposes.
         tools.push(crate::team::tool());
+        // Accepting is the person's: the PM only puts it to them on a card.
+        tools.push(crate::accept::tool());
     }
     tools
 }
@@ -896,6 +898,9 @@ mod tests {
         // Only the PM proposes changes to the team; nobody has a tool that makes one.
         assert!(names(tools(true)).contains(&crate::team::PROPOSE_TEAM_CHANGE.to_owned()));
         assert!(!names(tools(false)).contains(&crate::team::PROPOSE_TEAM_CHANGE.to_owned()));
+        // Only the PM puts acceptance to the person; no member has a tool that accepts or merges.
+        assert!(names(tools(true)).contains(&crate::accept::PROPOSE_ACCEPT.to_owned()));
+        assert!(!names(tools(false)).contains(&crate::accept::PROPOSE_ACCEPT.to_owned()));
         for name in names(tools(true)) {
             assert!(!["add_member", "remove_member", "approve_team_change"].contains(&name.as_str()), "{name}");
         }
