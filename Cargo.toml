@@ -35,6 +35,9 @@ opt-level = 2
 #   are the style's to set (`TextViewStyle`).
 # - gpui-base: where the window's selection ends are drawn, for what floats
 #   over it (`TextSelection::ends`, `is_selecting`; `views/quote.rs`).
+# - gpui-base: `ElementExt::on_prepaint` reports the element's own bounds —
+#   its canvas pinned to the top-left, not flowed under the element's
+#   children (`element_ext.rs`; the ticket card's place, `views/ticket_card.rs`).
 [patch.crates-io]
 gpui-pre = { path = "vendor/gpui-pre" }
 gpui-base = { path = "vendor/gpui-base" }

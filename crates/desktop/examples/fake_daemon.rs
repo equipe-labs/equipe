@@ -21,7 +21,9 @@
 //! `FAKE_SECONDS` (default 4) is how long a reply streams; `FAKE_SAID` adds a
 //! last message of the person's to the PM's history (attachment tags and all).
 //! `FAKE_CARDS=1` ends it on a reply naming T-42 (a review), T-117 and T-999
-//! (no such ticket), to rest the pointer on.
+//! (no such ticket), to rest the pointer on; `FAKE_CARDS=long` gives T-42 a
+//! hand-in long enough to scroll on its card, and with `FAKE_REPLY_IMAGES=1`
+//! the reply names T-4 too — its pictures and all, a card taller than a small window.
 //! `FAKE_ASKLIST=1` ends the PM's history on a reply asking three things in a
 //! numbered list of its own words, as a member does that skips `ask_decision`.
 //!
@@ -224,6 +226,16 @@ fn git(dir: &std::path::Path, args: &[&str]) {
 
 type Branch = (&'static str, Vec<(&'static str, usize)>);
 
+/// T-42's hand-in: a few lines, or (`FAKE_CARDS=long`) one long enough to scroll on its card.
+fn checkout_note() -> String {
+    let short = "결제 수단 선택을 **라디오 그룹**으로 바꿨습니다.\n\n- 카드 / 계좌이체 / 간편결제\n- 선택은 `localStorage`에 남습니다\n- 결제 API 호출은 `pay.ts`로 모았습니다";
+    if std::env::var("FAKE_CARDS").is_ok_and(|v| v == "long") {
+        let more: Vec<String> = (1..=14).map(|n| format!("{n}. 결제 흐름의 {n}번째 화면을 손봤습니다 — 버튼 간격, 오류 문구, 키보드 순서를 맞췄습니다.")).collect();
+        return format!("{short}\n\n## 바뀐 것\n\n{}\n\n여기가 마지막 줄입니다.", more.join("\n"));
+    }
+    short.into()
+}
+
 /// A repository per project, each with a branch per piece of work handed in.
 fn seed_repos() {
     let _ = std::fs::remove_dir_all(root());
@@ -283,7 +295,7 @@ fn board() -> Vec<Ticket> {
     ];
     if !empty {
         out.extend([
-            ticket(42, "review", "web", "frontend", "체크아웃 페이지 결제 수단 선택", "- [ ] 카드와 계좌이체 둘 다 선택된다\n- [ ] 선택이 새로고침 후에도 남는다\n- [ ] 모바일 너비에서 깨지지 않는다", &[], Some("equipe/t-42-checkout"), Some("결제 수단 선택을 **라디오 그룹**으로 바꿨습니다.\n\n- 카드 / 계좌이체 / 간편결제\n- 선택은 `localStorage`에 남습니다\n- 결제 API 호출은 `pay.ts`로 모았습니다")),
+            ticket(42, "review", "web", "frontend", "체크아웃 페이지 결제 수단 선택", "- [ ] 카드와 계좌이체 둘 다 선택된다\n- [ ] 선택이 새로고침 후에도 남는다\n- [ ] 모바일 너비에서 깨지지 않는다", &[], Some("equipe/t-42-checkout"), Some(&checkout_note())),
             ticket(71, "review", "api", "backend", "요청 수 제한 미들웨어", "- [ ] 분당 60회를 넘으면 429\n- [ ] 헤더에 남은 횟수", &[], Some("equipe/t-71-rate-limit"), Some("토큰 버킷으로 분당 60회 제한을 넣었습니다. 테스트 6개 추가.")),
             ticket(55, "waiting", "web", "frontend", "결제 테스트 키 연결", "Stripe 테스트 모드로 결제를 끝까지 돌려 봅니다.", &[], None, Some("Waiting on you:\n- [ ] Stripe 대시보드에서 테스트 키 만들기\n- [ ] `.env.local`에 STRIPE_KEY 넣기\n- [ ] Vercel 프로젝트에도 같은 키 추가")),
             ticket(73, "waiting", "api", "backend", "운영 DB 읽기 전용 계정", "", &[], None, Some("Waiting on you:\n- [ ] 운영 DB 읽기 전용 비밀번호 알려 주기")),
@@ -920,7 +932,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         // long gone, for the tickets' cards on the pointer.
                         if std::env::var_os("FAKE_CARDS").is_some() {
                             history.push(Entry::User { text: "지금 볼 거 있어?".into() });
-                            history.push(Entry::Reply { text: "T-42가 검토를 기다리고 있어요. T-117은 당신 차례이고, 예전 T-999는 이제 없습니다.".into() });
+                            let pictures = if replies::on() { " T-4의 그림도 봐 주세요." } else { "" };
+                            history.push(Entry::Reply { text: format!("T-42가 검토를 기다리고 있어요. T-117은 당신 차례이고, 예전 T-999는 이제 없습니다.{pictures}") });
                         }
                         if let Some(how) = your_turn() {
                             history.push(Entry::Note { text: "frontend handed in T-63 for your review · 경쟁 앱 온보딩 조사.".into() });

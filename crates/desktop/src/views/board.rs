@@ -1247,7 +1247,10 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                     .min_h_0()
                     .relative()
                     .child(list)
-                    .child(div().absolute().top_0().right_0().bottom_0().w(px(shell.board.peek_width)).bg(p.bg).border_l_1().border_color(p.hair).shadow_lg().child(peek))
+                    // Over the list: the pointer, a press and the wheel are
+                    // the peek's, at its ends too — the rows under it neither
+                    // light up nor scroll.
+                    .child(div().absolute().top_0().right_0().bottom_0().w(px(shell.board.peek_width)).bg(p.bg).border_l_1().border_color(p.hair).shadow_lg().occlude().child(peek))
                     .into_any_element(),
                 (None, _) => list.into_any_element(),
             }

@@ -7,7 +7,10 @@
 //! merged; a wait answered; a proposal taken or dropped; any ticket opened
 //! beside the conversation (⏎). The card stays while the pointer moves into
 //! it, goes a moment after it leaves, and Esc puts it away. It never opens
-//! while the conversation is scrolling or text is being selected.
+//! while the conversation is scrolling or text is being selected. A wheel on
+//! it scrolls its text — and its middle, when the window is too short for all
+//! of it — and never the conversation under it; a wheel off it scrolls the
+//! conversation and the card goes.
 //!
 //! The timing ([`Hover`]), the placing ([`place`]) and what a ticket offers
 //! ([`acts`]) are plain rules, tested below; the card is drawn over the
@@ -59,6 +62,24 @@ const FADE: f32 = 28.;
 /// `down` of the `most` it can be.
 fn fades(down: f32, most: f32) -> (bool, bool) {
     (down > 0.5, most - down > 0.5)
+}
+
+/// The card's height at most in a window `window_h` tall: the window less its
+/// margins (past that its middle scrolls, its head and buttons kept in view).
+pub fn tallest(window_h: f32) -> f32 {
+    (window_h - 2. * MARGIN).max(TALLEST_MIN)
+}
+
+/// Below this the card isn't squeezed: a window that short shows what it can.
+const TALLEST_MIN: f32 = 120.;
+
+/// Whether a wheel turn by `dy` (up positive) on the card's text is the
+/// text's: it was scrolled to `at` (zero or less) of the `most` it can be, and
+/// can still go that way. At its end (or all of it showing) the turn goes on
+/// to the card's middle, when the window is too short for the whole card —
+/// never past the card.
+fn text_takes(at: f32, dy: f32, most: f32) -> bool {
+    (dy < 0. && at > -most + 0.5) || (dy > 0. && at < -0.5)
 }
 const EXCERPT_LINE: f32 = 19.;
 
@@ -447,8 +468,9 @@ pub struct TicketCard {
     asked: HashMap<TicketId, (Option<String>, String, Option<bool>)>,
     /// Tickets acted on from a card: their undo shows off the work screens.
     acted: HashSet<TicketId>,
-    /// Where the card's text is scrolled to, for the card it opened as.
-    said: (u64, ScrollHandle),
+    /// Where the card's text, and its middle (when the window is too short
+    /// for all of it), are scrolled to, for the card it opened as.
+    said: (u64, ScrollHandle, ScrollHandle),
 }
 
 struct Layer(Entity<TicketCard>);
@@ -462,7 +484,7 @@ pub fn layer(cx: &mut Context<Shell>) -> AnyView {
         return layer.0.clone().into();
     }
     let shell = cx.entity().downgrade();
-    let card = cx.new(|_| TicketCard { shell, hover: Hover::default(), timer: None, drawn: Rc::new(Cell::new(None)), result: None, asked: HashMap::new(), acted: HashSet::new(), said: (0, ScrollHandle::new()) });
+    let card = cx.new(|_| TicketCard { shell, hover: Hover::default(), timer: None, drawn: Rc::new(Cell::new(None)), result: None, asked: HashMap::new(), acted: HashSet::new(), said: (0, ScrollHandle::new(), ScrollHandle::new()) });
     cx.set_global(Layer(card.clone()));
     gpui_kit::base::text::on_link_hover(cx, |url, bounds, _, cx| {
         if let Some(id) = url.strip_prefix(crate::convo::TICKET_SCHEME).and_then(|n| n.parse().ok()) {
@@ -703,9 +725,9 @@ impl Render for TicketCard {
             Some(t) => {
                 // Each card opens at the top of its text.
                 if self.said.0 != self.hover.epoch {
-                    self.said = (self.hover.epoch, ScrollHandle::new());
+                    self.said = (self.hover.epoch, ScrollHandle::new(), ScrollHandle::new());
                 }
-                content(shell, t, self.result.clone(), &self.shell, &this, &shots, &self.said.1)
+                content(shell, t, self.result.clone(), &self.shell, &this, &shots, (&self.said.1, &self.said.2))
             }
             None => missing(p, target.id),
         };
@@ -729,7 +751,14 @@ impl Render for TicketCard {
             .shadow(crate::motion::float_shadow(1.))
             .text_color(p.text)
             .cursor_default()
+            // No taller than the window: its middle scrolls instead.
+            .flex()
+            .flex_col()
+            .max_h(px(tallest(f32::from(viewport.height))))
             .child(body)
+            // A wheel on the card is the card's, at its ends too: what is
+            // under it (the conversation) never scrolls from here.
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .on_prepaint(move |b, window, _| {
                 let r = Rect::of(b);
                 let before = drawn.replace(Some(r));
@@ -758,7 +787,7 @@ fn missing(p: Palette, id: TicketId) -> AnyElement {
 
 /// The card's inside: where it stands and whose it is, its title, what was
 /// said of it, its size and links, and what can be done now.
-fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &WeakEntity<Shell>, card: &WeakEntity<TicketCard>, shots: &super::visuals::Shots, scroll: &ScrollHandle) -> AnyElement {
+fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &WeakEntity<Shell>, card: &WeakEntity<TicketCard>, shots: &super::visuals::Shots, scrolls: (&ScrollHandle, &ScrollHandle)) -> AnyElement {
     let p = shell.palette;
     let model = &shell.model;
     let id = t.id;
@@ -799,26 +828,37 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
     let title = div().text_size(px(14.)).line_height(px(20.)).font_weight(FontWeight::SEMIBOLD).line_clamp(2).child(t.title.clone());
     // What was said of it: the hand-in, what it asks, else what it is.
     let said = t.note.as_deref().filter(|n| !n.trim().is_empty() && !matches!(t.status, TicketStatus::Todo | TicketStatus::InProgress | TicketStatus::Proposed)).unwrap_or(&t.body);
+    let (scroll, body) = scrolls;
+    // Over a cut edge with more beyond it.
+    let fade = |top: bool| {
+        let solid = Hsla::from(p.raised);
+        let clear = Hsla { a: 0., ..solid };
+        let (from, to) = if top { (solid, clear) } else { (clear, solid) };
+        div().absolute().left_0().right_0().h(px(FADE)).when(top, |d| d.top_0()).when(!top, |d| d.bottom_0()).bg(linear_gradient(180., linear_color_stop(from, 0.), linear_color_stop(to, 1.)))
+    };
     let excerpt = (!said.trim().is_empty()).then(|| {
         // All of it, scrolled on the card past its first lines; an edge with
         // more beyond it fades out.
         let (above, below) = fades(-f32::from(scroll.offset().y), f32::from(scroll.max_offset().y));
-        let fade = |top: bool| {
-            let solid = Hsla::from(p.raised);
-            let clear = Hsla { a: 0., ..solid };
-            let (from, to) = if top { (solid, clear) } else { (clear, solid) };
-            div().absolute().left_0().right_0().h(px(FADE)).when(top, |d| d.top_0()).when(!top, |d| d.bottom_0()).bg(linear_gradient(180., linear_color_stop(from, 0.), linear_color_stop(to, 1.)))
-        };
-        let card = card.clone();
+        let (card, text) = (card.clone(), scroll.clone());
         div()
             .relative()
+            .flex_none()
             .child(
                 div()
                     .id(("card-said-scroll", id as u64))
                     .max_h(px(EXCERPT_LINES * EXCERPT_LINE))
                     .overflow_y_scroll()
                     .track_scroll(scroll)
-                    .on_scroll_wheel(move |_, _, cx| {
+                    .on_scroll_wheel(move |event, window, cx| {
+                        // The text has just been moved by the turn (its own
+                        // listener runs first, a sideways turn taken as down);
+                        // where it was says whether it could.
+                        let d = event.delta.pixel_delta(window.line_height());
+                        let dy = f32::from(if d.y.is_zero() { d.x } else { d.y });
+                        if text_takes(f32::from(text.offset().y) - dy, dy, f32::from(text.max_offset().y)) {
+                            cx.stop_propagation();
+                        }
                         let _ = card.update(cx, |_, cx| cx.notify());
                     })
                     .child(super::chat::markdown(p, ("card-said", id as u64), said, 13., EXCERPT_LINE, p.text2, handle)),
@@ -892,15 +932,31 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
     };
     // A hand-in's pictures, small, over what was said of it.
     let pictures = matches!(t.status, TicketStatus::Review | TicketStatus::Done).then(|| super::visuals::strip(shots, crate::render::hash_of(("card-shots", id)), id, &t.images, None)).flatten();
+    // Its middle: the pictures, what was said, the facts — scrolled when the
+    // window is too short for the whole card; its head and buttons stay.
+    let middle: Vec<AnyElement> = pictures.map(|s| div().flex_none().child(s).into_any_element()).into_iter().chain(excerpt.map(IntoElement::into_any_element)).chain(facts.map(|f| f.flex_none().into_any_element())).collect();
     v_flex()
+        .min_h_0()
         .p_3()
         .gap_2()
-        .child(head)
-        .child(title)
-        .children(pictures)
-        .children(excerpt)
-        .children(facts)
-        .child(div().pt_1().child(foot))
+        .child(div().flex_none().child(head))
+        .child(div().flex_none().child(title))
+        .when(!middle.is_empty(), |c| {
+            let (above, below) = fades(-f32::from(body.offset().y), f32::from(body.max_offset().y));
+            let card = card.clone();
+            let middle = v_flex()
+                .id(("card-middle", id as u64))
+                .min_h_0()
+                .overflow_y_scroll()
+                .track_scroll(body)
+                .on_scroll_wheel(move |_, _, cx| {
+                    let _ = card.update(cx, |_, cx| cx.notify());
+                })
+                .gap_2()
+                .children(middle);
+            c.child(v_flex().relative().min_h_0().child(middle).when(above, |d| d.child(fade(true))).when(below, |d| d.child(fade(false))))
+        })
+        .child(div().flex_none().pt_1().child(foot))
         .into_any_element()
 }
 
@@ -1289,6 +1345,96 @@ mod tests {
         // A wheel on the card scrolls it; the card stays.
         assert!(!h.scrolled(t0 + Duration::from_secs(61)));
         assert!(h.shown().is_some());
+    }
+
+    #[test]
+    fn a_wheel_on_the_card_keeps_it_and_one_off_it_puts_it_away() {
+        let t0 = Instant::now();
+        let open = || {
+            let mut h = Hover::default();
+            h.enter(target(5), t0);
+            h.tick(t0 + OPEN_AFTER);
+            h.card = Some(Rect::new(100., 126., 380., 230.));
+            h
+        };
+        // On the card, anywhere on it — its text, its head, its buttons: the
+        // wheel scrolls it, however many turns, and it stays.
+        for (x, y) in [(200., 200.), (101., 127.), (479., 355.)] {
+            let mut h = open();
+            h.moved(x, y, false, t0 + Duration::from_millis(400));
+            for turn in 0..20 {
+                assert!(!h.scrolled(t0 + Duration::from_millis(410 + turn * 16)), "a wheel at {x},{y}");
+            }
+            assert!(h.shown().is_some() && h.takes_keys());
+            assert!(!h.tick(t0 + Duration::from_secs(5)));
+        }
+        // Off it, over the conversation: the conversation scrolls, its link
+        // moves away, and the card goes at once.
+        let mut h = open();
+        h.moved(900., 600., false, t0 + Duration::from_millis(400));
+        assert!(h.scrolled(t0 + Duration::from_millis(410)));
+        assert_eq!(h.phase, Phase::Idle);
+        // Resting on its link (not the card): the same.
+        let mut h = open();
+        h.moved(110., 105., false, t0 + Duration::from_millis(400));
+        assert!(h.scrolled(t0 + Duration::from_millis(410)));
+    }
+
+    #[test]
+    fn a_card_above_its_link_is_reached_by_going_up_into_it() {
+        let t0 = Instant::now();
+        let mut h = Hover::default();
+        let anchor = Rect::new(860., 690., 22., 25.);
+        h.enter(Target { id: 23, anchor, prefer: Side::Below }, t0);
+        h.tick(t0 + OPEN_AFTER);
+        // A tall card: no room below, so above, clamped to the window's top —
+        // its head over the window's header and banner.
+        let (x, y, side) = place(anchor, (380., 676.), WIN, Side::Below);
+        assert_eq!((y, side), (8., Side::Above));
+        assert!(y + 676. <= anchor.y, "its foot over the link");
+        h.card = Some(Rect::new(x, y, 380., 676.));
+        // Up from the link, across the gap, into the card, up to its head.
+        let mut at = t0 + Duration::from_millis(400);
+        for py in [700., 690., 686., 680., 600., 400., 200., 60., 20., 10.] {
+            at += Duration::from_millis(16);
+            assert!(!h.moved(870., py, false, at), "moving up through {py}");
+            assert!(matches!(h.phase, Phase::Open { left: None, .. }), "not leaving at {py}");
+        }
+        assert!(h.takes_keys(), "on the card");
+        assert!(!h.tick(at + CLOSE_AFTER + Duration::from_millis(1)));
+        assert_eq!(h.shown().map(|t| t.id), Some(23));
+        // A wheel on its head: still there.
+        assert!(!h.scrolled(at + Duration::from_millis(500)));
+        assert!(h.shown().is_some());
+    }
+
+    #[test]
+    fn a_card_taller_than_the_window_is_held_inside_it() {
+        assert_eq!(super::tallest(800.), 800. - 16.);
+        assert_eq!(super::tallest(40.), 120., "a window that short isn't squeezed to nothing");
+        // Clamped to the window, the card is placed whole inside it, whichever side.
+        let h = super::tallest(WIN.1);
+        for anchor in [link(100., 100.), link(100., 400.), link(100., 760.)] {
+            let (_, y, _) = place(anchor, (380., h), WIN, Side::Below);
+            assert!(y >= 8. && y + h <= WIN.1 - 8. + 0.01, "{anchor:?}: {y}");
+        }
+    }
+
+    #[test]
+    fn the_cards_text_takes_the_wheel_until_its_end() {
+        use super::text_takes;
+        // At the top of 120 more: down is the text's, up is not (nowhere to go).
+        assert!(text_takes(0., -40., 120.));
+        assert!(!text_takes(0., 40., 120.));
+        // In the middle: both ways.
+        assert!(text_takes(-60., -40., 120.) && text_takes(-60., 40., 120.));
+        // At the end: down goes on to the card's middle, up is the text's.
+        assert!(!text_takes(-120., -40., 120.));
+        assert!(text_takes(-120., 40., 120.));
+        // Turns piled up past the end within a frame: still on to the middle.
+        assert!(!text_takes(-200., -40., 120.));
+        // Text that all shows never takes it.
+        assert!(!text_takes(0., -40., 0.) && !text_takes(0., 40., 0.));
     }
 
     #[test]

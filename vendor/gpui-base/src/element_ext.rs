@@ -22,7 +22,14 @@ pub trait ElementExt: ParentElement + Sized {
                 move |bounds, window, cx| callback(bounds, window, cx),
                 |_, _, _, _| {},
             )
+            // equipe: pinned to the element's top-left. Without insets an
+            // absolute child sits where it would have flowed — in a block
+            // `div`, under the children before it — so the bounds reported
+            // were the element's size moved down by its content's height
+            // (the ticket card's, for the pointer: `views/ticket_card.rs`).
             .absolute()
+            .top_0()
+            .left_0()
             .size_full(),
         )
     }
