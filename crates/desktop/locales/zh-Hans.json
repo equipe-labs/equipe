@@ -1116,7 +1116,6 @@
   "render.file_not_here": "此文件不在这台 Mac 上 — 已拷贝路径：{path}",
   "render.file_open": "打开",
   "render.file_reveal": "在访达中显示",
-  "render.image_elsewhere": "· 不在这台 Mac 上",
   "render.path_copied": "已拷贝路径",
   "render.show_diagram": "图表",
   "render.show_source": "源码",
@@ -1577,10 +1576,18 @@
   "update.why_other": "更新时出错（代码 {code}）— 详情见日志",
   "update.why_permission": "没有写入应用所在文件夹的权限，无法安装更新 — 请确认它在“应用程序”文件夹中",
   "update.why_signature": "无法验证下载的更新的签名，因此未安装",
-  "visuals.gone": "找不到图片",
+  "visuals.all_failed.other": "{count} 张图片无法加载",
+  "visuals.fewer_assets": "收起素材",
+  "visuals.folder.other": "{count} 张图片",
+  "visuals.inline_failed": "无法加载图片",
+  "visuals.more_assets.other": "另有 {count} 个素材",
   "visuals.open": "放大查看",
   "visuals.pick": "选这个方案",
   "visuals.picked": "已选择",
   "visuals.pictures.other": "{count} 张图片",
-  "visuals.recommended": "推荐"
+  "visuals.recommended": "推荐",
+  "visuals.retry": "重试",
+  "visuals.why_missing": "文件不存在",
+  "visuals.why_too_big": "文件太大，无法显示",
+  "visuals.why_unreadable": "无法读取此文件"
 }

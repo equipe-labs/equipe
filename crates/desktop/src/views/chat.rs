@@ -338,7 +338,25 @@ impl Chat {
         }
     }
 
-    fn remeasure_row(&self, row: u64, cx: &mut App) {
+    /// The latest reply that embeds pictures: its row's key, and each picture
+    /// (where it is, what it is called) — read against `base`.
+    #[cfg_attr(not(feature = "snapshot"), allow(dead_code))]
+    pub fn latest_pictures(&self, base: &std::path::Path) -> Option<(u64, Vec<(String, String)>)> {
+        use equipe_core::visuals::markdown;
+        self.blocks.iter().enumerate().rev().find_map(|(ix, block)| {
+            let Block::Reply { text, .. } = block else { return None };
+            let pictures: Vec<(String, String)> = markdown::local_images(text).into_iter().filter_map(|i| Some((markdown::lexical(&i.path, base)?.to_string_lossy().into_owned(), i.alt))).collect();
+            (!pictures.is_empty()).then_some((self.serial << 24 | ix as u64, pictures))
+        })
+    }
+
+    /// Every row is measured again (a gallery in one folded or unfolded).
+    pub fn remeasure_all(&self, cx: &mut App) {
+        self.scroller.update(cx, |s, cx| s.remeasure(cx));
+    }
+
+    /// Row `row` (a key: serial and index) is measured again, if it is of the conversation on show.
+    pub fn remeasure_row(&self, row: u64, cx: &mut App) {
         if row >> 24 != self.serial {
             return;
         }
@@ -955,6 +973,14 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
         }
         None => words(text, 0, cx).into_any_element(),
     };
+    // A folder of pictures it names: a strip of them under its words.
+    let strips: Vec<AnyElement> = if live {
+        Vec::new()
+    } else {
+        let lexical = |written: &str| equipe_core::visuals::markdown::lexical(written, &rows.base).map(|p| p.to_string_lossy().into_owned());
+        let pictures: Vec<(String, String)> = equipe_core::visuals::markdown::local_images(text).into_iter().filter_map(|i| Some((lexical(&i.path)?, i.alt))).collect();
+        equipe_core::visuals::markdown::folders(text).iter().filter_map(|f| lexical(f)).filter_map(|folder| super::visuals::folder_strip(&rows.shots, key, &folder, &pictures, cx)).collect()
+    };
     let group: SharedString = format!("reply-{key}").into();
     // After a group of calls or the news, a little air before the words.
     let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::HandOver { .. } | Block::Thought { .. } | Block::Worked(_));
@@ -1006,8 +1032,9 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
                     .child(rows.who.name.clone()),
             )
         })
-        // The measure: a long line is hard to follow back to the next.
-        .child(div().max_w(px(MEASURE)).text_size(px(BODY)).line_height(px(BODY_LINE)).text_color(p.prose).child(body))
+        // The measure: a long line is hard to follow back to the next. How
+        // wide it is drawn is the room a picture in it has.
+        .child(rows.shots.measured(div().w_full().max_w(px(MEASURE)).text_size(px(BODY)).line_height(px(BODY_LINE)).text_color(p.prose).child(body).children(strips), crate::visuals::COLUMN_KEY))
         .children(actions)
         .into_any_element()
 }
@@ -1567,6 +1594,25 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
     let split = crate::quote::split(&parts.text);
     let quoted = split.as_ref().map(|(quote, _)| super::quote::in_bubble(p, key, ix, quote, rows.handle.clone()));
     let text = split.as_ref().map_or(parts.text.as_str(), |(_, rest)| rest.as_str());
+    // The pictures it embeds show under it, their markup out of its words.
+    let embedded = equipe_core::visuals::markdown::local_images(text);
+    let lexical = |written: &str| equipe_core::visuals::markdown::lexical(written, &rows.base).map(|p| p.to_string_lossy().into_owned());
+    let pictures: Vec<(String, String)> = embedded.iter().filter_map(|i| Some((lexical(&i.path)?, i.alt.clone()))).collect();
+    let without: String;
+    let text = if embedded.is_empty() {
+        text
+    } else {
+        let mut rest = String::with_capacity(text.len());
+        let mut at = 0;
+        for image in &embedded {
+            rest.push_str(&text[at..image.span.start]);
+            at = image.span.end;
+        }
+        rest.push_str(&text[at..]);
+        without = rest.trim().to_owned();
+        without.as_str()
+    };
+    let shown_pictures: Vec<AnyElement> = pictures.iter().map(|(path, alt)| super::visuals::inline(&rows.shots, key, path, alt, &pictures, false, cx)).collect();
     let long = text.lines().count() > USER_LINES || text.chars().count() > USER_LINES * 36;
     let clamped = long && !open;
     let look = Look { size: BODY, line: BODY_LINE, color: p.prose, live: false };
@@ -1614,6 +1660,7 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
         .gap_1p5()
         .items_end()
         .children(files)
+        .when(!shown_pictures.is_empty(), |c| c.child(v_flex().items_end().gap_1().children(shown_pictures)))
         .children(bubble)
         // Beneath, flush right under the bubble: copy, shown on hover — its
         // room kept so nothing moves — then the project it was about, while

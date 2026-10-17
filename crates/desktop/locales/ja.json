@@ -1116,7 +1116,6 @@
   "render.file_not_here": "このファイルはこのMacにありません — パスをコピーしました: {path}",
   "render.file_open": "開く",
   "render.file_reveal": "Finderに表示",
-  "render.image_elsewhere": "· このMacにはありません",
   "render.path_copied": "パスをコピーしました",
   "render.show_diagram": "図",
   "render.show_source": "ソース",
@@ -1577,10 +1576,18 @@
   "update.why_other": "アップデート中にエラーが起きました（コード {code}）— 詳しくはログにあります",
   "update.why_permission": "アプリのあるフォルダに書き込む権限がないため、アップデートをインストールできませんでした — アプリケーションフォルダにあるか確認してください",
   "update.why_signature": "ダウンロードしたアップデートの署名を確認できなかったため、インストールしませんでした",
-  "visuals.gone": "画像が見つかりません",
+  "visuals.all_failed.other": "画像 {count}枚を読み込めませんでした",
+  "visuals.fewer_assets": "アセットをたたむ",
+  "visuals.folder.other": "画像 {count}枚",
+  "visuals.inline_failed": "画像を読み込めませんでした",
+  "visuals.more_assets.other": "ほかのアセット {count}件",
   "visuals.open": "拡大して見る",
   "visuals.pick": "この案にする",
   "visuals.picked": "選択済み",
   "visuals.pictures.other": "画像 {count}枚",
-  "visuals.recommended": "おすすめ"
+  "visuals.recommended": "おすすめ",
+  "visuals.retry": "もう一度試す",
+  "visuals.why_missing": "ファイルがありません",
+  "visuals.why_too_big": "大きすぎて表示できません",
+  "visuals.why_unreadable": "読み込めないファイルです"
 }

@@ -1116,7 +1116,6 @@
   "render.file_not_here": "此檔案不在這台 Mac 上 — 已拷貝路徑：{path}",
   "render.file_open": "打開",
   "render.file_reveal": "在 Finder 中顯示",
-  "render.image_elsewhere": "· 不在這台 Mac 上",
   "render.path_copied": "已拷貝路徑",
   "render.show_diagram": "圖表",
   "render.show_source": "原始碼",
@@ -1577,10 +1576,18 @@
   "update.why_other": "更新時發生錯誤（代碼 {code}）— 詳情見日誌",
   "update.why_permission": "沒有寫入 App 所在檔案夾的權限，無法安裝更新 — 請確認它在「應用程式」檔案夾中",
   "update.why_signature": "無法驗證下載的更新的簽名，因此未安裝",
-  "visuals.gone": "找不到圖片",
+  "visuals.all_failed.other": "{count} 張圖片無法載入",
+  "visuals.fewer_assets": "收起素材",
+  "visuals.folder.other": "{count} 張圖片",
+  "visuals.inline_failed": "無法載入圖片",
+  "visuals.more_assets.other": "另有 {count} 個素材",
   "visuals.open": "放大檢視",
   "visuals.pick": "選這個方案",
   "visuals.picked": "已選擇",
   "visuals.pictures.other": "{count} 張圖片",
-  "visuals.recommended": "推薦"
+  "visuals.recommended": "推薦",
+  "visuals.retry": "重試",
+  "visuals.why_missing": "檔案不存在",
+  "visuals.why_too_big": "檔案太大，無法顯示",
+  "visuals.why_unreadable": "無法讀取此檔案"
 }

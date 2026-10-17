@@ -23,9 +23,9 @@ fn hex(c: Rgba) -> u32 {
     byte(c.r) << 16 | byte(c.g) << 8 | byte(c.b)
 }
 
-/// Every plugin, in the order they are asked.
-pub fn all(p: Palette, look: Look) -> (FileChips, Images, InlineMath, BlockMath, Mermaid, Alerts) {
-    (FileChips { p }, Images { p }, InlineMath { p }, BlockMath { p, look }, Mermaid { p }, Alerts { p, look })
+/// Every plugin, in the order they are asked; `scope`: the conversation's row they draw in.
+pub fn all(p: Palette, look: Look, scope: u64) -> (FileChips, Images, InlineMath, BlockMath, Mermaid, Alerts) {
+    (FileChips { p }, Images { p, live: look.live, scope }, InlineMath { p }, BlockMath { p, look }, Mermaid { p }, Alerts { p, look })
 }
 
 // ── file chips ──
@@ -133,14 +133,21 @@ pub fn file_chip(p: Palette, id: (&'static str, u64), written: &str, openable: b
 
 // ── images ──
 
+/// An image a reply embeds: from the web as it is; a file — on this Mac or
+/// the daemon's, alike — asked of the daemon (`read_image`) and drawn in the
+/// column (`views::visuals::inline`), opened big among the reply's others.
 pub struct Images {
     p: Palette,
+    live: bool,
+    scope: u64,
 }
 
 #[derive(Clone)]
 struct ImageRef {
     url: String,
     alt: String,
+    /// Every file the text embeds, as written, and what each is called: the big view goes through them.
+    all: std::sync::Arc<Vec<(String, String)>>,
 }
 
 impl MarkdownPlugin for Images {
@@ -148,19 +155,33 @@ impl MarkdownPlugin for Images {
         "image"
     }
 
-    fn parse(&self, node: &md::Node, _: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+    fn parse(&self, node: &md::Node, cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
         let md::Node::Image(image) = node else { return None };
         let alt = image.alt.clone();
-        Some(MarkdownNode::new("image", ImageRef { url: image.url.clone(), alt: alt.clone() }).text(alt))
+        let all = equipe_core::visuals::markdown::local_images(cx.source()).into_iter().map(|i| (i.path, i.alt)).collect();
+        Some(MarkdownNode::new("image", ImageRef { url: image.url.clone(), alt: alt.clone(), all: std::sync::Arc::new(all) }).text(alt))
     }
 
     fn render_inline(&self, node: &MarkdownNode, context: &InlineRenderContext, _: &mut Window, cx: &mut App) -> Option<InlineElement> {
         let image = node.data::<ImageRef>()?.clone();
         let p = self.p;
         let id = hash_of(&image.url);
+        if !equipe_core::visuals::markdown::is_web(&image.url)
+            && let Some(shell) = cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade())
+        {
+            let (shots, base) = {
+                let read = shell.read(cx);
+                (crate::views::visuals::Shots::of(read, shell.downgrade(), cx), base_dir(read))
+            };
+            let lexical = |written: &str| equipe_core::visuals::markdown::lexical(written, &base).map(|p| p.to_string_lossy().into_owned());
+            if let Some(path) = lexical(&image.url) {
+                let pictures: Vec<(String, String)> = image.all.iter().filter_map(|(w, alt)| Some((lexical(w)?, alt.clone()))).collect();
+                return Some(InlineElement::new(crate::views::visuals::inline(&shots, self.scope, &path, &image.alt, &pictures, self.live, cx)));
+            }
+        }
         let source = image_source(&image.url, cx);
         let Some(source) = source else {
-            // Not on this Mac: a chip that says so, and copies where it is.
+            // A path that can't be read (`~`, `..`): a chip that says so, and copies where it is.
             let label = if image.alt.is_empty() { image.url.clone() } else { image.alt.clone() };
             let url = image.url.clone();
             return Some(InlineElement::new(
@@ -177,7 +198,7 @@ impl MarkdownPlugin for Images {
                     .cursor_pointer()
                     .child("▣")
                     .child(label)
-                    .child(div().child(t!("render.image_elsewhere")))
+                    .child(div().child(t!("visuals.inline_failed")))
                     .on_click(move |_, _, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
                         super::flash(t!("render.path_copied").to_owned(), cx);

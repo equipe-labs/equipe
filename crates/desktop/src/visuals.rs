@@ -5,14 +5,18 @@
 //! the whole ones kept within a budget. And how they lay out: the options'
 //! grid, a hand-in's gallery, the strip under a news line, the big view's
 //! ←/→. No UI types beyond the image, so the rules are tested without a window.
+//!
+//! A reply's pictures come the same way: each image it embeds at the
+//! column's width (`Size::Inline`), and the pictures of a folder it names
+//! (`list_images`), listed once.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
 use equipe_core::protocol::TicketId;
 use equipe_core::protocol::decide::Question;
-use equipe_core::protocol::rpc::ImageRead;
+use equipe_core::protocol::rpc::{ImageList, ImageRead, ImageWhy};
 use gpui_kit::{Image, ImageFormat};
 
 /// A thumbnail's longer side, in pixels: a tile is at most [`TILE_MAX`]
@@ -36,11 +40,23 @@ pub const STRIP: f32 = 64.;
 pub const STRIP_MAX: usize = 4;
 /// Pictures kept whole, at most this many bytes all told.
 const WHOLE_BUDGET: usize = 96 << 20;
+/// A picture in a reply: its longer side in pixels, for the column at 2x.
+pub const INLINE: u32 = 1280;
+/// A picture in a reply is never taller than this, in points…
+pub const INLINE_HIGH: f32 = 420.;
+/// …and, while its size isn't known, this wide, 4:3.
+pub const INLINE_GUESS: f32 = 480.;
+/// A folder's strip under a reply: each tile this wide, 4:3.
+pub const FOLDER_TILE: f32 = 88.;
+/// The key the conversation's column width is kept under.
+pub const COLUMN_KEY: u64 = u64::MAX;
 
 /// How big a picture is asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Size {
     Thumb,
+    /// As wide as the conversation's column, at 2x.
+    Inline,
     Full,
 }
 
@@ -48,6 +64,7 @@ impl Size {
     pub fn side(self) -> u32 {
         match self {
             Size::Thumb => THUMB,
+            Size::Inline => INLINE,
             Size::Full => FULL,
         }
     }
@@ -59,7 +76,16 @@ pub enum Look {
     /// Asked for, not here yet.
     Loading,
     Ready(Shot),
-    /// Not there any more, or not a picture the squad shows.
+    /// Not there any more, too big, or not a picture the squad shows.
+    Gone(ImageWhy),
+}
+
+/// What is known of a folder a reply names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Listing {
+    Loading,
+    Ready(ImageList),
+    /// Not a folder of pictures the squad shows (or a daemon too old to say).
     Gone,
 }
 
@@ -86,6 +112,13 @@ pub struct Visuals {
     whole: VecDeque<String>,
     whole_bytes: usize,
     widths: HashMap<u64, f32>,
+    folders: HashMap<String, Listing>,
+    wanted_folders: Vec<String>,
+    /// The conversation's rows each picture or folder is drawn in: measured
+    /// again when it comes, as its size is known then.
+    rows: HashMap<String, HashSet<u64>>,
+    /// Hand-in galleries whose assets the person unfolded.
+    pub unfolded: HashSet<u64>,
 }
 
 impl Visuals {
@@ -100,9 +133,14 @@ impl Visuals {
         Look::Loading
     }
 
-    /// The best of `path` there is: whole when it came, else its thumbnail.
+    /// What `path` shows at `size` now, without asking for it.
+    pub fn known(&self, path: &str, size: Size) -> Option<&Look> {
+        self.shown.get(&(path.to_owned(), size))
+    }
+
+    /// The best of `path` there is: whole when it came, else the reply's, else its thumbnail.
     pub fn best(&self, path: &str) -> Option<Shot> {
-        [Size::Full, Size::Thumb].into_iter().find_map(|size| match self.shown.get(&(path.to_owned(), size)) {
+        [Size::Full, Size::Inline, Size::Thumb].into_iter().find_map(|size| match self.shown.get(&(path.to_owned(), size)) {
             Some(Look::Ready(shot)) => Some(shot.clone()),
             _ => None,
         })
@@ -110,18 +148,54 @@ impl Visuals {
 
     /// Whether `path` turned out not to be there.
     pub fn is_gone(&self, path: &str) -> bool {
-        matches!(self.shown.get(&(path.to_owned(), Size::Thumb)), Some(Look::Gone))
+        matches!(self.shown.get(&(path.to_owned(), Size::Thumb)), Some(Look::Gone(_)))
+    }
+
+    /// What folder `folder` holds; the first time, it is asked for.
+    pub fn listing(&mut self, folder: &str) -> Listing {
+        if let Some(listing) = self.folders.get(folder) {
+            return listing.clone();
+        }
+        self.folders.insert(folder.to_owned(), Listing::Loading);
+        self.wanted_folders.push(folder.to_owned());
+        Listing::Loading
+    }
+
+    pub fn put_listing(&mut self, folder: &str, listing: Listing) {
+        self.folders.insert(folder.to_owned(), listing);
     }
 
     /// Whether anything waits to be asked for.
     pub fn has_wanted(&self) -> bool {
-        !self.wanted.is_empty()
+        !self.wanted.is_empty() || !self.wanted_folders.is_empty()
     }
 
     /// What is to be loaded, taken.
     pub fn take_wanted(&mut self) -> Vec<(String, Size)> {
         self.scheduled = false;
         std::mem::take(&mut self.wanted)
+    }
+
+    /// The folders to be listed, taken.
+    pub fn take_wanted_folders(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.wanted_folders)
+    }
+
+    /// `path` (a picture, or a folder) is drawn in conversation row `row`.
+    pub fn in_row(&mut self, path: &str, row: u64) {
+        if let Some(rows) = self.rows.get_mut(path) {
+            rows.insert(row);
+            return;
+        }
+        if self.rows.len() > 2048 {
+            self.rows.clear();
+        }
+        self.rows.insert(path.to_owned(), HashSet::from([row]));
+    }
+
+    /// The rows `path` is drawn in.
+    pub fn rows_of(&self, path: &str) -> Vec<u64> {
+        self.rows.get(path).map(|r| r.iter().copied().collect()).unwrap_or_default()
     }
 
     /// What `path` shows at `size` from now on. Whole pictures past the
@@ -145,7 +219,13 @@ impl Visuals {
 
     /// Back on the line: what couldn't be had is asked for again.
     pub fn retry_gone(&mut self) {
-        self.shown.retain(|_, look| !matches!(look, Look::Gone));
+        self.shown.retain(|_, look| !matches!(look, Look::Gone(_)));
+        self.folders.retain(|_, listing| *listing != Listing::Gone);
+    }
+
+    /// The person asked again for `paths`: they are asked for once more.
+    pub fn retry(&mut self, paths: &[String]) {
+        self.shown.retain(|(path, _), look| !(matches!(look, Look::Gone(_)) && paths.contains(path)));
     }
 
     /// Another machine or squad: nothing known holds.
@@ -209,6 +289,44 @@ pub fn contain(dims: (u32, u32), room: (f32, f32)) -> (f32, f32) {
     ((w * scale).floor(), (h * scale).floor())
 }
 
+/// The box a picture in a reply takes in a column `column` wide: its own
+/// shape, never wider than the column nor taller than [`INLINE_HIGH`], nor
+/// bigger than it is (a pixel a point); 4:3 while its size isn't known.
+pub fn inline_box(dims: Option<(u32, u32)>, column: f32) -> (f32, f32) {
+    let column = column.max(80.);
+    match dims {
+        Some((w, h)) => contain((w, h), (column.min(w.max(1) as f32), INLINE_HIGH.min(h.max(1) as f32))),
+        None => {
+            let w = column.min(INLINE_GUESS).floor();
+            (w, (w * RATIO).min(INLINE_HIGH).floor())
+        }
+    }
+}
+
+/// A hand-in's gallery: its work, and its source assets folded under it —
+/// each asset once, whatever sizes it comes in (`visuals::arrange`).
+pub fn arrange(images: &[String]) -> (Vec<String>, Vec<String>) {
+    let arranged = equipe_core::visuals::arrange(images);
+    (arranged.work, arranged.assets)
+}
+
+/// How the pictures of a gallery that couldn't be had read, when all of them
+/// failed: one line, with the reason most of them share.
+pub fn all_failed(looks: &[Option<&Look>]) -> Option<ImageWhy> {
+    if looks.is_empty() {
+        return None;
+    }
+    let mut whys: Vec<ImageWhy> = Vec::new();
+    for look in looks {
+        match look {
+            Some(Look::Gone(why)) => whys.push(*why),
+            _ => return None,
+        }
+    }
+    let count = |w: ImageWhy| whys.iter().filter(|x| **x == w).count();
+    [ImageWhy::Missing, ImageWhy::TooBig, ImageWhy::Unreadable].into_iter().max_by_key(|w| count(*w))
+}
+
 /// The words members mark the option they recommend with, in the languages
 /// the person may speak — "(Recommended)", "(추천)".
 const RECOMMENDED: [&str; 14] = [
@@ -240,6 +358,8 @@ pub enum Owner {
     Decision { set: u64, step: usize },
     /// A ticket's hand-in.
     Ticket(TicketId),
+    /// The pictures of one row of the conversation: those it embeds, then its folders'.
+    Reply(u64),
 }
 
 /// One picture of the big view, and what it is.
@@ -280,6 +400,19 @@ impl Viewer {
         let items: Vec<Item> = images.iter().map(|p| Item { path: p.clone(), choice: None, label: name_of(p).to_owned() }).collect();
         let at = items.iter().position(|i| i.path == path)?;
         Some(Self { owner: Owner::Ticket(id), items, at })
+    }
+
+    /// A reply's pictures — `(path, what it is called)`, each once — open at `path`.
+    pub fn of_reply(row: u64, pictures: &[(String, String)], path: &str) -> Option<Self> {
+        let mut items: Vec<Item> = Vec::new();
+        for (p, label) in pictures {
+            if !items.iter().any(|i| i.path == *p) {
+                let label = if label.trim().is_empty() { name_of(p).to_owned() } else { label.clone() };
+                items.push(Item { path: p.clone(), choice: None, label });
+            }
+        }
+        let at = items.iter().position(|i| i.path == path)?;
+        Some(Self { owner: Owner::Reply(row), items, at })
     }
 
     pub fn item(&self) -> &Item {
@@ -323,7 +456,7 @@ mod tests {
         assert_eq!(v.best("/w/a.png").unwrap().bytes, 10);
         v.put("/w/a.png", Size::Full, shot(1000));
         assert_eq!(v.best("/w/a.png").unwrap().bytes, 1000, "whole, once it came");
-        v.put("/w/gone.png", Size::Thumb, Look::Gone);
+        v.put("/w/gone.png", Size::Thumb, Look::Gone(ImageWhy::Missing));
         assert!(v.is_gone("/w/gone.png"));
         v.retry_gone();
         assert!(matches!(v.look("/w/gone.png", Size::Thumb), Look::Loading), "asked again once back on the line");
@@ -359,6 +492,69 @@ mod tests {
         assert_eq!(tile_width(260., 1), 260.);
         // Every tile of a grid is the same 4:3 box.
         assert_eq!((w3 * RATIO).round(), (w3 * 0.75).round());
+    }
+
+    #[test]
+    fn a_picture_in_a_reply_keeps_its_shape_within_the_column_and_never_grows() {
+        assert_eq!(inline_box(Some((2400, 1600)), 600.), (600., 400.), "the column's width, its own shape");
+        assert_eq!(inline_box(Some((1000, 2000)), 600.), (210., 420.), "a tall one stops at the height");
+        assert_eq!(inline_box(Some((300, 200)), 600.), (300., 200.), "a small one as it is");
+        assert_eq!(inline_box(Some((2400, 1600)), 320.), (320., 213.), "a narrow window");
+        assert_eq!(inline_box(None, 600.), (480., 360.), "unknown: 4:3, a guess");
+        assert_eq!(inline_box(None, 300.), (300., 225.));
+    }
+
+    #[test]
+    fn a_folder_is_listed_once_and_its_rows_are_remembered() {
+        let mut v = Visuals::default();
+        assert_eq!(v.listing("/w/images"), Listing::Loading);
+        assert_eq!(v.listing("/w/images"), Listing::Loading);
+        assert!(v.has_wanted());
+        assert_eq!(v.take_wanted_folders(), ["/w/images"]);
+        v.put_listing("/w/images", Listing::Ready(ImageList { folder: "/w/images".into(), images: vec!["/w/images/a.png".into()], total: 1 }));
+        assert!(matches!(v.listing("/w/images"), Listing::Ready(l) if l.total == 1));
+        v.put_listing("/w/gone", Listing::Gone);
+        v.retry_gone();
+        assert_eq!(v.listing("/w/gone"), Listing::Loading, "asked again once back on the line");
+        v.in_row("/w/a.png", 7);
+        v.in_row("/w/a.png", 9);
+        let mut rows = v.rows_of("/w/a.png");
+        rows.sort();
+        assert_eq!(rows, [7, 9]);
+    }
+
+    #[test]
+    fn a_gallery_whose_pictures_all_failed_reads_as_one_line_with_the_reason_most_share() {
+        let missing = Look::Gone(ImageWhy::Missing);
+        let big = Look::Gone(ImageWhy::TooBig);
+        let ready = shot(1);
+        assert_eq!(all_failed(&[Some(&missing), Some(&missing), Some(&big)]), Some(ImageWhy::Missing));
+        assert_eq!(all_failed(&[Some(&missing), Some(&ready)]), None, "one came: each says its own");
+        assert_eq!(all_failed(&[Some(&missing), None]), None, "one still coming");
+        assert_eq!(all_failed(&[]), None);
+        let mut v = Visuals::default();
+        v.put("/w/a.png", Size::Thumb, Look::Gone(ImageWhy::Missing));
+        v.put("/w/b.png", Size::Thumb, Look::Gone(ImageWhy::Missing));
+        v.retry(&["/w/a.png".to_owned()]);
+        assert!(v.known("/w/a.png", Size::Thumb).is_none() && v.is_gone("/w/b.png"), "only what was asked again");
+    }
+
+    #[test]
+    fn a_hand_ins_assets_come_after_its_work_each_once() {
+        let images: Vec<String> = ["/w/public/textures/earth_day_4096.jpg", "/w/outputs/T-4-globe.png", "/w/public/textures/earth_day_2048.jpg", "/w/outputs/T-4-flying.png"].map(str::to_owned).to_vec();
+        let (work, assets) = arrange(&images);
+        assert_eq!(work, ["/w/outputs/T-4-globe.png", "/w/outputs/T-4-flying.png"]);
+        assert_eq!(assets, ["/w/public/textures/earth_day_4096.jpg"]);
+    }
+
+    #[test]
+    fn the_big_view_goes_through_a_replys_pictures_once_each() {
+        let pictures = [("/w/plan.png".to_owned(), "평면도".to_owned()), ("/w/site.png".to_owned(), String::new()), ("/w/plan.png".to_owned(), "again".to_owned())];
+        let mut v = Viewer::of_reply(3, &pictures, "/w/site.png").unwrap();
+        assert_eq!((v.items.len(), v.at, v.item().label.as_str()), (2, 1, "site.png"));
+        v.step(true);
+        assert_eq!((v.item().label.as_str(), v.owner.clone()), ("평면도", Owner::Reply(3)));
+        assert!(Viewer::of_reply(3, &pictures, "/w/other.png").is_none());
     }
 
     #[test]
