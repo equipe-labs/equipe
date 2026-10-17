@@ -2895,6 +2895,32 @@ async fn the_pm_on_a_ticket_of_its_own_is_still_reached_beside_it() {
 }
 
 #[tokio::test]
+async fn said_to_the_pm_while_its_conversation_beside_the_work_is_at_it_steers_that_conversation() {
+    let site = named("site");
+    // The ticket's work is slow, and so is the PM's answer beside it.
+    let turn = format!("case \"$*\" in *\"slow-work\"*) sleep 8;; *\"slow-talk\"*) sleep 4;; esac\n{}", answering_per_call("ok"));
+    let (claude, _) = recording_claude(&turn);
+    let home = squad_home(&[&site]);
+    let (npx, _) = fake_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Translate the site", "body": "slow-work", "owner": "pm", "project": "site", "kind": "task" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 1, .. })).await;
+
+    handle.send(Command::Submit { session: 1, text: "slow-talk: how is it?".into(), about: Some(None) });
+    let seen = until(&mut events, |e| matches!(e, Event::UserMessage { text, .. } if text.starts_with("slow-talk"))).await;
+    let lane = seen.iter().find_map(|e| if let Event::LaneOpened { session, of: 1, .. } = e { Some(*session) } else { None }).expect("its conversation beside the work");
+    assert!(matches!(seen.last(), Some(Event::UserMessage { session, .. }) if *session == lane), "the person's message is the lane's, at once: {seen:#?}");
+
+    // Said to the PM (the screen names the member) while the lane answers:
+    // it steers the lane, which the screen shows waiting.
+    handle.send(Command::Submit { session: 1, text: "and the footer".into(), about: Some(None) });
+    let seen = until(&mut events, |e| matches!(e, Event::SteerQueued { .. } | Event::MessageQueued { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::SteerQueued { session, text, project: None }) if *session == lane && text == "and the footer"), "{seen:#?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_members_model_changes_between_turns_and_its_conversation_carries_on() {
     let cwd = scratch("model");
     let (claude, recorded) = recording_claude(&answering("ok"));

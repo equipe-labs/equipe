@@ -430,7 +430,7 @@ fn placeholder(model: &Model) -> String {
     };
     // At work: what Enter does now, and what Tab does instead.
     if model.viewed_presence() == Some(Presence::Working) && model.opened.is_none() {
-        return if member.engine == Some(Engine::Claude) { t!("composer.placeholder_steer", name = member.name) } else { t!("composer.placeholder_memo", name = member.name) };
+        return if member.engine.is_some() { t!("composer.placeholder_steer", name = member.name) } else { t!("composer.placeholder_memo", name = member.name) };
     }
     match model.opened {
         Some(ticket) => {
@@ -578,7 +578,7 @@ impl Shell {
 
     /// ⌘⇧⏎: to a member at work, the other of steer and memo, this once.
     fn send_inverted(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let steerable = self.model.selected_member().is_some_and(|m| m.engine == Some(Engine::Claude));
+        let steerable = self.model.selected_member().is_some_and(|m| m.engine.is_some());
         let working = self.model.viewed_presence() == Some(Presence::Working);
         self.send_as(working && steerable, window, cx);
     }
@@ -1697,7 +1697,7 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let text = composer.text(cx);
     let has_words = !text.trim().is_empty();
     let has_any = has_words || composer.strip.ready() > 0;
-    let steerable = member.is_some_and(|m| m.engine == Some(Engine::Claude));
+    let steerable = member.is_some_and(|m| m.engine.is_some());
     let (to_label, to_color) = recipient(p, model, &text);
     let project = model.focus.clone().filter(|_| member.is_some_and(Model::is_pm));
     let anchors = composer.anchors.clone();

@@ -505,7 +505,9 @@ pub fn plan(model: &Model, text: &str, later: bool) -> Plan {
     match presence {
         Presence::Closed => Plan { restore: Some(text.to_owned()), ..Plan::say(t!("compose.member_gone", name = target.name)) },
         // A memo: the core holds it until the turn ends. Only Claude can be steered.
-        Presence::Working if later || target.engine != Some(Engine::Claude) => Plan {
+        // Both engines read a steer at their next step (Codex through its own
+        // CLI's `turn/steer`); a daemon that can't steer one leaves a memo.
+        Presence::Working if later || target.engine.is_none() => Plan {
             commands: vec![Command::SubmitLater { session: target.session, text: text.to_owned(), about: Some(model.focus.clone()) }],
             flash: Some(t!("compose.memo_left", name = target.name)),
             ..Plan::default()
@@ -1121,12 +1123,12 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_member_at_work_always_gets_a_memo() {
+    fn a_codex_member_at_work_is_steered_like_a_claude_one() {
         let mut codex = session(3, "backend", SessionState::Working);
         codex.engine = Engine::Codex;
         let model = squad(vec![session(1, "pm", SessionState::Ready), codex]);
         let p = plan(&model, "@backend 이것도");
-        assert_eq!(p.commands, vec![Command::SubmitLater { session: 3, text: "이것도".into(), about: Some(None) }]);
+        assert_eq!(p.commands, vec![Command::Submit { session: 3, text: "이것도".into(), about: Some(None) }]);
     }
 
     #[test]
