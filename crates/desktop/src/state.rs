@@ -843,9 +843,13 @@ impl Model {
                     self.convos.insert(id, convo);
                 }
             }
+            // The conversation on screen: the selected member's — or its lane,
+            // the PM's conversation beside its work, whose events are not the
+            // member's session's (a steer said to it showed nothing).
+            let viewed = self.selected == Some(id) || self.viewed() == Some(id);
             if let Some(convo) = self.convos.get_mut(&id)
                 && convo.on_event(&event, Instant::now(), now)
-                && self.selected == Some(id)
+                && viewed
             {
                 self.revision += 1;
             }
@@ -1990,6 +1994,55 @@ mod tests {
         // Whatever project is in focus: one conversation.
         model.set_focus(Some("site".into()));
         assert_eq!(model.viewed(), Some(77));
+    }
+
+    /// What the conversation on screen draws: its pending bubbles and the
+    /// person's own messages, as the chat pane gets them.
+    fn on_screen(model: &Model) -> Vec<crate::convo::Block> {
+        model.conversation(true, &std::collections::HashSet::new()).blocks
+    }
+
+    #[test]
+    fn what_is_said_to_the_pms_lane_at_work_shows_at_once_in_every_slice() {
+        // The user's report: the PM's conversation beside its work (a lane)
+        // at work; a steer said to it never showed — its events drew nothing,
+        // being the lane's, not the selected member's.
+        for focus in [None, Some("site".to_owned())] {
+            let mut model = with_lane();
+            model.set_focus(focus.clone());
+            let before = model.revision;
+            // As the daemon says it: the PM's desk marks the project the message is about.
+            model.apply(Update::Event(Event::Thread { session: 77, project: focus.clone() }), T0);
+            assert!(model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into() }), T0), "the person's message in the lane is a redraw");
+            assert!(model.revision > before, "the chat pane syncs only on a new revision");
+            assert!(on_screen(&model).iter().any(|b| matches!(b, crate::convo::Block::User(t) if t == "앱은?")), "their bubble shows at once ({focus:?})");
+            let before = model.revision;
+            assert!(model.apply(Update::Event(Event::SteerQueued { session: 77, text: "그리고 웹도".into(), project: focus.clone() }), T0), "a steer queued is a redraw");
+            assert!(model.revision > before);
+            assert!(
+                on_screen(&model).iter().any(|b| matches!(b, crate::convo::Block::Pending { text, steer: true, .. } if text == "그리고 웹도")),
+                "the pending steer shows ({focus:?}): {:?}",
+                on_screen(&model)
+            );
+            // Read at its next step: the bubble is the conversation's.
+            let before = model.revision;
+            model.apply(Update::Event(Event::Steered { session: 77, text: "그리고 웹도".into() }), T0);
+            assert!(model.revision > before);
+            assert!(!on_screen(&model).iter().any(|b| matches!(b, crate::convo::Block::Pending { .. })));
+            // And the lane's reply streams in as it comes.
+            let before = model.revision;
+            model.apply(Update::Event(Event::TextDelta { session: 77, text: "웹도 봤어요.".into() }), T0);
+            assert!(model.revision > before, "a reply streaming in the lane draws");
+        }
+    }
+
+    #[test]
+    fn a_lane_at_work_not_in_view_draws_nothing() {
+        let mut model = with_lane();
+        model.select(2);
+        let before = model.revision;
+        model.apply(Update::Event(Event::SteerQueued { session: 77, text: "x".into(), project: None }), T0);
+        assert_eq!(model.revision, before, "another conversation's steer doesn't redraw this one");
     }
 
     #[test]
