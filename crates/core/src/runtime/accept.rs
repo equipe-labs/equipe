@@ -63,7 +63,7 @@ them, and note what they said on the ticket with `comment`, for the PM."
         let tickets = self.tickets(squad);
         let open = self.accepts.get(squad).cloned().unwrap_or_default();
         let declined = self.declined_lately(squad);
-        if let Ok(Outcome::Propose(checked)) = rules::check_tickets(verdict, named, note, "", &tickets, &open, &declined, now_secs()) {
+        if let Ok(Outcome::Propose(checked)) = rules::check_tickets(verdict, named, note, &tickets, &open, &declined, now_secs()) {
             let proposal = checked.into_proposal(equipe_protocol::new_session_id(), equipe_protocol::accept::FROM_WORDS, session, now_secs());
             self.put_up(squad, proposal);
         }

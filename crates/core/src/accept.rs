@@ -117,7 +117,7 @@ pub fn still_open(proposal: &AcceptProposal, tickets: &[Ticket]) -> bool {
 /// Tickets named, checked against the board and what already waits — the
 /// same rules for the PM's tool and a screen reading the person's words.
 /// What can't be proposed is left out with why; nothing left, an error.
-pub fn check_tickets(verdict: Verdict, named: &[TicketId], note: &str, summary: &str, tickets: &[Ticket], open: &[AcceptProposal], declined: &[Declined], now: u64) -> Result<Outcome, String> {
+pub fn check_tickets(verdict: Verdict, named: &[TicketId], note: &str, tickets: &[Ticket], open: &[AcceptProposal], declined: &[Declined], now: u64) -> Result<Outcome, String> {
     let note = note.trim().to_owned();
     if verdict == Verdict::Changes && note.is_empty() {
         return Err("Say what to change in `note`, in the person's own words.".into());
@@ -163,7 +163,7 @@ pub fn check_tickets(verdict: Verdict, named: &[TicketId], note: &str, summary: 
     for id in waiting {
         dropped.push((id, format!("T-{id} is on a card already")));
     }
-    Ok(Outcome::Propose(Checked { verdict, tickets: fit, note, summary: summary.trim().to_owned(), dropped }))
+    Ok(Outcome::Propose(Checked { verdict, tickets: fit, note, summary: String::new(), dropped }))
 }
 
 /// A `propose_accept` call checked against the board and what already
@@ -188,8 +188,11 @@ pub fn check(args: &Value, tickets: &[Ticket], open: &[AcceptProposal], declined
         }
     };
     let note = board::arg_str(args, "note").unwrap_or_default();
-    let summary = board::arg_str(args, "summary").unwrap_or_default();
-    check_tickets(verdict, &named, note, summary, tickets, open, declined, now)
+    let summary = board::arg_str(args, "summary").unwrap_or_default().to_owned();
+    Ok(match check_tickets(verdict, &named, note, tickets, open, declined, now)? {
+        Outcome::Propose(checked) => Outcome::Propose(Checked { summary, ..checked }),
+        already => already,
+    })
 }
 
 fn ids(list: &[TicketId]) -> String {

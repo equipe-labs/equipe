@@ -182,6 +182,9 @@ pub enum Need {
     Questions(u64),
     /// A change to the team the PM proposed (`crate::team`), by its id.
     Team(u64),
+    /// Handed-in work the person said in words to accept, on a card to
+    /// confirm (`crate::accept`), by its id.
+    Accept(u64),
     Ticket(TicketId),
     /// A member's browser page waiting for the person's own hand (a human
     /// check, a sign-in), by its page id ([`BrowserWait`]).
@@ -292,6 +295,8 @@ pub struct Model {
     pub asked: crate::decide::Asked,
     /// Changes to the team the PM proposed, waiting for the person, oldest first.
     pub team: crate::team::Proposals,
+    /// Handed-in work put to the person to confirm, oldest first.
+    pub accepts: crate::accept::Cards,
     /// Both engines' plans, the squad's switching and its cards (`engines`).
     pub engines: crate::switching::Engines,
     /// Things that need the person and have not been announced yet: the shell
@@ -414,6 +419,7 @@ impl Model {
             approvals: Queue::default(),
             asked: Default::default(),
             team: Default::default(),
+            accepts: Default::default(),
             engines: Default::default(),
             alerts: Vec::new(),
             flash: None,
@@ -667,6 +673,7 @@ impl Model {
                 self.approvals.forget_answers();
                 self.asked.forget_sent();
                 self.team.forget_sent();
+                self.accepts.forget_sent();
                 self.engines.forget_sent();
                 let next = match &self.conn {
                     // Already down: only the reason may have moved on, and it
@@ -743,6 +750,7 @@ impl Model {
         self.approvals.load(snapshot.approvals.clone());
         self.asked.load(snapshot.questions.clone());
         self.team.load(snapshot.team_changes.clone());
+        self.accepts.load(snapshot.accepts.clone());
         if let Some(note) = crate::notify::stale_daemon(&version, env!("CARGO_PKG_VERSION")) {
             self.flash = Some(note);
         }
@@ -896,6 +904,14 @@ impl Model {
                 }
             }
             Event::TeamChangeClosed { squad, id, .. } if squad == self.squad => self.team.close(id),
+            // Work to confirm: announced as a decision is — unless the person's own words raised it.
+            Event::AcceptProposed { squad, proposal } if squad == self.squad => {
+                let (session, member, words) = (proposal.session, proposal.by.clone(), proposal.from_words());
+                if self.accepts.push(proposal) && !words {
+                    self.alerts.push(Alert::Decision { session, member, count: 1 });
+                }
+            }
+            Event::AcceptClosed { squad, id, .. } if squad == self.squad => self.accepts.close(id),
             Event::ModeChanged { squad, member, mode } if squad == self.squad => match member {
                 None => self.mode = mode.unwrap_or_default(),
                 Some(name) => {
@@ -1113,7 +1129,7 @@ impl Model {
     /// What the cards above the composer show, for change detection.
     fn card_hint(&self) -> CardHint {
         (
-            self.approvals.ids().into_iter().chain(self.asked.ids()).chain(self.team.ids()).collect(),
+            self.approvals.ids().into_iter().chain(self.asked.ids()).chain(self.team.ids()).chain(self.accepts.ids()).collect(),
             self.for_you_here().iter().map(|t| (t.id, t.status, t.note.clone())).collect(),
             self.flash.clone(),
         )
@@ -1236,6 +1252,7 @@ impl Model {
         let mut out: Vec<(Section, Need)> = self.approvals.open_items().map(|a| (Section::Permission, Need::Permission(a.id))).collect();
         out.extend(self.asked.open().map(|s| (Section::Decide, Need::Questions(s.id))));
         out.extend(self.team.open().map(|c| (Section::Decide, Need::Team(c.id))));
+        out.extend(self.accepts.open().map(|c| (Section::Decide, Need::Accept(c.id))));
         // A page that waits for the person's own hand: their turn, first.
         out.extend(self.browser_waits.iter().map(|w| (Section::Waiting, Need::Browser(w.page))));
         for section in &Section::TICKETS {
@@ -2173,6 +2190,30 @@ mod tests {
         model.team.forget_sent();
         assert!(model.apply(Update::Event(Event::TeamChangeClosed { squad: "acme".into(), id: 70, approved: true, members: vec!["mobile-2".into()] }), T0));
         assert!(model.team.ids().is_empty());
+    }
+
+    #[test]
+    fn a_card_to_confirm_waits_to_be_decided_announced_only_when_a_member_raised_it() {
+        use equipe_core::protocol::accept::{AcceptProposal, FROM_WORDS, Verdict};
+        let mut model = needs_model();
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        model.take_alerts();
+        let card = AcceptProposal { id: 80, verdict: Verdict::Accept, tickets: vec![7], note: String::new(), summary: String::new(), by: "pm".into(), session: 1, proposed_at: 1 };
+        assert!(model.apply(Update::Event(Event::AcceptProposed { squad: "acme".into(), proposal: card.clone() }), T0), "the card shows: a redraw");
+        assert_eq!(model.take_alerts(), vec![Alert::Decision { session: 1, member: "pm".into(), count: 1 }]);
+        // Raised from the person's own words a moment ago: they know; nothing to announce.
+        model.apply(Update::Event(Event::AcceptProposed { squad: "acme".into(), proposal: AcceptProposal { id: 81, by: FROM_WORDS.into(), ..card.clone() } }), T0);
+        model.apply(Update::Event(Event::AcceptProposed { squad: "other".into(), proposal: AcceptProposal { id: 82, ..card.clone() } }), T0);
+        assert!(model.take_alerts().is_empty());
+        let decide: Vec<Need> = model.needs_you().into_iter().filter(|(s, _)| *s == Section::Decide).map(|(_, n)| n).collect();
+        assert_eq!(decide, [Need::Accept(80), Need::Accept(81)], "결정 필요");
+        assert_eq!(model.accepts.shown_in(1).map(|c| c.id), Some(80));
+        // Confirmed here: the person's command, hidden at once; closed anywhere: gone, live.
+        assert!(matches!(model.accepts.decide("acme", 80, true, |_| None), Some(Command::ConfirmAccept { id: 80, .. })));
+        assert!(!model.needs_you().iter().any(|(_, n)| *n == Need::Accept(80)));
+        model.accepts.forget_sent();
+        assert!(model.apply(Update::Event(Event::AcceptClosed { squad: "acme".into(), id: 80, confirmed: true, tickets: vec![7] }), T0));
+        assert_eq!(model.accepts.ids(), [81]);
     }
 
     #[test]

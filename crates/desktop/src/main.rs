@@ -17,6 +17,7 @@ mod engines;
 mod switching;
 mod export;
 mod compose;
+mod accept;
 mod activity;
 mod convo;
 mod decide;
@@ -223,6 +224,8 @@ pub struct Shell {
     pending_team: Option<Vec<String>>,
     connecting_shown: bool,
     pub(crate) log_renders: bool,
+    /// The tickets on cards to confirm whose size was asked for, as they looked then.
+    pub(crate) accept_asked: std::collections::HashMap<equipe_core::protocol::TicketId, (Option<String>, String, Option<bool>)>,
     renders: u64,
     started: std::time::Instant,
     // Dropping these ends the link's thread and the tasks that feed from it.
@@ -314,6 +317,7 @@ impl Shell {
             pending_team: None,
             connecting_shown: false,
             log_renders: std::env::var_os("EQUIPE_LOG_RENDER").is_some(),
+            accept_asked: std::collections::HashMap::new(),
             renders: 0,
             started: std::time::Instant::now(),
             link: None,
@@ -493,6 +497,11 @@ impl Shell {
                 views::decide::Took::Pass => {}
             }
             // A change to the team the PM proposed: ⌘⏎ approves it, above an empty composer or in the peek.
+            // Work to confirm: ⌘⏎ confirms what is ticked, above an empty composer or in the peek.
+            if this.update(cx, |shell, cx| shell.on_accept_key(key, &modifiers, cx)).unwrap_or(false) {
+                cx.stop_propagation();
+                return;
+            }
             if this.update(cx, |shell, cx| shell.on_team_key(key, &modifiers, cx)).unwrap_or(false) {
                 cx.stop_propagation();
                 return;
@@ -746,6 +755,8 @@ impl Shell {
                         }
                         let attached = matches!(update, daemon::Update::Attached(_));
                         changed |= this.model.apply(update, now);
+                        // A card to confirm shows each ticket's size: asked of git once per look.
+                        this.accept_stats();
                         // Settings open on its list: the daemon (maybe another one) is asked again.
                         if attached {
                             this.engines.attached();
