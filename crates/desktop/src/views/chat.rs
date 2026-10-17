@@ -1148,9 +1148,9 @@ fn linked(rows: &Rows, id: impl Into<ElementId>, text: &str, color: Rgba, grow: 
     let p = rows.p;
     let mut ranges = Vec::new();
     let mut from = 0;
-    while let Some((at, len)) = crate::convo::ticket_ref(&text[from..]) {
-        ranges.push(from + at..from + at + len);
-        from += at + len;
+    while let Some((at, len)) = crate::convo::ticket_ref_from(text, from) {
+        ranges.push(at..at + len);
+        from = at + len;
     }
     let tickets: Vec<u32> = ranges.iter().filter_map(|r| text[r.start + 2..r.end].parse().ok()).collect();
     let style = HighlightStyle { color: Some(p.text.into()), underline: Some(UnderlineStyle { thickness: px(1.), color: Some(p.hair.into()), wavy: false }), ..Default::default() };
@@ -1688,11 +1688,11 @@ pub fn escape_markdown(text: &str) -> String {
         let trimmed = line.trim_start_matches(' ');
         out.extend(std::iter::repeat_n('\u{A0}', line.len() - trimmed.len()));
         // A ticket number is a link to it, as in a reply.
-        let mut rest = trimmed;
-        while !rest.is_empty() {
-            let (plain, link) = match crate::convo::ticket_ref(rest) {
-                Some((at, len)) => (&rest[..at], Some(&rest[at..at + len])),
-                None => (rest, None),
+        let mut from = 0;
+        while from < trimmed.len() {
+            let (plain, link) = match crate::convo::ticket_ref_from(trimmed, from) {
+                Some((at, len)) => (&trimmed[from..at], Some(&trimmed[at..at + len])),
+                None => (&trimmed[from..], None),
             };
             for c in plain.chars() {
                 if c.is_ascii_punctuation() {
@@ -1703,7 +1703,7 @@ pub fn escape_markdown(text: &str) -> String {
             if let Some(link) = link {
                 out.push_str(&format!("[{}](ticket:{})", link.replace('-', "\\-"), &link[2..]));
             }
-            rest = &rest[plain.len() + link.map_or(0, str::len)..];
+            from += plain.len() + link.map_or(0, str::len);
         }
         if n + 1 < lines.len() {
             // A hard break, unless the next line is blank (a paragraph break).
