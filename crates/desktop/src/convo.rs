@@ -882,21 +882,9 @@ fn canonical(p: &Path) -> PathBuf {
     })
 }
 
-/// The first `T-<digits>` in `text` that stands as a word: where, and how long.
-pub fn ticket_ref(text: &str) -> Option<(usize, usize)> {
-    let bytes = text.as_bytes();
-    let mut from = 0;
-    while let Some(found) = text[from..].find("T-") {
-        let at = from + found;
-        let digits = bytes[at + 2..].iter().take_while(|b| b.is_ascii_digit()).count();
-        let before_ok = at == 0 || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'-');
-        if digits > 0 && before_ok {
-            return Some((at, 2 + digits));
-        }
-        from = at + 2;
-    }
-    None
-}
+/// Ticket numbers in text that stand on their own (not in a path, a file
+/// name or an address): the core's rule, the console's too.
+pub use equipe_core::board::{ticket_ref, ticket_ref_from};
 
 /// The link target a ticket number carries in markdown.
 pub const TICKET_SCHEME: &str = "ticket:";
@@ -921,6 +909,19 @@ mod tests {
         for e in events {
             c.on_event(e, now, T);
         }
+    }
+
+    #[test]
+    fn a_reply_streams_whole_through_what_adds_no_line() {
+        // Said while it answered: once, the chunk after it started a reply of
+        // its own, and "지" ended one row, "금 보드를" began the next.
+        let mut c = convo(true);
+        let delta = |text: &str| Event::TextDelta { session: 1, text: text.into() };
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "보드 확인해 줘".into() }, delta("네, 확인했습니다. 지")]);
+        feed(&mut c, &[Event::SteerQueued { session: 1, text: "그리고 하나 더".into(), project: None }, Event::SubagentStep { session: 1, id: "a".into(), step: "Read a.rs".into() }]);
+        feed(&mut c, &[delta("금 보드를 살펴보겠습니다.")]);
+        let replies: Vec<String> = c.blocks().into_iter().filter_map(|b| if let Block::Reply { text, .. } = b { Some(text) } else { None }).collect();
+        assert_eq!(replies, ["네, 확인했습니다. 지금 보드를 살펴보겠습니다."]);
     }
 
     #[test]

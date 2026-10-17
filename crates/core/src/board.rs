@@ -106,6 +106,77 @@ pub fn parse_ticket_id(text: &str) -> Option<TicketId> {
     digits.parse().ok()
 }
 
+/// The first ticket number in `text` that stands on its own — `T-8`, `(T-8)`,
+/// `T-8:`, `T-8,`, `T-8와`, `T-8.` closing a sentence, each of `T-2/T-3` —
+/// where, and how long. Not one inside a word (`MAT-8`, `T-8a`), a path or a
+/// file name (`outputs/T-2 갤러리/`, `T-2.png`, `a_T-2`, `T-2-draft`), or an
+/// address (`https://x.y/?t=T-2`): those are not about the ticket.
+pub fn ticket_ref(text: &str) -> Option<(usize, usize)> {
+    ticket_ref_from(text, 0)
+}
+
+/// [`ticket_ref`] from byte `from` on, what comes before it read as context.
+pub fn ticket_ref_from(text: &str, from: usize) -> Option<(usize, usize)> {
+    let mut from = from;
+    while let Some(found) = text.get(from..)?.find("T-") {
+        let at = from + found;
+        if let Some(len) = number_at(text, at)
+            && free_before(text, at)
+            && free_after(text, at + len)
+            && !in_address(text, at)
+        {
+            return Some((at, len));
+        }
+        from = at + 2;
+    }
+    None
+}
+
+/// How long the `T-<digits>` at `at` is, if one is there.
+fn number_at(text: &str, at: usize) -> Option<usize> {
+    let digits = text.as_bytes().get(at + 2..)?.iter().take_while(|b| b.is_ascii_digit()).count();
+    (text[at..].starts_with("T-") && digits > 0).then_some(2 + digits)
+}
+
+/// Where the `T-<digits>` that ends at `end` starts, if one ends there.
+fn number_ending_at(text: &str, end: usize) -> Option<usize> {
+    let digits = text.as_bytes()[..end].iter().rev().take_while(|b| b.is_ascii_digit()).count();
+    (digits > 0 && text[..end - digits].ends_with("T-")).then(|| end - digits - 2)
+}
+
+/// What paths and file names are joined with: a number touching one is part of the name.
+fn joins_name(c: char) -> bool {
+    matches!(c, '/' | '\\' | '.' | '_' | '-')
+}
+
+/// Nothing of a word or a name runs into the number at `at` from the left; a
+/// slash only between two numbers (`T-2/T-3`).
+fn free_before(text: &str, at: usize) -> bool {
+    match text[..at].chars().next_back() {
+        None => true,
+        Some('/') => number_ending_at(text, at - 1).is_some_and(|start| free_before(text, start)),
+        Some(c) => !(c.is_alphanumeric() || joins_name(c)),
+    }
+}
+
+/// Nothing of a word or a name runs on from the number ending at `end`: a
+/// Korean particle may (`T-2와`), a slash only to another number, a full stop
+/// only to end the sentence.
+fn free_after(text: &str, end: usize) -> bool {
+    match text[end..].chars().next() {
+        None => true,
+        Some('/') => number_at(text, end + 1).is_some_and(|len| free_after(text, end + 1 + len)),
+        Some('.') => text[end..].trim_start_matches('.').chars().next().is_none_or(|c| c.is_whitespace() || !(c.is_alphanumeric() || joins_name(c))),
+        Some(c) => !(c.is_ascii_alphanumeric() || joins_name(c)),
+    }
+}
+
+/// Whether the number at `at` is in a web address written out.
+fn in_address(text: &str, at: usize) -> bool {
+    let word = text[..at].rsplit(char::is_whitespace).next().unwrap_or_default();
+    word.contains("://") || word.starts_with("www.")
+}
+
 /// The board as text, for a model to read.
 pub fn render(tickets: &[Ticket]) -> String {
     let open: Vec<&Ticket> = tickets.iter().filter(|t| !t.status.is_closed()).collect();
@@ -686,6 +757,76 @@ pub fn arg_id(args: &Value, key: &str) -> Option<TicketId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every ticket number `ticket_ref` finds in `text`, in order.
+    fn refs(text: &str) -> Vec<&str> {
+        let mut out = Vec::new();
+        let mut from = 0;
+        while let Some((at, len)) = ticket_ref_from(text, from) {
+            out.push(&text[at..at + len]);
+            from = at + len;
+        }
+        out
+    }
+
+    #[test]
+    fn ticket_numbers_that_stand_on_their_own() {
+        let cases: &[(&str, &[&str])] = &[
+            ("T-2", &["T-2"]),
+            ("see T-12 now", &["T-12"]),
+            ("T-2: 갤러리", &["T-2"]),
+            ("갤러리 (T-2) 끝", &["T-2"]),
+            ("T-2, T-3 and T-4", &["T-2", "T-3", "T-4"]),
+            ("T-2와 T-3을 묶습니다", &["T-2", "T-3"]),
+            ("T-119처럼", &["T-119"]),
+            ("T-2/T-3 둘 다", &["T-2", "T-3"]),
+            ("T-2/T-3/T-4", &["T-2", "T-3", "T-4"]),
+            ("끝낸 것은 T-2.", &["T-2"]),
+            ("T-2. 다음은 T-3...", &["T-2", "T-3"]),
+            ("「T-2」 \"T-3\" **T-4**", &["T-2", "T-3", "T-4"]),
+            ("T-2!", &["T-2"]),
+            ("#T-2", &["T-2"]),
+            ("[T-2]", &["T-2"]),
+            ("line\nT-2\n", &["T-2"]),
+            ("T-8 is ready for you.", &["T-8"]),
+            // Inside a path or a file name.
+            ("/Users/abel/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images/", &[]),
+            ("outputs/T-2 갤러리", &[]),
+            ("outputs/T-117/shots/", &[]),
+            ("/T-2 갤러리", &[]),
+            ("a/T-2/T-3", &[]),
+            ("T-2/x", &[]),
+            ("C:\\work\\T-2", &[]),
+            ("T-2\\x", &[]),
+            ("T-2.png", &[]),
+            ("x.T-2", &[]),
+            ("T-2_draft", &[]),
+            ("draft_T-2", &[]),
+            ("T-2-draft", &[]),
+            ("v-T-2", &[]),
+            ("T-2./x", &[]),
+            // Inside a web address.
+            ("https://x.y/T-8", &[]),
+            ("https://x.y/?t=T-8 and T-9", &["T-9"]),
+            ("www.x.y?t=T-8", &[]),
+            // Inside a word.
+            ("abcT-2", &[]),
+            ("MAT-8", &[]),
+            ("UT-3", &[]),
+            ("9T-3", &[]),
+            ("가T-3", &[]),
+            ("T-2a", &[]),
+            ("T-2x T-3", &["T-3"]),
+            ("T-", &[]),
+            ("T-x", &[]),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(&refs(text), expected, "{text:?}");
+        }
+        assert_eq!(ticket_ref("see T-12 now"), Some((4, 4)));
+        assert_eq!(ticket_ref_from("T-2/T-3", 3), Some((4, 3)), "the number before is read as context");
+        assert_eq!(ticket_ref_from("a/T-3", 2), None);
+    }
 
     #[test]
     fn a_folder_inside_a_repository_is_named_with_it() {

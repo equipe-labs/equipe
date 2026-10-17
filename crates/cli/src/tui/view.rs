@@ -17,7 +17,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use equipe_core::board::project_name;
+use equipe_core::board::{project_name, ticket_ref, ticket_ref_from};
 use equipe_core::i18n::label;
 use equipe_core::protocol::{Engine, Entry, Estimate, Priority, SessionId, TicketId, TicketStatus};
 
@@ -210,6 +210,12 @@ impl Theme {
 
     fn bold(self) -> Style {
         Style::new().add_modifier(Modifier::BOLD)
+    }
+
+    /// A ticket number: the accent, underlined as a link is — a way to the
+    /// ticket, and told apart from code.
+    fn ticket(self) -> Style {
+        self.accent().add_modifier(Modifier::UNDERLINED)
     }
 
     /// Code in a reply: the accent, so it stands apart from prose without a box.
@@ -748,13 +754,14 @@ pub fn extent(app: &App, theme: Theme, screen: Rect, layouts: &Layouts) -> Exten
         for (row, line) in laid[top..lines.min(top + height)].iter().enumerate() {
             let mut x = text.x;
             for span in &line.spans {
+                // A number `mark_tickets` marked is a span of its own, in the ticket's look.
                 let content: &str = &span.content;
-                if let Some((at, len)) = ticket_ref(content)
-                    && let Ok(id) = content[at + 2..at + len].parse::<TicketId>()
+                if is_ticket_look(span.style, theme)
+                    && ticket_ref(content) == Some((0, content.len()))
+                    && let Ok(id) = content[2..].parse::<TicketId>()
                     && known.contains(&id)
                 {
-                    let from = x + unicode_width::UnicodeWidthStr::width(&content[..at]) as u16;
-                    hits.push((from, from + len as u16, text.y + row as u16, Hit::Ticket(id)));
+                    hits.push((x, x + content.len() as u16, text.y + row as u16, Hit::Ticket(id)));
                 }
                 x += span.width() as u16;
             }
@@ -1658,44 +1665,52 @@ fn squad_looks(app: &App) -> Looks {
 }
 
 /// Ticket numbers in a line — `T-8`, `T-12` — stand out: each is a way to its
-/// ticket (a click opens it on the board).
+/// ticket (a click opens it on the board). Only those standing on their own
+/// (`ticket_ref`), read across the line's spans, and none in code.
 fn mark_tickets(line: Line<'static>, theme: Theme) -> Line<'static> {
     if !line.spans.iter().any(|s| s.content.contains("T-")) {
         return line;
     }
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some((at, len)) = ticket_ref_from(&text, from) {
+        found.push(at..at + len);
+        from = at + len;
+    }
+    if found.is_empty() {
+        return line;
+    }
+    // Code is the accent alone; without colour it can't be told from prose.
+    let code = theme.code().fg.filter(|_| theme.code() != Style::new());
     let style = line.style;
     let mut spans = Vec::new();
+    let mut start = 0;
     for span in line.spans {
-        let text = span.content.to_string();
-        let mut rest = text.as_str();
-        while let Some((at, len)) = ticket_ref(rest) {
-            if at > 0 {
-                spans.push(Span::styled(rest[..at].to_owned(), span.style));
+        let end = start + span.content.len();
+        let mut at = start;
+        if code.is_none() || span.style.fg != code {
+            for number in found.iter().filter(|r| r.start >= start && r.end <= end) {
+                if number.start > at {
+                    spans.push(Span::styled(text[at..number.start].to_owned(), span.style));
+                }
+                spans.push(Span::styled(text[number.clone()].to_owned(), span.style.patch(theme.ticket())));
+                at = number.end;
             }
-            spans.push(Span::styled(rest[at..at + len].to_owned(), span.style.patch(theme.accent())));
-            rest = &rest[at + len..];
         }
-        if !rest.is_empty() {
-            spans.push(Span::styled(rest.to_owned(), span.style));
+        if at == start {
+            spans.push(span);
+        } else if at < end {
+            spans.push(Span::styled(text[at..end].to_owned(), span.style));
         }
+        start = end;
     }
     Line::from(spans).style(style)
 }
 
-/// The first `T-<digits>` in `text` that stands as a word: where, and how long.
-pub fn ticket_ref(text: &str) -> Option<(usize, usize)> {
-    let bytes = text.as_bytes();
-    let mut from = 0;
-    while let Some(found) = text[from..].find("T-") {
-        let at = from + found;
-        let digits = bytes[at + 2..].iter().take_while(|b| b.is_ascii_digit()).count();
-        let before_ok = at == 0 || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'-');
-        if digits > 0 && before_ok {
-            return Some((at, 2 + digits));
-        }
-        from = at + 2;
-    }
-    None
+/// Whether a span is in a ticket number's look, as `mark_tickets` gives it.
+fn is_ticket_look(style: Style, theme: Theme) -> bool {
+    style.add_modifier.contains(Modifier::UNDERLINED) && style.fg == theme.ticket().fg
 }
 
 /// What kind of block a conversation line belongs to: a change of kind gets a
@@ -3672,6 +3687,27 @@ mod tests {
         app.on_click(hit.0 + 1, hit.2);
         assert_eq!(app.pane, Pane::Board);
         assert_eq!(app.selected_ticket().map(|t| t.id), Some(8));
+    }
+
+    #[test]
+    fn only_ticket_numbers_standing_on_their_own_are_ways_to_them() {
+        let (mut app, id) = working();
+        for n in [2, 3, 8, 9] {
+            app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(n, TicketStatus::Review, "Gallery") });
+        }
+        app.flash = None;
+        let reply = "In /Users/abel/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images/ for T-2/T-3.\n\n\
+                     Run `T-8 check`, see [the shots](outputs/T-9/a.png), https://x.y/?t=T-9 or (T-9).";
+        app.on_event(Event::TextDelta { session: id, text: reply.into() });
+        let theme = Theme { color: true, truecolor: true, light: false, background: None };
+        let laid = extent(&app, theme, Rect::new(0, 0, 160, 30), &Layouts::default());
+        let shot = screen(&app, 160, 30);
+        let row = |words: &str| shot.lines().position(|l| l.contains(words)).unwrap_or_else(|| panic!("{shot}")) as u16;
+        let on = |r: u16| -> Vec<Hit> { laid.hits.iter().filter(|h| h.2 == r && matches!(h.3, Hit::Ticket(_))).map(|h| h.3).collect() };
+        let (path, prose) = (row("outputs/T-2 갤러리"), row("for T-2/T-3"));
+        assert!(path == prose || on(path).is_empty(), "not the path's:\n{shot}");
+        assert_eq!(on(prose), [Hit::Ticket(2), Hit::Ticket(3)], "both of T-2/T-3, not the path's:\n{shot}");
+        assert_eq!(on(row("Run ")), [Hit::Ticket(9)], "not in code, a link's target or an address:\n{shot}");
     }
 
     #[test]

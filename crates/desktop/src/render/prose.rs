@@ -23,7 +23,7 @@ use markdown::mdast::Node;
 use markdown::{ParseOptions, to_mdast};
 
 use super::plugins::looks_like_math;
-use crate::convo::{TICKET_SCHEME, ticket_ref};
+use crate::convo::{TICKET_SCHEME, ticket_ref, ticket_ref_from};
 
 /// The Markdown as the text view should get it. The same text comes in each
 /// frame a reply is in sight, so what was worked out is kept a while.
@@ -31,7 +31,7 @@ pub fn fix(markdown: &str) -> String {
     thread_local! {
         static DONE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     }
-    if ticket_ref(markdown).is_none() && !may_be_stuck(markdown) {
+    if !may_name_ticket(markdown) && !may_be_stuck(markdown) {
         return markdown.to_owned();
     }
     if let Some(done) = DONE.with_borrow(|done| done.get(markdown).cloned()) {
@@ -93,12 +93,18 @@ fn not_prose(node: &Node) -> bool {
 /// `[T-8](ticket:8)`, which a click turns into the ticket on the board.
 /// Emphasis around just the number goes inside the link (`[**T-8**](…)`).
 pub fn link_tickets(markdown: &str) -> String {
-    if ticket_ref(markdown).is_none() {
+    if !may_name_ticket(markdown) {
         return markdown.to_owned();
     }
     let mut edits = Vec::new();
     tickets_in(markdown, 0, &options(), &mut edits);
     splice(markdown, &mut edits)
+}
+
+/// Whether `T-<digit>` is anywhere in `text`: a cheap look before parsing,
+/// which decides what stands on its own (`_T-8_` does, once parsed).
+fn may_name_ticket(text: &str) -> bool {
+    text.match_indices("T-").any(|(at, _)| text.as_bytes().get(at + 2).is_some_and(u8::is_ascii_digit))
 }
 
 /// Edits (from `base` on) linking the tickets in `source`.
@@ -134,16 +140,19 @@ fn walk_tickets(node: &Node, source: &str, base: usize, edits: &mut Vec<Edit>) {
         }
         Node::Text(_) => {
             let Some(range) = span(node) else { return };
-            let mut from = range.start;
-            while let Some((at, len)) = ticket_ref(&source[from..range.end]) {
-                let at = from + at;
+            // The node's own text around a number is its context: a path or
+            // an address is one text, and what is outside it is markup.
+            let text = &source[range.clone()];
+            let mut from = 0;
+            while let Some((at, len)) = ticket_ref_from(text, from) {
+                let at = range.start + at;
                 // A word that runs on from the node before.
                 let joined = at == range.start && source[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '-');
                 if !joined {
                     let id = &source[at..at + len];
                     edits.push((base + at..base + at + len, format!("[{id}]{}", target(id))));
                 }
-                from = at + len;
+                from = at + len - range.start;
             }
         }
         _ => {
@@ -434,5 +443,39 @@ mod tests {
         assert_eq!(fix("[T-8](ticket:8)"), "[T-8](ticket:8)", "already a link");
         assert_eq!(fix("MAT-8 and T-"), "MAT-8 and T-", "only whole words");
         assert_eq!(fix("| a | T-5 |\n|---|---|\n| T-6 | b |"), "| a | [T-5](ticket:5) |\n|---|---|\n| [T-6](ticket:6) | b |");
+    }
+
+    #[test]
+    fn only_ticket_numbers_standing_on_their_own_become_links() {
+        let path = "/Users/abel/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images/";
+        let cases: &[(&str, &str)] = &[
+            // Kept: the number alone, and beside punctuation or a particle.
+            ("T-2: 갤러리", "[T-2](ticket:2): 갤러리"),
+            ("갤러리 (T-2) 끝", "갤러리 ([T-2](ticket:2)) 끝"),
+            ("T-2, T-3", "[T-2](ticket:2), [T-3](ticket:3)"),
+            ("T-2와 묶습니다", "[T-2](ticket:2)와 묶습니다"),
+            ("T-2/T-3 둘 다", "[T-2](ticket:2)/[T-3](ticket:3) 둘 다"),
+            ("끝낸 것은 T-2.", "끝낸 것은 [T-2](ticket:2)."),
+            ("_T-8_ 먼저", "[_T-8_](ticket:8) 먼저"),
+            ("__T-8 먼저__ 합니다", "__[T-8](ticket:8) 먼저__ 합니다"),
+            // Not: in code.
+            ("run `T-8` now", "run `T-8` now"),
+            ("`outputs/T-2 갤러리/a.png`", "`outputs/T-2 갤러리/a.png`"),
+            ("```\nls outputs/T-2\nT-3\n```", "```\nls outputs/T-2\nT-3\n```"),
+            // Not: in a path or a file name.
+            (path, path),
+            ("outputs/T-2 갤러리 디자인을 보세요", "outputs/T-2 갤러리 디자인을 보세요"),
+            ("T-2.png와 draft_T-3, T-4-a, C:\\x\\T-5", "T-2.png와 draft_T-3, T-4-a, C:\\x\\T-5"),
+            // Not: in an address, or a link's or a picture's target.
+            ("https://x.y/T-8 and https://x.y/?t=T-9", "https://x.y/T-8 and https://x.y/?t=T-9"),
+            ("see x.y/T-8", "see x.y/T-8"),
+            ("[the shots](outputs/T-9/a.png)", "[the shots](outputs/T-9/a.png)"),
+            ("![T-2 시안](outputs/T-2/a.png)", "![T-2 시안](outputs/T-2/a.png)"),
+            // Not: run on from a word.
+            ("abcT-2 and 9T-3", "abcT-2 and 9T-3"),
+        ];
+        for (markdown, expected) in cases {
+            assert_eq!(&fix(markdown), expected, "{markdown:?}");
+        }
     }
 }

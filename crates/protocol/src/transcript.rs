@@ -58,8 +58,8 @@ impl Transcript {
     }
 
     /// Apply one event. Returns the lines it made final — what a journal stores.
-    /// Streaming text joins the open reply and is final only once something else
-    /// happens (a tool use, the turn ending, an error).
+    /// Streaming text joins the open reply and is final only once a line comes
+    /// after it (a tool use, a message, news, an error) or the turn ends.
     pub fn apply(&mut self, event: &Event) -> Vec<Entry> {
         if let Event::TextDelta { text, .. } = event {
             match (self.open_reply, self.entries.last_mut()) {
@@ -89,13 +89,6 @@ impl Transcript {
             return Vec::new();
         }
 
-        let mut done = Vec::new();
-        if self.open_reply {
-            self.open_reply = false;
-            if let Some(reply) = self.entries.last() {
-                done.push(reply.clone());
-            }
-        }
         let new = match event {
             Event::SessionStarted { workspace: Some(ws), .. } => {
                 Some(Entry::Note { text: format!("{}{}{}", notes::WORKING_ON, ws.branch, notes::WORKING_REST) })
@@ -120,6 +113,18 @@ impl Transcript {
             Event::NothingChanged { .. } => Some(Entry::Note { text: notes::NOTHING_CHANGED.into() }),
             _ => None,
         };
+        // The reply ends where a line comes after it, or the turn ends. What
+        // adds no line — a memo said meanwhile, a token count, a subagent's
+        // step, a picture of the browser — leaves it streaming: split there,
+        // its next chunk was a reply of its own, a line break mid-word.
+        let ends = new.is_some() || matches!(event, Event::TurnEnded { .. } | Event::SessionClosed { .. } | Event::WorkEnded { .. });
+        let mut done = Vec::new();
+        if self.open_reply && ends {
+            self.open_reply = false;
+            if let Some(reply) = self.entries.last() {
+                done.push(reply.clone());
+            }
+        }
         if let Some(entry) = new {
             self.entries.push(entry.clone());
             done.push(entry);
@@ -484,6 +489,39 @@ mod tests {
         let done = t.apply(&Event::ToolUse { session: 1, tool: "Read".into(), target: Some("a.rs".into()) });
         assert_eq!(done, vec![Entry::Reply { text: "Let me look.".into() }, Entry::Tool { tool: "Read".into(), target: Some("a.rs".into()), outcome: None }]);
         t.apply(&delta("Done."));
+        assert_eq!(t.entries().len(), 3);
+    }
+
+    #[test]
+    fn what_adds_no_line_leaves_the_reply_streaming_whole() {
+        // A memo said while it answers, a token count, a subagent's step, a
+        // picture of the browser: none is a line, so the reply goes on — split
+        // there, its next chunk was a reply of its own, as a line break in the
+        // middle of a word ("지" / "금 보드를").
+        let quiet = [
+            Event::SteerQueued { session: 1, text: "그리고 하나 더".into(), project: None },
+            Event::Output { session: 1, tokens: 12 },
+            Event::ModelKnown { session: 1, model: "claude-opus-5-5".into() },
+            Event::Suggestion { session: 1, text: "다음".into() },
+            Event::SubagentStep { session: 1, id: "a".into(), step: "Read a.rs".into() },
+            Event::Estimated { session: 1, estimate: None },
+            Event::BrowserFrame { session: 1, image: String::new(), url: None },
+            Event::QueueSent { session: 1, texts: vec![] },
+        ];
+        for event in &quiet {
+            let mut t = Transcript::default();
+            t.apply(&delta("네, 확인했습니다. 지"));
+            assert!(t.apply(event).is_empty(), "{event:?} makes nothing final");
+            t.apply(&delta("금 보드를 살펴보겠습니다."));
+            assert_eq!(t.entries(), &[Entry::Reply { text: "네, 확인했습니다. 지금 보드를 살펴보겠습니다.".into() }], "after {event:?}");
+            let done = t.apply(&Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None });
+            assert_eq!(done, vec![Entry::Reply { text: "네, 확인했습니다. 지금 보드를 살펴보겠습니다.".into() }]);
+        }
+        // A line between ends it: a message read mid-turn, news.
+        let mut t = Transcript::default();
+        t.apply(&delta("first"));
+        t.apply(&Event::Notice { session: 1, text: "frontend handed in T-4".into() });
+        t.apply(&delta("second"));
         assert_eq!(t.entries().len(), 3);
     }
 
