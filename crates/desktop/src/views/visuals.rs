@@ -4,6 +4,7 @@
 //! over its note; a strip of small ones under a news line or on a ticket's
 //! card; and the big view over the window — ←/→ through them, Esc away, and
 //! for a decision's options the pick made right there (⏎, or its number).
+//! A reply's pictures, in its column, and the strip of a folder it names.
 //! What is known of each picture, and the layout rules, are `crate::visuals`'s.
 
 use std::cell::RefCell;
@@ -13,6 +14,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use equipe_core::protocol::TicketId;
+use equipe_core::protocol::rpc::ImageWhy;
 use equipe_core::t;
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -20,9 +22,9 @@ use gpui_kit::*;
 
 use crate::icons::{Icon, icon};
 use crate::motion;
-use crate::theme::{CONTROL, ICON, MONO, Palette, R_LG, R_MD, R_SM};
+use crate::theme::{CONTROL, ICON, MEASURE, MONO, Palette, R_LG, R_MD, R_SM};
 use crate::tips::tip;
-use crate::visuals::{self as rules, Look, Owner, Shot, Size, Viewer, Visuals};
+use crate::visuals::{self as rules, Listing, Look, Owner, Shot, Size, Viewer, Visuals};
 use crate::Shell;
 
 /// How long a picture that just came fades in.
@@ -61,6 +63,41 @@ impl Shots {
 
     pub fn handle(&self) -> WeakEntity<Shell> {
         self.handle.clone()
+    }
+
+    /// What `path` shows at `size`, without asking for it.
+    pub fn known(&self, path: &str, size: Size) -> Option<Look> {
+        self.shots.borrow().known(path, size).cloned()
+    }
+
+    /// What folder `folder` holds; the first time, it is listed — once the
+    /// frame is drawn.
+    pub fn listing(&self, folder: &str, cx: &mut App) -> Listing {
+        let mut shots = self.shots.borrow_mut();
+        let listing = shots.listing(folder);
+        if listing == Listing::Loading && !shots.scheduled {
+            shots.scheduled = true;
+            let handle = self.handle.clone();
+            cx.defer(move |cx| {
+                handle.update(cx, |shell, cx| shell.load_shots(cx)).ok();
+            });
+        }
+        listing
+    }
+
+    /// `path` is drawn in conversation row `row`: measured again when it comes.
+    pub fn in_row(&self, path: &str, row: u64) {
+        self.shots.borrow_mut().in_row(path, row);
+    }
+
+    /// The size of `path` as any copy of it that came says.
+    pub fn best_dims(&self, path: &str) -> Option<(u32, u32)> {
+        self.shots.borrow().best(path).and_then(|s| s.dims)
+    }
+
+    /// The conversation's column, as wide as it was last drawn (at most the measure).
+    pub fn column(&self) -> f32 {
+        self.width(rules::COLUMN_KEY, MEASURE).min(MEASURE)
     }
 
     /// The grid `key` as last drawn: its width, or `guess` before it was.
@@ -122,8 +159,17 @@ fn waiting(p: Palette, id: ElementId, reduce: bool) -> AnyElement {
     base.with_animation(id, Animation::new(Duration::from_millis(1400)).repeat().with_easing(bounce(ease_in_out)), |el, t| el.opacity(0.35 + 0.4 * t)).into_any_element()
 }
 
-/// Where a picture can't be had: the file's name, quietly.
-fn gone(p: Palette, path: &str, roomy: bool) -> AnyElement {
+/// Why a picture couldn't be had, in calm words.
+pub fn why_words(why: ImageWhy) -> &'static str {
+    match why {
+        ImageWhy::Missing => t!("visuals.why_missing"),
+        ImageWhy::TooBig => t!("visuals.why_too_big"),
+        ImageWhy::Unreadable => t!("visuals.why_unreadable"),
+    }
+}
+
+/// Where a picture can't be had: the file's name, and why, quietly.
+fn gone(p: Palette, path: &str, why: ImageWhy, roomy: bool) -> AnyElement {
     v_flex()
         .absolute()
         .inset_0()
@@ -134,7 +180,7 @@ fn gone(p: Palette, path: &str, roomy: bool) -> AnyElement {
         .text_color(p.muted)
         .child(icon(Icon::File, ICON, p.muted))
         .when(roomy, |c| c.child(div().max_w_full().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.5)).child(rules::name_of(path).to_owned())))
-        .when(roomy, |c| c.child(div().text_size(px(11.)).child(t!("visuals.gone"))))
+        .when(roomy, |c| c.child(div().text_size(px(11.)).child(why_words(why))))
         .into_any_element()
 }
 
@@ -159,7 +205,7 @@ pub fn picture(shots: &Shots, id: u64, path: &str, look: Look, w: f32, h: f32, r
                 image.into_any_element()
             }
         }
-        Look::Gone => gone(p, path, w >= 100.),
+        Look::Gone(why) => gone(p, path, *why, w >= 100.),
         Look::Loading => waiting(p, ElementId::NamedInteger("shot-wait".into(), id), shots.reduce),
     };
     corners(div().relative().flex_none().w(px(w)).h(px(h)).overflow_hidden().bg(p.wash)).children(board).child(face)
@@ -184,38 +230,233 @@ pub fn gallery(shell: &Shell, key: u64, ticket: TicketId, images: &[String], gue
     }
     let shots = Shots::of(shell, cx.entity().downgrade(), cx);
     let p = shots.p;
-    let width = shots.width(key, guess);
-    let columns = rules::columns(width, images.len());
-    let w = rules::tile_width(width, columns);
-    let h = (w * rules::RATIO).floor();
-    let tiles: Vec<AnyElement> = images
-        .iter()
-        .map(|path| {
-            let id = key ^ rules_hash(path);
-            let face = picture(&shots, id, path, shots.ask(path, Size::Thumb, cx), w, h, R_MD, true, 10.);
-            let tile = v_flex()
-                .id(("hand-in-shot", id))
-                .relative()
-                .w(px(w))
+    // Its work first; the project's source assets folded under it, each once.
+    let (mut work, mut assets) = rules::arrange(images);
+    if work.is_empty() {
+        work = std::mem::take(&mut assets);
+    }
+    let unfolded = shell.shots.borrow().unfolded.contains(&key);
+    let shown: Vec<String> = work.iter().chain(assets.iter().filter(|_| unfolded)).cloned().collect();
+    let looks: Vec<Look> = shown.iter().map(|path| shots.ask(path, Size::Thumb, cx)).collect();
+    // Every one failed: one calm line, and a way to ask again — not a wall of the same card.
+    if let Some(why) = rules::all_failed(&looks.iter().map(Some).collect::<Vec<_>>()) {
+        let all = shown.clone();
+        let handle = shots.handle();
+        let retry = div()
+            .id(("hand-in-retry", key))
+            .flex_none()
+            .h(px(24.))
+            .px_2()
+            .flex()
+            .items_center()
+            .gap_1()
+            .rounded(px(R_SM))
+            .border_1()
+            .border_color(p.hair)
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.wash))
+            .text_size(px(12.))
+            .text_color(p.text2)
+            .child(icon(Icon::Retry, 12., p.text2))
+            .child(t!("visuals.retry"))
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                let all = all.clone();
+                handle.update(cx, |shell, cx| shell.retry_shots(&all, cx)).ok();
+            });
+        return Some(
+            h_flex()
+                .id(("hand-in-failed", key))
+                .w_full()
+                .min_h(px(40.))
+                .px_3()
+                .py_2()
+                .gap_2()
+                .items_center()
                 .rounded(px(R_MD))
                 .border_1()
                 .border_color(p.hair)
-                .bg(p.bg)
-                .overflow_hidden()
-                .cursor_pointer()
-                .child(face)
-                .child(div().px_2().py(px(6.)).border_t_1().border_color(p.hair).overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(MONO).text_size(px(11.)).text_color(p.text2).child(rules::name_of(path).to_owned()))
-                .on_click(opens(&shots.handle, Viewer::of_ticket(ticket, images, path)));
-            lift(tile, ("hand-in-lift", id), p, false).into_any_element()
-        })
-        .collect();
-    let grid = h_flex().w_full().flex_wrap().gap(px(rules::GAP)).children(tiles);
+                .text_size(px(12.5))
+                .text_color(p.muted)
+                .child(icon(Icon::Camera, ICON_SMALL, p.muted))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().text_color(p.text2).child(t!("visuals.all_failed", count = images.len())))
+                        .child(div().text_size(px(11.5)).child(why_words(why))),
+                )
+                .child(retry)
+                .into_any_element(),
+        );
+    }
+    let width = shots.width(key, guess);
+    let columns = rules::columns(width, work.len().max(1));
+    let w = rules::tile_width(width, columns);
+    let h = (w * rules::RATIO).floor();
+    let tile = |path: &String, look: Look| -> AnyElement {
+        let id = key ^ rules_hash(path);
+        let face = picture(&shots, id, path, look, w, h, R_MD, true, 10.);
+        let tile = v_flex()
+            .id(("hand-in-shot", id))
+            .relative()
+            .w(px(w))
+            .rounded(px(R_MD))
+            .border_1()
+            .border_color(p.hair)
+            .bg(p.bg)
+            .overflow_hidden()
+            .cursor_pointer()
+            .child(face)
+            .child(div().px_2().py(px(6.)).border_t_1().border_color(p.hair).overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(MONO).text_size(px(11.)).text_color(p.text2).child(rules::name_of(path).to_owned()))
+            .on_click(opens(&shots.handle, Viewer::of_ticket(ticket, &shown, path)));
+        lift(tile, ("hand-in-lift", id), p, false).into_any_element()
+    };
+    let mut looks = looks.into_iter();
+    let work_tiles: Vec<AnyElement> = work.iter().map(|path| tile(path, looks.next().unwrap_or(Look::Loading))).collect();
+    let asset_tiles: Vec<AnyElement> = assets.iter().filter(|_| unfolded).map(|path| tile(path, looks.next().unwrap_or(Look::Loading))).collect();
+    let grid = h_flex().w_full().flex_wrap().gap(px(rules::GAP)).children(work_tiles);
     let grid = shots.measured(grid, key);
+    // The assets: under a hairline, folded until asked for.
+    let fold = (!assets.is_empty()).then(|| {
+        let handle = shots.handle();
+        let words = if unfolded { t!("visuals.fewer_assets").to_owned() } else { t!("visuals.more_assets", count = assets.len()) };
+        let toggle = h_flex()
+            .id(("hand-in-assets", key))
+            .flex_none()
+            .gap_1()
+            .items_center()
+            .cursor_pointer()
+            .text_size(px(11.5))
+            .text_color(p.muted)
+            .hover(move |s| s.text_color(p.text2))
+            .child(words)
+            .child(icon(if unfolded { Icon::ChevronUp } else { Icon::ChevronDown }, 11., p.muted))
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                handle.update(cx, |shell, cx| shell.toggle_assets(key, cx)).ok();
+            });
+        v_flex()
+            .gap_1p5()
+            .child(h_flex().gap_2().items_center().child(toggle).child(div().flex_1().h(px(1.)).bg(p.hair)))
+            .when(unfolded, |c| c.child(h_flex().w_full().flex_wrap().gap(px(rules::GAP)).children(asset_tiles)))
+    });
     Some(
         v_flex()
             .gap_1p5()
-            .child(div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child(t!("visuals.pictures", count = images.len())))
+            .child(div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child(t!("visuals.pictures", count = work.len() + assets.len())))
             .child(grid)
+            .children(fold)
+            .into_any_element(),
+    )
+}
+
+/// The icon a failed gallery's line starts with.
+const ICON_SMALL: f32 = 14.;
+
+/// A picture a reply embeds, in its column (`row`): its own shape, as wide
+/// as the column allows; a quiet wash breathing while it comes — its box
+/// kept once its size is known, so nothing jumps — fading in when it does; a
+/// calm line with its name when it can't be had, which asks again when
+/// clicked. Opened big among the reply's `pictures`. While the reply still
+/// streams, it waits to be asked for.
+#[allow(clippy::too_many_arguments)]
+pub fn inline(shots: &Shots, row: u64, path: &str, alt: &str, pictures: &[(String, String)], live: bool, cx: &mut App) -> AnyElement {
+    let p = shots.p;
+    let column = shots.column();
+    shots.in_row(path, row);
+    let look = if live { shots.known(path, Size::Inline).unwrap_or(Look::Loading) } else { shots.ask(path, Size::Inline, cx) };
+    let id = row ^ rules_hash(path);
+    let name = rules::name_of(path).to_owned();
+    if let Look::Gone(why) = look {
+        let handle = shots.handle();
+        let again = vec![path.to_owned()];
+        let label = if alt.trim().is_empty() { name.clone() } else { format!("{alt} · {name}") };
+        return h_flex()
+            .id(("inline-gone", id))
+            .my_1()
+            .max_w(px(column))
+            .min_h(px(48.))
+            .px_3()
+            .py_2()
+            .gap(px(10.))
+            .items_center()
+            .rounded(px(R_MD))
+            .border_1()
+            .border_color(p.hair)
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.wash))
+            .child(div().flex_none().size(px(28.)).flex().items_center().justify_center().rounded(px(R_SM)).bg(p.wash).child(icon(Icon::Camera, ICON_SMALL, p.muted)))
+            .child(
+                v_flex()
+                    .min_w_0()
+                    .child(div().text_size(px(13.)).line_height(px(18.)).text_color(p.text2).child(t!("visuals.inline_failed")))
+                    .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.5)).line_height(px(16.)).text_color(p.muted).child(format!("{label} · {}", why_words(why)))),
+            )
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                let again = again.clone();
+                handle.update(cx, |shell, cx| shell.retry_shots(&again, cx)).ok();
+            })
+            .into_any_element();
+    }
+    // An SVG says no size: a 4:3 box the column's width.
+    let dims = match &look {
+        Look::Ready(shot) => Some(shot.dims.unwrap_or((960, 720))),
+        _ => shots.best_dims(path),
+    };
+    let (w, h) = rules::inline_box(dims, column);
+    let face = picture(shots, id, path, look, w, h, R_MD, false, 0.);
+    let viewer = Viewer::of_reply(row, pictures, path);
+    let accent = p.hair;
+    let frame = div().id(("inline-shot", id)).flex_none().w(px(w)).h(px(h)).rounded(px(R_MD)).border_1().border_color(accent).overflow_hidden().cursor_pointer().child(face).on_click(opens(&shots.handle, viewer));
+    // What it is called shows under the pointer and in the big view, not under it: a reply names it already.
+    let label = if alt.trim().is_empty() { name } else { alt.to_owned() };
+    div().py_1().child(tip(frame, p, label, None)).into_any_element()
+}
+
+/// The strip under a reply that names a folder of pictures: "이미지 N개",
+/// the folder's name, and its first pictures small — none of it when the
+/// folder isn't one of pictures the squad shows, or every one already shows
+/// in the reply. Opened big among the reply's `pictures` and the folder's.
+pub fn folder_strip(shots: &Shots, row: u64, folder: &str, pictures: &[(String, String)], cx: &mut App) -> Option<AnyElement> {
+    shots.in_row(folder, row);
+    let Listing::Ready(list) = shots.listing(folder, cx) else { return None };
+    let embedded = |path: &String| pictures.iter().any(|(p, _)| p == path);
+    if list.images.is_empty() || (list.images.iter().all(embedded) && list.total as usize <= list.images.len()) {
+        return None;
+    }
+    let p = shots.p;
+    let (w, h) = (rules::FOLDER_TILE, (rules::FOLDER_TILE * rules::RATIO).floor());
+    let mut all: Vec<(String, String)> = pictures.to_vec();
+    all.extend(list.images.iter().map(|i| (i.clone(), rules::name_of(i).to_owned())));
+    let tiles: Vec<AnyElement> = list
+        .images
+        .iter()
+        .map(|path| {
+            let id = row ^ rules_hash(path) ^ 0x5157;
+            let face = picture(shots, id, path, shots.ask(path, Size::Thumb, cx), w, h, R_SM, false, 0.);
+            let tile = div().id(("folder-shot", id)).flex_none().rounded(px(R_SM)).border_1().border_color(p.hair).overflow_hidden().cursor_pointer().child(face).on_click(opens(&shots.handle, Viewer::of_reply(row, &all, path)));
+            tip(tile, p, rules::name_of(path).to_owned(), None).into_any_element()
+        })
+        .collect();
+    let more = (list.total as usize).saturating_sub(list.images.len());
+    let place: String = folder.trim_end_matches('/').rsplit('/').take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/");
+    Some(
+        v_flex()
+            .id(("folder-strip", row ^ rules_hash(folder)))
+            .mt_2()
+            .gap_1p5()
+            .child(
+                h_flex()
+                    .gap(px(6.))
+                    .items_center()
+                    .text_size(px(11.5))
+                    .child(icon(Icon::Folder, 12., p.muted))
+                    .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).text_color(p.text2).child(t!("visuals.folder", count = list.total)))
+                    .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(MONO).text_size(px(11.)).text_color(p.muted).child(place)),
+            )
+            .child(h_flex().flex_wrap().gap(px(6.)).children(tiles).when(more > 0, |r| r.child(div().h(px(h)).px_1().flex().items_center().text_size(px(11.5)).text_color(p.muted).child(format!("+{more}")))))
             .into_any_element(),
     )
 }
@@ -301,9 +542,12 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
     let (at, n) = (viewer.at, viewer.items.len());
     let shots = Shots::of(shell, cx.entity().downgrade(), cx);
     let p = shell.palette;
-    // Whole, asked for once it is opened; meanwhile its thumbnail.
+    // Whole, asked for once it is opened; meanwhile its thumbnail (a reply's: the copy it drew).
     let whole = shots.ask(&item.path, Size::Full, cx);
-    let thumb = shots.ask(&item.path, Size::Thumb, cx);
+    let thumb = match (&viewer.owner, shots.known(&item.path, Size::Inline)) {
+        (Owner::Reply(_), Some(look @ Look::Ready(_))) => look,
+        _ => shots.ask(&item.path, Size::Thumb, cx),
+    };
     let shown: Option<Shot> = shell.shots.borrow().best(&item.path);
     let viewport = window.viewport_size();
     let room = ((f32::from(viewport.width) - 96.).max(120.), (f32::from(viewport.height) - 150.).max(120.));
@@ -329,7 +573,7 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
                 .when(matches!(whole, Look::Loading), |d| d.child(div().absolute().right(px(10.)).bottom(px(10.)).child(motion::spinner(14., rgba(0x00000080)))))
                 .into_any_element()
         }
-        (None, Look::Gone) => v_flex().size(px(220.)).gap_2().rounded(px(R_LG)).bg(rgba(0xFFFFFF14)).items_center().justify_center().text_size(px(13.)).text_color(rgba(0xFFFFFFB3)).child(icon(Icon::File, 28., rgba(0xFFFFFFB3))).child(t!("visuals.gone")).into_any_element(),
+        (None, Look::Gone(why)) => v_flex().size(px(220.)).gap_2().rounded(px(R_LG)).bg(rgba(0xFFFFFF14)).items_center().justify_center().text_size(px(13.)).text_color(rgba(0xFFFFFFB3)).child(icon(Icon::Camera, 28., rgba(0xFFFFFFB3))).child(why_words(*why)).into_any_element(),
         _ => div().size(px(220.)).flex().items_center().justify_center().child(motion::spinner(20., rgba(0xFFFFFFB3))).into_any_element(),
     };
     let round = |b: Stateful<Div>, glyph: Icon, label: &'static str, keys: &'static str| {
@@ -439,7 +683,8 @@ impl Shell {
     /// daemon on this Mac or another — it gives only what the squad shows.
     pub fn load_shots(&mut self, cx: &mut Context<Self>) {
         let wanted = self.shots.borrow_mut().take_wanted();
-        if wanted.is_empty() {
+        let folders = self.shots.borrow_mut().take_wanted_folders();
+        if wanted.is_empty() && folders.is_empty() {
             return;
         }
         let generation = self.shots.borrow().generation;
@@ -447,17 +692,36 @@ impl Shell {
             // Not on the line: asked again once it is.
             let mut shots = self.shots.borrow_mut();
             for (path, size) in wanted {
-                shots.put(&path, size, Look::Gone);
+                shots.put(&path, size, Look::Gone(ImageWhy::Unreadable));
+            }
+            for folder in folders {
+                shots.put_listing(&folder, Listing::Gone);
             }
             return;
         };
         let squad = self.model.squad.clone();
+        // On this Mac, a reply's picture the daemon won't give (one outside the
+        // squad's folders) is still this Mac's own to show.
+        let here = !self.model.remote;
+        for folder in folders {
+            let (uploader, squad, asked) = (uploader.clone(), squad.clone(), folder.clone());
+            let listed = cx.background_spawn(async move { uploader.list_images(&squad, &asked).map_or(Listing::Gone, Listing::Ready) });
+            cx.spawn(async move |this, cx| {
+                let listing = listed.await;
+                this.update(cx, |this, cx| this.listing_arrived(generation, &folder, listing, cx)).ok();
+            })
+            .detach();
+        }
         for (path, size) in wanted {
             let (uploader, squad, asked) = (uploader.clone(), squad.clone(), path.clone());
             let loaded = cx.background_spawn(async move {
-                match uploader.read_image(&squad, &asked, Some(size.side())) {
-                    Ok(read) => rules::shot(&read).map_or(Look::Gone, Look::Ready),
-                    Err(_) => Look::Gone,
+                let read = uploader.read_image(&squad, &asked, Some(size.side())).or_else(|why| match here && size == Size::Inline && std::path::Path::new(&asked).is_file() {
+                    true => equipe_core::visuals::read(std::path::Path::new(&asked), &[std::path::PathBuf::from("/")], Some(size.side())),
+                    false => Err(why),
+                });
+                match read {
+                    Ok(read) => rules::shot(&read).map_or(Look::Gone(ImageWhy::Unreadable), Look::Ready),
+                    Err(why) => Look::Gone(ImageWhy::of(&why)),
                 }
             });
             cx.spawn(async move |this, cx| {
@@ -474,7 +738,49 @@ impl Shell {
             return;
         }
         shots.put(path, size, look);
+        // A reply's picture: its row is measured again, its size known now.
+        let rows = if size == Size::Inline { shots.rows_of(path) } else { Vec::new() };
         drop(shots);
+        for row in rows {
+            self.chat.remeasure_row(row, cx);
+        }
+        cx.notify();
+    }
+
+    fn listing_arrived(&mut self, generation: u64, folder: &str, listing: Listing, cx: &mut Context<Self>) {
+        let mut shots = self.shots.borrow_mut();
+        if shots.generation != generation {
+            return;
+        }
+        shots.put_listing(folder, listing);
+        let rows = shots.rows_of(folder);
+        drop(shots);
+        for row in rows {
+            self.chat.remeasure_row(row, cx);
+        }
+        cx.notify();
+    }
+
+    /// The person asked again for pictures that couldn't be had.
+    pub fn retry_shots(&mut self, paths: &[String], cx: &mut Context<Self>) {
+        self.shots.borrow_mut().retry(paths);
+        for path in paths {
+            for row in self.shots.borrow().rows_of(path) {
+                self.chat.remeasure_row(row, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// A hand-in's assets shown, or folded again.
+    pub fn toggle_assets(&mut self, key: u64, cx: &mut Context<Self>) {
+        {
+            let mut shots = self.shots.borrow_mut();
+            if !shots.unfolded.remove(&key) {
+                shots.unfolded.insert(key);
+            }
+        }
+        self.chat.remeasure_all(cx);
         cx.notify();
     }
 
@@ -503,6 +809,17 @@ impl Shell {
                 })
             }
         };
+        if let Some(viewer) = viewer {
+            self.open_viewer(viewer, cx);
+        }
+    }
+
+    /// Dev tool (`snapshot.rs`): the big view at the nth picture the latest
+    /// reply showing pictures embeds.
+    #[cfg(feature = "snapshot")]
+    pub fn reply_view_script(&mut self, n: usize, cx: &mut Context<Self>) {
+        let base = crate::render::base_dir(self);
+        let viewer = self.chat.latest_pictures(&base).and_then(|(row, pictures)| Viewer::of_reply(row, &pictures, &pictures.get(n.saturating_sub(1))?.0));
         if let Some(viewer) = viewer {
             self.open_viewer(viewer, cx);
         }
@@ -549,7 +866,7 @@ impl Shell {
         }
         let pick = |n: usize| match viewer.owner {
             Owner::Decision { set, step } => self.model.asked.get(set).and_then(|s| s.questions.get(step)).filter(|q| n < q.options.len()).map(|q| (set, n, q.multi_select)),
-            Owner::Ticket(_) => None,
+            Owner::Ticket(_) | Owner::Reply(_) => None,
         };
         match key {
             "left" | "right" => self.step_viewer(key == "right", cx),

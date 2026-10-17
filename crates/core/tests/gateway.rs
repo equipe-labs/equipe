@@ -362,7 +362,17 @@ async fn a_screen_reads_the_pictures_its_squad_shows_and_nothing_else() {
         questions: vec![Question { question: "Which logo?".into(), options: vec![option("A", vec![shown.clone()]), option("B", vec![])], ..Question::default() }],
         asked_at: 1,
     };
-    equipe_core::journal::Journal::for_squad(&home, "acme").unwrap().set_questions(&[set]).unwrap();
+    let journal = equipe_core::journal::Journal::for_squad(&home, "acme").unwrap();
+    journal.set_questions(&[set]).unwrap();
+    // A reply that embeds a picture (relative to where its member works) and names a folder.
+    std::fs::create_dir_all(folder.join("drafts/T-2 갤러리")).unwrap();
+    image::RgbImage::new(3, 2).save(folder.join("drafts/plan.png")).unwrap();
+    image::RgbImage::new(4, 2).save(folder.join("drafts/T-2 갤러리/site.png")).unwrap();
+    let record = equipe_core::journal::SessionRecord { id: 9, member: None, mode: None, engine: equipe_core::protocol::Engine::Claude, model: None, access: equipe_core::protocol::Access::ReadOnly, cwd: folder.clone(), repo: None, branch: None, base: None, engine_session: None, title: None, tokens: 0, open: false };
+    journal.record_session(&record).unwrap();
+    let said = format!("시안입니다.\n\n![평면도](drafts/plan.png)\n\n폴더: {}/drafts/T-2 갤러리/", folder.display());
+    journal.append(9, &equipe_core::protocol::Entry::Reply { text: said }).unwrap();
+    drop(journal);
     let claude = fake_claude(&slow_answer("0"));
     let (socket, _daemon) = daemon(&home, &claude).await;
 
@@ -391,6 +401,18 @@ async fn a_screen_reads_the_pictures_its_squad_shows_and_nothing_else() {
     assert!(other.error.is_some(), "only the squad it follows: {other:?}");
     let secret = ask(6, rpc::READ_IMAGE, read("acme", &home.join("squads.json").to_string_lossy())).await;
     assert!(secret.error.is_some());
+    // The reply's picture, by the path a screen makes of it; the folder's, listed then read.
+    let plan = folder.join("drafts/plan.png").to_string_lossy().into_owned();
+    let got = ask(7, rpc::READ_IMAGE, read("acme", &plan)).await.result_as::<ImageRead>().unwrap();
+    assert_eq!(got.width, Some(3));
+    let named = format!("{}/drafts/T-2 갤러리", folder.display());
+    let list = |squad: &str| serde_json::to_value(rpc::ListImages { squad: squad.into(), folder: named.clone(), max: None }).unwrap();
+    let listed = ask(8, rpc::LIST_IMAGES, list("acme")).await.result_as::<rpc::ImageList>().unwrap();
+    assert_eq!((listed.total, listed.images.len()), (1, 1));
+    assert_eq!(ask(9, rpc::READ_IMAGE, read("acme", &listed.images[0])).await.result_as::<ImageRead>().unwrap().width, Some(4));
+    assert!(ask(10, rpc::LIST_IMAGES, list("zeta")).await.error.is_some(), "only the squad it follows");
+    let unnamed = serde_json::to_value(rpc::ListImages { squad: "acme".into(), folder: folder.join("brand").to_string_lossy().into_owned(), max: None }).unwrap();
+    assert!(ask(11, rpc::LIST_IMAGES, unnamed).await.error.is_some(), "a folder nothing names");
     gateway::shutdown(&socket).await.unwrap();
 }
 

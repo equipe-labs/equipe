@@ -85,7 +85,8 @@ pub fn prepare(raw: &str, live: bool, expanded: &dyn Fn(usize) -> bool) -> (Stri
     let rows = |n: usize| t!("render.table_more_rows", count = n);
     let words = code::Words { more: &more, less: t!("render.code_less"), rows: &rows };
     let fences = code::prepare(shown, expanded, &words);
-    (prose::fix(&fences.text), fences.full)
+    // An image whose path has spaces, as members write them, read as one.
+    (prose::fix(&equipe_core::visuals::markdown::bracketed(&fences.text)), fences.full)
 }
 
 /// Set a text view up the conversation's way. `scope` names the row, for the
@@ -93,7 +94,7 @@ pub fn prepare(raw: &str, live: bool, expanded: &dyn Fn(usize) -> bool) -> (Stri
 pub fn configure(view: TextView, p: Palette, look: Look, scope: u64, full: Arc<HashMap<String, String>>) -> TextView {
     let muted = p.muted;
     let (wash, text) = (p.wash, p.text);
-    let (a, b, c, d, e, f) = plugins::all(p, look);
+    let (a, b, c, d, e, f) = plugins::all(p, look, scope);
     let motion = if look.live { TextViewMotion::default().with_stream_fade(Duration::from_millis(150)).with_stream_fade_stagger(Duration::from_millis(20)) } else { TextViewMotion::default() };
     view.style(style(p, &look))
         .selectable(true)

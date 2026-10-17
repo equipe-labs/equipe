@@ -153,6 +153,16 @@ impl Uploader {
             Err(_) => Err(t!("daemon.upload_no_answer").into()),
         }
     }
+
+    /// The pictures in a folder a reply names, from the daemon — only one
+    /// `squad`'s conversation names. Blocks: call it off the UI thread.
+    pub fn list_images(&self, squad: &str, folder: &str) -> Result<equipe_core::protocol::rpc::ImageList, String> {
+        let door = self.0.lock().unwrap().clone().ok_or(t!("daemon.not_connected"))?;
+        match door.list_images(squad, folder).recv_timeout(Duration::from_secs(60)) {
+            Ok(answer) => answer.and_then(|v| serde_json::from_value(v).map_err(|_| t!("failure.answer_unreadable").into())),
+            Err(_) => Err(t!("daemon.upload_no_answer").into()),
+        }
+    }
 }
 
 impl Link {

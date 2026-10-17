@@ -1130,6 +1130,23 @@ impl App {
 
     /// The conversation shown, to scroll or unfold: the selected member's, or
     /// its lane's about the project in view.
+    /// Ctrl-G: the pictures the latest reply on show embeds, in the system's
+    /// viewer — on this machine only; from over SSH, where they are.
+    fn open_reply_images(&mut self) {
+        let Some(agent) = self.viewed() else { return };
+        let paths = latest_images(agent.transcript.entries(), &agent.base);
+        if paths.is_empty() {
+            self.flash = Some(t!("app.reply_images_none").to_owned());
+            return;
+        }
+        let here = !cfg!(test) && std::env::var_os("SSH_CONNECTION").is_none() && std::env::var_os("EQUIPE_NO_OPEN").is_none();
+        if here {
+            paths.iter().map(std::path::Path::new).filter(|p| p.exists()).for_each(crate::home::open);
+        }
+        let (count, list) = (paths.len(), paths.join(", "));
+        self.flash = Some(if here { t!("app.decide_images_opened", count = count, paths = list) } else { t!("app.decide_images_there", count = count, paths = list) });
+    }
+
     fn viewed_mut(&mut self) -> Option<&mut Agent> {
         if let Some(ticket) = self.opened {
             return self.agents.iter_mut().find(|a| a.showing == Some(ticket));
@@ -2404,6 +2421,7 @@ impl App {
             KeyCode::Char('e') if ctrl => self.composer.end(),
             KeyCode::Char('u') if ctrl => self.composer.clear(),
             KeyCode::Char('w') if ctrl && self.composer.is_empty() => return self.toggle_watch(),
+            KeyCode::Char('g') if ctrl => self.open_reply_images(),
             KeyCode::Char('w') if ctrl => self.composer.delete_word(),
             KeyCode::Backspace => self.composer.backspace(),
             KeyCode::Delete => self.composer.delete(),
@@ -3402,6 +3420,22 @@ pub fn needs_way(t: &Ticket) -> bool {
 /// The order statuses are listed in, the person's calls first.
 pub fn status_rank(s: TicketStatus) -> usize {
     [TicketStatus::Review, TicketStatus::Waiting, TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed, TicketStatus::Done, TicketStatus::Cancelled].iter().position(|x| *x == s).unwrap_or(6)
+}
+
+/// The files the latest reply or note that embeds pictures shows, where they
+/// are — a relative one from `base`, where its member works.
+pub fn latest_images(entries: &[Entry], base: &std::path::Path) -> Vec<String> {
+    use equipe_core::visuals::markdown;
+    entries
+        .iter()
+        .rev()
+        .filter_map(|e| match e {
+            Entry::Reply { text } | Entry::Note { text } => Some(text),
+            _ => None,
+        })
+        .map(|text| markdown::local_images(text).iter().filter_map(|i| markdown::lexical(&i.path, base)).map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>())
+        .find(|paths| !paths.is_empty())
+        .unwrap_or_default()
 }
 
 pub fn transcript_markdown(agent: &Agent, squad: &str) -> String {
@@ -4656,6 +4690,24 @@ mod tests {
         app.selected = app.agents.iter().position(|a| a.id == frontend).unwrap();
         app.on_event(Event::SessionClosed { session: frontend });
         assert_eq!(app.selected().map(|a| a.id), Some(pm));
+    }
+
+    #[test]
+    fn ctrl_g_names_the_pictures_the_latest_reply_shows_where_they_are() {
+        let base = Path::new("/w/t2");
+        let entries = [
+            Entry::Reply { text: "![old](/w/old.png)".into() },
+            Entry::Note { text: "![배치도](images/site plan.png)\n![평면도](/w/T-2 갤러리/plan.png)".into() },
+            Entry::Reply { text: "no pictures here".into() },
+            Entry::User { text: "![mine](/w/mine.png)".into() },
+        ];
+        assert_eq!(latest_images(&entries, base), ["/w/t2/images/site plan.png", "/w/T-2 갤러리/plan.png"], "the latest that has any, relative ones from where it works");
+        assert!(latest_images(&entries[2..], base).is_empty(), "the person's own pictures are theirs already");
+        let (mut app, pm, _) = team();
+        app.on_event(Event::TextDelta { session: pm, text: "![평면도](/w/plan.png)".into() });
+        app.on_key(ctrl('g'), Instant::now());
+        // Under test nothing opens: it says where they are.
+        assert!(app.flash.as_deref().is_some_and(|f| f.contains("/w/plan.png")), "{:?}", app.flash);
     }
 
     #[test]

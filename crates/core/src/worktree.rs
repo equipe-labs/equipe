@@ -109,6 +109,48 @@ fn folder_name(repo: &Path) -> String {
     }
 }
 
+/// Where `repo`'s worktrees are under `home`: one folder each, by its id.
+pub fn worktrees_of(repo: &Path, home: &Path) -> PathBuf {
+    home.join("worktrees").join(folder_name(repo))
+}
+
+/// Why a file couldn't be had from git.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Blob {
+    /// `rev` has no such file (or there is no `rev`).
+    Missing,
+    /// It is bigger than was asked for at most.
+    TooBig(u64),
+    Failed(String),
+}
+
+/// The bytes of `rel` (from the top of `repo`) as `rev` has it — a ticket's
+/// branch, the main branch — when no bigger than `max`. Runs git: off the loop.
+pub fn read_blob(repo: &Path, rev: &str, rel: &Path, max: u64) -> std::result::Result<Vec<u8>, Blob> {
+    off_the_loop("read_blob");
+    let rel = rel.to_string_lossy();
+    if rev.is_empty() || rev.starts_with('-') || rev.contains(':') || rel.starts_with('/') || rel.split('/').any(|p| p == "..") {
+        return Err(Blob::Missing);
+    }
+    let object = format!("{rev}:{rel}");
+    let size = git(repo, &["cat-file", "-s", &object]).map_err(|_| Blob::Missing)?;
+    let size: u64 = size.parse().map_err(|_| Blob::Failed(format!("git gave {size} as its size")))?;
+    if size > max {
+        return Err(Blob::TooBig(size));
+    }
+    // Only a file: a folder of that name is no picture.
+    if git(repo, &["cat-file", "-t", &object]).map_err(|_| Blob::Missing)? != "blob" {
+        return Err(Blob::Missing);
+    }
+    let mut command = git_command(repo);
+    command.args(["cat-file", "blob", &object]);
+    let out = output_within(command, GIT_TIMEOUT).map_err(Blob::Failed)?;
+    if !out.status.success() {
+        return Err(Blob::Failed(String::from_utf8_lossy(&out.stderr).trim().to_owned()));
+    }
+    Ok(out.stdout)
+}
+
 #[derive(Debug, Clone)]
 pub struct Sandbox {
     pub repo: PathBuf,

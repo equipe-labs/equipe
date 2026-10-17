@@ -41,6 +41,12 @@
 //! designer's brand guide (T-144) handed in with its pictures
 //! (`fake_daemon/pictures.rs`).
 //!
+//! `FAKE_REPLY_IMAGES=1`: the PM's last reply shows the designer's drafts
+//! for T-2 — three pictures it embeds and the folder they are in — from "the
+//! daemon's machine", through `read_image` and `list_images` only; and T-4's
+//! hand-in has its renders and textures, T-6's pictures are gone
+//! (`fake_daemon/replies.rs`; `broken`: the floor plan is missing).
+//!
 //! `FAKE_HISTORY=<n>`: the PM's history is a long day's, `n` lines of it
 //! (`fake_daemon/history.rs`); `FAKE_LONG_REPLY=1`: its answers are long too.
 //!
@@ -298,6 +304,9 @@ fn board() -> Vec<Ticket> {
     }
     if your_turn().is_some() {
         out.push(turn_ticket());
+    }
+    if replies::on() {
+        out.extend(replies::tickets(|id, title, note| ticket(id, "review", "web", "frontend", title, "", &[], Some("equipe/frontend-t4-6ad33ac5"), Some(note))));
     }
     // `FAKE_DECIDE=logo`: the designer's brand guide, handed in with its pictures.
     if pictures::on() {
@@ -787,6 +796,9 @@ mod team;
 
 #[path = "fake_daemon/accept.rs"]
 mod accept;
+
+#[path = "fake_daemon/replies.rs"]
+mod replies;
 #[path = "fake_daemon/engines.rs"]
 mod engines;
 
@@ -833,6 +845,7 @@ async fn main() {
     if pictures::on() {
         pictures::make();
     }
+    replies::make();
     eprintln!("fake daemon on {}", socket.display());
     let seconds: f32 = std::env::var("FAKE_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(4.);
     let (events, _) = broadcast::channel::<Event>(1024);
@@ -894,6 +907,9 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         }
                         if pictures::on() {
                             history.push(Entry::Note { text: pictures::NEWS.into() });
+                        }
+                        if replies::on() {
+                            history.extend(replies::history());
                         }
                         if browser::handover() {
                             history.push(Entry::User { text: "App Store Connect에서 EU DSA 거래자 상태를 바꿔 줘".into() });
@@ -1044,8 +1060,19 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                     // design system's, checked as the daemon checks it.
                     (Some(rpc::READ_IMAGE), Some(id)) => {
                         let ask: rpc::ReadImage = message.params_as().unwrap();
-                        let reply = match pictures::read(&ask).or_else(|why| if design::mode().is_some() { design::read_image(&ask) } else { Err(why) }) {
+                        let reply = match pictures::read(&ask).or_else(|why| if replies::on() { replies::read(&ask) } else { Err(why) }).or_else(|why| if design::mode().is_some() { design::read_image(&ask) } else { Err(why) }) {
                             Ok(read) => Message::response(id, read),
+                            Err(why) => Message::failure(id, -32000, why),
+                        };
+                        if writer.write_all(reply.to_line().as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                    // A folder a reply names: the drafts' only.
+                    (Some(rpc::LIST_IMAGES), Some(id)) => {
+                        let ask: rpc::ListImages = message.params_as().unwrap();
+                        let reply = match replies::list(&ask) {
+                            Ok(list) => Message::response(id, list),
                             Err(why) => Message::failure(id, -32000, why),
                         };
                         if writer.write_all(reply.to_line().as_bytes()).await.is_err() {

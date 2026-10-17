@@ -96,6 +96,12 @@ impl Commands {
         self.ask(rpc::READ_IMAGE, rpc::ReadImage { squad: squad.to_owned(), path: path.to_owned(), max })
     }
 
+    /// Ask for the pictures in a folder a reply names (`list_images`);
+    /// answered as [`Commands::upload`] is.
+    pub fn list_images(&self, squad: &str, folder: &str) -> std::sync::mpsc::Receiver<Result<serde_json::Value, String>> {
+        self.ask(rpc::LIST_IMAGES, rpc::ListImages { squad: squad.to_owned(), folder: folder.to_owned(), max: None })
+    }
+
     fn ask(&self, method: &str, params: impl serde::Serialize) -> std::sync::mpsc::Receiver<Result<serde_json::Value, String>> {
         let (tx, rx) = std::sync::mpsc::channel();
         let id = self.next.fetch_add(1, Ordering::Relaxed);

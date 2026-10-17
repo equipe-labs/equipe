@@ -1144,7 +1144,6 @@
   "render.file_not_here": "이 Mac에 없는 파일입니다 — 경로를 복사했습니다: {path}",
   "render.file_open": "열기",
   "render.file_reveal": "Finder에서 보기",
-  "render.image_elsewhere": "· 이 Mac에 없는 이미지",
   "render.path_copied": "경로를 복사했습니다",
   "render.show_diagram": "다이어그램",
   "render.show_source": "원문",
@@ -1605,10 +1604,18 @@
   "update.why_other": "업데이트 중 오류가 났어요 (코드 {code}) — 로그에 자세한 내용이 있어요",
   "update.why_permission": "앱이 있는 폴더에 쓸 권한이 없어 업데이트를 설치하지 못했어요 — Applications 폴더에 있는지 확인해 주세요",
   "update.why_signature": "받은 업데이트의 서명을 확인하지 못해 설치하지 않았어요",
-  "visuals.gone": "이미지를 찾을 수 없어요",
+  "visuals.all_failed.other": "이미지 {count}개를 불러오지 못했어요",
+  "visuals.fewer_assets": "에셋 접기",
+  "visuals.folder.other": "이미지 {count}개",
+  "visuals.inline_failed": "이미지를 불러오지 못했어요",
+  "visuals.more_assets.other": "에셋 {count}개 더",
   "visuals.open": "크게 보기",
   "visuals.pick": "이 안으로 고르기",
   "visuals.picked": "골랐어요",
   "visuals.pictures.other": "이미지 {count}개",
-  "visuals.recommended": "추천"
+  "visuals.recommended": "추천",
+  "visuals.retry": "다시 시도",
+  "visuals.why_missing": "파일이 없어요",
+  "visuals.why_too_big": "너무 커서 보여 드릴 수 없어요",
+  "visuals.why_unreadable": "읽을 수 없는 파일이에요"
 }

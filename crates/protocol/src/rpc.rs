@@ -22,8 +22,10 @@
 //!   attached, read back from the daemon's `uploads` folder (and nowhere else)
 //!   so a screen on another machine can show it; only after `hello`
 //! - `read_image` (request): [`ReadImage`] → [`ImageRead`], a picture a member
-//!   showed (a decision's option, a hand-in), whole or as a thumbnail; only
-//!   after `hello`, for the squad followed
+//!   showed (a decision's option, a hand-in, an image its reply embeds),
+//!   whole or as a thumbnail; only after `hello`, for the squad followed
+//! - `list_images` (request): [`ListImages`] → [`ImageList`], the pictures in a
+//!   folder a reply points at; only after `hello`, for the squad followed
 //! - `browser_stream` (request): the connection becomes the browser panel's
 //!   picture stream ([`crate::stream`])
 //! - `attached` (notification, `equipe attach --stdio` → screen): [`Attached`],
@@ -46,6 +48,7 @@ pub const SQUADS: &str = "squads";
 pub const UPLOAD: &str = "upload";
 pub const READ_UPLOAD: &str = "read_upload";
 pub const READ_IMAGE: &str = "read_image";
+pub const LIST_IMAGES: &str = "list_images";
 
 /// The wire's version: bumped when a change would break a screen built
 /// against the one before (a method or a field it relies on removed or
@@ -276,6 +279,59 @@ pub struct ImageRead {
     pub scaled: bool,
 }
 
+/// Ask for the pictures in a folder a conversation points at ("the drafts are
+/// in …/images/"): given only when a line the daemon recorded for the squad
+/// names that folder, and the folder is inside the squad's folder or a
+/// member's worktree (`equipe_core::visuals`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListImages {
+    pub squad: crate::SquadName,
+    /// The folder, as the conversation names it (absolute).
+    pub folder: String,
+    /// At most this many back; absent: the daemon's own cap (12).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<u32>,
+}
+
+/// The pictures in a folder, by name: each path one `read_image` takes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageList {
+    pub folder: String,
+    pub images: Vec<String>,
+    /// How many pictures the folder has in all (`images` may be fewer).
+    pub total: u32,
+}
+
+/// Why `read_image` gave no picture, read from its error's words: a screen
+/// says it in the person's language. The daemon's words for each are these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ImageWhy {
+    /// No such file — on disk, or on the ticket's branch.
+    Missing,
+    TooBig,
+    /// Anything else: not a picture, not one the squad shows, no answer.
+    Unreadable,
+}
+
+/// The daemon's words for a picture that isn't there.
+pub const IMAGE_MISSING: &str = "no such file";
+/// …that was a ticket's, whose branch doesn't have it.
+pub const IMAGE_NOT_ON_BRANCH: &str = "no such file on its branch";
+/// …that is too big ("bigger than 30 MB").
+pub const IMAGE_TOO_BIG: &str = "bigger than";
+
+impl ImageWhy {
+    pub fn of(message: &str) -> Self {
+        if message.contains(IMAGE_MISSING) {
+            Self::Missing
+        } else if message.contains(IMAGE_TOO_BIG) {
+            Self::TooBig
+        } else {
+            Self::Unreadable
+        }
+    }
+}
+
 /// What `equipe attach --stdio` says first: which equipe answered on the
 /// other end, and which daemon it reached.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -445,5 +501,24 @@ mod tests {
         let svg = ImageRead { mime: "image/svg+xml".into(), size: 300, width: None, height: None, data: "PHN2Zz4=".into(), scaled: false };
         let wire = serde_json::to_string(&svg).unwrap();
         assert!(!wire.contains("width") && !wire.contains("scaled"), "{wire}");
+    }
+
+    #[test]
+    fn a_folders_pictures_are_listed_by_squad_and_folder() {
+        let ask = ListImages { squad: "acme".into(), folder: "/h/worktrees/site/t2/outputs/T-2 갤러리 디자인/images".into(), max: None };
+        let line = Message::request(5, LIST_IMAGES, &ask).to_line();
+        assert!(line.contains(r#""method":"list_images""#) && !line.contains("max"), "{line}");
+        assert_eq!(Message::from_line(&line).unwrap().params_as::<ListImages>(), Some(ask));
+        let list = ImageList { folder: "/f".into(), images: vec!["/f/a.png".into()], total: 14 };
+        assert_eq!(Message::response(5, &list).result_as::<ImageList>(), Some(list));
+        assert_eq!(serde_json::from_str::<ImageList>(r#"{"folder":"/f","images":[],"total":0}"#).unwrap(), ImageList { folder: "/f".into(), ..ImageList::default() });
+    }
+
+    #[test]
+    fn why_a_picture_failed_is_read_from_the_daemons_words() {
+        assert_eq!(ImageWhy::of("/w/a.png: no such file"), ImageWhy::Missing);
+        assert_eq!(ImageWhy::of("/w/a.png: no such file on its branch"), ImageWhy::Missing);
+        assert_eq!(ImageWhy::of("/w/a.png: bigger than 30 MB"), ImageWhy::TooBig);
+        assert_eq!(ImageWhy::of("/w/a.png: not a picture inside"), ImageWhy::Unreadable);
     }
 }

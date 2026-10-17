@@ -455,6 +455,20 @@ a document, a page — and what you couldn't confirm is marked unconfirmed, neve
         ),
         None => String::new(),
     };
+    // Pictures show where they are named, on every screen: never "open this folder".
+    let pictures = format!(
+        "\n\nTo show the person a picture — a render, a mockup, a screenshot, a teammate's draft — embed it in your \
+reply with Markdown's image syntax and its absolute path, one to a line: `![Floor plan](/full/path/floor-plan.png)`. \
+equipe shows each right in the conversation on every screen the person uses — this Mac, another one over SSH, their \
+phone — so never tell them to open a folder or a file to see one, and never only list paths. Save a picture you make \
+where you work first (PNG, JPG, WebP, GIF or SVG); a folder of them can be named too, its \
+absolute path ending in `/`, and its first pictures show as a strip.{}",
+        match role.id {
+            "designer" => " Show each draft that way as you make it, and give the PM the absolute paths, so it can show them too.",
+            PM => " When a teammate's work has pictures — a designer's drafts, a hand-in's renders — embed them in your answer the same way, by the paths they gave, instead of describing them or pointing at their folder.",
+            _ => "",
+        }
+    );
     let memory = match ctx.home {
         Some(home) => {
             let index = match ctx.memory {
@@ -501,7 +515,7 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
     };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{desktop}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{desktop}{pictures}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
@@ -715,6 +729,19 @@ mod tests {
             assert!(designer.contains(part), "{part}: {designer}");
         }
         assert!(!charter(role("designer").unwrap(), "designer", &ctx(&team, &[], false)).contains("`images`"), "no tools, no such advice");
+    }
+
+    #[test]
+    fn everyone_embeds_pictures_by_their_paths_rather_than_pointing_at_a_folder() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }, Teammate { name: "backend", role: "backend" }];
+        for (role_id, tools) in [("pm", true), ("designer", true), ("backend", false)] {
+            let text = charter(role(role_id).unwrap(), role_id, &ctx(&team, &[], tools));
+            for part in ["Markdown's image syntax", "absolute path", "never tell them to open a folder", "over SSH"] {
+                assert!(text.contains(part), "{role_id}: {part}");
+            }
+        }
+        assert!(charter(role("designer").unwrap(), "designer", &ctx(&team, &[], true)).contains("give the PM the absolute paths"));
+        assert!(charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true)).contains("by the paths they gave"));
     }
 
     #[test]

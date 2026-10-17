@@ -677,6 +677,8 @@ fn questions() -> QuestionSet {
 /// Pictures a designer made, in its worktree of the squad's folder.
 const LOGO_A: &str = "/Users/you/.equipe/worktrees/acme.home/t144-5e6f7a8b/brand/logo-blue-dot.png";
 const LOGO_B: &str = "/Users/you/.equipe/worktrees/acme.home/t144-5e6f7a8b/brand/logo-grey-dot.png";
+/// A folder of drafts a reply names, with spaces in it, as members write them.
+const DRAFTS: &str = "/Users/you/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images";
 
 /// A visual choice: the designer's logos, each option with its picture.
 fn visual_questions() -> QuestionSet {
@@ -931,6 +933,7 @@ fn message_vectors() -> Value {
             [Action::Open { squad, id, .. }] => json!({ "follows": squad, "answers_later": id }),
             [Action::Command { squad, command, .. }] => json!({ "to_squad": squad, "command": Message::command(command) }),
             [Action::ReadImage { squad, ask, .. }] => json!({ "reads_picture_of": squad, "asked": ask, "max_for_a_phone": equipe_core::visuals::PHONE_SIDE }),
+            [Action::ListImages { squad, ask, .. }] => json!({ "lists_pictures_of": squad, "asked": ask, "at_most": equipe_core::visuals::LIST_MAX }),
             other => panic!("{name}: {other:?}"),
         };
         examples.insert(name.to_owned(), json!({ "sends": serde_json::from_str::<Value>(&sealed.plaintext).unwrap(), "daemon": does }));
@@ -983,6 +986,17 @@ fn message_vectors() -> Value {
     let refused = relay_frames(&core.image_read(&device_id(), SQUAD, 21, Err(format!("{LOGO_A} isn't a picture {SQUAD} shows"))));
     examples.insert("read image: a picture the squad doesn't show".into(), json!({ "receives": opened(&refused[0]) }));
     ask(&mut core, &mut examples, "read image: a squad not followed", Some("home"), picture(22, "home"));
+    // A reply that embeds its pictures and names their folder: each read as above, the folder listed.
+    let reply = format!("T-2 시안입니다.\n\n![평면도]({DRAFTS}/평면도.png)\n\n전체는 {DRAFTS}/ 에 있어요.");
+    tell(&mut core, &mut examples, "event: a reply with pictures", Event::TextDelta { session: pm, text: reply });
+    let folder = |id: u64, squad: &str| json!({ "jsonrpc": "2.0", "id": id, "method": "list_images", "params": { "squad": squad, "folder": DRAFTS } });
+    let out = ask(&mut core, &mut examples, "list images", Some(SQUAD), folder(23, SQUAD));
+    let [Action::ListImages { id, .. }] = &out[..] else { panic!("{out:?}") };
+    let listed = equipe_core::protocol::rpc::ImageList { folder: DRAFTS.into(), images: ["단면·입면.png", "배치도.png", "평면도.png"].map(|n| format!("{DRAFTS}/{n}")).to_vec(), total: 3 };
+    examples["list images"]["daemon"]["answers"] = opened(&relay_frames(&core.images_listed(&device_id(), SQUAD, *id, Ok(listed)))[0]);
+    let refused = relay_frames(&core.images_listed(&device_id(), SQUAD, 24, Err(format!("{DRAFTS} isn't a folder {SQUAD} shows"))));
+    examples.insert("list images: a folder no reply names".into(), json!({ "receives": opened(&refused[0]) }));
+    ask(&mut core, &mut examples, "list images: a squad not followed", Some("home"), folder(25, "home"));
     // A hand-in of visual work: its pictures over the note.
     let mut shown = ticket(TicketStatus::Review);
     shown.images = vec![LOGO_A.into(), LOGO_B.into()];
