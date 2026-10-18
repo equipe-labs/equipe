@@ -1810,18 +1810,27 @@ impl BrowserPanel {
                     motion::rise(
                         shell("browser-check")
                             .child(div().size(px(28.)).flex_none().rounded_full().bg(p.amber.alpha(0.16)).flex().items_center().justify_center().child(icon(Icon::Hand, ICON_SM, p.amber)))
+                            // A narrow panel puts the buttons on a line of their own
+                            // rather than squeezing the words a letter to a line.
+                            .flex_wrap()
                             .child(
                                 v_flex()
                                     .flex_1()
-                                    .min_w_0()
+                                    .min_w(px(ui::WORDS_AT_LEAST))
                                     .gap(px(2.))
                                     .child(div().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("browser.check_title")))
                                     .child(div().text_size(px(12.)).text_color(p.muted).child(detail))
                                     .when_some(self.chrome_window_note(*check), |c, note| c.child(div().text_size(px(12.)).text_color(p.muted).child(note))),
                             )
-                            .child(ui::button(p, "browser-check-close", Kind::Ghost, t!("browser.close_tab")).field().tip(t!("browser.close_check_tip", name = name), Some("⌘W")).on_click(cx.listener(|this, _, _, cx| this.close_selected(cx))))
-                            .when_some(self.chrome_window_button(*check, "browser-check-window", cx), |row, b| row.child(b))
-                            .child(ui::button(p, "browser-check-take", Kind::Primary, t!("browser.take")).icon(Icon::Hand).field().on_click(cx.listener(|this, _, window, cx| this.take(window, cx)))),
+                            .child(
+                                h_flex()
+                                    .flex_none()
+                                    .ml_auto()
+                                    .gap_2()
+                                    .child(ui::button(p, "browser-check-close", Kind::Ghost, t!("browser.close_tab")).field().tip(t!("browser.close_check_tip", name = name), Some("⌘W")).on_click(cx.listener(|this, _, _, cx| this.close_selected(cx))))
+                                    .when_some(self.chrome_window_button(*check, "browser-check-window", cx), |row, b| row.child(b))
+                                    .child(ui::button(p, "browser-check-take", Kind::Primary, t!("browser.take")).icon(Icon::Hand).field().on_click(cx.listener(|this, _, window, cx| this.take(window, cx)))),
+                            ),
                         "browser-check-rise",
                     )
                     .into_any_element(),

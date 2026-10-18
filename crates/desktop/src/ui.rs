@@ -31,6 +31,11 @@ use crate::icons::{Icon, icon};
 use crate::motion;
 use crate::theme::{CONTROL, FIELD, ICON, Palette, R_MD, SMALL, mix};
 
+/// The narrowest the words of a card's footer or a banner get beside its
+/// buttons; narrower (a panel beside the conversation), the buttons go on a
+/// line of their own rather than squeezing the words a letter to a line.
+pub const WORDS_AT_LEAST: f32 = 200.;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Primary,

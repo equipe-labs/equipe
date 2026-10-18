@@ -199,9 +199,9 @@ fn card(shell: &Shell, id: u64, place: Place, cx: &mut Context<Shell>) -> Option
         .items_center()
         .border_t_1()
         .border_color(p.hair)
-        .child(h_flex().flex_1().min_w_0().gap(px(5.)).items_center().flex_wrap().text_size(px(SMALL)).text_color(p.muted).children(said))
-        .child(yes)
-        .child(no);
+        .flex_wrap()
+        .child(h_flex().flex_1().min_w(px(crate::ui::WORDS_AT_LEAST)).gap(px(5.)).items_center().flex_wrap().text_size(px(SMALL)).text_color(p.muted).children(said))
+        .child(h_flex().flex_none().ml_auto().gap_2().child(yes).child(no));
     let inner = v_flex().w_full().gap_2p5().child(head).child(v_flex().gap_1().child(title).children(reason)).child(details).children(quota).child(foot);
     Some(match place {
         Place::Docked => div()

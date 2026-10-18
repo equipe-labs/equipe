@@ -282,7 +282,7 @@ fn card_element(shell: &Shell, card: &Proposal, cx: &mut Context<Shell>) -> AnyE
         })
     };
     let mode = div().text_size(px(SMALL)).text_color(p.muted).child(t!("engines.mode_line", mode = rules::mode_word(shell.model.engines.mode)));
-    let foot = h_flex().w_full().pt_3().gap_2().items_center().border_t_1().border_color(p.hair).child(div().flex_1().min_w_0().child(mode)).child(yes).child(no);
+    let foot = h_flex().w_full().pt_3().gap_2().items_center().border_t_1().border_color(p.hair).flex_wrap().child(div().flex_1().min_w(px(crate::ui::WORDS_AT_LEAST)).child(mode)).child(h_flex().flex_none().ml_auto().gap_2().child(yes).child(no));
 
     let inner = v_flex().w_full().gap_2p5().child(head).child(v_flex().gap_1().child(title).child(why)).children(limit).child(table).child(note).child(foot);
     div()

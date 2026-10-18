@@ -578,10 +578,11 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
         .items_center()
         .border_t_1()
         .border_color(p.hair)
+        .flex_wrap()
         .child(
             v_flex()
                 .flex_1()
-                .min_w_0()
+                .min_w(px(crate::ui::WORDS_AT_LEAST))
                 .gap_0p5()
                 .text_size(px(12.))
                 .line_height(px(17.))
@@ -589,9 +590,7 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
                 .child(h_flex().gap(px(5.)).items_center().flex_wrap().children(said))
                 .child(div().opacity(0.8).overflow_hidden().whitespace_nowrap().text_ellipsis().child(keys)),
         )
-        .children(back)
-        .child(skip)
-        .child(next);
+        .child(h_flex().flex_none().ml_auto().gap_2().children(back).child(skip).child(next));
     let inner = v_flex().w_full().min_h_0().gap_3().child(body).child(foot.flex_none());
     // Never taller than the window has room for: past it, the options scroll.
     let room = if shell.decide.room > 0. { shell.decide.room } else { 760. };

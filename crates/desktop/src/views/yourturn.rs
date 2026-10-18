@@ -528,16 +528,18 @@ fn foot(card: &Card, d: &Draw<'_>) -> impl IntoElement {
     let waiting = card.who.as_ref().map(|(name, _)| t!("turn.waiting", name = name));
     let left = card.left();
     let partial = (card.can_send && left > 0).then(|| div().text_color(d.tones.warning).child(t!("turn.left", count = left)));
+    // Narrow (a panel beside it), the buttons go on a line of their own
+    // rather than squeezing the words a letter to a line.
     h_flex()
         .w_full()
+        .flex_wrap()
         .pt_3()
         .gap_3()
         .items_center()
         .border_t_1()
         .border_color(p.hair)
-        .child(v_flex().flex_1().min_w_0().gap_0p5().text_size(px(12.)).line_height(px(17.)).text_color(p.muted).children(waiting).children(partial).child(div().opacity(0.8).child(t!("turn.keys"))))
-        .children(board)
-        .child(send)
+        .child(v_flex().flex_1().min_w(px(crate::ui::WORDS_AT_LEAST)).gap_0p5().text_size(px(12.)).line_height(px(17.)).text_color(p.muted).children(waiting).children(partial).child(div().opacity(0.8).child(t!("turn.keys"))))
+        .child(h_flex().flex_none().ml_auto().gap_3().children(board).child(send))
 }
 
 /// What a reply says on screen, read back from what was sent.
