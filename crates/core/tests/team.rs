@@ -231,7 +231,10 @@ async fn letting_go_a_member_that_left_anyway_no_longer_waits_and_nothing_waits_
 fn nothing_adds_or_lets_go_a_member_but_the_persons_commands() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = vec![src.join("runtime.rs")];
-    files.extend(std::fs::read_dir(src.join("runtime")).unwrap().flatten().map(|e| e.path()));
+    // In name order: a folder lists in a different order on Linux than on macOS.
+    let mut rest: Vec<_> = std::fs::read_dir(src.join("runtime")).unwrap().flatten().map(|e| e.path()).collect();
+    rest.sort();
+    files.extend(rest);
     let mut starts = Vec::new();
     let mut start_commands = Vec::new();
     let mut approvals = Vec::new();
@@ -263,11 +266,11 @@ fn nothing_adds_or_lets_go_a_member_but_the_persons_commands() {
         start_commands,
         [
             "runtime.rs: Command::Start { session, spec } => self.start(session, spec).await,",
-            "team.rs: Box::pin(self.handle(Command::Start { session, spec })).await;",
             // A member moving engines is started again under its own name (or,
             // when the other engine can't take it, where it was): nobody joins.
             "engines.rs: Box::pin(self.handle(Command::Start { session: fresh, spec })).await;",
             "engines.rs: Box::pin(self.handle(Command::Start { session: again, spec })).await;",
+            "team.rs: Box::pin(self.handle(Command::Start { session, spec })).await;",
         ],
         "only the approval sends what /add sends, and moving engines restarts a member"
     );
