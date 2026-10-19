@@ -30,6 +30,7 @@ pub mod permissions;
 pub mod mock;
 pub mod pairing;
 pub mod roles;
+pub mod routines;
 pub mod runtime;
 pub mod squad_home;
 pub mod squad_memory;

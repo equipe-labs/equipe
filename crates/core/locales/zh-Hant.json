@@ -141,6 +141,8 @@
   "error.refuse_starts_by_itself": "T-{id} 會在負責人接手時開始——請改為指定負責人。",
   "error.refuse_under_way": "T-{id} 正在進行——取消它，或交給別人。",
   "error.refuse_waits_by_member": "只有成員才能把 T-{id} 交給你處理。",
+  "error.routine_invalid": "定期任務需要名稱、要做的事和有效的時間",
+  "error.routines_full": "每個小隊最多 {max} 個定期任務",
   "error.still_worked_on": "T-{id} 仍在進行中——請直接和 {name} 說。",
   "error.stuck": "常駐程式沒有回應：自 {since} 起一直停在 {doing}。請試試 `equipe daemon restart`。",
   "error.ticket_name_project": "請選擇專案——小隊有多個：{names}。",

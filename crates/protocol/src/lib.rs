@@ -18,6 +18,7 @@ pub mod decide;
 pub mod disk;
 pub mod engines;
 pub mod design;
+pub mod routines;
 pub mod rpc;
 pub mod stream;
 pub mod tags;
@@ -697,6 +698,12 @@ pub enum Command {
     /// operations across its products live — or none (`None`). Answered with
     /// [`Event::ProjectsChanged`].
     SetHq { squad: SquadName, path: Option<PathBuf> },
+    /// The person makes a routine (`id` 0) or changes one: regular work the
+    /// PM is handed on its schedule. Answered with [`Event::RoutinesChanged`].
+    SaveRoutine { squad: SquadName, routine: routines::Routine },
+    DeleteRoutine { squad: SquadName, id: u32 },
+    /// The person runs a routine now, off its schedule.
+    RunRoutine { squad: SquadName, id: u32 },
     /// The screen watches `session`'s browser (`None`: none): equipe sends it
     /// a picture of the page every moment or so ([`Event::BrowserFrame`]).
     WatchBrowser { squad: SquadName, session: Option<SessionId> },
@@ -1444,6 +1451,8 @@ pub enum Event {
     /// How the squad moves members between engines changed.
     EngineSwitchingChanged { squad: SquadName, mode: engines::Switching },
     /// The squad's projects now ([`Command::AddProject`]): their folders.
+    /// The squad's routines now, each with its next run.
+    RoutinesChanged { squad: SquadName, routines: Vec<routines::Routine> },
     ProjectsChanged {
         squad: SquadName,
         projects: Vec<PathBuf>,
@@ -1484,6 +1493,7 @@ impl Event {
             | Event::EngineProposalClosed { squad, .. }
             | Event::EngineSwitchingChanged { squad, .. }
             | Event::ProjectsChanged { squad, .. }
+            | Event::RoutinesChanged { squad, .. }
             | Event::Design { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             _ => None,
@@ -1538,6 +1548,7 @@ impl Event {
             | Event::EngineProposalClosed { .. }
             | Event::EngineSwitchingChanged { .. }
             | Event::ProjectsChanged { .. }
+            | Event::RoutinesChanged { .. }
             | Event::Design { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
@@ -1783,6 +1794,9 @@ pub struct Snapshot {
     /// Handed-in work put to the person to confirm accepting, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accepts: Vec<accept::AcceptProposal>,
+    /// The squad's routines ([`Command::SaveRoutine`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routines: Vec<routines::Routine>,
     /// How many extra members of a role equipe may bring in when its work waits.
     #[serde(default)]
     pub scale: Option<usize>,
@@ -2084,6 +2098,7 @@ mod tests {
             squad: "acme".into(),
             projects: vec!["/repo".into()],
             hq: Some("/repo".into()),
+            routines: vec![routines::Routine { id: 1, title: "Weekly report".into(), prompt: "Sum up the week".into(), when: routines::Schedule::Daily { hour: 9, minute: 0 }, on: true, last_run: None, next_run: Some(1) }],
             tickets: vec![ticket(1)],
             mode: Mode::ReadOnly,
             approvals: Vec::new(),

@@ -144,6 +144,8 @@
   "error.refuse_starts_by_itself": "T-{id} démarre quand son responsable le prend : désignez plutôt un responsable.",
   "error.refuse_under_way": "T-{id} est en cours : annulez-le ou confiez-le à quelqu'un d'autre.",
   "error.refuse_waits_by_member": "Seul un membre met T-{id} en attente de vous.",
+  "error.routine_invalid": "Une routine demande un nom, une tâche et une heure valide",
+  "error.routines_full": "Une équipe garde au plus {max} routines",
   "error.still_worked_on": "T-{id} est encore en cours : parlez directement à {name}.",
   "error.stuck": "Le démon ne répond pas : il est sur {doing} depuis {since}. Essayez `equipe daemon restart`.",
   "error.ticket_name_project": "Choisissez le projet — l'équipe en a plusieurs : {names}.",
