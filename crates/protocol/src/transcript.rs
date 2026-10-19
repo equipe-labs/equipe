@@ -526,6 +526,26 @@ mod tests {
     }
 
     #[test]
+    fn a_steer_read_ends_the_reply_so_far() {
+        let mut t = Transcript::default();
+        t.apply(&delta("Look"));
+        assert!(t.apply(&Event::SteerQueued { session: 1, text: "skip the footer".into(), project: None }).is_empty());
+        assert!(t.apply(&Event::SubagentStep { session: 1, id: "a".into(), step: "Read x".into() }).is_empty());
+        assert!(t.apply(&Event::ModelKnown { session: 1, model: "m".into() }).is_empty());
+        t.apply(&delta("ing."));
+        assert_eq!(t.entries(), &[Entry::Reply { text: "Looking.".into() }]);
+        // Read where it was: the reply so far is final, the steer follows it.
+        let done = t.apply(&Event::Steered { session: 1, text: "skip the footer".into() });
+        assert_eq!(done, vec![Entry::Reply { text: "Looking.".into() }, Entry::User { text: "skip the footer".into() }]);
+        // A token count leaves the next text in the same reply; the turn's end closes it.
+        t.apply(&delta("Done."));
+        assert!(t.apply(&Event::Output { session: 1, tokens: 40 }).is_empty());
+        t.apply(&delta(" Also."));
+        let done = t.apply(&Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None });
+        assert_eq!(done, vec![Entry::Reply { text: "Done. Also.".into() }]);
+    }
+
+    #[test]
     fn a_tool_result_lands_on_its_call_without_splitting_the_reply() {
         let mut t = Transcript::default();
         let call = |target: &str| Event::ToolUse { session: 1, tool: "Bash".into(), target: Some(target.into()) };

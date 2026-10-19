@@ -737,6 +737,24 @@
         "ts": 1760000000000
       }
     },
+    "event: branch landed": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "base": "main",
+            "branch": "equipe/backend-t38-1a2b3c4d",
+            "session": 4242,
+            "stat": " src/login.rs | 48 ++++++++++++++++++++++++++++++++++++++++++++++++\n 1 file changed, 48 insertions(+)",
+            "type": "branch_landed"
+          }
+        },
+        "seq": 56,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "event: design": {
       "receives": {
         "rpc": {
@@ -941,7 +959,7 @@
             "type": "disk_level"
           }
         },
-        "seq": 50,
+        "seq": 54,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1092,7 +1110,7 @@
             "type": "engines"
           }
         },
-        "seq": 51,
+        "seq": 55,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1127,6 +1145,37 @@
           }
         },
         "seq": 36,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: model known": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "model": "claude-opus-5-5",
+            "session": 1001,
+            "type": "model_known"
+          }
+        },
+        "seq": 52,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: nothing changed": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "session": 4242,
+            "type": "nothing_changed"
+          }
+        },
+        "seq": 57,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1333,7 +1382,7 @@
             "type": "queue_sent"
           }
         },
-        "seq": 49,
+        "seq": 53,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1351,6 +1400,22 @@
           }
         },
         "seq": 48,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: steered": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "session": 1001,
+            "text": "푸터는 빼 줘",
+            "type": "steered"
+          }
+        },
+        "seq": 49,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1481,6 +1546,38 @@
           }
         },
         "seq": 37,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: thread": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "project": "web",
+            "session": 1001,
+            "type": "thread"
+          }
+        },
+        "seq": 50,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: thread, the whole squad": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "project": null,
+            "session": 1001,
+            "type": "thread"
+          }
+        },
+        "seq": 51,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1876,12 +1973,25 @@
                     "queued_project": null,
                     "recent": [
                       {
+                        "kind": "thread",
+                        "project": null
+                      },
+                      {
                         "kind": "user",
                         "text": "이번 주 계획 정리해 줘"
                       },
                       {
                         "kind": "reply",
                         "text": "보드에 세 장 올렸어요."
+                      },
+                      {
+                        "kind": "thread",
+                        "project": "api"
+                      },
+                      {
+                        "kind": "error",
+                        "message": "Claude Code isn't signed in",
+                        "next": "claude login"
                       }
                     ],
                     "session": 1001,
@@ -1908,6 +2018,15 @@
                     "queued_project": null,
                     "recent": [
                       {
+                        "kind": "thread",
+                        "project": "api"
+                      },
+                      {
+                        "branch": "equipe/backend-t37-9f8e7d6c",
+                        "kind": "landed",
+                        "stat": " src/session.rs | 12 ++++++------\n 1 file changed, 6 insertions(+), 6 deletions(-)"
+                      },
+                      {
                         "kind": "tool",
                         "target": "cargo test",
                         "tool": "Bash"
@@ -1915,7 +2034,12 @@
                     ],
                     "session": 4242,
                     "state": "working",
-                    "steering": [],
+                    "steering": [
+                      "에러 메시지는 한국어로"
+                    ],
+                    "steering_in": [
+                      "api"
+                    ],
                     "subagents": [
                       {
                         "id": "toolu_01",
