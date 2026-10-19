@@ -695,7 +695,8 @@ impl Model {
                 self.squad_list = list.squads;
                 false
             }
-            Update::Bridge(_) => false,
+            // The connecting screen's, kept by the shell.
+            Update::Bridge(_) | Update::Leg(_) | Update::Door(_) => false,
             Update::Event(event) => {
                 let before = (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint());
                 self.on_event(event, now);

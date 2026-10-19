@@ -61,13 +61,16 @@ pub struct Launcher {
     /// Extra `ssh` options from `$EQUIPE_SSH_OPTIONS` (e.g. `-F /path/config`), for
     /// the odd setup and for tests; placed before the host.
     pub extra: Vec<String>,
+    /// Look up where the host is and knock there while `ssh` connects, to show
+    /// how far it got: the system `ssh` only, not a stand-in.
+    pub knock: bool,
 }
 
 impl Launcher {
     pub fn system(askpass: Option<Askpass>) -> Self {
         let control_dir = askpass::private_dir().unwrap_or_else(|_| PathBuf::from("/tmp"));
         let extra = std::env::var("EQUIPE_SSH_OPTIONS").map(|o| o.split_whitespace().map(str::to_owned).collect()).unwrap_or_default();
-        Self { program: PathBuf::from("ssh"), control_dir, askpass, extra }
+        Self { program: PathBuf::from("ssh"), control_dir, askpass, extra, knock: true }
     }
 
     /// The options every run gets, before the host.
@@ -192,6 +195,18 @@ impl Launcher {
         }
     }
 
+    /// Where `ssh` will connect for `host`, as its config resolves it (`ssh -G`
+    /// reads it and connects nowhere).
+    pub async fn door(&self, host: &SshHost) -> Option<Door> {
+        let mut command = Command::new(&self.program);
+        command.arg("-G").args(&self.extra).args(host.args()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+        let out = tokio::time::timeout(Duration::from_secs(3), command.output()).await.ok()?.ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Door::parse(&String::from_utf8_lossy(&out.stdout))
+    }
+
     /// Close the shared connection to `host` (a dead one after the network
     /// changed or the Mac slept would otherwise be reused until it times out).
     pub async fn drop_shared_connection(&self, host: &SshHost) {
@@ -207,6 +222,70 @@ impl Launcher {
         if let Ok(mut child) = command.spawn() {
             let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
         }
+    }
+}
+
+/// Where a connection goes: the address and port `ssh` will use, and whether
+/// it goes through another machine first (`ProxyJump`, `ProxyCommand`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Door {
+    pub host: String,
+    pub port: u16,
+    pub relayed: bool,
+}
+
+impl Door {
+    /// From what `ssh -G` prints: one `key value` a line.
+    pub fn parse(text: &str) -> Option<Self> {
+        let (mut host, mut port, mut relayed) = (None, 22, false);
+        for line in text.lines() {
+            let Some((key, value)) = line.trim().split_once(' ') else { continue };
+            let value = value.trim();
+            match key {
+                "hostname" => host = Some(value.to_owned()),
+                "port" => port = value.parse().unwrap_or(22),
+                "proxyjump" | "proxycommand" if value != "none" => relayed = true,
+                _ => {}
+            }
+        }
+        Some(Self { host: host.filter(|h| !h.is_empty())?, port, relayed })
+    }
+
+    /// `host:port`, as the screen shows it.
+    pub fn label(&self) -> String {
+        if self.host.contains(':') { format!("[{}]:{}", self.host, self.port) } else { format!("{}:{}", self.host, self.port) }
+    }
+
+    /// Whether something listens there: true as soon as it answers. False when
+    /// refused, not found or silent for `wait` (ssh will say which).
+    pub async fn knock(&self, wait: Duration) -> bool {
+        matches!(tokio::time::timeout(wait, tokio::net::TcpStream::connect((self.host.as_str(), self.port))).await, Ok(Ok(_)))
+    }
+}
+
+/// `ssh`'s standard output, saying once when the far side first speaks: by
+/// then `ssh` is through and the command there runs.
+pub struct Heard<R> {
+    inner: R,
+    first: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl<R> Heard<R> {
+    pub fn new(inner: R, first: impl FnOnce() + Send + 'static) -> Self {
+        Self { inner, first: Some(Box::new(first)) }
+    }
+}
+
+impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for Heard<R> {
+    fn poll_read(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let poll = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        if matches!(poll, std::task::Poll::Ready(Ok(()))) && buf.filled().len() > before
+            && let Some(first) = self.first.take()
+        {
+            first();
+        }
+        poll
     }
 }
 
@@ -297,7 +376,7 @@ mod tests {
 
     #[test]
     fn the_line_has_the_options_the_design_needs_and_the_host_last_but_one() {
-        let launcher = Launcher { program: "ssh".into(), control_dir: "/tmp/x".into(), askpass: None, extra: vec![] };
+        let launcher = Launcher { program: "ssh".into(), control_dir: "/tmp/x".into(), askpass: None, extra: vec![], knock: false };
         let command = launcher.command(&host(), "REMOTE");
         let args: Vec<_> = command.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         assert_eq!(args[0], "-T");
@@ -312,7 +391,7 @@ mod tests {
     #[test]
     fn asks_come_back_to_the_app() {
         let askpass = Askpass { exe: "/Apps/equipe".into(), socket: "/tmp/s.sock".into(), token: "t0k".into() };
-        let launcher = Launcher { program: "ssh".into(), control_dir: "/tmp/x".into(), askpass: Some(askpass), extra: vec![] };
+        let launcher = Launcher { program: "ssh".into(), control_dir: "/tmp/x".into(), askpass: Some(askpass), extra: vec![], knock: false };
         let command = launcher.command(&host(), "REMOTE");
         let env: std::collections::HashMap<_, _> = command.as_std().get_envs().map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned()))).collect();
         assert!(!command.as_std().get_args().any(|a| a.to_string_lossy().starts_with("BatchMode")), "ssh must be allowed to ask");
@@ -353,7 +432,7 @@ mod tests {
         script(&home.join(".local/bin/equipe"), "#!/bin/sh\necho \"$*\" > \"$HOME/args\"\ncat > \"$HOME/got\"\necho /far/uploads/kept.mov\n");
         let file = home.join("clip.mov");
         std::fs::write(&file, vec![7u8; 600 << 10]).unwrap();
-        let launcher = Launcher { program: fake_ssh, control_dir: home.clone(), askpass: None, extra: vec![] };
+        let launcher = Launcher { program: fake_ssh, control_dir: home.clone(), askpass: None, extra: vec![], knock: false };
         let sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let seen = sent.clone();
         let kept = launcher.send_file(&host(), &file, "clip.mov", "video", move |n| seen.store(n, std::sync::atomic::Ordering::Relaxed)).await;
@@ -392,5 +471,37 @@ mod tests {
         let out = Std::new("/bin/sh").arg("-c").arg(attach_command()).env("HOME", "/nonexistent").env("PATH", "/usr/bin:/bin").output().unwrap();
         assert_eq!(out.status.code(), Some(127));
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn the_door_is_read_from_what_ssh_resolves() {
+        let door = Door::parse("user me\nhostname 110.66.18.3\nport 2222\nproxyjump none\n").unwrap();
+        assert_eq!(door, Door { host: "110.66.18.3".into(), port: 2222, relayed: false });
+        assert_eq!(door.label(), "110.66.18.3:2222");
+        assert!(Door::parse("hostname mini.local\nport 22\nproxyjump bastion\n").unwrap().relayed, "a jump host: knocking here says nothing");
+        assert_eq!(Door::parse("hostname ::1\nport 22\n").unwrap().label(), "[::1]:22");
+        assert_eq!(Door::parse("user me\n"), None);
+    }
+
+    #[tokio::test]
+    async fn a_knock_hears_whether_anything_listens() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let door = Door { host: "127.0.0.1".into(), port, relayed: false };
+        assert!(door.knock(Duration::from_secs(2)).await);
+        drop(listener);
+        assert!(!door.knock(Duration::from_secs(2)).await, "refused");
+    }
+
+    #[tokio::test]
+    async fn the_first_word_is_heard_once() {
+        let heard = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = heard.clone();
+        let mut out = Heard::new(&b"hello\nworld\n"[..], move || {
+            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
+        let mut text = String::new();
+        out.read_to_string(&mut text).await.unwrap();
+        assert_eq!((text.as_str(), heard.load(std::sync::atomic::Ordering::Relaxed)), ("hello\nworld\n", 1));
     }
 }

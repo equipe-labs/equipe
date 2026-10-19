@@ -224,6 +224,8 @@ pub struct Shell {
     /// The roles a squad just started joins with, once it is open and empty.
     pending_team: Option<Vec<String>>,
     connecting_shown: bool,
+    /// How far the connection being made has got, for its screen.
+    pub(crate) connecting: views::connect::Connecting,
     pub(crate) log_renders: bool,
     /// The tickets on cards to confirm whose size was asked for, as they looked then.
     pub(crate) accept_asked: std::collections::HashMap<equipe_core::protocol::TicketId, (Option<String>, String, Option<bool>)>,
@@ -317,6 +319,7 @@ impl Shell {
             confirm: None,
             pending_team: None,
             connecting_shown: false,
+            connecting: views::connect::Connecting::new(std::time::Instant::now()),
             log_renders: std::env::var_os("EQUIPE_LOG_RENDER").is_some(),
             accept_asked: std::collections::HashMap::new(),
             renders: 0,
@@ -632,6 +635,7 @@ impl Shell {
         self.sheet = None;
         self.confirm = None;
         self.connecting_shown = false;
+        self.connecting = views::connect::Connecting::new(std::time::Instant::now());
         // Phones are the daemon's machine's: another machine has its own. A
         // code open closes with the old connection.
         let _ = self.pairing.close();
@@ -721,7 +725,13 @@ impl Shell {
                             }
                             continue;
                         }
+                        // How far a connection got: its screen's, never the model's.
+                        if let daemon::Update::Leg(_) | daemon::Update::Door(_) = &update {
+                            changed |= this.connecting.hear(&update, std::time::Instant::now());
+                            continue;
+                        }
                         if let daemon::Update::Down(_) = &update {
+                            changed |= this.connecting.hear(&update, std::time::Instant::now());
                             this.pairing.disconnected();
                             this.disk.disconnected();
                             this.engines.disconnected();
@@ -797,16 +807,8 @@ impl Shell {
                 }
             }
         }));
-        // Quick connections show nothing; a slow one says so, once.
-        self._connecting = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(CONNECTING_AFTER).await;
-            let _ = this.update(cx, |this, cx| {
-                if this.model.conn == Conn::Connecting {
-                    this.connecting_shown = true;
-                    cx.notify();
-                }
-            });
-        }));
+        // Quick connections show nothing; a slow one says so, with its seconds.
+        self._connecting = Some(self.tick_connecting(CONNECTING_AFTER, cx));
     }
 
     pub fn select_squad(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -871,7 +873,35 @@ impl Shell {
         if let Some(link) = &self.link {
             link.retry();
         }
+        // From a guide: the try is shown leg by leg, and the guide comes back if it fails.
+        if self.endpoint.is_remote() && matches!(self.model.conn, Conn::Down { had_snapshot: false, .. }) {
+            self.connecting = views::connect::Connecting { retrying: true, door: self.connecting.door.take(), ..views::connect::Connecting::new(std::time::Instant::now()) };
+            self.connecting_shown = true;
+            self._connecting = Some(self.tick_connecting(Duration::ZERO, cx));
+        }
         cx.notify();
+    }
+
+    /// The connecting screen, from `after` on and each second while it shows:
+    /// its seconds count and its hints come in on time.
+    fn tick_connecting(&self, after: Duration, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(after).await;
+            loop {
+                let showing = this.update(cx, |this, cx| {
+                    let showing = this.model.conn == Conn::Connecting || (this.connecting.retrying && matches!(this.model.conn, Conn::Down { had_snapshot: false, .. }));
+                    if showing {
+                        this.connecting_shown = true;
+                        cx.notify();
+                    }
+                    showing
+                });
+                if !matches!(showing, Ok(true)) {
+                    break;
+                }
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+            }
+        })
     }
 
     // ── questions from ssh ──
@@ -901,6 +931,8 @@ impl Shell {
     /// `ssh` wants something from the person: a box over the window.
     fn ask_user(&mut self, prompt: askpass::Prompt, window: &mut Window, cx: &mut Context<Self>) {
         self.ask.queue.push_back(prompt);
+        // ssh asks once the machine answered: signing in.
+        self.connecting.reached(daemon::Leg::SigningIn, std::time::Instant::now());
         if self.ask.queue.len() == 1 {
             self.prepare_question(window, cx);
         }
@@ -1019,8 +1051,12 @@ impl Shell {
         if nothing_attached && !self.endpoint.is_remote() && !install::cli_installed() {
             return install_screen(p);
         }
+        let remote = self.endpoint.is_remote();
         match &self.model.conn {
-            Conn::Down { reason, had_snapshot: false, .. } => v_flex().flex_1().child(self.drag_strip()).child(views::connect::guide_screen(self, &reason.guide(&self.endpoint), cx)).into_any_element(),
+            Conn::Down { had_snapshot: false, .. } | Conn::Connecting if remote && self.connecting_shown && (self.connecting.retrying || self.model.conn == Conn::Connecting) => {
+                v_flex().flex_1().child(self.drag_strip()).child(views::connect::connecting_screen(self, cx)).into_any_element()
+            }
+            Conn::Down { reason, had_snapshot: false, .. } => v_flex().flex_1().child(self.drag_strip()).child(views::connect::guide_screen(self, &reason.guide_at(&self.endpoint, self.connecting.door.as_deref()), cx)).into_any_element(),
             Conn::Connecting => div()
                 .flex_1()
                 .flex()
@@ -1028,12 +1064,7 @@ impl Shell {
                 .justify_center()
                 .text_size(px(BODY))
                 .text_color(p.muted)
-                .when(self.connecting_shown, |d| {
-                    d.child(match &self.endpoint {
-                        Endpoint::Local { .. } => t!("main.connecting_local").to_owned(),
-                        remote => t!("main.connecting_ssh", name = remote.label()),
-                    })
-                })
+                .when(self.connecting_shown, |d| d.child(t!("main.connecting_local")))
                 .into_any_element(),
             conn => {
                 let screen = match self.screen {
