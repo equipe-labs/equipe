@@ -1154,6 +1154,11 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A message held for its uploads goes as soon as they're up.
+        if let Some(later) = self.composer.send_when_ready.filter(|_| !self.composer.strip.busy()) {
+            self.composer.send_when_ready = None;
+            cx.defer_in(window, move |this, window, cx| this.send_as(later, window, cx));
+        }
         if self.board.words != crate::i18n::lang() {
             self.relocalize_inputs(window, cx);
         }

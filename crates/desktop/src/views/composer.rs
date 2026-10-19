@@ -223,6 +223,9 @@ pub struct Composer {
     guard: EnterGuard,
     /// One quiet line over the box: what the last send did.
     pub flash: Option<String>,
+    /// ⏎ while attachments still upload: sent the moment they're up (as a
+    /// memo when `true`), the person typing on meanwhile; Esc takes it back.
+    pub send_when_ready: Option<bool>,
     choices: Vec<Choice>,
     pick: usize,
     /// The text completion was dismissed for (Esc), until it changes.
@@ -283,6 +286,7 @@ impl Composer {
             drafts: Drafts::load(Drafts::file(&equipe_providers::credentials::equipe_home())),
             guard: EnterGuard::default(),
             flash: None,
+            send_when_ready: None,
             choices: Vec::new(),
             pick: 0,
             dismissed: None,
@@ -540,11 +544,15 @@ impl Shell {
             return;
         }
         let typed = attach::clean(&self.composer.text(cx));
+        // Still uploading: held, and sent the moment the files are up — the
+        // person's flow isn't stopped by a progress bar.
         if self.composer.strip.busy() {
-            self.composer.flash = Some(t!("composer.uploading_wait").into());
+            self.composer.send_when_ready = Some(later);
+            self.composer.flash = Some(t!("composer.sends_when_uploaded").into());
             cx.notify();
             return;
         }
+        self.composer.send_when_ready = None;
         let tags = self.composer.strip.tags();
         let text = attach::message(&typed, &tags);
         let carries = !tags.is_empty() && !typed.trim().starts_with('/');
@@ -1195,6 +1203,12 @@ impl Shell {
             return true;
         }
         match key {
+            "escape" if plain && self.composer.send_when_ready.is_some() => {
+                self.composer.send_when_ready = None;
+                self.composer.flash = Some(t!("composer.send_held_cancelled").into());
+                cx.notify();
+                true
+            }
             "escape" if plain => {
                 if self.composer.open() {
                     self.composer.dismissed = Some(text);
@@ -2134,14 +2148,26 @@ fn chip(shell: &Shell, item: &attach::Item, n: usize, cx: &mut Context<Shell>) -
         Stage::Preparing => Some(0.),
         _ => None,
     };
+    // A picture's: a short rounded bar inset over its foot, on a dark track.
     let progress = share.map(|s| {
         div()
             .absolute()
-            .left_0()
-            .bottom_0()
-            .h(px(2.))
-            .w(relative(s.max(0.04)))
-            .bg(p.accent)
+            .left(px(6.))
+            .right(px(6.))
+            .bottom(px(6.))
+            .h(px(4.))
+            .rounded_full()
+            .bg(rgba(0x00000073))
+            .child(div().h_full().w(relative(s.clamp(0.04, 1.))).rounded_full().bg(p.accent))
+    });
+    // A file's: the line under its name becomes a slim track and the percent.
+    let gauge = share.map(|s| {
+        h_flex()
+            .gap(px(6.))
+            .items_center()
+            .h(px(15.))
+            .child(div().flex_1().h(px(3.)).rounded_full().bg(p.hair).child(div().h_full().w(relative(s.clamp(0.04, 1.))).rounded_full().bg(p.accent)))
+            .child(div().flex_none().text_size(px(11.)).text_color(p.muted).child(format!("{}%", (s * 100.).round() as u32)))
     });
     // A picture: its thumbnail, 72 points, with its number.
     if item.kind == Kind::Image && !failed {
@@ -2235,9 +2261,11 @@ fn chip(shell: &Shell, item: &attach::Item, n: usize, cx: &mut Context<Shell>) -
                         .flex_1()
                         .min_w_0()
                         .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.5)).line_height(px(17.)).text_color(p.text).child(if item.kind == Kind::Text && item.origin.is_none() { t!("composer.pasted_label").to_owned() } else { item.name.clone() }))
-                        .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.)).line_height(px(15.)).text_color(if failed { p.danger() } else { p.muted }).child(detail)),
+                        .child(match gauge {
+                            Some(gauge) => gauge.into_any_element(),
+                            None => div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.)).line_height(px(15.)).text_color(if failed { p.danger() } else { p.muted }).child(detail).into_any_element(),
+                        }),
                 )
-                .children(progress)
                 // Focused: a second point of the accent inside — the chip's words don't move.
                 .when(focused, |d| d.child(super::visuals::ring(p, R_LG - 1., 1.).when(failed, |r| r.border_color(p.danger())))),
         )
