@@ -728,6 +728,8 @@ enum Internal {
     DiskReport(Box<crate::disk::DiskReport>, std::time::Instant),
     /// What a clean gave back, the free space after it, and who asked.
     DiskCleaned(Box<crate::disk::DiskCleaned>, Option<crate::disk::DiskStatus>, std::time::Instant, Option<oneshot::Sender<crate::disk::DiskCleaned>>),
+    /// What a trim of the build caches gave back when the disk ran short, one line each.
+    DiskTrimmed(u64, Vec<String>),
     /// Hand ready work out in every squad again (the disk has room once more).
     Dispatch,
     /// Where the engines stand, as just looked at off the loop.
@@ -913,6 +915,7 @@ impl Wake {
             Wake::Internal(Internal::Disk(..)) => Borrowed("the disk's free space"),
             Wake::Internal(Internal::DiskReport(..)) => Borrowed("what uses the disk"),
             Wake::Internal(Internal::DiskCleaned(..)) => Borrowed("a clean of the disk"),
+            Wake::Internal(Internal::DiskTrimmed(..)) => Borrowed("a trim of the build caches"),
             Wake::Internal(Internal::Dispatch) => Borrowed("handing out work again"),
             Wake::Request(Some(Request::Disk(_))) => Borrowed("a look at the disk"),
             Wake::Request(Some(Request::DiskClean(..))) => Borrowed("a clean of the disk"),
@@ -1075,6 +1078,7 @@ impl Runtime {
                 Internal::Disk(status, asked) => self.on_disk(status, asked),
                 Internal::DiskReport(report, asked) => self.on_disk_report(*report, asked),
                 Internal::DiskCleaned(cleaned, status, asked, reply) => self.on_disk_cleaned(*cleaned, status, asked, reply),
+                Internal::DiskTrimmed(freed, lines) => self.on_disk_trimmed(freed, lines),
                 Internal::Dispatch => {
                     let squads: Vec<String> = self.journals.keys().cloned().collect();
                     for squad in squads {
