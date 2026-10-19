@@ -14,6 +14,7 @@ pub mod accept;
 pub mod board;
 pub mod browser;
 pub mod design;
+pub mod group;
 pub mod desktop;
 pub mod desktop_gate;
 pub mod disk;

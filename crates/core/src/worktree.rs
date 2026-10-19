@@ -59,7 +59,7 @@ pub(crate) fn output_within(mut command: Command, timeout: Duration) -> Result<O
     match rx.recv_timeout(timeout) {
         Ok(out) => out.map_err(|err| format!("couldn't run {program}: {err}")),
         Err(_) => {
-            let _ = Command::new("kill").args(["-KILL", &format!("-{pid}")]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+            crate::group::end(pid, libc::SIGKILL);
             let args: Vec<String> = command.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
             Err(format!("{program} {} took more than {}s and was stopped", args.join(" "), timeout.as_secs()))
         }

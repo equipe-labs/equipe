@@ -135,7 +135,7 @@ impl Drop for Running {
         match &self.kind {
             Kind::Own(child) => {
                 if let Some(pid) = child.id() {
-                    let _ = std::process::Command::new("kill").args(["-TERM", &format!("-{pid}")]).status();
+                    crate::group::end(pid, libc::SIGTERM);
                 }
             }
             Kind::Lane { id, host } => {
@@ -569,7 +569,7 @@ fn read_host(mut out: impl std::io::Read, hub: &Hub, events: &tokio::sync::mpsc:
 
 impl Drop for Host {
     fn drop(&mut self) {
-        let _ = std::process::Command::new("kill").args(["-TERM", &format!("-{}", self.child.id())]).status();
+        crate::group::end(self.child.id(), libc::SIGTERM);
     }
 }
 

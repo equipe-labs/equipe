@@ -11,8 +11,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Smaller builds: no incremental caches (each run starts clean anyway) and
-  # line tables only, which keep a failing test's backtrace readable.
+  # Smaller, quicker builds: no incremental caches (each run starts clean
+  # anyway) and line tables only, which keep a failing test's backtrace readable.
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
@@ -29,23 +29,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      # Linux runners have about 14 GB free: a debug build of the workspace with
-      # its tests filled it, and the runner died mid-test ("received a shutdown
-      # signal"). Room first: toolchains this job never uses.
-      - name: Free disk space
-        if: runner.os == 'Linux'
-        run: |
-          df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-          df -h /
       - uses: Swatinem/rust-cache@v2
       # The desktop app pulls in GPUI and its platform toolchain; the CLI is
       # what ships, so CI covers everything else.
       - run: cargo test --workspace --exclude equipe-desktop --locked
       - run: cargo clippy --workspace --exclude equipe-desktop --all-targets --locked -- -D warnings
-      - name: Disk left
-        if: always()
-        run: df -h .
 
   relay:
     runs-on: ubuntu-24.04
