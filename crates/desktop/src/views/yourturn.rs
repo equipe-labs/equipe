@@ -396,7 +396,9 @@ fn line(card: &Card, d: &Draw<'_>, n: usize, ask: &str) -> AnyElement {
     let handle = d.handle.clone();
     h_flex()
         .id(("turn-line", hash(d.key, n)))
-        .w_full()
+        // Its number and words in line with the open step's; the hover's
+        // fill reaches past them.
+        .mx(px(-8.))
         .min_h(px(32.))
         .px_2()
         .gap_2p5()
@@ -790,6 +792,11 @@ impl Shell {
             let (id, n) = k;
             let subscription = cx.subscribe_in(&field, window, move |this, field, event: &InputEvent, window, cx| match event {
                 InputEvent::PressEnter { secondary: true, .. } => this.turn_send(id, window, cx),
+                // Typing into a step keeps it open: its first letter (even one
+                // still being composed) mustn't move the card on to the next.
+                InputEvent::Focus => {
+                    this.turn.open.insert(id, n);
+                }
                 InputEvent::Change => {
                     // Words typed answer it: a pick standing in for them goes,
                     // and the step stays open while they are typed.

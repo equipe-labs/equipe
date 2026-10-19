@@ -203,6 +203,12 @@ pub struct Shell {
     doc_reads: u64,
     /// The side panel's edge being dragged: where it began, and the width then.
     pub(crate) side_drag: Option<(f32, f32)>,
+    /// The terminal's top edge being dragged (under the conversation): where it began, the height then.
+    pub(crate) term_drag: Option<(f32, f32)>,
+    /// The daemon's machine being brought up to this app's release.
+    pub(crate) daemon_update: Option<DaemonUpdate>,
+    /// The person closed the banner: not again this launch.
+    daemon_update_hidden: bool,
     /// The ticket a `T-n` link asked the board to open.
     pub board_ticket: Option<u32>,
     /// Notifications: what macOS allows, the sheet asking, the reply awaited, the Dock's number.
@@ -316,6 +322,9 @@ impl Shell {
             doc: None,
             doc_reads: 0,
             side_drag: None,
+            term_drag: None,
+            daemon_update: None,
+            daemon_update_hidden: false,
             board_ticket: None,
             bell: Default::default(),
             update: relaunch::current(),
@@ -1199,7 +1208,7 @@ impl Shell {
                     Screen::Settings => views::settings::render(self, cx),
                     Screen::Design => views::design::render(self, cx),
                 };
-                v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).child(screen).into_any_element()
+                v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(self.update_banner(cx)).children(views::disk::banner(self, cx)).child(screen).into_any_element()
             }
         }
     }
@@ -1250,6 +1259,105 @@ impl Shell {
                 .child(div().flex_1().min_w_0().text_color(p.muted).child(if waits { t!("main.banner_needs_you") } else { t!("main.banner_reconnecting") }))
                 .child(ui::button(p, "banner-retry", ui::Kind::Secondary, t!("main.retry")).icon(icons::Icon::Retry).on_click(cx.listener(|this, _, _, cx| this.retry(cx)))),
         )
+    }
+}
+
+/// Bringing the daemon's machine up to this app's release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DaemonUpdate {
+    Running,
+    /// Installed: the daemon starts again on it once its members are idle.
+    Done,
+    Failed(String),
+}
+
+/// What runs on the daemon's machine: the latest equipe over the one there
+/// (`equipe update`, else the install script), then a restart once its
+/// members are idle, left to run on its own. An `equipe` that is the app's
+/// own (a link into an .app) is new with the app already: only the restart.
+const UPDATE_SCRIPT: &str = r#"exe=$(command -v equipe) || { curl -fsSL https://github.com/equipe-labs/equipe/releases/latest/download/install.sh | sh || exit 1; exe=$HOME/.local/bin/equipe; }
+case "$(readlink "$exe" 2>/dev/null)" in
+  *.app/*) ;;
+  *) equipe update >/dev/null 2>&1 || curl -fsSL https://github.com/equipe-labs/equipe/releases/latest/download/install.sh | sh >/dev/null 2>&1 || { echo "the update didn't install" >&2; exit 1; } ;;
+esac
+nohup equipe daemon restart --when-idle >/dev/null 2>&1 &
+"#;
+
+impl Shell {
+    /// The daemon is older than this app: a line over the conversation, with
+    /// the button that updates it where it runs (this Mac, or over SSH).
+    fn update_banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let p = self.palette;
+        let stale = notify::stale_daemon(&self.model.daemon_version, env!("CARGO_PKG_VERSION")).is_some();
+        if !stale && self.daemon_update.is_none() || self.daemon_update_hidden || !matches!(self.model.conn, Conn::Connected { .. }) {
+            return None;
+        }
+        let theirs = self.model.daemon_version.split('+').next().unwrap_or_default().to_owned();
+        let place = self.endpoint.label();
+        let (words, tone) = match &self.daemon_update {
+            None => (t!("main.update_daemon_line", place = place, theirs = theirs, ours = env!("CARGO_PKG_VERSION")), p.text),
+            Some(DaemonUpdate::Running) => (t!("main.update_daemon_running", place = place), p.text2),
+            Some(DaemonUpdate::Done) => (t!("main.update_daemon_done").to_owned(), p.text2),
+            Some(DaemonUpdate::Failed(why)) => (t!("main.update_daemon_failed", why = why), p.text),
+        };
+        let can = matches!(self.daemon_update, None | Some(DaemonUpdate::Failed(_)));
+        Some(
+            h_flex()
+                .min_h(px(40.))
+                .flex_none()
+                .px_4()
+                .gap_3()
+                .items_center()
+                .bg(p.accent_bg)
+                .border_b_1()
+                .border_color(p.hair)
+                .text_size(px(SMALL))
+                .child(icons::icon(icons::Icon::ArrowUp, 14., p.accent))
+                .child(div().flex_1().min_w_0().text_color(tone).child(words))
+                .when(matches!(self.daemon_update, Some(DaemonUpdate::Running)), |b| b.child(motion::spinner(13., p.muted)))
+                .when(can, |b| b.child(ui::button(p, "update-daemon", ui::Kind::Primary, t!("main.update_daemon")).on_click(cx.listener(|this, _, _, cx| this.update_daemon(cx)))))
+                .child(ui::icon_button(p, "update-daemon-hide", icons::Icon::X, t!("main.update_daemon_hide"), None).on_click(cx.listener(|this, _, _, cx| {
+                    this.daemon_update_hidden = true;
+                    cx.notify();
+                }))),
+        )
+    }
+
+    /// Update the daemon's machine, off the main thread.
+    fn update_daemon(&mut self, cx: &mut Context<Self>) {
+        self.daemon_update = Some(DaemonUpdate::Running);
+        let endpoint = self.endpoint.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let done = match &endpoint {
+                Endpoint::Local { .. } => {
+                    let path = format!("{}/.local/bin:/opt/homebrew/bin:/usr/local/bin:{}", std::env::var("HOME").unwrap_or_default(), std::env::var("PATH").unwrap_or_default());
+                    match std::process::Command::new("sh").arg("-c").arg(UPDATE_SCRIPT).env("PATH", path).stdin(std::process::Stdio::null()).output() {
+                        Ok(out) if out.status.success() => Ok(()),
+                        Ok(out) => Err(String::from_utf8_lossy(&out.stderr).trim().to_owned()),
+                        Err(e) => Err(e.to_string()),
+                    }
+                }
+                Endpoint::Ssh(host) => tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| e.to_string())
+                    .and_then(|rt| rt.block_on(ssh::Launcher::system(None).run(host, UPDATE_SCRIPT)).map(|_| ()).map_err(|f| f.detail().map_or_else(|| f.guide(&endpoint).short, str::to_owned))),
+            };
+            let _ = tx.send(done);
+        });
+        cx.spawn(async move |this, cx| {
+            let done = rx.await.unwrap_or_else(|_| Err("stopped".into()));
+            let _ = this.update(cx, |this, cx| {
+                this.daemon_update = Some(match done {
+                    Ok(()) => DaemonUpdate::Done,
+                    Err(why) => DaemonUpdate::Failed(if why.is_empty() { t!("main.update_daemon_unknown").into() } else { why }),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 }
 
@@ -1356,6 +1464,15 @@ impl Render for Shell {
                         this.sidebar_released(cx);
                     }
                 }
+                // The terminal below grows as its top edge goes up.
+                if let Some((y0, h0)) = this.term_drag {
+                    if e.pressed_button == Some(MouseButton::Left) {
+                        this.remembered.term_height = Some(h0 + y0 - f32::from(e.position.y));
+                        cx.notify();
+                    } else if this.term_drag.take().is_some() {
+                        this.remembered.save(&equipe_providers::credentials::equipe_home());
+                    }
+                }
                 // The side panel grows as its left edge goes left.
                 if let Some((x0, w0)) = this.side_drag {
                     if e.pressed_button == Some(MouseButton::Left) {
@@ -1369,6 +1486,10 @@ impl Render for Shell {
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
                 this.sidebar_released(cx);
                 this.side_released(cx);
+                if this.term_drag.take().is_some() {
+                    this.remembered.save(&equipe_providers::credentials::equipe_home());
+                    cx.notify();
+                }
             }))
             .on_action(cx.listener(|this, _: &ToggleBoard, _, cx| {
                 let next = if this.screen == Screen::Chat { Screen::Board } else { Screen::Chat };
@@ -1423,10 +1544,15 @@ impl Render for Shell {
         // A document open takes the right side; closed, the browser is back.
         let doc = (self.screen == Screen::Chat).then(|| views::doc::panel(self, window, cx)).flatten();
         // Then the terminal, sized to the panel as the window is now.
-        views::terminal::fit(self, window);
-        let doc = doc.or_else(|| (self.screen == Screen::Chat).then(|| views::terminal::panel(self, window, cx)).flatten());
+        views::terminal::fit(self, window, cx);
+        let terminal = (self.screen == Screen::Chat).then(|| views::terminal::panel(self, window, cx)).flatten();
+        // Under the conversation, or at its right where the document isn't.
+        let (below, terminal) = if self.remembered.term_below { (terminal, None) } else { (None, terminal) };
+        let doc = doc.or(terminal);
         let browser = (doc.is_none() && self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
-        root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(self.panes.body.clone().cached(StyleRefinement::default().flex_1().min_w_0().h_full())).children(doc).children(browser))
+        let body = self.panes.body.clone().cached(StyleRefinement::default().flex_1().min_w_0().min_h_0());
+        let middle = v_flex().flex_1().min_w_0().h_full().child(body).children(below);
+        root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(middle).children(doc).children(browser))
             // The title bar's fixed buttons, by the traffic lights, over the
             // sidebar or the header alike: the same place whatever slides.
             .child(views::sidebar::title_buttons(self, cx))

@@ -28,8 +28,16 @@ pub struct TermUi {
     pub open: bool,
     /// Where it runs, for its bar.
     pub place: String,
+    /// A wheel's turn not yet a whole line: a trackpad's small steps add up.
+    pub wheel: f32,
     _reading: Task<()>,
 }
+
+/// Under the conversation: how tall by default, and at least.
+pub const BELOW: f32 = 280.;
+const BELOW_MIN: f32 = 140.;
+/// The bar over the text.
+const BAR: f32 = 36.;
 
 /// A cell's width in this font, measured once per window size.
 fn cell_width(window: &Window) -> f32 {
@@ -38,12 +46,12 @@ fn cell_width(window: &Window) -> f32 {
     system.advance(id, px(FONT), 'm').map(|s| f32::from(s.width)).unwrap_or(FONT * 0.6)
 }
 
-/// Columns and lines that fit the panel, `wide` across.
-fn fits(window: &Window, wide: f32) -> Size {
-    let viewport = window.viewport_size();
+/// Columns and lines that fit `wide` × `tall` of text.
+fn fits(window: &Window, (wide, tall): (f32, f32)) -> Size {
     let width = wide - 2. * PAD;
-    let height = f32::from(viewport.height) - super::header::HEIGHT - 2. * PAD;
-    let cw = cell_width(window);
+    let height = tall - 2. * PAD;
+    // Whole pixels: the grid is drawn at the rounded width, so it is counted at it.
+    let cw = cell_width(window).round().max(1.);
     Size { cols: (width / cw).floor().max(20.) as u16, lines: (height / LINE).floor().max(5.) as u16, cell_w: cw.round() as u16, cell_h: LINE as u16 }
 }
 
@@ -56,7 +64,7 @@ impl Shell {
             let program = crate::term::program(&self.endpoint, dir.as_deref());
             // A far machine's folder isn't this Mac's: ssh goes there itself.
             let here = if self.endpoint.is_remote() { None } else { dir.as_deref() };
-            match Terminal::start(program, here, fits(window, self.side_width(window))) {
+            match Terminal::start(program, here, fits(window, self.term_box(window, cx))) {
                 Ok((term, mut rx)) => {
                     let reading = cx.spawn(async move |this, cx| {
                         while let Some(happened) = rx.recv().await {
@@ -73,7 +81,7 @@ impl Shell {
                             }
                         }
                     });
-                    self.terminal = Some(TermUi { term, focus: cx.focus_handle(), open: true, place: self.endpoint.label(), _reading: reading });
+                    self.terminal = Some(TermUi { term, focus: cx.focus_handle(), open: true, place: self.endpoint.label(), wheel: 0., _reading: reading });
                 }
                 Err(e) => {
                     self.composer.flash = Some(t!("term.not_started", why = e.to_string()));
@@ -90,6 +98,30 @@ impl Shell {
             ui.term.suggest(&line);
         }
         window.focus(&ui.focus, cx);
+        cx.notify();
+    }
+
+    /// How tall it is under the conversation: as left, within the window.
+    pub fn term_height(&self, window: &Window) -> f32 {
+        let most = (f32::from(window.viewport_size().height) - 240.).max(BELOW_MIN);
+        self.remembered.term_height.unwrap_or(BELOW).clamp(BELOW_MIN, most)
+    }
+
+    /// The room the text has, wherever the terminal sits.
+    pub fn term_box(&self, window: &Window, cx: &App) -> (f32, f32) {
+        let viewport = window.viewport_size();
+        if self.remembered.term_below {
+            let side = self.board.sidebar_width * self.sidebar_shown(cx);
+            (f32::from(viewport.width) - side, self.term_height(window) - BAR)
+        } else {
+            (self.side_width(window), f32::from(viewport.height) - super::header::HEIGHT)
+        }
+    }
+
+    /// At the right, or under the conversation: kept for next time.
+    pub fn move_terminal(&mut self, cx: &mut Context<Self>) {
+        self.remembered.term_below = !self.remembered.term_below;
+        self.remembered.save(&equipe_providers::credentials::equipe_home());
         cx.notify();
     }
 
@@ -118,13 +150,14 @@ pub fn panel(shell: &Shell, window: &mut Window, cx: &mut Context<Shell>) -> Opt
     let dark = shell.palette.bg.r + shell.palette.bg.g + shell.palette.bg.b < 1.5;
     let colors = if dark { Colors::dark() } else { Colors::light() };
     // Kept the panel's size: a window resized, the shell hears it.
-    let size = fits(window, shell.side_width(window));
+    let below = shell.remembered.term_below;
+    let size = fits(window, shell.term_box(window, cx));
     let cw = f32::from(size.cell_w);
     let screen = ui.term.screen(&colors);
     let focused = ui.focus.is_focused(window);
     let title = ui.term.title.clone().filter(|t| !t.trim().is_empty());
     let bar = h_flex()
-        .h(px(super::header::HEIGHT))
+        .h(px(if below { BAR } else { super::header::HEIGHT }))
         .flex_none()
         .px_3()
         .gap_2()
@@ -140,6 +173,10 @@ pub fn panel(shell: &Shell, window: &mut Window, cx: &mut Context<Shell>) -> Opt
                 .children(title.map(|t| div().text_size(px(META)).text_color(p.muted).font_family(MONO).truncate().child(t))),
         )
         .when(ui.term.ended, |bar| bar.child(ui::icon_button(p, "term-again", Icon::Reload, t!("term.again"), None).on_click(cx.listener(|this, _, window, cx| this.open_terminal(None, window, cx)))))
+        .child(
+            ui::icon_button(p, "term-move", if below { Icon::ArrowRight } else { Icon::ArrowDown }, if below { t!("term.to_right") } else { t!("term.to_bottom") }, None)
+                .on_click(cx.listener(|this, _, _, cx| this.move_terminal(cx))),
+        )
         .child(ui::icon_button(p, "term-hide", Icon::X, t!("term.close"), None).on_click(cx.listener(|this, _, window, cx| this.close_terminal(window, cx))));
     let bg: Hsla = rgb(colors.background).into();
     let lines = screen.lines.into_iter().enumerate().map(|(row, runs)| {
@@ -200,19 +237,62 @@ pub fn panel(shell: &Shell, window: &mut Window, cx: &mut Context<Shell>) -> Opt
                 cx.stop_propagation();
             }
         }))
-        .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, window, cx| {
-            if let Some(ui) = this.terminal.as_ref() {
-                let dy = f32::from(e.delta.pixel_delta(px(LINE)).y);
-                let lines = (dy / LINE).round() as i32;
-                if lines != 0 {
-                    ui.term.scroll(lines);
-                    let _ = window;
+        // Back through what scrolled by: a trackpad's small steps add up to lines.
+        .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, _, cx| {
+            if let Some(ui) = this.terminal.as_mut() {
+                ui.wheel += f32::from(e.delta.pixel_delta(px(LINE)).y);
+                let lines = (ui.wheel / LINE).trunc();
+                if lines != 0. {
+                    ui.wheel -= lines * LINE;
+                    ui.term.scroll(lines as i32);
                     cx.notify();
                 }
+                cx.stop_propagation();
             }
         }))
         .children(lines)
         .children(cursor);
+    if below {
+        let dragging = shell.term_drag.is_some();
+        // Its top edge: drag to make it taller or shorter, double-click for the usual height.
+        let edge = div()
+            .id("term-edge")
+            .group("term-edge")
+            .absolute()
+            .left_0()
+            .right_0()
+            .top(px(-4.))
+            .h(px(8.))
+            .cursor_row_resize()
+            .child(div().absolute().left_0().right_0().top(px(4.)).h(px(1.)).bg(if dragging { p.accent } else { p.hair }).group_hover("term-edge", move |s| s.bg(p.accent).opacity(0.7)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                    if e.click_count >= 2 {
+                        this.remembered.term_height = None;
+                        this.remembered.save(&equipe_providers::credentials::equipe_home());
+                    } else {
+                        this.term_drag = Some((f32::from(e.position.y), this.term_height(window)));
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            );
+        return Some(
+            v_flex()
+                .id("term-panel")
+                .relative()
+                .w_full()
+                .h(px(shell.term_height(window)))
+                .flex_none()
+                .min_h_0()
+                .bg(p.bg)
+                .child(bar)
+                .child(body)
+                .child(edge)
+                .into_any_element(),
+        );
+    }
     Some(
         v_flex()
             .id("term-panel")
@@ -232,9 +312,9 @@ pub fn panel(shell: &Shell, window: &mut Window, cx: &mut Context<Shell>) -> Opt
 }
 
 /// The size the panel wants now; the shell is told when it changed.
-pub fn fit(shell: &mut Shell, window: &Window) {
-    let wide = shell.side_width(window);
+pub fn fit(shell: &mut Shell, window: &Window, cx: &App) {
+    let room = shell.term_box(window, cx);
     if let Some(ui) = shell.terminal.as_mut().filter(|t| t.open) {
-        ui.term.resize(fits(window, wide));
+        ui.term.resize(fits(window, room));
     }
 }

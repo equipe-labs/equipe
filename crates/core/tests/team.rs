@@ -132,7 +132,11 @@ async fn the_pm_proposes_the_person_approves_and_the_new_member_takes_the_waitin
     let odd = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "astronaut", "reason": "-" })).await;
     assert!(odd.is_error && odd.text.contains("No role called astronaut"), "{odd:?}");
 
-    let said = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "qa", "reason": "T-2가 기다려요 (qa는 T-1 중)", "unblocks": [2] })).await;
+    // Unasked, a few seconds after T-2 came: too soon — qa takes it as it finishes.
+    let soon = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "qa", "reason": "T-2가 기다려요", "unblocks": [2] })).await;
+    assert!(soon.is_error && soon.text.contains("has waited 0 min"), "{soon:?}");
+    // The person asked for one in words: it goes to them.
+    let said = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "qa", "reason": "T-2가 기다려요 (qa는 T-1 중)", "unblocks": [2], "asked": true })).await;
     assert!(!said.is_error && said.text.starts_with("Proposed — the person decides on a card."), "{said:?}");
     let change = proposed(&until(&mut events, |e| matches!(e, Event::TeamChangeProposed { .. })).await);
     assert_eq!((change.change, change.role.as_str(), change.count, change.unblocks.as_slice(), change.by.as_str(), change.session), (Change::Add, "qa", 1, &[2][..], "pm", 1));
