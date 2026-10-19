@@ -808,6 +808,10 @@ impl Shell {
                         // Settings open on its list: the daemon (maybe another one) is asked again.
                         if attached {
                             this.engines.attached();
+                            // The projects in the order the person left them on this Mac.
+                            let squad = this.model.squad.clone();
+                            this.model.project_order = this.remembered.project_orders.iter().find(|(s, _)| *s == squad).map(|(_, n)| n.clone()).unwrap_or_default();
+                            this.model.order_projects();
                         }
                         if attached && this.screen == Screen::Settings {
                             this.pairing.devices_asked = None;
@@ -1070,6 +1074,48 @@ impl Shell {
             });
         })
         .detach();
+        cx.notify();
+    }
+
+    /// A web link from a reply: in the browser the person chose (settings),
+    /// or with ⌘ (`other`) in the other — equipe's panel or the Mac's.
+    pub fn open_link(&mut self, url: &str, other: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remembered.links_in_app == other {
+            cx.open_url(url);
+            return;
+        }
+        if self.screen != Screen::Chat {
+            self.show(Screen::Chat, cx);
+        }
+        // The right side is the browser's now.
+        self.doc = None;
+        if let Some(ui) = self.terminal.as_mut().filter(|_| !self.remembered.term_below) {
+            ui.open = false;
+        }
+        if !self.browser.read(cx).open {
+            self.browser.update(cx, |b, cx| b.toggle(window, cx));
+            self.sync_browser(window, cx);
+        }
+        self.browser.update(cx, |b, cx| b.open_tab(url, cx));
+        cx.notify();
+    }
+
+    pub fn set_links_in_app(&mut self, on: bool) {
+        self.remembered.links_in_app = on;
+        self.remembered.save(&equipe_providers::credentials::equipe_home());
+    }
+
+    /// Project `name` dragged before `before`: kept for this squad on this Mac.
+    pub fn reorder_project(&mut self, name: &str, before: Option<&str>, cx: &mut Context<Self>) {
+        if before == Some(name) {
+            return;
+        }
+        let names = self.model.move_project(name, before);
+        let squad = self.model.squad.clone();
+        self.remembered.project_orders.retain(|(s, _)| *s != squad);
+        self.remembered.project_orders.push((squad, names));
+        self.remembered.save(&equipe_providers::credentials::equipe_home());
+        self.board_sync(cx);
         cx.notify();
     }
 

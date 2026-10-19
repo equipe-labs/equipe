@@ -163,6 +163,10 @@ pub struct Remembered {
     pub browser_width: Option<f32>,
     /// How wide the document and terminal panel was left, in px.
     pub side_width: Option<f32>,
+    /// A link in a reply opens in equipe's own browser panel, not the Mac's browser.
+    pub links_in_app: bool,
+    /// The order the person dragged each squad's projects into: (squad, names).
+    pub project_orders: Vec<(String, Vec<String>)>,
     /// The terminal sits under the conversation rather than at its right.
     pub term_below: bool,
     /// How tall it was left there, in px.
@@ -426,6 +430,12 @@ impl Remembered {
                 out.board_split = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("browser-width ") {
                 out.browser_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
+            } else if let Some(rest) = line.strip_prefix("project-order ")
+                && let Some((squad, names)) = rest.split_once(' ')
+            {
+                out.project_orders.push((squad.to_owned(), names.split('\t').filter(|n| !n.is_empty()).map(str::to_owned).collect()));
+            } else if line.trim() == "links in-app" {
+                out.links_in_app = true;
             } else if line.trim() == "term-below" {
                 out.term_below = true;
             } else if let Some(rest) = line.strip_prefix("term-height ") {
@@ -459,6 +469,12 @@ impl Remembered {
         }
         if let Some(width) = self.side_width {
             text.push_str(&format!("side-width {width:.0}\n"));
+        }
+        for (squad, names) in &self.project_orders {
+            text.push_str(&format!("project-order {squad} {}\n", names.join("\t")));
+        }
+        if self.links_in_app {
+            text.push_str("links in-app\n");
         }
         if self.term_below {
             text.push_str("term-below\n");

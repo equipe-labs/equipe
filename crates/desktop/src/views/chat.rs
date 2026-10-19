@@ -481,7 +481,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         }
         // Its own pane: the composer's cursor, a card's box, the header don't
         // lay a day's conversation out again (`pane.rs`).
-        Some(_) => shell.panes.conversation.clone().cached(StyleRefinement::default().flex_1().min_h_0().w_full().max_w(px(COLUMN))).into_any_element(),
+        Some(_) => shell.panes.conversation.clone().cached(StyleRefinement::default().flex_1().min_h_0().w_full()).into_any_element(),
     };
     // A ticket open: its number, title and where it stands, over its work.
     let banner = model.opened.and_then(|id| model.tickets.iter().find(|t| t.id == id)).map(|t| {
@@ -797,16 +797,20 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         .children(pulse)
         .children(jump)
         .child(
-        MessageScroller::new("conversation", shell.chat.scroller.clone(), move |ix, window, cx| row(&rows, ix, window, cx))
+        // The list is the pane's whole width, so its scrollbar is at the
+        // window's right edge (as a terminal's is); each row keeps the column.
+        MessageScroller::new("conversation", shell.chat.scroller.clone(), move |ix, window, cx| {
+            h_flex().w_full().justify_center().child(div().flex_1().min_w_0().max_w(px(COLUMN - 32. - 2. * TEXT_INSET)).child(row(&rows, ix, window, cx))).into_any_element()
+        })
             .jump_button(false)
-            .with_row_style(StyleRefinement::default().pb(px(8.)).pl(px(TEXT_INSET)).pr(px(TEXT_INSET)))
+            .with_row_style(StyleRefinement::default().pb(px(8.)).pl(px(16. + TEXT_INSET)).pr(px(16. + TEXT_INSET)))
             // Room under the last line, so it never sits on the composer's
             // edge; read back, the rows fade out there under the jump pill.
             .with_list_style(StyleRefinement::default().pt(px(8.)).pb(px(TAIL_ROOM)))
             .with_bottom_fade(p.bg)
     );
     // The pill has its own room under the list, so it covers nothing.
-    let list = v_flex().flex_1().min_h_0().w_full().max_w(px(COLUMN)).px_4().child(scroller).children(answered);
+    let list = v_flex().flex_1().min_h_0().w_full().items_center().child(scroller).children(answered);
     // Another project's slice: the list fades in at its end.
     match shell.chat.faded_in {
         Some(serial) if serial == shell.chat.serial => motion::fade(list, ("slice-in", serial), motion::BASE).into_any_element(),
@@ -1701,7 +1705,7 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
     let look = Look { size: BODY, line: BODY_LINE, color: p.prose, live: false };
     let body = (!text.is_empty()).then(|| {
         let state = rows.views.borrow_mut().get(view_key(key, 2), &escape_markdown(text), cx);
-        TextView::new(&state).style(view::style(p, &look)).selectable(true).on_link_click(|url, event, _, cx| view::follow(url, event.modifiers(), 0, cx)).when(clamped, |v| v.max_lines(USER_LINES))
+        TextView::new(&state).style(view::style(p, &look)).selectable(true).on_link_click(|url, event, window, cx| view::follow(url, event.modifiers(), 0, window, cx)).when(clamped, |v| v.max_lines(USER_LINES))
     });
     let files = attached::attachments(&rows.attached, key, &parts.tags, parts.more, true, cx);
     let group: SharedString = format!("user-{key}").into();

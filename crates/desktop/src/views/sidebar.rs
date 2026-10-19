@@ -214,10 +214,14 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         (m.arriving(now), m.leaving(now))
     };
     let mut list: Vec<AnyElement> = Vec::new();
+    // The projects under a heading of their own, with the button that adds one.
+    if !groups.is_empty() || !model.projects.is_empty() {
+        list.push(projects_heading(shell, cx));
+    }
     let mut after_rows = false;
     for (ix, g) in groups.iter().enumerate() {
         let folded = shell.remembered.folded.contains(&g.key());
-        let gap = if ix == 0 { 14. } else if after_rows { 10. } else { 2. };
+        let gap = if ix == 0 { 2. } else if after_rows { 10. } else { 2. };
         list.push(project_head(shell, g, folded, gap, cx));
         after_rows = !folded && (!g.is_quiet() || leaving.iter().any(|l| l.key == g.key()));
         if folded {
@@ -300,6 +304,66 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                     }),
                 ),
         )
+}
+
+/// "프로젝트", over the squad's projects, and its "+" (the same as the
+/// project list's "Add a project…").
+fn projects_heading(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let local = !shell.endpoint.is_remote();
+    h_flex()
+        .id("projects-heading")
+        .group("projects-heading")
+        .h(px(26.))
+        .mt(px(14.))
+        .mx_2()
+        .pl_2()
+        .pr_1()
+        .items_center()
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(p.muted)
+        .child(div().flex_1().child(t!("sidebar.projects")))
+        .child(
+            div()
+                .id("projects-add")
+                .size(px(20.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.))
+                .cursor_pointer()
+                .hover(move |s| s.bg(p.side_hover))
+                .tip(p, t!("header.add_project"), None)
+                .child(icon(IconName::Plus, 13., p.muted))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if local {
+                        this.pick_project_folder(cx);
+                    } else {
+                        this.board.popover = Some(super::board::Popover::Projects);
+                        this.board.slice_place = "chat";
+                        this.start_adding_project(window, cx);
+                    }
+                })),
+        )
+        .into_any_element()
+}
+
+/// A project's header being dragged to a new place.
+#[derive(Clone)]
+pub struct ProjectDrag {
+    pub name: String,
+    pub palette: Palette,
+}
+
+/// The project's name under the pointer while it is dragged.
+struct ProjectGhost(ProjectDrag);
+
+impl Render for ProjectGhost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let p = self.0.palette;
+        div().px_3().py_1().rounded(px(6.)).bg(p.popover()).border_1().border_color(p.accent).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(self.0.name.clone())
+    }
 }
 
 /// The ticket the screen shows, for the row's highlight.
@@ -424,9 +488,17 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, cx: &mut C
                 this.new_message(window, cx);
             }))
     });
+    let drag = g.name.clone().map(|name| ProjectDrag { name, palette: p });
+    let target = g.name.clone();
     h_flex()
         .id(SharedString::from(format!("head-row-{key}")))
         .group(group)
+        // Dragged onto another project's header, it goes before that one.
+        .when_some(drag, |row, drag| row.on_drag(drag, |d, _, _, cx| cx.new(|_| ProjectGhost(d.clone()))))
+        .when_some(target, |row, target| {
+            row.drag_over::<ProjectDrag>(move |style, _, _, _| style.border_t_2().border_color(p.accent))
+                .on_drop(cx.listener(move |this, d: &ProjectDrag, _, cx| this.reorder_project(&d.name, Some(&target), cx)))
+        })
         .h(px(26.))
         .mt(px(gap))
         .mx_2()
@@ -1019,7 +1091,9 @@ impl SubMotion {
 fn relaunch(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
     use crate::relaunch::{Update, Why};
     let words = crate::relaunch::pill(&shell.update)?;
-    let pill = h_flex().id("relaunch").h(px(34.)).flex_none().mx_3().mb_1().px_3().rounded(px(8.)).items_center().justify_between().text_size(px(TEXT));
+    // Words that shorten with an ellipsis, then the mark, inside the pill whatever the width.
+    let pill = h_flex().id("relaunch").h(px(34.)).flex_none().mx_2().mb_1().px_3().gap_2().overflow_hidden().rounded(px(8.)).items_center().justify_between().text_size(px(TEXT));
+    let mark = |m: &'static str| div().flex_none().child(m);
     Some(match &shell.update {
         Update::Ready(_) => pill
             .bg(p.primary)
@@ -1028,8 +1102,8 @@ fn relaunch(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<impl I
             .cursor_pointer()
             .hover(|s| s.opacity(0.9))
             .on_click(cx.listener(|this, _, _, cx| this.relaunch_to_update(cx)))
-            .child(words)
-            .child("→"),
+            .child(div().flex_1().min_w_0().truncate().child(words))
+            .child(mark("→")),
         // Downloading: said quietly, nothing to press.
         Update::Found(_) | Update::Downloading(_) => pill.border_1().border_color(p.hair).text_color(p.muted).child(div().min_w_0().truncate().child(words)),
         // The app can't replace itself where it is: show it in Finder.
@@ -1040,8 +1114,8 @@ fn relaunch(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<impl I
             .cursor_pointer()
             .hover(|s| s.bg(p.wash))
             .on_click(|_, _, _| crate::relaunch::reveal())
-            .child(div().min_w_0().truncate().child(words))
-            .child("→"),
+            .child(div().flex_1().min_w_0().truncate().child(words))
+            .child(mark("→")),
         _ => pill
             .border_1()
             .border_color(p.hair)
@@ -1049,8 +1123,8 @@ fn relaunch(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<impl I
             .cursor_pointer()
             .hover(|s| s.bg(p.wash))
             .on_click(|_, _, cx| crate::relaunch::check_now(cx))
-            .child(div().min_w_0().truncate().child(words))
-            .child("↻"),
+            .child(div().flex_1().min_w_0().truncate().child(words))
+            .child(mark("↻")),
     })
 }
 

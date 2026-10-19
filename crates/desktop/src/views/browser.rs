@@ -1060,6 +1060,11 @@ impl BrowserPanel {
         }
     }
 
+    /// A tab of the person's own at `url`, picked when it comes (a link from a reply).
+    pub fn open_tab(&mut self, url: &str, cx: &mut Context<Self>) {
+        self.new_tab(Some(url.to_owned()), cx);
+    }
+
     fn new_tab(&mut self, url: Option<String>, cx: &mut Context<Self>) {
         self.new_tab = true;
         self.command(Command::BrowserNewTab { url }, cx);
@@ -2183,10 +2188,6 @@ impl BrowserPanel {
         if take { self.take(window, cx) } else { self.give_back(cx) }
     }
 
-    /// A tab of the person's own at `url`, picked when it comes.
-    pub fn open_tab(&mut self, url: &str, cx: &mut Context<Self>) {
-        self.new_tab(Some(url.to_owned()), cx);
-    }
 
     /// Compose each of `steps` in turn (`ㅎ`, `하`, `한`), then commit the last.
     pub fn compose(&mut self, steps: &[&str], window: &mut Window, cx: &mut Context<Self>) {
