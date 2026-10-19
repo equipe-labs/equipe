@@ -71,11 +71,12 @@ objc2 = "0.6"
 block2 = "0.6"
 # Attachments: a video's frames (AVFoundation), a PDF's first page and page
 # count (CoreGraphics) — read on this Mac, off the UI thread (src/media.rs).
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSArray", "NSValue", "NSError", "NSDictionary", "NSBundle", "NSSet"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSArray", "NSValue", "NSError", "NSDictionary", "NSBundle", "NSSet", "NSLocale"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFURL", "CFString", "CFCGTypes"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "CGPDFDocument", "CGPDFPage", "CGAffineTransform", "CGGeometry"] }
 objc2-core-media = { version = "0.3", default-features = false, features = ["std", "CMTime", "CMTimeRange"] }
 objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "AVAsset", "AVAssetImageGenerator", "AVAssetTrack", "AVMediaFormat", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media"] }
+objc2-speech = { version = "0.3", default-features = false, features = ["std", "block2", "SFSpeechRecognizer", "SFSpeechRecognitionRequest", "SFSpeechRecognitionResult", "SFSpeechRecognitionTask", "SFTranscription", "SFSpeechRecognitionTaskHint", "SFSpeechRecognitionMetadata"] }
 
 [features]
 snapshot = ["gpui-kit/test-support"]

@@ -30,6 +30,7 @@ use crate::motion;
 use crate::target::Endpoint;
 use crate::theme::{CONTROL, GAP, ICON, ICON_SM, MONO, Palette, R_LG, R_MD, R_SM, R_XL, ROW, SMALL, look};
 use crate::tips::tip;
+use crate::transcribe::Failure;
 use crate::{Screen, Shell, files, media};
 
 /// How tall the box may grow, in lines, before it scrolls inside.
@@ -548,7 +549,8 @@ impl Shell {
         // person's flow isn't stopped by a progress bar.
         if self.composer.strip.busy() {
             self.composer.send_when_ready = Some(later);
-            self.composer.flash = Some(t!("composer.sends_when_uploaded").into());
+            let writing = self.composer.strip.items().iter().any(|i| i.writing);
+            self.composer.flash = Some(if writing { t!("composer.sends_when_written") } else { t!("composer.sends_when_uploaded") }.into());
             cx.notify();
             return;
         }
@@ -672,6 +674,11 @@ impl Shell {
                 over += 1;
                 continue;
             };
+            if let Source::File(path) = &source
+                && source.kind() == Kind::Audio
+            {
+                self.write_down(id, path.clone(), cx);
+            }
             let store = store.clone();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Step>();
             cx.background_spawn(async move {
@@ -732,6 +739,42 @@ impl Shell {
             self.composer.flash = Some(t!("composer.too_many", n = attach::MAX_ATTACHMENTS, over = over));
         }
         cx.notify();
+    }
+
+    /// A recording attached (a voice memo, a call): written down on this Mac
+    /// too, and its words attached beside it as a text file, so a member reads
+    /// what was said, on this Mac's daemon or a far one alike.
+    fn write_down(&mut self, id: u64, path: PathBuf, cx: &mut Context<Self>) {
+        self.composer.strip.writing(id, true);
+        let locale = speech_locale(crate::i18n::lang());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let from = path.clone();
+        // Minutes for a long one: its own thread, not one of the pool's.
+        std::thread::spawn(move || drop(tx.send(crate::transcribe::transcribe(&from, locale, media::audio_duration(&from)))));
+        cx.spawn(async move |this, cx| {
+            let heard = rx.await.unwrap_or_else(|_| Err(Failure::Failed("stopped".into())));
+            let _ = this.update(cx, |this, cx| {
+                // Taken off meanwhile: its words aren't wanted either.
+                if !this.composer.strip.writing(id, false) {
+                    return cx.notify();
+                }
+                let name = attach::file_name(&path);
+                this.composer.flash = Some(match heard {
+                    Ok(words) => {
+                        let stem = path.file_stem().map_or_else(|| name.clone(), |s| s.to_string_lossy().into_owned());
+                        let text = format!("{}\n\n{}\n", t!("composer.transcript_head", name = name), words.trim());
+                        this.attach_sources(vec![Source::Text { name: format!("{}.txt", t!("composer.transcript_name", name = stem)), text }], cx);
+                        t!("composer.transcribed", name = name)
+                    }
+                    Err(Failure::Denied) => t!("composer.transcribe_denied").into(),
+                    Err(Failure::Unsupported) => t!("composer.transcribe_unsupported").into(),
+                    Err(Failure::NoSpeech) => t!("composer.transcribe_no_speech", name = name),
+                    Err(Failure::Failed(why)) => t!("composer.transcribe_failed", why = why),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// ⌘V in the box. True when the clipboard held files or a picture and they
@@ -2109,6 +2152,7 @@ fn chip_detail(item: &attach::Item) -> String {
         Stage::Sending(share) => t!("composer.sending", percent = (share * 100.).round() as u32),
         // The chip names the file already.
         Stage::Failed(why) => why.strip_prefix(&format!("{} — ", item.name)).unwrap_or(why).to_owned(),
+        Stage::Ready(_) if item.writing => t!("composer.writing_down").into(),
         Stage::Ready(_) => {
             let size = attach::size_label(item.size);
             let m = &item.meta;

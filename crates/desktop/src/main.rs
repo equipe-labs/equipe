@@ -47,6 +47,7 @@ mod theme;
 mod team;
 mod tickets;
 mod tips;
+mod transcribe;
 mod ui;
 mod i18n;
 mod icons;
