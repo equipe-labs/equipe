@@ -188,6 +188,8 @@ pub struct Shell {
     /// Members' pictures — decisions' options, hand-ins — and the one shown big.
     pub shots: std::rc::Rc<std::cell::RefCell<visuals::Visuals>>,
     pub viewer: Option<visuals::Viewer>,
+    /// How far the big view is zoomed in, and where.
+    pub viewer_zoom: visuals::Zoom,
     /// A reply's list of questions, answered in place.
     pub asklist: views::asklist::AskListUi,
     /// Words selected in the conversation, asked about (`views/quote.rs`).
@@ -319,6 +321,7 @@ impl Shell {
             decide: Default::default(),
             shots: Default::default(),
             viewer: None,
+            viewer_zoom: Default::default(),
             asklist: Default::default(),
             quote: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),

@@ -1834,5 +1834,8 @@
   "visuals.retry": "Erneut versuchen",
   "visuals.why_missing": "Die Datei ist nicht da",
   "visuals.why_too_big": "Zu groß zum Anzeigen",
-  "visuals.why_unreadable": "Sie ließ sich nicht lesen"
+  "visuals.why_unreadable": "Sie ließ sich nicht lesen",
+  "visuals.zoom_fit": "Ganz",
+  "visuals.zoom_in": "Vergrößern",
+  "visuals.zoom_out": "Verkleinern"
 }

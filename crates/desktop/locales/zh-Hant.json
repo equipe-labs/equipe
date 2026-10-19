@@ -1782,5 +1782,8 @@
   "visuals.retry": "重試",
   "visuals.why_missing": "檔案不存在",
   "visuals.why_too_big": "檔案太大，無法顯示",
-  "visuals.why_unreadable": "無法讀取此檔案"
+  "visuals.why_unreadable": "無法讀取此檔案",
+  "visuals.zoom_fit": "符合",
+  "visuals.zoom_in": "放大",
+  "visuals.zoom_out": "縮小"
 }

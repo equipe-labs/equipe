@@ -364,6 +364,13 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 // A member's pictures big: option n's of the card on show, or a hand-in's nth.
                 "dview" => shell.update(cx, |shell, cx| shell.view_script(None, arg.parse().unwrap_or(1), cx)),
                 "rview" => shell.update(cx, |shell, cx| shell.reply_view_script(arg.parse().unwrap_or(1), cx)),
+                // The big view zoomed to `vzoom:2` at its centre.
+                "vzoom" => shell.update(cx, |shell, cx| {
+                    if let Some(path) = shell.viewer.as_ref().map(|v| v.item().path.clone()) {
+                        shell.viewer_zoom.set(&path, arg.parse().unwrap_or(2.), (0., 0.));
+                        cx.notify();
+                    }
+                }),
                 "tview" => shell.update(cx, |shell, cx| {
                     let (ticket, n) = arg.split_once(',').unwrap_or((arg.as_str(), "1"));
                     shell.view_script(ticket.parse().ok(), n.parse().unwrap_or(1), cx);

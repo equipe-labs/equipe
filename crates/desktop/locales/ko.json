@@ -1782,5 +1782,8 @@
   "visuals.retry": "다시 시도",
   "visuals.why_missing": "파일이 없어요",
   "visuals.why_too_big": "너무 커서 보여 드릴 수 없어요",
-  "visuals.why_unreadable": "읽을 수 없는 파일이에요"
+  "visuals.why_unreadable": "읽을 수 없는 파일이에요",
+  "visuals.zoom_fit": "맞춤",
+  "visuals.zoom_in": "확대",
+  "visuals.zoom_out": "축소"
 }
