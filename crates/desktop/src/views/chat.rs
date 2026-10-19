@@ -1216,10 +1216,33 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
         activity::Title::Summary(summary) => div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(summary).into_any_element(),
     };
     let one = single.then(|| &lines[0]);
+    // A document read or written: a look at it in the panel, one click away.
+    let doc = one.filter(|_| status != Status::Running && !failed).and_then(|l| l.path.clone()).filter(|path| crate::doc::is_doc(path)).map(|path| {
+        let handle = rows.handle.clone();
+        div()
+            .id(("group-doc", key))
+            .flex_none()
+            .px(px(7.))
+            .py(px(1.))
+            .rounded(px(R_SM))
+            .border_1()
+            .border_color(p.hair)
+            .text_size(px(META))
+            .text_color(p.text2)
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.wash).text_color(p.text))
+            .child(t!("doc.view"))
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                let path = std::path::PathBuf::from(&path);
+                handle.update(cx, |shell, cx| shell.open_doc(path, cx)).ok();
+            })
+    });
     let head = disclosure_head(rows, ("group", key), PART_GROUP, key, false, window, cx)
         .text_color(tone)
         .children(mark)
         .child(title)
+        .children(doc)
         .children(one.and_then(diff_stat).map(|(a, r)| stat_chip(rows, a, r)))
         .children(one.and_then(|l| l.exit.filter(|_| failed)).map(|code| div().flex_none().px_1().rounded(px(4.)).bg(t.danger_bg).text_size(px(META)).text_color(t.danger).child(t!("chat.exit_code", code = code))))
         .children(activity::total_ms(lines).map(|ms| div().flex_none().text_size(px(META)).text_color(p.muted).child(tools::duration(ms))))

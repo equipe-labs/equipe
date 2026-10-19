@@ -173,6 +173,10 @@ pub fn follow(url: &str, modifiers: Modifiers, scope: u64, cx: &mut App) {
     match links::classify(url, &base) {
         Link::Ticket(n) => with_shell(cx, |shell, cx| shell.open_ticket(n, cx)),
         Link::Web(url) => cx.open_url(&url),
+        // A document opens beside the conversation, on this Mac or another.
+        Link::File { path, .. } if !modifiers.platform && !modifiers.alt && crate::doc::is_doc(&path.to_string_lossy()) => {
+            with_shell(cx, |shell, cx| shell.open_doc(path, cx));
+        }
         Link::File { path, .. } => {
             let how = if modifiers.platform {
                 Open::Edit

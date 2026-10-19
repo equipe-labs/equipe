@@ -49,7 +49,8 @@ impl MarkdownPlugin for FileChips {
         let id = ("file-chip", hash_of((&text, node.source_range().map(|r| r.start))));
         let size = context.font_size() * 0.88;
         let base = cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade()).map(|s| base_dir(s.read(cx))).unwrap_or_default();
-        let openable = exists(&links::resolve(links::path_and_line(&text).0, &base));
+        // A document opens in the panel wherever the daemon is.
+        let openable = crate::doc::is_doc(&text) || exists(&links::resolve(links::path_and_line(&text).0, &base));
         Some(InlineElement::new(file_chip(self.p, id, &text, openable, size)))
     }
 }
@@ -82,7 +83,8 @@ fn exists(path: &std::path::Path) -> bool {
 /// A path in a reply, as written, like any inline code: a quiet fill, no
 /// mark. One on this Mac (`openable`) underlines under the pointer — a click
 /// looks at it, ⌘-click opens it, ⌥-click shows it in Finder — and its menu
-/// also copies its path.
+/// also copies its path. A document (Markdown) opens in the panel at the
+/// right instead, from this Mac or another.
 pub fn file_chip(p: Palette, id: (&'static str, u64), written: &str, openable: bool, size: Pixels) -> impl IntoElement + use<> {
     let label = written.to_owned();
     let written = written.to_owned();
@@ -109,6 +111,9 @@ pub fn file_chip(p: Palette, id: (&'static str, u64), written: &str, openable: b
                     _ => Open::Look,
                 };
                 let path = click(cx);
+                if how == Open::Look && crate::doc::is_doc(&path.to_string_lossy()) {
+                    return super::with_shell(cx, |shell, cx| shell.open_doc(path, cx));
+                }
                 open_file(&path, how, cx);
             })
         })
@@ -118,6 +123,7 @@ pub fn file_chip(p: Palette, id: (&'static str, u64), written: &str, openable: b
                 PopupMenuItem::new(label).on_click(move |_, _, cx| {
                     let path = locate(cx);
                     match how {
+                        Some(Open::Look) if crate::doc::is_doc(&path.to_string_lossy()) => super::with_shell(cx, |shell, cx| shell.open_doc(path, cx)),
                         Some(how) => open_file(&path, how, cx),
                         None => cx.write_to_clipboard(ClipboardItem::new_string(path.display().to_string())),
                     }
