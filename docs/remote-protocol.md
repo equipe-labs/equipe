@@ -104,7 +104,10 @@ A visual choice carries its pictures: a question may have `"images": [<path>…]
 shows as a whole), and each option `"images": [<path>…]` — at most 6 and 4, absent when none.
 A ticket handed in for review may carry `"images": [<path>…]` too (at most 12): the pictures
 its member named, then the images its branch changed. All three are additive; an older
-screen ignores them. A path is the picture's on the daemon's machine, already checked when the
+screen ignores them. A ticket in review may also carry `"design_qa": <ticket id>` while a
+designer checks its screens on that ticket first (see *Design QA* in ARCHITECTURE.md): a
+screen should show it as in design QA rather than as waiting for the person; it is absent
+once that passes, and from an older daemon. A path is the picture's on the daemon's machine, already checked when the
 member named it: a PNG, JPG, WebP, GIF or SVG inside the squad's folder or the member's
 worktree. A screen that shows options as pictures should lay them out side by side and let the
 person pick from them; the pick is the same `answer_questions` as ever.

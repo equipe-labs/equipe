@@ -203,6 +203,9 @@ pub fn render(tickets: &[Ticket]) -> String {
         if let Some(branch) = &t.branch {
             facts.push(format!("branch {branch}"));
         }
+        if let Some(qa) = t.design_qa {
+            facts.push(format!("design QA on T-{qa} first"));
+        }
         if !facts.is_empty() {
             out.push_str(&format!(" — {}", facts.join(", ")));
         }
@@ -374,6 +377,8 @@ pub const REMEMBER: &str = "remember";
 pub const FORGET: &str = "forget";
 /// A member says when what it is doing will be done — and what it ships, live.
 pub const ESTIMATE: &str = "estimate";
+/// A designer finishes a design QA ticket: the screens pass, or go back to their engineer.
+pub const DESIGN_QA: &str = "design_qa";
 
 /// The `kind` argument of `create_ticket` and `update_ticket`.
 static KIND_SCHEMA: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
@@ -454,12 +459,14 @@ It waits on the board as a proposal until the PM or the person accepts it."
 Your changes are committed to the ticket's branch and the person reviews them. Then end your turn. When the work is \
 visual — a logo, a screen, a mockup, an illustration, colours, a layout — name its pictures in `images` (renders or \
 screenshots you saved in your worktree), so the person sees them above your summary; images your branch changes \
-are shown too.",
+are shown too. On a code ticket, say whether it changes what users see (`changes_screens`): when the squad has a \
+designer, they check those screens from your screenshots before the person reviews.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "summary": { "type": "string", "description": "What you did and how to check it, in a few lines — in the person's language." },
                     "images": IMAGES_SCHEMA.clone(),
+                    "changes_screens": { "type": "boolean", "description": "Code tickets: true when users see a change — a screen, page, layout, style, visible copy, an icon; then give screenshots of each changed screen in `images`. False for changes nobody sees." },
                 },
                 "required": ["summary"],
             },
@@ -486,6 +493,24 @@ backticks (`outputs/T-12/shots/`). In the person's language.",
             },
         }),
     ];
+    if !is_pm {
+        tools.push(json!({
+            "name": DESIGN_QA,
+            "description": "Designers, on a design QA ticket: finish checking an engineer's screens against the spec \
+and the design system. `pass` sends their ticket on to the person's review; `changes` sends it back to its engineer \
+with your findings. Count only differences from the spec, the tokens and accessibility as defects, not taste. Then \
+end your turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "verdict": { "type": "string", "enum": ["pass", "changes"] },
+                    "findings": { "type": "string", "description": "What you checked and found, each difference numbered with where it is, the spec's value, what was built and how much it matters — in the person's language." },
+                    "images": IMAGES_SCHEMA.clone(),
+                },
+                "required": ["verdict", "findings"],
+            },
+        }));
+    }
     tools.push(json!({
         "name": SHOW_BROWSER,
         "description": "Hand your browser to the person — for them to sign in, to look at something with you, or \
@@ -855,6 +880,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
+            design_qa: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],
@@ -1046,6 +1072,9 @@ mod tests {
             assert!(!["add_member", "remove_member", "approve_team_change"].contains(&name.as_str()), "{name}");
         }
         assert!(names(tools(false)).contains(&SUBMIT_FOR_REVIEW.to_owned()));
+        // Design QA is a member's to finish, never the PM's.
+        assert!(names(tools(false)).contains(&DESIGN_QA.to_owned()));
+        assert!(!names(tools(true)).contains(&DESIGN_QA.to_owned()));
     }
 
     #[test]

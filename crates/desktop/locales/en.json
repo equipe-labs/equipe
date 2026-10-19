@@ -1465,6 +1465,7 @@
   "state.status_in_progress": "In progress",
   "state.status_proposed": "Proposed",
   "state.status_review": "Review",
+  "state.status_design_qa": "Design QA",
   "state.status_todo": "To do",
   "state.status_waiting": "Your turn",
   "state.waiting_flash.one": "T-{id} your turn — {name} asks you {count} thing",

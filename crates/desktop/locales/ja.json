@@ -1421,6 +1421,7 @@
   "state.status_in_progress": "進行中",
   "state.status_proposed": "提案",
   "state.status_review": "レビュー",
+  "state.status_design_qa": "デザインQA中",
   "state.status_todo": "未着手",
   "state.status_waiting": "あなたの番",
   "state.waiting_flash.other": "T-{id}はあなたの番 — {name} から {count} 件の確認",

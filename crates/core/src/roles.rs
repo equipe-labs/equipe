@@ -72,18 +72,36 @@ You don't change a project's code yourself: that is a code ticket for an enginee
     Role {
         id: "designer",
         title: "product designer",
-        summary: "UX and UI — flows, layout, visual language, design tokens",
-        duties: "You own the experience: flows, layout, visual language, design tokens, copy tone. \
-You may edit files on your own branch — design notes, tokens, styles, static mockups. \
-Explain each choice in a sentence; leave engineering to the engineers. \
-You keep the design system, which the person sees in equipe's design system screen: a `design/` folder at the top \
-of the squad's folder (a project with a look of its own keeps one at the top of its repository). Whenever brand or \
-design work lands, bring it up to date in the same hand-in: `design/tokens.json` in the W3C Design Tokens format \
+        summary: "design — flows, UI, design system and brand",
+        duties: "You own the experience: flows, layout, visual language, design tokens, copy tone, and the brand. \
+You work like a company's product designer, from the system, not from the screen. A project's design assets live in \
+its own repository, under its `design/` folder, versioned with its code — tokens (DTCG JSON), components, brand \
+guidelines, mockups: read them before designing, and when something is missing add it there rather than invent a \
+one-off value. The squad's folder keeps only principles shared by every project (its `design/`), never one \
+project's assets.\n\
+equipe's design system screen shows what these `design/` folders hold, so keep their layout, and bring it up \
+to date in the same hand-in whenever brand or design work lands: `design/tokens.json` in the W3C Design Tokens format \
 (groups, each token a `$value` with its `$type`; aliases as `{color.blue.600}`) covering colour, typography, spacing, \
 radius, shadow and motion (`duration`, `cubicBezier`), each colour with its dark value in `$extensions.mode.dark` or in \
 sibling `light` and `dark` groups; `design/guidelines.md`, the rules in prose; `design/assets/` with the logos \
 (`logo/`, an `-on-dark` variant where it differs), icons and illustrations as SVG or PNG; and `design/components/` with \
-a PNG or SVG preview you render of each key component. A draft stays in your worktree until the person accepts it.",
+a PNG or SVG preview you render of each key component. A draft stays in your worktree until the person accepts it.\n\
+Work in this order and say which step you are on: define the problem and how success shows; collect references, \
+each with its link and what you take from it; explore at least three genuinely different options (colour alone \
+doesn't make another) and put them side by side in one comparison sheet with your recommendation and why; take the \
+person's critique; refine only the chosen option, at full fidelity — every state (empty, loading, error, long text), \
+light and dark, the widths it supports, real copy; hand off a spec an engineer can build without guessing (token \
+names, states, responsive rules, motion, accessibility, copy, asset paths); after the engineer builds it, check the \
+result in design QA. Taste calls — brand direction, colours, typefaces, which option — are the person's: offer \
+options with reasons and let them decide, and remember what they chose.\n\
+Your sources of truth are files: tokens, SVG and HTML mockups, markdown guidelines. Render each one and look at the \
+picture yourself before you show or hand it in; compute contrast ratios instead of judging by eye (WCAG AA at \
+least); mark what you could not check as unconfirmed. You may edit files on your own branch: design notes, tokens, \
+styles, static mockups. Leave building to the engineers: propose build work as tickets.\n\
+Design QA: when an engineer hands in a code ticket that changes what users see, equipe gives you a design QA ticket \
+before the person reviews it. Compare the built screens with the spec and the system, take screenshots where you \
+can, and count only differences from the spec, the tokens and accessibility as defects, not taste. Finish it with \
+`design_qa`: pass, or changes with each difference numbered — the work then goes back to its engineer.",
         edits: true,
         tier: Tier::Upper,
     },
@@ -427,6 +445,15 @@ account, team or workspace, without saying so first — the rest of the squad wo
     } else {
         ""
     };
+    // How a designer sees its own files: what the browser opens and what it doesn't.
+    let render = if ctx.browser && role.id == "designer" {
+        " To look at a mockup, open it as a `data:` URL (`data:text/html,…` or `data:image/svg+xml,…`), take a \
+screenshot saved in your worktree, and Read it; check each width you design for with `browser_resize` (390, 768 and \
+1280 on the web). The browser doesn't open `file://` pages, and a server you start on this Mac times out: don't wait \
+on either."
+    } else {
+        ""
+    };
     let desktop = if ctx.desktop {
         "\n\nYou can work the Mac's desktop apps (the `desktop` tools, experimental) on the person's own Mac, \
 where they may be working too. Look first: `screenshot`, then `elements` for the app's buttons and fields — \
@@ -515,7 +542,7 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
     };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{desktop}{pictures}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{render}{desktop}{pictures}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
@@ -752,6 +779,44 @@ mod tests {
             assert!(text.contains(part), "{part}: {text}");
         }
         assert!(!charter(role("frontend").unwrap(), "frontend", &ctx(&team, &[], true)).contains("`design/tokens.json`"), "the designer's to keep");
+    }
+
+    #[test]
+    fn a_designer_works_like_a_company_designer_from_the_system_to_design_qa() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }, Teammate { name: "frontend", role: "frontend" }];
+        let text = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], true));
+        for part in [
+            // From the system, its assets in each project's repository; the squad's folder only shared principles.
+            "from the system, not from the screen",
+            "in its own repository, under its `design/` folder",
+            "only principles shared by every project",
+            // The steps, three real options side by side, the person deciding.
+            "define the problem",
+            "collect references",
+            "at least three genuinely different options",
+            "one comparison sheet",
+            "full fidelity",
+            "hand off a spec an engineer can build without guessing",
+            "are the person's",
+            // Seen before shown, contrast computed.
+            "look at the picture yourself",
+            "compute contrast ratios",
+            "unconfirmed",
+            // Design QA, finished with its own tool.
+            "design QA ticket",
+            "`design_qa`: pass, or changes",
+        ] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+        assert_eq!(role("designer").unwrap().summary, "design — flows, UI, design system and brand");
+        // How to render: what the browser opens, and what to give up on.
+        let browsing = charter(role("designer").unwrap(), "designer", &Context { browser: true, ..ctx(&team, &[], true) });
+        for part in ["`data:` URL", "`browser_resize`", "doesn't open `file://`", "times out"] {
+            assert!(browsing.contains(part), "{part}: {browsing}");
+        }
+        assert!(!text.contains("`data:` URL"), "no browser, no render advice");
+        let frontend = charter(role("frontend").unwrap(), "frontend", &Context { browser: true, ..ctx(&team, &[], true) });
+        assert!(!frontend.contains("`data:` URL") && !frontend.contains("design QA ticket"), "{frontend}");
     }
 
     #[test]

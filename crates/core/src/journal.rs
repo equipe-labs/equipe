@@ -362,6 +362,8 @@ impl Journal {
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN remaining TEXT", []);
         // The pictures a hand-in shows (JSON list of paths).
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN images TEXT", []);
+        // The design QA ticket a hand-in waits on before the person's review.
+        let _ = conn.execute("ALTER TABLE tickets ADD COLUMN design_qa INTEGER", []);
         // Tickets from before kinds: `code` with a project, `task` without — once,
         // when the column arrives.
         if conn.execute("ALTER TABLE tickets ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'", []).is_ok() {
@@ -663,7 +665,7 @@ impl Journal {
         self.conn.execute(
             "UPDATE tickets SET title = ?1, body = ?2, status = ?3, owner = ?4, assignee = ?5, project = ?6,
                                 depends_on = ?7, branch = ?8, note = ?9, updated_at = ?10, merged = ?12, kind = ?13,
-                                off_main = ?14, priority = ?15, rank = ?16, remaining = ?17, images = ?18
+                                off_main = ?14, priority = ?15, rank = ?16, remaining = ?17, images = ?18, design_qa = ?19
              WHERE id = ?11",
             params![
                 t.title,
@@ -684,6 +686,7 @@ impl Journal {
                 t.rank,
                 remaining_str(&t.remaining),
                 remaining_str(&t.images),
+                t.design_qa,
             ],
         )?;
         Ok(())
@@ -721,7 +724,7 @@ impl Journal {
     fn query_tickets(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<Ticket>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree, merged, kind, off_main, updated_at,
-                    priority, rank, remaining, images
+                    priority, rank, remaining, images, design_qa
              FROM tickets {filter} ORDER BY id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -747,6 +750,7 @@ impl Journal {
                 rank: r.get(17)?,
                 off_main: r.get::<_, Option<String>>(14)?.and_then(|o| serde_json::from_str(&o).ok()),
                 updated_at: r.get::<_, Option<i64>>(15)?.map(|at| at.max(0) as u64),
+                design_qa: r.get(20)?,
             };
             // A waiting ticket's asks are kept in its note; they travel as a list.
             t.asks = t.asks();
@@ -1256,6 +1260,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
+            design_qa: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],
@@ -1322,6 +1327,21 @@ mod tests {
         t.images.clear();
         j.save_ticket(&t).unwrap();
         assert!(j.ticket(1).unwrap().unwrap().images.is_empty());
+    }
+
+    #[test]
+    fn the_design_qa_a_hand_in_waits_on_is_kept() {
+        let home = temp_home();
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        j.create_ticket(&ticket("Settings screen")).unwrap();
+        let mut t = j.ticket(1).unwrap().unwrap();
+        assert_eq!(t.design_qa, None);
+        t.design_qa = Some(2);
+        j.save_ticket(&t).unwrap();
+        assert_eq!(j.ticket(1).unwrap().unwrap().design_qa, Some(2));
+        t.design_qa = None;
+        j.save_ticket(&t).unwrap();
+        assert_eq!(j.ticket(1).unwrap().unwrap().design_qa, None);
     }
 
     #[test]
