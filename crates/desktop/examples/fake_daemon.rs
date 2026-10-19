@@ -995,7 +995,6 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         // `FAKE_BACKGROUND=1`: the PM at work, waiting on a command it left
                         // running in the background (described, as Claude Code's are).
                         let pm_waits = std::env::var("FAKE_BACKGROUND").is_ok_and(|v| v == "1");
-                        let mut history = history;
                         if pm_waits {
                             history.push(Entry::User { text: "새 배포 올라오면 바로 확인해 줘".into() });
                             history.push(Entry::Tool { tool: "Bash".into(), target: Some("git -C ~/site log -1 --format=%h".into()), outcome: Some(Box::new(equipe_core::protocol::ToolOutcome { ok: true, exit: None, ms: Some(100), output: "6ad5f11".into(), skipped: 0, diff: None })), label: Some("지금 커밋 확인".into()), background: false });
