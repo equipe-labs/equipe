@@ -385,7 +385,7 @@ pub struct Check {
     pub tool: String,
     pub input: Value,
     pub scene: Scene,
-    /// The screen right now (PNG), shown to the person if it asks.
+    /// The screen right now (JPEG or PNG), shown to the person if it asks.
     pub screen: Option<Vec<u8>>,
 }
 

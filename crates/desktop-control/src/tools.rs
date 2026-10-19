@@ -20,6 +20,11 @@ fn element() -> Value {
     json!({ "type": "string", "description": "An element id from your last `elements` call, e.g. \"e12\"." })
 }
 
+/// In a messaging app an input that may send asks the person first, with this.
+fn why() -> Value {
+    json!({ "type": "string", "description": "In a messaging app (Teams, Slack, Mail…), what you are sending and to whom, in a line: an input that may send waits for the person's yes, and they read this." })
+}
+
 fn number(description: &str) -> Value {
     json!({ "type": "number", "description": description })
 }
@@ -73,13 +78,14 @@ pub fn tools() -> Vec<Value> {
                 "y": number("Y."),
                 "app": app(),
                 "button": { "type": "string", "enum": ["left", "right"], "description": "Default left." },
+                "why": why(),
             }),
             &[],
         ),
         tool(
             "double_click",
             &format!("Double-click an element or a point {COORDS}."),
-            json!({ "element": element(), "x": number("X."), "y": number("Y."), "app": app() }),
+            json!({ "element": element(), "x": number("X."), "y": number("Y."), "app": app(), "why": why() }),
             &[],
         ),
         tool(
@@ -91,6 +97,7 @@ pub fn tools() -> Vec<Value> {
                 "to_x": number("End x."),
                 "to_y": number("End y."),
                 "app": app(),
+                "why": why(),
             }),
             &["from_x", "from_y", "to_x", "to_y"],
         ),
@@ -114,13 +121,14 @@ pub fn tools() -> Vec<Value> {
                 "text": { "type": "string", "description": "What to type. A newline presses return." },
                 "element": json!({ "type": "string", "description": "Focus this text field first (id from `elements`)." }),
                 "app": app(),
+                "why": why(),
             }),
             &["text"],
         ),
         tool(
             "key",
             "Press keys or shortcuts, one after another: \"cmd+s\", \"return\", \"cmd+a delete\". Refused if focus isn't in the app you mean.",
-            json!({ "keys": { "type": "string", "description": "Shortcuts separated by spaces." }, "app": app() }),
+            json!({ "keys": { "type": "string", "description": "Shortcuts separated by spaces." }, "app": app(), "why": why() }),
             &["keys"],
         ),
     ]

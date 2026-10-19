@@ -311,7 +311,36 @@ blocked 'equipe' from modifying apps" when setup, run under the daemon, swapped
 the bundle in `~/Applications` — the swap itself went through.
 
 Not done here: Teams' AX tree (`AXManualAccessibility` is set, untested — no
-Teams on this Mac), the screen lease (T-22), send approval (T-23).
+Teams on this Mac), the screen lease (T-22), send approval (T-23) — both wired
+in since (T-128, above).
+
+## One desktop call, end to end (T-128)
+
+`Handle::desktop` (the gateway's `desktop` request) runs every member's call
+through both gates before the helper touches the Mac:
+
+1. **May it** — the desktop is on for this member (`desktop_allowed`).
+2. **Its turn** — `desktop_ask(member, Use::of(tool))`: screenshot, `elements`
+   and `list_windows` are `Look`; everything else is `Input`, refused while the
+   person is at the Mac, the screen is locked, or after `/desktop stop` (which
+   refuses looking too). Another member's call waits in line.
+3. **The send gate**, for an input (`Act` not `Look`): the helper's `_scene`
+   request reads what it would act on — app, front window, the element a
+   click lands on (a hit inside a button is the button), the focused element
+   and its draft — without acting. `desktop_gate` judges it; when it asks, the
+   helper's `_capture` (whole screen, members' coordinates untouched) is the
+   preview. After a yes the call asks for its turn again as `Use::Approved`:
+   the person's own hands on the Mac (answering) don't hold that one send back,
+   another member holding the screen or `/desktop stop` still do.
+4. **The helper acts** with `_expect: <scene>` in the arguments, and refuses if
+   the screen isn't that scene any more — another app, conversation or field,
+   or (after a yes) another draft — so a yes never lands somewhere else, and a
+   field that became a password field gets nothing.
+5. `desktop_done` records when it ran, so the members' own input isn't taken
+   for the person's.
+
+Tools that may send take `why` (what, and to whom): without it a send in a
+messaging app goes back to the member unasked.
 
 ## Notes for the follow-up tickets
 

@@ -3451,3 +3451,212 @@ async fn a_screen_asking_for_the_design_system_gets_it_and_then_what_the_designe
     assert_eq!(systems[0].tokens.len(), 2);
     assert!(systems[0].modes.is_empty());
 }
+
+// ── members' desktop calls: the lease, then the send gate, then the helper ──
+
+/// A Mac whose last input the test sets (seconds ago), unlocked.
+#[derive(Clone)]
+struct Hands(std::sync::Arc<std::sync::Mutex<f64>>);
+
+impl equipe_core::desktop::Probe for Hands {
+    fn idle(&self) -> Option<f64> {
+        Some(*self.0.lock().unwrap())
+    }
+    fn screen(&self) -> equipe_core::desktop::Screen {
+        equipe_core::desktop::Screen::Open
+    }
+}
+
+/// A desktop helper on the socket: it says the screen is `scene`, and keeps
+/// every call that reached it — what would have touched the Mac.
+#[derive(Clone)]
+struct FakeHelper {
+    scene: std::sync::Arc<std::sync::Mutex<serde_json::Value>>,
+    reached: std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>,
+}
+
+impl FakeHelper {
+    fn start(home: &Path) -> FakeHelper {
+        use equipe_desktop_control::helper;
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+        helper::ensure_token(home).unwrap();
+        let listener = tokio::net::UnixListener::bind(helper::socket_path(home)).unwrap();
+        let fake = FakeHelper { scene: Default::default(), reached: Default::default() };
+        let serving = fake.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let (read, mut write) = stream.into_split();
+                let mut line = String::new();
+                tokio::io::BufReader::new(read).read_line(&mut line).await.unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let tool = request["tool"].as_str().unwrap().to_owned();
+                let reply = match tool.as_str() {
+                    helper::SCENE => ToolResult::ok(serving.scene.lock().unwrap().to_string()),
+                    helper::CAPTURE => ToolResult {
+                        text: String::new(),
+                        is_error: false,
+                        image: Some(equipe_core::protocol::rpc::Image { mime: "image/jpeg".into(), data: "/9hmYWtl".into() }),
+                    },
+                    _ => {
+                        serving.reached.lock().unwrap().push((tool.clone(), request["arguments"].clone()));
+                        ToolResult::ok(format!("{tool} done"))
+                    }
+                };
+                write.write_all(format!("{}\n", serde_json::to_string(&reply).unwrap()).as_bytes()).await.unwrap();
+            }
+        });
+        fake
+    }
+
+    fn tools(&self) -> Vec<String> {
+        self.reached.lock().unwrap().iter().map(|(tool, _)| tool.clone()).collect()
+    }
+}
+
+/// A squad home short enough for a socket path in it (macOS allows 104 bytes).
+fn short_home(project: &Path) -> PathBuf {
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let home = PathBuf::from(format!("/tmp/eq-dt-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    squads::create(&home, "acme", project).unwrap();
+    home
+}
+
+fn desktop_call(member: &str, tool: &str, arguments: serde_json::Value) -> ToolCall {
+    ToolCall { squad: "acme".into(), member: member.into(), name: tool.into(), arguments }
+}
+
+/// Two members with the desktop on, a Mac nobody has touched for ten
+/// minutes, and a helper showing TextEdit.
+async fn at_the_desktop() -> (Handle, UnboundedReceiver<Event>, FakeHelper, std::sync::Arc<std::sync::Mutex<f64>>, PathBuf) {
+    let repo = repo();
+    let claude = fake_claude(true, &answering("ok"));
+    let home = short_home(&repo);
+    let hands = std::sync::Arc::new(std::sync::Mutex::new(600.0));
+    let (handle, mut events) = runtime::start(Config { mac: Box::new(Hands(hands.clone())), ..config(&claude, &home, false) });
+    add(&handle, &mut events, 1, member(&repo, "frontend")).await;
+    add(&handle, &mut events, 2, member(&repo, "backend")).await;
+    for name in ["frontend", "backend"] {
+        Journal::for_squad(&home, "acme").unwrap().set_desktop(name, true).unwrap();
+    }
+    let helper = FakeHelper::start(&home);
+    *helper.scene.lock().unwrap() = serde_json::json!({ "app": { "name": "TextEdit", "bundle_id": "com.apple.TextEdit" }, "window": "Untitled" });
+    (handle, events, helper, hands, home)
+}
+
+#[tokio::test]
+async fn members_take_turns_at_the_screen_and_the_person_comes_first() {
+    use equipe_core::protocol::MemberRef;
+    let (handle, _events, helper, hands, home) = at_the_desktop().await;
+    let click = |member: &str| desktop_call(member, "click", serde_json::json!({ "x": 10, "y": 10, "app": "TextEdit" }));
+
+    // Both click at once: one does, the other is told to wait its turn.
+    let (a, b) = tokio::join!(handle.desktop(click("frontend")), handle.desktop(click("backend")));
+    let (first, second) = match (a.is_error, b.is_error) {
+        (false, true) => (("frontend", a), ("backend", b)),
+        (true, false) => (("backend", b), ("frontend", a)),
+        _ => panic!("exactly one may use the screen: {} / {}", a.text, b.text),
+    };
+    assert_eq!(first.1.text, "click done");
+    assert!(second.1.text.starts_with(&format!("{} is using the screen; you are number 1 in line", first.0)), "{}", second.1.text);
+    assert_eq!(helper.tools(), ["click"], "the one waiting reached nothing");
+    // The input carries the scene it was checked against.
+    assert_eq!(helper.reached.lock().unwrap()[0].1["_expect"]["app"]["name"], "TextEdit");
+    // The first lets go: the one in line carries on.
+    assert!(handle.desktop_release(MemberRef { squad: "acme".into(), member: first.0.into() }).await);
+    assert!(!handle.desktop(click(second.0)).await.is_error);
+    assert!(handle.desktop(click(first.0)).await.is_error);
+    assert_eq!(helper.tools(), ["click", "click"]);
+
+    // /desktop stop: nobody's call reaches the Mac.
+    handle.send(Command::Desktop { open: false });
+    let stopped = handle.desktop(click(second.0)).await;
+    assert!(stopped.is_error && stopped.text.contains("/desktop stop"), "{}", stopped.text);
+    assert!(handle.desktop(desktop_call(second.0, "screenshot", serde_json::json!({}))).await.is_error);
+    assert_eq!(helper.tools().len(), 2);
+    handle.send(Command::Desktop { open: true });
+
+    // The person is at the Mac: looking goes ahead, clicking and typing don't.
+    *hands.lock().unwrap() = 2.0;
+    for (tool, args) in [
+        ("click", serde_json::json!({ "x": 10, "y": 10, "app": "TextEdit" })),
+        ("type_text", serde_json::json!({ "text": "hi", "app": "TextEdit" })),
+        ("key", serde_json::json!({ "keys": "cmd+s" })),
+    ] {
+        let refused = handle.desktop(desktop_call("backend", tool, args)).await;
+        assert!(refused.is_error && refused.text.contains("The person is using the Mac"), "{tool}: {}", refused.text);
+    }
+    for tool in ["screenshot", "elements"] {
+        let looked = handle.desktop(desktop_call("backend", tool, serde_json::json!({ "app": "TextEdit" }))).await;
+        assert_eq!(looked.text, format!("{tool} done"));
+    }
+    assert_eq!(helper.tools(), ["click", "click", "screenshot", "elements"]);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[tokio::test]
+async fn a_members_send_from_teams_waits_for_the_persons_yes_and_a_password_field_gets_nothing() {
+    let (handle, mut events, helper, hands, home) = at_the_desktop().await;
+    let teams = serde_json::json!({
+        "app": { "name": "Microsoft Teams", "bundle_id": "com.microsoft.teams2" },
+        "window": "Chat | Kim Minji",
+        "focused": { "role": "AXTextArea", "value": "내일 회의 3시로 옮겨요" },
+    });
+    *helper.scene.lock().unwrap() = teams.clone();
+    let call = |tool: &str, args: serde_json::Value| desktop_call("backend", tool, args);
+
+    // The draft is written at once.
+    let typed = handle.desktop(call("type_text", serde_json::json!({ "text": "내일 회의 3시로 옮겨요", "app": "Microsoft Teams" }))).await;
+    assert_eq!(typed.text, "type_text done");
+    let expect = helper.reached.lock().unwrap()[0].1["_expect"].clone();
+    assert_eq!((&expect["window"], &expect["focused"]), (&teams["window"], &serde_json::json!({ "role": "AXTextArea" })), "a draft may still change");
+    // Return without saying what it sends goes back to the member, unasked.
+    let unsaid = handle.desktop(call("key", serde_json::json!({ "keys": "return" }))).await;
+    assert!(unsaid.is_error && unsaid.text.contains("`why`"), "{}", unsaid.text);
+    assert_eq!(helper.tools(), ["type_text"]);
+
+    let send = || {
+        let handle = handle.clone();
+        let call = call("key", serde_json::json!({ "keys": "return", "why": "Kim Minji에게 회의 시간 변경 답장" }));
+        tokio::spawn(async move { handle.desktop(call).await })
+    };
+    // A no: Return never reaches Teams.
+    let waiting = send();
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    assert_eq!(approval.action, "press return in Microsoft Teams · Chat | Kim Minji\n내일 회의 3시로 옮겨요");
+    let preview = approval.preview.clone().expect("the screen, to look at");
+    assert!(preview.ends_with(".jpg") && std::fs::read(&preview).unwrap() == b"\xff\xd8fake", "{preview}");
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: equipe_core::protocol::Decision::Deny });
+    let answer = waiting.await.unwrap();
+    assert!(answer.is_error && answer.text.contains("Not sent"), "{}", answer.text);
+    assert_eq!(helper.tools(), ["type_text"]);
+
+    // A password field takes nothing, in any app.
+    *helper.scene.lock().unwrap() = serde_json::json!({
+        "app": { "name": "Safari", "bundle_id": "com.apple.Safari" },
+        "focused": { "role": "AXSecureTextField" },
+    });
+    let refused = handle.desktop(call("type_text", serde_json::json!({ "text": "hunter2", "app": "Safari" }))).await;
+    assert!(refused.is_error && refused.text.contains("password"), "{}", refused.text);
+    assert_eq!(helper.tools(), ["type_text"]);
+
+    // A yes: it goes ahead — even though the person, answering, just touched the Mac.
+    *helper.scene.lock().unwrap() = teams.clone();
+    let waiting = send();
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    assert_eq!(helper.tools(), ["type_text"], "nothing pressed while the person decides");
+    *hands.lock().unwrap() = 1.0;
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: equipe_core::protocol::Decision::Allow });
+    let answer = waiting.await.unwrap();
+    assert_eq!(answer.text, "key done");
+    let reached = helper.reached.lock().unwrap().clone();
+    assert_eq!((reached[1].0.as_str(), &reached[1].1["_expect"]), ("key", &teams), "only on the screen it was asked about");
+    // The person's hands on the Mac still hold back the members' other input.
+    let held = handle.desktop(call("type_text", serde_json::json!({ "text": "다음 메시지" }))).await;
+    assert!(held.is_error && held.text.contains("The person is using the Mac"), "{}", held.text);
+    let _ = std::fs::remove_dir_all(home);
+}

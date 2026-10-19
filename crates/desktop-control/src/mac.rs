@@ -234,6 +234,15 @@ fn application(pid: i32) -> Cf {
     Cf(unsafe { AXUIElementCreateApplication(pid) })
 }
 
+/// What an element is called: its title, else its description or placeholder.
+fn title_of(e: Ref) -> String {
+    string(e, "AXTitle")
+        .filter(|t| !t.is_empty())
+        .or_else(|| string(e, "AXDescription").filter(|t| !t.is_empty()))
+        .or_else(|| string(e, "AXPlaceholderValue"))
+        .unwrap_or_default()
+}
+
 /// Roles that only hold others: listed only when they say something.
 const CONTAINERS: &[&str] = &["AXGroup", "AXUnknown", "AXSplitGroup", "AXLayoutArea", "AXLayoutItem", "AXScrollArea"];
 
@@ -253,11 +262,7 @@ impl Mac {
         }
         let e = element.0;
         let role = string(e, "AXRole").unwrap_or_default();
-        let title = string(e, "AXTitle")
-            .filter(|t| !t.is_empty())
-            .or_else(|| string(e, "AXDescription").filter(|t| !t.is_empty()))
-            .or_else(|| string(e, "AXPlaceholderValue"))
-            .unwrap_or_default();
+        let title = title_of(e);
         let value = string(e, "AXValue");
         let actions: Vec<String> = actions(e).into_iter().filter(|a| a != "AXShowMenu" && a != "AXScrollToVisible").collect();
         let quiet = CONTAINERS.contains(&role.as_str()) && title.is_empty() && value.as_deref().is_none_or(str::is_empty) && actions.is_empty();
@@ -494,11 +499,18 @@ impl Desktop for Mac {
             return None;
         }
         let hit = Cf::owned(hit)?;
-        Some(Hit {
-            pid: pid_of(hit.0)?,
-            role: string(hit.0, "AXRole").unwrap_or_default(),
-            title: string(hit.0, "AXTitle").or_else(|| string(hit.0, "AXDescription")).unwrap_or_default(),
-        })
+        // What the click acts on: the icon inside a send button is the button.
+        let mut acting = hit.clone();
+        let mut at = hit.clone();
+        for _ in 0..4 {
+            if actions(at.0).iter().any(|a| a == "AXPress") {
+                acting = at;
+                break;
+            }
+            let Some(parent) = attr(at.0, "AXParent").and_then(|p| Cf::retained(ptr(&p))) else { break };
+            at = parent;
+        }
+        Some(Hit { pid: pid_of(hit.0)?, role: string(acting.0, "AXRole").unwrap_or_default(), title: title_of(acting.0) })
     }
 
     fn elements(&self, pid: i32, window: Option<&Window>, max: usize) -> Vec<(Cf, Node)> {
@@ -518,6 +530,12 @@ impl Desktop for Mac {
 
     fn frame(&self, element: &Cf) -> Option<Frame> {
         frame_of(element.0)
+    }
+
+    fn node(&self, element: &Cf) -> Option<Node> {
+        let e = element.0;
+        let role = string(e, "AXRole")?;
+        Some(Node { role, title: title_of(e), value: string(e, "AXValue"), focused: flag(e, "AXFocused"), ..Node::default() })
     }
 
     fn value(&self, element: &Cf) -> Option<String> {

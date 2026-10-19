@@ -186,8 +186,9 @@ enum Request {
     Subscribe(String, oneshot::Sender<Subscription>),
     Tool(ToolCall, oneshot::Sender<ToolResult>),
     DesktopGate(Box<desktop_gate::Check>, oneshot::Sender<ToolResult>),
-    /// May this member use the desktop: equipe's home if so.
-    DesktopTool(ToolCall, oneshot::Sender<Result<PathBuf, ToolResult>>),
+    /// May this member use the desktop: equipe's home and the squad's
+    /// messaging apps if so.
+    DesktopTool(ToolCall, oneshot::Sender<Result<(PathBuf, Vec<String>), ToolResult>>),
     Busy(oneshot::Sender<equipe_protocol::rpc::Busy>),
     /// What uses the disk (`equipe disk`).
     Disk(oneshot::Sender<crate::disk::DiskReport>),
@@ -237,20 +238,93 @@ impl Handle {
         rx.await.unwrap_or(ToolResult { text: "equipe is shutting down".into(), is_error: true, image: None })
     }
 
-    /// A member's desktop tool call: the runtime checks the member may, and the
-    /// desktop helper does it — outside the runtime's loop, so a click that
-    /// takes a second holds no one else up.
+    /// A member's desktop tool call: the runtime checks the member may, it
+    /// waits its turn at the screen ([`Handle::desktop_ask`]), an input passes
+    /// the send gate ([`Handle::desktop_gate`]) on what the helper says it
+    /// would act on, and the helper does it — outside the runtime's loop, so a
+    /// click that takes a second holds no one else up.
     pub async fn desktop(&self, call: ToolCall) -> ToolResult {
+        use equipe_desktop_control::helper;
         let (tx, rx) = oneshot::channel();
         let _ = self.requests.send(Request::DesktopTool(call.clone(), tx));
-        match rx.await {
-            Ok(Ok(home)) => {
-                let member = format!("{}/{}", call.squad, call.member);
-                equipe_desktop_control::helper::call(&home, &member, &call.name, &call.arguments).await
+        let (home, apps) = match rx.await {
+            Ok(Ok(allowed)) => allowed,
+            Ok(Err(refused)) => return refused,
+            Err(_) => return ToolResult::error("equipe is shutting down"),
+        };
+        let who = MemberRef { squad: call.squad.clone(), member: call.member.clone() };
+        let member = format!("{}/{}", call.squad, call.member);
+        let what = desktop::Use::of(&call.name);
+        let mut start = match self.desktop_ask(who.clone(), what).await {
+            Ok(start) => start,
+            Err(refused) => return ToolResult::error(refused),
+        };
+        let act = Act::of(&call.name, &call.arguments);
+        let mut arguments = call.arguments.clone();
+        if !act.is_look() {
+            match self.desktop_check(&home, &apps, &call, &member, act).await {
+                Ok((mut scene, asked)) => {
+                    // Only a draft the person said yes to must stay as it was.
+                    if !asked {
+                        for key in ["target", "focused"] {
+                            if let Some(element) = scene.get_mut(key).and_then(Value::as_object_mut) {
+                                element.remove("value");
+                            }
+                        }
+                    }
+                    arguments[equipe_desktop_control::controller::EXPECT] = scene;
+                    // The person took their time: the screen may have gone on
+                    // to another member, or been taken back, meanwhile.
+                    if asked {
+                        start = match self.desktop_ask(who.clone(), desktop::Use::Approved).await {
+                            Ok(start) => start,
+                            Err(refused) => return ToolResult::error(format!("The person said yes, but nothing was sent: {refused}")),
+                        };
+                    }
+                }
+                Err(refused) => {
+                    self.desktop_done(who, start, false);
+                    return refused;
+                }
             }
-            Ok(Err(refused)) => refused,
-            Err(_) => ToolResult::error("equipe is shutting down"),
         }
+        let result = helper::call(&home, &member, &call.name, &arguments).await;
+        self.desktop_done(who, start, what != desktop::Use::Look);
+        result
+    }
+
+    /// An input, before it reaches the screen: what it would act on, from the
+    /// helper, through the send gate. The scene the gate judged — the helper
+    /// acts only while the screen is still that — and whether the person was asked.
+    async fn desktop_check(&self, home: &Path, apps: &[String], call: &ToolCall, member: &str, act: Act) -> Result<(Value, bool), ToolResult> {
+        use base64::Engine as _;
+        use equipe_desktop_control::helper;
+        let read = helper::call(home, member, helper::SCENE, &json!({ "tool": call.name, "arguments": call.arguments })).await;
+        if read.is_error {
+            return Err(read);
+        }
+        let raw: Value = serde_json::from_str(&read.text).map_err(|_| ToolResult::error("The desktop helper's answer was unreadable: nothing done."))?;
+        let scene: desktop_gate::Scene =
+            serde_json::from_value(raw.clone()).map_err(|_| ToolResult::error("The desktop helper's answer was unreadable: nothing done."))?;
+        let asks = matches!(desktop_gate::judge(&act, &scene, apps), Verdict::Ask(_));
+        let said = call.arguments.get("why").and_then(Value::as_str).is_some_and(|w| !w.trim().is_empty());
+        // The person sees the screen they are asked about.
+        let screen = if asks && said {
+            let shot = helper::call(home, member, helper::CAPTURE, &json!({})).await;
+            shot.image.and_then(|image| base64::engine::general_purpose::STANDARD.decode(image.data).ok())
+        } else {
+            None
+        };
+        let check = desktop_gate::Check {
+            squad: call.squad.clone(),
+            member: call.member.clone(),
+            tool: call.name.clone(),
+            input: call.arguments.clone(),
+            scene,
+            screen,
+        };
+        let verdict = self.desktop_gate(check).await;
+        if verdict.is_error { Err(verdict) } else { Ok((raw, asks)) }
     }
 
     /// Whether a member's desktop input may go ahead: at once, after the
@@ -4293,11 +4367,11 @@ there, end your turn, and carry on when they say they're done."
     }
 
     /// Whether a member may use the desktop: only one the person turned it on for.
-    fn desktop_allowed(&self, call: &ToolCall) -> Result<PathBuf, ToolResult> {
-        let on = self.team(&call.squad).iter().any(|(_, name, _)| *name == call.member)
-            && self.journals.get(&call.squad).is_some_and(|j| j.desktop_enabled(&call.member));
+    fn desktop_allowed(&self, call: &ToolCall) -> Result<(PathBuf, Vec<String>), ToolResult> {
+        let journal = self.journals.get(&call.squad);
+        let on = self.team(&call.squad).iter().any(|(_, name, _)| *name == call.member) && journal.is_some_and(|j| j.desktop_enabled(&call.member));
         if on {
-            Ok(self.config.home.clone())
+            Ok((self.config.home.clone(), journal.map(Journal::messaging_apps).unwrap_or_default()))
         } else {
             Err(ToolResult::error(format!(
                 "The Mac's desktop is off for {}. Only the person turns it on (`equipe desktop on {} --experimental`).",
@@ -5634,14 +5708,16 @@ fn plain_access(access: Access) -> claude_code::Access {
 /// What the engine's permission prompt tool answers: Claude Code reads it as JSON.
 /// The screen before a send, where the person can open it while asked: in
 /// the temp folder, readable by them alone, deleted once answered.
-fn save_preview(id: u64, png: &[u8]) -> Option<String> {
+fn save_preview(id: u64, image: &[u8]) -> Option<String> {
     use std::io::Write;
-    let path = std::env::temp_dir().join(format!("equipe-send-{}-{id}.png", std::process::id()));
+    // The desktop helper's screenshots are JPEG.
+    let kind = if image.starts_with(&[0xff, 0xd8]) { "jpg" } else { "png" };
+    let path = std::env::temp_dir().join(format!("equipe-send-{}-{id}.{kind}", std::process::id()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    options.open(&path).and_then(|mut f| f.write_all(png)).ok()?;
+    options.open(&path).and_then(|mut f| f.write_all(image)).ok()?;
     Some(path.to_string_lossy().into_owned())
 }
 
