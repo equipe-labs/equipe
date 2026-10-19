@@ -278,6 +278,8 @@ pub struct Model {
     pub tickets: Vec<Ticket>,
     /// The squad's projects, in the order they joined.
     pub projects: Vec<PathBuf>,
+    /// The order the person dragged the projects into, by name (this Mac's).
+    pub project_order: Vec<String>,
     /// The squad's mode, for completion's sake.
     pub mode: Mode,
     /// The Claude plan's usage windows, as last reported.
@@ -411,6 +413,7 @@ impl Model {
             conn: Conn::Connecting,
             tickets: Vec::new(),
             projects: Vec::new(),
+            project_order: Vec::new(),
             mode: Mode::default(),
             plan: None,
             remote: false,
@@ -641,6 +644,28 @@ impl Model {
     }
 
     /// The names of the squad's projects, as chips show them.
+    /// The projects in the person's order: those they placed first, as
+    /// placed; the rest after, as the daemon lists them.
+    pub fn order_projects(&mut self) {
+        let order = &self.project_order;
+        let rank = |p: &PathBuf| order.iter().position(|n| *n == equipe_core::board::project_name(p)).unwrap_or(usize::MAX);
+        self.projects.sort_by_key(rank);
+    }
+
+    /// Project `name` moved to where `before` is (`None`: the end). The new
+    /// order, by name, to keep.
+    pub fn move_project(&mut self, name: &str, before: Option<&str>) -> Vec<String> {
+        let mut names = self.project_names();
+        let Some(from) = names.iter().position(|n| n == name) else { return names };
+        let moved = names.remove(from);
+        let to = before.and_then(|b| names.iter().position(|n| n == b)).unwrap_or(names.len());
+        names.insert(to, moved);
+        self.project_order = names.clone();
+        self.order_projects();
+        self.revision += 1;
+        names
+    }
+
     pub fn project_names(&self) -> Vec<String> {
         self.projects.iter().map(|p| equipe_core::board::project_name(p)).collect()
     }
@@ -743,6 +768,7 @@ impl Model {
         }
         self.tickets = snapshot.tickets.clone();
         self.projects = snapshot.projects.clone();
+        self.order_projects();
         self.mode = snapshot.mode;
         self.plan = snapshot.plan;
         self.suggestions = !snapshot.suggestions_off;
@@ -840,6 +866,7 @@ impl Model {
                     self.flash = Some(t!("header.project_added", name = equipe_core::board::project_name(new)));
                 }
                 self.projects = projects.clone();
+                self.order_projects();
             }
             Event::TurnEnded { session, usage: Some(u), .. } if !self.lanes.iter().any(|l| l.session == *session) => {
                 let spent = self.spent.entry(*session).or_default();
@@ -1505,6 +1532,19 @@ mod tests {
 
     const T0: Clock = Clock { hour: 14, minute: 2, second: 10 };
     const T1: Clock = Clock { hour: 14, minute: 3, second: 12 };
+
+    #[test]
+    fn projects_keep_the_order_they_were_dragged_into() {
+        let mut model = Model::new("acme");
+        model.projects = vec!["/c/mcp".into(), "/c/website".into(), "/c/hq".into()];
+        assert_eq!(model.move_project("hq", Some("mcp")), ["hq", "mcp", "website"]);
+        assert_eq!(model.project_names(), ["hq", "mcp", "website"]);
+        assert_eq!(model.move_project("hq", None), ["mcp", "website", "hq"], "dropped at the end");
+        // A list from the daemon keeps the order; a new project goes after.
+        model.projects = vec!["/c/hq".into(), "/c/new".into(), "/c/website".into(), "/c/mcp".into()];
+        model.order_projects();
+        assert_eq!(model.project_names(), ["mcp", "website", "hq", "new"]);
+    }
 
     #[test]
     fn a_members_page_waiting_for_the_person_is_theirs_to_do_until_it_passes() {

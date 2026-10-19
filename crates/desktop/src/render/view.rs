@@ -159,7 +159,7 @@ pub fn configure(view: TextView, p: Palette, look: Look, scope: u64, full: Arc<H
                         }),
                 )
         })
-        .on_link_click(move |url, event, _, cx| follow(url, event.modifiers(), scope, cx))
+        .on_link_click(move |url, event, window, cx| follow(url, event.modifiers(), scope, window, cx))
         .image_source(|uri| {
             let url = uri.to_string();
             match url.strip_prefix("file://") {
@@ -192,11 +192,18 @@ pub fn nested(p: Palette, id: (&'static str, u64), markdown: &str, look: Look) -
 /// A link in a reply was clicked: a ticket opens on the board, a page in the
 /// browser, a file in Quick Look (⌘: in its app, ⌥: in Finder), a control
 /// does what it says.
-pub fn follow(url: &str, modifiers: Modifiers, scope: u64, cx: &mut App) {
+pub fn follow(url: &str, modifiers: Modifiers, scope: u64, window: &mut Window, cx: &mut App) {
     let base = cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade()).map(|s| base_dir(s.read(cx))).unwrap_or_default();
     match links::classify(url, &base) {
         Link::Ticket(n) => with_shell(cx, |shell, cx| shell.open_ticket(n, cx)),
-        Link::Web(url) => cx.open_url(&url),
+        // Where the person chose (settings), ⌘-click the other place.
+        Link::Web(url) => {
+            if let Some(shell) = cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade()) {
+                shell.update(cx, |shell, cx| shell.open_link(&url, modifiers.platform, window, cx));
+            } else {
+                cx.open_url(&url);
+            }
+        }
         // A document opens beside the conversation, on this Mac or another.
         Link::File { path, .. } if !modifiers.platform && !modifiers.alt && crate::doc::is_doc(&path.to_string_lossy()) => {
             with_shell(cx, |shell, cx| shell.open_doc(path, cx));
