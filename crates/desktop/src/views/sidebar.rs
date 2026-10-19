@@ -194,6 +194,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .child(nav("nav-inbox", IconName::Inbox, t!("board.menu_inbox").into(), needs, 0, on_board && menu == Menu::Inbox).on_click(cx.listener(|this, _, _, cx| this.open_side_menu(Menu::Inbox, cx))))
         .child(nav("nav-working", IconName::LoaderCircle, t!("board.menu_working").into(), 0, working, on_board && menu == Menu::Working).on_click(cx.listener(|this, _, _, cx| this.open_side_menu(Menu::Working, cx))))
         .child(nav("nav-all", IconName::LayoutDashboard, t!("board.menu_all").into(), 0, 0, on_board && matches!(menu, Menu::All | Menu::View(_))).on_click(cx.listener(|this, _, _, cx| this.open_side_menu(Menu::All, cx))))
+        .child(nav("nav-overview", IconName::ChartPie, t!("overview.title").into(), 0, 0, shell.screen == Screen::Overview).on_click(cx.listener(|this, _, _, cx| this.open_overview(cx))))
         .child(nav("nav-design", IconName::Palette, t!("design.title").into(), 0, 0, shell.screen == Screen::Design).on_click(cx.listener(|this, _, _, cx| this.open_design(cx))));
 
     // The live work, a group per project; rows that just came arrive, rows
@@ -374,7 +375,7 @@ fn selected_ticket(shell: &Shell) -> Option<TicketId> {
             Some(Need::Ticket(id)) => Some(id),
             _ => None,
         },
-        Screen::Settings | Screen::Design => None,
+        Screen::Settings | Screen::Design | Screen::Overview => None,
     }
 }
 
@@ -382,6 +383,22 @@ fn selected_ticket(shell: &Shell) -> Option<TicketId> {
 /// project slice to it) and, folded, how much is live in it — "2 · 1⚑", at
 /// work and waiting on the person. A project with nothing live is one muted
 /// line with no chevron.
+/// "HQ", beside the name of the project that is the squad's HQ.
+pub fn hq_badge(p: Palette) -> impl IntoElement {
+    div()
+        .flex_none()
+        .px(px(5.))
+        .h(px(16.))
+        .flex()
+        .items_center()
+        .rounded(px(4.))
+        .bg(p.wash)
+        .text_size(px(10.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(p.text2)
+        .child("HQ")
+}
+
 fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let key = g.key();
@@ -422,7 +439,10 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, cx: &mut C
         None => name_tip.to_owned(),
     };
     let local = !shell.endpoint.is_remote();
+    let hq = g.name.as_deref().is_some_and(|n| shell.model.is_hq(n));
     let ident = match g.at {
+        // The HQ: a building, not a dot — the squad's own place, not one of its products.
+        Some(_) if hq => icon(IconName::Building2, 12., p.text2).into_any_element(),
         Some(at) => dot(project_color(p, at), 6.).into_any_element(),
         None => icon(IconName::Folder, 12., p.muted).into_any_element(),
     };
@@ -440,12 +460,20 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, cx: &mut C
         .tip_at(p, name_tip, None, gpui_kit::base::Placement::Right)
         .on_click(cx.listener(move |this, _, window, cx| this.side_head_click(HeadClick::Name, name_project.clone(), window, cx)))
         .child(ident)
-        .child(crate::ui::steady(label, FontWeight::SEMIBOLD, focused, true).text_color(name_color));
+        .child(crate::ui::steady(label, FontWeight::SEMIBOLD, focused, true).text_color(name_color))
+        .when(hq, |n| n.child(hq_badge(p)));
     let name: AnyElement = match folder {
         Some(path) => {
             use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+            let shell_handle = cx.entity().downgrade();
             name.context_menu(move |menu, _, _| {
                 let copy = path.clone();
+                // The squad's HQ: where its operations live; one at a time.
+                let (mark, mark_to) = if hq { (t!("sidebar.hq_unset"), None) } else { (t!("sidebar.hq_set"), Some(path.clone())) };
+                let handle = shell_handle.clone();
+                let menu = menu.item(PopupMenuItem::new(mark).on_click(move |_, _, cx| {
+                    let _ = handle.update(cx, |shell, cx| shell.set_hq(mark_to.clone(), cx));
+                }));
                 let menu = menu.item(PopupMenuItem::new(t!("sidebar.copy_project_path")).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.display().to_string()))));
                 if local {
                     let reveal = path.clone();
@@ -1478,6 +1506,7 @@ impl Shell {
             },
             Screen::Settings => self.open_settings(None, window, cx),
             Screen::Design => self.open_design(cx),
+            Screen::Overview => self.open_overview(cx),
         }
         cx.notify();
     }

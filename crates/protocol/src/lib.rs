@@ -693,6 +693,10 @@ pub enum Command {
     /// machine (a git repository; one with no history yet is started as one).
     /// Answered with [`Event::ProjectsChanged`], or an error saying why not.
     AddProject { squad: SquadName, path: PathBuf },
+    /// The person makes one of the squad's projects its HQ — where the
+    /// operations across its products live — or none (`None`). Answered with
+    /// [`Event::ProjectsChanged`].
+    SetHq { squad: SquadName, path: Option<PathBuf> },
     /// The screen watches `session`'s browser (`None`: none): equipe sends it
     /// a picture of the page every moment or so ([`Event::BrowserFrame`]).
     WatchBrowser { squad: SquadName, session: Option<SessionId> },
@@ -1440,7 +1444,13 @@ pub enum Event {
     /// How the squad moves members between engines changed.
     EngineSwitchingChanged { squad: SquadName, mode: engines::Switching },
     /// The squad's projects now ([`Command::AddProject`]): their folders.
-    ProjectsChanged { squad: SquadName, projects: Vec<PathBuf> },
+    ProjectsChanged {
+        squad: SquadName,
+        projects: Vec<PathBuf>,
+        /// Which of them is the squad's HQ ([`Command::SetHq`]).
+        #[serde(default)]
+        hq: Option<PathBuf>,
+    },
     /// The squad's design systems, as they are now ([`Command::Design`]):
     /// its own first, then each project's that has one, then the drafts
     /// tickets in review hand in. None: there is none yet, and `folder` is
@@ -1750,6 +1760,9 @@ pub struct Snapshot {
     /// The squad's projects (repositories), in the order they joined.
     #[serde(default)]
     pub projects: Vec<PathBuf>,
+    /// Which project is the squad's HQ, if one is ([`Command::SetHq`]).
+    #[serde(default)]
+    pub hq: Option<PathBuf>,
     /// The members, the PM first.
     pub sessions: Vec<SessionInfo>,
     /// Open tickets and the latest closed ones.

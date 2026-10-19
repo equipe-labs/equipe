@@ -1484,6 +1484,7 @@ impl Runtime {
                 }
             }
             Command::AddProject { squad, path } => self.add_project(squad, path),
+            Command::SetHq { squad, path } => self.set_hq(&squad, path),
             Command::Focus { squad, project } => match project {
                 Some(name) => {
                     self.focus.insert(squad, name);
@@ -1655,8 +1656,7 @@ impl Runtime {
             Ok(path) => {
                 let name = crate::board::project_name(&path);
                 crate::daemon_log!("equipe: {squad} has a new project, {name} ({})", path.display());
-                let projects = self.projects(squad);
-                self.publish(Event::ProjectsChanged { squad: squad.to_owned(), projects });
+                self.publish_projects(squad);
                 self.brief_pm(squad, format!("The person added a project to the squad: {name}, at {}.", path.display()), None);
             }
             Err(why) => {
@@ -1679,6 +1679,43 @@ impl Runtime {
 
     fn journal(&mut self, squad: &str) -> Option<&Journal> {
         journal_for(&mut self.journals, &self.config.home, squad)
+    }
+
+    /// Every screen of the squad has its projects again, and which is its HQ.
+    fn publish_projects(&mut self, squad: &str) {
+        let projects = self.projects(squad);
+        let hq = self.hq(squad);
+        self.publish(Event::ProjectsChanged { squad: squad.to_owned(), projects, hq });
+    }
+
+    fn hq(&mut self, squad: &str) -> Option<PathBuf> {
+        self.journal(squad).and_then(|j| j.hq())
+    }
+
+    /// The person makes a project the squad's HQ (or none): the PM is told
+    /// what goes there from now on.
+    fn set_hq(&mut self, squad: &str, path: Option<PathBuf>) {
+        if path.as_ref().is_some_and(|p| !self.projects(squad).contains(p)) {
+            return;
+        }
+        let before = self.hq(squad);
+        if before == path {
+            return;
+        }
+        if let Some(Err(err)) = self.journal(squad).map(|j| j.set_hq(path.as_deref())) {
+            crate::daemon_log!("equipe: {squad}: the HQ wasn't kept: {err}");
+            return;
+        }
+        self.publish_projects(squad);
+        let line = match &path {
+            Some(hq) => format!(
+                "The person made {} the squad's HQ: from now on the plan across the projects, the roadmap, decisions, \
+runbooks and reports live there, and work across the projects or on running them is filed in it.",
+                board::project_name(hq)
+            ),
+            None => "The person took the HQ mark off: no project is the squad's HQ now.".to_owned(),
+        };
+        self.brief_pm(squad, line, None);
     }
 
     fn projects(&mut self, squad: &str) -> Vec<PathBuf> {
@@ -2602,6 +2639,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         };
         let squad = session.squad.clone();
         let projects = squad.as_deref().map(|s| self.projects_cached(s)).unwrap_or_default();
+        let hq = squad.as_deref().and_then(|s| self.journals.get(s)).and_then(Journal::hq).map(|p| board::project_name(&p));
         let board_tools = session.member.is_some() && has_tools(session) && self.config.equipe_binary.is_some();
         let language = squad.as_deref().and_then(|s| self.journals.get(s)).and_then(Journal::language);
         let edits = session.edits();
@@ -2665,6 +2703,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             let ctx = roles::Context {
                 team: &mates,
                 projects: &names,
+                hq: hq.as_deref(),
                 board_tools,
                 language: language.as_deref(),
                 screen_language: Some(self.config.lang.english_name()),
@@ -5278,11 +5317,13 @@ it back there once they have done it.{again} End your turn now with a short line
         let questions = self.question_sets(squad).clone();
         let team_changes = self.team_changes(squad).clone();
         let accepts = self.accepts(squad).clone();
+        let hq = self.hq(squad);
         Snapshot {
             team_changes,
             accepts,
             squad: squad.to_owned(),
             projects,
+            hq,
             sessions,
             tickets,
             mode,

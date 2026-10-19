@@ -306,6 +306,8 @@ pub struct Context<'a> {
     pub team: &'a [Teammate<'a>],
     /// The squad's projects, by name.
     pub projects: &'a [String],
+    /// The project that is the squad's HQ, by name: where its operations live.
+    pub hq: Option<&'a str>,
     /// Whether the member's engine has equipe's board tools.
     pub board_tools: bool,
     /// The language the person writes in, once known.
@@ -355,6 +357,16 @@ project it belongs to.",
             many.join(", ")
         ),
         many => format!(" The squad works on several projects: {}.", many.join(", ")),
+    };
+    // The HQ: the projects' operations in one place, the PM's to keep.
+    let projects = match ctx.hq {
+        Some(hq) if role.id == PM => format!(
+            "{projects} {hq} is the squad's HQ: the plan across the projects — roadmap, a short brief of each \
+product, decisions, runbooks, regular reports — lives there. Work across the projects or on running them is \
+filed in {hq}, and what you learn about the whole goes in its files, not only in a reply."
+        ),
+        Some(hq) => format!("{projects} {hq} is the squad's HQ, where the plan across the projects and its operations live."),
+        None => projects,
     };
     let pm = ctx.team.iter().find(|m| m.role == PM).map(|m| m.name);
     let reporting = match pm {
@@ -664,7 +676,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, board_tools, language: None, screen_language: None, browser: false, desktop: false, home: None, memory: None, facts: 0, edits: false }
+        Context { team, projects, hq: None, board_tools, language: None, screen_language: None, browser: false, desktop: false, home: None, memory: None, facts: 0, edits: false }
     }
 
     #[test]
@@ -680,6 +692,17 @@ mod tests {
         assert!(screen.contains("in the language they write in; until they have written, in Japanese"), "{screen}");
         let both = charter(role(PM).unwrap(), "pm", &Context { language: Some("Korean"), screen_language: Some("Japanese"), ..ctx(&team, &[], true) });
         assert!(both.contains("writes in Korean") && !both.contains("Japanese"), "what they write wins: {both}");
+    }
+
+    #[test]
+    fn the_pm_keeps_the_operations_in_the_hq() {
+        let team = [Teammate { name: "pm", role: PM }];
+        let projects = ["web".to_owned(), "app".to_owned(), "atinum-hq".to_owned()];
+        let pm = charter(role(PM).unwrap(), "pm", &Context { hq: Some("atinum-hq"), ..ctx(&team, &projects, true) });
+        assert!(pm.contains("atinum-hq is the squad's HQ"), "{pm}");
+        assert!(pm.contains("filed in atinum-hq"), "{pm}");
+        let none = charter(role(PM).unwrap(), "pm", &ctx(&team, &projects, true));
+        assert!(!none.contains("HQ"), "{none}");
     }
 
     #[test]

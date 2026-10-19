@@ -222,6 +222,19 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 }),
                 "retry" => shell.update(cx, |shell, cx| shell.retry(cx)),
                 // 디자인 시스템: the screen at a section, another system, its draft, what changed, an asset big.
+                // 현황; `overview:<project>` marks that project the HQ here first (no daemon asked).
+                "overview" => shell.update(cx, |shell, cx| {
+                    if !arg.is_empty() {
+                        shell.model.hq = shell.model.projects.iter().find(|p| equipe_core::board::project_name(p) == arg).cloned();
+                        shell.model.order_projects();
+                    }
+                    shell.open_overview(cx);
+                }),
+                // The sidebar this wide: `sidew:210`.
+                "sidew" => shell.update(cx, |shell, cx| {
+                    shell.board.sidebar_width = arg.parse().unwrap_or(crate::views::sidebar::WIDTH);
+                    cx.notify();
+                }),
                 "design" => shell.update(cx, |shell, cx| {
                     shell.open_design(cx);
                     if let Some(section) = crate::design::Section::parse(&arg) {

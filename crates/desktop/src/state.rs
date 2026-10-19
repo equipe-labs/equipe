@@ -280,6 +280,9 @@ pub struct Model {
     pub projects: Vec<PathBuf>,
     /// The order the person dragged the projects into, by name (this Mac's).
     pub project_order: Vec<String>,
+    /// The project that is the squad's HQ, where its operations live: first
+    /// among the projects, wherever the others were dragged.
+    pub hq: Option<PathBuf>,
     /// The squad's mode, for completion's sake.
     pub mode: Mode,
     /// The Claude plan's usage windows, as last reported.
@@ -414,6 +417,7 @@ impl Model {
             tickets: Vec::new(),
             projects: Vec::new(),
             project_order: Vec::new(),
+            hq: None,
             mode: Mode::default(),
             plan: None,
             remote: false,
@@ -647,8 +651,8 @@ impl Model {
     /// The projects in the person's order: those they placed first, as
     /// placed; the rest after, as the daemon lists them.
     pub fn order_projects(&mut self) {
-        let order = &self.project_order;
-        let rank = |p: &PathBuf| order.iter().position(|n| *n == equipe_core::board::project_name(p)).unwrap_or(usize::MAX);
+        let (order, hq) = (&self.project_order, &self.hq);
+        let rank = |p: &PathBuf| (Some(p) != hq.as_ref(), order.iter().position(|n| *n == equipe_core::board::project_name(p)).unwrap_or(usize::MAX));
         self.projects.sort_by_key(rank);
     }
 
@@ -664,6 +668,11 @@ impl Model {
         self.order_projects();
         self.revision += 1;
         names
+    }
+
+    /// Whether the project called `name` is the squad's HQ.
+    pub fn is_hq(&self, name: &str) -> bool {
+        self.hq.as_ref().is_some_and(|hq| equipe_core::board::project_name(hq) == name)
     }
 
     pub fn project_names(&self) -> Vec<String> {
@@ -768,6 +777,7 @@ impl Model {
         }
         self.tickets = snapshot.tickets.clone();
         self.projects = snapshot.projects.clone();
+        self.hq = snapshot.hq.clone();
         self.order_projects();
         self.mode = snapshot.mode;
         self.plan = snapshot.plan;
@@ -860,7 +870,8 @@ impl Model {
             }
             Event::EngineProposalClosed { squad, id, .. } if *squad == self.squad => self.engines.close(*id),
             Event::EngineSwitchingChanged { squad, mode } if *squad == self.squad => self.engines.mode = *mode,
-            Event::ProjectsChanged { squad, projects } if *squad == self.squad => {
+            Event::ProjectsChanged { squad, projects, hq } if *squad == self.squad => {
+                self.hq = hq.clone();
                 // The one just added, said under the box.
                 if let Some(new) = projects.iter().find(|p| !self.projects.contains(p)) {
                     self.flash = Some(t!("header.project_added", name = equipe_core::board::project_name(new)));
@@ -1544,6 +1555,23 @@ mod tests {
         model.projects = vec!["/c/hq".into(), "/c/new".into(), "/c/website".into(), "/c/mcp".into()];
         model.order_projects();
         assert_eq!(model.project_names(), ["mcp", "website", "hq", "new"]);
+    }
+
+    #[test]
+    fn the_hq_comes_first_wherever_the_others_were_dragged() {
+        let mut model = Model::new("acme");
+        model.projects = vec!["/c/mcp".into(), "/c/website".into(), "/c/hq".into()];
+        model.project_order = vec!["website".into(), "mcp".into(), "hq".into()];
+        model.hq = Some("/c/hq".into());
+        model.order_projects();
+        assert_eq!(model.project_names(), ["hq", "website", "mcp"]);
+        assert!(model.is_hq("hq") && !model.is_hq("mcp"));
+        // Dragged below another, it stays on top: the HQ is the squad's, not a slot.
+        model.move_project("hq", None);
+        assert_eq!(model.project_names(), ["hq", "website", "mcp"]);
+        // The mark taken off: back where it was dragged.
+        model.apply(Update::Event(Event::ProjectsChanged { squad: "acme".into(), projects: model.projects.clone(), hq: None }), T0);
+        assert_eq!(model.project_names(), ["website", "mcp", "hq"]);
     }
 
     #[test]
