@@ -67,6 +67,22 @@ pub enum Update {
     /// Not attached, and why. Retrying in the background — unless the cause is
     /// one the person has to fix.
     Down(Failure),
+    /// How far a connection over SSH has got; `Reaching` again on each try.
+    Leg(Leg),
+    /// Where that connection goes, as `ssh` resolved it: `110.66.18.3:22`.
+    Door(String),
+}
+
+/// How far a connection over SSH has got, for the screen that waits on it:
+/// `ssh` itself says nothing until it is through or has given up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Leg {
+    /// Finding the machine: its name looked up, its door knocked on.
+    Reaching,
+    /// It answered: signing in.
+    SigningIn,
+    /// Signed in: equipe there is starting and sending the squad.
+    Opening,
 }
 
 /// How long to wait between attempts: doubling from `min` up to `max`.
@@ -95,6 +111,8 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(5);
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
 /// How often the clock is looked at, to notice the Mac slept.
 const TICK: Duration = Duration::from_secs(2);
+/// How long a knock on the far door waits: as long as `ssh` does (`ConnectTimeout`).
+const KNOCK_WAIT: Duration = Duration::from_secs(15);
 /// A gap this much longer than a tick means the machine was asleep.
 const SLEPT: Duration = Duration::from_secs(10);
 
@@ -292,7 +310,7 @@ async fn run(
         if let Some(server) = side.as_ref().and_then(|s| s.server.as_ref()) {
             server.forget_cancelled();
         }
-        let failure = match attach(&target, side.as_ref()).await {
+        let failure = match attach(&target, side.as_ref(), &updates).await {
             Ok(mut conn) => {
                 wait = backoff.min;
                 if let Some(bridge) = conn.greeting.bridge.clone()
@@ -339,7 +357,8 @@ async fn run(
             // Nothing to gain from another go until the person says so.
             loop {
                 tokio::select! {
-                    () = retry.notified() => break,
+                    // The person asked: what this try finds is news, even the same.
+                    () = retry.notified() => { down = None; break },
                     command = commands.recv() => if command.is_none() { return },
                     () = updates.closed() => return,
                 }
@@ -356,7 +375,7 @@ async fn run(
         loop {
             tokio::select! {
                 () = &mut nap => break,
-                () = retry.notified() => { wait = backoff.min; break },
+                () = retry.notified() => { wait = backoff.min; down = None; break },
                 _ = tick.tick() => if sleep.woke() && side.is_some() { woke = true; break },
                 command = commands.recv() => if command.is_none() { return },
                 () = updates.closed() => return,
@@ -436,7 +455,7 @@ async fn follow(
     Followed::Ended(failure)
 }
 
-async fn attach(target: &Target, side: Option<&SshSide>) -> Result<Connected, Failure> {
+async fn attach(target: &Target, side: Option<&SshSide>, updates: &UnboundedSender<Update>) -> Result<Connected, Failure> {
     let opts = |bridged| Opts {
         version: target.version.clone(),
         prefer: target.prefer.clone(),
@@ -473,8 +492,26 @@ async fn attach(target: &Target, side: Option<&SshSide>) -> Result<Connected, Fa
             }
         }
         (Endpoint::Ssh(_), Some(side)) => {
+            let _ = updates.send(Update::Leg(Leg::Reaching));
+            // Beside `ssh`: where it goes, and whether anything answers there.
+            let scout = side.launcher.knock.then(|| {
+                let (launcher, host, updates) = (side.launcher.clone(), side.host.clone(), updates.clone());
+                tokio::spawn(async move {
+                    let Some(door) = launcher.door(&host).await else { return };
+                    let _ = updates.send(Update::Door(door.label()));
+                    if !door.relayed && door.knock(KNOCK_WAIT).await {
+                        let _ = updates.send(Update::Leg(Leg::SigningIn));
+                    }
+                })
+            });
             let (mut process, stdout, stdin) = side.launcher.attach(&side.host).map_err(|e| Failure::Other(format!("ssh: {e}")))?;
-            match wire::connect(stdout, stdin, &opts(true)).await {
+            let heard = updates.clone();
+            let stdout = ssh::Heard::new(stdout, move || drop(heard.send(Update::Leg(Leg::Opening))));
+            let connected = wire::connect(stdout, stdin, &opts(true)).await;
+            if let Some(scout) = scout {
+                scout.abort();
+            }
+            match connected {
                 Ok((greeting, wire)) => Ok(Connected { greeting, wire, process: Some(process) }),
                 Err(Stop::Eof) => {
                     let cancelled = side.server.as_ref().is_some_and(askpass::Server::take_cancelled);
@@ -600,8 +637,14 @@ mod tests {
         }
     }
 
+    /// The next update but how far a connection got.
     async fn next(updates: &mut UnboundedReceiver<Update>) -> Update {
-        tokio::time::timeout(WAIT, updates.recv()).await.expect("an update in time").expect("the link is alive")
+        loop {
+            match tokio::time::timeout(WAIT, updates.recv()).await.expect("an update in time").expect("the link is alive") {
+                Update::Leg(_) | Update::Door(_) => {}
+                other => return other,
+            }
+        }
     }
 
     /// The next update that isn't the squad list or the bridge's greeting.
@@ -765,7 +808,7 @@ mod tests {
             let program = dir.join("ssh");
             std::fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap();
             std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-            let launcher = Launcher { program, control_dir: dir.clone(), askpass: None, extra: vec![] };
+            let launcher = Launcher { program, control_dir: dir.clone(), askpass: None, extra: vec![], knock: false };
             Self { dir, launcher }
         }
 
@@ -902,7 +945,7 @@ mod tests {
         spawned.link.retry();
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(fake.runs(), 2, "the person's click tries once");
-        assert!(spawned.updates.try_recv().is_err(), "the same failure is not news");
+        assert_eq!(next(&mut spawned.updates).await, Update::Down(failure), "the person's try is answered, even when the same");
     }
 
     #[tokio::test]
