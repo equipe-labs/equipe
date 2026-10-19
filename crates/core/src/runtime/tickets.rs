@@ -72,7 +72,7 @@ impl Runtime {
     /// Tell member `name` (or the member holding role `name`) about a change
     /// to its ticket: a line in its conversation and words with its next
     /// message. The PM is told on its own.
-    fn brief_member(&mut self, squad: &str, name: &str, line: &str, shown: &str) {
+    pub(super) fn brief_member(&mut self, squad: &str, name: &str, line: &str, shown: &str) {
         let by_name = self.member_id(squad, name);
         let by_role = || {
             self.sessions

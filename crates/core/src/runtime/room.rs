@@ -333,7 +333,15 @@ impl Runtime {
             }
         };
         let (home, prefix) = (self.config.home.clone(), format!("t{}-", ticket.id));
+        // Another squad's open ticket of the same number may own a bare `T<id>` simulator.
+        let shared = self.journals.keys().filter(|s| s.as_str() != squad).cloned().collect::<Vec<_>>().iter().any(|other| {
+            self.journal(other).and_then(|j| j.tickets().ok()).is_some_and(|ts| ts.iter().any(|t| t.id == ticket.id && !matches!(t.status, TicketStatus::Done | TicketStatus::Cancelled)))
+        });
+        let (id, owner) = (ticket.id, squad.to_owned());
         tokio::task::spawn_blocking(move || {
+            for line in disk::clear_simulators(id, &owner, shared) {
+                crate::daemon_log!("equipe: {line} (its ticket is done with)");
+            }
             let dir = home.join("worktrees").join(folder);
             for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
                 if entry.file_name().to_string_lossy().starts_with(&prefix) {

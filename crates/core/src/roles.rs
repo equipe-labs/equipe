@@ -132,7 +132,9 @@ with tests where they are practical.",
         duties: "You build the mobile apps: iOS (Swift, SwiftUI) and Android, or cross-platform (React Native, \
 Flutter) — screens, navigation, state, device features, and the app's use of the backend's APIs. \
 You edit files on your own branch, in a worktree of your own. Build and run it in a simulator where you can, \
-and say how to see it working.",
+and say how to see it working. A simulator you make for a ticket is named for it (`T<ticket> iPhone 17 Pro`) so \
+equipe deletes it when the ticket is done; keep one booted at a time and shut it down when you're through \
+(`xcrun simctl shutdown <udid>`).",
         edits: true,
         tier: Tier::Top,
     },
