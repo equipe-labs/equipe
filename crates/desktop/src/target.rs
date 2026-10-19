@@ -161,6 +161,8 @@ pub struct Remembered {
     pub board_split: Option<f32>,
     /// How wide the browser panel was left, in px.
     pub browser_width: Option<f32>,
+    /// How wide the document and terminal panel was left, in px.
+    pub side_width: Option<f32>,
     /// What accepting lands, per project (by name), once the person said.
     pub merge_ways: Vec<(String, String)>,
     /// The views the person saved (⌥V), in their order.
@@ -420,6 +422,8 @@ impl Remembered {
                 out.board_split = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("browser-width ") {
                 out.browser_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
+            } else if let Some(rest) = line.strip_prefix("side-width ") {
+                out.side_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
             } else if let Some(rest) = line.strip_prefix("recent ssh ")
                 && let Ok(host) = SshHost::parse(rest)
                 && !out.recent.contains(&host)
@@ -444,6 +448,9 @@ impl Remembered {
         }
         if let Some(width) = self.browser_width {
             text.push_str(&format!("browser-width {width:.0}\n"));
+        }
+        if let Some(width) = self.side_width {
+            text.push_str(&format!("side-width {width:.0}\n"));
         }
         if let Some(width) = self.sidebar_width {
             text.push_str(&format!("sidebar-width {width:.0}\n"));

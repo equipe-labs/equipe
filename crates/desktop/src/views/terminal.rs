@@ -38,10 +38,10 @@ fn cell_width(window: &Window) -> f32 {
     system.advance(id, px(FONT), 'm').map(|s| f32::from(s.width)).unwrap_or(FONT * 0.6)
 }
 
-/// Columns and lines that fit the panel.
-fn fits(window: &Window) -> Size {
+/// Columns and lines that fit the panel, `wide` across.
+fn fits(window: &Window, wide: f32) -> Size {
     let viewport = window.viewport_size();
-    let width = crate::doc::width(viewport.width.into()) - 2. * PAD;
+    let width = wide - 2. * PAD;
     let height = f32::from(viewport.height) - super::header::HEIGHT - 2. * PAD;
     let cw = cell_width(window);
     Size { cols: (width / cw).floor().max(20.) as u16, lines: (height / LINE).floor().max(5.) as u16, cell_w: cw.round() as u16, cell_h: LINE as u16 }
@@ -56,7 +56,7 @@ impl Shell {
             let program = crate::term::program(&self.endpoint, dir.as_deref());
             // A far machine's folder isn't this Mac's: ssh goes there itself.
             let here = if self.endpoint.is_remote() { None } else { dir.as_deref() };
-            match Terminal::start(program, here, fits(window)) {
+            match Terminal::start(program, here, fits(window, self.side_width(window))) {
                 Ok((term, mut rx)) => {
                     let reading = cx.spawn(async move |this, cx| {
                         while let Some(happened) = rx.recv().await {
@@ -118,7 +118,7 @@ pub fn panel(shell: &Shell, window: &mut Window, cx: &mut Context<Shell>) -> Opt
     let dark = shell.palette.bg.r + shell.palette.bg.g + shell.palette.bg.b < 1.5;
     let colors = if dark { Colors::dark() } else { Colors::light() };
     // Kept the panel's size: a window resized, the shell hears it.
-    let size = fits(window);
+    let size = fits(window, shell.side_width(window));
     let cw = f32::from(size.cell_w);
     let screen = ui.term.screen(&colors);
     let focused = ui.focus.is_focused(window);
@@ -216,7 +216,8 @@ pub fn panel(shell: &Shell, window: &mut Window, cx: &mut Context<Shell>) -> Opt
     Some(
         v_flex()
             .id("term-panel")
-            .w(px(crate::doc::width(window.viewport_size().width.into())))
+            .relative()
+            .w(px(shell.side_width(window)))
             .flex_none()
             .h_full()
             .min_h_0()
@@ -225,13 +226,15 @@ pub fn panel(shell: &Shell, window: &mut Window, cx: &mut Context<Shell>) -> Opt
             .bg(p.bg)
             .child(bar)
             .child(body)
+            .child(super::doc::edge(shell, cx))
             .into_any_element(),
     )
 }
 
 /// The size the panel wants now; the shell is told when it changed.
 pub fn fit(shell: &mut Shell, window: &Window) {
+    let wide = shell.side_width(window);
     if let Some(ui) = shell.terminal.as_mut().filter(|t| t.open) {
-        ui.term.resize(fits(window));
+        ui.term.resize(fits(window, wide));
     }
 }
