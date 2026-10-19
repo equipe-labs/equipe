@@ -298,7 +298,14 @@ const address = (text) => {
     await page.bringToFront().catch(() => {});
     await setState(windowId, 'minimized');
     giveBack(before);
-    page.once('close', () => { if (parking?.page === page) parking = null; });
+    // Closed (the person closed the window): made again at once. Without a
+    // window Chrome refuses every new tab ("no browser is open"), and a
+    // member's browser tools fail until something else made one.
+    page.once('close', () => {
+      if (parking?.page !== page) return;
+      parking = null;
+      setTimeout(() => { restack().catch(() => {}); }, 300);
+    });
     return parking;
   };
 
