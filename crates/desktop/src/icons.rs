@@ -96,11 +96,17 @@ pub enum Icon {
     Plug,
     /// Codex's mark.
     Sparkles,
+    /// Claude's own mark, for Claude Code (Simple Icons, CC0; the mark is
+    /// Anthropic's, shown to name the platform).
+    ClaudeMark,
+    /// OpenAI's own mark, for Codex (Simple Icons, CC0; the mark is OpenAI's,
+    /// shown to name the platform).
+    OpenAiMark,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 54] = [
+    pub const ALL: [Icon; 56] = [
         Icon::ArrowDown,
         Icon::ArrowLeft,
         Icon::ArrowRight,
@@ -155,6 +161,8 @@ impl Icon {
         Icon::SendNow,
         Icon::Plug,
         Icon::Sparkles,
+        Icon::ClaudeMark,
+        Icon::OpenAiMark,
     ];
 
     pub fn path(self) -> &'static str {
@@ -209,6 +217,8 @@ impl Icon {
             Icon::Warning => "icons/triangle-alert.svg",
             Icon::Lock => "icons/lock.svg",
             Icon::Hand => "icons/hand.svg",
+            Icon::ClaudeMark => BRAND_CLAUDE,
+            Icon::OpenAiMark => BRAND_OPENAI,
             Icon::Withdraw => "icons/undo-2.svg",
             Icon::SendNow => "icons/corner-down-right.svg",
             Icon::Plug => "icons/plug.svg",
@@ -222,11 +232,19 @@ pub fn icon(name: Icon, size: f32, color: impl Into<Hsla>) -> Svg {
     svg().path(name.path()).size(px(size)).flex_none().text_color(color)
 }
 
+const BRAND_CLAUDE: &str = "brand/claude.svg";
+const BRAND_OPENAI: &str = "brand/openai.svg";
+
 /// The window's assets: the icons above, then GPUI Kit's own.
 pub struct AppAssets;
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        match path {
+            BRAND_CLAUDE => return Ok(Some(Cow::Borrowed(include_bytes!("../assets/brand/claude.svg")))),
+            BRAND_OPENAI => return Ok(Some(Cow::Borrowed(include_bytes!("../assets/brand/openai.svg")))),
+            _ => {}
+        }
         if let Some(bytes) = Chosen.load(path)? {
             return Ok(Some(bytes));
         }

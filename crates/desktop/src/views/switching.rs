@@ -120,7 +120,14 @@ fn meter_row(shell: &Shell, m: &Meter, now: i64, cx: &mut Context<Shell>) -> Any
                 .child(name),
         );
     if m.gauges.is_empty() {
-        row = row.child(div().flex_1().text_size(px(11.5)).text_color(p.muted).child(t!("engines.not_yet")));
+        // Read, but a plan with no five-hour or weekly window (a free one):
+        // its kind, rather than "not yet".
+        let kind = shell.model.engines.plan(m.engine).and_then(|p| p.plan_type.clone()).filter(|_| m.read_at.is_some());
+        let words = match kind {
+            Some(kind) => t!("engines.plan_no_windows", plan = crate::engines::title_case(&kind)),
+            None => t!("engines.not_yet").to_owned(),
+        };
+        row = row.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.5)).text_color(p.muted).child(words));
     }
     for g in &m.gauges {
         row = row.child(gauge(p, m, g, now));
@@ -176,7 +183,9 @@ pub fn badge(p: Palette, engine: Engine) -> AnyElement {
         .border_color(p.hair)
         .text_size(px(10.))
         .line_height(px(14.))
+        .gap(px(3.))
         .text_color(p.muted)
+        .child(crate::icons::icon(if engine == Engine::Codex { crate::icons::Icon::OpenAiMark } else { crate::icons::Icon::ClaudeMark }, 9., if engine == Engine::Codex { p.text2 } else { rgb(0xD97757) }))
         .child(rules::engine_name(engine))
         .into_any_element()
 }

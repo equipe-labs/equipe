@@ -64,7 +64,7 @@ pub static PLATFORMS: [Platform; 2] = [
     Platform {
         engine: Engine::Claude,
         name: "Claude Code",
-        mark: Icon::Terminal,
+        mark: Icon::ClaudeMark,
         tint: 0xD97757,
         tool: "claude",
         signs_in: SignsIn::InTerminal { command: "claude auth login" },
@@ -77,8 +77,8 @@ pub static PLATFORMS: [Platform; 2] = [
     Platform {
         engine: Engine::Codex,
         name: "Codex",
-        mark: Icon::Sparkles,
-        tint: 0x10A37F,
+        mark: Icon::OpenAiMark,
+        tint: 0x0D0D0D,
         tool: "codex",
         signs_in: SignsIn::FromApp,
         install: "npm install -g @openai/codex",

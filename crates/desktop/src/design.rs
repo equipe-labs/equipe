@@ -302,6 +302,8 @@ pub struct DesignUi {
     pub seen: BTreeMap<String, Seen>,
     pub seen_loaded: bool,
     pub changes_open: bool,
+    /// What couldn't be read, listed rather than said in one line.
+    pub problems_open: bool,
     pub sources_open: bool,
     /// The asset shown big, by its place in the system's assets.
     pub lightbox: Option<usize>,
@@ -333,6 +335,7 @@ impl Default for DesignUi {
             seen: BTreeMap::new(),
             seen_loaded: false,
             changes_open: false,
+            problems_open: false,
             sources_open: false,
             lightbox: None,
             copied: None,

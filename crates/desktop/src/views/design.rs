@@ -444,7 +444,7 @@ fn overview(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> An
     let logos: Vec<(usize, &equipe_core::protocol::design::Asset)> = ds::DesignUi::logos(system).into_iter().take(3).map(|i| (i, &system.assets[i])).collect();
     let mut col = v_flex().gap_8();
     if !system.problems.is_empty() {
-        col = col.child(problems(p, &system.problems));
+        col = col.child(problems(shell, &system.problems, cx));
     }
     if !logos.is_empty() {
         let mut row = h_flex().gap_3().flex_wrap();
@@ -491,11 +491,28 @@ fn overview(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> An
                 .on_click(cx.listener(move |this, _, _, cx| this.design_section(section, cx))),
         );
     }
-    col = col.child(v_flex().child(heading(p, t!("design.at_a_glance").into(), None)).child(cards));
+    let any = ds::sections(system).into_iter().any(|s| s != Section::Overview && ds::count(system, s).unwrap_or(0) > 0);
+    col = col.child(v_flex().child(heading(p, t!("design.at_a_glance").into(), None)).child(if any {
+        cards.into_any_element()
+    } else {
+        div().text_size(px(SMALL)).text_color(p.muted).child(t!("design.nothing_yet")).into_any_element()
+    }));
     col.into_any_element()
 }
 
-fn problems(p: Palette, problems: &[String]) -> impl IntoElement + use<> {
+/// What couldn't be read: one line, its count, with the way to have it fixed
+/// beside it; the list itself only when asked for.
+fn problems(shell: &Shell, problems: &[String], cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let open = shell.design.problems_open;
+    let shown = 8;
+    let toggle = ui::button(p, "design-problems-toggle", ui::Kind::Ghost, if open { t!("design.problems_less") } else { t!("design.problems_more") })
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.design.problems_open = !this.design.problems_open;
+            cx.notify();
+        }));
+    let listed: Vec<String> = problems.to_vec();
+    let fix = ui::button(p, "design-problems-fix", ui::Kind::Secondary, t!("design.ask_fix")).on_click(cx.listener(move |this, _, window, cx| this.design_ask_fix(&listed, window, cx)));
     v_flex()
         .p_3()
         .gap_1()
@@ -504,8 +521,30 @@ fn problems(p: Palette, problems: &[String]) -> impl IntoElement + use<> {
         .border_color(Rgba { a: 0.45, ..p.amber })
         .bg(Rgba { a: 0.07, ..p.amber })
         .text_size(px(SMALL))
-        .child(h_flex().gap_2().items_center().text_color(p.text).font_weight(FontWeight::MEDIUM).child(icon(Icon::Alert, ICON_SM, p.amber)).child(t!("design.problems", count = problems.len())))
-        .children(problems.iter().take(12).map(|text| div().pl(px(22.)).text_color(p.text2).child(text.clone())))
+        .child(
+            h_flex()
+                .flex_wrap()
+                .gap_2()
+                .items_center()
+                .child(
+                    h_flex()
+                        .flex_1()
+                        .min_w(px(ui::WORDS_AT_LEAST))
+                        .gap_2()
+                        .items_center()
+                        .text_color(p.text)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(icon(Icon::Alert, ICON_SM, p.amber))
+                        .child(t!("design.problems", count = problems.len())),
+                )
+                .child(h_flex().flex_none().ml_auto().gap_2().child(toggle).child(fix)),
+        )
+        .when(!open, |c| c.child(div().pl(px(22.)).text_color(p.text2).child(t!("design.problems_hint"))))
+        .when(open, |c| {
+            c.children(problems.iter().take(shown).map(|text| div().pl(px(22.)).text_color(p.text2).child(text.clone())))
+                .when(problems.len() > shown, |c| c.child(div().pl(px(22.)).text_color(p.muted).child(t!("design.problems_rest", count = problems.len() - shown))))
+        })
+        .into_any_element()
 }
 
 /// A logo on the system's own light or dark background.
@@ -1525,6 +1564,23 @@ impl Shell {
                 return;
             }
         };
+        self.select_member(to, window, cx);
+        self.composer.set_text(&text, window, cx);
+        self.send(window, cx);
+    }
+
+    /// "designer에게 고쳐 달라고 하기": what couldn't be read goes to the
+    /// designer (or the PM) as the person's message, a few of them named.
+    pub fn design_ask_fix(&mut self, problems: &[String], window: &mut Window, cx: &mut Context<Self>) {
+        let designer = self.model.members.iter().find(|m| m.role == "designer" && m.presence != crate::state::Presence::Closed).map(|m| m.session);
+        let pm = self.model.members.iter().find(|m| crate::state::Model::is_pm(m)).map(|m| m.session);
+        let Some(to) = designer.or(pm) else {
+            self.composer.flash = Some(t!("design.no_one_to_ask").into());
+            cx.notify();
+            return;
+        };
+        let examples = problems.iter().take(5).cloned().collect::<Vec<_>>().join("; ");
+        let text = t!("design.fix_message", count = problems.len(), examples = examples);
         self.select_member(to, window, cx);
         self.composer.set_text(&text, window, cx);
         self.send(window, cx);

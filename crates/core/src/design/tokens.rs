@@ -203,11 +203,55 @@ fn walk(node: &[(String, Node)], path: &mut Vec<String>, inherited: Option<&str>
                     });
                 }
             }
+            // Style Dictionary's way: `value` (and `type`) without the `$`.
+            Node::Obj(entries) if child.get("value").is_some_and(|v| !matches!(v, Node::Obj(_))) && entries.iter().all(|(k, v)| !matches!(v, Node::Obj(_)) || k == "value") => {
+                let own = child.get("type").and_then(Node::as_str);
+                push(out, problems, Raw {
+                    path: path.clone(),
+                    kind: own.or(kind).map(str::to_owned).or_else(|| group_kind(path).map(str::to_owned)),
+                    value: child.get("value").cloned().unwrap_or(Node::Null),
+                    description: child.get("description").or_else(|| child.get("comment")).and_then(Node::as_str).map(str::to_owned),
+                    modes: Vec::new(),
+                });
+            }
             Node::Obj(entries) => walk(entries, path, kind, out, problems),
-            _ => problems.push(Problem::Stray { path: path.join(".") }),
+            // A bare value (`"bg": "#0A0A0C"`, `"m": 12`): a token too, as most
+            // hand-written token files have them; its type from its group's
+            // `$type`, else the group's name (`space`, `radius`…), else its look.
+            Node::Str(_) | Node::Num(_) | Node::Bool(_) | Node::Arr(_) => push(out, problems, Raw {
+                path: path.clone(),
+                kind: kind.map(str::to_owned).or_else(|| group_kind(path).map(str::to_owned)),
+                value: child.clone(),
+                description: None,
+                modes: Vec::new(),
+            }),
+            Node::Null => problems.push(Problem::Stray { path: path.join(".") }),
         }
         path.pop();
     }
+}
+
+fn push(out: &mut Vec<Raw>, problems: &mut Vec<Problem>, raw: Raw) {
+    if out.len() >= MAX_TOKENS {
+        if !problems.contains(&Problem::TooMany) {
+            problems.push(Problem::TooMany);
+        }
+    } else {
+        out.push(raw);
+    }
+}
+
+/// The type a group's name says its bare values are, where their look alone
+/// wouldn't: `space.m: 12` is a size, not just a number.
+fn group_kind(path: &[String]) -> Option<&'static str> {
+    path.iter().rev().skip(1).find_map(|segment| match segment.to_ascii_lowercase().as_str() {
+        "color" | "colors" | "colour" | "colours" | "palette" => Some("color"),
+        "space" | "spacing" | "spaces" | "size" | "sizes" | "sizing" | "gap" | "gaps" | "radius" | "radii" | "rounded" | "borderradius" | "border-radius" => Some("dimension"),
+        "duration" | "durations" => Some("duration"),
+        "font" | "fonts" | "fontfamily" | "font-family" | "family" => Some("fontFamily"),
+        "weight" | "weights" | "fontweight" | "font-weight" => Some("fontWeight"),
+        _ => None,
+    })
 }
 
 /// Read `tokens.json`'s text.
@@ -500,13 +544,15 @@ mod tests {
               "space": { "$type": "dimension", "odd": { "$value": "twelve" } }
             }"##,
         );
-        assert_eq!(parsed.tokens.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["color.ok", "color.bad", "space.odd"]);
+        assert_eq!(parsed.tokens.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["color.ok", "color.bad", "color.note", "space.odd"]);
         let has = |p: &Problem| parsed.problems.contains(p);
         assert!(has(&Problem::Unresolved { token: "color.gone".into(), reference: "{color.nowhere}".into() }), "{:?}", parsed.problems);
         assert!(has(&Problem::Cycle { token: "color.a".into() }) && has(&Problem::Cycle { token: "color.b".into() }));
         assert!(has(&Problem::Invalid { token: "color.bad".into(), kind: "color".into(), value: "#GG0000".into() }));
         assert!(has(&Problem::Invalid { token: "space.odd".into(), kind: "dimension".into(), value: "twelve".into() }));
-        assert!(has(&Problem::Stray { path: "color.note".into() }));
+        // A bare value is a token (as hand-written files have them); one that
+        // isn't what its group says is said so.
+        assert!(has(&Problem::Invalid { token: "color.note".into(), kind: "color".into(), value: "not a token".into() }));
     }
 
     #[test]
@@ -522,5 +568,26 @@ mod tests {
         let parsed = parse(r##"{ "c": { "$value": "#fff" }, "d": { "$value": "12px" }, "t": { "$value": "200ms" }, "e": { "$value": [0.2, 0, 0, 1] } }"##);
         let kinds: Vec<&str> = parsed.tokens.iter().map(|t| t.kind.as_str()).collect();
         assert_eq!(kinds, ["color", "dimension", "duration", "cubicBezier"]);
+    }
+
+    #[test]
+    fn bare_values_and_style_dictionary_tokens_are_read_as_tokens() {
+        // As T-133's file is: plain values under groups, modes as sibling groups.
+        let parsed = parse(r##"{
+          "$comment": "equipe app",
+          "color": { "dark": { "background": "#0A0A0C", "hairline": "rgba(233,230,223,0.14)" }, "light": { "background": "#F6F5F1", "hairline": "rgba(10,10,12,0.14)" } },
+          "space": { "xs": 4, "m": 12 },
+          "radius": { "card": 16 },
+          "motion": { "fast": "120ms" },
+          "brand": { "accent": { "value": "#1D4ED8", "type": "color", "comment": "Links" } }
+        }"##);
+        assert!(parsed.problems.is_empty(), "{:?}", parsed.problems);
+        let kind = |name: &str| parsed.tokens.iter().find(|t| t.name == name).map(|t| t.kind.clone()).unwrap_or_else(|| panic!("{name}: {:?}", parsed.tokens.iter().map(|t| &t.name).collect::<Vec<_>>()));
+        assert_eq!(kind("color.background"), "color");
+        assert_eq!(kind("color.hairline"), "color");
+        assert_eq!(kind("space.xs"), "dimension");
+        assert_eq!(kind("radius.card"), "dimension");
+        assert_eq!(kind("motion.fast"), "duration");
+        assert_eq!(kind("brand.accent"), "color");
     }
 }

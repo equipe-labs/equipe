@@ -35,10 +35,13 @@ fn mark(platform: &Platform) -> AnyElement {
         .size(px(30.))
         .rounded(px(R_MD))
         .bg(rgb(platform.tint))
+        // A dark tile (Codex's) still reads on a dark page.
+        .border_1()
+        .border_color(rgba(0xffffff1f))
         .flex()
         .items_center()
         .justify_center()
-        .child(icon(platform.mark, 16., rgb(0xffffff)))
+        .child(icon(platform.mark, 18., rgb(0xffffff)))
         .into_any_element()
 }
 
@@ -250,8 +253,18 @@ fn progress(shell: &Shell, at: usize, platform: &'static Platform, card: &Card, 
 fn usage(shell: &Shell, platform: &Platform, signed_in: bool) -> Line {
     let p = shell.palette;
     let line = Line::new(t!("engines.row_usage"), "");
-    match (platform.usage, shell.model.plan) {
-        (Usage::ClaudePlan, Some(plan)) if signed_in => {
+    // Claude's as before; another engine's from what the daemon read of it.
+    let read = match platform.usage {
+        Usage::ClaudePlan => shell.model.plan,
+        Usage::Later => shell.model.engines.plan(platform.engine).map(|p| p.usage),
+    };
+    let kind = shell.model.engines.plan(platform.engine).and_then(|p| p.plan_type.clone());
+    match (platform.usage, read) {
+        (_, Some(plan)) if signed_in && plan.five_hour.is_none() && plan.seven_day.is_none() => {
+            // Read, but a plan without five-hour or weekly windows (a free one keeps a monthly one).
+            line.control(value(p, t!("engines.usage_no_windows", plan = kind.as_deref().map(engines::title_case).unwrap_or_default())))
+        }
+        (_, Some(plan)) if signed_in => {
             let rows = engines::plan_usage(&plan, crate::state::now_unix() as i64);
             if rows.is_empty() {
                 return line.control(value(p, t!("engines.usage_unknown")));
@@ -265,8 +278,7 @@ fn usage(shell: &Shell, platform: &Platform, signed_in: bool) -> Line {
             }));
             line.below(bars)
         }
-        (Usage::ClaudePlan, None) if signed_in => line.control(value(p, t!("engines.usage_unknown"))),
-        _ if signed_in => line.control(value(p, t!("engines.usage_soon"))),
+        (_, None) if signed_in => line.control(value(p, t!("engines.usage_unknown"))),
         _ => line.control(value(p, "—")),
     }
 }
