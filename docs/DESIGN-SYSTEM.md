@@ -37,6 +37,11 @@ design/
   components/          a rendered preview (PNG or SVG) of each key component
 ```
 
+equipe's own is [`design/`](../design/README.md) at the top of this
+repository: its layered sources are in `design/tokens/`, and `npm run build`
+there writes `design/tokens.json` (light as `$value`, dark in
+`$extensions.mode.dark`) — a generated file, never edited by hand.
+
 ## `tokens.json`
 
 The [W3C Design Tokens Community Group format](https://tr.designtokens.org/format/):

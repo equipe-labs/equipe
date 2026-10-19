@@ -590,4 +590,15 @@ mod tests {
         assert_eq!(kind("motion.fast"), "duration");
         assert_eq!(kind("brand.accent"), "color");
     }
+
+    #[test]
+    fn the_repositorys_own_design_system_reads_whole_in_light_and_dark() {
+        // design/tokens.json, generated from design/tokens/ by `npm run build`.
+        let parsed = parse(include_str!("../../../../design/tokens.json"));
+        assert_eq!(parsed.problems, [], "every token reads");
+        assert_eq!(parsed.modes, ["light", "dark"]);
+        let bg = token(&parsed, "color.bg");
+        assert_eq!((bg.value_in(Some("light")), bg.value_in(Some("dark"))), (&json!("#F6F5F1"), &json!("#0A0A0C")));
+        assert_eq!(token(&parsed, "button.primary-bg").value_in(Some("dark")), token(&parsed, "color.action").value_in(Some("dark")), "a component token takes its alias's modes");
+    }
 }

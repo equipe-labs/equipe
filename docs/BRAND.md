@@ -1,3 +1,11 @@
+> **Superseded (2026-10-19).** The brand is now T-144's guideline v1 — warm neutrals with
+> one blue (`#1D4ED8`, the dot `#3F6FF5`), Inter + Pretendard, the `e.` mark — kept in
+> [`design/guidelines.md`](../design/guidelines.md), with its values in
+> [`design/tokens/`](../design/tokens/). This page is the earlier identity, kept for the
+> terminal UI and the social assets still drawn from it until they move to the tokens.
+> Its chrome-and-grain look applies only to brand surfaces (social cards, avatars),
+> never to product screens (`design/guidelines.md`, 브랜드 §4).
+
 # equipe — visual identity
 
 North star: **a fashion house for software teams.** Editorial, restrained,

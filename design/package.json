@@ -1,0 +1,17 @@
+{
+  "dependencies": {
+    "style-dictionary": "^4.0.0"
+  },
+  "name": "equipe-design-system",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "equipe design tokens (DTCG) \u2192 CSS, Rust, Swift, Kotlin",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "contrast": "node scripts/contrast.mjs",
+    "lint:css": "node scripts/lint-css.mjs",
+    "sheets": "node scripts/sheets.mjs",
+    "check": "npm run build && npm run contrast && npm run lint:css"
+  }
+}
