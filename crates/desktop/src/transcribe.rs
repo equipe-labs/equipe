@@ -53,10 +53,14 @@ struct Joiner {
 
 impl Joiner {
     fn result(&mut self, text: &str, ends_utterance: bool) {
-        if let Some(utterance) = self.utterance.take()
-            && starts_over(&utterance, text)
-        {
-            self.keep(&utterance);
+        let before = std::mem::take(&mut self.now);
+        match self.utterance.take() {
+            Some(utterance) if starts_over(&utterance, text) => self.keep(&utterance),
+            // Results after a pause start over, and only a final one says it
+            // ended an utterance: one much shorter, unlike the last, is a new one.
+            Some(_) => {}
+            None if !before.is_empty() && starts_over(&before, text) && text.chars().count() * 10 < before.chars().count() * 7 => self.keep(&before),
+            None => {}
         }
         if ends_utterance {
             self.utterance = Some(text.to_owned());
@@ -209,6 +213,18 @@ mod tests {
         j.result("How are you?", true);
         j.result("Fine", false);
         assert_eq!(j.text(), "Hello world. How are you? Fine");
+    }
+
+    #[test]
+    fn what_was_said_before_a_pause_is_kept_without_being_told() {
+        // As a recording reads on the device: partial results only, each
+        // pause starting over, no word on where an utterance ended.
+        let mut j = Joiner::default();
+        for partial in ["오늘", "오늘 회의는", "오늘 회의는 삼성동에서 했어요.", "다음", "다음 주에는", "다음 주에는 계약서를 보내요."] {
+            j.result(partial, false);
+        }
+        j.result("마지막", false);
+        assert_eq!(j.text(), "오늘 회의는 삼성동에서 했어요. 다음 주에는 계약서를 보내요. 마지막");
     }
 
     #[test]
