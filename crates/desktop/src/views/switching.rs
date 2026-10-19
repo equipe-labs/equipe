@@ -129,8 +129,15 @@ fn meter_row(shell: &Shell, m: &Meter, now: i64, cx: &mut Context<Shell>) -> Any
         };
         row = row.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.5)).text_color(p.muted).child(words));
     }
-    for g in &m.gauges {
-        row = row.child(gauge(p, m, g, now));
+    // One slot per window, the same on every row: a plan with only a weekly
+    // window keeps its bar under the others' weekly bar, not across both.
+    if !m.gauges.is_empty() {
+        for window in [equipe_core::protocol::engines::Window::FiveHour, equipe_core::protocol::engines::Window::Weekly] {
+            row = row.child(match m.gauges.iter().find(|g| g.window == window) {
+                Some(g) => gauge(p, m, g, now),
+                None => div().flex_1().min_w_0().into_any_element(),
+            });
+        }
     }
     row.into_any_element()
 }
@@ -146,7 +153,7 @@ fn gauge(p: Palette, m: &Meter, g: &Gauge, now: i64) -> AnyElement {
         .gap(px(5.))
         .items_center()
         .tip_at(p, words, None, gpui_kit::base::Placement::Right)
-        .child(div().flex_none().text_size(px(10.5)).text_color(p.muted).child(rules::window_short(g.window)))
+        .child(div().flex_none().w(px(16.)).text_size(px(10.5)).text_color(p.muted).child(rules::window_short(g.window)))
         .child(
             div()
                 .flex_1()
@@ -160,7 +167,7 @@ fn gauge(p: Palette, m: &Meter, g: &Gauge, now: i64) -> AnyElement {
         .child(
             div()
                 .flex_none()
-                .min_w(px(26.))
+                .w(px(30.))
                 .text_right()
                 .text_size(px(11.))
                 .text_color(if g.tone >= Tone::Low && !m.stale { color } else { p.muted })
@@ -170,22 +177,33 @@ fn gauge(p: Palette, m: &Meter, g: &Gauge, now: i64) -> AnyElement {
         .into_any_element()
 }
 
-/// The small badge by a member's name: the engine it runs on.
-pub fn badge(p: Palette, engine: Engine) -> AnyElement {
+/// The engine's mark alone, for a row with no room for its name (the team
+/// list): its name on the pointer.
+pub fn mark(p: Palette, id: impl Into<ElementId>, engine: Engine) -> AnyElement {
+    let (glyph, tint) = if engine == Engine::Codex { (crate::icons::Icon::OpenAiMark, p.text2) } else { (crate::icons::Icon::ClaudeMark, rgb(0xD97757)) };
     div()
+        .id(id.into())
         .flex_none()
-        .h(px(16.))
-        .px(px(5.))
+        .size(px(16.))
         .flex()
         .items_center()
-        .rounded(px(4.))
-        .border_1()
-        .border_color(p.hair)
-        .text_size(px(10.))
-        .line_height(px(14.))
-        .gap(px(3.))
+        .justify_center()
+        .tip_at(p, rules::engine_name(engine).to_owned(), None, gpui_kit::base::Placement::Right)
+        .child(crate::icons::icon(glyph, 11., tint))
+        .into_any_element()
+}
+
+/// The engine as words with its mark, unboxed: inside a control that has an
+/// edge of its own (the header's title).
+pub fn label(p: Palette, engine: Engine) -> AnyElement {
+    let (glyph, tint) = if engine == Engine::Codex { (crate::icons::Icon::OpenAiMark, p.text2) } else { (crate::icons::Icon::ClaudeMark, rgb(0xD97757)) };
+    h_flex()
+        .flex_none()
+        .gap(px(4.))
+        .items_center()
+        .text_size(px(12.))
         .text_color(p.muted)
-        .child(crate::icons::icon(if engine == Engine::Codex { crate::icons::Icon::OpenAiMark } else { crate::icons::Icon::ClaudeMark }, 9., if engine == Engine::Codex { p.text2 } else { rgb(0xD97757) }))
+        .child(crate::icons::icon(glyph, 11., tint))
         .child(rules::engine_name(engine))
         .into_any_element()
 }

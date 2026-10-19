@@ -12,7 +12,7 @@ use gpui_kit::*;
 
 use super::board::{Popover, dot, kbd};
 use crate::state::{Member, Model, Presence};
-use crate::theme::{PROJECT_HUES, Palette, SANS, SMALL, look};
+use crate::theme::{PROJECT_HUES, Palette, R_MD, SANS, SMALL, look};
 use crate::Shell;
 
 /// The title bar's one height, the sidebar's strip's too.
@@ -31,14 +31,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             .relative()
             .flex_none()
             .child(
-                h_flex()
-                    .id("conversation-title")
-                    .h(px(28.))
-                    .px_2()
-                    .gap(px(6.))
-                    .items_center()
-                    .rounded(px(6.))
-                    .cursor_pointer()
+                pill(p, "conversation-title")
                     .when(open, |b| b.bg(p.wash))
                     .hover(move |s| s.bg(p.wash))
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -46,9 +39,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                         cx.notify();
                     }))
                     .child(title(p, m))
-                    .children(m.engine.map(|e| super::switching::badge(p, e)))
+                    .children(m.engine.map(|e| super::switching::label(p, e)))
                     .children(ticket.map(|t| div().max_w(px(320.)).truncate().text_size(px(14.)).text_color(p.text2).child(format!("· {}", t.title))))
-                    .child(super::sidebar::icon(IconName::ChevronDown, 13., p.muted)),
+                    .child(super::sidebar::icon(IconName::ChevronDown, CHEVRON, p.muted)),
             )
             .children(open.then(|| members(shell, cx)))
     });
@@ -136,6 +129,26 @@ fn members(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     deferred(v_flex().id("member-list").absolute().top(px(32.)).left_0().w(px(220.)).p_1().rounded(px(8.)).bg(p.raised).border_1().border_color(p.hair).shadow_lg().occlude().children(rows)).into_any_element()
 }
 
+/// The header's controls' shape: the conversation's title and the projects'
+/// switch share it, so they sit on one line at one height.
+fn pill(p: Palette, id: impl Into<ElementId>) -> Stateful<Div> {
+    h_flex()
+        .id(id.into())
+        .h(px(PILL))
+        .pl(px(10.))
+        .pr(px(8.))
+        .gap(px(6.))
+        .flex_none()
+        .items_center()
+        .rounded(px(R_MD))
+        .border_1()
+        .border_color(p.hair)
+        .cursor_pointer()
+}
+
+const PILL: f32 = 28.;
+const CHEVRON: f32 = 12.;
+
 /// `◆ pm`, in the member's colour; a member who left is dimmed.
 fn title(p: Palette, member: &Member) -> impl IntoElement + use<> {
     let (mark, hue) = look(&member.role, &member.name);
@@ -145,8 +158,8 @@ fn title(p: Palette, member: &Member) -> impl IntoElement + use<> {
         .items_center()
         .flex_none()
         .text_color(color)
-        .child(div().text_size(px(14.)).child(mark))
-        .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(member.name.clone()))
+        .child(div().text_size(px(11.)).child(mark))
+        .child(div().text_size(px(13.5)).font_weight(FontWeight::SEMIBOLD).child(member.name.clone()))
 }
 
 /// A project's colour, by its place in the squad.
@@ -174,19 +187,9 @@ pub fn slice_control(shell: &Shell, place: &'static str, cx: &mut Context<Shell>
     let at = focus.as_ref().and_then(|f| names.iter().position(|n| n == f));
     let open = shell.board.popover == Some(Popover::Projects) && shell.board.slice_place == place;
     let label = focus.clone().unwrap_or_else(|| t!("header.all_projects").into());
-    // A small chip, as Claude's project beside a conversation's title.
-    let button = h_flex()
-        .id(SharedString::from(format!("slice-{place}")))
-        .h(px(24.))
-        .px_2()
-        .gap(px(6.))
-        .flex_none()
-        .items_center()
-        .rounded(px(6.))
-        .border_1()
-        .border_color(p.hair)
-        .text_size(px(12.))
-        .cursor_pointer()
+    // The same pill as the conversation's title beside it: one height, one edge.
+    let button = pill(p, SharedString::from(format!("slice-{place}")))
+        .text_size(px(13.))
         .when(open, |b| b.bg(p.wash))
         .hover(move |s| s.bg(p.wash))
         .on_click(cx.listener(move |this, _, window, cx| {
@@ -203,7 +206,7 @@ pub fn slice_control(shell: &Shell, place: &'static str, cx: &mut Context<Shell>
         }))
         .when_some(at, |b, at| b.child(dot(project_color(p, at), 7.)))
         .child(div().max_w(px(160.)).truncate().text_color(if focus.is_some() { p.text } else { p.text2 }).child(label))
-        .child(super::sidebar::icon(IconName::ChevronDown, 12., p.muted));
+        .child(super::sidebar::icon(IconName::ChevronDown, CHEVRON, p.muted));
     div().relative().flex_none().child(button).children(open.then(|| list(shell, cx))).into_any_element()
 }
 
