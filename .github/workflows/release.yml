@@ -122,12 +122,17 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: "12.0"
           # The app in 16 pieces: twice as fast to build, 7% larger.
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-        run: cargo build --release --locked -p equipe-desktop --target ${{ matrix.arch }}-apple-darwin
+        run: |
+          cargo build --release --locked -p equipe-desktop --target ${{ matrix.arch }}-apple-darwin
+          # The `equipe` the app carries: its daemon and command line.
+          cargo build --release --locked -p equipe --bin equipe --target ${{ matrix.arch }}-apple-darwin
 
       - uses: actions/upload-artifact@v5
         with:
           name: equipe-desktop-${{ matrix.arch }}
-          path: target/${{ matrix.arch }}-apple-darwin/release/equipe-desktop
+          path: |
+            target/${{ matrix.arch }}-apple-darwin/release/equipe-desktop
+            target/${{ matrix.arch }}-apple-darwin/release/equipe
 
   desktop:
     name: desktop (equipe.dmg)
@@ -188,8 +193,9 @@ jobs:
         env:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
           EQUIPE_DMG_PREBUILT: prebuilt/equipe-desktop-aarch64/equipe-desktop prebuilt/equipe-desktop-x86_64/equipe-desktop
+          EQUIPE_DMG_PREBUILT_CLI: prebuilt/equipe-desktop-aarch64/equipe prebuilt/equipe-desktop-x86_64/equipe
         run: |
-          chmod +x prebuilt/*/equipe-desktop
+          chmod +x prebuilt/*/equipe-desktop prebuilt/*/equipe
           scripts/desktop-dmg.sh
 
       - name: Check the DMG
@@ -197,6 +203,8 @@ jobs:
           hdiutil verify dist/equipe.dmg
           mount="$(hdiutil attach -nobrowse -readonly dist/equipe.dmg | tail -1 | cut -f3)"
           lipo -archs "$mount/equipe.app/Contents/MacOS/equipe-desktop" | grep -q "x86_64 arm64"
+          lipo -archs "$mount/equipe.app/Contents/Helpers/equipe" | grep -q "x86_64 arm64"
+          "$mount/equipe.app/Contents/Helpers/equipe" --version
           codesign --verify --deep --strict "$mount/equipe.app"
           if [ -n "$APPLE_API_KEY" ] && [ -n "$MACOS_CERTIFICATE" ]; then
             xcrun stapler validate "$mount/equipe.app"
