@@ -606,18 +606,15 @@ impl Model {
         self.convo().filter(|c| follow && c.sliceable()).map(|_| self.focus.clone())
     }
 
-    /// The conversation in view as it shows (see [`Convo::sliced`]); folded
-    /// stretches the person opened are in `open`.
-    pub fn conversation(&self, follow: bool, open: &std::collections::HashSet<u64>) -> crate::convo::Sliced {
+    /// The conversation in view as it shows (see [`Convo::sliced`]): with a
+    /// project in focus, its thread and the squad's — never another project's.
+    pub fn conversation(&self, follow: bool) -> crate::convo::Sliced {
         let Some(convo) = self.convo() else { return Default::default() };
         match self.chat_slice(follow) {
-            // The PM's conversation is one, whatever project is in focus: the
-            // focus says what a new message is about, and each stretch says
-            // which project it was — nothing is folded away as "elsewhere".
-            Some(_) => convo.sliced(None, open),
+            Some(slice) => convo.sliced(slice.as_deref()),
             None => {
                 let blocks = convo.blocks();
-                crate::convo::Sliced { about: vec![None; blocks.len()], blocks, answered_in: None }
+                crate::convo::Sliced { about: vec![None; blocks.len()], blocks }
             }
         }
     }
@@ -1713,32 +1710,54 @@ mod tests {
     }
 
     #[test]
-    fn the_pms_conversation_is_one_whatever_the_project_in_focus() {
+    fn a_project_in_focus_shows_its_own_thread_and_never_another_projects() {
         let mut model = pm_in_two_projects();
-        let none = std::collections::HashSet::new();
-        assert_eq!(said(&model.conversation(true, &none)), ["app q", "site q"]);
+        // Every project: everything, each stretch saying its project.
+        assert_eq!(said(&model.conversation(true)), ["app q", "site q"]);
         let before = model.revision;
         assert!(model.set_focus(Some("app".into())));
         assert!(model.revision > before, "a draw is due");
-        assert_eq!(model.chat_slice(true), Some(Some("app".into())), "the focus is still what new messages are about");
-        let app = model.conversation(true, &none);
-        assert_eq!(said(&app), ["app q", "site q"], "nothing folded away as another project's");
-        assert!(!app.blocks.iter().any(|b| matches!(b, crate::convo::Block::Elsewhere { .. })));
-        assert_eq!(app.answered_in, None, "every reply in sight: no pill");
-        assert!(app.about.contains(&Some("site".into())) && app.about.contains(&Some("app".into())), "each stretch says its project");
+        assert_eq!(model.chat_slice(true), Some(Some("app".into())));
+        // The app's thread alone: the site's lines are not there at all —
+        // no fold row, no pill pointing at them.
+        let app = model.conversation(true);
+        assert_eq!(said(&app), ["app q"]);
+        assert!(!app.blocks.iter().any(|b| matches!(b, crate::convo::Block::Reply { text, .. } if text == "site a")));
+        model.set_focus(Some("site".into()));
+        let site = model.conversation(true);
+        assert_eq!(said(&site), ["site q"]);
+        assert!(matches!(site.blocks.last(), Some(crate::convo::Block::Reply { text, .. }) if text == "site a"), "its latest line last");
+        // Following the project off in settings: the whole conversation.
+        assert_eq!(said(&model.conversation(false)), ["app q", "site q"]);
+    }
+
+    #[test]
+    fn what_was_said_to_the_whole_squad_shows_in_every_project() {
+        let mut model = Model::new("acme");
+        let mut pm = session(1, "pm", "pm", SessionState::Ready);
+        let about = |p: Option<&str>| Entry::Thread { project: p.map(Into::into) };
+        let said = |t: &str| Entry::User { text: t.into() };
+        let reply = |t: &str| Entry::Reply { text: t.into() };
+        pm.recent = vec![about(None), said("plan the week"), reply("ok"), about(Some("site")), said("site q"), reply("site a"), about(Some("app")), said("app q"), reply("app a")];
+        model.apply(hello(vec![pm]), T0);
+        model.set_focus(Some("app".into()));
+        assert_eq!(self::said(&model.conversation(true)), ["plan the week", "app q"], "the squad's own lines are every project's; the site's are not");
+        // A project nothing was said about yet: only what was said to everyone.
+        model.projects.push("/c/new".into());
+        model.set_focus(Some("new".into()));
+        assert_eq!(self::said(&model.conversation(true)), ["plan the week"]);
     }
 
     #[test]
     fn with_the_setting_off_the_conversation_is_as_it_always_was() {
         let mut model = pm_in_two_projects();
-        let none = std::collections::HashSet::new();
         let whole = model.convo().unwrap().blocks();
         for focus in [None, Some("app"), Some("site")] {
             model.set_focus(focus.map(str::to_owned));
             assert_eq!(model.chat_slice(false), None);
-            let shown = model.conversation(false, &none);
+            let shown = model.conversation(false);
             assert_eq!(shown.blocks, whole);
-            assert!(shown.about.iter().all(Option::is_none) && shown.answered_in.is_none());
+            assert!(shown.about.iter().all(Option::is_none));
         }
         // A member's conversation never follows the project.
         model.set_focus(Some("app".into()));
@@ -2102,7 +2121,7 @@ mod tests {
     /// What the conversation on screen draws: its pending bubbles and the
     /// person's own messages, as the chat pane gets them.
     fn on_screen(model: &Model) -> Vec<crate::convo::Block> {
-        model.conversation(true, &std::collections::HashSet::new()).blocks
+        model.conversation(true).blocks
     }
 
     #[test]
