@@ -1434,6 +1434,7 @@ impl App {
                 | Event::EngineProposed { .. }
                 | Event::EngineProposalClosed { .. }
                 | Event::EngineSwitchingChanged { .. }
+                | Event::ProjectsChanged { .. }
                 | Event::Allowed { .. }
                 | Event::Design { .. } => {}
                 Event::Error { message, next, .. } => {
