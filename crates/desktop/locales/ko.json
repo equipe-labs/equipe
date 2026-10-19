@@ -251,8 +251,6 @@
   "chat.ago_hours.other": "{count}시간 전",
   "chat.ago_mins.other": "{count}분 전",
   "chat.ago_now": "방금",
-  "chat.answered_in": "{project}에서 답이 왔어요",
-  "chat.answered_in_all": "모든 프로젝트 대화에 새 답",
   "chat.cards_waiting": "카드 {at} / {count}",
   "chat.browser_given_back": "🖐 브라우저를 돌려줬어요",
   "chat.committed": "변경을 커밋했습니다 ·",

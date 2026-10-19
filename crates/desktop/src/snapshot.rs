@@ -148,11 +148,6 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 "board" => shell.update(cx, |shell, cx| shell.show(crate::Screen::Board, cx)),
                 "chat" => shell.update(cx, |shell, cx| shell.show(crate::Screen::Chat, cx)),
                 "folds" => shell.update(cx, |shell, cx| shell.toggle_folds(cx)),
-                "elsewhere" => shell.update(cx, |shell, cx| {
-                    if let Some(fold) = shell.chat.nth_fold(arg.parse().unwrap_or(0)) {
-                        shell.toggle_elsewhere(fold, cx);
-                    }
-                }),
                 "chooser" => shell.update(cx, |shell, cx| shell.open_chooser(window, cx)),
                 "connect" => shell.update(cx, |shell, cx| shell.connect_typed(&arg, window, cx)),
                 "pass" => shell.update(cx, |shell, cx| {

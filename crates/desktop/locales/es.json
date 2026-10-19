@@ -258,8 +258,6 @@
   "chat.ago_mins.one": "hace {count} minuto",
   "chat.ago_mins.other": "hace {count} minutos",
   "chat.ago_now": "ahora mismo",
-  "chat.answered_in": "Nueva respuesta en {project}",
-  "chat.answered_in_all": "Nueva respuesta en la conversación de todos los proyectos",
   "chat.cards_waiting": "Tarjeta {at} de {count}",
   "chat.browser_given_back": "🖐 Navegador devuelto",
   "chat.committed": "Cambios confirmados ·",

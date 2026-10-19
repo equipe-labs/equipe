@@ -251,8 +251,6 @@
   "chat.ago_hours.other": "{count} 小時前",
   "chat.ago_mins.other": "{count} 分鐘前",
   "chat.ago_now": "剛剛",
-  "chat.answered_in": "{project} 有新回覆",
-  "chat.answered_in_all": "全部專案對話中有新回覆",
   "chat.cards_waiting": "卡片 {at} / {count}",
   "chat.browser_given_back": "🖐 已交還瀏覽器",
   "chat.committed": "已提交變更 ·",

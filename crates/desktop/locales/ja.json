@@ -251,8 +251,6 @@
   "chat.ago_hours.other": "{count}時間前",
   "chat.ago_mins.other": "{count}分前",
   "chat.ago_now": "たった今",
-  "chat.answered_in": "{project}で返信がありました",
-  "chat.answered_in_all": "全プロジェクトの会話に新しい返信",
   "chat.cards_waiting": "カード {at} / {count}",
   "chat.browser_given_back": "🖐 ブラウザを返しました",
   "chat.committed": "変更をコミットしました ·",
