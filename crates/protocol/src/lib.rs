@@ -2083,6 +2083,7 @@ mod tests {
         let snapshot = Snapshot {
             squad: "acme".into(),
             projects: vec!["/repo".into()],
+            hq: Some("/repo".into()),
             tickets: vec![ticket(1)],
             mode: Mode::ReadOnly,
             approvals: Vec::new(),
