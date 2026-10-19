@@ -1032,8 +1032,20 @@ impl Shell {
             _ => self.doc = Some(doc::Doc::new(path.clone(), read)),
         }
         let endpoint = self.endpoint.clone();
+        // Written in a ticket's worktree, or on its branch only: looked for there too.
+        let base = render::base_dir(self);
+        let mine = self.model.viewed().and_then(|s| self.model.members.iter().find(|m| m.session == s)).map(|m| m.name.clone());
+        let tickets: Vec<_> = self
+            .model
+            .tickets
+            .iter()
+            .filter(|t| mine.is_some() && (t.owner == mine || t.assignee == mine))
+            .filter(|t| t.worktree.is_some() || t.branch.is_some())
+            .map(|t| (t.worktree.clone(), t.branch.clone(), t.project.clone()))
+            .collect();
+        let also = doc::elsewhere(&path, &base, &tickets);
         let (tx, rx) = tokio::sync::oneshot::channel();
-        std::thread::spawn(move || drop(tx.send(doc::read(&endpoint, &path))));
+        std::thread::spawn(move || drop(tx.send(doc::read(&endpoint, &path, &also))));
         cx.spawn(async move |this, cx| {
             let Ok(got) = rx.await else { return };
             let _ = this.update(cx, |this, cx| {
