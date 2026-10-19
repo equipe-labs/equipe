@@ -1834,5 +1834,8 @@
   "visuals.retry": "Try again",
   "visuals.why_missing": "The file isn't there",
   "visuals.why_too_big": "Too large to show",
-  "visuals.why_unreadable": "It couldn't be read"
+  "visuals.why_unreadable": "It couldn't be read",
+  "visuals.zoom_fit": "Fit",
+  "visuals.zoom_in": "Zoom in",
+  "visuals.zoom_out": "Zoom out"
 }

@@ -1782,5 +1782,8 @@
   "visuals.retry": "もう一度試す",
   "visuals.why_missing": "ファイルがありません",
   "visuals.why_too_big": "大きすぎて表示できません",
-  "visuals.why_unreadable": "読み込めないファイルです"
+  "visuals.why_unreadable": "読み込めないファイルです",
+  "visuals.zoom_fit": "全体",
+  "visuals.zoom_in": "拡大",
+  "visuals.zoom_out": "縮小"
 }
