@@ -150,6 +150,7 @@ const address = (text) => {
   let personShown = null; // a page the person asked for on screen
   let staged = null; // the page the person drives, in front of a real window (`restage`)
   let onStage = null; // the page `restack` last brought forward for that
+  let unsized = null; // { windowId, width, height }: the window's size before the stage sized it
 
   const idOf = (page) => {
     if (!ids.has(page)) {
@@ -315,6 +316,7 @@ const address = (text) => {
       || shown.map((id) => pages.get(lanes.get(id).agent) || tabsOf(id).at(-1)).find((p) => p && !p.isClosed());
     if (front) {
       onStage = null;
+      await unsize();
       const { windowId } = await windowOf(front).catch(() => ({}));
       if (windowId) await setState(windowId, 'normal');
       await raise(front);
@@ -322,6 +324,7 @@ const address = (text) => {
     }
     if (staged && !staged.isClosed()) return putOnStage(staged);
     onStage = null;
+    await unsize();
     // Nothing to show: the placeholder in front, the window down — and the
     // keyboard back where it was. Already down, it stays as it is: bringing a
     // tab forward would bring the window up.
@@ -378,6 +381,17 @@ const address = (text) => {
     await sizeStage(page, windowId);
     giveBack(before);
   };
+  /// Off the stage, the window the stage sized at its own size again (resized
+  /// while it is still up: Chrome resizes no minimized window).
+  const unsize = async () => {
+    if (!unsized || !parking) return;
+    const { windowId, width, height } = unsized;
+    unsized = null;
+    const { bounds } = await parking.cdp.send('Browser.getWindowBounds', { windowId }).catch(() => ({}));
+    if (!bounds) return;
+    if (bounds.windowState !== 'normal') await setState(windowId, 'normal');
+    await parking.cdp.send('Browser.setWindowBounds', { windowId, bounds: { width, height } }).catch(() => {});
+  };
   /// The stage's window, sized so the page's viewport is the panel's box.
   const sizeStage = async (page, windowId) => {
     const f = fits.get(idOf(page));
@@ -390,6 +404,12 @@ const address = (text) => {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     if (!edge || edge[1] <= 0 || (edge[2] === f.w && edge[3] === f.h)) return;
+    // The window is every parked tab's: its own size comes back off the stage.
+    if (unsized?.windowId !== windowId) {
+      await unsize();
+      const { bounds } = await parking?.cdp.send('Browser.getWindowBounds', { windowId }).catch(() => ({})) || {};
+      if (bounds?.width && bounds?.height) unsized = { windowId, width: bounds.width, height: bounds.height };
+    }
     await parking?.cdp.send('Browser.setWindowBounds', { windowId, bounds: { width: f.w + edge[0], height: f.h + edge[1] } }).catch(() => {});
     // A page that doesn't change draws no new frame: its screencast starts
     // again, which sends one at the new size at once.
