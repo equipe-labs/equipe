@@ -136,6 +136,27 @@ fn card(shell: &Shell, at: usize, platform: &'static Platform, now: Instant, cx:
     };
     let mut lines = vec![Line::new(platform.name, (platform.who)()).label_el(head).words(words.clone()).control_opt(action)];
 
+    // Signed in from here: who as and on what plan, and the way to another account.
+    if card == Card::Idle && signed_in && platform.signs_in == SignsIn::FromApp {
+        let who = status.and_then(|s| s.account.clone());
+        let plan = status.and_then(|s| s.plan.clone()).map(|plan| engines::title_case(&plan));
+        let said = match (who, plan) {
+            (Some(who), Some(plan)) => t!("engines.account_on", account = who, plan = plan),
+            (Some(who), None) => who,
+            (None, Some(plan)) => t!("engines.account_plan_only", plan = plan),
+            (None, None) => t!("engines.account_unknown").to_owned(),
+        };
+        let switch = button(shell, at, 1, "engine-switch-account", Kind::Ghost, t!("engines.switch_account"))
+            .tip(t!("engines.switch_account_tip"), None)
+            .disabled(!connected)
+            .on_click(cx.listener(move |this, _, _, cx| this.engine_sign_in(engine, cx)));
+        lines.push(
+            Line::new(t!("engines.row_account"), "")
+                .words(format!("{words} account plan email switch"))
+                .control(h_flex().gap_3().items_center().child(value(p, said)).child(switch).into_any_element()),
+        );
+    }
+
     // A sign-in on its way, or how it ended.
     if let Some(line) = progress(shell, at, platform, &card, cx) {
         lines.push(line.words(words.clone()));

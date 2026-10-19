@@ -1004,6 +1004,11 @@ impl Runtime {
                     if self.sign_ins.get(&engine).is_some_and(|(at, _)| *at == id) {
                         self.sign_ins.remove(&engine);
                     }
+                    // Maybe another account now: its plan and usage read afresh.
+                    if engine == Engine::Codex {
+                        self.forget_codex_plan();
+                        self.read_codex_usage(true);
+                    }
                 }
                 Internal::Design(squad, stamp, catalog) => self.on_design(squad, stamp, catalog),
             },
@@ -1486,12 +1491,21 @@ impl Runtime {
         self.sign_ins.insert(engine, (id, task));
     }
 
+    /// What was read of the Codex account's plan, forgotten: signed out, or
+    /// signed in again (perhaps as someone else).
+    fn forget_codex_plan(&mut self) {
+        self.codex_read = None;
+        self.plan_types.remove(&Engine::Codex);
+        self.plans.retain(|p| p.engine != Engine::Codex);
+    }
+
     /// Sign `engine` out with its own tool. Claude Code's login is the
     /// person's: equipe never touches it.
     fn sign_out(&mut self, engine: Engine) {
         if engine != Engine::Codex {
             return;
         }
+        self.forget_codex_plan();
         let (claude, codex, store, internal) = (self.config.claude_binary.clone(), self.codex_binary.clone(), self.config.store.clone(), self.internal.clone());
         tokio::spawn(async move {
             if let Err(why) = crate::engines::codex_logout(&codex).await {

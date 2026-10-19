@@ -61,6 +61,15 @@ pub async fn codex(binary: &str, store: &CredentialStore) -> EngineStatus {
         }
     };
     status.legacy = legacy;
+    // Signed in: who as, and on what plan — `codex login status` says neither.
+    if status.state == EngineState::SignedIn {
+        let cwd = std::env::temp_dir();
+        if let Ok(Ok(Some(account))) = tokio::time::timeout(ASK_WAIT, equipe_providers::codex_app::read_account(binary, &cwd)).await {
+            status.account = account.email;
+            status.plan = status.plan.or(account.plan);
+            status.per_token |= account.api_key;
+        }
+    }
     status
 }
 

@@ -934,6 +934,29 @@ pub async fn read_limits(binary: &str, cwd: &Path) -> Result<Limits> {
     read.get("rateLimits").and_then(parse_limits).ok_or_else(|| Error::Protocol("codex reported no usage limits".into()))
 }
 
+/// Who the person's Codex is signed in as: the ChatGPT account's email and
+/// plan (`free`, `plus`, `pro`…), and whether it is an API key instead.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Account {
+    pub email: Option<String>,
+    pub plan: Option<String>,
+    pub api_key: bool,
+}
+
+/// Read who the person's Codex is signed in as (`account/read`); `None`: signed out.
+pub async fn read_account(binary: &str, cwd: &Path) -> Result<Option<Account>> {
+    let mut server = Server::start(binary, cwd, &[]).await?;
+    let read = server.call("account/read", json!({}), ANSWER_WAIT).await?;
+    server.close().await;
+    Ok(account_of(&read))
+}
+
+fn account_of(read: &Value) -> Option<Account> {
+    let account = read.get("account").filter(|a| !a.is_null())?;
+    let text = |k: &str| account.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+    Some(Account { email: text("email"), plan: text("planType"), api_key: text("type").as_deref() == Some("apiKey") })
+}
+
 /// The models the person's Codex offers, its default first.
 pub async fn list_models(binary: &str, cwd: &Path) -> Result<Vec<String>> {
     let mut server = Server::start(binary, cwd, &[]).await?;
@@ -1510,5 +1533,13 @@ mod tests {
     fn a_change_reads_as_a_git_diff_whatever_codex_sent() {
         assert!(change_diff("/w/a", "delete", "x\ny\n").contains("--- a//w/a\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-x\n-y\n"));
         assert_eq!(change_diff("/w/a", "update", "--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y"), "diff --git a//w/a b//w/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y\n");
+    }
+
+    #[test]
+    fn the_account_says_who_and_on_what_plan() {
+        let chatgpt = json!({ "account": { "type": "chatgpt", "email": "abel@example.com", "planType": "free" }, "requiresOpenaiAuth": true });
+        assert_eq!(super::account_of(&chatgpt), Some(super::Account { email: Some("abel@example.com".into()), plan: Some("free".into()), api_key: false }));
+        assert_eq!(super::account_of(&json!({ "account": { "type": "apiKey" } })), Some(super::Account { api_key: true, ..Default::default() }));
+        assert_eq!(super::account_of(&json!({ "account": null, "requiresOpenaiAuth": true })), None);
     }
 }

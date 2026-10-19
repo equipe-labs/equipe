@@ -59,6 +59,7 @@ fn statuses() -> Vec<EngineStatus> {
     let mut codex = EngineStatus::new(Engine::Codex, *self::codex().lock().unwrap());
     if codex.state == EngineState::SignedIn {
         codex.plan = Some("plus".into());
+        codex.account = Some("abel@example.com".into());
         codex.members = vec![member("backend")];
     }
     codex.signing_in = signing_in().lock().unwrap().as_ref().is_some_and(|t| !t.is_finished());

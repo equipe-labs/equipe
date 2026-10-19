@@ -818,11 +818,14 @@ pub struct EngineStatus {
     /// equipe's own older login to it is kept too (`equipe login codex`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub legacy: bool,
+    /// Who it is signed in as (the ChatGPT account's email), when its tool says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 impl EngineStatus {
     pub fn new(engine: Engine, state: EngineState) -> Self {
-        Self { engine, state, plan: None, per_token: false, detail: None, members: Vec::new(), signing_in: false, legacy: false }
+        Self { engine, state, plan: None, per_token: false, detail: None, members: Vec::new(), signing_in: false, legacy: false, account: None }
     }
 }
 
