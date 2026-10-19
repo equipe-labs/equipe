@@ -888,7 +888,7 @@ fn snapshot() -> Snapshot {
                 recent: vec![
                     Entry::Thread { project: Some("api".into()) },
                     Entry::Landed { branch: "equipe/backend-t37-9f8e7d6c".into(), stat: " src/session.rs | 12 ++++++------\n 1 file changed, 6 insertions(+), 6 deletions(-)".into() },
-                    Entry::Tool { tool: "Bash".into(), target: Some("cargo test".into()), outcome: None },
+                    Entry::Tool { tool: "Bash".into(), target: Some("cargo test".into()), outcome: None, label: None, background: false },
                 ],
                 queued: vec![],
                 queued_project: None,
@@ -1063,7 +1063,7 @@ fn message_vectors() -> Value {
     tell(&mut core, &mut examples, "event: user message", Event::UserMessage { session: pm, text: "로그인 화면 다음에 뭐 할까?".into() });
     tell(&mut core, &mut examples, "event: message queued", Event::MessageQueued { session: pm, text: "그리고 테스트도".into(), project: None });
     tell(&mut core, &mut examples, "event: text delta", Event::TextDelta { session: pm, text: "보드를 보면".into() });
-    tell(&mut core, &mut examples, "event: tool use", Event::ToolUse { session: pm, tool: "board".into(), target: None });
+    tell(&mut core, &mut examples, "event: tool use", Event::ToolUse { session: pm, tool: "board".into(), target: None, label: None, background: false });
     // Side work handed to a subagent: it starts, takes steps, hands back (the snapshot lists those still at it).
     tell(&mut core, &mut examples, "event: subagent started", Event::SubagentStarted { session: pm, id: "toolu_02".into(), what: "Compare the two login flows".into() });
     tell(&mut core, &mut examples, "event: subagent step", Event::SubagentStep { session: pm, id: "toolu_02".into(), step: "Read src/login.tsx".into() });

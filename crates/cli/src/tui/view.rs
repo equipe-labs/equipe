@@ -3014,7 +3014,7 @@ mod tests {
         });
         app.on_event(Event::UserMessage { session: id, text: "fix the bug".into() });
         app.on_event(Event::TextDelta { session: id, text: "Looking **now**.".into() });
-        app.on_event(Event::ToolUse { session: id, tool: "Edit".into(), target: Some("src/auth.rs".into()) });
+        app.on_event(Event::ToolUse { session: id, tool: "Edit".into(), target: Some("src/auth.rs".into()), label: None, background: false });
         (app, id)
     }
 
@@ -3460,9 +3460,9 @@ mod tests {
     fn looking_around_reads_as_one_line() {
         let (mut app, id) = working();
         for file in ["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"] {
-            app.on_event(Event::ToolUse { session: id, tool: "Read".into(), target: Some(format!("src/{file}")) });
+            app.on_event(Event::ToolUse { session: id, tool: "Read".into(), target: Some(format!("src/{file}")), label: None, background: false });
         }
-        app.on_event(Event::ToolUse { session: id, tool: "Edit".into(), target: Some("src/a.rs".into()) });
+        app.on_event(Event::ToolUse { session: id, tool: "Edit".into(), target: Some("src/a.rs".into()), label: None, background: false });
         let shot = screen(&app, 100, 24);
         assert!(shot.contains("· read   src/a.rs, src/b.rs, src/c.rs, +2"), "{shot}");
         assert_eq!(shot.matches("✎ edit").count(), 2, "edits stay one per line:\n{shot}");
@@ -3631,11 +3631,13 @@ mod tests {
     #[test]
     fn engine_housekeeping_stays_out_and_memory_reads_as_memory() {
         let (mut app, id) = working();
-        app.on_event(Event::ToolUse { session: id, tool: "ToolSearch".into(), target: None });
+        app.on_event(Event::ToolUse { session: id, tool: "ToolSearch".into(), target: None, label: None, background: false });
         app.on_event(Event::ToolUse {
             session: id,
             tool: "Write".into(),
             target: Some("/Users/a/.equipe/squads/acme/members/pm/memory/site.md".into()),
+            label: None,
+            background: false,
         });
         let shot = screen(&app, 100, 22);
         assert!(!shot.contains("ToolSearch"), "{shot}");
@@ -4203,7 +4205,7 @@ mod tests {
     fn a_long_run_of_tool_use_folds_and_o_unfolds_it() {
         let (mut app, id) = working();
         for i in 0..9 {
-            app.on_event(Event::ToolUse { session: id, tool: "Edit".into(), target: Some(format!("src/f{i}.rs")) });
+            app.on_event(Event::ToolUse { session: id, tool: "Edit".into(), target: Some(format!("src/f{i}.rs")), label: None, background: false });
         }
         let shot = screen(&app, 100, 30);
         // The edit from `working()` and nine more make a run of ten: three, the fold, two.
@@ -4313,7 +4315,7 @@ mod bench {
         for i in 0..200 {
             app.on_event(Event::UserMessage { session: id, text: format!("question {i}") });
             app.on_event(Event::TextDelta { session: id, text: "## Plan\n\n1. **designer**: 랜딩 페이지 카피와 디자인을 맡아요. equipe가 뭔지 담아요.\n2. **frontend**: 정적 사이트 프로젝트를 세팅해요 (Astro 제안).\n\n| 티켓 | 담당 | 내용 |\n|---|---|---|\n| T-1 | designer | 카피·디자인 |\n| T-2 | frontend | Astro 셋업 |\n\nSome `code` and more prose that goes on for a while to wrap across lines in the pane.".into() });
-            app.on_event(Event::ToolUse { session: id, tool: "Read".into(), target: Some("src/a.rs".into()) });
+            app.on_event(Event::ToolUse { session: id, tool: "Read".into(), target: Some("src/a.rs".into()), label: None, background: false });
             app.on_event(Event::TurnEnded { session: id, outcome: equipe_core::protocol::TurnOutcome::Completed, usage: None });
         }
         let mut layouts = Layouts::default();

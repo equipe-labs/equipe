@@ -5227,7 +5227,7 @@ mod tests {
         let (mut app, pm, _) = team();
         app.on_event(Event::UserMessage { session: pm, text: "plan it".into() });
         app.on_event(Event::TextDelta { session: pm, text: "**Done.**".into() });
-        app.on_event(Event::ToolUse { session: pm, tool: "Read".into(), target: Some("a.rs".into()) });
+        app.on_event(Event::ToolUse { session: pm, tool: "Read".into(), target: Some("a.rs".into()), label: None, background: false });
         type_text(&mut app, "/export");
         enter(&mut app);
         assert!(app.export);

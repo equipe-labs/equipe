@@ -202,6 +202,11 @@ impl Convo {
     }
 
     /// Since when the latest call has run, while it does.
+    /// How long the turn has run, while it does.
+    pub fn working_for(&self) -> Option<std::time::Duration> {
+        self.working_since.map(|since| since.elapsed())
+    }
+
     pub fn step_since(&self) -> Option<Instant> {
         self.step_since.filter(|_| self.working_since.is_some())
     }
@@ -317,6 +322,17 @@ impl Convo {
             }
         }
         self.mark_delegations(blocks);
+        // A command left running in the background runs on while the turn does,
+        // wherever its line is.
+        if self.working_since.is_some() {
+            for block in blocks.iter_mut() {
+                if let Block::Steps(lines) = block {
+                    for line in lines.iter_mut().filter(|l| l.background && l.status == Status::Unknown) {
+                        line.status = Status::Running;
+                    }
+                }
+            }
+        }
         if !end_shown {
             return;
         }
@@ -460,15 +476,23 @@ pub struct ToolLine {
     pub path: Option<String>,
     /// What it acted on, whole: a command's every line, a comment's words.
     pub full: Option<String>,
+    /// What it does in the agent's words (a command's description): shown
+    /// over what it acted on, which shows when it is opened.
+    pub label: Option<String>,
+    /// A command left running on in the background.
+    pub background: bool,
 }
 
 impl ToolLine {
     pub fn new(verb: impl Into<String>, targets: Vec<String>, edits: bool) -> Self {
-        Self { verb: verb.into(), targets, edits, status: Status::Unknown, ms: None, exit: None, output: None, diff: None, path: None, full: None }
+        Self { verb: verb.into(), targets, edits, status: Status::Unknown, ms: None, exit: None, output: None, diff: None, path: None, full: None, label: None, background: false }
     }
 
     /// `read  a.rs, b.rs, c.rs, +2` — what the line says after its mark.
     pub fn text(&self) -> String {
+        if let Some(label) = self.label.as_ref().filter(|_| self.targets.len() <= 1) {
+            return label.clone();
+        }
         let mut named: Vec<String> = self.targets.iter().take(TARGETS_SHOWN).cloned().collect();
         if self.targets.len() > TARGETS_SHOWN {
             named.push(format!("+{}", self.targets.len() - TARGETS_SHOWN));
@@ -599,7 +623,7 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
             Entry::Thread { .. } => continue,
             // Claude Code loading tool descriptions: its business, not the person's.
             Entry::Tool { tool, .. } if tool == "ToolSearch" => continue,
-            Entry::Tool { tool, target, outcome } => {
+            Entry::Tool { tool, target, outcome, label, background } => {
                 let (verb, shown, edits) = match target {
                     // A member writing down what it learned, in its own memory.
                     Some(t) if is_memory(tool, t) => {
@@ -632,6 +656,8 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
                             line.output = (!o.output.is_empty()).then(|| (o.output.clone(), o.skipped));
                             line.diff = o.diff.clone();
                         }
+                        line.label = label.clone();
+                        line.background = *background;
                         line.path = target.clone().filter(|_| matches!(tool.as_str(), "Read" | "Edit" | "MultiEdit" | "Write" | "NotebookEdit"));
                         if line.path.is_none() && !shown.is_empty() {
                             line.full = Some(shown);
@@ -811,7 +837,7 @@ mod tests {
     }
 
     fn tool(name: &str, target: &str) -> Event {
-        Event::ToolUse { session: 1, tool: name.into(), target: Some(target.into()) }
+        Event::ToolUse { session: 1, tool: name.into(), target: Some(target.into()), label: None, background: false }
     }
 
     fn feed(c: &mut Convo, events: &[Event]) {
@@ -1143,6 +1169,46 @@ mod tests {
         let mut c = two_projects();
         c.showing = Some(4);
         assert_eq!(c.sliced(Some("app")).blocks, c.blocks());
+    }
+
+    #[test]
+    fn a_command_shows_its_description_and_one_in_the_background_runs_while_the_turn_does() {
+        let mut c = convo(true);
+        let steps = |c: &Convo| -> Vec<(String, String, Status, bool)> {
+            c.blocks().iter().filter_map(|b| if let Block::Steps(lines) = b { Some(lines.clone()) } else { None }).flatten().map(|l| (l.verb.clone(), l.text(), l.status, l.background)).collect()
+        };
+        let watch = "until git log -1 | grep -q x; do sleep 30; done";
+        feed(
+            &mut c,
+            &[
+                Event::UserMessage { session: 1, text: "배포 지켜봐 줘".into() },
+                Event::ToolUse { session: 1, tool: "Bash".into(), target: Some(watch.into()), label: Some("새 커밋·배포 감시".into()), background: true },
+                Event::TextDelta { session: 1, text: "지켜보고 있어요.".into() },
+            ],
+        );
+        // Its words over the command, which is under it when opened; running
+        // in the background while the turn goes on, though a reply came after.
+        assert_eq!(steps(&c), [("run".to_owned(), "새 커밋·배포 감시".to_owned(), Status::Running, true)]);
+        let line = c.blocks().iter().find_map(|b| if let Block::Steps(lines) = b { lines.first().cloned() } else { None }).unwrap();
+        assert_eq!(line.full.as_deref(), Some(watch));
+        assert!(crate::activity::has_more(&line), "the command opens under its description");
+        assert_eq!(crate::activity::line_phrase(&line, true), "백그라운드에서 실행 중");
+        // Its task ended: done.
+        let outcome = equipe_core::protocol::ToolOutcome { ok: true, exit: None, ms: Some(240_000), output: "new commit".into(), skipped: 0, diff: None };
+        feed(&mut c, &[Event::ToolResult { session: 1, tool: "Bash".into(), target: Some(watch.into()), outcome }]);
+        assert_eq!(steps(&c)[0].2, Status::Done);
+        // A turn that ended before it did: no longer shown as running.
+        let mut c = convo(true);
+        feed(
+            &mut c,
+            &[
+                Event::UserMessage { session: 1, text: "x".into() },
+                Event::ToolUse { session: 1, tool: "Bash".into(), target: Some(watch.into()), label: None, background: true },
+                Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None },
+            ],
+        );
+        assert_eq!(steps(&c)[0].2, Status::Unknown);
+        assert_eq!(steps(&c)[0].1, watch, "no description: the command");
     }
 
     #[test]

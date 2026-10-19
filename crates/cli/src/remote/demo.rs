@@ -177,7 +177,7 @@ impl Scene {
             ],
             None,
         );
-        let frontend = session(FRONTEND, "frontend", PROJECTS[0], vec![Entry::Tool { tool: "Edit".into(), target: Some("src/pages/index.tsx".into()), outcome: None }], Some(3));
+        let frontend = session(FRONTEND, "frontend", PROJECTS[0], vec![Entry::Tool { tool: "Edit".into(), target: Some("src/pages/index.tsx".into()), outcome: None, label: None, background: false }], Some(3));
         let backend = session(BACKEND, "backend", PROJECTS[1], vec![], None);
         let tickets = vec![
             ticket(1, "Set up the project", TicketStatus::Done, Some("backend"), Some("Repository, CI and a first deploy.")),
@@ -267,7 +267,7 @@ impl Scene {
                     s.tokens += text.len() as u64 / 4;
                 }
             }
-            Event::ToolUse { session, tool, target } => self.entry(*session, Entry::Tool { tool: tool.clone(), target: target.clone(), outcome: None }),
+            Event::ToolUse { session, tool, target, label, background } => self.entry(*session, Entry::Tool { tool: tool.clone(), target: target.clone(), outcome: None, label: label.clone(), background: *background }),
             Event::Thread { session, project } => self.entry(*session, Entry::Thread { project: project.clone() }),
             Event::TurnEnded { session, .. } => self.state(*session, SessionState::Ready),
             _ => {}
@@ -326,7 +326,7 @@ impl Scene {
                 let end = if decision == Decision::Deny {
                     self.say(s, start, "Understood — I won't do that. I'll leave it for you and carry on with the rest.")
                 } else {
-                    self.at(start, Event::ToolUse { session: s, tool: asked.tool.clone(), target: Some(asked.action.clone()) });
+                    self.at(start, Event::ToolUse { session: s, tool: asked.tool.clone(), target: Some(asked.action.clone()), label: None, background: false });
                     let end = self.say(s, start + 900, "Done. It worked; I'm carrying on with the ticket.");
                     // The landing page, built, is handed in.
                     if let Some(t) = asked.ticket.and_then(|id| self.find(id)).filter(|t| t.id == 3 && t.status == TicketStatus::InProgress) {

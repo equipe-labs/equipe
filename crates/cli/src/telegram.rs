@@ -1102,7 +1102,7 @@ mod tests {
         b.on_event("acme", &Event::TextDelta { session: 1, text: "earlier work".into() });
         b.on_event("acme", &Event::UserMessage { session: 1, text: "Ship the site today?".into() });
         b.on_event("acme", &Event::TextDelta { session: 1, text: "Checking the board.".into() });
-        b.on_event("acme", &Event::ToolUse { session: 1, tool: "board".into(), target: None });
+        b.on_event("acme", &Event::ToolUse { session: 1, tool: "board".into(), target: None, label: None, background: false });
         b.on_event("acme", &Event::TextDelta { session: 1, text: "Yes — after T-3.".into() });
         let outs = b.on_event("acme", &Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None });
         assert_eq!(outs.len(), 1);
