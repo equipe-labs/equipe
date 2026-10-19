@@ -1644,6 +1644,8 @@
   "turn.closed": "더 기다리지 않음",
   "turn.count.other": "{count}개",
   "turn.done": "했음",
+  "turn.steps": "{done} / {total} 완료",
+  "turn.next": "다음 단계",
   "turn.file_copy": "이 Mac에 없음 — 클릭하면 경로를 복사합니다",
   "turn.file_look": "클릭: 훑어보기 · ⌥-클릭: Finder에서 보기",
   "turn.free_placeholder": "{name}에게 덧붙일 말",

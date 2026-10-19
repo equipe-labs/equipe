@@ -1690,6 +1690,8 @@
   "turn.count.one": "{count} answer",
   "turn.count.other": "{count} answers",
   "turn.done": "Done",
+  "turn.steps": "{done} of {total} done",
+  "turn.next": "Next step",
   "turn.file_copy": "Not on this Mac — click to copy the path",
   "turn.file_look": "Click to look · ⌥-click to show in Finder",
   "turn.free_placeholder": "Anything else for {name}",
