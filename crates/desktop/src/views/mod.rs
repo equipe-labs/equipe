@@ -21,6 +21,7 @@ pub mod switching;
 pub mod header;
 pub mod icons;
 pub mod pair;
+pub mod overview;
 pub mod peek;
 pub mod quote;
 pub mod settings;

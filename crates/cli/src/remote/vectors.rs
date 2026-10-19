@@ -837,6 +837,7 @@ fn snapshot() -> Snapshot {
     Snapshot {
         squad: SQUAD.into(),
         projects: vec!["/Users/you/projects/site".into(), "/Users/you/projects/api".into()],
+        hq: None,
         sessions: vec![
             SessionInfo {
                 session: 1001,

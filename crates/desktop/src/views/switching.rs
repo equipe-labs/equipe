@@ -132,17 +132,27 @@ fn meter_row(shell: &Shell, m: &Meter, now: i64, cx: &mut Context<Shell>) -> Any
     // One slot per window, the same on every row: a plan with only a weekly
     // window keeps its bar under the others' weekly bar, not across both.
     if !m.gauges.is_empty() {
+        // A narrow sidebar has no room for the bars: the label and percent alone.
+        let bars = shell.board.sidebar_width >= BARS_FROM;
         for window in [equipe_core::protocol::engines::Window::FiveHour, equipe_core::protocol::engines::Window::Weekly] {
             row = row.child(match m.gauges.iter().find(|g| g.window == window) {
-                Some(g) => gauge(p, m, g, now),
-                None => div().flex_1().min_w(px(54.)).into_any_element(),
+                Some(g) => gauge(p, m, g, now, bars),
+                None => div().flex_1().min_w(px(if bars { GAUGE_MIN } else { 0. })).into_any_element(),
             });
         }
     }
     row.into_any_element()
 }
 
-fn gauge(p: Palette, m: &Meter, g: &Gauge, now: i64) -> AnyElement {
+/// A gauge's least width with its bar: label, gaps, a sliver of bar, percent.
+const GAUGE_MIN: f32 = LABEL_W + 4. + 8. + 4. + PERCENT_W;
+const LABEL_W: f32 = 16.;
+const PERCENT_W: f32 = 30.;
+/// The sidebar width a row's two bars fit in: its margins and padding, the
+/// engine's name, two gauges at their least and the gaps between.
+const BARS_FROM: f32 = 16. + 16. + 42. + 8. + GAUGE_MIN + 8. + GAUGE_MIN + 8.;
+
+fn gauge(p: Palette, m: &Meter, g: &Gauge, now: i64, bars: bool) -> AnyElement {
     let color = if m.stale { p.muted } else { tone_color(p, g.tone) };
     let words = rules::gauge_words(g, now, crate::usage::local_time);
     let fill = (f32::from(g.percent) / 100.).clamp(0., 1.);
@@ -150,13 +160,15 @@ fn gauge(p: Palette, m: &Meter, g: &Gauge, now: i64) -> AnyElement {
         .id(SharedString::from(format!("gauge-{}-{:?}", rules::engine_name(m.engine), g.window)))
         .flex_1()
         // Its label, a sliver of bar and its percent never run into the next.
-        .min_w(px(54.))
+        .min_w(px(if bars { GAUGE_MIN } else { 0. }))
         .overflow_hidden()
+        .whitespace_nowrap()
         .gap(px(4.))
         .items_center()
+        .when(!bars, |g| g.justify_end())
         .tip_at(p, words, None, gpui_kit::base::Placement::Right)
-        .child(div().flex_none().w(px(14.)).text_size(px(10.5)).text_color(p.muted).child(rules::window_short(g.window)))
-        .child(
+        .child(div().flex_none().w(px(LABEL_W)).text_size(px(10.5)).text_color(p.muted).child(rules::window_short(g.window)))
+        .when(bars, |gauge| gauge.child(
             div()
                 .flex_1()
                 .min_w(px(6.))
@@ -165,11 +177,11 @@ fn gauge(p: Palette, m: &Meter, g: &Gauge, now: i64) -> AnyElement {
                 .bg(p.hair)
                 .overflow_hidden()
                 .child(div().h_full().w(relative(fill)).rounded(px(2.)).bg(color)),
-        )
+        ))
         .child(
             div()
                 .flex_none()
-                .w(px(28.))
+                .w(px(PERCENT_W))
                 .text_right()
                 .text_size(px(10.5))
                 .text_color(if g.tone >= Tone::Low && !m.stale { color } else { p.muted })

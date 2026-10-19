@@ -629,6 +629,18 @@ impl Journal {
         Ok(())
     }
 
+    /// The squad's HQ: the project its operations live in — the plan across
+    /// the products, decisions, runbooks, reports. Only while it is one of
+    /// the squad's projects.
+    pub fn hq(&self) -> Option<PathBuf> {
+        let hq = PathBuf::from(self.meta("hq").filter(|h| !h.is_empty())?);
+        self.projects().ok()?.contains(&hq).then_some(hq)
+    }
+
+    pub fn set_hq(&self, path: Option<&Path>) -> Result<()> {
+        self.set_meta("hq", &path.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())
+    }
+
     // ── the board ──
 
     /// Put a ticket on the board. Its id is the next free number; the one given is ignored.

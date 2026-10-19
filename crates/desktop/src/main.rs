@@ -34,6 +34,7 @@ mod mem;
 mod notify;
 mod pair;
 mod pane;
+mod portfolio;
 mod queue;
 mod quote;
 mod sheet;
@@ -166,6 +167,8 @@ pub enum Screen {
     Settings,
     /// 디자인 시스템: the squad's design system (`views/design.rs`).
     Design,
+    /// 현황: every project at a glance, the HQ first (`views/overview.rs`).
+    Overview,
 }
 
 pub struct Shell {
@@ -209,6 +212,8 @@ pub struct Shell {
     pub(crate) daemon_update: Option<DaemonUpdate>,
     /// The person closed the banner: not again this launch.
     daemon_update_hidden: bool,
+    /// 현황's releases, as last found.
+    pub overview: views::overview::OverviewUi,
     /// The banner's "restart now" asked once: the next click restarts.
     daemon_restart_armed: bool,
     /// The ticket a `T-n` link asked the board to open.
@@ -327,6 +332,7 @@ impl Shell {
             term_drag: None,
             daemon_update: None,
             daemon_update_hidden: false,
+            overview: Default::default(),
             daemon_restart_armed: false,
             board_ticket: None,
             bell: Default::default(),
@@ -1113,6 +1119,13 @@ impl Shell {
         self.remembered.save(&equipe_providers::credentials::equipe_home());
     }
 
+    /// The person makes `path` the squad's HQ, or none: the daemon keeps it
+    /// and tells the PM; every screen hears it back (`ProjectsChanged`).
+    pub fn set_hq(&mut self, path: Option<std::path::PathBuf>, cx: &mut Context<Self>) {
+        self.send_command(equipe_core::protocol::Command::SetHq { squad: self.model.squad.clone(), path });
+        cx.notify();
+    }
+
     /// Project `name` dragged before `before`: kept for this squad on this Mac.
     pub fn reorder_project(&mut self, name: &str, before: Option<&str>, cx: &mut Context<Self>) {
         if before == Some(name) {
@@ -1261,6 +1274,7 @@ impl Shell {
                     Screen::Board => views::board::render(self, cx).into_any_element(),
                     Screen::Settings => views::settings::render(self, cx),
                     Screen::Design => views::design::render(self, cx),
+                    Screen::Overview => views::overview::render(self, cx),
                 };
                 v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(self.update_banner(cx)).children(views::disk::banner(self, cx)).child(screen).into_any_element()
             }
