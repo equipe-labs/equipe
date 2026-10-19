@@ -601,7 +601,15 @@ impl Model {
     pub fn conversation(&self, follow: bool, open: &std::collections::HashSet<u64>) -> crate::convo::Sliced {
         let Some(convo) = self.convo() else { return Default::default() };
         match self.chat_slice(follow) {
-            Some(slice) => convo.sliced(slice.as_deref(), open),
+            // A project with nothing said about it yet: the whole conversation,
+            // not an empty screen with every line folded away (and a pill for
+            // the reply that came in another).
+            Some(Some(project)) => {
+                let sliced = convo.sliced(Some(&project), open);
+                let own = sliced.blocks.iter().any(|b| matches!(b, crate::convo::Block::User(_) | crate::convo::Block::Reply { .. }));
+                if own { sliced } else { convo.sliced(None, open) }
+            }
+            Some(None) => convo.sliced(None, open),
             None => {
                 let blocks = convo.blocks();
                 crate::convo::Sliced { about: vec![None; blocks.len()], blocks, answered_in: None }
@@ -1636,6 +1644,16 @@ mod tests {
     fn said(sliced: &crate::convo::Sliced) -> Vec<String> {
         use crate::convo::Block;
         sliced.blocks.iter().filter_map(|b| if let Block::User(t) = b { Some(t.clone()) } else { None }).collect()
+    }
+
+    #[test]
+    fn a_project_with_nothing_said_shows_the_whole_conversation() {
+        let mut model = pm_in_two_projects();
+        let none = std::collections::HashSet::new();
+        model.set_focus(Some("web".into()));
+        let web = model.conversation(true, &none);
+        assert_eq!(said(&web), ["app q", "site q"], "not an empty screen of folds");
+        assert_eq!(web.answered_in, None, "every reply is in sight: no pill");
     }
 
     #[test]
