@@ -751,7 +751,19 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     // button would be (which has the place while you read back).
     let following = shell.chat.scroller.read(cx).is_following_tail();
     // A reply about another project came: a pill to go there, the view stays.
-    let pulse = (replying && following).then(|| pulse_pill(p));
+    // Its words: what it is doing while nothing shows it — a command left
+    // running in the background it waits on, or how long the turn has run.
+    let doing = {
+        let waiting_on = shell.chat.blocks.iter().filter_map(|b| if let Block::Steps(lines) = b { Some(lines) } else { None }).flatten().filter(|l| l.background && l.status == Status::Running).map(|l| l.text()).next_back();
+        let took = shell.model.convo().and_then(|c| c.working_for()).map(crate::convo::elapsed);
+        match (waiting_on, took) {
+            (Some(what), Some(took)) => t!("chat.doing_waiting_background", what = what, took = took),
+            (Some(what), None) => t!("chat.doing_waiting_background_now", what = what),
+            (None, Some(took)) => t!("chat.doing_working", took = took),
+            (None, None) => String::new(),
+        }
+    };
+    let pulse = (replying && following).then(|| pulse_pill(p, doing));
     // Our own pill, not the kit's jump button: the kit's put a tooltip with the
     // same word on it, in its own white, over the conversation.
     let jump = (!following).then(|| jump_pill(p, shell.chat.scroller.clone()));
@@ -1296,7 +1308,7 @@ fn call_row(rows: &Rows, key: u64, at: u32, line: &ToolLine, rule: bool, window:
         .when(!more, |h| h.cursor_default())
         .children(running.then(|| motion::spinner(11., p.muted)))
         .children(failed.then(|| icon(Icon::Alert, 12., t.danger)))
-        .child(div().flex_none().text_color(if failed { t.danger } else { p.muted }).child(activity::phrase(&line.verb, running)))
+        .child(div().flex_none().text_color(if failed { t.danger } else { p.muted }).child(activity::line_phrase(line, running)))
         .child(linked(rows, ("call-object", key << 8 | at as u64), &line.text(), p.text2, true))
         .children(diff_stat(line).map(|(a, r)| stat_chip(rows, a, r)))
         .children(line.exit.filter(|_| failed).map(|code| div().flex_none().px_1().rounded(px(4.)).bg(t.danger_bg).text_size(px(META)).text_color(t.danger).child(t!("chat.exit_code", code = code))))
@@ -1316,7 +1328,8 @@ fn call_body(rows: &Rows, key: u64, at: u32, line: &ToolLine, failed: bool, _win
     let id = key << 8 | at as u64;
     let mut parts: Vec<AnyElement> = Vec::new();
     let command = line.verb == "run";
-    if let Some(full) = line.full.as_ref().filter(|f| f.chars().count() > 80 || f.contains('\n')) {
+    // Under its description, a command shows whole however short.
+    if let Some(full) = line.full.as_ref().filter(|f| line.label.is_some() || f.chars().count() > 80 || f.contains('\n')) {
         if command || line.output.is_some() {
             parts.push(
                 div()
@@ -1771,7 +1784,7 @@ fn jump_pill(p: Palette, scroller: Entity<MessageScrollerState>) -> impl IntoEle
     div().absolute().bottom(px(12.)).left_0().right_0().flex().justify_center().child(motion::rise(pill, "jump-to-latest-in"))
 }
 
-fn pulse_pill(p: Palette) -> impl IntoElement {
+fn pulse_pill(p: Palette, words: String) -> impl IntoElement {
     let dot = move |n: usize| {
         div().size(px(5.)).rounded_full().bg(p.muted).with_animation(
             ("pulse-dot", n),
@@ -1799,7 +1812,8 @@ fn pulse_pill(p: Palette) -> impl IntoElement {
             .border_1()
             .border_color(p.hair)
             .shadow(motion::float_shadow(0.5))
-            .children((0..3).map(dot)),
+            .child(h_flex().gap(px(4.)).children((0..3).map(dot)))
+            .when(!words.is_empty(), |pill| pill.child(div().pl(px(4.)).max_w(px(520.)).truncate().text_size(px(META)).text_color(p.text2).child(words))),
     )
 }
 

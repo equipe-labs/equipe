@@ -1177,7 +1177,7 @@ impl Runtime {
             ticket.updated_at = Some(now_secs());
         }
         // Where a member's browser goes, to bring it back there on screen.
-        if let Event::ToolUse { session, tool, target: Some(url) } = &event
+        if let Event::ToolUse { session, tool, target: Some(url), .. } = &event
             && tool.ends_with("browser_navigate")
             && let Some(key) = self.browser_key(*session)
         {
@@ -6335,7 +6335,7 @@ fn has_tools(session: &Session) -> bool {
 fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
     Some(match activity {
         Activity::Text(text) => Event::TextDelta { session: id, text },
-        Activity::Tool { name, target } => Event::ToolUse { session: id, tool: name, target },
+        Activity::Tool { name, target, label, background } => Event::ToolUse { session: id, tool: name, target, label, background },
         Activity::ToolDone(done) => {
             let (output, skipped) = equipe_protocol::ToolOutcome::tail(&done.output);
             let outcome = equipe_protocol::ToolOutcome { ok: done.ok, exit: done.exit, ms: Some(done.ms), output, skipped, diff: done.diff };

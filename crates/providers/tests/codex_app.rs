@@ -90,7 +90,7 @@ async fn a_recorded_turn_streams_as_entries_and_writes_its_files() {
     assert_eq!(a[0], Activity::Model("gpt-6.1-sol".into()));
     assert!(a.contains(&Activity::Thinking("Looking at the repo".into())));
     assert_eq!(text(a), "I'll add the file, then test.DONE");
-    let tools: Vec<(&str, Option<&str>)> = a.iter().filter_map(|x| if let Activity::Tool { name, target } = x { Some((name.as_str(), target.as_deref())) } else { None }).collect();
+    let tools: Vec<(&str, Option<&str>)> = a.iter().filter_map(|x| if let Activity::Tool { name, target, .. } = x { Some((name.as_str(), target.as_deref())) } else { None }).collect();
     let readme = run.cwd.join("README.md").to_string_lossy().into_owned();
     let hello = run.cwd.join("hello.txt").to_string_lossy().into_owned();
     assert_eq!(tools, [

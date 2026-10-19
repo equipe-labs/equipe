@@ -1770,7 +1770,7 @@ mod tests {
         let mut model = Model::new("acme");
         let mut busy = session(2, "frontend", "frontend", SessionState::Working);
         busy.work = Some(WorkInfo { ticket: 61, project: "/p".into(), workspace: None });
-        busy.recent = vec![Entry::Tool { tool: "Edit".into(), target: None, outcome: None }];
+        busy.recent = vec![Entry::Tool { tool: "Edit".into(), target: None, outcome: None, label: None, background: false }];
         assert!(model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), busy]), T0));
         assert_eq!(model.conn, Conn::Connected { last_event: None });
         assert_eq!(model.status(&model.members[1]), Status::Working { ticket: Some(61), verb: Verb::Editing });
@@ -1856,7 +1856,7 @@ mod tests {
 
         assert!(model.apply(Update::Event(Event::WorkStarted { session: 1, ticket: 5, title: "t".into(), project: "/p".into(), workspace: None }), T0));
         assert_eq!(model.status(&model.members[0]), Status::Working { ticket: Some(5), verb: Verb::Thinking });
-        model.apply(Update::Event(Event::ToolUse { session: 1, tool: "Read".into(), target: None }), T0);
+        model.apply(Update::Event(Event::ToolUse { session: 1, tool: "Read".into(), target: None, label: None, background: false }), T0);
         assert_eq!(model.status(&model.members[0]), Status::Working { ticket: Some(5), verb: Verb::Reading });
         model.apply(Update::Event(Event::TurnEnded { session: 1, outcome: equipe_core::protocol::TurnOutcome::Completed, usage: None }), T0);
         assert!(matches!(model.status(&model.members[0]), Status::Ready { ticket: Some(5), .. }));

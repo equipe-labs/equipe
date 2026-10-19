@@ -1281,6 +1281,14 @@ pub enum Event {
         session: SessionId,
         tool: String,
         target: Option<String>,
+        /// What it does, in the agent's own words — a command's description
+        /// ("Watch for a new commit or deployment") — shown over `target`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        /// It runs on in the background: its [`Event::ToolResult`] comes when
+        /// it finishes, which may be long after the call answered.
+        #[serde(default, skip_serializing_if = "is_false")]
+        background: bool,
     },
     /// A tool use came back: the latest [`Event::ToolUse`] with the same
     /// `tool` and `target` still open ended so. A screen that doesn't know
@@ -1613,6 +1621,10 @@ pub struct ToolOutcome {
     pub diff: Option<String>,
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 fn is_zero(n: &u32) -> bool {
     *n == 0
 }
@@ -1665,6 +1677,12 @@ pub enum Entry {
         /// How it ended, once it has (and the screen was told).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         outcome: Option<Box<ToolOutcome>>,
+        /// What it does, in the agent's words ([`Event::ToolUse`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        /// Started to run on in the background ([`Event::ToolUse`]).
+        #[serde(default, skip_serializing_if = "is_false")]
+        background: bool,
     },
     /// A quiet line from equipe itself.
     Note { text: String },
@@ -2054,7 +2072,7 @@ mod tests {
             Event::MessageQueued { session: 1, text: "also the footer".into(), project: None },
             Event::Notice { session: 2, text: "↪ You → frontend: hi".into() },
             Event::TextDelta { session: 1, text: "안녕".into() },
-            Event::ToolUse { session: 1, tool: "Edit".into(), target: Some("a.rs".into()) },
+            Event::ToolUse { session: 1, tool: "Edit".into(), target: Some("a.rs".into()), label: None, background: false },
             Event::TurnEnded {
                 session: 1,
                 outcome: TurnOutcome::Interrupted,

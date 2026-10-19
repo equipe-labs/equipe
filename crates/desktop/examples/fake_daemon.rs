@@ -474,7 +474,7 @@ fn live_subagents() -> &'static std::sync::Mutex<Vec<(SessionId, SubagentInfo, s
 fn subagents_of(session: SessionId) -> (Vec<SubagentInfo>, Vec<Entry>) {
     let live = live_subagents().lock().unwrap();
     let subs: Vec<SubagentInfo> = live.iter().filter(|(s, ..)| *s == session).map(|(_, info, since)| SubagentInfo { secs: since.elapsed().as_secs(), ..info.clone() }).collect();
-    let calls = subs.iter().map(|s| Entry::Tool { tool: "Agent".into(), target: Some(s.what.clone()), outcome: None }).collect();
+    let calls = subs.iter().map(|s| Entry::Tool { tool: "Agent".into(), target: Some(s.what.clone()), outcome: None, label: None, background: false }).collect();
     (subs, calls)
 }
 
@@ -494,7 +494,7 @@ async fn subagents_play(events: broadcast::Sender<Event>) {
         let mut started: Vec<(SessionId, String, usize)> = Vec::new();
         for (n, (session, what, _)) in tasks.iter().enumerate() {
             let id = format!("sub-{round}-{n}");
-            let _ = events.send(Event::ToolUse { session: *session, tool: "Agent".into(), target: Some((*what).into()) });
+            let _ = events.send(Event::ToolUse { session: *session, tool: "Agent".into(), target: Some((*what).into()), label: None, background: false });
             live_subagents().lock().unwrap().push((*session, SubagentInfo { id: id.clone(), what: (*what).into(), step: None, secs: 0 }, std::time::Instant::now()));
             let _ = events.send(Event::SubagentStarted { session: *session, id: id.clone(), what: (*what).into() });
             started.push((*session, id, n));
@@ -787,7 +787,7 @@ fn on(mut info: SessionInfo, ticket: u32, project: &str, title: &str, working: b
         Entry::Note { text: format!("── T-{ticket} · {title} — on branch equipe/t-{ticket}") },
         Entry::User { text: format!("T-{ticket} 시작해 주세요.") },
         Entry::Reply { text: "네, 지금 구조부터 보겠습니다. 기존 컴포넌트를 재사용하고 테스트를 먼저 쓰겠습니다.".into() },
-        Entry::Tool { tool: tool.0.into(), target: Some(if tool.0 == "Bash" { tool.1.to_owned() } else { format!("{}/{}", repo(project).display(), tool.1) }), outcome: None },
+        Entry::Tool { tool: tool.0.into(), target: Some(if tool.0 == "Bash" { tool.1.to_owned() } else { format!("{}/{}", repo(project).display(), tool.1) }), outcome: None, label: None, background: false },
     ];
     info.estimate = estimate;
     info
@@ -893,8 +893,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         let history = vec![
                             Entry::User { text: "어제 하던 일 이어서 해 줘".into() },
                             Entry::Reply { text: "네, **T-9**부터 이어서 하겠습니다.".into() },
-                            Entry::Tool { tool: "Read".into(), target: Some("/tmp/fake/site/a.rs".into()), outcome: None },
-                            Entry::Tool { tool: "Edit".into(), target: Some("/tmp/fake/site/a.rs".into()), outcome: None },
+                            Entry::Tool { tool: "Read".into(), target: Some("/tmp/fake/site/a.rs".into()), outcome: None, label: None, background: false },
+                            Entry::Tool { tool: "Edit".into(), target: Some("/tmp/fake/site/a.rs".into()), outcome: None, label: None, background: false },
                             Entry::Reply { text: "고쳤습니다.".into() },
                         ];
                         // `FAKE_SAID`: one more message of the person's, last — as one with
@@ -914,7 +914,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         // `FAKE_ASKLIST=1`: the PM's last reply asks three things in a list of its own words.
                         if std::env::var("FAKE_ASKLIST").is_ok_and(|v| v == "1") {
                             history.push(Entry::User { text: "EU 스토어에도 바로 낼 수 있어?".into() });
-                            history.push(Entry::Tool { tool: "WebFetch".into(), target: Some("https://developer.apple.com/help/app-store-connect/manage-compliance-information/manage-european-union-digital-services-act-trader-requirements".into()), outcome: None });
+                            history.push(Entry::Tool { tool: "WebFetch".into(), target: Some("https://developer.apple.com/help/app-store-connect/manage-compliance-information/manage-european-union-digital-services-act-trader-requirements".into()), outcome: None, label: None, background: false });
                             history.push(Entry::Reply { text: ASKLIST.into() });
                         }
                         if pictures::on() {
@@ -992,7 +992,21 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 tokio::spawn(subagents_play(events.clone()));
                             }
                         }
-                        let mut sessions = vec![info(1, "pm", history), frontend, backend, designer];
+                        // `FAKE_BACKGROUND=1`: the PM at work, waiting on a command it left
+                        // running in the background (described, as Claude Code's are).
+                        let pm_waits = std::env::var("FAKE_BACKGROUND").is_ok_and(|v| v == "1");
+                        let mut history = history;
+                        if pm_waits {
+                            history.push(Entry::User { text: "새 배포 올라오면 바로 확인해 줘".into() });
+                            history.push(Entry::Tool { tool: "Bash".into(), target: Some("git -C ~/site log -1 --format=%h".into()), outcome: Some(Box::new(equipe_core::protocol::ToolOutcome { ok: true, exit: None, ms: Some(100), output: "6ad5f11".into(), skipped: 0, diff: None })), label: Some("지금 커밋 확인".into()), background: false });
+                            history.push(Entry::Tool { tool: "Bash".into(), target: Some("until [ \"$(git -C ~/site log -1 --format=%h)\" != 6ad5f11 ]; do sleep 30; done".into()), outcome: None, label: Some("새 커밋·배포 감시".into()), background: true });
+                            history.push(Entry::Reply { text: "네, 새 커밋과 새 배포를 지켜보고 있어요. 올라오면 화면을 확인해서 보여 드릴게요.".into() });
+                        }
+                        let mut pm_info = info(1, "pm", history);
+                        if pm_waits {
+                            pm_info.state = SessionState::Working;
+                        }
+                        let mut sessions = vec![pm_info, frontend, backend, designer];
                         if busy() {
                             for (ticket, session, name, title) in BUSY {
                                 let role = name.split('-').next().unwrap_or(name);
@@ -1270,7 +1284,7 @@ fn scoped_history() -> Vec<Entry> {
     let about = |p: Option<&str>| Entry::Thread { project: p.map(str::to_owned) };
     let user = |t: &str| Entry::User { text: t.into() };
     let reply = |t: &str| Entry::Reply { text: t.into() };
-    let read = |p: &str, f: &str| Entry::Tool { tool: "Read".into(), target: Some(format!("/tmp/fake/site/{p}/{f}")), outcome: None };
+    let read = |p: &str, f: &str| Entry::Tool { tool: "Read".into(), target: Some(format!("/tmp/fake/site/{p}/{f}")), outcome: None, label: None, background: false };
     vec![
         about(Some("app")),
         user("온보딩 첫 화면 문구를 다듬어 줘"),
@@ -1294,7 +1308,7 @@ fn scoped_history() -> Vec<Entry> {
 
 /// One turn: a couple of steps, then the reply a few characters at a time.
 async fn turn(session: SessionId, events: broadcast::Sender<Event>, seconds: f32) {
-    let tool = |tool: &str, target: &str| Event::ToolUse { session, tool: tool.into(), target: Some(target.into()) };
+    let tool = |tool: &str, target: &str| Event::ToolUse { session, tool: tool.into(), target: Some(target.into()), label: None, background: false };
     tokio::time::sleep(Duration::from_millis(200)).await;
     for step in [tool("Read", "/tmp/fake/site/a.rs"), tool("Read", "/tmp/fake/site/b.rs"), tool("Edit", "/tmp/fake/site/a.rs")] {
         let _ = events.send(step);

@@ -13,6 +13,15 @@ pub const NEWS_FOLDS_PAST: usize = 3;
 
 /// A step's verb phrase, done or under way: `실행함` / `실행 중`. A tool
 /// without a phrase of its own reads as its name.
+/// A line's verb phrase: a command left in the background says so.
+pub fn line_phrase(line: &ToolLine, running: bool) -> String {
+    if line.background {
+        let key = if running { "chat.doing_background" } else { "chat.did_background" };
+        return crate::i18n::catalog().get(key).to_owned();
+    }
+    phrase(&line.verb, running)
+}
+
 pub fn phrase(verb: &str, running: bool) -> String {
     let key = match (verb, running) {
         ("run", false) => "chat.did_run",
@@ -156,10 +165,10 @@ pub enum Title {
 /// holds, or a delegated task's own description, or the count.
 pub fn title(lines: &[ToolLine]) -> Title {
     if let Some(running) = lines.iter().rev().find(|l| l.status == Status::Running) {
-        return Title::Call { phrase: phrase(&running.verb, true), object: running.text() };
+        return Title::Call { phrase: line_phrase(running, true), object: running.text() };
     }
     match lines {
-        [one] if one.targets.len() <= 1 => Title::Call { phrase: phrase(&one.verb, false), object: one.text() },
+        [one] if one.targets.len() <= 1 => Title::Call { phrase: line_phrase(one, false), object: one.text() },
         _ => match lines.iter().find(|l| l.verb == "delegate" && !l.targets.is_empty()) {
             Some(task) if lines.iter().all(|l| l.verb == "delegate") => Title::Call { phrase: phrase("delegate", false), object: task.text() },
             _ => Title::Summary(summary(lines)),
@@ -213,7 +222,8 @@ pub fn groups(run: Vec<ToolLine>) -> Vec<Vec<ToolLine>> {
 /// What a call shows when its row is opened: a command's full text and
 /// output, an edit's change, the whole of a long object.
 pub fn has_more(line: &ToolLine) -> bool {
-    line.output.is_some() || line.diff.is_some() || line.full.as_ref().is_some_and(|f| f.chars().count() > 80 || f.contains('\n'))
+    // A described command: the command itself is under its description.
+    (line.label.is_some() && line.full.is_some()) || line.output.is_some() || line.diff.is_some() || line.full.as_ref().is_some_and(|f| f.chars().count() > 80 || f.contains('\n'))
 }
 
 // ── news ──
