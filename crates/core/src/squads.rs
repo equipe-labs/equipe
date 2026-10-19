@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::journal::{Journal, squad_dir};
+use crate::squad_home::git;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SquadSummary {
@@ -170,6 +171,50 @@ pub fn add_project(home: &Path, name: &str, project: &Path) -> Result<(), String
     journal.add_project(project).map_err(|err| err.to_string())
 }
 
+/// A folder the person names, added to `squad` as a project: the repository
+/// it is in, or — a folder with no history yet, made if it isn't there —
+/// started as one with a first commit, so members can branch from it. `~`
+/// is this machine's home. Never home itself or a folder above it, nor
+/// equipe's own. Blocking (git): off the daemon's loop. Where it went.
+pub fn add_folder(home: &Path, squad: &str, typed: &str, user_home: Option<&Path>) -> Result<PathBuf, String> {
+    let typed = typed.trim();
+    let path = match (typed.strip_prefix("~"), user_home) {
+        (Some(rest), Some(user)) if rest.is_empty() || rest.starts_with('/') => user.join(rest.trim_start_matches('/')),
+        _ => PathBuf::from(typed),
+    };
+    if !path.is_absolute() {
+        return Err(format!("{typed}: a full path, or one from ~"));
+    }
+    if !path.exists() {
+        path.parent().filter(|p| p.is_dir()).ok_or_else(|| format!("{}: its folder isn't there", path.display()))?;
+        std::fs::create_dir(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    let path = path.canonicalize().map_err(|e| format!("{}: {e}", path.display()))?;
+    if !path.is_dir() {
+        return Err(format!("{}: not a folder", path.display()));
+    }
+    let too_wide = |p: &Path| p.components().count() <= 2 || user_home.and_then(|u| u.canonicalize().ok()).is_some_and(|u| u.starts_with(p));
+    let equipes = |p: &Path| home.canonicalize().is_ok_and(|h| p.starts_with(&h) || h.starts_with(p));
+    if too_wide(&path) || equipes(&path) {
+        return Err(format!("{}: too wide a folder for a project — pick the project's own", path.display()));
+    }
+    let repo = match crate::worktree::repo_root(&path) {
+        Ok(root) if !too_wide(&root) => root.canonicalize().unwrap_or(root),
+        Ok(root) => return Err(format!("{} is inside {}, a repository too wide for a project", path.display(), root.display())),
+        Err(_) => {
+            git(&path, &["init", "-q", "-b", "main"])?;
+            path.clone()
+        }
+    };
+    // Members branch from a commit: a repository with none gets its first.
+    if git(&repo, &["rev-parse", "-q", "--verify", "HEAD"]).is_err() {
+        git(&repo, &["add", "-A"])?;
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "equipe: the project's start"])?;
+    }
+    add_project(home, squad, &repo)?;
+    Ok(repo)
+}
+
 /// Take a project off a squad. Its tickets and branches stay.
 pub fn remove_project(home: &Path, name: &str, project: &Path) -> Result<(), String> {
     let journal = Journal::for_squad(home, name).map_err(|err| err.to_string())?;
@@ -257,5 +302,34 @@ mod tests {
         assert_eq!(last_squad(&home).as_deref(), Some("acme"), "one remembered thing keeps the other");
         let text = std::fs::read_to_string(home.join("state.json")).unwrap();
         assert_eq!(text.matches("/code/site").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn a_folder_named_becomes_a_project_started_as_a_repository_if_need_be() {
+        let home = home();
+        // The person's home beside equipe's, not in it.
+        let user = home.with_file_name(format!("{}-user", home.file_name().unwrap().to_string_lossy()));
+        let _ = std::fs::remove_dir_all(&user);
+        std::fs::create_dir_all(user.join("code/notes")).unwrap();
+        std::fs::write(user.join("code/notes/plan.md"), "# plan\n").unwrap();
+        crate::squad_home::ensure(&home, "acme", None).ok();
+        // A plain folder: a repository now, its files in a first commit.
+        let notes = add_folder(&home, "acme", "~/code/notes", Some(&user)).unwrap();
+        assert_eq!(notes, user.join("code/notes").canonicalize().unwrap());
+        assert!(notes.join(".git").exists());
+        assert!(git(&notes, &["ls-files"]).unwrap().contains("plan.md"));
+        // A new folder: made, and started with an empty commit.
+        let fresh = add_folder(&home, "acme", &user.join("code/fresh").display().to_string(), Some(&user)).unwrap();
+        assert!(git(&fresh, &["rev-parse", "HEAD"]).is_ok());
+        assert_eq!(list(&home).into_iter().find(|s| s.name == "acme").unwrap().projects, vec![notes.clone(), fresh]);
+        // A folder inside a repository: the repository.
+        std::fs::create_dir_all(notes.join("sub")).unwrap();
+        assert_eq!(add_folder(&home, "acme", &notes.join("sub").display().to_string(), Some(&user)).unwrap(), notes);
+        // Too wide, equipe's own, relative, or with no parent: refused.
+        assert!(add_folder(&home, "acme", "~", Some(&user)).is_err());
+        assert!(add_folder(&home, "acme", "/", Some(&user)).is_err());
+        assert!(add_folder(&home, "acme", &home.join("squads").display().to_string(), Some(&user)).is_err());
+        assert!(add_folder(&home, "acme", "code/notes", Some(&user)).is_err());
+        assert!(add_folder(&home, "acme", &user.join("no/such/place").display().to_string(), Some(&user)).is_err());
     }
 }

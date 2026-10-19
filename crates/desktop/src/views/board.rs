@@ -69,6 +69,8 @@ pub struct BoardUi {
     /// The project list's search, and which header opened it.
     pub slice_search: Entity<InputState>,
     pub slice_place: &'static str,
+    /// The project list's box takes a folder's path to add, not a name to find.
+    pub adding_project: bool,
     pub flow: Option<Flow>,
     pub popover: Option<Popover>,
     pub list_scroll: ScrollHandle,
@@ -148,6 +150,7 @@ impl BoardUi {
             naming: cx.new(|cx| InputState::new(window, cx).placeholder(t!("board.view_name_placeholder"))),
             slice_search: cx.new(|cx| InputState::new(window, cx).placeholder(t!("header.find_project"))),
             slice_place: "",
+            adding_project: false,
             flow: None,
             popover: None,
             list_scroll: ScrollHandle::new(),
@@ -242,10 +245,16 @@ impl Shell {
         let slice = self.board.slice_search.clone();
         let mut tickets = self.tickets_subscriptions(window, cx);
         tickets.extend(vec![
-            cx.subscribe_in(&slice, window, |_, _, event: &InputEvent, _, cx| {
-                if matches!(event, InputEvent::Change) {
-                    cx.notify();
+            cx.subscribe_in(&slice, window, |this, input, event: &InputEvent, _, cx| match event {
+                InputEvent::Change => cx.notify(),
+                // A path typed to add: sent as it is, read on the daemon's machine.
+                InputEvent::PressEnter { .. } if this.board.adding_project => {
+                    let path = input.read(cx).value().trim().to_owned();
+                    if !path.is_empty() {
+                        this.add_project(path, cx);
+                    }
                 }
+                _ => {}
             }),
             cx.subscribe_in(&search, window, |this, input, event: &InputEvent, window, cx| match event {
                 InputEvent::Change => {

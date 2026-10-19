@@ -31,7 +31,7 @@ use crate::{Screen, Shell, motion};
 
 pub const WIDTH: f32 = 260.;
 pub const MIN_WIDTH: f32 = 200.;
-pub const MAX_WIDTH: f32 = 420.;
+pub const MAX_WIDTH: f32 = 480.;
 /// The title bar: the sidebar's strip and every screen's header are this one
 /// row, one height, one hairline under it.
 pub const STRIP: f32 = 44.;
@@ -51,6 +51,16 @@ const BUTTON_GAP: f32 = 2.;
 /// Where the traffic lights go with the window zoomed (`zoom.rs`): AppKit's
 /// lights keep their size and their place from the left, and stay centred on
 /// the title bar, which grows and shrinks with everything else.
+/// A dragged width as kept: within bounds, and the usual width when within
+/// a few points of it, so it is easy to come back to.
+pub fn settle(width: f32) -> f32 {
+    let width = width.clamp(MIN_WIDTH, MAX_WIDTH);
+    if (width - WIDTH).abs() <= SETTLE { WIDTH } else { width }
+}
+
+/// How near the usual width a drag settles on it.
+const SETTLE: f32 = 8.;
+
 pub fn lights_at(zoom: f32) -> (f32, f32) {
     (LIGHTS_AT.0, (STRIP * zoom - LIGHT) / 2.)
 }
@@ -175,7 +185,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             .when(badge > 0, |r| {
                 r.child(div().flex_none().min_w(px(18.)).h(px(18.)).px(px(5.)).flex().items_center().justify_center().rounded(px(9.)).bg(p.accent).text_color(p.on_accent).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child(badge.to_string()))
             })
-            .when(count > 0, |r| r.child(div().flex_none().pr(px(4.)).text_size(px(12.)).text_color(p.muted).child(count.to_string())))
+            .when(count > 0, |r| r.child(div().flex_none().min_w(px(18.)).h(px(18.)).px(px(5.)).flex().items_center().justify_center().text_size(px(12.)).text_color(p.muted).child(count.to_string())))
     };
     let nav_rows = v_flex()
         .gap(px(1.))
@@ -254,20 +264,37 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .children(relaunch(p, shell, cx))
         .child(footer(p, shell, cx))
         .children(popup(p, shell, cx))
-        // The edge: drag to resize.
+        // The edge: drag to resize (it settles on the usual width when near
+        // it), double-click for the usual width again. Lit under the pointer.
         .child(
             div()
                 .id("sidebar-edge")
+                .group("sidebar-edge")
                 .absolute()
                 .top_0()
                 .bottom_0()
-                .right(px(-3.))
-                .w(px(6.))
+                .right(px(-4.))
+                .w(px(8.))
                 .cursor_col_resize()
-                .child(div().absolute().top_0().bottom_0().left(px(3.)).w(px(1.)).bg(if ui.sidebar_drag.is_some() { p.accent } else { p.hair }))
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(px(4.))
+                        .w(px(1.))
+                        .bg(if ui.sidebar_drag.is_some() { p.accent } else { p.hair })
+                        .group_hover("sidebar-edge", move |s| s.bg(p.accent).opacity(0.7)),
+                )
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                        if e.click_count >= 2 {
+                            this.board.sidebar_drag = Some((f32::from(e.position.x), WIDTH));
+                            this.board.sidebar_width = WIDTH;
+                            this.sidebar_released(cx);
+                            return;
+                        }
                         this.board.sidebar_drag = Some((f32::from(e.position.x), this.board.sidebar_width));
                         cx.notify();
                     }),
@@ -324,6 +351,13 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, cx: &mut C
         (Some(_), true) => t!("sidebar.back_to_all"),
         (Some(_), false) => t!("sidebar.switch_project"),
     };
+    // Where the project is, on the daemon's machine: on the pointer, and to copy.
+    let folder = g.name.as_ref().and_then(|n| shell.model.projects.iter().find(|p| &equipe_core::board::project_name(p) == n)).cloned();
+    let name_tip = match &folder {
+        Some(path) => format!("{name_tip}\n{}", path.display()),
+        None => name_tip.to_owned(),
+    };
+    let local = !shell.endpoint.is_remote();
     let ident = match g.at {
         Some(at) => dot(project_color(p, at), 6.).into_any_element(),
         None => icon(IconName::Folder, 12., p.muted).into_any_element(),
@@ -343,6 +377,23 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, cx: &mut C
         .on_click(cx.listener(move |this, _, window, cx| this.side_head_click(HeadClick::Name, name_project.clone(), window, cx)))
         .child(ident)
         .child(crate::ui::steady(label, FontWeight::SEMIBOLD, focused, true).text_color(name_color));
+    let name: AnyElement = match folder {
+        Some(path) => {
+            use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+            name.context_menu(move |menu, _, _| {
+                let copy = path.clone();
+                let menu = menu.item(PopupMenuItem::new(t!("sidebar.copy_project_path")).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.display().to_string()))));
+                if local {
+                    let reveal = path.clone();
+                    menu.item(PopupMenuItem::new(t!("render.file_reveal")).on_click(move |_, _, cx| cx.reveal_path(&reveal)))
+                } else {
+                    menu
+                }
+            })
+            .into_any_element()
+        }
+        None => name.into_any_element(),
+    };
     let counts = (folded && !quiet).then(|| {
         h_flex()
             .flex_none()
@@ -775,9 +826,21 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, cx: &mut Co
         .group(group.clone())
         .on_click(cx.listener(move |this, _, window, cx| this.select_member(session, window, cx)))
         .child(mark_element(p, mark, if mark == Mark::Spinner { shell.spin(cx) } else { 0. }))
-        .child(div().flex_none().max_w(px(120.)).truncate().text_size(px(TEXT)).text_color(if on { p.text } else { p.text2 }).child(member.name.clone()))
-        .children(member.engine.map(|e| super::switching::badge(p, e)))
-        .child(fading_title(p, state.words(), on, true).text_size(px(12.)).when(state.waits(), |d| d.text_color(p.orange)).group_hover(group.clone(), |s| s.invisible()))
+        // Name, then what it is doing against the right edge, then its engine:
+        // each in the same place on every row.
+        .child(div().flex_1().min_w(px(36.)).truncate().text_size(px(TEXT)).text_color(if on { p.text } else { p.text2 }).child(member.name.clone()))
+        .child(
+            div()
+                .flex_none()
+                .max_w(relative(0.55))
+                .truncate()
+                .text_right()
+                .text_size(px(12.))
+                .text_color(if state.waits() { p.orange } else { p.muted })
+                .group_hover(group.clone(), |s| s.invisible())
+                .child(state.words()),
+        )
+        .children(member.engine.map(|e| div().flex_none().group_hover(group.clone(), |s| s.invisible()).child(super::switching::mark(p, ("member-engine", session), e))))
         // No room for its subagents' rows: how many, which opens them all.
         .children(folded.map(|n| {
             h_flex()
@@ -1278,12 +1341,13 @@ impl Shell {
     /// Dragging the sidebar's edge.
     pub fn sidebar_dragged(&mut self, x: f32, cx: &mut Context<Self>) {
         if let Some((x0, w0)) = self.board.sidebar_drag {
-            self.board.sidebar_width = (w0 + x - x0).clamp(MIN_WIDTH, MAX_WIDTH);
+            self.board.sidebar_width = settle(w0 + x - x0);
             cx.notify();
         }
     }
 
     pub fn sidebar_released(&mut self, cx: &mut Context<Self>) {
+        // (A double-click on the edge comes here with the usual width set.)
         if self.board.sidebar_drag.take().is_some() {
             self.remembered.sidebar_width = Some(self.board.sidebar_width);
             self.remembered.save(&equipe_providers::credentials::equipe_home());
@@ -1356,11 +1420,20 @@ pub struct Place {
 
 #[cfg(test)]
 mod tests {
-    use super::{Leaving, SUB_ROW, SUBS_SHOWN, SideMotion, Shown, SubLeaving, SubMotion, SubShown, TEAM_ROW, TeamState, sub_rows, subs_cap, team_height};
+    use super::{Leaving, MAX_WIDTH, MIN_WIDTH, SUB_ROW, SUBS_SHOWN, SideMotion, Shown, SubLeaving, SubMotion, SubShown, TEAM_ROW, TeamState, WIDTH, settle, sub_rows, subs_cap, team_height};
     use crate::board::Live;
     use crate::state::{Member, Model, Presence, Verb};
     use equipe_core::protocol::Ticket;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_dragged_width_stays_in_bounds_and_settles_on_the_usual_one() {
+        assert_eq!(settle(100.), MIN_WIDTH);
+        assert_eq!(settle(900.), MAX_WIDTH);
+        assert_eq!(settle(WIDTH + 6.), WIDTH);
+        assert_eq!(settle(WIDTH - 7.), WIDTH);
+        assert_eq!(settle(WIDTH + 30.), WIDTH + 30.);
+    }
 
     fn ticket(id: u32, status: &str, owner: &str) -> Ticket {
         serde_json::from_value(serde_json::json!({"id": id, "title": "t", "body": "", "status": status, "owner": owner, "assignee": null, "project": null, "depends_on": [], "branch": null, "created_by": "pm", "note": null})).unwrap()
