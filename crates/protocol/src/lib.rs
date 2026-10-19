@@ -1448,7 +1448,7 @@ pub enum Event {
         squad: SquadName,
         projects: Vec<PathBuf>,
         /// Which of them is the squad's HQ ([`Command::SetHq`]).
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         hq: Option<PathBuf>,
     },
     /// The squad's design systems, as they are now ([`Command::Design`]):
@@ -1761,7 +1761,7 @@ pub struct Snapshot {
     #[serde(default)]
     pub projects: Vec<PathBuf>,
     /// Which project is the squad's HQ, if one is ([`Command::SetHq`]).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hq: Option<PathBuf>,
     /// The members, the PM first.
     pub sessions: Vec<SessionInfo>,
