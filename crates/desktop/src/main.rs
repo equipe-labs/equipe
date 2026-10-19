@@ -46,6 +46,7 @@ mod stream;
 mod target;
 mod theme;
 mod team;
+mod term;
 mod tickets;
 mod tips;
 mod transcribe;
@@ -89,7 +90,7 @@ use views::connect::{AskUi, ConnectUi};
 
 actions!(
     equipe,
-    [ToggleBoard, ToggleBrowser, ChooseTarget, AllProjects, Project1, Project2, Project3, Project4, Project5, Project6, Project7, Project8, Project9, ToggleFolds]
+    [ToggleBoard, ToggleBrowser, ToggleTerminal, ChooseTarget, AllProjects, Project1, Project2, Project3, Project4, Project5, Project6, Project7, Project8, Project9, ToggleFolds]
 );
 // The conversation's: ⌘F, and Escape in its find bar.
 actions!(equipe, [FindInConversation, CloseFind]);
@@ -193,6 +194,10 @@ pub struct Shell {
     pub design: design::DesignUi,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
     pub browser: Entity<BrowserPanel>,
+    /// The terminal at the right, while one runs.
+    pub(crate) terminal: Option<views::terminal::TermUi>,
+    /// The reply whose command was last typed into the terminal unasked.
+    term_offered: Option<u64>,
     /// The document open in the panel at the right, if one is.
     pub(crate) doc: Option<doc::Doc>,
     doc_reads: u64,
@@ -304,6 +309,8 @@ impl Shell {
             settings: views::settings::SettingsUi::new(window, cx),
             design: Default::default(),
             browser,
+            terminal: None,
+            term_offered: None,
             doc: None,
             doc_reads: 0,
             board_ticket: None,
@@ -641,8 +648,9 @@ impl Shell {
         self.sheet = None;
         self.confirm = None;
         self.connecting_shown = false;
-        // Another machine: its files aren't the ones open.
+        // Another machine: its files aren't the ones open, nor its shell.
         self.doc = None;
+        self.terminal = None;
         self.connecting = views::connect::Connecting::new(std::time::Instant::now());
         // Phones are the daemon's machine's: another machine has its own. A
         // code open closes with the old connection.
@@ -773,9 +781,18 @@ impl Shell {
                             _ => {}
                         }
                         let attached = matches!(update, daemon::Update::Attached(_));
+                        let ended = match &update {
+                            daemon::Update::Event(Event::TurnEnded { session, .. }) => Some(*session),
+                            _ => None,
+                        };
                         changed |= this.model.apply(update, now);
                         // A card to confirm shows each ticket's size: asked of git once per look.
                         this.accept_stats();
+                        // A reply asking the person to run something as the machine's
+                        // administrator: the terminal opens with it typed, not run.
+                        if let Some(session) = ended {
+                            this.offer_terminal(session, window, cx);
+                        }
                         // Settings open on its list: the daemon (maybe another one) is asked again.
                         if attached {
                             this.engines.attached();
@@ -976,6 +993,30 @@ impl Shell {
         let text = self.ask.input.read(cx).value().to_string();
         self.ask.input.update(cx, |s, cx| s.set_value(String::new(), window, cx));
         self.answer_prompt(askpass::Answer::Text(text), window, cx);
+    }
+
+    /// The viewed conversation's last reply, if it asks the person to run a
+    /// `sudo` command: typed into the terminal for them, once per reply.
+    fn offer_terminal(&mut self, session: SessionId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.screen != Screen::Chat || self.model.viewed() != Some(session) {
+            return;
+        }
+        let Some(text) = self.model.convo().and_then(|c| {
+            c.blocks().into_iter().rev().find_map(|b| match b {
+                convo::Block::Reply { text, .. } => Some(text),
+                _ => None,
+            })
+        }) else {
+            return;
+        };
+        let Some(block) = term::shell_blocks(&text).into_iter().find(|b| term::wants_person(b)) else { return };
+        let key = render::hash_of(&text);
+        if self.term_offered == Some(key) {
+            return;
+        }
+        self.term_offered = Some(key);
+        self.open_terminal(Some(term::command_of(&block)), window, cx);
+        self.composer.flash = Some(t!("term.offered").into());
     }
 
     // ── the document panel ──
@@ -1288,6 +1329,7 @@ impl Render for Shell {
             }))
             .on_action(cx.listener(|this, _: &ChooseTarget, window, cx| this.open_chooser(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleBrowser, window, cx| this.toggle_browser(window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleTerminal, window, cx| this.toggle_terminal(window, cx)))
             // The browser panel's divider follows the pointer wherever it goes.
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
                 let pressed = e.pressed_button == Some(MouseButton::Left);
@@ -1333,6 +1375,9 @@ impl Render for Shell {
         let sidebar = self.sidebar(window, cx);
         // A document open takes the right side; closed, the browser is back.
         let doc = (self.screen == Screen::Chat).then(|| views::doc::panel(self, window, cx)).flatten();
+        // Then the terminal, sized to the panel as the window is now.
+        views::terminal::fit(self, window);
+        let doc = doc.or_else(|| (self.screen == Screen::Chat).then(|| views::terminal::panel(self, window, cx)).flatten());
         let browser = (doc.is_none() && self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
         root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(self.panes.body.clone().cached(StyleRefinement::default().flex_1().min_w_0().h_full())).children(doc).children(browser))
             // The title bar's fixed buttons, by the traffic lights, over the
@@ -1436,6 +1481,7 @@ fn window_bindings() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("cmd-b", ToggleBoard, None),
         KeyBinding::new("cmd-shift-b", ToggleBrowser, None),
+        KeyBinding::new("ctrl-`", ToggleTerminal, None),
         KeyBinding::new("cmd-\\", ToggleSidebar, None),
         KeyBinding::new("cmd-n", NewMessage, None),
         KeyBinding::new("cmd-k", SearchAll, None),
