@@ -86,7 +86,13 @@ impl Shell {
     pub fn announce(&mut self, alerts: Vec<Alert>, window: &Window, cx: &mut Context<Self>) {
         let pings = self.remembered.pings;
         let alerts: Vec<Alert> = notify::only_awaited(alerts, &self.bell.awaiting).into_iter().filter(|a| pings.wants(a)).collect();
-        if alerts.is_empty() || window.is_window_active() {
+        // In sight, the cards say it — but a browser waiting for the person's
+        // hands is told even then, unless that very page is on screen: the
+        // person may be reading elsewhere while a member waits on them.
+        let active = window.is_window_active();
+        let browser = self.browser.read(cx);
+        let alerts: Vec<Alert> = alerts.into_iter().filter(|a| !active || matches!(a, Alert::Browser { page, .. } if !browser.showing(*page))).collect();
+        if alerts.is_empty() {
             return;
         }
         if notify::explain_now(self.bell.permission, self.remembered.notify_later) && !self.overlay_open() {
