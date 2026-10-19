@@ -285,7 +285,7 @@ impl Core {
         let keys = config.keys();
         let aad = config.id.clone();
         let close = Action::Relay(json!({ "type": "pair_close", "slot": pairing.slot }));
-        let answer = |body: Value| seal::seal(Kind::PairAnswer, &request.key, Some(&keys), Some(&pairing.secret), &aad, body.to_string().as_bytes());
+        let answer = |body: Value| seal::seal(Kind::PairAnswer, &request.key, Some(&keys), Some(&pairing.secret), &aad, super::plaintext(body).as_bytes());
         if !approve {
             let mut out = Vec::new();
             if let Ok(data) = answer(json!({ "type": "refused" })) {
@@ -422,7 +422,7 @@ impl Core {
             plain["squad"] = json!(squad);
         }
         let aad = format!("{}:{device}", config.id);
-        let data = seal::seal(Kind::ToDevice, &to, Some(&config.keys()), None, &aad, plain.to_string().as_bytes()).ok()?;
+        let data = seal::seal(Kind::ToDevice, &to, Some(&config.keys()), None, &aad, super::plaintext(plain).as_bytes()).ok()?;
         let frame = json!({ "type": "send", "device": device, "data": data });
         // The relay drops a frame past its limit and says only "frame is too
         // large": dropped here instead, said once for what it was.
@@ -825,7 +825,7 @@ impl Core {
             // Shown, not counted: seq 0.
             let plain = json!({ "ts": super::now_ms(), "seq": 0, "squad": squad, "rpc": Message::event(&event) });
             let aad = format!("{}:{}", config.id, device.id);
-            let Ok(data) = seal::seal(Kind::ToDevice, &device.key, Some(&config.keys()), None, &aad, plain.to_string().as_bytes()) else {
+            let Ok(data) = seal::seal(Kind::ToDevice, &device.key, Some(&config.keys()), None, &aad, super::plaintext(plain).as_bytes()) else {
                 continue;
             };
             out.push(Action::Relay(json!({
@@ -861,7 +861,7 @@ fn admit(config: &mut Config, request: Request, secret: &[u8; 32], slot: &str, n
     let id = super::hex(&super::random::<16>());
     let token = super::b64(&super::random::<32>());
     let body = json!({ "type": "paired", "device": id, "token": token, "name": name });
-    let data = seal::seal(Kind::PairAnswer, &request.key, Some(&config.keys()), Some(secret), &config.id, body.to_string().as_bytes()).ok()?;
+    let data = seal::seal(Kind::PairAnswer, &request.key, Some(&config.keys()), Some(secret), &config.id, super::plaintext(body).as_bytes()).ok()?;
     config.devices.retain(|d| d.name != request.name || d.key != request.key);
     config.devices.push(Device { id: id.clone(), name: request.name, platform: request.platform, key: request.key, added: now / 1000, seen: 0 });
     Some(vec![

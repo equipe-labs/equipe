@@ -97,6 +97,14 @@ pub fn relay_url(config: Option<&Config>) -> String {
         .to_owned()
 }
 
+/// The JSON a sealed frame carries: keys sorted, so the same value makes the
+/// same bytes however serde_json was built (`preserve_order`, which gpui turns
+/// on in a workspace build, would keep them in insertion order).
+pub fn plaintext(mut value: serde_json::Value) -> String {
+    value.sort_all_objects();
+    value.to_string()
+}
+
 pub fn b64(bytes: &[u8]) -> String {
     use base64::Engine as _;
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
