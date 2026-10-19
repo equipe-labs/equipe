@@ -42,6 +42,8 @@ use crate::eta;
 use crate::journal::{self, Journal, SessionRecord, TicketWork};
 use crate::permissions;
 use crate::roles::{self, Teammate};
+use crate::routines;
+use equipe_protocol::routines::Routine;
 use crate::squad_home;
 use crate::squad_memory;
 use crate::steers;
@@ -76,6 +78,8 @@ const BRIEF_REPLY_CHARS: usize = 400;
 
 /// Closed tickets a snapshot still shows, newest first.
 const CLOSED_TICKETS_SHOWN: usize = 20;
+/// The routines one squad may keep.
+const MAX_ROUTINES: usize = 20;
 
 /// The MCP server equipe gives members; its tools are `mcp__equipe__*`.
 const MCP_SERVER: &str = "equipe";
@@ -1128,6 +1132,8 @@ impl Runtime {
                 self.let_helpers_go().await;
                 pulse.step("minute tick: stale tickets");
                 self.tidy_check();
+                pulse.step("minute tick: routines");
+                self.run_due_routines().await;
                 pulse.step("minute tick: engines");
                 self.engines_tick().await;
                 // Work that reached main outside equipe: every ten minutes is soon
@@ -1485,6 +1491,12 @@ impl Runtime {
             }
             Command::AddProject { squad, path } => self.add_project(squad, path),
             Command::SetHq { squad, path } => self.set_hq(&squad, path),
+            Command::SaveRoutine { squad, routine } => self.save_routine(&squad, routine),
+            Command::DeleteRoutine { squad, id } => self.delete_routine(&squad, id),
+            Command::RunRoutine { squad, id } => {
+                let now = now_secs();
+                self.run_routine(&squad, id, now).await;
+            }
             Command::Focus { squad, project } => match project {
                 Some(name) => {
                     self.focus.insert(squad, name);
@@ -1716,6 +1728,109 @@ runbooks and reports live there, and work across the projects or on running them
             None => "The person took the HQ mark off: no project is the squad's HQ now.".to_owned(),
         };
         self.brief_pm(squad, line, None);
+    }
+
+    // ── routines ──
+
+    fn routines(&mut self, squad: &str) -> Vec<Routine> {
+        self.journal(squad).map(Journal::routines).unwrap_or_default()
+    }
+
+    /// Kept, and every screen of the squad has them again.
+    fn keep_routines(&mut self, squad: &str, routines: Vec<Routine>) {
+        if let Some(Err(err)) = self.journal(squad).map(|j| j.set_routines(&routines)) {
+            crate::daemon_log!("equipe: {squad}: the routines weren't kept: {err}");
+        }
+        self.publish(Event::RoutinesChanged { squad: squad.to_owned(), routines });
+    }
+
+    /// The person makes or changes a routine: numbered if new, its next run worked out.
+    fn save_routine(&mut self, squad: &str, mut routine: Routine) {
+        routine.title = routine.title.trim().to_owned();
+        routine.prompt = routine.prompt.trim().to_owned();
+        if routine.title.is_empty() || routine.prompt.is_empty() || !routine.when.is_valid() {
+            let message = say!(self, "error.routine_invalid");
+            return self.squad_error(squad, message);
+        }
+        let mut all = self.routines(squad);
+        routine.next_run = Some(routines::next_run(routine.when, now_secs(), &routines::Local));
+        let full = all.len() >= MAX_ROUTINES;
+        match all.iter_mut().find(|r| r.id == routine.id && routine.id != 0) {
+            Some(old) => {
+                routine.last_run = old.last_run;
+                *old = routine;
+            }
+            None if full => {
+                let message = say!(self, "error.routines_full", max = MAX_ROUTINES);
+                return self.squad_error(squad, message);
+            }
+            None => {
+                routine.id = all.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+                routine.last_run = None;
+                all.push(routine);
+            }
+        }
+        self.keep_routines(squad, all);
+    }
+
+    fn delete_routine(&mut self, squad: &str, id: u32) {
+        let mut all = self.routines(squad);
+        let before = all.len();
+        all.retain(|r| r.id != id);
+        if all.len() != before {
+            self.keep_routines(squad, all);
+        }
+    }
+
+    /// A routine handed to the PM as the person's message — after its turn
+    /// if one runs — about the HQ when the squad has one. `false`: no PM to hand it to.
+    async fn run_routine(&mut self, squad: &str, id: u32, now: u64) -> bool {
+        let mut all = self.routines(squad);
+        let Some(routine) = all.iter().find(|r| r.id == id).cloned() else {
+            return false;
+        };
+        let Some(pm) = self.pm_of(squad) else {
+            return false;
+        };
+        crate::daemon_log!("equipe: {squad}: routine {} ({}) handed to the PM", routine.id, routine.title);
+        let about = self.hq(squad).map(|hq| board::project_name(&hq));
+        let text = routines::message(&routine);
+        self.said_about = Some(about);
+        match self.sessions.get(&pm) {
+            Some(s) if s.is_working() => self.leave_memo(pm, text),
+            _ => self.submit(pm, text).await,
+        }
+        self.said_about = None;
+        if let Some(r) = all.iter_mut().find(|r| r.id == id) {
+            r.last_run = Some(now);
+            r.next_run = Some(routines::next_run(r.when, now, &routines::Local));
+        }
+        self.keep_routines(squad, all);
+        true
+    }
+
+    /// Each minute: the routines due, run; a run missed for long, let go.
+    async fn run_due_routines(&mut self) {
+        let now = now_secs();
+        let squads: Vec<String> = self.journals.keys().cloned().collect();
+        for squad in squads {
+            let all = self.routines(&squad);
+            for r in &all {
+                match routines::due(r, now) {
+                    routines::Due::Run => {
+                        self.run_routine(&squad, r.id, now).await;
+                    }
+                    routines::Due::Skip => {
+                        let mut kept = self.routines(&squad);
+                        if let Some(k) = kept.iter_mut().find(|k| k.id == r.id) {
+                            k.next_run = Some(routines::next_run(k.when, now, &routines::Local));
+                        }
+                        self.keep_routines(&squad, kept);
+                    }
+                    routines::Due::Wait => {}
+                }
+            }
+        }
     }
 
     fn projects(&mut self, squad: &str) -> Vec<PathBuf> {
@@ -5318,7 +5433,9 @@ it back there once they have done it.{again} End your turn now with a short line
         let team_changes = self.team_changes(squad).clone();
         let accepts = self.accepts(squad).clone();
         let hq = self.hq(squad);
+        let routines = self.routines(squad);
         Snapshot {
+            routines,
             team_changes,
             accepts,
             squad: squad.to_owned(),

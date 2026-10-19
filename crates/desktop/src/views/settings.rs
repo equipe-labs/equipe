@@ -189,7 +189,7 @@ fn switch(shell: &Shell, id: &str, on: bool, enabled: bool, flip: impl Fn(&mut S
 }
 
 /// A few fixed choices side by side, the one in use raised.
-fn segmented<T: Copy + PartialEq + 'static>(shell: &Shell, id: &str, options: Vec<(T, String)>, now: T, set: impl Fn(&mut Shell, T, &mut Window, &mut Context<Shell>) + 'static, cx: &mut Context<Shell>) -> AnyElement {
+pub(crate) fn segmented<T: Copy + PartialEq + 'static>(shell: &Shell, id: &str, options: Vec<(T, String)>, now: T, set: impl Fn(&mut Shell, T, &mut Window, &mut Context<Shell>) + 'static, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let set = Rc::new(set);
     let raised = if p.is_dark() { p.side_sel } else { p.raised };

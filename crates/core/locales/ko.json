@@ -141,6 +141,8 @@
   "error.refuse_starts_by_itself": "T-{id}은(는) 담당 멤버가 집어 들 때 시작됩니다. 대신 담당을 정하세요.",
   "error.refuse_under_way": "T-{id}은(는) 진행 중입니다. 취소하거나 다른 멤버에게 넘기세요.",
   "error.refuse_waits_by_member": "T-{id}을(를) 내 차례로 넘기는 건 멤버만 할 수 있습니다.",
+  "error.routine_invalid": "정기 업무에는 이름, 할 일, 올바른 시간이 있어야 해요",
+  "error.routines_full": "정기 업무는 스쿼드마다 {max}개까지예요",
   "error.still_worked_on": "T-{id}은(는) 아직 작업 중입니다 — {name}에게 직접 말하세요.",
   "error.stuck": "데몬이 응답하지 않습니다. {since}부터 {doing} 처리에 머물러 있습니다. `equipe daemon restart`를 실행해 보세요.",
   "error.ticket_name_project": "프로젝트를 골라 주세요. 스쿼드에 여러 개가 있습니다: {names}.",

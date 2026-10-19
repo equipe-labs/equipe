@@ -144,6 +144,8 @@
   "error.refuse_starts_by_itself": "T-{id} starts when its owner picks it up — give it an owner instead.",
   "error.refuse_under_way": "T-{id} is under way — cancel it, or give it to someone else.",
   "error.refuse_waits_by_member": "Only a member puts T-{id} down to wait for you.",
+  "error.routine_invalid": "A routine needs a name, what to do and a valid time",
+  "error.routines_full": "A squad keeps up to {max} routines",
   "error.still_worked_on": "T-{id} is still being worked on — talk to {name} directly.",
   "error.stuck": "The daemon isn't answering: it has been on {doing} since {since}. Try `equipe daemon restart`.",
   "error.ticket_name_project": "Pick the project — the squad has several: {names}.",

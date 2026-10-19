@@ -283,6 +283,8 @@ pub struct Model {
     /// The project that is the squad's HQ, where its operations live: first
     /// among the projects, wherever the others were dragged.
     pub hq: Option<PathBuf>,
+    /// The squad's routines (`protocol::routines`), as the daemon has them.
+    pub routines: Vec<equipe_core::protocol::routines::Routine>,
     /// The squad's mode, for completion's sake.
     pub mode: Mode,
     /// The Claude plan's usage windows, as last reported.
@@ -418,6 +420,7 @@ impl Model {
             projects: Vec::new(),
             project_order: Vec::new(),
             hq: None,
+            routines: Vec::new(),
             mode: Mode::default(),
             plan: None,
             remote: false,
@@ -778,6 +781,7 @@ impl Model {
         self.tickets = snapshot.tickets.clone();
         self.projects = snapshot.projects.clone();
         self.hq = snapshot.hq.clone();
+        self.routines = snapshot.routines.clone();
         self.order_projects();
         self.mode = snapshot.mode;
         self.plan = snapshot.plan;
@@ -870,6 +874,7 @@ impl Model {
             }
             Event::EngineProposalClosed { squad, id, .. } if *squad == self.squad => self.engines.close(*id),
             Event::EngineSwitchingChanged { squad, mode } if *squad == self.squad => self.engines.mode = *mode,
+            Event::RoutinesChanged { squad, routines } if *squad == self.squad => self.routines = routines.clone(),
             Event::ProjectsChanged { squad, projects, hq } if *squad == self.squad => {
                 self.hq = hq.clone();
                 // The one just added, said under the box.

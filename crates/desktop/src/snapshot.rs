@@ -230,6 +230,27 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     }
                     shell.open_overview(cx);
                 }),
+                // Two routines on this screen alone (no daemon asked), the second off.
+                "rseed" => shell.update(cx, |shell, cx| {
+                    use equipe_core::protocol::routines::{Routine, Schedule};
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                    shell.model.routines = vec![
+                        Routine { id: 1, title: "주간 리포트".into(), prompt: "-".into(), when: Schedule::Weekly { weekday: 1, hour: 9, minute: 0 }, on: true, last_run: Some(now - 6 * 86_400), next_run: Some(now + 86_400) },
+                        Routine { id: 2, title: "의존성 점검".into(), prompt: "-".into(), when: Schedule::Weekly { weekday: 5, hour: 16, minute: 0 }, on: false, last_run: None, next_run: Some(now + 4 * 86_400) },
+                    ];
+                    cx.notify();
+                }),
+                // The routine form: `rnew` blank, `rnew:weekly|deps|morning` from a preset.
+                "rnew" => shell.update(cx, |shell, cx| {
+                    use crate::views::routines::Preset;
+                    let preset = match arg.as_str() {
+                        "weekly" => Some(Preset::WeeklyReport),
+                        "deps" => Some(Preset::Dependencies),
+                        "morning" => Some(Preset::Morning),
+                        _ => None,
+                    };
+                    shell.open_routine(None, preset, window, cx);
+                }),
                 // The sidebar this wide: `sidew:210`.
                 "sidew" => shell.update(cx, |shell, cx| {
                     shell.board.sidebar_width = arg.parse().unwrap_or(crate::views::sidebar::WIDTH);

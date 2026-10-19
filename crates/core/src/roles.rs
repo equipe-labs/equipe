@@ -368,6 +368,16 @@ filed in {hq}, and what you learn about the whole goes in its files, not only in
         Some(hq) => format!("{projects} {hq} is the squad's HQ, where the plan across the projects and its operations live."),
         None => projects,
     };
+    // Routines: the person's regular work, handed over on their schedule.
+    let projects = if role.id == PM {
+        format!(
+            "{projects} A message that starts with [Routine · …] is one of the person's routines, set up to come on a \
+schedule: do what it asks as if they had just written it, and keep what it produces where it can be found again{}.",
+            ctx.hq.map(|hq| format!(" — in {hq}")).unwrap_or_default()
+        )
+    } else {
+        projects
+    };
     let pm = ctx.team.iter().find(|m| m.role == PM).map(|m| m.name);
     let reporting = match pm {
         Some(pm) if pm != name => format!(
@@ -703,6 +713,7 @@ mod tests {
         assert!(pm.contains("filed in atinum-hq"), "{pm}");
         let none = charter(role(PM).unwrap(), "pm", &ctx(&team, &projects, true));
         assert!(!none.contains("HQ"), "{none}");
+        assert!(pm.contains("[Routine · …]") && pm.contains("found again — in atinum-hq."), "{pm}");
     }
 
     #[test]

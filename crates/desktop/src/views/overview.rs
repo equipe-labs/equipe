@@ -29,6 +29,8 @@ pub struct OverviewUi {
     /// Each project's newest tag, as last found.
     pub releases: Vec<(PathBuf, Release)>,
     pub asked: Option<Instant>,
+    /// 정기 업무's form and second clicks.
+    pub routines: super::routines::RoutinesUi,
 }
 
 fn now_secs() -> u64 {
@@ -78,7 +80,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let filler = (cards.len() % 2 == 1).then(|| div().flex_1().flex_basis(px(CARD_BASIS)).min_w(px(CARD_MIN)));
     let grid = h_flex().w_full().flex_wrap().gap_3().items_start().children(cards.iter().map(|c| card(shell, c, now, cx))).children(filler);
     let empty = shell.model.projects.is_empty().then(|| div().py_8().text_size(px(13.)).text_color(p.muted).child(t!("overview.no_projects")));
-    let column = v_flex().w_full().max_w(px(1040.)).px_6().pt_5().pb_10().gap_5().child(tiles).children(hint).children(empty).child(grid);
+    let column = v_flex().w_full().max_w(px(1040.)).px_6().pt_5().pb_10().gap_5().child(tiles).children(hint).child(super::routines::section(shell, cx)).children(empty).child(grid);
     v_flex()
         .id("overview")
         .flex_1()

@@ -144,6 +144,8 @@
   "error.refuse_starts_by_itself": "T-{id} empieza cuando su responsable lo toma: asígnale uno en su lugar.",
   "error.refuse_under_way": "T-{id} está en curso: cancélalo o pásaselo a otra persona.",
   "error.refuse_waits_by_member": "Solo un miembro deja T-{id} esperando por ti.",
+  "error.routine_invalid": "Una rutina necesita un nombre, una tarea y una hora válida",
+  "error.routines_full": "Un equipo guarda hasta {max} rutinas",
   "error.still_worked_on": "T-{id} todavía está en curso: habla directamente con {name}.",
   "error.stuck": "El daemon no responde: lleva en {doing} desde las {since}. Prueba `equipe daemon restart`.",
   "error.ticket_name_project": "Elige el proyecto: el equipo tiene varios: {names}.",
