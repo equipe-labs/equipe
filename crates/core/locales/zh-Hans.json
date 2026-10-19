@@ -198,6 +198,7 @@
   "news.merge_declined": "你没有接受并合并 {tickets} — 保持原样",
   "news.merge_conflict_owner": "T-{id} 与 main 冲突：已请其合入 main 并解决冲突。",
   "news.merged": "你把 T-{id} · {title} 合并进了 {branch}。",
+  "news.merged_local": "已将 T-{id} · {title} 合并到 {branch}。此项目没有远程仓库，因此跳过了推送。",
   "news.merged_pushed": "你把 T-{id} · {title} 合并进了 {branch} 并已推送。",
   "news.person_created": "你把 T-{id} 放上看板，交给了 {name} · {title}。",
   "news.person_created_unowned": "你把 T-{id} 放上了看板，由 PM 决定谁来做 · {title}。",

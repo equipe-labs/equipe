@@ -198,6 +198,7 @@
   "news.merge_declined": "{tickets} の承認とマージはしませんでした — そのままです",
   "news.merge_conflict_owner": "T-{id} が main と衝突したため、main を取り込んで衝突を解くよう頼みました。",
   "news.merged": "T-{id} · {title} を {branch} にマージしました。",
+  "news.merged_local": "T-{id} · {title} を {branch} にマージしました。このプロジェクトにはリモートがないため、プッシュは省きました。",
   "news.merged_pushed": "T-{id} · {title} を {branch} にマージしてプッシュしました。",
   "news.person_created": "T-{id} をボードに追加し、{name} に任せました · {title}。",
   "news.person_created_unowned": "T-{id} をボードに追加しました。担当は PM が決めます · {title}。",

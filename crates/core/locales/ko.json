@@ -198,6 +198,7 @@
   "news.merge_declined": "{tickets} 수락·머지하지 않았어요 — 그대로 둬요",
   "news.merge_conflict_owner": "T-{id}이(가) main과 충돌해서, main을 받아 충돌을 푸는 일을 맡겼어요.",
   "news.merged": "T-{id} · {title}을(를) {branch}에 병합했습니다.",
+  "news.merged_local": "T-{id} · {title}을(를) {branch}에 병합했습니다. 이 프로젝트엔 원격 저장소가 없어 푸시는 건너뛰었어요.",
   "news.merged_pushed": "T-{id} · {title}을(를) {branch}에 병합하고 푸시했습니다.",
   "news.person_created": "T-{id}을(를) 보드에 올리고 {name}에게 맡겼습니다 · {title}.",
   "news.person_created_unowned": "T-{id}을(를) 보드에 올렸습니다. 담당은 PM이 정합니다 · {title}.",

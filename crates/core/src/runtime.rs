@@ -3920,6 +3920,11 @@ for one project goes to it as tickets for its owners, with that project — and 
                 line.push_str(" and pushed it");
                 news = "news.merged_pushed";
             }
+            // A project kept on this machine only: merged is all there is to do.
+            Some(Err(err)) if err == worktree::NO_ORIGIN => {
+                line.push_str(" (it has no remote to push to)");
+                news = "news.merged_local";
+            }
             Some(Err(err)) => {
                 let message = say!(self, "error.not_pushed", branch = main, err = err);
                 self.squad_error(squad, message);

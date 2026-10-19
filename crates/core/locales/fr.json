@@ -201,6 +201,7 @@
   "news.merge_declined": "Vous n’avez ni accepté ni fusionné {tickets} : rien ne change",
   "news.merge_conflict_owner": "T-{id} est en conflit avec main : il faut intégrer main et résoudre le conflit.",
   "news.merged": "Vous avez fusionné T-{id} · {title} dans {branch}.",
+  "news.merged_local": "T-{id} · {title} fusionné dans {branch}. Ce projet n'a pas de dépôt distant : rien à pousser.",
   "news.merged_pushed": "Vous avez fusionné T-{id} · {title} dans {branch} et l'avez poussé.",
   "news.person_created": "Vous avez mis T-{id} au tableau pour {name} · {title}.",
   "news.person_created_unowned": "Vous avez mis T-{id} au tableau ; le PM choisit qui s'en charge · {title}.",

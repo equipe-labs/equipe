@@ -360,9 +360,21 @@ pub fn merge_into_main(repo: &Path, branch: &str, message: &str) -> Result<Strin
 /// Push the main branch to `origin`.
 pub fn push_main(repo: &Path) -> Result<String> {
     off_the_loop("push_main");
+    if !has_origin(repo) {
+        return Err(NO_ORIGIN.into());
+    }
     let main = main_branch(repo)?;
     git_within(repo, &["push", "-q", "origin", &main], PUSH_TIMEOUT)?;
     Ok(main)
+}
+
+/// What `push_main` says when the repository has nowhere to push to: a
+/// local-only project, merged and kept here, not a failure.
+pub const NO_ORIGIN: &str = "no remote named origin";
+
+/// Whether `repo` has a remote named `origin` to push main to.
+pub fn has_origin(repo: &Path) -> bool {
+    git(repo, &["remote", "get-url", "origin"]).is_ok_and(|url| !url.trim().is_empty())
 }
 
 /// Run a git command that makes a commit, as the user — or as equipe when no
@@ -857,6 +869,13 @@ mod tests {
         assert!(merge_into_main(&repo, &one, "merge").unwrap_err().contains("nothing was merged"));
         assert_eq!(git(&repo, &["rev-parse", "main"]).unwrap(), head);
         assert_eq!(std::fs::read_to_string(repo.join("README.md")).unwrap(), "mine\n");
+    }
+
+    #[test]
+    fn a_project_with_no_remote_has_nothing_to_push_to() {
+        let repo = repo();
+        assert!(!has_origin(&repo));
+        assert_eq!(push_main(&repo).unwrap_err(), NO_ORIGIN);
     }
 
     #[test]

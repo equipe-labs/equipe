@@ -201,6 +201,7 @@
   "news.merge_declined": "No aceptaste ni fusionaste {tickets}: queda como está",
   "news.merge_conflict_owner": "T-{id} choca con main: se pidió traer main y resolver el conflicto.",
   "news.merged": "Fusionaste T-{id} · {title} en {branch}.",
+  "news.merged_local": "T-{id} · {title} fusionado en {branch}. Este proyecto no tiene remoto, así que no había adónde subirlo.",
   "news.merged_pushed": "Fusionaste T-{id} · {title} en {branch} y lo subiste.",
   "news.person_created": "Pusiste T-{id} en el tablero para {name} · {title}.",
   "news.person_created_unowned": "Pusiste T-{id} en el tablero; el PM decide quién lo hace · {title}.",

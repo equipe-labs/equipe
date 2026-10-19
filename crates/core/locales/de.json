@@ -201,6 +201,7 @@
   "news.merge_declined": "{tickets} nicht angenommen und nicht gemergt — bleibt, wie es ist",
   "news.merge_conflict_owner": "T-{id} kollidiert mit main: main hereinholen und den Konflikt lösen.",
   "news.merged": "Du hast T-{id} · {title} in {branch} gemergt.",
+  "news.merged_local": "T-{id} · {title} in {branch} gemergt. Dieses Projekt hat kein Remote, also gab es nichts zu pushen.",
   "news.merged_pushed": "Du hast T-{id} · {title} in {branch} gemergt und gepusht.",
   "news.person_created": "Du hast T-{id} für {name} aufs Board gesetzt · {title}.",
   "news.person_created_unowned": "Du hast T-{id} aufs Board gesetzt – der PM entscheidet, wer es macht · {title}.",
