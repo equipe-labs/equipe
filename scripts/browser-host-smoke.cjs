@@ -270,6 +270,7 @@ const freePort = () => new Promise((resolve) => {
   // Nobody watching any more: its own size again.
   op({ op: 'unfit', page });
   const unfitted = await until('its own size again', () => frames.slice(-3).find((f) => f.header.page === page && f.header.cssW === own?.cssW));
+  if (!unfitted) console.log('own', JSON.stringify(own), JSON.stringify(frames.slice(-3).map((f) => f.header)));
   check(!!unfitted, 'unwatched, the member\'s page is at its own size again');
   await mcp('browser_navigate', { url: `${base}/signin` });
   const signin = await until('the sign-in page', () => lastTabs(lane)?.pages.find((p) => p.url.endsWith('/signin') && p.signals?.password));
