@@ -1644,6 +1644,8 @@
   "turn.closed": "もう待っていません",
   "turn.count.other": "{count}件",
   "turn.done": "済み",
+  "turn.steps": "{done} / {total} 完了",
+  "turn.next": "次のステップ",
   "turn.file_copy": "この Mac にはありません — クリックでパスをコピー",
   "turn.file_look": "クリックでクイックルック · ⌥クリックで Finder に表示",
   "turn.free_placeholder": "{name} への追加の一言",

@@ -66,6 +66,9 @@ pub struct TurnUi {
     pub free: HashMap<TicketId, Entity<TextareaState>>,
     /// Each ask's pick, by ticket.
     pub picks: HashMap<TicketId, HashMap<usize, Pick>>,
+    /// The step the person opened (to answer again, or ahead): else the first
+    /// one not yet answered is the one open.
+    pub open: HashMap<TicketId, usize>,
     /// The keys Tab goes through with the boxes (the send button's ask: none, `usize::MAX`).
     keys: HashMap<(TicketId, usize, Slot), FocusHandle>,
     subscriptions: HashMap<(TicketId, usize, u8), Subscription>,
@@ -100,6 +103,8 @@ pub struct Card {
     pub answered: Option<Answered>,
     pub can_send: bool,
     pub now: u64,
+    /// The one step open, answered in place; the rest are a line each.
+    pub current: Option<usize>,
 }
 
 impl Card {
@@ -118,6 +123,7 @@ impl Card {
         let free = shell.turn.free.get(&id).cloned();
         let picks = shell.turn.picks.get(&id).cloned().unwrap_or_default();
         let answers = shell.turn_answers(id, &asks, cx);
+        let current = shell.turn.open.get(&id).copied().filter(|n| *n < asks.len()).or_else(|| answers.replies.iter().position(|r| r.is_empty()));
         let can_send = rules::can_send(&answers) && shell.can_act();
         let keys = shell.turn.keys.iter().filter(|((t, ..), _)| *t == id).map(|((_, n, slot), f)| ((*n, *slot), f.clone())).collect();
         let who = t.and_then(|t| t.assignee.clone().or(t.owner.clone())).map(|name| {
@@ -143,6 +149,7 @@ impl Card {
             answered,
             can_send,
             now: crate::state::now_unix(),
+            current,
         }))
     }
 
@@ -307,7 +314,16 @@ fn boxed(p: Palette, field: &Entity<TextareaState>, size: f32) -> Div {
 fn pending(card: &Card, d: &Draw<'_>, cx: &mut App) -> AnyElement {
     let p = d.p;
     let key = d.key;
-    let items: Vec<AnyElement> = card.asks.iter().enumerate().map(|(n, ask)| item(card, d, n, ask, cx)).collect();
+    // One step at a time: the open one in full, the others a line each —
+    // answered ones with what they say, the ones ahead to open early.
+    let one_at_a_time = d.place != Place::Side && card.asks.len() > 1;
+    let items: Vec<AnyElement> = card
+        .asks
+        .iter()
+        .enumerate()
+        .map(|(n, ask)| if !one_at_a_time || card.current == Some(n) { item(card, d, n, ask, cx) } else { line(card, d, n, ask) })
+        .collect();
+    let progress = one_at_a_time.then(|| steps_bar(card, d));
     let order = card.tab_order(cx);
     let id = card.ticket;
     let handle = d.handle.clone();
@@ -335,7 +351,8 @@ fn pending(card: &Card, d: &Draw<'_>, cx: &mut App) -> AnyElement {
         })
         .when(d.place == Place::Conversation, |c| c.child(header(card, d)))
         .children(card.why.clone().filter(|_| d.place == Place::Conversation).map(|why| div().mt(px(-6.)).text_size(px(12.5)).line_height(px(18.)).text_color(p.muted).child(why)))
-        .child(v_flex().gap(px(18.)).children(items))
+        .children(progress)
+        .child(v_flex().gap(if one_at_a_time { px(6.) } else { px(18.) }).children(items))
         .children(free)
         .when(answering, |c| c.child(foot(card, d)));
     match d.place {
@@ -352,6 +369,63 @@ fn pending(card: &Card, d: &Draw<'_>, cx: &mut App) -> AnyElement {
             .into_any_element(),
         _ => body.into_any_element(),
     }
+}
+
+/// How far along the steps are: a thin bar and `2 / 5`.
+fn steps_bar(card: &Card, d: &Draw<'_>) -> impl IntoElement {
+    let p = d.p;
+    let total = card.asks.len().max(1);
+    let done = card.replies.iter().filter(|r| !r.is_empty()).count();
+    let share = done as f32 / total as f32;
+    h_flex()
+        .gap_2()
+        .items_center()
+        .child(div().flex_1().h(px(4.)).rounded_full().bg(p.hair).overflow_hidden().child(div().h_full().w(relative(share)).rounded_full().bg(d.tones.added)))
+        .child(div().flex_none().text_size(px(12.)).text_color(p.muted).child(t!("turn.steps", done = done, total = total)))
+}
+
+/// A step that isn't open: its number (✓ when done), its words on one line,
+/// and what it says back when answered. A click opens it.
+fn line(card: &Card, d: &Draw<'_>, n: usize, ask: &str) -> AnyElement {
+    let p = d.p;
+    let id = card.ticket;
+    let reply = card.replies.get(n).cloned().unwrap_or_default();
+    let set = !reply.is_empty();
+    let done = reply == Reply::Done;
+    let words: String = ask.lines().next().unwrap_or_default().replace("**", "").replace('`', "");
+    let handle = d.handle.clone();
+    h_flex()
+        .id(("turn-line", hash(d.key, n)))
+        .w_full()
+        .min_h(px(32.))
+        .px_2()
+        .gap_2p5()
+        .items_center()
+        .rounded(px(R_SM + 2.))
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.wash))
+        .on_click(move |_, window, cx| {
+            handle.update(cx, |shell, cx| shell.turn_open(id, n, window, cx)).ok();
+        })
+        .child(
+            div()
+                .flex_none()
+                .size(px(20.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .border_1()
+                .border_color(if done { d.tones.added } else if set { p.accent } else { p.hair })
+                .when(done, |c| c.bg(Rgba { a: 0.14, ..d.tones.added }))
+                .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(if done { d.tones.added } else { p.text2 })
+                .child(if done { "✓".to_owned() } else { (n + 1).to_string() }),
+        )
+        .child(div().flex_1().min_w_0().truncate().text_size(px(13.5)).text_color(if set { p.muted } else { p.text2 }).child(words))
+        .children(set.then(|| div().flex_none().max_w(relative(0.4)).truncate().text_size(px(12.)).text_color(if done { d.tones.added } else { p.text2 }).child(reply_words(&reply))))
+        .into_any_element()
 }
 
 /// What a pick is called on its button, and what it does, said in its tooltip.
@@ -407,6 +481,14 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
         boxed(p, &field, 14.).when(picked, |c| c.opacity(0.45))
     });
     let choices = answering.then(|| choices(card, d, n, want));
+    // Words typed: a button on to the next step (one at a time only).
+    let typed = matches!(card.replies.get(n), Some(Reply::Text(_)));
+    let next = (answering && typed && card.asks.len() > 1 && card.current == Some(n)).then(|| {
+        let (handle, id) = (d.handle.clone(), card.ticket);
+        ui::button(p, ("turn-next", hash(key, n)), Kind::Primary, t!("turn.next")).on_click(move |_, _, cx| {
+            handle.update(cx, |shell, cx| shell.turn_next(id, cx)).ok();
+        })
+    });
     let note = card.notes.get(n).cloned().flatten().filter(|_| answering).map(|note| boxed(p, &note, 13.));
     let _ = cx;
     h_flex()
@@ -414,7 +496,7 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
         .gap_2p5()
         .items_start()
         .child(number)
-        .child(v_flex().flex_1().min_w_0().gap_2().child(text).children(files).children(field).children(choices).children(note))
+        .child(v_flex().flex_1().min_w_0().gap_2().child(text).children(files).children(field).children(choices).children(note).children(next.map(|b| h_flex().justify_end().child(b))))
         .into_any_element()
 }
 
@@ -709,7 +791,9 @@ impl Shell {
             let subscription = cx.subscribe_in(&field, window, move |this, field, event: &InputEvent, window, cx| match event {
                 InputEvent::PressEnter { secondary: true, .. } => this.turn_send(id, window, cx),
                 InputEvent::Change => {
-                    // Words typed answer it: a pick standing in for them goes.
+                    // Words typed answer it: a pick standing in for them goes,
+                    // and the step stays open while they are typed.
+                    this.turn.open.insert(id, n);
                     if !field.read(cx).value().trim().is_empty()
                         && let Some(picks) = this.turn.picks.get_mut(&id)
                     {
@@ -805,10 +889,31 @@ impl Shell {
         }
     }
 
+    /// Step `n` opened, to answer it again or ahead of the others.
+    pub fn turn_open(&mut self, id: TicketId, n: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.turn.open.insert(id, n);
+        if let Some(field) = self.turn.fields.get(&(id, n)).cloned() {
+            field.update(cx, |s, cx| s.focus(window, cx));
+        }
+        self.chat_remeasure_turn(id, cx);
+        cx.notify();
+    }
+
+    /// The step answered in words is through: on to the next one open.
+    pub fn turn_next(&mut self, id: TicketId, cx: &mut Context<Self>) {
+        self.turn.open.remove(&id);
+        self.chat_remeasure_turn(id, cx);
+        cx.notify();
+    }
+
     /// A pick on ask `n`, or taken back when it was the one picked.
     pub fn turn_pick(&mut self, id: TicketId, n: usize, pick: Pick, window: &mut Window, cx: &mut Context<Self>) {
         let _ = window;
         rules::toggle(self.turn.picks.entry(id).or_default(), n, pick);
+        // Picked: on to the next step not yet answered.
+        if self.turn.picks.get(&id).is_some_and(|p| p.contains_key(&n)) {
+            self.turn.open.remove(&id);
+        }
         self.chat_remeasure_turn(id, cx);
         self.chat_sync(cx);
         cx.notify();

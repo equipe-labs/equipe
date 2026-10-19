@@ -401,10 +401,21 @@ pub fn command_of(code: &str) -> String {
         .join(" && ")
 }
 
+/// Commands only the person can see through: a sign-in that shows a code or
+/// opens a page, a password, a key of their own.
+const THEIRS: &[&str] = &[
+    "gh auth login", "gh auth refresh", "aws sso login", "aws configure", "gcloud auth", "gcloud init", "npm login", "npm adduser", "pnpm login",
+    "yarn npm login", "docker login", "firebase login", "vercel login", "netlify login", "supabase login", "fly auth login", "flyctl auth login",
+    "heroku login", "az login", "op signin", "codex login", "claude login", "wrangler login", "eas login", "expo login", "ssh-keygen", "ssh-copy-id",
+    "passwd", "security unlock-keychain", "notarytool store-credentials", "gpg --full-generate-key",
+];
+
 /// Whether a reply's shell block is one for the person to run themselves:
-/// it asks for the machine's administrator.
+/// it asks for the machine's administrator, or signs them in somewhere.
 pub fn wants_person(code: &str) -> bool {
-    code.split(|c: char| c.is_whitespace() || c == ';' || c == '&' || c == '|').any(|w| w == "sudo")
+    let words: Vec<&str> = code.split(|c: char| c.is_whitespace() || c == ';' || c == '&' || c == '|').filter(|w| !w.is_empty()).collect();
+    let joined = words.join(" ");
+    words.contains(&"sudo") || THEIRS.iter().any(|t| joined.contains(t))
 }
 
 /// The shell blocks in `markdown`: their code, in order.
@@ -454,6 +465,9 @@ mod tests {
         assert!(wants_person(&blocks[0]));
         assert_eq!(command_of(&blocks[0]), "sudo pmset -a sleep 0 && sudo pmset -a womp 1");
         assert!(!wants_person("echo pseudo"));
+        assert!(wants_person("gh  auth login --web"), "a sign-in that shows a code");
+        assert!(wants_person("cd ~/app && npx vercel login"));
+        assert!(!wants_person("gh pr list"));
     }
 
     #[test]

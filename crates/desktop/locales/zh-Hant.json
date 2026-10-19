@@ -1644,6 +1644,8 @@
   "turn.closed": "不再等待",
   "turn.count.other": "{count} 項",
   "turn.done": "已完成",
+  "turn.steps": "已完成 {done} / {total}",
+  "turn.next": "下一步",
   "turn.file_copy": "不在這台 Mac 上 — 按一下拷貝路徑",
   "turn.file_look": "按一下預覽 · ⌥ 按一下在 Finder 中顯示",
   "turn.free_placeholder": "還想對 {name} 說的話",
