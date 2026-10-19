@@ -201,6 +201,8 @@ pub struct Shell {
     /// The document open in the panel at the right, if one is.
     pub(crate) doc: Option<doc::Doc>,
     doc_reads: u64,
+    /// The side panel's edge being dragged: where it began, and the width then.
+    pub(crate) side_drag: Option<(f32, f32)>,
     /// The ticket a `T-n` link asked the board to open.
     pub board_ticket: Option<u32>,
     /// Notifications: what macOS allows, the sheet asking, the reply awaited, the Dock's number.
@@ -313,6 +315,7 @@ impl Shell {
             term_offered: None,
             doc: None,
             doc_reads: 0,
+            side_drag: None,
             board_ticket: None,
             bell: Default::default(),
             update: relaunch::current(),
@@ -1028,7 +1031,7 @@ impl Shell {
         let read = self.doc_reads;
         match &mut self.doc {
             // Read again in place: where it was scrolled to stays.
-            Some(doc) if doc.path == path => doc.read = read,
+            Some(doc) if doc.path == path => (doc.read, doc.folded) = (read, false),
             _ => self.doc = Some(doc::Doc::new(path.clone(), read)),
         }
         let endpoint = self.endpoint.clone();
@@ -1059,6 +1062,26 @@ impl Shell {
         })
         .detach();
         cx.notify();
+    }
+
+    /// The side panel's width now: as the person left it, within the window.
+    pub fn side_width(&self, window: &Window) -> f32 {
+        doc::kept_width(self.remembered.side_width, window.viewport_size().width.into())
+    }
+
+    fn side_released(&mut self, cx: &mut Context<Self>) {
+        if self.side_drag.take().is_some() {
+            self.remembered.save(&equipe_providers::credentials::equipe_home());
+            cx.notify();
+        }
+    }
+
+    /// Folded to a rail at the edge, or open again.
+    pub fn fold_doc(&mut self, folded: bool, cx: &mut Context<Self>) {
+        if let Some(doc) = self.doc.as_mut() {
+            doc.folded = folded;
+            cx.notify();
+        }
     }
 
     pub fn reload_doc(&mut self, cx: &mut Context<Self>) {
@@ -1333,8 +1356,20 @@ impl Render for Shell {
                         this.sidebar_released(cx);
                     }
                 }
+                // The side panel grows as its left edge goes left.
+                if let Some((x0, w0)) = this.side_drag {
+                    if e.pressed_button == Some(MouseButton::Left) {
+                        this.remembered.side_width = Some(w0 + x0 - f32::from(e.position.x));
+                        cx.notify();
+                    } else {
+                        this.side_released(cx);
+                    }
+                }
             }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| this.sidebar_released(cx)))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                this.sidebar_released(cx);
+                this.side_released(cx);
+            }))
             .on_action(cx.listener(|this, _: &ToggleBoard, _, cx| {
                 let next = if this.screen == Screen::Chat { Screen::Board } else { Screen::Chat };
                 this.show(next, cx);

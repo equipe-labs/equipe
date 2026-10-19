@@ -804,6 +804,8 @@
   "doc.reload": "Volver a leer",
   "doc.open": "Abrir en su app",
   "doc.copy_path": "Copiar ruta",
+  "doc.fold": "Plegar el panel",
+  "doc.unfold": "Desplegar {name}",
   "doc.copied": "Ruta copiada",
   "doc.close": "Cerrar",
   "doc.reading": "Leyendo…",

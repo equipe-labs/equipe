@@ -23,6 +23,18 @@ pub fn width(window: f32) -> f32 {
     (window * 0.42).clamp(380., 820.)
 }
 
+/// The width the person dragged it to, kept within the window: the
+/// conversation keeps room to be read.
+pub fn kept_width(dragged: Option<f32>, window: f32) -> f32 {
+    let most = (window - 420.).max(MIN_WIDTH);
+    dragged.map_or_else(|| width(window), |w| w.clamp(MIN_WIDTH, most))
+}
+
+/// The panel's narrowest.
+pub const MIN_WIDTH: f32 = 320.;
+/// Folded: a rail with its name, to open it again.
+pub const RAIL: f32 = 40.;
+
 /// The document in the panel.
 pub struct Doc {
     pub path: PathBuf,
@@ -33,11 +45,13 @@ pub struct Doc {
     pub scroll: gpui_kit::ScrollHandle,
     /// Which read this is: an older one coming back late is dropped.
     pub read: u64,
+    /// Folded to a rail at the window's edge.
+    pub folded: bool,
 }
 
 impl Doc {
     pub fn new(path: PathBuf, read: u64) -> Self {
-        Self { path, text: None, cut: false, scroll: gpui_kit::ScrollHandle::new(), read }
+        Self { path, text: None, cut: false, scroll: gpui_kit::ScrollHandle::new(), read, folded: false }
     }
 
     pub fn name(&self) -> String {
@@ -166,6 +180,14 @@ mod tests {
         assert_eq!(width(1000.), 420.);
         assert_eq!(width(600.), 380.);
         assert_eq!(width(3000.), 820.);
+    }
+
+    #[test]
+    fn a_dragged_width_leaves_the_conversation_room() {
+        assert_eq!(kept_width(None, 1000.), 420.);
+        assert_eq!(kept_width(Some(600.), 1400.), 600.);
+        assert_eq!(kept_width(Some(100.), 1400.), MIN_WIDTH);
+        assert_eq!(kept_width(Some(1300.), 1400.), 980.);
     }
 
     #[test]

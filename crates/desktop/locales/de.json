@@ -804,6 +804,8 @@
   "doc.reload": "Neu lesen",
   "doc.open": "In der App öffnen",
   "doc.copy_path": "Pfad kopieren",
+  "doc.fold": "Panel einklappen",
+  "doc.unfold": "{name} ausklappen",
   "doc.copied": "Pfad kopiert",
   "doc.close": "Schließen",
   "doc.reading": "Wird gelesen…",

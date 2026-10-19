@@ -769,6 +769,8 @@
   "doc.reload": "重新读取",
   "doc.open": "在应用中打开",
   "doc.copy_path": "复制路径",
+  "doc.fold": "收起面板",
+  "doc.unfold": "展开 {name}",
   "doc.copied": "已复制路径",
   "doc.close": "关闭",
   "doc.reading": "正在读取…",

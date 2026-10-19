@@ -769,6 +769,8 @@
   "doc.reload": "読み直す",
   "doc.open": "アプリで開く",
   "doc.copy_path": "パスをコピー",
+  "doc.fold": "パネルを畳む",
+  "doc.unfold": "{name} を開く",
   "doc.copied": "パスをコピーしました",
   "doc.close": "閉じる",
   "doc.reading": "読み込み中…",

@@ -14,9 +14,63 @@ use crate::render::view::Look;
 use crate::theme::{BODY, BODY_LINE, MONO, META, SMALL};
 use crate::ui;
 
+/// The panel's left edge: drag to make it wider or narrower (kept), double-
+/// click for the usual width. Shared by the document and the terminal.
+pub fn edge(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+    let p = shell.palette;
+    let dragging = shell.side_drag.is_some();
+    div()
+        .id("side-edge")
+        .group("side-edge")
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(px(-4.))
+        .w(px(8.))
+        .cursor_col_resize()
+        .child(div().absolute().top_0().bottom_0().left(px(4.)).w(px(1.)).bg(if dragging { p.accent } else { p.hair }).group_hover("side-edge", move |s| s.bg(p.accent).opacity(0.7)))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                if e.click_count >= 2 {
+                    this.remembered.side_width = None;
+                    this.remembered.save(&equipe_providers::credentials::equipe_home());
+                } else {
+                    this.side_drag = Some((f32::from(e.position.x), this.side_width(window)));
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }),
+        )
+}
+
+/// Folded: a rail at the window's edge — its name on the pointer, a click
+/// opens it again.
+fn rail(shell: &Shell, name: String, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    v_flex()
+        .id("doc-rail")
+        .w(px(crate::doc::RAIL))
+        .flex_none()
+        .h_full()
+        .pt_2()
+        .gap_2()
+        .items_center()
+        .border_l_1()
+        .border_color(p.hair)
+        .bg(p.bg)
+        .child(ui::icon_button(p, "doc-unfold", Icon::ArrowLeft, t!("doc.unfold", name = name), None).on_click(cx.listener(|this, _, _, cx| this.fold_doc(false, cx))))
+        .child(div().id("doc-rail-file").cursor_pointer().on_click(cx.listener(|this, _, _, cx| this.fold_doc(false, cx))).child(icon(Icon::FileText, 15., p.muted)))
+        .child(ui::icon_button(p, "doc-rail-close", Icon::X, t!("doc.close"), None).on_click(cx.listener(|this, _, _, cx| this.close_doc(cx))))
+        .into_any_element()
+}
+
 pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let doc = shell.doc.as_ref()?;
     let p = shell.palette;
+    if doc.folded {
+        return Some(rail(shell, doc.name(), cx));
+    }
     let local = !shell.endpoint.is_remote();
     let path = doc.path.display().to_string();
     let bar = h_flex()
@@ -44,6 +98,7 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
             cx.write_to_clipboard(ClipboardItem::new_string(path.clone()));
             crate::render::flash(t!("doc.copied").into(), cx);
         }))
+        .child(ui::icon_button(p, "doc-fold", Icon::ChevronRight, t!("doc.fold"), None).on_click(cx.listener(|this, _, _, cx| this.fold_doc(true, cx))))
         .child(ui::icon_button(p, "doc-close", Icon::X, t!("doc.close"), None).on_click(cx.listener(|this, _, _, cx| this.close_doc(cx))));
     let body: AnyElement = match &doc.text {
         None => div().p_4().flex().items_center().gap_2().text_size(px(SMALL)).text_color(p.muted).child(crate::motion::spinner(13., p.muted)).child(t!("doc.reading")).into_any_element(),
@@ -67,10 +122,11 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
                 .into_any_element()
         }
     };
-    let wide = crate::doc::width(window.viewport_size().width.into());
+    let wide = shell.side_width(window);
     Some(
         v_flex()
             .id("doc-panel")
+            .relative()
             .w(px(wide))
             .flex_none()
             .h_full()
@@ -80,6 +136,7 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
             .bg(p.bg)
             .child(bar)
             .child(div().id("doc-scroll").flex_1().min_h_0().overflow_y_scroll().track_scroll(&doc.scroll).child(body))
+            .child(edge(shell, cx))
             .into_any_element(),
     )
 }
