@@ -103,7 +103,7 @@ fn meter_row(shell: &Shell, m: &Meter, now: i64, cx: &mut Context<Shell>) -> Any
         .h(px(24.))
         .mx_2()
         .px_2()
-        .gap(px(10.))
+        .gap(px(8.))
         .items_center()
         .rounded(px(6.))
         .cursor_pointer()
@@ -112,7 +112,7 @@ fn meter_row(shell: &Shell, m: &Meter, now: i64, cx: &mut Context<Shell>) -> Any
         .child(
             div()
                 .id(SharedString::from(format!("meter-name-{name}")))
-                .w(px(44.))
+                .w(px(42.))
                 .flex_none()
                 .text_size(px(12.))
                 .text_color(if m.read_at.is_some() { p.text2 } else { p.muted })
@@ -135,7 +135,7 @@ fn meter_row(shell: &Shell, m: &Meter, now: i64, cx: &mut Context<Shell>) -> Any
         for window in [equipe_core::protocol::engines::Window::FiveHour, equipe_core::protocol::engines::Window::Weekly] {
             row = row.child(match m.gauges.iter().find(|g| g.window == window) {
                 Some(g) => gauge(p, m, g, now),
-                None => div().flex_1().min_w_0().into_any_element(),
+                None => div().flex_1().min_w(px(54.)).into_any_element(),
             });
         }
     }
@@ -149,15 +149,17 @@ fn gauge(p: Palette, m: &Meter, g: &Gauge, now: i64) -> AnyElement {
     h_flex()
         .id(SharedString::from(format!("gauge-{}-{:?}", rules::engine_name(m.engine), g.window)))
         .flex_1()
-        .min_w_0()
-        .gap(px(5.))
+        // Its label, a sliver of bar and its percent never run into the next.
+        .min_w(px(54.))
+        .overflow_hidden()
+        .gap(px(4.))
         .items_center()
         .tip_at(p, words, None, gpui_kit::base::Placement::Right)
-        .child(div().flex_none().w(px(16.)).text_size(px(10.5)).text_color(p.muted).child(rules::window_short(g.window)))
+        .child(div().flex_none().w(px(14.)).text_size(px(10.5)).text_color(p.muted).child(rules::window_short(g.window)))
         .child(
             div()
                 .flex_1()
-                .min_w(px(14.))
+                .min_w(px(6.))
                 .h(px(4.))
                 .rounded(px(2.))
                 .bg(p.hair)
@@ -167,9 +169,9 @@ fn gauge(p: Palette, m: &Meter, g: &Gauge, now: i64) -> AnyElement {
         .child(
             div()
                 .flex_none()
-                .w(px(30.))
+                .w(px(28.))
                 .text_right()
-                .text_size(px(11.))
+                .text_size(px(10.5))
                 .text_color(if g.tone >= Tone::Low && !m.stale { color } else { p.muted })
                 .when(g.tone >= Tone::Low, |d| d.font_weight(FontWeight::SEMIBOLD))
                 .child(format!("{}%", g.percent)),
