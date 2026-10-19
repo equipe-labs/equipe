@@ -209,6 +209,8 @@ pub struct Shell {
     pub(crate) daemon_update: Option<DaemonUpdate>,
     /// The person closed the banner: not again this launch.
     daemon_update_hidden: bool,
+    /// The banner's "restart now" asked once: the next click restarts.
+    daemon_restart_armed: bool,
     /// The ticket a `T-n` link asked the board to open.
     pub board_ticket: Option<u32>,
     /// Notifications: what macOS allows, the sheet asking, the reply awaited, the Dock's number.
@@ -325,6 +327,7 @@ impl Shell {
             term_drag: None,
             daemon_update: None,
             daemon_update_hidden: false,
+            daemon_restart_armed: false,
             board_ticket: None,
             bell: Default::default(),
             update: relaunch::current(),
@@ -808,6 +811,11 @@ impl Shell {
                         // Settings open on its list: the daemon (maybe another one) is asked again.
                         if attached {
                             this.engines.attached();
+                            // The daemon back on this app's release: the update's line has said its piece.
+                            if this.daemon_update.is_some() && notify::stale_daemon(&this.model.daemon_version, env!("CARGO_PKG_VERSION")).is_none() {
+                                this.daemon_update = None;
+                                this.daemon_restart_armed = false;
+                            }
                             // The projects in the order the person left them on this Mac.
                             let squad = this.model.squad.clone();
                             this.model.project_order = this.remembered.project_orders.iter().find(|(s, _)| *s == squad).map(|(_, n)| n.clone()).unwrap_or_default();
@@ -1314,6 +1322,8 @@ pub enum DaemonUpdate {
     Running,
     /// Installed: the daemon starts again on it once its members are idle.
     Done,
+    /// The person asked for it now, not once the members are idle.
+    Restarting,
     Failed(String),
 }
 
@@ -1327,6 +1337,14 @@ case "$(readlink "$exe" 2>/dev/null)" in
   *) equipe update >/dev/null 2>&1 || curl -fsSL https://github.com/equipe-labs/equipe/releases/latest/download/install.sh | sh >/dev/null 2>&1 || { echo "the update didn't install" >&2; exit 1; } ;;
 esac
 nohup equipe daemon restart --when-idle >/dev/null 2>&1 &
+"#;
+
+/// The restart now, over a member's turn: the restart left waiting for the
+/// members to be idle gives way to one at once (`[i]` so the pattern doesn't
+/// match this script's own shell).
+const RESTART_NOW_SCRIPT: &str = r#"pkill -f 'daemon restart --when-[i]dle' 2>/dev/null
+command -v equipe >/dev/null || PATH=$HOME/.local/bin:$PATH
+nohup equipe daemon restart >/dev/null 2>&1 &
 "#;
 
 impl Shell {
@@ -1345,7 +1363,12 @@ impl Shell {
             Some(DaemonUpdate::Running) => (t!("main.update_daemon_running", place = place), p.text2),
             Some(DaemonUpdate::Done) => (t!("main.update_daemon_done").to_owned(), p.text2),
             Some(DaemonUpdate::Failed(why)) => (t!("main.update_daemon_failed", why = why), p.text),
+            Some(DaemonUpdate::Restarting) => (t!("main.update_daemon_restarting").to_owned(), p.text2),
         };
+        let done = matches!(self.daemon_update, Some(DaemonUpdate::Done));
+        let armed = self.daemon_restart_armed;
+        // Members at work stop mid-turn: the first click says so, the second restarts.
+        let (now_label, now_kind) = if armed { (t!("main.update_daemon_now_sure"), ui::Kind::Danger) } else { (t!("main.update_daemon_now"), ui::Kind::Secondary) };
         let can = matches!(self.daemon_update, None | Some(DaemonUpdate::Failed(_)));
         Some(
             h_flex()
@@ -1360,7 +1383,17 @@ impl Shell {
                 .text_size(px(SMALL))
                 .child(icons::icon(icons::Icon::ArrowUp, 14., p.accent))
                 .child(div().flex_1().min_w_0().text_color(tone).child(words))
-                .when(matches!(self.daemon_update, Some(DaemonUpdate::Running)), |b| b.child(motion::spinner(13., p.muted)))
+                .when(matches!(self.daemon_update, Some(DaemonUpdate::Running | DaemonUpdate::Restarting)), |b| b.child(motion::spinner(13., p.muted)))
+                .when(done, |b| {
+                    b.child(ui::button(p, "restart-daemon-now", now_kind, now_label).on_click(cx.listener(move |this, _, _, cx| {
+                        if armed {
+                            this.restart_daemon_now(cx);
+                        } else {
+                            this.daemon_restart_armed = true;
+                            cx.notify();
+                        }
+                    })))
+                })
                 .when(can, |b| b.child(ui::button(p, "update-daemon", ui::Kind::Primary, t!("main.update_daemon")).on_click(cx.listener(|this, _, _, cx| this.update_daemon(cx)))))
                 .child(ui::icon_button(p, "update-daemon-hide", icons::Icon::X, t!("main.update_daemon_hide"), None).on_click(cx.listener(|this, _, _, cx| {
                     this.daemon_update_hidden = true;
@@ -1372,13 +1405,28 @@ impl Shell {
     /// Update the daemon's machine, off the main thread.
     fn update_daemon(&mut self, cx: &mut Context<Self>) {
         self.daemon_update = Some(DaemonUpdate::Running);
+        self.daemon_restart_armed = false;
+        self.on_daemon_machine(UPDATE_SCRIPT, DaemonUpdate::Done, cx);
+    }
+
+    /// The person's second click: the daemon starts again on the new
+    /// release now, members mid-turn or not; the app reconnects on its own.
+    fn restart_daemon_now(&mut self, cx: &mut Context<Self>) {
+        self.daemon_update = Some(DaemonUpdate::Restarting);
+        self.daemon_restart_armed = false;
+        self.on_daemon_machine(RESTART_NOW_SCRIPT, DaemonUpdate::Restarting, cx);
+    }
+
+    /// A script run where the daemon runs (this Mac, or over SSH), off the
+    /// main thread; `then` is the banner's state once it succeeded.
+    fn on_daemon_machine(&mut self, script: &'static str, then: DaemonUpdate, cx: &mut Context<Self>) {
         let endpoint = self.endpoint.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         std::thread::spawn(move || {
             let done = match &endpoint {
                 Endpoint::Local { .. } => {
                     let path = format!("{}/.local/bin:/opt/homebrew/bin:/usr/local/bin:{}", std::env::var("HOME").unwrap_or_default(), std::env::var("PATH").unwrap_or_default());
-                    match std::process::Command::new("sh").arg("-c").arg(UPDATE_SCRIPT).env("PATH", path).stdin(std::process::Stdio::null()).output() {
+                    match std::process::Command::new("sh").arg("-c").arg(script).env("PATH", path).stdin(std::process::Stdio::null()).output() {
                         Ok(out) if out.status.success() => Ok(()),
                         Ok(out) => Err(String::from_utf8_lossy(&out.stderr).trim().to_owned()),
                         Err(e) => Err(e.to_string()),
@@ -1388,7 +1436,7 @@ impl Shell {
                     .enable_all()
                     .build()
                     .map_err(|e| e.to_string())
-                    .and_then(|rt| rt.block_on(ssh::Launcher::system(None).run(host, UPDATE_SCRIPT)).map(|_| ()).map_err(|f| f.detail().map_or_else(|| f.guide(&endpoint).short, str::to_owned))),
+                    .and_then(|rt| rt.block_on(ssh::Launcher::system(None).run(host, script)).map(|_| ()).map_err(|f| f.detail().map_or_else(|| f.guide(&endpoint).short, str::to_owned))),
             };
             let _ = tx.send(done);
         });
@@ -1396,7 +1444,7 @@ impl Shell {
             let done = rx.await.unwrap_or_else(|_| Err("stopped".into()));
             let _ = this.update(cx, |this, cx| {
                 this.daemon_update = Some(match done {
-                    Ok(()) => DaemonUpdate::Done,
+                    Ok(()) => then,
                     Err(why) => DaemonUpdate::Failed(if why.is_empty() { t!("main.update_daemon_unknown").into() } else { why }),
                 });
                 cx.notify();
