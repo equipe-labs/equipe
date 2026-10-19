@@ -1483,6 +1483,8 @@
   "switch.keep": "这次不变",
   "switch.window_week": "每周",
   "term.title": "终端 · {place}",
+  "term.to_bottom": "移到下方",
+  "term.to_right": "移到右侧",
   "term.again": "重新开始",
   "term.close": "关闭（shell 会结束）",
   "term.tip": "终端",

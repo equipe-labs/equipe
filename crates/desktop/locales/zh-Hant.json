@@ -1483,6 +1483,8 @@
   "switch.keep": "這次不變",
   "switch.window_week": "每週",
   "term.title": "終端機 · {place}",
+  "term.to_bottom": "移到下方",
+  "term.to_right": "移到右側",
   "term.again": "重新開始",
   "term.close": "關閉（shell 會結束）",
   "term.tip": "終端機",

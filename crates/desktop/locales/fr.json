@@ -1528,6 +1528,8 @@
   "switch.keep": "Pas cette fois",
   "switch.window_week": "hebdomadaire",
   "term.title": "Terminal · {place}",
+  "term.to_bottom": "Déplacer en bas",
+  "term.to_right": "Déplacer à droite",
   "term.again": "Recommencer",
   "term.close": "Fermer (le shell se termine)",
   "term.tip": "Terminal",

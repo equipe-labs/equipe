@@ -1483,6 +1483,8 @@
   "switch.keep": "이번엔 그대로",
   "switch.window_week": "주간",
   "term.title": "터미널 · {place}",
+  "term.to_bottom": "아래로 옮기기",
+  "term.to_right": "오른쪽으로 옮기기",
   "term.again": "다시 시작",
   "term.close": "닫기 (셸이 끝나요)",
   "term.tip": "터미널",

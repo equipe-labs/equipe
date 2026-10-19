@@ -163,6 +163,10 @@ pub struct Remembered {
     pub browser_width: Option<f32>,
     /// How wide the document and terminal panel was left, in px.
     pub side_width: Option<f32>,
+    /// The terminal sits under the conversation rather than at its right.
+    pub term_below: bool,
+    /// How tall it was left there, in px.
+    pub term_height: Option<f32>,
     /// What accepting lands, per project (by name), once the person said.
     pub merge_ways: Vec<(String, String)>,
     /// The views the person saved (⌥V), in their order.
@@ -422,6 +426,10 @@ impl Remembered {
                 out.board_split = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("browser-width ") {
                 out.browser_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
+            } else if line.trim() == "term-below" {
+                out.term_below = true;
+            } else if let Some(rest) = line.strip_prefix("term-height ") {
+                out.term_height = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("side-width ") {
                 out.side_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
             } else if let Some(rest) = line.strip_prefix("recent ssh ")
@@ -451,6 +459,12 @@ impl Remembered {
         }
         if let Some(width) = self.side_width {
             text.push_str(&format!("side-width {width:.0}\n"));
+        }
+        if self.term_below {
+            text.push_str("term-below\n");
+        }
+        if let Some(height) = self.term_height {
+            text.push_str(&format!("term-height {height:.0}\n"));
         }
         if let Some(width) = self.sidebar_width {
             text.push_str(&format!("sidebar-width {width:.0}\n"));

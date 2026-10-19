@@ -203,6 +203,8 @@ pub struct Shell {
     doc_reads: u64,
     /// The side panel's edge being dragged: where it began, and the width then.
     pub(crate) side_drag: Option<(f32, f32)>,
+    /// The terminal's top edge being dragged (under the conversation): where it began, the height then.
+    pub(crate) term_drag: Option<(f32, f32)>,
     /// The daemon's machine being brought up to this app's release.
     pub(crate) daemon_update: Option<DaemonUpdate>,
     /// The person closed the banner: not again this launch.
@@ -320,6 +322,7 @@ impl Shell {
             doc: None,
             doc_reads: 0,
             side_drag: None,
+            term_drag: None,
             daemon_update: None,
             daemon_update_hidden: false,
             board_ticket: None,
@@ -1461,6 +1464,15 @@ impl Render for Shell {
                         this.sidebar_released(cx);
                     }
                 }
+                // The terminal below grows as its top edge goes up.
+                if let Some((y0, h0)) = this.term_drag {
+                    if e.pressed_button == Some(MouseButton::Left) {
+                        this.remembered.term_height = Some(h0 + y0 - f32::from(e.position.y));
+                        cx.notify();
+                    } else if this.term_drag.take().is_some() {
+                        this.remembered.save(&equipe_providers::credentials::equipe_home());
+                    }
+                }
                 // The side panel grows as its left edge goes left.
                 if let Some((x0, w0)) = this.side_drag {
                     if e.pressed_button == Some(MouseButton::Left) {
@@ -1474,6 +1486,10 @@ impl Render for Shell {
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
                 this.sidebar_released(cx);
                 this.side_released(cx);
+                if this.term_drag.take().is_some() {
+                    this.remembered.save(&equipe_providers::credentials::equipe_home());
+                    cx.notify();
+                }
             }))
             .on_action(cx.listener(|this, _: &ToggleBoard, _, cx| {
                 let next = if this.screen == Screen::Chat { Screen::Board } else { Screen::Chat };
@@ -1528,10 +1544,15 @@ impl Render for Shell {
         // A document open takes the right side; closed, the browser is back.
         let doc = (self.screen == Screen::Chat).then(|| views::doc::panel(self, window, cx)).flatten();
         // Then the terminal, sized to the panel as the window is now.
-        views::terminal::fit(self, window);
-        let doc = doc.or_else(|| (self.screen == Screen::Chat).then(|| views::terminal::panel(self, window, cx)).flatten());
+        views::terminal::fit(self, window, cx);
+        let terminal = (self.screen == Screen::Chat).then(|| views::terminal::panel(self, window, cx)).flatten();
+        // Under the conversation, or at its right where the document isn't.
+        let (below, terminal) = if self.remembered.term_below { (terminal, None) } else { (None, terminal) };
+        let doc = doc.or(terminal);
         let browser = (doc.is_none() && self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
-        root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(self.panes.body.clone().cached(StyleRefinement::default().flex_1().min_w_0().h_full())).children(doc).children(browser))
+        let body = self.panes.body.clone().cached(StyleRefinement::default().flex_1().min_w_0().min_h_0());
+        let middle = v_flex().flex_1().min_w_0().h_full().child(body).children(below);
+        root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(middle).children(doc).children(browser))
             // The title bar's fixed buttons, by the traffic lights, over the
             // sidebar or the header alike: the same place whatever slides.
             .child(views::sidebar::title_buttons(self, cx))

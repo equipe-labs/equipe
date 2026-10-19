@@ -1483,6 +1483,8 @@
   "switch.keep": "今回はそのまま",
   "switch.window_week": "週間",
   "term.title": "ターミナル · {place}",
+  "term.to_bottom": "下に移動",
+  "term.to_right": "右に移動",
   "term.again": "もう一度開始",
   "term.close": "閉じる (シェルは終了)",
   "term.tip": "ターミナル",
