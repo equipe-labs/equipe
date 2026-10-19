@@ -359,6 +359,9 @@ mod tests {
         png(&design.join("assets/logo.png"));
         let with_logo = stamp(&place);
         assert_ne!(first, with_logo);
+        // Linux stamps a file's time from a coarse clock (a few ms): a save
+        // within it reads as the same time. A person's edits are further apart.
+        std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(design.join(TOKENS), r##"{ "color": { "$type": "color", "bg": { "$value": "#0A0A0C" } } }"##).unwrap();
         assert_ne!(with_logo, stamp(&place), "the same size, saved again");
         std::fs::remove_dir_all(root).unwrap();
