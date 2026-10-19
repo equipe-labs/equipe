@@ -2234,6 +2234,7 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-core-media",
  "objc2-foundation 0.3.2",
+ "objc2-speech",
  "objc2-user-notifications",
  "qrcode",
  "ropey",

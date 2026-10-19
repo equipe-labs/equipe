@@ -2,4 +2,4 @@
 "CFBundleDisplayName" = "equipe";
 "CFBundleName" = "equipe";
 "NSMicrophoneUsageDescription" = "equipe utilise le micro quand vous dictez un message. Le son ne quitte jamais ce Mac.";
-"NSSpeechRecognitionUsageDescription" = "equipe transforme ce que vous dites en texte sur ce Mac et le place dans le champ de message.";
+"NSSpeechRecognitionUsageDescription" = "equipe transforme en texte sur ce Mac ce que vous dites, ou un enregistrement que vous joignez.";

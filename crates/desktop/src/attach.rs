@@ -166,7 +166,7 @@ pub fn check(path: &Path) -> Result<(Kind, u64), String> {
     Ok((kind, meta.len()))
 }
 
-fn file_name(path: &Path) -> String {
+pub(crate) fn file_name(path: &Path) -> String {
     path.file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned())
 }
 
@@ -552,6 +552,8 @@ pub struct Item {
     pub stage: Stage,
     /// The file on this Mac it came from, to offer again in "recent".
     pub origin: Option<PathBuf>,
+    /// A recording being written down on this Mac; its words come as a text file.
+    pub writing: bool,
 }
 
 impl Item {
@@ -638,12 +640,12 @@ impl Strip {
         if !self.has_room() {
             return None;
         }
-        Some(self.push(Item { id: 0, kind: source.kind(), name: source.name(), size: source.size(), thumb: None, meta: Meta::default(), stage: Stage::Preparing, origin: source.path().map(Path::to_owned) }))
+        Some(self.push(Item { id: 0, kind: source.kind(), name: source.name(), size: source.size(), thumb: None, meta: Meta::default(), stage: Stage::Preparing, origin: source.path().map(Path::to_owned), writing: false }))
     }
 
     /// One that can't be attached at all: shown as an error until dismissed.
     pub fn refuse(&mut self, name: &str, kind: Kind, why: String) -> u64 {
-        self.push(Item { id: 0, kind, name: name.to_owned(), size: 0, thumb: None, meta: Meta::default(), stage: Stage::Failed(why), origin: None })
+        self.push(Item { id: 0, kind, name: name.to_owned(), size: 0, thumb: None, meta: Meta::default(), stage: Stage::Failed(why), origin: None, writing: false })
     }
 
     fn get(&mut self, id: u64) -> Option<&mut Item> {
@@ -684,6 +686,11 @@ impl Strip {
         }
     }
 
+    /// Its recording is being written down, or is done. False when it was taken off.
+    pub fn writing(&mut self, id: u64, on: bool) -> bool {
+        self.get(id).map(|item| item.writing = on).is_some()
+    }
+
     pub fn remove(&mut self, id: u64) {
         self.items.retain(|i| i.id != id);
     }
@@ -704,7 +711,7 @@ impl Strip {
 
     /// Something is still on its way: sending now would leave it behind.
     pub fn busy(&self) -> bool {
-        self.items.iter().any(|i| matches!(i.stage, Stage::Preparing | Stage::Sending(_)))
+        self.items.iter().any(|i| i.writing || matches!(i.stage, Stage::Preparing | Stage::Sending(_)))
     }
 
     pub fn ready(&self) -> usize {
@@ -742,7 +749,7 @@ impl Strip {
         self.items.clear();
         for s in saved.iter().take(MAX_ATTACHMENTS) {
             let thumb = s.thumb.clone().map(|png| Arc::new(Image::from_bytes(ImageFormat::Png, png)));
-            self.push(Item { id: 0, kind: s.kind, name: s.name.clone(), size: s.size, thumb, meta: s.meta.clone(), stage: Stage::Ready(s.ready.clone()), origin: s.origin.clone() });
+            self.push(Item { id: 0, kind: s.kind, name: s.name.clone(), size: s.size, thumb, meta: s.meta.clone(), stage: Stage::Ready(s.ready.clone()), origin: s.origin.clone(), writing: false });
         }
     }
 
@@ -1062,6 +1069,19 @@ mod tests {
         }
         strip.dismiss_failed();
         assert_eq!(strip.failed(), 0);
+    }
+
+    #[test]
+    fn a_recording_being_written_down_holds_the_send() {
+        let mut strip = Strip::default();
+        let memo = strip.begin(&Source::File("/u/memo.m4a".into())).unwrap();
+        assert!(strip.writing(memo, true));
+        strip.finish(memo, Ok(ready("/up/memo.m4a")));
+        assert!(strip.busy(), "sent, but its words are still coming");
+        strip.writing(memo, false);
+        assert!(!strip.busy());
+        strip.remove(memo);
+        assert!(!strip.writing(memo, false), "taken off: its words aren't wanted");
     }
 
     #[test]
