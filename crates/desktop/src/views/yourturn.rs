@@ -384,6 +384,32 @@ fn steps_bar(card: &Card, d: &Draw<'_>) -> impl IntoElement {
         .child(div().flex_none().text_size(px(12.)).text_color(p.muted).child(t!("turn.steps", done = done, total = total)))
 }
 
+/// A step's mark: its number (✓ when done) in a ring — the same size for
+/// 1 and 10, the digits centred, two of them a size smaller to fit — so the
+/// words after every mark start in one column.
+fn number(n: usize, done: bool, edge: Rgba, fill: Option<Rgba>, ink: Rgba) -> Div {
+    let words = if done { "✓".to_owned() } else { (n + 1).to_string() };
+    let size = if words.chars().count() > 1 { 9.5 } else { 11. };
+    div()
+        .flex_none()
+        .size(px(NUMBER))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .border_1()
+        .border_color(edge)
+        .when_some(fill, |c, f| c.bg(f))
+        .text_size(px(size))
+        .line_height(px(NUMBER - 2.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(ink)
+        .child(div().text_center().child(words))
+}
+
+/// The ring a step's number sits in.
+const NUMBER: f32 = 22.;
+
 /// A step that isn't open: its number (✓ when done), its words on one line,
 /// and what it says back when answered. A click opens it.
 fn line(card: &Card, d: &Draw<'_>, n: usize, ask: &str) -> AnyElement {
@@ -409,22 +435,13 @@ fn line(card: &Card, d: &Draw<'_>, n: usize, ask: &str) -> AnyElement {
         .on_click(move |_, window, cx| {
             handle.update(cx, |shell, cx| shell.turn_open(id, n, window, cx)).ok();
         })
-        .child(
-            div()
-                .flex_none()
-                .size(px(20.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_full()
-                .border_1()
-                .border_color(if done { d.tones.added } else if set { p.accent } else { p.hair })
-                .when(done, |c| c.bg(Rgba { a: 0.14, ..d.tones.added }))
-                .text_size(px(11.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(if done { d.tones.added } else { p.text2 })
-                .child(if done { "✓".to_owned() } else { (n + 1).to_string() }),
-        )
+        .child(number(
+            n,
+            done,
+            if done { d.tones.added } else if set { p.accent } else { p.hair },
+            done.then_some(Rgba { a: 0.14, ..d.tones.added }),
+            if done { d.tones.added } else { p.text2 },
+        ))
         .child(div().flex_1().min_w_0().truncate().text_size(px(13.5)).text_color(if set { p.muted } else { p.text2 }).child(words))
         .children(set.then(|| div().flex_none().max_w(relative(0.4)).truncate().text_size(px(12.)).text_color(if done { d.tones.added } else { p.text2 }).child(reply_words(&reply))))
         .into_any_element()
@@ -457,21 +474,8 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
     } else {
         (p.hair, None, p.text2)
     };
-    let number = div()
-        .flex_none()
-        .size(px(20.))
-        .mt(px(1.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_full()
-        .border_1()
-        .border_color(edge)
-        .when_some(fill, |c, f| c.bg(f))
-        .text_size(px(11.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(ink)
-        .child(if done { "✓".to_owned() } else { (n + 1).to_string() });
+    // On the first line of its words: their line is 22 high, the mark 22.
+    let number = number(n, done, edge, fill, ink);
     let shown = rules::mark_paths(ask, card.named.get(n).map(Vec::as_slice).unwrap_or_default());
     let quiet = done || matches!(reply, Reply::Yours | Reply::Later);
     let text = super::chat::markdown(p, ("turn-ask", hash(key, n)), &shown, crate::theme::UI, crate::theme::UI_PROSE_LINE, if quiet { p.muted } else { p.text }, &d.handle);

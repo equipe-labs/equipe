@@ -31,6 +31,10 @@ const HEADING: f32 = 30.;
 /// The peek's width, and the window width under which it lies over the list.
 pub const PEEK: f32 = 420.;
 pub const PEEK_BESIDE_FROM: f32 = 1100.;
+/// The narrowest the ticket panel is dragged to.
+pub const PEEK_LEAST: f32 = 320.;
+/// What the list keeps beside a panel dragged wide.
+const LIST_LEAST: f32 = 420.;
 
 /// A question or a note being written about the pick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +121,8 @@ pub struct BoardUi {
     pub peek_width: f32,
     /// A width the peek is held at (the snapshot script's `peekw:`).
     pub peek_held: Option<f32>,
+    /// The ticket panel's edge being dragged: where it was pressed, and its width then.
+    pub peek_drag: Option<(f32, f32)>,
     /// Sends what is held back when its time comes (`Shell::ensure_undo_timer`).
     _undo_timer: Option<Task<()>>,
     /// 티켓's own: menus, the board's drag, the new ticket sheet, the page's edits.
@@ -179,6 +185,7 @@ impl BoardUi {
             list_width: 900.,
             peek_width: PEEK,
             peek_held: None,
+            peek_drag: None,
             _undo_timer: None,
             tk: super::tickets::TicketsUi::new(window, cx),
         }
@@ -1154,12 +1161,45 @@ impl Shell {
         self.board.wide = width >= PEEK_BESIDE_FROM;
         let peek = self.board.view.peek && self.board.wide && self.board.view.page.is_none();
         let side = if self.board.sidebar_hidden { 0. } else { self.board.sidebar_width };
-        // Over the list, it takes no more than the room there is.
-        let room = if self.board.wide { PEEK } else { PEEK.min(width - side) };
-        self.board.peek_width = self.board.peek_held.unwrap_or(room).max(240.);
+        // As wide as the person dragged it, else the usual; beside the list it
+        // leaves the list its room, over it no more than there is.
+        let most = if self.board.wide { width - side - LIST_LEAST } else { width - side };
+        let wanted = self.board.peek_held.or(self.remembered.peek_width).unwrap_or(PEEK);
+        self.board.peek_width = wanted.min(most).max(PEEK_LEAST);
         self.board.list_width = width - side - if peek { self.board.peek_width } else { 0. } - 16.;
         self.note_place();
     }
+}
+
+/// The ticket panel's left edge: drag to make it wider or narrower (kept),
+/// double-click for the usual width.
+fn peek_edge(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+    let p = shell.palette;
+    let dragging = shell.board.peek_drag.is_some();
+    div()
+        .id("peek-edge")
+        .group("peek-edge")
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(px(-4.))
+        .w(px(8.))
+        .cursor_col_resize()
+        .child(div().absolute().top_0().bottom_0().left(px(4.)).w(px(1.)).bg(if dragging { p.accent } else { p.hair }).group_hover("peek-edge", move |s| s.bg(p.accent).opacity(0.7)))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, e: &MouseDownEvent, _, cx| {
+                if e.click_count >= 2 {
+                    this.remembered.peek_width = None;
+                    this.board.peek_held = None;
+                    this.remembered.save(&equipe_providers::credentials::equipe_home());
+                } else {
+                    this.board.peek_drag = Some((f32::from(e.position.x), this.board.peek_width));
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }),
+        )
 }
 
 fn flow_ticket(flow: Flow) -> Option<TicketId> {
@@ -1250,7 +1290,13 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             let list = if shell.tickets_board() { super::tickets::board(shell, cx) } else { list(shell, &rows, pick, cx).into_any_element() };
             let peek = pick.filter(|_| view.peek).map(|need| super::peek::panel(shell, need, cx));
             match (peek, shell.board.wide) {
-                (Some(peek), true) => h_flex().flex_1().min_h_0().items_start().child(list).child(div().w(px(shell.board.peek_width)).h_full().flex_none().border_l_1().border_color(p.hair).child(peek)).into_any_element(),
+                (Some(peek), true) => h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .items_start()
+                    .child(list)
+                    .child(div().relative().w(px(shell.board.peek_width)).h_full().flex_none().border_l_1().border_color(p.hair).child(peek).child(peek_edge(shell, cx)))
+                    .into_any_element(),
                 (Some(peek), false) => div()
                     .flex_1()
                     .min_h_0()
@@ -1259,7 +1305,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                     // Over the list: the pointer, a press and the wheel are
                     // the peek's, at its ends too — the rows under it neither
                     // light up nor scroll.
-                    .child(div().absolute().top_0().right_0().bottom_0().w(px(shell.board.peek_width)).bg(p.bg).border_l_1().border_color(p.hair).shadow_lg().occlude().child(peek))
+                    .child(div().absolute().top_0().right_0().bottom_0().w(px(shell.board.peek_width)).bg(p.bg).border_l_1().border_color(p.hair).shadow_lg().occlude().child(peek).child(peek_edge(shell, cx)))
                     .into_any_element(),
                 (None, _) => list.into_any_element(),
             }
@@ -1759,7 +1805,10 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
     // title · flags · detail · when · time.
     let compact = shell.board.list_width < 720.;
     let show_project = model.focus.is_none() && model.projects.len() > 1;
-    let (flags_w, detail_w, eta_w) = if compact { (72., 120., 44.) } else { (120., 176., 56.) };
+    // Narrower still (a ticket panel dragged wide beside it): the flags and
+    // the estimate go, so what is left is never cut at the edge.
+    let narrow = shell.board.list_width < 560.;
+    let (flags_w, detail_w, eta_w) = if narrow { (0., 96., 0.) } else if compact { (72., 120., 44.) } else { (120., 176., 56.) };
     let project_col = |t: Option<&Ticket>| {
         let color = t.and_then(|t| hue_of(p, model, t));
         let name = t.map(|t| model.ticket_project_name(t).unwrap_or_else(|| t!("board.squad_folder").into()));
