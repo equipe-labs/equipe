@@ -23,6 +23,7 @@ mod convo;
 mod decide;
 mod daemon;
 mod disk;
+mod doc;
 mod design;
 mod failure;
 mod help;
@@ -192,6 +193,9 @@ pub struct Shell {
     pub design: design::DesignUi,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
     pub browser: Entity<BrowserPanel>,
+    /// The document open in the panel at the right, if one is.
+    pub(crate) doc: Option<doc::Doc>,
+    doc_reads: u64,
     /// The ticket a `T-n` link asked the board to open.
     pub board_ticket: Option<u32>,
     /// Notifications: what macOS allows, the sheet asking, the reply awaited, the Dock's number.
@@ -300,6 +304,8 @@ impl Shell {
             settings: views::settings::SettingsUi::new(window, cx),
             design: Default::default(),
             browser,
+            doc: None,
+            doc_reads: 0,
             board_ticket: None,
             bell: Default::default(),
             update: relaunch::current(),
@@ -635,6 +641,8 @@ impl Shell {
         self.sheet = None;
         self.confirm = None;
         self.connecting_shown = false;
+        // Another machine: its files aren't the ones open.
+        self.doc = None;
         self.connecting = views::connect::Connecting::new(std::time::Instant::now());
         // Phones are the daemon's machine's: another machine has its own. A
         // code open closes with the old connection.
@@ -970,6 +978,47 @@ impl Shell {
         self.answer_prompt(askpass::Answer::Text(text), window, cx);
     }
 
+    // ── the document panel ──
+
+    /// Open `path` (on the daemon's machine) in the panel at the right, read
+    /// off the main thread; the same one again is read again.
+    pub fn open_doc(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        self.doc_reads += 1;
+        let read = self.doc_reads;
+        match &mut self.doc {
+            // Read again in place: where it was scrolled to stays.
+            Some(doc) if doc.path == path => doc.read = read,
+            _ => self.doc = Some(doc::Doc::new(path.clone(), read)),
+        }
+        let endpoint = self.endpoint.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || drop(tx.send(doc::read(&endpoint, &path))));
+        cx.spawn(async move |this, cx| {
+            let Ok(got) = rx.await else { return };
+            let _ = this.update(cx, |this, cx| {
+                let Some(doc) = this.doc.as_mut().filter(|d| d.read == read) else { return };
+                match got {
+                    Ok((text, cut)) => (doc.text, doc.cut) = (Some(Ok(text)), cut),
+                    Err(why) => doc.text = Some(Err(why)),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub fn reload_doc(&mut self, cx: &mut Context<Self>) {
+        if let Some(path) = self.doc.as_ref().map(|d| d.path.clone()) {
+            self.open_doc(path, cx);
+        }
+    }
+
+    pub fn close_doc(&mut self, cx: &mut Context<Self>) {
+        self.doc = None;
+        cx.notify();
+    }
+
     /// Show a file the daemon's machine named (an approval's screen). On this
     /// Mac it opens where it is; from another machine it is fetched first, over
     /// the same SSH connection, into a private temp file.
@@ -1282,8 +1331,10 @@ impl Render for Shell {
                 .children(tips::layer(cx));
         }
         let sidebar = self.sidebar(window, cx);
-        let browser = (self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
-        root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(self.panes.body.clone().cached(StyleRefinement::default().flex_1().min_w_0().h_full())).children(browser))
+        // A document open takes the right side; closed, the browser is back.
+        let doc = (self.screen == Screen::Chat).then(|| views::doc::panel(self, window, cx)).flatten();
+        let browser = (doc.is_none() && self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
+        root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(self.panes.body.clone().cached(StyleRefinement::default().flex_1().min_w_0().h_full())).children(doc).children(browser))
             // The title bar's fixed buttons, by the traffic lights, over the
             // sidebar or the header alike: the same place whatever slides.
             .child(views::sidebar::title_buttons(self, cx))
