@@ -88,11 +88,17 @@ fn exists(path: &std::path::Path) -> bool {
 pub fn file_chip(p: Palette, id: (&'static str, u64), written: &str, openable: bool, size: Pixels) -> impl IntoElement + use<> {
     let label = written.to_owned();
     let written = written.to_owned();
+    // No kind of file at its end: a folder.
+    let folder = {
+        let path = links::path_and_line(&written).0.trim_end_matches('/');
+        let name = path.rsplit('/').next().unwrap_or(path);
+        path.contains('/') && !name.contains('.')
+    };
     let resolve = move |cx: &mut App| -> PathBuf {
         let base = cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade()).map(|s| base_dir(s.read(cx))).unwrap_or_default();
         links::resolve(links::path_and_line(&written).0, &base)
     };
-    let (click, locate) = (resolve.clone(), resolve);
+    let (click, locate, add_locate) = (resolve.clone(), resolve.clone(), resolve);
     let accent = p.accent;
     div()
         .id(id)
@@ -129,11 +135,21 @@ pub fn file_chip(p: Palette, id: (&'static str, u64), written: &str, openable: b
                     }
                 })
             };
-            menu.item(item(t!("render.file_look"), Some(Open::Look)))
+            let menu = menu.item(item(t!("render.file_look"), Some(Open::Look)))
                 .item(item(t!("render.file_open"), Some(Open::Edit)))
                 .item(item(t!("render.file_reveal"), Some(Open::Reveal)))
                 .separator()
-                .item(item(t!("render.file_copy_path"), None))
+                .item(item(t!("render.file_copy_path"), None));
+            // A folder a member made (a new project): one click puts it on the squad.
+            if folder {
+                let locate = add_locate.clone();
+                menu.separator().item(PopupMenuItem::new(t!("render.add_as_project")).on_click(move |_, _, cx| {
+                    let path = locate(cx);
+                    super::with_shell(cx, |shell, cx| shell.add_project(path.display().to_string(), cx));
+                }))
+            } else {
+                menu
+            }
         })
 }
 
