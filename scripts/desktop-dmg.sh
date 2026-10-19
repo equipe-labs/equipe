@@ -23,7 +23,9 @@
 # Other knobs: EQUIPE_DMG_OUT (dist), EQUIPE_DMG_ARCHS ("aarch64 x86_64"; one
 # arch for a quicker local build), EQUIPE_DMG_PREBUILT (the per-arch
 # equipe-desktop binaries, built elsewhere — CI builds each arch on its own
-# machine at once — to package instead of building), EQUIPE_APPCAST_URL / EQUIPE_DMG_URL (where
+# machine at once — to package instead of building), EQUIPE_DMG_PREBUILT_CLI
+# (the per-arch `equipe` binaries the app carries, likewise; built here when
+# not given), EQUIPE_APPCAST_URL / EQUIPE_DMG_URL (where
 # the app looks for updates and where the appcast says this DMG is; default the
 # GitHub release of this version), EQUIPE_BUNDLE_ID (im.equipe.desktop; another
 # one for a local test build, so its notification permission and defaults are
@@ -95,11 +97,34 @@ for arch in $archs; do
   binaries+=("$target_dir/$triple/release/equipe-desktop")
 done
 
+# The `equipe` the app carries — the daemon and the command line, the app's
+# own version — so the app runs on a Mac that never installed equipe.
+cli_binaries=()
+# shellcheck disable=SC2206 # one path per word
+[ -n "${EQUIPE_DMG_PREBUILT_CLI:-}" ] && cli_binaries=($EQUIPE_DMG_PREBUILT_CLI)
+for path in ${cli_binaries[@]+"${cli_binaries[@]}"}; do
+  [ -f "$path" ] || die "no prebuilt $path"
+done
+if [ ${#cli_binaries[@]} -eq 0 ]; then
+  for arch in ${EQUIPE_DMG_ARCHS:-aarch64 x86_64}; do
+    triple="$arch-apple-darwin"
+    if ! "$rustup" target list --installed 2>/dev/null | grep -qx "$triple"; then
+      "$rustup" target add "$triple"
+    fi
+    MACOSX_DEPLOYMENT_TARGET="$min_macos" "$cargo" build --release --locked -p equipe --bin equipe --target "$triple"
+    cli_binaries+=("$target_dir/$triple/release/equipe")
+  done
+fi
+
 rm -rf "$work"
 mkdir -p "$work" "$out"
 app="$work/equipe.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 lipo -create "${binaries[@]}" -output "$app/Contents/MacOS/equipe-desktop"
+# In Helpers, not MacOS: an `equipe` in Contents/MacOS is the desktop helper's copy.
+mkdir -p "$app/Contents/Helpers"
+lipo -create "${cli_binaries[@]}" -output "$app/Contents/Helpers/equipe"
+chmod +x "$app/Contents/Helpers/equipe"
 cp crates/desktop/macos/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 # The languages the app speaks, each with its name and its reasons for the
 # microphone and speech recognition: macOS lists equipe under System Settings ›
@@ -203,6 +228,7 @@ else
   say "no Developer ID identity: signing ad hoc"
   sign() { codesign --force --sign - "$@"; }
 fi
+sign "$app/Contents/Helpers/equipe"
 framework="$app/Contents/Frameworks/Sparkle.framework"
 if [ -d "$framework" ]; then
   sign "$framework/Versions/B/Autoupdate"

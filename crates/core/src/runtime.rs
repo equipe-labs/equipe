@@ -1498,6 +1498,8 @@ impl Runtime {
         self.codex_read = None;
         self.plan_types.remove(&Engine::Codex);
         self.plans.retain(|p| p.engine != Engine::Codex);
+        // Another account may offer other models (a paid plan has more).
+        self.codex_models = None;
     }
 
     /// Sign `engine` out with its own tool. Claude Code's login is the

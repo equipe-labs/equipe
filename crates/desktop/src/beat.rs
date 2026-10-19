@@ -15,8 +15,12 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
-/// A step of the clock: the sidebar's spinners turn a twelfth each.
-pub const STEP: Duration = Duration::from_millis(100);
+/// A step of the clock, about 30 a second: the sidebar's spinners turn a
+/// thirty-sixth each — smooth to the eye (a twelfth at 10 a second read as
+/// jerky), still only the spinner's own view drawn again.
+pub const STEP: Duration = Duration::from_micros(33_334);
+/// Steps in a spinner's turn: 1.2 s, as before.
+const TURN: u64 = 36;
 
 /// Who is to be drawn again, and when.
 #[derive(Debug, Default)]
@@ -68,15 +72,15 @@ fn on_grid(epoch: Instant, at: Instant) -> Instant {
     epoch + Duration::from_nanos((steps * STEP.as_nanos()) as u64)
 }
 
-/// How far a spinner has turned at a step: a twelfth a step, 1.2 s a turn.
+/// How far a spinner has turned at a step: a thirty-sixth a step, 1.2 s a turn.
 pub fn spin(step: u64) -> f32 {
-    (step % 12) as f32 * std::f32::consts::TAU / 12.
+    (step % TURN) as f32 * std::f32::consts::TAU / TURN as f32
 }
 
 /// How strong a live dot is at a step: a soft pulse, a new strength every
 /// other step.
 pub fn pulse(step: u64) -> f32 {
-    [1.0, 0.75, 0.45, 0.3, 0.45, 0.75][(step / 2 % 6) as usize]
+    [1.0, 0.75, 0.45, 0.3, 0.45, 0.75][(step / 6 % 6) as usize]
 }
 
 /// How long until a time counting up (`45s`, `25m`, `3h`, `2d` —
@@ -181,7 +185,7 @@ impl crate::Shell {
 
     /// A live dot drawn now: how strong it is, the same way.
     pub fn pulse(&self, cx: &mut Context<Self>) -> f32 {
-        pulse(Beat::turning(self.drawing(cx), 2, cx))
+        pulse(Beat::turning(self.drawing(cx), 6, cx))
     }
 
     /// A time counting up drawn now, `elapsed` into it, as `short_span` says
@@ -212,9 +216,9 @@ mod tests {
         let epoch = Instant::now();
         let mut beats = Beats::default();
         assert_eq!(beats.next(), None, "nothing drawn asked");
-        beats.turn(view(1), 1, epoch, epoch + Duration::from_millis(30));
+        beats.turn(view(1), 1, epoch, epoch + STEP / 3);
         assert_eq!(beats.next(), Some(epoch + STEP), "a spinner drawn: the next step");
-        assert_eq!(beats.take_due(epoch + Duration::from_millis(99)), [], "not yet");
+        assert_eq!(beats.take_due(epoch + STEP - Duration::from_millis(1)), [], "not yet");
         assert_eq!(beats.take_due(epoch + STEP), [view(1)]);
         assert_eq!(beats.next(), None, "it didn't ask again (it wasn't drawn): the clock stops");
     }
@@ -223,9 +227,9 @@ mod tests {
     fn what_turns_in_several_views_turns_in_one_frame() {
         let epoch = Instant::now();
         let mut beats = Beats::default();
-        beats.turn(view(1), 1, epoch, epoch + Duration::from_millis(310));
-        beats.turn(view(2), 1, epoch, epoch + Duration::from_millis(370));
-        let at = epoch + Duration::from_millis(400);
+        beats.turn(view(1), 1, epoch, epoch + STEP * 3 + STEP / 10);
+        beats.turn(view(2), 1, epoch, epoch + STEP * 3 + STEP * 7 / 10);
+        let at = epoch + STEP * 4;
         assert_eq!(beats.next(), Some(at));
         let mut due = beats.take_due(at);
         due.sort();
@@ -233,34 +237,36 @@ mod tests {
     }
 
     #[test]
-    fn a_pulse_every_other_step_asks_for_the_even_one() {
+    fn a_pulse_every_sixth_step_asks_for_the_next_sixth() {
         let epoch = Instant::now();
         let mut beats = Beats::default();
-        beats.turn(view(1), 2, epoch, epoch + Duration::from_millis(210));
-        assert_eq!(beats.next(), Some(epoch + Duration::from_millis(400)));
-        assert_ne!(pulse(3), pulse(4));
-        assert_eq!(pulse(4), pulse(5), "the dot holds for two steps");
+        beats.turn(view(1), 6, epoch, epoch + STEP * 7);
+        assert_eq!(beats.next(), Some(epoch + STEP * 12));
+        assert_ne!(pulse(5), pulse(6));
+        assert_eq!(pulse(6), pulse(11), "the dot holds for six steps (~200 ms), as it did");
         // A spinner in the same view wants it sooner.
-        beats.turn(view(1), 1, epoch, epoch + Duration::from_millis(210));
-        assert_eq!(beats.next(), Some(epoch + Duration::from_millis(300)));
+        beats.turn(view(1), 1, epoch, epoch + STEP * 7);
+        assert_eq!(beats.next(), Some(epoch + STEP * 8));
     }
 
     #[test]
     fn a_wake_falls_on_a_step() {
         let epoch = Instant::now();
         let mut beats = Beats::default();
-        beats.wake(view(1), epoch + Duration::from_millis(1234), epoch);
-        assert_eq!(beats.next(), Some(epoch + Duration::from_millis(1300)));
-        beats.wake(view(1), epoch + Duration::from_millis(60_000), epoch);
-        assert_eq!(beats.next(), Some(epoch + Duration::from_millis(1300)), "the sooner one stands");
+        beats.wake(view(1), epoch + STEP * 37 + STEP / 2, epoch);
+        assert_eq!(beats.next(), Some(epoch + STEP * 38));
+        beats.wake(view(1), epoch + Duration::from_secs(60), epoch);
+        assert_eq!(beats.next(), Some(epoch + STEP * 38), "the sooner one stands");
     }
 
     #[test]
-    fn the_spinner_turns_a_twelfth_a_step() {
+    fn the_spinner_turns_smoothly_once_in_1_2_seconds() {
         let epoch = Instant::now();
-        assert_eq!(step_at(epoch, epoch + Duration::from_millis(1250)), 12);
-        assert_eq!(spin(12), 0.);
-        assert!((spin(3) - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        let turn = step_at(epoch, epoch + Duration::from_millis(1205));
+        assert_eq!(turn, 36, "36 steps a turn, ~30 a second");
+        assert_eq!(spin(turn), 0.);
+        assert!((spin(9) - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert!(spin(1) < std::f32::consts::TAU / 30., "small steps: no visible jump");
     }
 
     #[test]

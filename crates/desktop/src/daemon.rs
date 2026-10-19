@@ -446,6 +446,17 @@ async fn attach(target: &Target, side: Option<&SshSide>) -> Result<Connected, Fa
     };
     match (&target.endpoint, side) {
         (Endpoint::Local { socket }, _) => {
+            // Off on this Mac: started (once per launch), with the app's own
+            // `equipe` when the Mac has none — then looked for again.
+            #[cfg(not(test))]
+            if !socket.exists() && tokio::task::spawn_blocking(crate::install::wake_daemon).await.unwrap_or(false) {
+                for _ in 0..40 {
+                    if socket.exists() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            }
             if !socket.exists() {
                 return Err(not_running(socket));
             }
