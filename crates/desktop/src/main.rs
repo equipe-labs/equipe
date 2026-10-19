@@ -1581,6 +1581,15 @@ impl Render for Shell {
                         this.remembered.save(&equipe_providers::credentials::equipe_home());
                     }
                 }
+                // The board's ticket panel too.
+                if let Some((x0, w0)) = this.board.peek_drag {
+                    if e.pressed_button == Some(MouseButton::Left) {
+                        this.remembered.peek_width = Some((w0 + x0 - f32::from(e.position.x)).max(views::board::PEEK_LEAST));
+                        cx.notify();
+                    } else if this.board.peek_drag.take().is_some() {
+                        this.remembered.save(&equipe_providers::credentials::equipe_home());
+                    }
+                }
                 // The side panel grows as its left edge goes left.
                 if let Some((x0, w0)) = this.side_drag {
                     if e.pressed_button == Some(MouseButton::Left) {
@@ -1594,6 +1603,10 @@ impl Render for Shell {
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
                 this.sidebar_released(cx);
                 this.side_released(cx);
+                if this.board.peek_drag.take().is_some() {
+                    this.remembered.save(&equipe_providers::credentials::equipe_home());
+                    cx.notify();
+                }
                 if this.term_drag.take().is_some() {
                     this.remembered.save(&equipe_providers::credentials::equipe_home());
                     cx.notify();
