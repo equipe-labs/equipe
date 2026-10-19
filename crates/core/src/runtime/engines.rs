@@ -834,6 +834,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
+            design_qa: None,
             created_by: "pm".into(),
             note: None,
             asks: vec!["Which store for counters?".into()],
@@ -861,7 +862,7 @@ mod tests {
         let talk = brief_talk(&entries);
         assert!(talk.len() <= BRIEF_TALK + 2_000, "{}", talk.len());
         assert!(talk.contains("step 199") && !talk.contains("step 0 "));
-        let long = Ticket { body: "y".repeat(20_000), ..Ticket { id: 1, title: "t".into(), body: String::new(), status: TicketStatus::Todo, kind: TicketKind::Code, owner: None, assignee: None, project: None, depends_on: vec![], branch: None, worktree: None, merged: None, off_main: None, created_by: "you".into(), note: None, asks: vec![], remaining: vec![], priority: Default::default(), rank: 0, updated_at: None, images: Default::default() } };
+        let long = Ticket { body: "y".repeat(20_000), ..Ticket { id: 1, title: "t".into(), body: String::new(), status: TicketStatus::Todo, kind: TicketKind::Code, owner: None, assignee: None, project: None, depends_on: vec![], branch: None, worktree: None, merged: None, off_main: None, design_qa: None, created_by: "you".into(), note: None, asks: vec![], remaining: vec![], priority: Default::default(), rank: 0, updated_at: None, images: Default::default() } };
         let text = brief("backend", &backend_move(), Why::Drain, Some(&brief_ticket(&long, "")), &talk);
         // About 2–4k tokens: well under 16k characters.
         assert!(text.len() < 16_000, "{}", text.len());
