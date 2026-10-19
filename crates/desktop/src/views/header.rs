@@ -197,8 +197,10 @@ pub fn slice_control(shell: &Shell, place: &'static str, cx: &mut Context<Shell>
             this.board.popover = opening.then_some(Popover::Projects);
             this.board.slice_place = place;
             if opening {
+                this.board.adding_project = false;
                 this.board.slice_search.update(cx, |s, cx| {
                     s.set_value(String::new(), window, cx);
+                    s.set_placeholder(t!("header.find_project"), window, cx);
                     s.focus(window, cx);
                 });
             }
@@ -214,11 +216,14 @@ fn list(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let model = &shell.model;
     let names = model.project_names();
-    let typed = shell.board.slice_search.read(cx).value().trim().to_lowercase();
+    let adding = shell.board.adding_project;
+    let typed = if adding { String::new() } else { shell.board.slice_search.read(cx).value().trim().to_lowercase() };
+    let paths: std::collections::HashMap<String, String> = model.projects.iter().map(|p| (equipe_core::board::project_name(p), super::settings::short_path(p))).collect();
     let row = |id: SharedString, color: Option<Rgba>, label: String, counts: (usize, usize), key: Option<&'static str>, on: bool, target: Option<String>, cx: &mut Context<Shell>| {
         h_flex()
             .id(id)
-            .h(px(30.))
+            .min_h(px(30.))
+            .py_1()
             .px_2()
             .gap_2()
             .items_center()
@@ -233,7 +238,14 @@ fn list(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 cx.notify();
             }))
             .child(div().w(px(10.)).flex().justify_center().children(color.map(|c| dot(c, 7.))))
-            .child(div().flex_1().min_w_0().truncate().when(on, |d| d.font_weight(FontWeight::SEMIBOLD)).child(label))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().truncate().when(on, |d| d.font_weight(FontWeight::SEMIBOLD)).child(label.clone()))
+                    // Where it is, on the daemon's machine.
+                    .children(paths.get(&label).filter(|_| color.is_some()).map(|path| div().truncate().text_size(px(11.)).text_color(p.muted).child(path.clone()))),
+            )
             .when(counts.0 > 0, |r| r.child(h_flex().gap_1().items_center().text_size(px(12.)).text_color(p.amber).child(dot(p.amber, 5.)).child(counts.0.to_string())))
             .when(counts.1 > 0, |r| r.child(div().text_size(px(12.)).text_color(p.accent).child(format!("⚑ {}", counts.1))))
             .children(key.map(|k| div().w(px(26.)).text_align(TextAlign::Right).text_size(px(11.)).text_color(p.muted).child(k)))
@@ -249,13 +261,37 @@ fn list(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 .into_any_element(),
         );
     }
+    // Adding a project: the system's folder picker on this Mac; for another
+    // machine, its path typed in the box above.
+    let local = !shell.endpoint.is_remote();
+    let add = h_flex()
+        .id("slice-add")
+        .h(px(30.))
+        .px_2()
+        .gap_2()
+        .items_center()
+        .rounded(px(6.))
+        .text_size(px(SMALL))
+        .text_color(p.text2)
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.wash))
+        .child(div().w(px(10.)).flex().justify_center().child(super::sidebar::icon(IconName::Plus, 12., p.muted)))
+        .child(div().flex_1().child(if adding { t!("header.add_project_typed") } else { t!("header.add_project") }))
+        .on_click(cx.listener(move |this, _, window, cx| {
+            if local && !this.board.adding_project {
+                this.pick_project_folder(cx);
+            } else {
+                this.start_adding_project(window, cx);
+            }
+        }));
+    let show_box = adding || names.len() >= SEARCH_FROM;
     deferred(
         v_flex()
             .id("slice-list")
             .absolute()
-            .top(px(32.))
+            .top(px(PILL + 4.))
             .left_0()
-            .w(px(280.))
+            .w(px(320.))
             .max_h(px(420.))
             .overflow_y_scroll()
             .p_1()
@@ -265,11 +301,50 @@ fn list(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
             .border_color(p.hair)
             .shadow_lg()
             .occlude()
-            .when(names.len() >= SEARCH_FROM, |c| {
+            .when(show_box, |c| {
                 c.child(h_flex().mx_1().mb_1().px_2().h(px(28.)).items_center().rounded(px(6.)).bg(p.code_bg).border_1().border_color(p.hair).text_size(px(SMALL)).child(Input::new(&shell.board.slice_search).appearance(false).bordered(false)))
             })
-            .children(rows)
-            .child(h_flex().px_2().pt_1().gap_1().items_center().text_size(px(11.)).text_color(p.muted).child(kbd(p, "⌃0–9")).child(t!("header.slice_hint"))),
+            .when(!adding, |c| c.children(rows))
+            .when(adding, |c| c.child(div().px_2().py_1().text_size(px(11.)).text_color(p.muted).child(if local { t!("header.add_project_hint_here") } else { t!("header.add_project_hint_there") })))
+            .child(div().mx_1().my_1().h(px(1.)).bg(p.hair))
+            .child(add)
+            .when(!adding, |c| c.child(h_flex().px_2().pt_1().gap_1().items_center().text_size(px(11.)).text_color(p.muted).child(kbd(p, "⌃0–9")).child(t!("header.slice_hint")))),
     )
     .into_any_element()
+}
+
+impl Shell {
+    /// The project list's box takes a path: a folder on the daemon's machine.
+    pub fn start_adding_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.board.adding_project = true;
+        self.board.slice_search.update(cx, |s, cx| {
+            s.set_value(String::new(), window, cx);
+            s.set_placeholder(t!("header.project_path_placeholder"), window, cx);
+            s.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// On this Mac: the system's folder picker, then added.
+    pub fn pick_project_folder(&mut self, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some(t!("header.add_project_prompt").into()) });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = picked.await
+                && let Some(path) = paths.into_iter().next()
+            {
+                this.update(cx, |this, cx| this.add_project(path.display().to_string(), cx)).ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Ask the daemon to add `path` as a project of the squad shown; the list
+    /// comes back with it, or the reason it wasn't.
+    pub fn add_project(&mut self, path: String, cx: &mut Context<Self>) {
+        self.board.adding_project = false;
+        self.board.popover = None;
+        self.send_command(equipe_core::protocol::Command::AddProject { squad: self.model.squad.clone(), path: path.clone().into() });
+        self.composer.flash = Some(t!("header.adding_project", path = path));
+        cx.notify();
+    }
 }

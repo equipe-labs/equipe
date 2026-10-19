@@ -689,6 +689,10 @@ pub enum Command {
     /// The project the person is looking at, by name — new work goes there
     /// unless they say otherwise; `None`: all of the squad's projects.
     Focus { squad: SquadName, project: Option<String> },
+    /// The person adds a project to the squad: a folder on the daemon's
+    /// machine (a git repository; one with no history yet is started as one).
+    /// Answered with [`Event::ProjectsChanged`], or an error saying why not.
+    AddProject { squad: SquadName, path: PathBuf },
     /// The screen watches `session`'s browser (`None`: none): equipe sends it
     /// a picture of the page every moment or so ([`Event::BrowserFrame`]).
     WatchBrowser { squad: SquadName, session: Option<SessionId> },
@@ -1435,6 +1439,8 @@ pub enum Event {
     },
     /// How the squad moves members between engines changed.
     EngineSwitchingChanged { squad: SquadName, mode: engines::Switching },
+    /// The squad's projects now ([`Command::AddProject`]): their folders.
+    ProjectsChanged { squad: SquadName, projects: Vec<PathBuf> },
     /// The squad's design systems, as they are now ([`Command::Design`]):
     /// its own first, then each project's that has one, then the drafts
     /// tickets in review hand in. None: there is none yet, and `folder` is
@@ -1467,6 +1473,7 @@ impl Event {
             | Event::EngineProposed { squad, .. }
             | Event::EngineProposalClosed { squad, .. }
             | Event::EngineSwitchingChanged { squad, .. }
+            | Event::ProjectsChanged { squad, .. }
             | Event::Design { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             _ => None,
@@ -1520,6 +1527,7 @@ impl Event {
             | Event::EngineProposed { .. }
             | Event::EngineProposalClosed { .. }
             | Event::EngineSwitchingChanged { .. }
+            | Event::ProjectsChanged { .. }
             | Event::Design { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }

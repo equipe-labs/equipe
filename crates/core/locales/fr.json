@@ -130,6 +130,7 @@
   "error.no_ticket": "Il n'y a pas de T-{id} sur le tableau.",
   "error.not_accepted": "T-{id} n'est pas encore accepté : d'abord /accept T-{id}.",
   "error.not_committed": "impossible de valider les modifications : {err} ; elles sont toujours dans {path}",
+  "error.project_not_added": "Le projet n'a pas été ajouté : {why}",
   "error.not_merged": "T-{id} n'a pas été fusionné : {err}",
   "error.not_merged_conflict": "T-{id} n'est pas encore fusionné : il recoupe main ({err}). {who} doit intégrer main et résoudre le conflit — ensuite, fusionnez-le à nouveau depuis le tableau.",
   "error.not_pushed": "{branch} n'a pas été poussé : {err}",

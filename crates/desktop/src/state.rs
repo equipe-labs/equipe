@@ -833,6 +833,13 @@ impl Model {
             }
             Event::EngineProposalClosed { squad, id, .. } if *squad == self.squad => self.engines.close(*id),
             Event::EngineSwitchingChanged { squad, mode } if *squad == self.squad => self.engines.mode = *mode,
+            Event::ProjectsChanged { squad, projects } if *squad == self.squad => {
+                // The one just added, said under the box.
+                if let Some(new) = projects.iter().find(|p| !self.projects.contains(p)) {
+                    self.flash = Some(t!("header.project_added", name = equipe_core::board::project_name(new)));
+                }
+                self.projects = projects.clone();
+            }
             Event::TurnEnded { session, usage: Some(u), .. } if !self.lanes.iter().any(|l| l.session == *session) => {
                 let spent = self.spent.entry(*session).or_default();
                 spent.tokens += u.total();

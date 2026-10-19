@@ -127,6 +127,7 @@
   "error.no_ticket": "看板上沒有 T-{id}。",
   "error.not_accepted": "T-{id} 尚未接受——請先 /accept T-{id}。",
   "error.not_committed": "無法提交變更：{err}——它們仍在 {path}",
+  "error.project_not_added": "未能新增專案：{why}",
   "error.not_merged": "T-{id} 未能合併：{err}",
   "error.not_merged_conflict": "T-{id} 與 main 有重疊，還沒有合併（{err}）。已請 {who} 合入 main 並解決衝突——解決後請在看板上再次合併。",
   "error.not_pushed": "{branch} 未能推送：{err}",

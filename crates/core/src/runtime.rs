@@ -475,6 +475,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         settled_at: None,
         merging: std::collections::HashSet::new(),
         disk: Default::default(),
+        awake: Default::default(),
         sign_ins: HashMap::new(),
         next_sign_in: 1,
         codex_binary: crate::engines::codex_binary(),
@@ -730,6 +731,8 @@ enum Internal {
     DiskCleaned(Box<crate::disk::DiskCleaned>, Option<crate::disk::DiskStatus>, std::time::Instant, Option<oneshot::Sender<crate::disk::DiskCleaned>>),
     /// What a trim of the build caches gave back when the disk ran short, one line each.
     DiskTrimmed(u64, Vec<String>),
+    /// A project the person added, or why it wasn't.
+    ProjectAdded { squad: String, result: Result<PathBuf, String> },
     /// Hand ready work out in every squad again (the disk has room once more).
     Dispatch,
     /// Where the engines stand, as just looked at off the loop.
@@ -859,6 +862,8 @@ struct Runtime {
     merging: std::collections::HashSet<(String, TicketId)>,
     /// The disk's room, as last looked at or as a write said (`room.rs`).
     disk: room::DiskWatch,
+    /// The Mac held awake while members work or a screen is attached.
+    awake: crate::awake::Awake,
     /// Sign-ins under way on this machine, by engine: which one, and its task.
     sign_ins: HashMap<Engine, (u64, JoinHandle<()>)>,
     next_sign_in: u64,
@@ -915,6 +920,7 @@ impl Wake {
             Wake::Internal(Internal::Disk(..)) => Borrowed("the disk's free space"),
             Wake::Internal(Internal::DiskReport(..)) => Borrowed("what uses the disk"),
             Wake::Internal(Internal::DiskCleaned(..)) => Borrowed("a clean of the disk"),
+            Wake::Internal(Internal::ProjectAdded { .. }) => Borrowed("a project added"),
             Wake::Internal(Internal::DiskTrimmed(..)) => Borrowed("a trim of the build caches"),
             Wake::Internal(Internal::Dispatch) => Borrowed("handing out work again"),
             Wake::Request(Some(Request::Disk(_))) => Borrowed("a look at the disk"),
@@ -1003,6 +1009,7 @@ impl Runtime {
                         let _ = tx.send(Event::Error { session: None, message: say!(self, "error.disk_full"), next: None });
                     }
                     self.subscribers.push((Some(squad.clone()), tx));
+                    self.keep_awake();
                     let _ = reply.send((self.snapshot(&squad), rx));
                     // A screen that shows the plans' usage gets Codex's fresh, soon after.
                     self.read_codex_usage(true);
@@ -1078,6 +1085,7 @@ impl Runtime {
                 Internal::Disk(status, asked) => self.on_disk(status, asked),
                 Internal::DiskReport(report, asked) => self.on_disk_report(*report, asked),
                 Internal::DiskCleaned(cleaned, status, asked, reply) => self.on_disk_cleaned(*cleaned, status, asked, reply),
+                Internal::ProjectAdded { squad, result } => self.project_added(&squad, result),
                 Internal::DiskTrimmed(freed, lines) => self.on_disk_trimmed(freed, lines),
                 Internal::Dispatch => {
                     let squads: Vec<String> = self.journals.keys().cloned().collect();
@@ -1109,6 +1117,7 @@ impl Runtime {
             Wake::Frames => self.take_frames(),
             Wake::DesignTick => self.design_tick(),
             Wake::Minute => {
+                self.keep_awake();
                 pulse.step("minute tick: idle lanes");
                 self.fold_idle_lanes();
                 self.trim_builds();
@@ -1474,6 +1483,7 @@ impl Runtime {
                     self.publish(Event::Notice { session, text });
                 }
             }
+            Command::AddProject { squad, path } => self.add_project(squad, path),
             Command::Focus { squad, project } => match project {
                 Some(name) => {
                     self.focus.insert(squad, name);
@@ -1624,6 +1634,46 @@ impl Runtime {
             let _ = journal.set_waiting(id, "memo", &queued);
             let _ = journal.set_waiting(id, "memo-threads", &threads);
             let _ = journal.set_waiting(id, "briefing", &briefing);
+        }
+    }
+
+    /// The person adds a folder as a project: checked, and started as a
+    /// repository if it is none yet, off the loop (git).
+    fn add_project(&mut self, squad: String, path: PathBuf) {
+        let (home, internal) = (self.config.home.clone(), self.internal.clone());
+        let user_home = std::env::var_os("HOME").map(PathBuf::from);
+        tokio::task::spawn_blocking(move || {
+            let result = crate::squads::add_folder(&home, &squad, &path.to_string_lossy(), user_home.as_deref());
+            let _ = internal.send(Internal::ProjectAdded { squad, result });
+        });
+    }
+
+    /// A project added: every screen of the squad has the list again, and the
+    /// PM knows where it is.
+    fn project_added(&mut self, squad: &str, result: Result<PathBuf, String>) {
+        match result {
+            Ok(path) => {
+                let name = crate::board::project_name(&path);
+                crate::daemon_log!("equipe: {squad} has a new project, {name} ({})", path.display());
+                let projects = self.projects(squad);
+                self.publish(Event::ProjectsChanged { squad: squad.to_owned(), projects });
+                self.brief_pm(squad, format!("The person added a project to the squad: {name}, at {}.", path.display()), None);
+            }
+            Err(why) => {
+                let message = say!(self, "error.project_not_added", why = why);
+                self.squad_error(squad, message);
+            }
+        }
+    }
+
+    /// Awake while wanted: a member at work, or a screen attached (the first
+    /// subscriber is the daemon's own handle).
+    fn keep_awake(&mut self) {
+        let screens = self.subscribers.iter().skip(1).any(|(follows, screen)| follows.is_some() && !screen.is_closed());
+        let working = self.sessions.values().any(Session::is_working);
+        let want = screens || working;
+        if self.awake.want(want) {
+            crate::daemon_log!("equipe: {}", if want { "keeping this Mac awake: the squad works or a screen is attached" } else { "this Mac may sleep again" });
         }
     }
 

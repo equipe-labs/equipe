@@ -351,6 +351,13 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, cx: &mut C
         (Some(_), true) => t!("sidebar.back_to_all"),
         (Some(_), false) => t!("sidebar.switch_project"),
     };
+    // Where the project is, on the daemon's machine: on the pointer, and to copy.
+    let folder = g.name.as_ref().and_then(|n| shell.model.projects.iter().find(|p| &equipe_core::board::project_name(p) == n)).cloned();
+    let name_tip = match &folder {
+        Some(path) => format!("{name_tip}\n{}", path.display()),
+        None => name_tip.to_owned(),
+    };
+    let local = !shell.endpoint.is_remote();
     let ident = match g.at {
         Some(at) => dot(project_color(p, at), 6.).into_any_element(),
         None => icon(IconName::Folder, 12., p.muted).into_any_element(),
@@ -370,6 +377,23 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, cx: &mut C
         .on_click(cx.listener(move |this, _, window, cx| this.side_head_click(HeadClick::Name, name_project.clone(), window, cx)))
         .child(ident)
         .child(crate::ui::steady(label, FontWeight::SEMIBOLD, focused, true).text_color(name_color));
+    let name: AnyElement = match folder {
+        Some(path) => {
+            use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+            name.context_menu(move |menu, _, _| {
+                let copy = path.clone();
+                let menu = menu.item(PopupMenuItem::new(t!("sidebar.copy_project_path")).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.display().to_string()))));
+                if local {
+                    let reveal = path.clone();
+                    menu.item(PopupMenuItem::new(t!("render.file_reveal")).on_click(move |_, _, cx| cx.reveal_path(&reveal)))
+                } else {
+                    menu
+                }
+            })
+            .into_any_element()
+        }
+        None => name.into_any_element(),
+    };
     let counts = (folded && !quiet).then(|| {
         h_flex()
             .flex_none()

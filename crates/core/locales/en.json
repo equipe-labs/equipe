@@ -130,6 +130,7 @@
   "error.no_ticket": "There is no T-{id} on the board.",
   "error.not_accepted": "T-{id} isn't accepted yet — /accept T-{id} first.",
   "error.not_committed": "couldn't commit the changes: {err} — they are still in {path}",
+  "error.project_not_added": "The project wasn't added: {why}",
   "error.not_merged": "T-{id} wasn't merged: {err}",
   "error.not_merged_conflict": "T-{id} isn't merged yet: it overlaps with main ({err}). {who} was asked to merge main in and resolve it — then merge it again from the board.",
   "error.not_pushed": "{branch} wasn't pushed: {err}",

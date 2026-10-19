@@ -130,6 +130,7 @@
   "error.no_ticket": "Auf dem Board gibt es kein T-{id}.",
   "error.not_accepted": "T-{id} ist noch nicht angenommen – zuerst /accept T-{id}.",
   "error.not_committed": "die Änderungen konnten nicht committet werden: {err} – sie liegen noch in {path}",
+  "error.project_not_added": "Das Projekt wurde nicht hinzugefügt: {why}",
   "error.not_merged": "T-{id} wurde nicht gemergt: {err}",
   "error.not_merged_conflict": "T-{id} ist noch nicht gemergt: Es überschneidet sich mit main ({err}). {who} soll main hereinholen und den Konflikt lösen — danach auf dem Board erneut mergen.",
   "error.not_pushed": "{branch} wurde nicht gepusht: {err}",

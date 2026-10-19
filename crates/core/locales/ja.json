@@ -127,6 +127,7 @@
   "error.no_ticket": "ボードに T-{id} はありません。",
   "error.not_accepted": "T-{id} はまだ承認されていません — 先に /accept T-{id}",
   "error.not_committed": "変更をコミットできませんでした: {err} — 変更はまだ {path} にあります",
+  "error.project_not_added": "プロジェクトを追加できませんでした: {why}",
   "error.not_merged": "T-{id} をマージできませんでした: {err}",
   "error.not_merged_conflict": "T-{id} は main と重なる部分があるため、まだマージしていません ({err})。{who} に main を取り込んで衝突を解くよう頼みました — 解けたらボードからもう一度マージしてください。",
   "error.not_pushed": "{branch} をプッシュできませんでした: {err}",
