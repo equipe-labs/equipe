@@ -601,15 +601,10 @@ impl Model {
     pub fn conversation(&self, follow: bool, open: &std::collections::HashSet<u64>) -> crate::convo::Sliced {
         let Some(convo) = self.convo() else { return Default::default() };
         match self.chat_slice(follow) {
-            // A project with nothing said about it yet: the whole conversation,
-            // not an empty screen with every line folded away (and a pill for
-            // the reply that came in another).
-            Some(Some(project)) => {
-                let sliced = convo.sliced(Some(&project), open);
-                let own = sliced.blocks.iter().any(|b| matches!(b, crate::convo::Block::User(_) | crate::convo::Block::Reply { .. }));
-                if own { sliced } else { convo.sliced(None, open) }
-            }
-            Some(None) => convo.sliced(None, open),
+            // The PM's conversation is one, whatever project is in focus: the
+            // focus says what a new message is about, and each stretch says
+            // which project it was — nothing is folded away as "elsewhere".
+            Some(_) => convo.sliced(None, open),
             None => {
                 let blocks = convo.blocks();
                 crate::convo::Sliced { about: vec![None; blocks.len()], blocks, answered_in: None }
@@ -1645,32 +1640,19 @@ mod tests {
     }
 
     #[test]
-    fn a_project_with_nothing_said_shows_the_whole_conversation() {
+    fn the_pms_conversation_is_one_whatever_the_project_in_focus() {
         let mut model = pm_in_two_projects();
         let none = std::collections::HashSet::new();
-        model.set_focus(Some("web".into()));
-        let web = model.conversation(true, &none);
-        assert_eq!(said(&web), ["app q", "site q"], "not an empty screen of folds");
-        assert_eq!(web.answered_in, None, "every reply is in sight: no pill");
-    }
-
-    #[test]
-    fn the_conversation_follows_the_project_in_focus_to_its_latest_line() {
-        let mut model = pm_in_two_projects();
-        let none = std::collections::HashSet::new();
-        assert_eq!(model.chat_slice(true), Some(None), "every project: everything");
         assert_eq!(said(&model.conversation(true, &none)), ["app q", "site q"]);
         let before = model.revision;
         assert!(model.set_focus(Some("app".into())));
         assert!(model.revision > before, "a draw is due");
-        assert_eq!(model.chat_slice(true), Some(Some("app".into())), "a new slice: the list starts over at its end");
+        assert_eq!(model.chat_slice(true), Some(Some("app".into())), "the focus is still what new messages are about");
         let app = model.conversation(true, &none);
-        assert_eq!(said(&app), ["app q"]);
-        assert!(matches!(app.blocks.last(), Some(crate::convo::Block::Elsewhere { said: 2, .. })), "the site's turn after, folded: {:?}", app.blocks);
-        assert_eq!(app.answered_in, Some(Some("site".into())), "the latest reply is the site's");
-        model.set_focus(Some("site".into()));
-        let site = model.conversation(true, &none);
-        assert!(matches!(site.blocks.last(), Some(crate::convo::Block::Reply { text, .. }) if text == "site a"), "the slice's latest line last");
+        assert_eq!(said(&app), ["app q", "site q"], "nothing folded away as another project's");
+        assert!(!app.blocks.iter().any(|b| matches!(b, crate::convo::Block::Elsewhere { .. })));
+        assert_eq!(app.answered_in, None, "every reply in sight: no pill");
+        assert!(app.about.contains(&Some("site".into())) && app.about.contains(&Some("app".into())), "each stretch says its project");
     }
 
     #[test]

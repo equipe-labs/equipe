@@ -196,6 +196,10 @@ impl MarkdownPlugin for Images {
                 (crate::views::visuals::Shots::of(read, shell.downgrade(), cx), base_dir(read))
             };
             let lexical = |written: &str| equipe_core::visuals::markdown::lexical(written, &base).map(|p| p.to_string_lossy().into_owned());
+            // A folder in a picture's place: its pictures come as the strip under the reply.
+            if !image.url.trim_end_matches('/').rsplit('/').next().is_some_and(|n| n.contains('.')) {
+                return Some(InlineElement::new(div()));
+            }
             if let Some(path) = lexical(&image.url) {
                 let pictures: Vec<(String, String)> = image.all.iter().filter_map(|(w, alt)| Some((lexical(w)?, alt.clone()))).collect();
                 return Some(InlineElement::new(crate::views::visuals::inline(&shots, self.scope, &path, &image.alt, &pictures, self.live, cx)));

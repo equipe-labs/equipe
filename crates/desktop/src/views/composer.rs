@@ -689,6 +689,12 @@ impl Shell {
                     Err(why) => return drop(tx.send(Step::Done(Err(why)))),
                 };
                 let _ = tx.send(Step::Shown(Box::new(prepared_head(&prepared))));
+                if let (attach::Kind::Image, attach::Payload::Bytes { name, bytes }) = (prepared.kind, &prepared.main) {
+                    let path = crate::ssh::scratch_dir().join(format!("{}-{}", std::process::id(), crate::ssh::safe_name(std::path::Path::new(name))));
+                    if std::fs::write(&path, bytes).is_ok() {
+                        let _ = tx.send(Step::Whole(path));
+                    }
+                }
                 let Some(store) = store else {
                     return drop(tx.send(Step::Done(Err(t!("composer.not_connected").into()))));
                 };
@@ -713,6 +719,10 @@ impl Shell {
                                 true
                             }
                             Step::Share(share) => strip.progress(id, share),
+                            Step::Whole(path) => {
+                                strip.whole(id, path);
+                                false
+                            }
                             Step::Seen(seen) => {
                                 let mut sent = this.chat.sent.borrow_mut();
                                 for (path, shown) in seen {
@@ -1430,6 +1440,8 @@ impl Shell {
 /// One step of an attachment on its way, as the UI hears it.
 enum Step {
     Shown(Box<attach::Prepared>),
+    /// A pasted picture's bytes, kept whole in a scratch file for its big view.
+    Whole(PathBuf),
     Share(f32),
     /// What the conversation shows of it once sent, by its paths there.
     Seen(Vec<(String, crate::sent::Shown)>),
@@ -2419,6 +2431,8 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoEleme
     // What to show: the file itself on this Mac (a picture, a video's sheet), else the thumbnail.
     let sheet = ready.as_ref().and_then(|r| r.tag.split(" · ").find_map(|f| f.strip_prefix("sheet: ")).map(|s| PathBuf::from(s.trim_end_matches(']'))));
     let shown: Option<ImageSource> = match (item.kind, local, &ready) {
+        // The picture whole, on this Mac or not: a paste's kept copy, a file where it is.
+        (Kind::Image, _, _) if item.whole.as_ref().is_some_and(|p| p.is_file()) => item.whole.clone().map(Into::into),
         (Kind::Image, true, Some(r)) => Some(PathBuf::from(&r.path).into()),
         (Kind::Video, true, Some(_)) => sheet.map(Into::into),
         (Kind::Pdf, _, _) => shell.composer.page.as_ref().filter(|(at, _)| *at == id).map(|(_, page)| page.clone().into()),
@@ -2462,7 +2476,8 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoEleme
                     .justify_center()
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .child(match shown {
-                        Some(source) => img(source).max_w_full().max_h_full().object_fit(ObjectFit::Contain).rounded(px(8.)).into_any_element(),
+                        // As big as the window lets it be, its shape kept.
+                        Some(source) => img(source).size_full().object_fit(ObjectFit::Contain).rounded(px(8.)).into_any_element(),
                         None => div().size(px(160.)).rounded(px(R_XL)).bg(rgba(0xFFFFFF14)).flex().items_center().justify_center().text_size(px(28.)).font_weight(FontWeight::BOLD).text_color(rgb(0xFFFFFF)).child(attach::badge(&item.name, item.kind)).into_any_element(),
                     }),
                 ("lightbox-shown", id),

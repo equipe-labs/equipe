@@ -554,6 +554,9 @@ pub struct Item {
     pub origin: Option<PathBuf>,
     /// A recording being written down on this Mac; its words come as a text file.
     pub writing: bool,
+    /// The picture whole on this Mac, for its big view (a paste kept in a
+    /// scratch file; a file, where it is) — the thumbnail is chip-sized.
+    pub whole: Option<PathBuf>,
 }
 
 impl Item {
@@ -640,12 +643,12 @@ impl Strip {
         if !self.has_room() {
             return None;
         }
-        Some(self.push(Item { id: 0, kind: source.kind(), name: source.name(), size: source.size(), thumb: None, meta: Meta::default(), stage: Stage::Preparing, origin: source.path().map(Path::to_owned), writing: false }))
+        Some(self.push(Item { id: 0, kind: source.kind(), name: source.name(), size: source.size(), thumb: None, meta: Meta::default(), stage: Stage::Preparing, origin: source.path().map(Path::to_owned), writing: false, whole: source.path().map(Path::to_owned) }))
     }
 
     /// One that can't be attached at all: shown as an error until dismissed.
     pub fn refuse(&mut self, name: &str, kind: Kind, why: String) -> u64 {
-        self.push(Item { id: 0, kind, name: name.to_owned(), size: 0, thumb: None, meta: Meta::default(), stage: Stage::Failed(why), origin: None, writing: false })
+        self.push(Item { id: 0, kind, name: name.to_owned(), size: 0, thumb: None, meta: Meta::default(), stage: Stage::Failed(why), origin: None, writing: false, whole: None })
     }
 
     fn get(&mut self, id: u64) -> Option<&mut Item> {
@@ -689,6 +692,13 @@ impl Strip {
     /// Its recording is being written down, or is done. False when it was taken off.
     pub fn writing(&mut self, id: u64, on: bool) -> bool {
         self.get(id).map(|item| item.writing = on).is_some()
+    }
+
+    /// Its picture whole, kept on this Mac.
+    pub fn whole(&mut self, id: u64, path: PathBuf) {
+        if let Some(item) = self.get(id) {
+            item.whole = Some(path);
+        }
     }
 
     pub fn remove(&mut self, id: u64) {
@@ -749,7 +759,7 @@ impl Strip {
         self.items.clear();
         for s in saved.iter().take(MAX_ATTACHMENTS) {
             let thumb = s.thumb.clone().map(|png| Arc::new(Image::from_bytes(ImageFormat::Png, png)));
-            self.push(Item { id: 0, kind: s.kind, name: s.name.clone(), size: s.size, thumb, meta: s.meta.clone(), stage: Stage::Ready(s.ready.clone()), origin: s.origin.clone(), writing: false });
+            self.push(Item { id: 0, kind: s.kind, name: s.name.clone(), size: s.size, thumb, meta: s.meta.clone(), stage: Stage::Ready(s.ready.clone()), origin: s.origin.clone(), writing: false, whole: s.origin.clone() });
         }
     }
 
