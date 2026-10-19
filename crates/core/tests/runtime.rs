@@ -1025,6 +1025,8 @@ async fn work_not_on_main_says_why_can_be_kept_on_its_branch_and_settles_when_no
     let two = ticket_changed(&failed).pop().unwrap();
     assert!(matches!(&two.off_main, Some(OffMain::Conflict { detail }) if detail.contains("README.md")), "{two:?}");
     assert!(two.waits_to_merge(), "still the person's call");
+    // Its owner is asked to resolve it, and the person told so.
+    assert!(failed.iter().any(|e| matches!(e, Event::Error { message, .. } if message.contains("frontend"))), "{failed:?}");
 
     // Kept on its branch: it stops asking, and is still not on main.
     handle.send(Command::KeepOnBranch { squad: "acme".into(), ticket: 3 });

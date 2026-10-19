@@ -3893,8 +3893,23 @@ for one project goes to it as tickets for its owners, with that project — and 
                     let _ = journal.save_ticket(&found);
                     let _ = journal.ticket_event(ticket, "equipe", "not merged", &err);
                 }
-                self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: found });
-                let message = say!(self, "error.not_merged", id = ticket, err = err);
+                self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: found.clone() });
+                // A conflict is work: its owner merges main in and resolves it,
+                // and the person merges again from the board.
+                let owner = found.owner.clone().or_else(|| found.assignee.clone()).filter(|_| err.contains(" conflicts with "));
+                let message = match owner {
+                    Some(owner) => {
+                        let branch = found.branch.clone().unwrap_or_else(|| "its branch".into());
+                        let line = format!(
+                            "T-{ticket} couldn't be merged into main: {err}. In the ticket's worktree, merge main into {branch}, resolve the conflict keeping what both sides meant, run the tests and commit. Then say it's ready: the person merges it again from the board."
+                        );
+                        let shown = say!(self, "news.merge_conflict_owner", id = ticket);
+                        self.brief_member(squad, &owner, &line, &shown);
+                        self.brief_pm(squad, line, None);
+                        say!(self, "error.not_merged_conflict", id = ticket, err = err, who = owner)
+                    }
+                    None => say!(self, "error.not_merged", id = ticket, err = err),
+                };
                 return self.squad_error(squad, message);
             }
         };

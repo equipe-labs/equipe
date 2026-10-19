@@ -879,9 +879,61 @@ pub fn clear_builds(home: &Path, worktree: &Path) -> Vec<String> {
     done
 }
 
+/// Whether a simulator named `name` is ticket `id`'s: `T126 iPhone 17 Pro`,
+/// `T-126 …`, `acme T126 …` (`squad` given) — not `T1260 …`.
+fn ticket_simulator(name: &str, id: TicketId, squad: Option<&str>) -> bool {
+    let name = squad.and_then(|s| name.strip_prefix(s)).map_or(name, str::trim_start);
+    [format!("T{id}"), format!("T-{id}")].iter().any(|tag| name == tag || name.strip_prefix(tag.as_str()).is_some_and(|rest| rest.starts_with([' ', '-', '_', '·'])))
+}
+
+/// The simulators made for ticket `id` (named for it, as the mobile role is
+/// told to), shut down and deleted once the ticket is done with: each holds a
+/// booted iPhone's memory and gigabytes of disk. `squad`'s own names always;
+/// a bare `T<id>` only when `shared` is false (no other squad has that
+/// number open). What went, for the log.
+pub fn clear_simulators(id: TicketId, squad: &str, shared: bool) -> Vec<String> {
+    off_the_loop("disk::clear_simulators");
+    if !cfg!(target_os = "macos") {
+        return Vec::new();
+    }
+    let simctl = |args: &[&str]| {
+        let mut command = std::process::Command::new("xcrun");
+        command.arg("simctl").args(args);
+        output_within(command, Duration::from_secs(60)).ok().filter(|o| o.status.success())
+    };
+    let Some(list) = simctl(&["list", "devices", "-j"]) else { return Vec::new() };
+    let Ok(list) = serde_json::from_slice::<serde_json::Value>(&list.stdout) else { return Vec::new() };
+    let mut done = Vec::new();
+    for device in list["devices"].as_object().into_iter().flat_map(|runtimes| runtimes.values()).filter_map(|d| d.as_array()).flatten() {
+        let (Some(name), Some(udid)) = (device["name"].as_str(), device["udid"].as_str()) else { continue };
+        let ours = ticket_simulator(name, id, Some(squad)) && (name.starts_with(squad) || !shared);
+        if !ours {
+            continue;
+        }
+        if device["state"].as_str() == Some("Booted") {
+            simctl(&["shutdown", udid]);
+        }
+        if simctl(&["delete", udid]).is_some() {
+            done.push(format!("deleted simulator {name} ({udid})"));
+        }
+    }
+    done
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_simulator_is_a_tickets_by_its_name() {
+        assert!(ticket_simulator("T126 iPhone 17 Pro", 126, None));
+        assert!(ticket_simulator("T-126 Media", 126, None));
+        assert!(ticket_simulator("T126", 126, None));
+        assert!(ticket_simulator("acme T126 iPhone", 126, Some("acme")));
+        assert!(!ticket_simulator("T1260 iPhone", 126, None));
+        assert!(!ticket_simulator("iPhone 17 Pro", 126, None));
+        assert!(!ticket_simulator("Test T126", 126, None));
+    }
 
     const G: u64 = GB;
 
