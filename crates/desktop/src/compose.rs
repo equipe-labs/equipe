@@ -644,6 +644,37 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 None => Plan::say(t!("compose.model_no_member", name = words[0])),
             }
         }
+        // `/engine codex` (the member in view), `/engine backend codex`,
+        // `/engine all claude`: moved at each one's next ticket boundary.
+        "engine" => {
+            let words: Vec<&str> = rest.split_whitespace().collect();
+            let engine = words.last().and_then(|w| match w.to_ascii_lowercase().as_str() {
+                "claude" | "claude-code" | "claudecode" => Some(Engine::Claude),
+                "codex" => Some(Engine::Codex),
+                _ => None,
+            });
+            let Some(engine) = engine else { return Plan::say(t!("compose.engine_usage")) };
+            let named = &words[..words.len() - 1];
+            let members: Vec<String> = match named {
+                [] => match model.selected_member() {
+                    Some(m) => vec![m.name.clone()],
+                    None => return Plan::say(t!("compose.engine_usage")),
+                },
+                ["all"] | ["모두"] | ["전부"] => Vec::new(),
+                names => {
+                    if let Some(missing) = names.iter().find(|n| member_named(n).is_none()) {
+                        return Plan::say(t!("compose.model_no_member", name = missing));
+                    }
+                    names.iter().map(|n| (*n).to_owned()).collect()
+                }
+            };
+            let who = if members.is_empty() { t!("compose.engine_everyone").to_owned() } else { members.join("·") };
+            Plan {
+                commands: vec![Command::MoveEngine { squad, members, engine }],
+                flash: Some(t!("compose.engine_moving", names = who, engine = crate::switching::engine_name(engine))),
+                ..Plan::default()
+            }
+        }
         "engines" => match rest {
             "" => Plan::say(t!("engines.now", mode = crate::switching::mode_word(model.engines.mode), about = crate::switching::mode_about(model.engines.mode))),
             "setup" => Plan::send(Command::ShowEngineSetup { squad }),

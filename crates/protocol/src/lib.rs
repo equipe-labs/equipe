@@ -788,6 +788,15 @@ pub enum Command {
     UndoEngineProposal { squad: SquadName, id: u64 },
     /// Propose the squad's recommended setup for both engines again.
     ShowEngineSetup { squad: SquadName },
+    /// The person moves `members` (none named: every member) to `engine`,
+    /// each at its next ticket boundary, its work handed over. Only ever the
+    /// person's; where they belong from then on.
+    MoveEngine {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        members: Vec<String>,
+        engine: Engine,
+    },
     /// Show the squad's design systems (`design::DesignSystem`): answered by
     /// [`Event::Design`], and again whenever one of them changes while a
     /// screen follows the squad.

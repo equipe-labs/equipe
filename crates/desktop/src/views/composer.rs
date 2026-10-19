@@ -85,6 +85,8 @@ enum Act {
     Effort(Option<String>),
     Mode(Mode),
     Refresh(bool),
+    /// The member onto the other engine, at its next ticket.
+    Engine(Engine),
 }
 
 impl MenuKind {
@@ -976,14 +978,22 @@ impl Shell {
                 }
                 let now = member.model.clone().unwrap_or_default();
                 let exact = models.contains(&now);
-                models
+                let mut rows: Vec<Row> = models
                     .into_iter()
                     .map(|m| {
                         let short = short_model(&m);
                         let hint = if short == m { String::new() } else { m.clone() };
                         Row::new(short, hint, Act::Model(m.clone())).checked(now == m || (!exact && now.contains(&m)))
                     })
-                    .collect()
+                    .collect();
+                // Which engine it works on: the other one, at its next ticket.
+                let on = member.engine;
+                rows.push(Row::note(t!("composer.menu_engine")));
+                for (engine, mark) in [(Engine::Claude, Icon::ClaudeMark), (Engine::Codex, Icon::OpenAiMark)] {
+                    let hint = if on == Some(engine) { String::new() } else { t!("composer.engine_next").to_owned() };
+                    rows.push(Row::new(crate::switching::engine_name(engine), hint, Act::Engine(engine)).icon(mark).checked(on == Some(engine)));
+                }
+                rows
             }
             MenuKind::Effort => {
                 let Some(member) = member else { return };
@@ -1042,6 +1052,14 @@ impl Shell {
                 }
             }
             Act::Select(session) => self.select_member(session, window, cx),
+            Act::Engine(engine) => {
+                if let Some((_, name)) = member
+                    && self.model.selected_member().is_some_and(|m| m.engine != Some(engine))
+                {
+                    self.send_command(Command::MoveEngine { squad: self.model.squad.clone(), members: vec![name.clone()], engine });
+                    self.composer.flash = Some(t!("compose.engine_moving", names = name, engine = crate::switching::engine_name(engine)));
+                }
+            }
             Act::Model(model) => {
                 if let Some((session, name)) = member {
                     self.send_command(Command::SetModel { session, model: model.clone() });

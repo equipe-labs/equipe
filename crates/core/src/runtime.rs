@@ -1437,6 +1437,7 @@ impl Runtime {
             Command::DismissEngineProposal { squad, id } => self.dismiss_engine_proposal(&squad, id),
             Command::UndoEngineProposal { squad, id } => self.undo_engine_proposal(&squad, id).await,
             Command::ShowEngineSetup { squad } => self.show_engine_setup(&squad),
+            Command::MoveEngine { squad, members, engine } => self.move_engine(&squad, members, engine).await,
             Command::Design { squad } => self.design_asked(squad),
         }
     }

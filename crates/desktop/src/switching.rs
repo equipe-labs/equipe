@@ -251,6 +251,7 @@ pub fn mode_about(mode: Switching) -> &'static str {
 pub fn kind(p: &Proposal) -> &'static str {
     match (p.why, p.applied) {
         (Why::Setup, _) => t!("engines.kind_setup"),
+        (Why::Person, _) => t!("engines.kind_person"),
         (Why::Return, true) => t!("engines.kind_back"),
         (_, true) => t!("engines.kind_made"),
         (_, false) => t!("engines.kind_ask"),
@@ -265,6 +266,7 @@ pub fn headline(p: &Proposal, now: i64) -> String {
     let (window, used, span) = (window_word(p.window), p.used_percent, span(p.resets_at, now));
     match (p.why, p.applied) {
         (Why::Setup, _) => t!("engines.setup_title").to_owned(),
+        (Why::Person, _) => t!("engines.person_title", names = names, to = to),
         (Why::StepDown, false) => t!("engines.step_down_ask", names = names),
         (Why::StepDown, true) => t!("engines.step_down", names = names),
         (Why::Return, _) => t!("engines.return", engine = engine, window = window, used = used, names = names),
@@ -279,6 +281,7 @@ pub fn headline(p: &Proposal, now: i64) -> String {
 pub fn subline(p: &Proposal) -> &'static str {
     match p.why {
         Why::Setup => t!("engines.setup_why"),
+        Why::Person => t!("engines.person_why"),
         Why::StepDown => t!("engines.step_down_why"),
         Why::Return => t!("engines.return_why"),
         Why::Exhausted => t!("engines.hand_over_why"),

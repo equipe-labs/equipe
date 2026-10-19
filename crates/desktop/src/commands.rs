@@ -13,7 +13,7 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-pub const COMMANDS: [Spec; 30] = [
+pub const COMMANDS: [Spec; 31] = [
     Spec { name: "usage", args: "", about: "commands.about_usage" },
     Spec { name: "scale", args: "[0-6|off]", about: "commands.about_scale" },
     Spec { name: "compact", args: "[member]", about: "commands.about_compact" },
@@ -39,6 +39,7 @@ pub const COMMANDS: [Spec; 30] = [
     Spec { name: "browser", args: "[show|hide [member] · max <n>]", about: "commands.about_browser" },
     Spec { name: "send-apps", args: "[add|remove <app> · reset]", about: "commands.about_send_apps" },
     Spec { name: "desktop", args: "stop|resume", about: "commands.about_desktop" },
+    Spec { name: "engine", args: "[member|all] <claude|codex>", about: "commands.about_engine" },
     Spec { name: "engines", args: "[auto|suggest|off|setup]", about: "commands.about_engines" },
     Spec { name: "export", args: "", about: "commands.about_export" },
     Spec { name: "mouse", args: "", about: "commands.about_mouse" },

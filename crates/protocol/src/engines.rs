@@ -76,6 +76,8 @@ pub enum Why {
     Return,
     /// The squad's recommended setup for both engines.
     Setup,
+    /// The person moved members themselves (`/engine`, the member's menu).
+    Person,
 }
 
 /// One member's move.

@@ -485,6 +485,31 @@ impl Runtime {
         self.apply_engine_moves(squad).await;
     }
 
+    /// The person's own move: `members` (none: all) to `engine`, each at its
+    /// next boundary, told on a card that offers to undo it.
+    pub(super) async fn move_engine(&mut self, squad: &str, members: Vec<String>, engine: Engine) {
+        let moves: Vec<Move> = self
+            .mates(squad)
+            .into_iter()
+            .filter(|m| members.is_empty() || members.iter().any(|n| n == &m.name))
+            .filter(|m| m.engine != engine)
+            .map(|m| Move { member: m.name, role: m.role, from: m.engine, to: engine, model: None, effort: None, was_model: m.model, done: false })
+            .collect();
+        if moves.is_empty() {
+            let text = say!(self, "engines.move_none", engine = engine_word(engine));
+            return self.squad_error(squad, text);
+        }
+        let proposal = Proposal { id: equipe_protocol::new_session_id(), why: Why::Person, engine: None, window: None, used_percent: 0, resets_at: 0, moves, applied: true, proposed_at: now_secs() };
+        let names = Self::names(&proposal.moves);
+        self.log_engines(squad, format!("the person moved {names} to {}", engine_word(engine)));
+        self.engines_of(squad).proposals.push(proposal.clone());
+        self.schedule(squad, &proposal);
+        self.publish(Event::EngineProposed { squad: squad.to_owned(), proposal });
+        let text = say!(self, "engines.news_person", names = names, engine = engine_word(engine));
+        self.brief_pm(squad, format!("equipe: {text}"), Some(text));
+        self.apply_engine_moves(squad).await;
+    }
+
     pub(super) fn show_engine_setup(&mut self, squad: &str) {
         let mates = self.mates(squad);
         let reach = self.reach();
@@ -572,7 +597,8 @@ impl Runtime {
             record.homes.entry(mv.member.clone()).or_insert(Home { engine: mv.from, model: mv.was_model.clone() });
             record.switched.entry(mv.member.clone()).or_default().push(unix_now());
         }
-        let setup = self.engines_of(squad).proposals.iter().any(|p| p.id == proposal && p.why == Why::Setup);
+        // The setup, or the person's own move: where it belongs from now on.
+        let setup = self.engines_of(squad).proposals.iter().any(|p| p.id == proposal && matches!(p.why, Why::Setup | Why::Person));
         if setup {
             record.homes.insert(mv.member.clone(), Home { engine: mv.to, model: mv.model.clone() });
         }
@@ -774,6 +800,14 @@ Questions still open with the person stay open — don't ask them again."
         "Nothing is in progress: carry on with the team as before."
     });
     out
+}
+
+/// An engine as the person reads its name.
+fn engine_word(engine: Engine) -> &'static str {
+    match engine {
+        Engine::Claude => "Claude",
+        Engine::Codex => "Codex",
+    }
 }
 
 #[cfg(test)]
