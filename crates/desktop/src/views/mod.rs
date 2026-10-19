@@ -27,6 +27,7 @@ pub mod settings;
 pub mod sheet;
 pub mod sidebar;
 pub mod team;
+pub mod terminal;
 pub mod ticket_card;
 pub mod tickets;
 pub mod visuals;

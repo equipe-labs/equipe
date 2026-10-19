@@ -103,12 +103,36 @@ pub fn configure(view: TextView, p: Palette, look: Look, scope: u64, full: Arc<H
             let shown = block.code();
             let whole = full.get(shown.as_ref()).cloned().unwrap_or_else(|| shown.to_string());
             let label = block.lang().and_then(|l| code::label(&l));
+            // A shell's lines: typed into the terminal, for the person to run.
+            let shell_lang = block.lang().is_some_and(|l| matches!(l.as_ref(), "sh" | "bash" | "zsh" | "shell" | "console" | "fish"));
+            let command = shell_lang.then(|| crate::term::command_of(&whole));
             let copied = window.use_keyed_state(("copied", super::hash_of(&whole)), cx, |_, _| None::<Instant>);
             let is_copied = copied.read(cx).is_some_and(|at| at.elapsed() < COPIED_FOR);
             h_flex()
                 .gap_1()
                 .items_center()
                 .children(label.map(|l| div().px_1().font_family(MONO).text_size(px(11.5)).text_color(muted).child(l)))
+                .children(command.map(|command| {
+                    h_flex()
+                        .id("run-in-terminal")
+                        .h(px(24.))
+                        .px(px(7.))
+                        .gap(px(5.))
+                        .items_center()
+                        .rounded(px(5.))
+                        .cursor_pointer()
+                        .text_size(px(11.5))
+                        .text_color(muted)
+                        .hover(move |s| s.bg(wash).text_color(text))
+                        .child(icon(Icon::Terminal, 12., muted))
+                        .child(t!("term.run_here"))
+                        .on_click(move |_, window, cx| {
+                            let command = command.clone();
+                            if let Some(shell) = cx.try_global::<super::ShellRef>().and_then(|s| s.0.upgrade()) {
+                                shell.update(cx, |shell, cx| shell.open_terminal(Some(command), window, cx));
+                            }
+                        })
+                }))
                 .child(
                     div()
                         .id("copy")

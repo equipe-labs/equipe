@@ -45,6 +45,8 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 # The daemon link runs its own small runtime on a thread off the UI.
 tokio = { version = "1.53.2", features = ["rt", "macros", "sync", "time", "net", "io-util", "process", "fs"] }
+# The terminal panel: its grid, its escape codes and its pty (as Zed's).
+alacritty_terminal = "0.26"
 
 # Attached screenshots: decoded, shrunk and thumbnailed off the UI thread.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff"] }

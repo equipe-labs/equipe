@@ -89,7 +89,17 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .child(div().flex_1())
         .children(screen)
         .children(context)
+        .child(terminal_button(shell, cx))
         .child(browser_button(shell, cx))
+}
+
+/// The terminal's switch (⌃`): a shell on the daemon's machine.
+fn terminal_button(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+    let p = shell.palette;
+    let on = shell.terminal.as_ref().is_some_and(|t| t.open);
+    super::sidebar::icon_button(p, "header-terminal", IconName::SquareTerminal, true, Some(format!("{} ⌃`", t!("term.tip"))))
+        .when(on, |b| b.bg(p.wash))
+        .on_click(cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx)))
 }
 
 /// The browser panel's switch (⌘⇧B), at the title bar's right as Claude's globe.
