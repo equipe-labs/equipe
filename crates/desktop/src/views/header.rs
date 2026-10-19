@@ -254,7 +254,9 @@ fn list(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                     .min_w_0()
                     .child(div().truncate().when(on, |d| d.font_weight(FontWeight::SEMIBOLD)).child(label.clone()))
                     // Where it is, on the daemon's machine.
-                    .children(paths.get(&label).filter(|_| color.is_some()).map(|path| div().truncate().text_size(px(11.)).text_color(p.muted).child(path.clone()))),
+                    .children(paths.get(&label).filter(|_| color.is_some()).map(|path| div().truncate().text_size(px(11.)).text_color(p.muted).child(path.clone())))
+                    // All of the squad: also what belongs to no project.
+                    .when(color.is_none(), |d| d.child(div().truncate().text_size(px(11.)).text_color(p.muted).child(t!("header.all_projects_note")))),
             )
             .when(counts.0 > 0, |r| r.child(h_flex().gap_1().items_center().text_size(px(12.)).text_color(p.amber).child(dot(p.amber, 5.)).child(counts.0.to_string())))
             .when(counts.1 > 0, |r| r.child(div().text_size(px(12.)).text_color(p.accent).child(format!("⚑ {}", counts.1))))

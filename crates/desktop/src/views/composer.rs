@@ -445,9 +445,11 @@ fn placeholder(model: &Model) -> String {
             t!("composer.placeholder_ticket", id = ticket, name = to)
         }
         // To the PM, with a project in focus: about it.
-        None => match model.focus.as_deref().filter(|_| Model::is_pm(member)) {
-            Some(project) => t!("composer.placeholder_to_in", name = member.name, project = project),
-            None => t!("composer.placeholder_to", name = member.name),
+        None => match (model.focus.as_deref(), Model::is_pm(member)) {
+            (Some(project), true) => t!("composer.placeholder_to_in", name = member.name, project = project),
+            // The PM with no project in focus: anything at all, a new project too.
+            (None, true) => t!("composer.placeholder_to_pm_any", name = member.name),
+            _ => t!("composer.placeholder_to", name = member.name),
         },
     }
 }
