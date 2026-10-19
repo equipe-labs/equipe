@@ -372,7 +372,8 @@ const ANSWERS: &[&str] = &[
 /// What `ask` wants back: an OK when it asks for a look (and says what an OK
 /// would be), words when it asks something, else a thing to do.
 pub fn want_of(ask: &str) -> Want {
-    let lower = ask.to_lowercase();
+    // A link's `?` and words aren't the ask's: `…/new?plan=free` asks nothing.
+    let lower: String = ask.to_lowercase().split_whitespace().filter(|w| !w.contains("://")).collect::<Vec<_>>().join(" ");
     // A Korean word counts at a word's start only: `설정해 주세요` is a thing
     // to do, not `정해 주세요`.
     let has = |words: &[&str]| {
@@ -498,6 +499,7 @@ mod tests {
         assert_eq!(want_of("대상은 '내부(Internal)'로 설정해 주세요."), Want::Do);
         assert_eq!(want_of("어느 쪽으로 할지 정해 주세요"), Want::Answer);
         assert_eq!(want_of("이름을 골라 주세요"), Want::Answer);
+        assert_eq!(want_of("https://github.com/account/organizations/new?plan=free 에 들어가 조직을 만들어 주세요"), Want::Do, "a link's ? asks nothing");
     }
 
     /// The line the person saw, its asks joined with ", ".

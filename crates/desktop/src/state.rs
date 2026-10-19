@@ -761,9 +761,7 @@ impl Model {
         self.asked.load(snapshot.questions.clone());
         self.team.load(snapshot.team_changes.clone());
         self.accepts.load(snapshot.accepts.clone());
-        if let Some(note) = crate::notify::stale_daemon(&version, env!("CARGO_PKG_VERSION")) {
-            self.flash = Some(note);
-        }
+        // An older daemon: the banner over the conversation says so, with its button.
         self.daemon_version = version;
         self.member_modes = snapshot.sessions.iter().filter_map(|s| Some((s.session, s.mode?))).collect();
         self.efforts = snapshot.sessions.iter().filter_map(|s| Some((s.session, s.effort.clone()?))).collect();

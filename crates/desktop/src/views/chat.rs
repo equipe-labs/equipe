@@ -76,6 +76,8 @@ type Shown = (SessionId, Option<u32>, Option<Option<String>>);
 
 pub struct Chat {
     scroller: Entity<MessageScrollerState>,
+    /// Which of the cards over the composer is in front, when several wait.
+    pub dock_at: usize,
     pub blocks: Rc<Vec<Block>>,
     /// Whose conversation `blocks` are, the ticket it shows the work of, and
     /// the slice of it.
@@ -181,6 +183,7 @@ impl Chat {
             answered_in: None,
             follow: true,
             elsewhere: HashSet::new(),
+            dock_at: 0,
             faded_in: None,
             seen_revision: 0,
             expanded: false,
@@ -521,11 +524,65 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 .min_h_0()
                 .max_w(px(COLUMN))
                 .px_4()
-                .child(v_flex().min_h_0().children(approvals::for_you(shell, cx)).children(approvals::approval(shell, cx)).children(super::decide::docked(shell, cx)).children(super::accept::docked(shell, cx)).children(super::team::docked(shell, cx)).children(super::switching::docked(shell, cx)).children(super::asklist::hint(shell, cx)))
+                .child(v_flex().min_h_0().children(approvals::for_you(shell, cx)).children(dock(shell, cx)).children(super::asklist::hint(shell, cx)))
                 .child(div().flex_none().child(composer::render(shell, cx))),
         )
         .children(lightbox(shell, cx));
     h_flex().flex_1().min_h_0().items_stretch().child(main).children(side_panel(shell, cx))
+}
+
+/// The cards over the composer — a request, a member's questions, work to
+/// confirm, a change to the team, an engine's — one at a time, so the
+/// conversation stays in sight: the one in front, and "1 / 3 ‹ ›" to go
+/// through the others. Answered, the next comes to the front.
+fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let cards: Vec<AnyElement> = [
+        approvals::approval(shell, cx),
+        super::decide::docked(shell, cx),
+        super::accept::docked(shell, cx),
+        super::team::docked(shell, cx),
+        super::switching::docked(shell, cx),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let count = cards.len();
+    if count == 0 {
+        return None;
+    }
+    let at = shell.chat.dock_at.min(count - 1);
+    let card = cards.into_iter().nth(at)?;
+    if count == 1 {
+        return Some(card);
+    }
+    let p = shell.palette;
+    let step = |id: &'static str, glyph: Icon, by: isize, cx: &mut Context<Shell>| {
+        div()
+            .id(id)
+            .size(px(22.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(R_SM))
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.wash))
+            .child(icon(glyph, 12., p.text2))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.chat.dock_at = (this.chat.dock_at.min(count - 1) as isize + by).rem_euclid(count as isize) as usize;
+                cx.notify();
+            }))
+    };
+    let bar = h_flex()
+        .justify_end()
+        .gap_1()
+        .items_center()
+        .pb_1()
+        .text_size(px(META))
+        .text_color(p.muted)
+        .child(t!("chat.cards_waiting", at = at + 1, count = count))
+        .child(step("dock-prev", Icon::ArrowLeft, -1, cx))
+        .child(step("dock-next", Icon::ArrowRight, 1, cx));
+    Some(v_flex().min_h_0().child(bar).child(card).into_any_element())
 }
 
 /// What a blank conversation says. The PM's names the thread it is.

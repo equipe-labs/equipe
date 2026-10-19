@@ -36,6 +36,10 @@ proposes it to the person."
         let mates: Vec<Mate<'_>> = team.iter().map(|(name, role, on)| Mate { name, role, on: *on }).collect();
         let waiting = self.team_changes.get(squad).cloned().unwrap_or_default();
         let proposal = rules::check(args, &mates, &tickets, &waiting)?;
+        let asked = args.get("asked").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        if let Some(why) = rules::too_soon(&proposal, &mates, &tickets, now_secs(), asked) {
+            return Err(why);
+        }
         let reply = rules::proposed_reply(&proposal);
         let change = proposal.into_change(equipe_protocol::new_session_id(), member, id, now_secs());
         self.team_changes(squad).push(change.clone());
