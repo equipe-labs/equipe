@@ -1,0 +1,147 @@
+{
+  "$description": "equipe design system v1 — layer 1: primitives (raw values, no meaning). Never use these directly in product code; use the semantic layer (semantic.*.json) or component tokens. Source: T-144 brand guideline §2.2, §6; audit in audit.md.",
+  "color": {
+    "raw": {
+      "neutral": {
+        "$type": "color",
+        "0":   { "$value": "#FFFFFF", "$description": "white" },
+        "50":  { "$value": "#F6F5F1", "$description": "paper — light bg" },
+        "100": { "$value": "#EFEDE7", "$description": "bone — dark text, mark" },
+        "200": { "$value": "#EAE7E0", "$description": "light sunken" },
+        "400": { "$value": "#A3A5AB", "$description": "dark muted" },
+        "500": { "$value": "#7C7E85" },
+        "550": { "$value": "#74767D", "$description": "light strong border (>=3:1 on bg)" },
+        "600": { "$value": "#4F5159", "$description": "light muted" },
+        "800": { "$value": "#15161A", "$description": "ink — light text" },
+        "825": { "$value": "#2A2C33", "$description": "ink, a step lighter (light action hover)" },
+        "850": { "$value": "#16171A", "$description": "dark surface" },
+        "860": { "$value": "#3A3C44", "$description": "ink, two steps lighter (light action pressed)" },
+        "875": { "$value": "#1B1C20", "$description": "dark raised" },
+        "900": { "$value": "#111114", "$description": "dark sunken" },
+        "950": { "$value": "#0A0A0C", "$description": "void — dark bg, icon tile" },
+        "150": { "$value": "#DAD7CF", "$description": "bone, a step darker (dark action hover)" },
+        "160": { "$value": "#C9C6BE", "$description": "bone, two steps darker (dark action pressed)" }
+      },
+      "blue": {
+        "$type": "color",
+        "300": { "$value": "#8FB0FF", "$description": "dark accent" },
+        "500": { "$value": "#3F6FF5", "$description": "the brand dot (graphic only, not text)" },
+        "700": { "$value": "#1D4ED8", "$description": "light accent" },
+        "950": { "$value": "#0B1226", "$description": "text on dark accent" }
+      },
+      "green":  { "$type": "color", "300": { "$value": "#7FCB8E" }, "700": { "$value": "#1F6B33" } },
+      "amber":  { "$type": "color", "300": { "$value": "#E2B865" }, "700": { "$value": "#825600" } },
+      "orange": { "$type": "color", "300": { "$value": "#EC9A62" }, "700": { "$value": "#A04610" } },
+      "red":    { "$type": "color", "300": { "$value": "#EE7B74" }, "700": { "$value": "#AD2E27" } },
+      "alpha": {
+        "$type": "color",
+        "ink-5":   { "$value": "#0A0A0C0D" },
+        "ink-9":   { "$value": "#0A0A0C17" },
+        "ink-14":  { "$value": "#0A0A0C24" },
+        "ink-40":  { "$value": "#0A0A0C66" },
+        "bone-7":  { "$value": "#EFEDE712" },
+        "bone-12": { "$value": "#EFEDE71F" },
+        "bone-14": { "$value": "#E9E6DF24" },
+        "black-60": { "$value": "#00000099" },
+        "blue700-10": { "$value": "#1D4ED81A" },
+        "blue300-12": { "$value": "#8FB0FF1F" },
+        "green700-12": { "$value": "#1F6B331F" },
+        "green300-12": { "$value": "#7FCB8E1F" },
+        "amber700-12": { "$value": "#8256001F" },
+        "amber300-12": { "$value": "#E2B8651F" },
+        "orange700-12": { "$value": "#A046101F" },
+        "orange300-12": { "$value": "#EC9A621F" },
+        "red700-12": { "$value": "#AD2E271F" },
+        "red300-12": { "$value": "#EE7B741F" },
+        "black-22": { "$value": "#00000038" },
+        "black-10": { "$value": "#0000001A" },
+        "black-30": { "$value": "#0000004D" }
+      }
+    }
+  },
+  "space": {
+    "$type": "dimension",
+    "$description": "4px base. 1-6 are for components; 7-9 are page rhythm (web sections).",
+    "0": { "$value": "0px" },
+    "1": { "$value": "4px" },
+    "2": { "$value": "8px" },
+    "3": { "$value": "12px" },
+    "4": { "$value": "16px" },
+    "5": { "$value": "24px" },
+    "6": { "$value": "32px" },
+    "7": { "$value": "48px" },
+    "8": { "$value": "72px" },
+    "9": { "$value": "112px" }
+  },
+  "radius": {
+    "$type": "dimension",
+    "sm":   { "$value": "6px" },
+    "md":   { "$value": "8px" },
+    "lg":   { "$value": "12px" },
+    "xl":   { "$value": "16px" },
+    "xxl":  { "$value": "24px" },
+    "full": { "$value": "9999px" }
+  },
+  "border": {
+    "$type": "dimension",
+    "1": { "$value": "1px" },
+    "2": { "$value": "2px" }
+  },
+  "font": {
+    "family": {
+      "$type": "fontFamily",
+      "sans": { "$value": ["Inter Variable", "Inter", "Pretendard Variable", "system-ui", "sans-serif"], "$description": "Web only. Apps use the platform font (SF Pro / Roboto) — guideline §3.2." },
+      "mono": { "$value": ["JetBrains Mono Variable", "JetBrains Mono", "ui-monospace", "Menlo", "monospace"] }
+    },
+    "weight": {
+      "$type": "fontWeight",
+      "regular": { "$value": 400 },
+      "semibold": { "$value": 600 },
+      "bold": { "$value": 700 }
+    }
+  },
+  "duration": {
+    "$type": "duration",
+    "0":    { "$value": "0ms" },
+    "100":  { "$value": "100ms" },
+    "120":  { "$value": "120ms" },
+    "160":  { "$value": "160ms" },
+    "180":  { "$value": "180ms" },
+    "200":  { "$value": "200ms" },
+    "5000": { "$value": "5000ms" }
+  },
+  "easing": {
+    "$type": "cubicBezier",
+    "out-cubic": { "$value": [0.215, 0.61, 0.355, 1], "$description": "1-(1-t)^3 — desktop motion.rs ease_out" },
+    "out-quint": { "$value": [0.23, 1, 0.32, 1], "$description": "1-(1-t)^5 — panel slide" }
+  },
+  "opacity": {
+    "$type": "number",
+    "disabled": { "$value": 0.4 }
+  },
+  "elevation": {
+    "$type": "shadow",
+    "float": {
+      "$value": [
+        { "color": "{color.raw.alpha.black-22}", "offsetX": "0px", "offsetY": "8px", "blur": "24px", "spread": "-4px" },
+        { "color": "{color.raw.alpha.black-10}", "offsetX": "0px", "offsetY": "2px", "blur": "6px", "spread": "0px" }
+      ],
+      "$description": "popover, menu, toast — desktop motion.rs float_shadow at full strength"
+    },
+    "overlay": {
+      "$value": [
+        { "color": "{color.raw.alpha.black-30}", "offsetX": "0px", "offsetY": "16px", "blur": "48px", "spread": "-8px" },
+        { "color": "{color.raw.alpha.black-10}", "offsetX": "0px", "offsetY": "4px", "blur": "12px", "spread": "0px" }
+      ],
+      "$description": "modal dialog, bottom sheet — NEW in v1 (no current equivalent)"
+    }
+  },
+  "z": {
+    "$type": "number",
+    "base": { "$value": 0 },
+    "sticky": { "$value": 5 },
+    "dropdown": { "$value": 6 },
+    "overlay": { "$value": 20 },
+    "toast": { "$value": 30 }
+  }
+}

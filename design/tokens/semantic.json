@@ -1,0 +1,720 @@
+{
+  "$description": "layer 2: semantic, mode-independent (shape, size, type, motion). Platform differences are explicit under $extensions.im.equipe.platform.",
+  "radius": {
+    "$type": "dimension",
+    "code": {
+      "$value": "{radius.sm}",
+      "$description": "inline code, small tags"
+    },
+    "control": {
+      "$value": "{radius.md}",
+      "$description": "buttons, fields, menus, rows",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "ios": "{radius.lg}",
+            "android": "{radius.lg}"
+          }
+        }
+      }
+    },
+    "card": {
+      "$value": "{radius.lg}",
+      "$description": "cards, banners",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "ios": "{radius.xl}",
+            "android": "{radius.xl}"
+          }
+        }
+      }
+    },
+    "sheet": {
+      "$value": "{radius.xl}",
+      "$description": "modal dialogs; mobile bottom-sheet top corners",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "ios": "{radius.xxl}",
+            "android": "{radius.xxl}"
+          }
+        }
+      }
+    },
+    "chip": {
+      "$value": "{radius.full}",
+      "$description": "chips and badges (pill)"
+    }
+  },
+  "size": {
+    "$type": "dimension",
+    "button": {
+      "$value": "44px",
+      "$description": "button height (md)",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "desktop": "28px",
+            "android": "48px"
+          }
+        }
+      }
+    },
+    "field": {
+      "$value": "44px",
+      "$description": "text field height",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "desktop": "36px",
+            "android": "48px"
+          }
+        }
+      }
+    },
+    "row": {
+      "$value": "48px",
+      "$description": "list row min height",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "desktop": "32px",
+            "ios": "44px",
+            "android": "56px"
+          }
+        }
+      }
+    },
+    "tap": {
+      "$value": "44px",
+      "$description": "minimum hit area",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "desktop": "28px",
+            "android": "48px"
+          }
+        }
+      }
+    },
+    "icon": {
+      "sm": {
+        "$value": "16px"
+      },
+      "md": {
+        "$value": "20px"
+      },
+      "lg": {
+        "$value": "24px"
+      }
+    },
+    "chip": {
+      "$value": "32px",
+      "$description": "chip height",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "desktop": "24px"
+          }
+        }
+      }
+    },
+    "badge": {
+      "$value": "22px",
+      "$description": "status badge height",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "desktop": "20px"
+          }
+        }
+      }
+    },
+    "grabber-width": {
+      "$value": "36px"
+    },
+    "grabber-height": {
+      "$value": "4px"
+    }
+  },
+  "layout": {
+    "$type": "dimension",
+    "wrap": {
+      "$value": "1040px",
+      "$description": "web content max width"
+    },
+    "measure": {
+      "$value": "680px",
+      "$description": "reading column",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "desktop": "600px"
+          }
+        }
+      }
+    },
+    "column": {
+      "$value": "720px",
+      "$description": "desktop conversation column"
+    },
+    "gutter": {
+      "$value": "24px",
+      "$description": "page side padding (web: 24, 16 at <=640)",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "ios": "16px",
+            "android": "16px",
+            "web-narrow": "16px"
+          }
+        }
+      }
+    },
+    "breakpoint-narrow": {
+      "$value": "640px",
+      "$description": "web only"
+    }
+  },
+  "type": {
+    "$type": "typography",
+    "$description": "Type roles. $value = web (>640px). Overrides: web-narrow (<=640), desktop (GPUI), ios (Dynamic Type textStyle; size = Large default, reference only), android (Material3 slot, sp). Apps keep the platform font (guideline 3.2).",
+    "display": {
+      "$value": {
+        "fontFamily": "{font.family.sans}",
+        "fontSize": "56px",
+        "fontWeight": "{font.weight.bold}",
+        "lineHeight": "60px",
+        "letterSpacing": "-0.02em"
+      },
+      "$description": "hero / onboarding title",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "web-narrow": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "36px",
+              "fontWeight": "{font.weight.bold}",
+              "lineHeight": "38px",
+              "letterSpacing": "-0.02em"
+            },
+            "desktop": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "28px",
+              "fontWeight": "{font.weight.bold}",
+              "lineHeight": "34px",
+              "letterSpacing": "0em"
+            },
+            "ios": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "34px",
+              "fontWeight": "{font.weight.bold}",
+              "lineHeight": "41px",
+              "letterSpacing": "0em",
+              "textStyle": "largeTitle"
+            },
+            "android": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "36px",
+              "fontWeight": "{font.weight.bold}",
+              "lineHeight": "44px",
+              "letterSpacing": "0em",
+              "slot": "displaySmall"
+            }
+          }
+        }
+      }
+    },
+    "headline": {
+      "$value": {
+        "fontFamily": "{font.family.sans}",
+        "fontSize": "32px",
+        "fontWeight": "{font.weight.bold}",
+        "lineHeight": "37px",
+        "letterSpacing": "-0.02em"
+      },
+      "$description": "section / screen headline",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "web-narrow": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "26px",
+              "fontWeight": "{font.weight.bold}",
+              "lineHeight": "30px",
+              "letterSpacing": "-0.02em"
+            },
+            "desktop": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "22px",
+              "fontWeight": "{font.weight.bold}",
+              "lineHeight": "28px",
+              "letterSpacing": "0em"
+            },
+            "ios": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "28px",
+              "fontWeight": "{font.weight.bold}",
+              "lineHeight": "34px",
+              "letterSpacing": "0em",
+              "textStyle": "title"
+            },
+            "android": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "28px",
+              "fontWeight": "{font.weight.bold}",
+              "lineHeight": "36px",
+              "letterSpacing": "0em",
+              "slot": "headlineMedium"
+            }
+          }
+        }
+      }
+    },
+    "title": {
+      "$value": {
+        "fontFamily": "{font.family.sans}",
+        "fontSize": "18px",
+        "fontWeight": "{font.weight.bold}",
+        "lineHeight": "23px",
+        "letterSpacing": "0em"
+      },
+      "$description": "card / sheet / group title",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "web-narrow": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "18px",
+              "fontWeight": "{font.weight.bold}",
+              "lineHeight": "23px",
+              "letterSpacing": "0em"
+            },
+            "desktop": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "16px",
+              "fontWeight": "{font.weight.semibold}",
+              "lineHeight": "22px",
+              "letterSpacing": "0em"
+            },
+            "ios": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "20px",
+              "fontWeight": "{font.weight.semibold}",
+              "lineHeight": "25px",
+              "letterSpacing": "0em",
+              "textStyle": "title3"
+            },
+            "android": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "22px",
+              "fontWeight": "{font.weight.semibold}",
+              "lineHeight": "28px",
+              "letterSpacing": "0em",
+              "slot": "titleLarge"
+            }
+          }
+        }
+      }
+    },
+    "lead": {
+      "$value": {
+        "fontFamily": "{font.family.sans}",
+        "fontSize": "22px",
+        "fontWeight": "{font.weight.regular}",
+        "lineHeight": "33px",
+        "letterSpacing": "0em"
+      },
+      "$description": "intro paragraph (web); apps use body",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "web-narrow": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "19px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "28px",
+              "letterSpacing": "0em"
+            },
+            "desktop": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "17px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "27px",
+              "letterSpacing": "0em"
+            },
+            "ios": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "17px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "22px",
+              "letterSpacing": "0em",
+              "textStyle": "body"
+            },
+            "android": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "16px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "24px",
+              "letterSpacing": "0em"
+            }
+          }
+        }
+      }
+    },
+    "body": {
+      "$value": {
+        "fontFamily": "{font.family.sans}",
+        "fontSize": "18px",
+        "fontWeight": "{font.weight.regular}",
+        "lineHeight": "29px",
+        "letterSpacing": "0em"
+      },
+      "$description": "reading text: replies, descriptions",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "web-narrow": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "17px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "27px",
+              "letterSpacing": "0em"
+            },
+            "desktop": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "15px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "25px",
+              "letterSpacing": "0em"
+            },
+            "ios": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "17px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "22px",
+              "letterSpacing": "0em",
+              "textStyle": "body"
+            },
+            "android": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "16px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "24px",
+              "letterSpacing": "0em",
+              "slot": "bodyLarge"
+            }
+          }
+        }
+      }
+    },
+    "ui": {
+      "$value": {
+        "fontFamily": "{font.family.sans}",
+        "fontSize": "16px",
+        "fontWeight": "{font.weight.regular}",
+        "lineHeight": "24px",
+        "letterSpacing": "0em"
+      },
+      "$description": "interface text: rows, fields, menus",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "web-narrow": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "16px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "24px",
+              "letterSpacing": "0em"
+            },
+            "desktop": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "14px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "20px",
+              "letterSpacing": "0em"
+            },
+            "ios": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "15px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "20px",
+              "letterSpacing": "0em",
+              "textStyle": "subheadline"
+            },
+            "android": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "14px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "20px",
+              "letterSpacing": "0em",
+              "slot": "bodyMedium"
+            }
+          }
+        }
+      }
+    },
+    "label": {
+      "$value": {
+        "fontFamily": "{font.family.sans}",
+        "fontSize": "16px",
+        "fontWeight": "{font.weight.semibold}",
+        "lineHeight": "24px",
+        "letterSpacing": "0em"
+      },
+      "$description": "button / tab / chip label",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "web-narrow": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "16px",
+              "fontWeight": "{font.weight.semibold}",
+              "lineHeight": "24px",
+              "letterSpacing": "0em"
+            },
+            "desktop": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "14px",
+              "fontWeight": "{font.weight.semibold}",
+              "lineHeight": "20px",
+              "letterSpacing": "0em"
+            },
+            "ios": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "15px",
+              "fontWeight": "{font.weight.semibold}",
+              "lineHeight": "20px",
+              "letterSpacing": "0em",
+              "textStyle": "subheadline"
+            },
+            "android": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "14px",
+              "fontWeight": "{font.weight.semibold}",
+              "lineHeight": "20px",
+              "letterSpacing": "0em",
+              "slot": "labelLarge"
+            }
+          }
+        }
+      }
+    },
+    "small": {
+      "$value": {
+        "fontFamily": "{font.family.sans}",
+        "fontSize": "14px",
+        "fontWeight": "{font.weight.regular}",
+        "lineHeight": "21px",
+        "letterSpacing": "0em"
+      },
+      "$description": "secondary text: notes, hints, captions",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "web-narrow": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "14px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "21px",
+              "letterSpacing": "0em"
+            },
+            "desktop": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "13px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "20px",
+              "letterSpacing": "0em"
+            },
+            "ios": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "13px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "18px",
+              "letterSpacing": "0em",
+              "textStyle": "footnote"
+            },
+            "android": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "13px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "18px",
+              "letterSpacing": "0em",
+              "slot": "bodySmall"
+            }
+          }
+        }
+      }
+    },
+    "meta": {
+      "$value": {
+        "fontFamily": "{font.family.sans}",
+        "fontSize": "12px",
+        "fontWeight": "{font.weight.regular}",
+        "lineHeight": "18px",
+        "letterSpacing": "0em"
+      },
+      "$description": "times, counts, badge text",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "web-narrow": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "12px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "18px",
+              "letterSpacing": "0em"
+            },
+            "desktop": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "12px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "18px",
+              "letterSpacing": "0em"
+            },
+            "ios": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "12px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "16px",
+              "letterSpacing": "0em",
+              "textStyle": "caption1"
+            },
+            "android": {
+              "fontFamily": "{font.family.sans}",
+              "fontSize": "12px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "16px",
+              "letterSpacing": "0em",
+              "slot": "labelMedium"
+            }
+          }
+        }
+      }
+    },
+    "code": {
+      "$value": {
+        "fontFamily": "{font.family.mono}",
+        "fontSize": "15px",
+        "fontWeight": "{font.weight.regular}",
+        "lineHeight": "24px",
+        "letterSpacing": "0em"
+      },
+      "$description": "code, commands, paths",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "web-narrow": {
+              "fontFamily": "{font.family.mono}",
+              "fontSize": "14px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "22px",
+              "letterSpacing": "0em"
+            },
+            "desktop": {
+              "fontFamily": "{font.family.mono}",
+              "fontSize": "13px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "20px",
+              "letterSpacing": "0em"
+            },
+            "ios": {
+              "fontFamily": "{font.family.mono}",
+              "fontSize": "15px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "20px",
+              "letterSpacing": "0em",
+              "textStyle": "footnote"
+            },
+            "android": {
+              "fontFamily": "{font.family.mono}",
+              "fontSize": "14px",
+              "fontWeight": "{font.weight.regular}",
+              "lineHeight": "20px",
+              "letterSpacing": "0em"
+            }
+          }
+        }
+      }
+    }
+  },
+  "motion": {
+    "duration": {
+      "$type": "duration",
+      "fast": {
+        "$value": "{duration.120}",
+        "$description": "hover fill, press, tooltip"
+      },
+      "base": {
+        "$value": "{duration.160}",
+        "$description": "popover, menu, chip"
+      },
+      "slow": {
+        "$value": "{duration.200}",
+        "$description": "dialog, sheet, a card or message arriving"
+      },
+      "slide": {
+        "$value": "{duration.180}",
+        "$description": "sidebar / panel sliding"
+      },
+      "toast": {
+        "$value": "{duration.5000}",
+        "$description": "a toast without an action stays this long; pauses on hover/focus"
+      },
+      "reduced": {
+        "$value": "{duration.100}",
+        "$description": "the only motion left under Reduce Motion: an opacity fade this short or shorter"
+      }
+    },
+    "easing": {
+      "$type": "cubicBezier",
+      "standard": {
+        "$value": "{easing.out-cubic}",
+        "$description": "the one curve: quick to start, soft to land"
+      },
+      "soft": {
+        "$value": "{easing.out-quint}",
+        "$description": "panel slide only"
+      }
+    },
+    "travel": {
+      "$type": "dimension",
+      "pop": {
+        "$value": "4px"
+      },
+      "rise": {
+        "$value": "6px"
+      },
+      "dialog": {
+        "$value": "8px"
+      },
+      "reduced": {
+        "$value": "0px",
+        "$description": "under Reduce Motion every travel is 0"
+      }
+    }
+  },
+  "state": {
+    "disabled-opacity": {
+      "$type": "number",
+      "$value": "{opacity.disabled}"
+    }
+  },
+  "focus": {
+    "$type": "dimension",
+    "ring-width": {
+      "$value": "2px"
+    },
+    "ring-offset": {
+      "$value": "3px",
+      "$extensions": {
+        "im.equipe": {
+          "platform": {
+            "desktop": "2px"
+          }
+        }
+      }
+    }
+  }
+}

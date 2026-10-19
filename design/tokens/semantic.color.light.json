@@ -1,0 +1,134 @@
+{
+  "$description": "layer 2: semantic colour — light. Same keys in light and dark; only values differ.",
+  "color": {
+    "$type": "color",
+    "bg": {
+      "$value": "{color.raw.neutral.50}",
+      "$description": "page / app background"
+    },
+    "surface": {
+      "$value": "{color.raw.neutral.0}",
+      "$description": "cards, sheets, fields"
+    },
+    "raised": {
+      "$value": "{color.raw.neutral.0}",
+      "$description": "popovers, menus, toasts-over-surface, selected segment"
+    },
+    "sunken": {
+      "$value": "{color.raw.neutral.200}",
+      "$description": "code, pressed wells, progress tracks"
+    },
+    "text": {
+      "$value": "{color.raw.neutral.800}",
+      "$description": "body and headings"
+    },
+    "muted": {
+      "$value": "{color.raw.neutral.600}",
+      "$description": "secondary text"
+    },
+    "accent": {
+      "$value": "{color.raw.blue.700}",
+      "$description": "links, text buttons, selection, focus"
+    },
+    "on-accent": {
+      "$value": "{color.raw.neutral.0}",
+      "$description": "text on a filled accent area"
+    },
+    "accent-bg": {
+      "$value": "{color.raw.alpha.blue700-10}",
+      "$description": "selected row / selected chip tint"
+    },
+    "focus": {
+      "$value": "{color.raw.blue.700}",
+      "$description": "focus ring (graphic, 3:1)"
+    },
+    "dot": {
+      "$value": "{color.raw.blue.500}",
+      "$description": "brand dot — logo graphic only, never text"
+    },
+    "line": {
+      "$value": "{color.raw.alpha.ink-14}",
+      "$description": "hairline dividers (decorative)"
+    },
+    "border-strong": {
+      "$value": "{color.raw.neutral.550}",
+      "$description": "field / control boundary that must be seen (3:1)"
+    },
+    "action": {
+      "$value": "{color.raw.neutral.800}",
+      "$description": "filled primary action in product UI (text-colour fill)"
+    },
+    "on-action": {
+      "$value": "{color.raw.neutral.50}",
+      "$description": "text on action"
+    },
+    "action-hover": {
+      "$value": "{color.raw.neutral.825}",
+      "$description": "action, pointer over"
+    },
+    "action-pressed": {
+      "$value": "{color.raw.neutral.860}",
+      "$description": "action, pressed"
+    },
+    "hover": {
+      "$value": "{color.raw.alpha.ink-5}",
+      "$description": "neutral overlay: pointer over a row / ghost control"
+    },
+    "pressed": {
+      "$value": "{color.raw.alpha.ink-9}",
+      "$description": "neutral overlay: pressed"
+    },
+    "scrim": {
+      "$value": "{color.raw.alpha.ink-40}",
+      "$description": "behind a modal or sheet"
+    },
+    "inverse": {
+      "$value": "{color.raw.neutral.800}",
+      "$description": "toast / tooltip background (opposite of the page)"
+    },
+    "on-inverse": {
+      "$value": "{color.raw.neutral.50}",
+      "$description": "text on inverse"
+    },
+    "inverse-accent": {
+      "$value": "{color.raw.blue.300}",
+      "$description": "link / action on inverse"
+    },
+    "ok": {
+      "$value": "{color.raw.green.700}",
+      "$description": "done / success text and icon"
+    },
+    "ok-bg": {
+      "$value": "{color.raw.alpha.green700-12}",
+      "$description": "badge tint"
+    },
+    "work": {
+      "$value": "{color.raw.amber.700}",
+      "$description": "a member is working"
+    },
+    "work-bg": {
+      "$value": "{color.raw.alpha.amber700-12}",
+      "$description": "badge tint"
+    },
+    "wait": {
+      "$value": "{color.raw.orange.700}",
+      "$description": "waiting for the person — their turn, approval"
+    },
+    "wait-bg": {
+      "$value": "{color.raw.alpha.orange700-12}",
+      "$description": "badge tint"
+    },
+    "err": {
+      "$value": "{color.raw.red.700}",
+      "$description": "error / destructive text, icon, fill"
+    },
+    "err-bg": {
+      "$value": "{color.raw.alpha.red700-12}",
+      "$description": "badge / banner tint"
+    },
+    "on-err": {
+      "$value": "{color.raw.neutral.0}",
+      "$description": "text on a filled err area"
+    }
+  }
+}

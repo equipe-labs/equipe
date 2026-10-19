@@ -1,0 +1,82 @@
+/* equipe design system v1 — reference web implementation of the eight components.
+   Hand-written, but every value is a token from build/css/tokens.css (var(--eq-*)); `npm run lint:css`
+   fails on any raw colour or px literal here. States have a class twin (.is-hover …) so a sheet can draw them side by side. */
+
+.eq-focusable:focus-visible, .eq-focusable.is-focus { outline: var(--eq-focus-ring-width) solid var(--eq-color-focus); outline-offset: var(--eq-focus-ring-offset); }
+.eq-overlay-hover:hover, .eq-overlay-hover.is-hover { background-image: linear-gradient(var(--eq-color-hover), var(--eq-color-hover)); }
+.eq-overlay-hover:active, .eq-overlay-hover.is-pressed { background-image: linear-gradient(var(--eq-color-pressed), var(--eq-color-pressed)); }
+:where(.eq-btn, .eq-input, .eq-card, .eq-chip, .eq-row, .eq-toast-action):disabled,
+:where(.eq-btn, .eq-input, .eq-card, .eq-chip, .eq-row, .eq-toast-action).is-disabled { opacity: var(--eq-state-disabled-opacity); cursor: not-allowed; }
+@media (prefers-reduced-motion: no-preference) { .eq-anim { transition: background-color var(--eq-motion-duration-fast) var(--eq-motion-easing-standard), border-color var(--eq-motion-duration-fast) var(--eq-motion-easing-standard), opacity var(--eq-motion-duration-fast) var(--eq-motion-easing-standard); } }
+
+/* ── button ── */
+.eq-btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--eq-button-gap); min-height: var(--eq-button-height); padding: 0 var(--eq-button-padding-x); border-radius: var(--eq-button-radius); border: var(--eq-border-1) solid transparent; font: var(--eq-button-font); letter-spacing: var(--eq-type-label-tracking); cursor: pointer; background-color: var(--eq-button-primary-bg); color: var(--eq-button-primary-fg); }
+.eq-btn--sm { min-height: var(--eq-button-height-sm); padding: 0 var(--eq-space-3); font: var(--eq-type-ui); font-weight: 600; }
+.eq-btn--primary:hover, .eq-btn--primary.is-hover { background-color: var(--eq-button-primary-bg-hover); }
+.eq-btn--primary:active, .eq-btn--primary.is-pressed { background-color: var(--eq-button-primary-bg-pressed); }
+.eq-btn--brand { background-color: var(--eq-button-brand-bg); color: var(--eq-button-brand-fg); }
+.eq-btn--secondary { background-color: var(--eq-button-secondary-bg); color: var(--eq-button-secondary-fg); border-color: var(--eq-button-secondary-border); }
+.eq-btn--ghost { background-color: var(--eq-button-ghost-bg); color: var(--eq-button-ghost-fg); }
+.eq-btn--danger { background-color: var(--eq-button-danger-bg); color: var(--eq-button-danger-fg); }
+
+/* ── input ── */
+.eq-field { display: flex; flex-direction: column; gap: var(--eq-input-gap); }
+.eq-field label { font: var(--eq-input-label-font); color: var(--eq-card-title-fg); }
+.eq-input { box-sizing: border-box; min-height: var(--eq-input-height); padding: 0 var(--eq-input-padding-x); border-radius: var(--eq-input-radius); border: var(--eq-input-border-width) solid var(--eq-input-border); background-color: var(--eq-input-bg); color: var(--eq-input-fg); font: var(--eq-input-font); width: 100%; }
+.eq-input::placeholder { color: var(--eq-input-placeholder); opacity: 1; }
+.eq-input:hover:not(:disabled), .eq-input.is-hover { background-image: linear-gradient(var(--eq-color-hover), var(--eq-color-hover)); }
+.eq-input:focus, .eq-input.is-focus { outline: none; border-color: var(--eq-input-border-focus); box-shadow: 0 0 0 var(--eq-border-1) var(--eq-input-border-focus); }
+.eq-input.is-error { border-color: var(--eq-input-border-error); box-shadow: 0 0 0 var(--eq-border-1) var(--eq-input-border-error); }
+.eq-help { font: var(--eq-type-small); color: var(--eq-input-helper-fg); margin: 0; }
+.eq-help.is-error { color: var(--eq-input-error-fg); }
+
+/* ── card ── */
+.eq-card { box-sizing: border-box; background-color: var(--eq-card-bg); border: var(--eq-card-border-width) solid var(--eq-card-border); border-radius: var(--eq-card-radius); padding: var(--eq-card-padding); display: flex; flex-direction: column; gap: var(--eq-card-gap); color: var(--eq-card-title-fg); }
+.eq-card--raised { background-color: var(--eq-card-raised-bg); box-shadow: var(--eq-card-raised-shadow); }
+.eq-card--link { cursor: pointer; }
+.eq-card h3 { font: var(--eq-card-title-font); letter-spacing: var(--eq-type-title-tracking); margin: 0; }
+.eq-card p { font: var(--eq-card-body-font); margin: 0; }
+.eq-card .meta { font: var(--eq-type-meta); color: var(--eq-card-meta-fg); }
+
+/* ── chip ── */
+.eq-chip { display: inline-flex; align-items: center; gap: var(--eq-space-1); box-sizing: border-box; min-height: var(--eq-chip-height); padding: 0 var(--eq-chip-padding-x); border-radius: var(--eq-chip-radius); border: var(--eq-chip-border-width) solid var(--eq-chip-border); background-color: var(--eq-chip-bg); color: var(--eq-chip-fg); font: var(--eq-chip-font); cursor: pointer; }
+.eq-chip.is-selected { background-color: var(--eq-chip-selected-bg); color: var(--eq-chip-selected-fg); border-color: var(--eq-chip-selected-border); }
+
+/* ── badge (status is never colour alone: glyph + word) ── */
+.eq-badge { display: inline-flex; align-items: center; gap: var(--eq-badge-gap); box-sizing: border-box; min-height: var(--eq-badge-height); padding: 0 var(--eq-badge-padding-x); border-radius: var(--eq-badge-radius); font: var(--eq-badge-font); font-weight: 600; background-color: var(--eq-badge-neutral-bg); color: var(--eq-badge-neutral-fg); }
+.eq-badge--ok { background-color: var(--eq-badge-ok-bg); color: var(--eq-badge-ok-fg); }
+.eq-badge--work { background-color: var(--eq-badge-work-bg); color: var(--eq-badge-work-fg); }
+.eq-badge--wait { background-color: var(--eq-badge-wait-bg); color: var(--eq-badge-wait-fg); }
+.eq-badge--err { background-color: var(--eq-badge-err-bg); color: var(--eq-badge-err-fg); }
+
+/* ── list row ── */
+.eq-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.eq-row { display: flex; align-items: center; gap: var(--eq-row-gap); box-sizing: border-box; min-height: var(--eq-row-height); padding: 0 var(--eq-row-padding-x); color: var(--eq-row-fg); font: var(--eq-row-font); border-radius: var(--eq-row-radius); border-bottom: var(--eq-border-1) solid var(--eq-row-divider); cursor: pointer; background-color: transparent; }
+.eq-row .secondary { font: var(--eq-row-secondary-font); color: var(--eq-row-secondary-fg); }
+.eq-row .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.eq-row.is-selected { background-color: var(--eq-row-selected-bg); }
+.eq-row:last-child { border-bottom: 0; }
+
+/* ── sheet / modal ── */
+.eq-scrim { position: relative; background-color: var(--eq-color-scrim); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.eq-scrim--bottom { align-items: flex-end; }
+.eq-sheet { box-sizing: border-box; background-color: var(--eq-sheet-bg); border-radius: var(--eq-sheet-radius); padding: var(--eq-sheet-padding); box-shadow: var(--eq-sheet-shadow); display: flex; flex-direction: column; gap: var(--eq-sheet-gap); max-width: var(--eq-sheet-max-width); width: 100%; color: var(--eq-sheet-title-fg); }
+.eq-sheet--bottom { max-width: none; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.eq-sheet h3 { font: var(--eq-sheet-title-font); margin: 0; }
+.eq-sheet p { font: var(--eq-sheet-body-font); margin: 0; }
+.eq-sheet .grabber { align-self: center; width: var(--eq-sheet-grabber-width); height: var(--eq-sheet-grabber-height); border-radius: var(--eq-radius-full); background-color: var(--eq-sheet-grabber); }
+.eq-actions { display: flex; gap: var(--eq-decision-actions-gap); justify-content: flex-end; }
+
+/* ── decision card (the approval) ── */
+.eq-decision { box-sizing: border-box; background-color: var(--eq-decision-bg); border: var(--eq-decision-border-width) solid var(--eq-decision-border); border-radius: var(--eq-decision-radius); padding: var(--eq-decision-padding); display: flex; flex-direction: column; gap: var(--eq-decision-gap); color: var(--eq-decision-who-fg); }
+.eq-decision .who { font: var(--eq-decision-who-font); letter-spacing: var(--eq-type-title-tracking); margin: 0; }
+.eq-decision .where { font: var(--eq-decision-where-font); color: var(--eq-decision-where-fg); margin: 0; }
+.eq-decision pre { margin: 0; background-color: var(--eq-decision-code-bg); color: var(--eq-decision-code-fg); font: var(--eq-decision-code-font); border-radius: var(--eq-decision-code-radius); padding: var(--eq-decision-code-padding); overflow: auto; white-space: pre-wrap; }
+.eq-decision .eq-actions .eq-btn { flex: 1; }
+.eq-decision.is-resolved { border-color: var(--eq-card-border); }
+
+/* ── toast ── */
+.eq-toast { display: inline-flex; align-items: center; gap: var(--eq-toast-gap); box-sizing: border-box; max-width: var(--eq-toast-max-width); padding: var(--eq-toast-padding-y) var(--eq-toast-padding-x); border-radius: var(--eq-toast-radius); background-color: var(--eq-toast-bg); color: var(--eq-toast-fg); font: var(--eq-toast-font); box-shadow: var(--eq-toast-shadow); }
+.eq-toast-action { background: none; border: 0; padding: var(--eq-space-1) var(--eq-space-2); border-radius: var(--eq-radius-sm); color: var(--eq-toast-action-fg); font: var(--eq-type-label); cursor: pointer; margin-inline-start: auto; }
+.eq-toast-action:hover, .eq-toast-action.is-hover { text-decoration: underline; }
+.eq-toast-action:focus-visible, .eq-toast-action.is-focus { outline: var(--eq-focus-ring-width) solid var(--eq-toast-action-fg); outline-offset: var(--eq-border-1); }

@@ -208,7 +208,16 @@ pub fn primary_colors(system: &DesignSystem, n: usize) -> Vec<&Token> {
     };
     let mut ranked: Vec<(usize, usize, &Token)> = colors.iter().enumerate().map(|(i, t)| (rank(t), i, *t)).filter(|(r, _, _)| *r < ORDER.len()).collect();
     ranked.sort_by_key(|(r, i, _)| (*r, *i));
-    let mut out: Vec<&Token> = ranked.into_iter().map(|(_, _, t)| t).collect();
+    // One of each word: `card.bg` and `input.bg` after `color.bg` say nothing more.
+    let mut words: Vec<String> = Vec::new();
+    let mut out: Vec<&Token> = Vec::new();
+    for (_, _, t) in ranked {
+        let word = t.leaf().to_ascii_lowercase();
+        if !words.contains(&word) || ["default", "base", "main", "500"].contains(&word.as_str()) {
+            words.push(word);
+            out.push(t);
+        }
+    }
     if out.len() < n {
         let more: Vec<&Token> = colors.into_iter().filter(|t| !out.iter().any(|o| o.name == t.name)).take(n - out.len()).collect();
         out.extend(more);
@@ -604,6 +613,9 @@ mod tests {
         let s = system(None, None, vec![token("color.text", "color", json!("#111")), token("color.ok", "color", json!("#0A0")), token("color.accent", "color", json!("#1D4ED8")), token("brand.dot", "color", json!("#3F6FF5"))]);
         let names: Vec<&str> = primary_colors(&s, 3).iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["color.accent", "brand.dot", "color.text"]);
+        let s = system(None, None, vec![token("color.accent", "color", json!("#1D4ED8")), token("color.bg", "color", json!("#FFF")), token("card.bg", "color", json!("#FFF")), token("color.text", "color", json!("#111"))]);
+        let names: Vec<&str> = primary_colors(&s, 3).iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["color.accent", "color.bg", "color.text"], "a component's own bg doesn't lead");
         let mut with_logos = system(None, None, vec![]);
         with_logos.assets = ["assets/logo/mark-mono-on-dark.svg", "assets/logo/mark.svg", "assets/icons/x.svg", "assets/logo/wordmark.svg"]
             .iter()
