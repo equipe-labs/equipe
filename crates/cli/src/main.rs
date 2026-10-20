@@ -10,6 +10,7 @@
 mod attach;
 mod clip;
 mod daemon;
+mod design;
 mod desktop;
 mod disk;
 mod home;
@@ -248,6 +249,11 @@ enum Command {
         #[command(subcommand)]
         action: DaemonAction,
     },
+    /// The designer's tools: init, check, specimen, render, audit
+    Design {
+        #[command(subcommand)]
+        action: design::DesignAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -413,6 +419,7 @@ async fn main() -> ExitCode {
         Command::Status => app.status().await,
         Command::Try { prompt, engine, model, edit } => app.run_try(&prompt, engine, model.as_deref(), edit).await,
         Command::Daemon { action } => daemon_command(action).await,
+        Command::Design { action } => design::command(action).await.map_err(Failure::new),
         Command::Disk { words, squad, yes } => disk::command(&words, squad, yes).await.map_err(Failure::new),
         Command::Update => update().await,
         Command::Lang { lang } => match lang::command(&equipe_providers::credentials::equipe_home(), lang.as_deref()) {
