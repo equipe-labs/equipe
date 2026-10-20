@@ -119,6 +119,7 @@
   "error.in_folder": "Die Arbeit von T-{id} kam beim Annehmen in den Ordner des Squads.",
   "error.join_a_squad": "Ein Mitglied tritt einem Squad bei; nenne einen.",
   "error.kind_under_way": "An T-{id} wird schon gearbeitet – die Art bleibt; brich es ab und leg ein neues an.",
+  "error.login_not_kept": "Die Anmeldung wurde nicht gespeichert: {why}",
   "error.name_a_mode": "Nenne einen Modus: read-only, ask, auto oder full.",
   "error.no_branch": "T-{id} hat keinen Branch zum Mergen.",
   "error.no_engine": "Keine Engine ist bereit. Melde dich zuerst bei Codex oder Claude Code an.",

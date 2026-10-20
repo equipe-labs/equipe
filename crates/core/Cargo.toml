@@ -19,3 +19,7 @@ serde_json = "1.0.154"
 sys-locale = "0.3.2"
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "process"] }
 whatlang = "0.18.0"
+
+# Logins' passwords, in the Keychain only (`vault`).
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"

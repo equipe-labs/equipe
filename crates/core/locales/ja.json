@@ -116,6 +116,7 @@
   "error.in_folder": "T-{id} の成果は承認したときにスクワッドのフォルダに入りました。",
   "error.join_a_squad": "メンバーはスクワッドに参加します。スクワッドを指定してください。",
   "error.kind_under_way": "T-{id} はすでに作業が始まっているため種類を変えられません。キャンセルして新しく作ってください。",
+  "error.login_not_kept": "ログイン情報を保存できませんでした: {why}",
   "error.name_a_mode": "モードを指定してください: read-only、ask、auto、full。",
   "error.no_branch": "T-{id} にはマージするブランチがありません。",
   "error.no_engine": "使えるエンジンがありません。先に Codex か Claude Code にサインインしてください。",

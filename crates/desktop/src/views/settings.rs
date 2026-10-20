@@ -72,6 +72,8 @@ pub struct SettingsUi {
     pub scroll: ScrollHandle,
     /// The AI platforms' buttons, for Tab (`super::engines::KEYS` a card).
     pub engine_keys: Vec<FocusHandle>,
+    /// 계정's form and second clicks.
+    pub accounts: super::accounts::AccountsUi,
 }
 
 impl SettingsUi {
@@ -85,6 +87,7 @@ impl SettingsUi {
             anchors: Rc::default(),
             scroll: ScrollHandle::new(),
             engine_keys: (0..crate::engines::PLATFORMS.len() * super::engines::KEYS).map(|_| cx.focus_handle().tab_stop(true)).collect(),
+            accounts: super::accounts::AccountsUi::new(window, cx),
         }
     }
 
@@ -753,6 +756,7 @@ fn sections(shell: &Shell, category: Category, cx: &mut Context<Shell>) -> Vec<S
         Category::Permissions => permissions(shell, cx),
         Category::Projects => projects(shell, cx),
         Category::Browser => browser(shell, cx),
+        Category::Accounts => super::accounts::sections(shell, cx),
         Category::Keys => keys(shell),
         Category::About => about(shell, cx),
     }
@@ -767,6 +771,7 @@ fn intro(category: Category) -> &'static str {
         Category::Permissions => t!("settings.intro_permissions"),
         Category::Projects => t!("settings.intro_projects"),
         Category::Browser => t!("settings.intro_browser"),
+        Category::Accounts => t!("settings.intro_accounts"),
         Category::Keys => t!("settings.intro_keys"),
         Category::About => t!("settings.intro_about"),
     }
@@ -1067,6 +1072,7 @@ impl Shell {
         match category.unwrap_or(self.settings.category) {
             Category::Squad => self.ask_devices(cx),
             Category::Engines => self.ask_engines(cx),
+            Category::Accounts => self.send_command(Command::Logins),
             _ => {}
         }
         if self.screen != Screen::Settings {
@@ -1108,6 +1114,7 @@ impl Shell {
         match category {
             Category::Squad => self.ask_devices(cx),
             Category::Engines => self.ask_engines(cx),
+            Category::Accounts => self.send_command(Command::Logins),
             _ => {}
         }
         if self.settings.category != category {

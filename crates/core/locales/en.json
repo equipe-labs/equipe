@@ -119,6 +119,7 @@
   "error.in_folder": "T-{id}'s work went into the squad's folder when you accepted it.",
   "error.join_a_squad": "A member joins a squad; name one.",
   "error.kind_under_way": "T-{id} has work under way — it keeps its kind; cancel it and make a new one.",
+  "error.login_not_kept": "The login wasn't kept: {why}",
   "error.name_a_mode": "Name a mode: read-only, ask, auto or full.",
   "error.no_branch": "T-{id} has no branch to merge.",
   "error.no_engine": "No engine is ready. Sign in to Codex or Claude Code first.",

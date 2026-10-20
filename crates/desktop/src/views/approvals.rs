@@ -114,6 +114,10 @@ pub fn decision_for(key: &str, shift: bool) -> Option<Decision> {
 
 // ── the card's words ──
 
+/// A member signing in with a kept login (`equipe_core::vault`): "always"
+/// lets that member use it without asking.
+pub const SIGN_IN: &str = "Sign in";
+
 /// What kind of thing is asked, as a noun phrase.
 pub fn noun(tool: &str) -> &'static str {
     match tool {
@@ -122,6 +126,7 @@ pub fn noun(tool: &str) -> &'static str {
         "WebFetch" => t!("approvals.noun_web_fetch"),
         equipe_core::desktop_gate::SEND => t!("approvals.noun_send"),
         equipe_core::permissions::BROWSER_CODE => t!("approvals.noun_browser_code"),
+        SIGN_IN => t!("approvals.noun_sign_in"),
         _ => t!("approvals.noun_other"),
     }
 }
@@ -174,6 +179,7 @@ pub struct Card {
     pub writes: Vec<String>,
     pub always: Option<String>,
     pub is_send: bool,
+    pub is_sign_in: bool,
 }
 
 impl Card {
@@ -189,8 +195,9 @@ impl Card {
             lines: all.iter().take(shown).map(|l| (*l).to_owned()).collect(),
             more: all.len().saturating_sub(shown),
             writes: files_written(&approval.action),
-            always: always_rule(approval).map(|r| always_label(&r)),
+            always: if approval.tool == SIGN_IN { Some(approval.member.clone()) } else { always_rule(approval).map(|r| always_label(&r)) },
             is_send: approval.tool == equipe_core::desktop_gate::SEND,
+            is_sign_in: approval.tool == SIGN_IN,
         }
     }
 }
@@ -335,6 +342,7 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
                     .child(button(p, ("deny", id), t!("approvals.deny"), "N", false, act(Decision::Deny)))
                     .child(div().flex_1())
                     .child(div().text_size(px(12.)).text_color(p.muted).child(match &card.always {
+                        Some(member) if card.is_sign_in => t!("approvals.sign_in_always", member = member),
                         Some(label) => t!("approvals.always_rule", label = label),
                         None if card.is_send => t!("approvals.send_always_asks").to_owned(),
                         None => t!("approvals.once_only").to_owned(),
