@@ -130,7 +130,7 @@
   "error.not_committed": "변경을 커밋하지 못했습니다: {err} — 변경은 아직 {path}에 있습니다",
   "error.project_not_added": "프로젝트를 추가하지 못했어요: {why}",
   "error.not_merged": "T-{id}을(를) 병합하지 못했습니다: {err}",
-  "error.not_merged_conflict": "T-{id}은(는) main과 겹치는 부분이 있어 아직 합치지 못했어요 ({err}). {who}에게 main을 받아 충돌을 풀어 달라고 했어요 — 풀리면 보드에서 다시 합치기를 눌러 주세요.",
+  "error.not_merged_conflict": "T-{id}은(는) main과 충돌해서 합치지 않았어요 ({files}). {who}이(가) 충돌을 풀고 있어요 — 다시 검토로 올라오면 그때 합쳐 주세요.",
   "error.not_pushed": "{branch}을(를) 푸시하지 못했습니다: {err}",
   "error.not_waiting": "T-{id}은(는) 나를 기다리고 있지 않습니다 — 지금 {status} 상태입니다.",
   "error.owner_closed": "T-{id}은(는) 이미 끝나서 담당을 바꿀 수 없습니다.",

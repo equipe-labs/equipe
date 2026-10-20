@@ -130,7 +130,7 @@
   "error.not_committed": "无法提交更改：{err}——它们仍在 {path}",
   "error.project_not_added": "未能添加项目：{why}",
   "error.not_merged": "T-{id} 未能合并：{err}",
-  "error.not_merged_conflict": "T-{id} 与 main 有重叠，还没有合并（{err}）。已请 {who} 合入 main 并解决冲突——解决后请在看板上再次合并。",
+  "error.not_merged_conflict": "T-{id} 与 main 冲突，没有合并（{files}）。{who} 正在解决冲突——回到待审核后再合并。",
   "error.not_pushed": "{branch} 未能推送：{err}",
   "error.not_waiting": "T-{id} 没有在等你——它现在是{status}。",
   "error.owner_closed": "T-{id} 已经结束，不能再换负责人。",

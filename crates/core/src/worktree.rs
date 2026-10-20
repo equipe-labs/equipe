@@ -521,9 +521,32 @@ pub fn trim_builds(home: &Path, busy: &[PathBuf], cap: u64) -> Vec<String> {
     done
 }
 
+/// The files a merge that "conflicts with main in a, b — nothing was merged"
+/// names, as the person reads them: by file name, the first three and how
+/// many more. `None` for any other failure.
+pub fn conflict_files(err: &str) -> Option<String> {
+    let (_, rest) = err.split_once(" conflicts with ")?;
+    let (_, files) = rest.split_once(" in ")?;
+    let files = files.split(" — ").next().unwrap_or(files);
+    let names: Vec<&str> = files.split(", ").map(str::trim).filter(|f| !f.is_empty()).map(|f| f.rsplit('/').next().unwrap_or(f)).collect();
+    if names.is_empty() {
+        return None;
+    }
+    let shown = names.iter().take(3).copied().collect::<Vec<_>>().join(", ");
+    Some(if names.len() > 3 { format!("{shown} +{}", names.len() - 3) } else { shown })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_conflict_is_told_by_its_files_names_not_git_words() {
+        let err = "equipe/backend-2-t122-6ad71844 conflicts with main in src/audit.ts, src/http.ts, src/packs.ts, src/server.ts — nothing was merged";
+        assert_eq!(conflict_files(err).as_deref(), Some("audit.ts, http.ts, packs.ts +1"));
+        assert_eq!(conflict_files("b conflicts with main in README.md — nothing was merged").as_deref(), Some("README.md"));
+        assert_eq!(conflict_files("git merge-tree failed: boom"), None);
+    }
 
     #[test]
     fn a_members_build_cache_past_its_cap_loses_incremental_state_then_all_unless_it_builds() {

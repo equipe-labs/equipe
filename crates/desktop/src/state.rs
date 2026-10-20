@@ -314,6 +314,9 @@ pub struct Model {
     alerts: Vec<Alert>,
     /// One quiet line the shell shows under the conversation, until taken.
     flash: Option<String>,
+    /// Something the person asked for went wrong (a merge that didn't land):
+    /// a notice of its own over the box, until taken.
+    problem: Option<String>,
     /// Each member's conversation.
     pub convos: HashMap<SessionId, Convo>,
     /// Whose conversation is on screen.
@@ -437,6 +440,7 @@ impl Model {
             engines: Default::default(),
             alerts: Vec::new(),
             flash: None,
+            problem: None,
             convos: HashMap::new(),
             selected: None,
             focus: None,
@@ -996,7 +1000,7 @@ impl Model {
             }
             Event::SessionClosed { session } if self.lanes.iter().any(|l| l.session == session) => self.fold_lane(session),
             Event::Error { session: None, message, .. } => {
-                self.flash = Some(message);
+                self.problem = Some(message);
                 self.squad_errors += 1;
                 self.board_rev += 1;
             }
@@ -1290,6 +1294,10 @@ impl Model {
 
     pub fn take_flash(&mut self) -> Option<String> {
         self.flash.take()
+    }
+
+    pub fn take_problem(&mut self) -> Option<String> {
+        self.problem.take()
     }
 
     /// The project a ticket is about: its own; for code, else the squad's first.
