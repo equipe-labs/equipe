@@ -270,6 +270,8 @@
   "browser.stop": "Arrêter le chargement",
   "browser.take": "Prendre la main",
   "browser.take_tip": "Pilotez vous-même le navigateur de {name} — ses outils de navigateur attendent pendant ce temps",
+  "browser.talk_placeholder": "Dites un mot à {name} — lu même en plein travail ⏎",
+  "browser.talk_sent": "Envoyé à {name}",
   "browser.took_toast": "Vous utilisez le navigateur — {name} attend · rendez-le avec Échap ou « Rendre »",
   "browser.wants_close": "{name} veut fermer cet onglet",
   "browser.wheel_hint": "Cliquez pour l'utiliser vous-même",
