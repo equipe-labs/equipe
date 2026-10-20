@@ -270,6 +270,8 @@
   "browser.stop": "Stop loading",
   "browser.take": "Take over",
   "browser.take_tip": "Drive {name}'s browser yourself — its browser tools wait meanwhile",
+  "browser.talk_placeholder": "Say something to {name} — it reads it mid-work ⏎",
+  "browser.talk_sent": "Sent to {name}",
   "browser.took_toast": "You're using the browser — {name} waits · give it back with Esc or Give back",
   "browser.wants_close": "{name} wants to close this tab",
   "browser.wheel_hint": "Click to use it yourself",

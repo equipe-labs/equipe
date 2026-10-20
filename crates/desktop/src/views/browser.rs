@@ -138,6 +138,10 @@ pub struct BrowserPanel {
     /// The page whose address the field shows.
     url_of: Option<(u64, String)>,
     prompt: Entity<InputState>,
+    /// Words to the member whose browser is on screen: they reach it mid-work.
+    talk: Entity<InputState>,
+    /// Whom the words box's hint names now.
+    talk_to: Option<String>,
     lanes: BTreeMap<String, Lane>,
     /// Who has each member's browser in hand.
     hands: HashMap<String, Hand>,
@@ -225,6 +229,7 @@ impl BrowserPanel {
     pub fn new(width: Option<f32>, palette: Palette, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let url = cx.new(|cx| InputState::new(window, cx).placeholder(t!("browser.address_placeholder")));
         let prompt = cx.new(|cx| InputState::new(window, cx));
+        let talk = cx.new(|cx| InputState::new(window, cx));
         let mut subscriptions = vec![cx.subscribe_in(&url, window, |this, input, event: &FieldEvent, window, cx| match event {
             FieldEvent::PressEnter { .. } => {
                 let text = input.read(cx).value().to_string();
@@ -248,6 +253,14 @@ impl BrowserPanel {
                 this.answer(true, Some(text), cx);
             }
         }));
+        subscriptions.push(cx.subscribe_in(&talk, window, |this, input, event: &FieldEvent, window, cx| {
+            if matches!(event, FieldEvent::PressEnter { .. }) {
+                let text = input.read(cx).value().trim().to_owned();
+                if !text.is_empty() {
+                    this.say_to_member(text, window, cx);
+                }
+            }
+        }));
         // Out of focus, the page streams slower; back in, at full speed.
         subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
             this.rewatch(window, cx);
@@ -264,6 +277,8 @@ impl BrowserPanel {
             url,
             url_of: None,
             prompt,
+            talk,
+            talk_to: None,
             lanes: BTreeMap::new(),
             hands: HashMap::new(),
             dialogs: Vec::new(),
@@ -1309,6 +1324,60 @@ impl BrowserPanel {
         Some(self.hands.get(lane).cloned().unwrap_or_default().mode(check, self.working(lane)))
     }
 
+    /// Whether one of the panel's boxes has the keyboard — the address, a
+    /// page's question, the words to its member: what is typed is the box's.
+    pub fn typing(&self, window: &Window, cx: &App) -> bool {
+        [&self.url, &self.prompt, &self.talk].iter().any(|f| f.read(cx).focus_handle(cx).is_focused(window))
+    }
+
+    /// The member whose browser is on screen, to talk to: its conversation and name.
+    fn talk_target(&self) -> Option<(SessionId, String)> {
+        let lane = self.lane_of_selected().filter(|l| *l != MINE)?;
+        let session = self.lanes.get(lane)?.session?;
+        Some((session, self.member_name(lane)))
+    }
+
+    /// Send `text` to the member on screen: read at its next step when at
+    /// work, else it starts on it.
+    fn say_to_member(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((session, name)) = self.talk_target() else { return };
+        cx.emit(PanelEvent::Command(Command::Submit { session, text, about: None }));
+        self.talk.update(cx, |s, cx| s.set_value(String::new(), window, cx));
+        self.toast_next = Some((t!("browser.talk_sent", name = name), TOAST_FOR));
+        cx.notify();
+    }
+
+    /// The words box under the page, when it is a member's browser.
+    fn talk_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let p = self.palette;
+        let (_, name) = self.talk_target()?;
+        if self.talk_to.as_deref() != Some(name.as_str()) {
+            self.talk.update(cx, |s, cx| s.set_placeholder(t!("browser.talk_placeholder", name = name), window, cx));
+            self.talk_to = Some(name);
+        }
+        Some(
+            h_flex()
+                .flex_none()
+                .px_3()
+                .pt_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .h(px(34.))
+                        .pl(px(2.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(R_MD))
+                        .bg(p.code_bg)
+                        .border_1()
+                        .border_color(p.hair)
+                        .text_size(px(13.))
+                        .child(Input::new(&self.talk).appearance(false).bordered(false)),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// The lanes in the strip's order.
     fn ordered(&self) -> Vec<String> {
         let names: Vec<(String, Option<SessionId>, String)> = self
@@ -2146,6 +2215,7 @@ impl Render for BrowserPanel {
                     .child(self.toolbar(window, cx))
                     .children(self.handed_strip(cx))
                     .child(self.viewport(cx))
+                    .children(self.talk_bar(window, cx))
                     .child(self.control_bar(cx)),
             )
     }

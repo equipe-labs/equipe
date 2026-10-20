@@ -267,6 +267,8 @@
   "browser.stop": "그만 불러오기",
   "browser.take": "직접 하기",
   "browser.take_tip": "{name}의 브라우저를 직접 조작해요 — 그동안 {name}의 브라우저 도구는 기다려요",
+  "browser.talk_placeholder": "{name}에게 한마디 — 일하는 중이면 바로 전해져요 ⏎",
+  "browser.talk_sent": "{name}에게 보냈어요",
   "browser.took_toast": "브라우저를 직접 쓰고 있어요 — {name}은(는) 기다려요 · Esc나 '돌려주기'로 돌려줘요",
   "browser.wants_close": "{name}이(가) 이 탭을 닫으려 해요",
   "browser.wheel_hint": "클릭하면 직접 쓸 수 있어요",

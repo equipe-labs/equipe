@@ -267,6 +267,8 @@
   "browser.stop": "読み込みを中止",
   "browser.take": "自分で操作",
   "browser.take_tip": "{name} のブラウザを自分で操作します — その間 {name} のブラウザツールは待ちます",
+  "browser.talk_placeholder": "{name} に一言 — 作業中でもすぐ届きます ⏎",
+  "browser.talk_sent": "{name} に送りました",
   "browser.took_toast": "ブラウザを操作中です — {name} は待っています · Esc か「返す」で返します",
   "browser.wants_close": "{name} がこのタブを閉じようとしています",
   "browser.wheel_hint": "クリックすると自分で操作できます",

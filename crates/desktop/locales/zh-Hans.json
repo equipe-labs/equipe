@@ -267,6 +267,8 @@
   "browser.stop": "停止加载",
   "browser.take": "亲自操作",
   "browser.take_tip": "亲自操作 {name} 的浏览器 —— 期间 {name} 的浏览器工具会等待",
+  "browser.talk_placeholder": "对 {name} 说一句——工作中也会立刻收到 ⏎",
+  "browser.talk_sent": "已发给 {name}",
   "browser.took_toast": "你正在使用浏览器 —— {name} 在等待 · 按 Esc 或「交还」交还",
   "browser.wants_close": "{name} 想关闭这个标签页",
   "browser.wheel_hint": "点击即可亲自操作",

@@ -270,6 +270,8 @@
   "browser.stop": "Laden stoppen",
   "browser.take": "Selbst übernehmen",
   "browser.take_tip": "Steuere den Browser von {name} selbst – seine Browser-Werkzeuge warten so lange",
+  "browser.talk_placeholder": "Sag {name} etwas — es liest es auch mitten in der Arbeit ⏎",
+  "browser.talk_sent": "An {name} gesendet",
   "browser.took_toast": "Du bedienst den Browser – {name} wartet · mit Esc oder „Zurückgeben“ zurückgeben",
   "browser.wants_close": "{name} möchte diesen Tab schließen",
   "browser.wheel_hint": "Klicken, um selbst zu bedienen",

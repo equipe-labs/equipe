@@ -270,6 +270,8 @@
   "browser.stop": "Detener la carga",
   "browser.take": "Tomar el control",
   "browser.take_tip": "Maneja tú el navegador de {name}; mientras, sus herramientas de navegador esperan",
+  "browser.talk_placeholder": "Dile algo a {name}: lo lee aunque esté trabajando ⏎",
+  "browser.talk_sent": "Enviado a {name}",
   "browser.took_toast": "Estás usando el navegador — {name} espera · devuélvelo con Esc o «Devolver»",
   "browser.wants_close": "{name} quiere cerrar esta pestaña",
   "browser.wheel_hint": "Haz clic para usarlo tú",

@@ -503,9 +503,9 @@ impl Shell {
                 }
                 return;
             }
-            // Typing in a "your turn" card's box: T, N, y, 1… are letters there, not
-            // shortcuts. Esc still leaves; Tab and ⌘⏎ are the card's own.
-            if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx)).unwrap_or(false) {
+            // Typing in a "your turn" card's box or one of the browser panel's: T, N,
+            // y, 1… are letters there, not shortcuts. Esc still leaves; Tab and ⌘⏎ are the card's own.
+            if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx) || shell.browser.read(cx).typing(window, cx)).unwrap_or(false) {
                 return;
             }
             // Writing to a member on its request: Esc closes the box; every other
