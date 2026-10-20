@@ -339,6 +339,23 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 // `apick:117,2,yours` picks (done, yours, later, call, unknown),
                 // `anote:117,2,words` opens a note and types in it, `afree:117,words`
                 // types the words to the member, `asend:117` sends it.
+                // `akeys:117,1,talk now` presses each key as the keyboard would — through
+                // every shortcut on the way — into the box `answer:117,1,` focused a frame before.
+                "akeys" => {
+                    let mut parts = arg.splitn(3, ',');
+                    let ticket: u32 = parts.next().and_then(|t| t.parse().ok()).unwrap_or(0);
+                    let n: usize = parts.next().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).saturating_sub(1);
+                    let words = parts.next().unwrap_or_default().to_owned();
+                    for ch in words.chars() {
+                        let key = if ch == ' ' { "space".to_owned() } else { ch.to_string() };
+                        if let Ok(mut stroke) = Keystroke::parse(&key) {
+                            stroke.key_char = Some(ch.to_string());
+                            window.dispatch_keystroke(stroke, cx);
+                        }
+                    }
+                    let typed = shell.read(cx).turn.fields.get(&(ticket, n)).map(|f| f.read(cx).value().to_string()).unwrap_or_default();
+                    eprintln!("akeys typed: {typed:?}");
+                }
                 "answer" | "aok" | "atick" | "apick" | "anote" | "afree" | "asend" => shell.update(cx, |shell, cx| {
                     let mut parts = arg.splitn(3, ',');
                     let ticket: u32 = parts.next().and_then(|t| t.parse().ok()).unwrap_or(0);
