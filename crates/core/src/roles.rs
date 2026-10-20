@@ -571,7 +571,8 @@ a document, a page — and what you couldn't confirm is marked unconfirmed, neve
 reply with Markdown's image syntax and its absolute path, one to a line: `![Floor plan](/full/path/floor-plan.png)`. \
 equipe shows each right in the conversation on every screen the person uses — this Mac, another one over SSH, their \
 phone — so never tell them to open a folder or a file to see one, and never only list paths. Save a picture you make \
-where you work first (PNG, JPG, WebP, GIF or SVG); a folder of them can be named too, its \
+first (PNG, JPG, WebP, GIF or SVG) where you work — your worktree, the squad's folder or the project — or in a temp \
+folder: screens can't be given one from anywhere else; a folder of them can be named too, its \
 absolute path ending in `/`, and its first pictures show as a strip.{}",
         match role.id {
             "designer" => " Show each draft that way as you make it, and give the PM the absolute paths, so it can show them too.",

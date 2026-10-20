@@ -1834,6 +1834,7 @@
   "visuals.recommended": "おすすめ",
   "visuals.retry": "もう一度試す",
   "visuals.why_missing": "ファイルがありません",
+  "visuals.why_outside": "メンバーが画面に表示できない場所に保存しました — 作業フォルダに保存し直すよう伝えてください",
   "visuals.why_too_big": "大きすぎて表示できません",
   "visuals.why_unreadable": "読み込めないファイルです",
   "visuals.zoom_fit": "全体",
