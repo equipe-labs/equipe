@@ -247,6 +247,17 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     shell.open_routine(None, preset, window, cx);
                 }),
                 "roadmap" => shell.update(cx, |shell, cx| shell.open_roadmap(cx)),
+                // Two logins on this screen alone (no daemon asked); `lform` opens the form.
+                "lseed" => shell.update(cx, |shell, cx| {
+                    use equipe_core::protocol::vault::{Login, Use};
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                    shell.model.logins = vec![
+                        Login { id: 1, site: "dash.cloudflare.com".into(), url: Some("https://dash.cloudflare.com/login".into()), username: "abel@ironact.net".into(), note: Some("DNS".into()), allowed: vec!["demo/backend".into()], created_at: now, uses: vec![Use { at: now - 3600, squad: "demo".into(), member: "backend".into(), outcome: "signed_in".into() }] },
+                        Login { id: 2, site: "github.com".into(), url: None, username: "abel-ko".into(), note: None, allowed: vec![], created_at: now, uses: vec![Use { at: now - 86_400, squad: "demo".into(), member: "frontend".into(), outcome: "declined".into() }] },
+                    ];
+                    cx.notify();
+                }),
+                "lform" => shell.update(cx, |shell, cx| shell.open_login_form(None, window, cx)),
                 // The sidebar this wide: `sidew:210`.
                 "sidew" => shell.update(cx, |shell, cx| {
                     shell.board.sidebar_width = arg.parse().unwrap_or(crate::views::sidebar::WIDTH);

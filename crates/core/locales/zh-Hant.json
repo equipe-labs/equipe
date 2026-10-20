@@ -116,6 +116,7 @@
   "error.in_folder": "T-{id} 的成果在你接受時已放進小隊資料夾。",
   "error.join_a_squad": "成員要加入一個小隊；請指定一個。",
   "error.kind_under_way": "T-{id} 已經開始工作，類型不能再改；請取消後新建一個。",
+  "error.login_not_kept": "未能儲存登入資訊：{why}",
   "error.name_a_mode": "請指定模式：read-only、ask、auto 或 full。",
   "error.no_branch": "T-{id} 沒有可合併的分支。",
   "error.no_engine": "沒有就緒的引擎。請先登入 Codex 或 Claude Code。",

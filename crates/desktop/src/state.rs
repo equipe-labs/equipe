@@ -285,6 +285,8 @@ pub struct Model {
     pub hq: Option<PathBuf>,
     /// The squad's routines (`protocol::routines`), as the daemon has them.
     pub routines: Vec<equipe_core::protocol::routines::Routine>,
+    /// The logins members sign in with, as the daemon keeps them (no passwords).
+    pub logins: Vec<equipe_core::protocol::vault::Login>,
     /// The squad's mode, for completion's sake.
     pub mode: Mode,
     /// The Claude plan's usage windows, as last reported.
@@ -421,6 +423,7 @@ impl Model {
             project_order: Vec::new(),
             hq: None,
             routines: Vec::new(),
+            logins: Vec::new(),
             mode: Mode::default(),
             plan: None,
             remote: false,
@@ -872,6 +875,7 @@ impl Model {
             Event::EngineProposalClosed { squad, id, .. } if *squad == self.squad => self.engines.close(*id),
             Event::EngineSwitchingChanged { squad, mode } if *squad == self.squad => self.engines.mode = *mode,
             Event::RoutinesChanged { squad, routines } if *squad == self.squad => self.routines = routines.clone(),
+            Event::Logins { logins } => self.logins = logins.clone(),
             Event::ProjectsChanged { squad, projects, hq } if *squad == self.squad => {
                 self.hq = hq.clone();
                 // The one just added, said under the box.

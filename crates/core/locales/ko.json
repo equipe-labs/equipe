@@ -116,6 +116,7 @@
   "error.in_folder": "T-{id}의 결과는 수락할 때 이미 스쿼드 폴더에 들어갔습니다.",
   "error.join_a_squad": "멤버는 스쿼드에 들어갑니다. 스쿼드를 정해 주세요.",
   "error.kind_under_way": "T-{id}은(는) 이미 작업이 시작되어 종류를 바꿀 수 없습니다. 취소하고 새로 만드세요.",
+  "error.login_not_kept": "로그인 정보를 저장하지 못했어요: {why}",
   "error.name_a_mode": "모드를 정해 주세요: read-only, ask, auto, full.",
   "error.no_branch": "T-{id}에는 병합할 브랜치가 없습니다.",
   "error.no_engine": "준비된 엔진이 없습니다. 먼저 Codex나 Claude Code에 로그인하세요.",

@@ -371,6 +371,8 @@ pub const ASK_PERSON: &str = "ask_person";
 /// A member puts a decision to the person: questions with options to pick.
 pub const ASK_DECISION: &str = "ask_decision";
 pub const SHOW_BROWSER: &str = "show_my_browser";
+/// Sign in to a site in your browser with a login the person keeps (`vault`).
+pub const SIGN_IN: &str = "sign_in";
 /// A member writes a fact into the squad's memory.
 pub const REMEMBER: &str = "remember";
 /// A member takes a wrong or stale fact out of the squad's memory.
@@ -511,6 +513,23 @@ end your turn.",
             },
         }));
     }
+    tools.push(json!({
+        "name": SIGN_IN,
+        "description": "Sign in to a site in your browser with a login the person keeps in equipe. You never see or type \
+the password: equipe asks the person (unless they already let you use that login), then fills the site's sign-in form \
+in your browser and submits it; you hear how it went. Open the site's sign-in page first, or let equipe open it. If \
+there's no login kept for the site, ask the person to add one in equipe (Settings › Accounts) — or hand them your \
+browser with `show_my_browser` to sign in themselves. Never ask for a password in words, and never read one off a page.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "site": { "type": "string", "description": "The site, by host or address: github.com, https://dash.cloudflare.com/login." },
+                "account": { "type": "string", "description": "The username, when the person keeps several for that site." },
+                "why": { "type": "string", "description": "What you'll do once signed in, in one line, in the person's language: shown to them on the card." },
+            },
+            "required": ["site", "why"],
+        },
+    }));
     tools.push(json!({
         "name": SHOW_BROWSER,
         "description": "Hand your browser to the person — for them to sign in, to look at something with you, or \

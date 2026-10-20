@@ -119,6 +119,7 @@
   "error.in_folder": "El trabajo de T-{id} entró en la carpeta del equipo cuando lo aceptaste.",
   "error.join_a_squad": "Un miembro se une a un equipo; nombra uno.",
   "error.kind_under_way": "T-{id} ya tiene trabajo en curso y conserva su tipo: cancélalo y crea uno nuevo.",
+  "error.login_not_kept": "No se guardó el acceso: {why}",
   "error.name_a_mode": "Indica un modo: read-only, ask, auto o full.",
   "error.no_branch": "T-{id} no tiene una rama que fusionar.",
   "error.no_engine": "Ningún motor está listo. Inicia sesión primero en Codex o Claude Code.",

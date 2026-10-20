@@ -24,6 +24,7 @@ pub mod stream;
 pub mod tags;
 pub mod team;
 pub mod transcript;
+pub mod vault;
 
 pub use transcript::Transcript;
 
@@ -704,6 +705,15 @@ pub enum Command {
     DeleteRoutine { squad: SquadName, id: u32 },
     /// The person runs a routine now, off its schedule.
     RunRoutine { squad: SquadName, id: u32 },
+    /// The person saves a login for members to sign in with (new, or a
+    /// change): its password to the Keychain, the rest to every screen
+    /// ([`Event::Logins`]).
+    SaveLogin { draft: vault::LoginDraft },
+    DeleteLogin { id: u32 },
+    /// The person takes back a member's "always" for a login (`squad/member`).
+    ForgetLoginAllowance { id: u32, who: String },
+    /// Every screen's list of logins, again.
+    Logins,
     /// The screen watches `session`'s browser (`None`: none): equipe sends it
     /// a picture of the page every moment or so ([`Event::BrowserFrame`]).
     WatchBrowser { squad: SquadName, session: Option<SessionId> },
@@ -1459,6 +1469,8 @@ pub enum Event {
     /// How the squad moves members between engines changed.
     EngineSwitchingChanged { squad: SquadName, mode: engines::Switching },
     /// The squad's projects now ([`Command::AddProject`]): their folders.
+    /// The logins kept, without their passwords: every screen's.
+    Logins { logins: Vec<vault::Login> },
     /// The squad's routines now, each with its next run.
     RoutinesChanged { squad: SquadName, routines: Vec<routines::Routine> },
     ProjectsChanged {
@@ -1557,6 +1569,7 @@ impl Event {
             | Event::EngineSwitchingChanged { .. }
             | Event::ProjectsChanged { .. }
             | Event::RoutinesChanged { .. }
+            | Event::Logins { .. }
             | Event::Design { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
@@ -1592,6 +1605,7 @@ impl Event {
                 | Event::DiskCleaned { .. }
                 | Event::Engines { .. }
                 | Event::SignIn { .. }
+                | Event::Logins { .. }
                 | Event::BrowserDialogClosed { .. }
                 | Event::BrowserTabs { squad: None, .. }
                 | Event::BrowserControl { squad: None, .. }

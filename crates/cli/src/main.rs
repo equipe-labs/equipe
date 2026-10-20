@@ -1443,6 +1443,7 @@ impl App {
                 | Event::EngineSwitchingChanged { .. }
                 | Event::ProjectsChanged { .. }
                 | Event::RoutinesChanged { .. }
+                | Event::Logins { .. }
                 | Event::Allowed { .. }
                 | Event::Design { .. } => {}
                 Event::Error { message, next, .. } => {

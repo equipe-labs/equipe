@@ -119,6 +119,7 @@
   "error.in_folder": "Le travail de T-{id} est entré dans le dossier de l'équipe quand vous l'avez accepté.",
   "error.join_a_squad": "Un membre rejoint une équipe ; nommez-en une.",
   "error.kind_under_way": "T-{id} a déjà du travail en cours et garde son type : annulez-le et créez-en un nouveau.",
+  "error.login_not_kept": "L’identifiant n’a pas été enregistré : {why}",
   "error.name_a_mode": "Indiquez un mode : read-only, ask, auto ou full.",
   "error.no_branch": "T-{id} n'a pas de branche à fusionner.",
   "error.no_engine": "Aucun moteur n'est prêt. Connectez-vous d'abord à Codex ou à Claude Code.",
