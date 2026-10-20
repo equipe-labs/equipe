@@ -809,7 +809,8 @@ pub async fn run_turn(
     });
 
     // The turn's first message; Claude Code reads more until its input ends,
-    // which is once the turn has its result and no subagent is still out.
+    // which is once the turn has its result and no subagent or background
+    // command is still out.
     let mut stdin = child.stdin.take();
     if let Some(input) = &mut stdin {
         let _ = input.write_all(user_message(request.prompt).as_bytes()).await;
@@ -845,8 +846,10 @@ pub async fn run_turn(
         match serde_json::from_str::<Value>(line) {
             Ok(event) => {
                 collector.on_event(&event).into_iter().for_each(&mut on_activity);
-                if event.get("type").and_then(Value::as_str) == Some("result") && collector.subagents.is_empty() {
-                    // Done: its input ends, and so does Claude Code.
+                // Done: its input ends, and so does Claude Code — unless a subagent
+                // or a command runs on in the background. Claude Code is still there
+                // then, waiting for it, and reads what the person says meanwhile.
+                if event.get("type").and_then(Value::as_str) == Some("result") && collector.subagents.is_empty() && collector.background.is_empty() {
                     stdin = None;
                 }
             }
