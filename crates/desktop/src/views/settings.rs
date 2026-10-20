@@ -670,6 +670,7 @@ fn browser(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     vec![
         Section::new(t!("settings.section_members_browsers"), vec![shown, panel]).foot(t!("settings.squad_foot")),
         Section::new(t!("settings.section_sign_in"), vec![sign_in, pop_out]).foot(t!("settings.sign_in_foot")),
+        super::accounts::profiles_section(shell, cx),
     ]
 }
 
@@ -1073,6 +1074,7 @@ impl Shell {
             Category::Squad => self.ask_devices(cx),
             Category::Engines => self.ask_engines(cx),
             Category::Accounts => self.send_command(Command::Logins),
+            Category::Browser => self.send_command(Command::BrowserProfiles),
             _ => {}
         }
         if self.screen != Screen::Settings {
@@ -1115,6 +1117,7 @@ impl Shell {
             Category::Squad => self.ask_devices(cx),
             Category::Engines => self.ask_engines(cx),
             Category::Accounts => self.send_command(Command::Logins),
+            Category::Browser => self.send_command(Command::BrowserProfiles),
             _ => {}
         }
         if self.settings.category != category {

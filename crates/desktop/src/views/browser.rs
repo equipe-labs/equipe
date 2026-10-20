@@ -412,7 +412,7 @@ impl BrowserPanel {
                     return;
                 }
                 let before = self.lanes.get(lane).map(|l| l.agent_page);
-                let mine_before: std::collections::HashSet<u64> = self.lanes.get(MINE).map(|l| l.pages.iter().map(|p| p.id).collect()).unwrap_or_default();
+                let mine_before: std::collections::HashSet<u64> = self.lanes.get(lane).filter(|_| browse::mine(lane)).map(|l| l.pages.iter().map(|p| p.id).collect()).unwrap_or_default();
                 let name = self.member_name(lane);
                 let last_url = self.selected.as_ref().filter(|(l, _)| l == lane).and_then(|_| self.page()).map(|p| p.url.clone());
                 if pages.is_empty() {
@@ -424,18 +424,18 @@ impl BrowserPanel {
                     );
                 }
                 // What the lane's page waits for, for the hand on it.
-                if lane != MINE {
+                if !browse::mine(lane) {
                     let waiting = pages.iter().filter(|p| p.check.is_some()).min_by_key(|p| Some(p.id) != *agent_page).and_then(|p| p.check);
                     self.hands.entry(lane.clone()).or_default().on_page(waiting);
                 }
                 // A tab of the person's own just asked for: shown.
-                if lane == MINE
+                if browse::mine(lane)
                     && self.new_tab
                     && let Some(new) = pages.iter().find(|p| !mine_before.contains(&p.id))
                 {
                     self.new_tab = false;
                     self.follow = false;
-                    self.select(MINE.to_owned(), new.id, window, cx);
+                    self.select(lane.clone(), new.id, window, cx);
                 }
                 // Handed over before its tabs were told: shown, in their hands, now.
                 if let Some((lane, page)) = self.handovers.on_tabs(lane, self.lane_page(lane)) {
@@ -462,7 +462,7 @@ impl BrowserPanel {
                             let closed_here = self.closing == Some(page);
                             self.selected = None;
                             self.drop_pictures(window);
-                            if closed_here || sel_lane == MINE {
+                            if closed_here || browse::mine(&sel_lane) {
                                 self.follow = true;
                             } else {
                                 self.gone = Some(Gone { name, url: last_url });
@@ -947,7 +947,7 @@ impl BrowserPanel {
         let Some((x, y)) = self.to_page(e.position) else { return };
         // A member's page it drives: the wheel doesn't take it (only a click or a
         // key does), and goes nowhere — a word says how to.
-        if !browse::wheel_goes(self.lane_of_selected().is_some_and(|l| l != MINE), self.held()) {
+        if !browse::wheel_goes(self.lane_of_selected().is_some_and(|l| !browse::mine(l)), self.held()) {
             if self.toast.as_ref().is_none_or(|(text, _)| *text != t!("browser.wheel_hint")) {
                 self.toast_next = Some((t!("browser.wheel_hint").to_owned(), HINT_FOR));
                 cx.notify();
@@ -992,7 +992,7 @@ impl BrowserPanel {
 
     /// The person drives the tab on screen: their own, or a member's in their hands.
     fn drives_selected(&self) -> bool {
-        self.lane_of_selected() == Some(MINE) || self.held()
+        self.lane_of_selected().is_some_and(browse::mine) || self.held()
     }
 
     fn held(&self) -> bool {
@@ -1081,8 +1081,15 @@ impl BrowserPanel {
     }
 
     fn new_tab(&mut self, url: Option<String>, cx: &mut Context<Self>) {
+        // In the profile on screen: another person's tabs open beside theirs.
+        let profile = self.lane_of_selected().and_then(browse::profile_of).map(str::to_owned);
+        self.new_tab_in(url, profile, cx);
+    }
+
+    /// A tab of the person's own in browser profile `profile` (`None`: the main one), picked when it comes.
+    pub fn new_tab_in(&mut self, url: Option<String>, profile: Option<String>, cx: &mut Context<Self>) {
         self.new_tab = true;
-        self.command(Command::BrowserNewTab { url }, cx);
+        self.command(Command::BrowserNewTab { url, profile }, cx);
     }
 
     fn answer(&mut self, accept: bool, text: Option<String>, cx: &mut Context<Self>) {
@@ -1216,7 +1223,7 @@ impl BrowserPanel {
         if pages.is_empty() {
             return;
         }
-        if browse::close_asks(lane != MINE, self.working(lane)) {
+        if browse::close_asks(!browse::mine(lane), self.working(lane)) {
             self.confirm_close = Some((lane.to_owned(), pages));
             cx.notify();
             return;
@@ -1275,18 +1282,24 @@ impl BrowserPanel {
 
 impl BrowserPanel {
     fn lane_label(&self, lane: &str, l: &Lane) -> (String, Option<Rgba>) {
-        if lane == MINE {
-            return (t!("browser.my_tabs").to_owned(), None);
+        // Another browser profile's: its name beside whose it is.
+        let profiled = |label: String| match browse::profile_of(lane) {
+            Some(profile) => format!("{label} · {profile}"),
+            None => label,
+        };
+        if browse::mine(lane) {
+            return (profiled(t!("browser.my_tabs").to_owned()), None);
         }
         let p = self.palette;
         match l.session.and_then(|s| self.who.get(&s)) {
             Some(who) => {
-                let about = l.member.as_deref().and_then(|m| m.split_once(" (")).map(|(_, a)| a.trim_end_matches(')').to_owned());
+                let member = l.member.as_deref().map(|m| m.split_once(" · ").map_or(m, |(m, _)| m));
+                let about = member.and_then(|m| m.split_once(" (")).map(|(_, a)| a.trim_end_matches(')').to_owned());
                 let label = match about {
                     Some(about) if about != "the whole squad" => format!("{} · {about}", who.name),
                     _ => who.name.clone(),
                 };
-                (label, Some(p.member(who.hue)))
+                (profiled(label), Some(p.member(who.hue)))
             }
             None => (
                 l.member.as_deref().map(|m| m.split_once(" (").map_or(m, |(name, _)| name).to_owned()).unwrap_or_else(|| lane.rsplit('/').next().unwrap_or(lane).to_owned()),
@@ -1317,7 +1330,7 @@ impl BrowserPanel {
     /// What the bar and banner say of the tab on screen.
     fn mode(&self) -> Option<Mode> {
         let lane = self.lane_of_selected()?;
-        if lane == MINE {
+        if browse::mine(lane) {
             return Some(Mode::Mine);
         }
         let check = self.page().and_then(|p| p.check);
@@ -1332,7 +1345,7 @@ impl BrowserPanel {
 
     /// The member whose browser is on screen, to talk to: its conversation and name.
     fn talk_target(&self) -> Option<(SessionId, String)> {
-        let lane = self.lane_of_selected().filter(|l| *l != MINE)?;
+        let lane = self.lane_of_selected().filter(|l| !browse::mine(l))?;
         let session = self.lanes.get(lane)?.session?;
         Some((session, self.member_name(lane)))
     }
@@ -1383,8 +1396,8 @@ impl BrowserPanel {
         let names: Vec<(String, Option<SessionId>, String)> = self
             .lanes
             .iter()
-            .filter(|(lane, l)| lane.as_str() == MINE || l.squad.as_deref() == Some(self.squad.as_str()))
-            .map(|(lane, l)| (lane.clone(), l.session, if lane == MINE { String::new() } else { self.member_name(lane) }))
+            .filter(|(lane, l)| browse::mine(lane) || l.squad.as_deref() == Some(self.squad.as_str()))
+            .map(|(lane, l)| (lane.clone(), l.session, if browse::mine(lane) { String::new() } else { self.member_name(lane) }))
             .collect();
         let refs = names.iter().map(|(lane, session, name)| LaneRef { lane, session: *session, name }).collect();
         browse::order(refs, self.viewed).into_iter().map(|l| l.lane.to_owned()).collect()

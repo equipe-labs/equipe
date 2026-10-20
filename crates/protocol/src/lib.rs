@@ -722,6 +722,13 @@ pub enum Command {
     ForgetLoginAllowance { id: u32, who: String },
     /// Every screen's list of logins, again.
     Logins,
+    /// The person adds a browser profile — another person's accounts in a
+    /// Chrome of their own — or names one again ([`Event::BrowserProfiles`]).
+    SaveBrowserProfile { profile: BrowserProfile },
+    /// The person drops a browser profile: members stop getting its browser.
+    DeleteBrowserProfile { name: String },
+    /// Every screen's list of browser profiles, again.
+    BrowserProfiles,
     /// The screen watches `session`'s browser (`None`: none): equipe sends it
     /// a picture of the page every moment or so ([`Event::BrowserFrame`]).
     WatchBrowser { squad: SquadName, session: Option<SessionId> },
@@ -763,7 +770,12 @@ pub enum Command {
     BrowserNav { page: u64, action: BrowserNavAction, url: Option<String> },
     /// A tab of the person's own in the shared Chrome, at `url` (blank without
     /// one). Answered by [`Event::BrowserTabs`] for the person's lane (`""`).
-    BrowserNewTab { url: Option<String> },
+    BrowserNewTab {
+        url: Option<String>,
+        /// In another browser profile's Chrome (its lane `#name`); `None`: the main one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
+    },
     BrowserCloseTab { page: u64 },
     /// The person takes a member's browser (`lane`, as [`Event::BrowserTabs`]
     /// names it) into their own hands, or gives it back. While they have it the
@@ -1004,6 +1016,18 @@ pub enum BrowserNavAction {
     Stop,
     /// To the `url` given.
     Go,
+}
+
+/// A browser profile besides the person's main one: a Chrome of its own with
+/// its own sign-ins — another person's accounts, to work or test as them.
+/// Members get its browser beside their own (`browser_<name>`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserProfile {
+    /// Its name: lowercase letters, digits and `-`.
+    pub name: String,
+    /// Whose accounts it holds, in the person's words: `jhjung@atinuminvest.co.kr`.
+    #[serde(default)]
+    pub label: String,
 }
 
 /// One tab of the shared Chrome. `id` is the browser's own, stable while the
@@ -1479,6 +1503,8 @@ pub enum Event {
     /// The squad's projects now ([`Command::AddProject`]): their folders.
     /// The logins kept, without their passwords: every screen's.
     Logins { logins: Vec<vault::Login> },
+    /// The browser profiles besides the main one: every screen's.
+    BrowserProfiles { profiles: Vec<BrowserProfile> },
     /// The squad's routines now, each with its next run.
     RoutinesChanged { squad: SquadName, routines: Vec<routines::Routine> },
     ProjectsChanged {
@@ -1578,6 +1604,7 @@ impl Event {
             | Event::ProjectsChanged { .. }
             | Event::RoutinesChanged { .. }
             | Event::Logins { .. }
+            | Event::BrowserProfiles { .. }
             | Event::Design { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
@@ -1614,6 +1641,7 @@ impl Event {
                 | Event::Engines { .. }
                 | Event::SignIn { .. }
                 | Event::Logins { .. }
+                | Event::BrowserProfiles { .. }
                 | Event::BrowserDialogClosed { .. }
                 | Event::BrowserTabs { squad: None, .. }
                 | Event::BrowserControl { squad: None, .. }

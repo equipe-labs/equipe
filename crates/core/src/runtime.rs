@@ -1441,12 +1441,17 @@ impl Runtime {
                 };
                 self.hub.op(&json!({ "op": "nav", "page": page, "action": action, "url": url }));
             }
-            Command::BrowserNewTab { url } => {
-                // The person's own tab: the shared Chrome starts for it if it must.
+            Command::BrowserNewTab { url, profile } => {
+                // The person's own tab: the shared Chrome starts for it if it must
+                // (another profile's, its own Chrome).
                 if let Some(npx) = self.config.npx.clone()
                     && self.browser_host(&npx).is_some()
                 {
-                    self.hub.op(&json!({ "op": "newtab", "url": url }));
+                    let mut request = json!({ "op": "newtab", "url": url });
+                    if let Some(p) = profile.filter(|p| browser::profiles(&self.config.home).iter().any(|k| k.name == *p)) {
+                        browser::with_profile(&mut request, &self.config.home, &p);
+                    }
+                    self.hub.op(&request);
                 }
             }
             Command::BrowserCloseTab { page } => {
@@ -1516,6 +1521,23 @@ impl Runtime {
                 let logins = self.logins.clone();
                 self.publish(Event::Logins { logins });
             }
+            Command::SaveBrowserProfile { profile } => {
+                match browser::save_profile(&self.config.home, &profile.name, &profile.label) {
+                    Ok(_) => {}
+                    Err(why) => self.error(None, why, None),
+                }
+                self.publish_browser_profiles();
+            }
+            Command::DeleteBrowserProfile { name } => {
+                if let Err(why) = browser::delete_profile(&self.config.home, &name) {
+                    self.error(None, why, None);
+                }
+                // Its lanes close: members stop getting its browser from their next turn.
+                let suffix = format!("#{name}");
+                self.browsers.retain(|(_, key), _| !key.ends_with(&suffix));
+                self.publish_browser_profiles();
+            }
+            Command::BrowserProfiles => self.publish_browser_profiles(),
             Command::SaveRoutine { squad, routine } => self.save_routine(&squad, routine),
             Command::DeleteRoutine { squad, id } => self.delete_routine(&squad, id),
             Command::RunRoutine { squad, id } => {
@@ -2813,6 +2835,17 @@ for one project goes to it as tickets for its owners, with that project — and 
             }
             _ => None,
         };
+        // Other people's accounts: a browser in each other profile's Chrome, beside its own.
+        let profile_browsers: Vec<(browser::BrowserProfile, u16)> = match (browser, self.browser_key(id)) {
+            (Some(_), Some((squad, key))) if self.config.browser_host => browser::profiles(&self.config.home)
+                .into_iter()
+                .filter_map(|p| {
+                    let port = self.open_browser(&squad, &browser::in_profile(&key, Some(&p.name)), false)?;
+                    Some((p, port))
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         let Some(session) = self.sessions.get(&id) else {
             return;
         };
@@ -2820,7 +2853,13 @@ for one project goes to it as tickets for its owners, with that project — and 
         // Code run in the browser's own process is outside any sandbox: in auto
         // the person sees the code and says yes; in full it runs.
         let ask_tools: Vec<String> =
-            if browser.is_some() && mode == Mode::Auto { vec![permissions::BROWSER_CODE.to_owned()] } else { Vec::new() };
+            if browser.is_some() && mode == Mode::Auto {
+                std::iter::once(permissions::BROWSER_CODE.to_owned())
+                    .chain(profile_browsers.iter().map(|(p, _)| format!("mcp__{}__browser_run_code_unsafe", browser::server_name(Some(&p.name)))))
+                    .collect()
+            } else {
+                Vec::new()
+            };
         let mcp_config = match (&squad, &session.member, &self.config.equipe_binary) {
             (Some(squad), Some(m), Some(binary)) if board_tools => {
                 let mut servers = json!({ MCP_SERVER: {
@@ -2830,6 +2869,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                 }});
                 if let Some(port) = browser {
                     servers[browser::SERVER] = browser::entry(port);
+                }
+                for (profile, port) in &profile_browsers {
+                    servers[browser::server_name(Some(&profile.name))] = browser::entry(*port);
                 }
                 if desktop {
                     servers[DESKTOP_SERVER] = json!({
@@ -2858,6 +2900,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 language: language.as_deref(),
                 screen_language: Some(self.config.lang.english_name()),
                 browser: browser.is_some(),
+                profiles: &profile_browsers.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(),
                 desktop,
                 home: home.as_deref(),
                 memory: memory.as_deref(),
@@ -2952,6 +2995,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                         let mut servers = json!({ MCP_SERVER: codex_app::mcp_server(binary, &args(None), true) });
                         if let Some(port) = browser {
                             servers[browser::SERVER] = codex_app::mcp_http_server(&format!("http://localhost:{port}/mcp"), browses_freely);
+                        }
+                        for (profile, port) in &profile_browsers {
+                            servers[browser::server_name(Some(&profile.name))] = codex_app::mcp_http_server(&format!("http://localhost:{port}/mcp"), browses_freely);
                         }
                         if desktop {
                             servers[DESKTOP_SERVER] = codex_app::mcp_server(binary, &args(Some(DESKTOP_SERVER)), matches!(mode, Mode::Auto | Mode::Full));
@@ -3071,6 +3117,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 let mut allowed: Vec<String> = mcp_config.iter().map(|_| format!("mcp__{MCP_SERVER}")).collect();
                 if browses_freely {
                     allowed.push(format!("mcp__{}", browser::SERVER));
+                    allowed.extend(profile_browsers.iter().map(|(p, _)| format!("mcp__{}", browser::server_name(Some(&p.name)))));
                 }
                 if desktop && matches!(mode, Mode::Auto | Mode::Full) {
                     allowed.push(format!("mcp__{DESKTOP_SERVER}"));
@@ -4435,7 +4482,7 @@ there, end your turn, and carry on when they say they're done."
     /// its own. Blocked things are refused, "always allow" rules answered, and
     /// everything else put to the person.
     fn ask_permission(&mut self, call: ToolCall, reply: oneshot::Sender<ToolResult>) {
-        let tool = call.arguments.get("tool_name").and_then(Value::as_str).unwrap_or("?").to_owned();
+        let tool = permissions::canonical(call.arguments.get("tool_name").and_then(Value::as_str).unwrap_or("?")).to_owned();
         let input = call.arguments.get("input").cloned().unwrap_or_else(|| json!({}));
         let (action, reason) = permissions::describe_in(self.config.lang, &tool, &input);
         let Some(id) = self.member_id(&call.squad, &call.member) else {
@@ -4715,6 +4762,12 @@ there, end your turn, and carry on when they say they're done."
         });
     }
 
+    /// Every screen's list of browser profiles.
+    fn publish_browser_profiles(&mut self) {
+        let profiles = browser::profiles(&self.config.home);
+        self.publish(Event::BrowserProfiles { profiles });
+    }
+
     fn logins_changed(&mut self, result: Result<Vec<crate::protocol::vault::Login>, String>) {
         match result {
             Ok(logins) => {
@@ -4937,11 +4990,13 @@ there, end your turn, and carry on when they say they're done."
         if !self.browsers.get_mut(&key).is_some_and(|b| b.fits(shown)) {
             // A lane of the shared Chrome; a Chrome of its own if that can't be had.
             let running = match self.browser_host(&npx) {
-                Some(host) => browser::lane(&host, squad, name, &output, shown).ok(),
+                Some(host) => browser::lane(&host, &self.config.home, squad, name, &output, shown).ok(),
                 None => None,
             };
             let running = match running {
                 Some(running) => running,
+                // Another profile's browser lives only in the shared Chrome's host.
+                None if browser::split_profile(name).1.is_some() => return None,
                 None => browser::launch(&npx, &self.config.home, &profile, &output, shown).ok()?,
             };
             let (client, port) = (self.client.clone(), running.port);
@@ -5238,6 +5293,7 @@ there, end your turn, and carry on when they say they're done."
         let Some((squad, key)) = lane.split_once('/') else {
             return (None, None);
         };
+        let key = browser::split_profile(key).0;
         let session = self.sessions.keys().copied().find(|id| self.browser_key(*id).is_some_and(|(q, k)| q == squad && k == key));
         (Some(squad.to_owned()), session)
     }
