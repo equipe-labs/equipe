@@ -879,6 +879,10 @@ impl Shell {
                         this.composer.flash = Some(flash);
                         changed = true;
                     }
+                    if let Some(problem) = this.model.take_problem() {
+                        this.composer.problem = Some(problem);
+                        changed = true;
+                    }
                     if changed {
                         if this.log_renders {
                             eprintln!("daemon update -> redraw");
