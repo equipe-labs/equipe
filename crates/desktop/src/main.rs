@@ -89,6 +89,7 @@ use views::browser::{BrowserPanel, PanelEvent};
 use views::chat::Chat;
 use views::composer::Composer;
 use views::connect::{AskUi, ConnectUi};
+use tips::TipExt as _;
 
 actions!(
     equipe,
@@ -1410,12 +1411,20 @@ impl Shell {
         }
         let theirs = self.model.daemon_version.split('+').next().unwrap_or_default().to_owned();
         let place = self.endpoint.label();
-        let (words, tone) = match &self.daemon_update {
-            None => (t!("main.update_daemon_line", place = place, theirs = theirs, ours = env!("CARGO_PKG_VERSION")), p.text),
-            Some(DaemonUpdate::Running) => (t!("main.update_daemon_running", place = place), p.text2),
-            Some(DaemonUpdate::Done) => (t!("main.update_daemon_done").to_owned(), p.text2),
-            Some(DaemonUpdate::Failed(why)) => (t!("main.update_daemon_failed", why = why), p.text),
-            Some(DaemonUpdate::Restarting) => (t!("main.update_daemon_restarting").to_owned(), p.text2),
+        // One line, cut short if it must; the whole of it on the pointer.
+        let (words, tone, whole) = match &self.daemon_update {
+            None => (
+                t!("main.update_daemon_short", place = place, theirs = theirs, ours = env!("CARGO_PKG_VERSION")),
+                p.text,
+                Some(t!("main.update_daemon_line", place = place, theirs = theirs, ours = env!("CARGO_PKG_VERSION"))),
+            ),
+            Some(DaemonUpdate::Running) => (t!("main.update_daemon_running", place = place), p.text2, None),
+            Some(DaemonUpdate::Done) => (t!("main.update_daemon_done_short").to_owned(), p.text2, Some(t!("main.update_daemon_done").to_owned())),
+            Some(DaemonUpdate::Failed(why)) => {
+                let all = t!("main.update_daemon_failed", why = why);
+                (all.clone(), p.text, Some(all))
+            }
+            Some(DaemonUpdate::Restarting) => (t!("main.update_daemon_restarting").to_owned(), p.text2, None),
         };
         let done = matches!(self.daemon_update, Some(DaemonUpdate::Done));
         let armed = self.daemon_restart_armed;
@@ -1424,7 +1433,7 @@ impl Shell {
         let can = matches!(self.daemon_update, None | Some(DaemonUpdate::Failed(_)));
         Some(
             h_flex()
-                .min_h(px(40.))
+                .h(px(40.))
                 .flex_none()
                 .px_4()
                 .gap_3()
@@ -1434,7 +1443,13 @@ impl Shell {
                 .border_color(p.hair)
                 .text_size(px(SMALL))
                 .child(icons::icon(icons::Icon::ArrowUp, 14., p.accent))
-                .child(div().flex_1().min_w_0().text_color(tone).child(words))
+                .child({
+                    let line = div().id("update-daemon-words").flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(tone).child(words);
+                    match whole {
+                        Some(whole) => line.tip(p, whole, None).into_any_element(),
+                        None => line.into_any_element(),
+                    }
+                })
                 .when(matches!(self.daemon_update, Some(DaemonUpdate::Running | DaemonUpdate::Restarting)), |b| b.child(motion::spinner(13., p.muted)))
                 .when(done, |b| {
                     b.child(ui::button(p, "restart-daemon-now", now_kind, now_label).on_click(cx.listener(move |this, _, _, cx| {

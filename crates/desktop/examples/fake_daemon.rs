@@ -1034,7 +1034,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             ..Default::default()
                         };
                         team::on_hello(&events);
-                        let hello = Hello { version: "fake".into(), snapshot };
+                        // `FAKE_VERSION=0.1.0`: an older daemon, for the update banner.
+                        let hello = Hello { version: std::env::var("FAKE_VERSION").unwrap_or_else(|_| "fake".into()), snapshot };
                         writer.write_all(Message::response(id, hello).to_line().as_bytes()).await.unwrap();
                         // `FAKE_BROWSER`: the shared Chrome's tabs as they stand, as the daemon tells them.
                         for event in browser::replay() {
