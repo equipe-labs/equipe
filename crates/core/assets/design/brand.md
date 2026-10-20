@@ -40,5 +40,14 @@ Sample lines, in the voice:
 | Success | 저장했어요. |
 | Destructive confirm | 이 펀드를 삭제할까요? 되돌릴 수 없어요. |
 
-## 6. Decisions
-Dated, one line each: what was chosen, from which options, why.
+## 6. Brief (binding, before any option)
+- One specific reference — a named product, site or print piece — and what to take from it.
+- Visual thesis, in one line.
+- Locked axes (kept as they are) and free axes (to explore).
+
+## 7. Locked
+The brand's own values — kept, and not flagged by `equipe design check` as clichés.
+List each with where it comes from (e.g. `#C1262D` logo red · from the audit; Proxima Nova · site headings).
+
+## 8. Decisions
+Dated, one line each: what was chosen, from which options, why. The person's taste goes in `taste.md`.

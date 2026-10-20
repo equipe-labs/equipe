@@ -80,7 +80,7 @@ pub fn check(dir: &Path) -> Vec<Finding> {
         contrast_of(tokens, Some(dark), true, &mut out);
     }
     typefaces(tokens, &mut out);
-    look(tokens, &mut out);
+    look(tokens, &locked(dir), &mut out);
     files(dir, &mut out);
     out.sort_by_key(|f| f.level);
     out
@@ -204,19 +204,41 @@ fn dedup(list: &[String]) -> Vec<String> {
     seen
 }
 
+/// What `brand.md` lists under `## Locked` (or `## 고정`): the brand's
+/// own values, lower-cased — hex colours and face names — which are the
+/// brand, not a cliché.
+pub fn locked(dir: &Path) -> Vec<String> {
+    let text = std::fs::read_to_string(dir.join("brand.md")).unwrap_or_default();
+    let mut on = false;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') {
+            let lower = trimmed.to_lowercase();
+            on = lower.contains("locked") || lower.contains("고정");
+            continue;
+        }
+        if on {
+            out.push(line.to_lowercase());
+        }
+    }
+    out
+}
+
 /// The stock looks of AI-made screens: a warm cream page with serif
-/// headings, or Inter with an indigo-violet accent.
-fn look(tokens: &[Token], out: &mut Vec<Finding>) {
+/// headings, or Inter with an indigo-violet accent — unless the brand locked them.
+fn look(tokens: &[Token], locked: &[String], out: &mut Vec<Finding>) {
+    let is_locked = |what: &str| !what.is_empty() && locked.iter().any(|l| l.contains(&what.to_lowercase()));
     let bg = contrast::background(tokens, None, Color::WHITE);
     let families: Vec<String> = tokens.iter().flat_map(|t| match t.kind.as_str() {
         "fontFamily" => values::font_family(&t.value).unwrap_or_default(),
         "typography" => values::typography(&t.value).map(|s| s.family).unwrap_or_default(),
         _ => Vec::new(),
     }).map(|f| f.to_ascii_lowercase()).collect();
-    let serif = families.iter().any(|f| f.contains("serif") && !f.contains("sans") || ["playfair", "garamond", "fraunces", "instrument serif", "dm serif", "lora", "cormorant"].iter().any(|s| f.contains(s)));
-    let inter = families.first().is_some_and(|f| f.contains("inter"));
-    let cream = is_cream(bg);
-    let indigo = tokens.iter().filter(|t| t.kind == "color" && t.name.to_ascii_lowercase().split('.').any(|p| ["primary", "accent", "action", "brand"].contains(&p))).filter_map(|t| values::color(&t.value)).any(is_indigo);
+    let serif = families.iter().any(|f| (f.contains("serif") && !f.contains("sans") || ["playfair", "garamond", "fraunces", "instrument serif", "dm serif", "lora", "cormorant"].iter().any(|s| f.contains(s))) && !is_locked(f));
+    let inter = families.first().is_some_and(|f| f.contains("inter") && !is_locked(f));
+    let cream = is_cream(bg) && !is_locked(&bg.hex());
+    let indigo = tokens.iter().filter(|t| t.kind == "color" && t.name.to_ascii_lowercase().split('.').any(|p| ["primary", "accent", "action", "brand"].contains(&p))).filter_map(|t| values::color(&t.value)).any(|c| is_indigo(c) && !is_locked(&c.hex()));
     if cream && serif {
         out.push(Finding::new(Level::Warn, "look", "A cream page with serif headings is the stock look of AI-made screens: keep it only if the brand is that, and say why."));
     } else if inter && indigo {
@@ -352,6 +374,9 @@ mod tests {
           "font": { "body": { "$type": "fontFamily", "$value": ["Inter", "sans-serif"] } } }"##;
         assert!(levels(&check(&dir(indigo, &[])), "look").contains(&Level::Warn));
         assert!(is_indigo(Color::rgb(0x7C3AED)) && !is_indigo(Color::rgb(0x2563EB)));
+        // The brand's own: locked in brand.md, not a cliché.
+        let d = dir(cream, &[("brand.md", "# Brand\n## Locked\n- page #F5F0E8\n- Playfair Display for headings\n## Voice\n해요체")]);
+        assert!(levels(&check(&d), "look").is_empty(), "{:#?}", check(&d));
         let own = r##"{ "color": { "$type": "color", "bg": { "$value": "#FFFFFF" }, "primary": { "$value": "#C8102E" } },
           "font": { "body": { "$type": "fontFamily", "$value": ["Pretendard"] } } }"##;
         assert!(levels(&check(&dir(own, &[])), "look").is_empty());
