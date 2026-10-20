@@ -14,13 +14,14 @@ use crate::protocol::design::Token;
 const BRAND: &str = include_str!("../../assets/design/brand.md");
 const GUIDELINES: &str = include_str!("../../assets/design/guidelines.md");
 const TOKENS: &str = include_str!("../../assets/design/tokens.json");
+const TASTE: &str = include_str!("../../assets/design/taste.md");
 
 /// Lay out `dir` to fill in: only what isn't there yet. What was written.
 pub fn init(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut written = Vec::new();
     std::fs::create_dir_all(dir.join("assets").join("logo"))?;
     std::fs::create_dir_all(dir.join("components"))?;
-    for (name, body) in [("brand.md", BRAND), ("guidelines.md", GUIDELINES), ("tokens.json", TOKENS)] {
+    for (name, body) in [("brand.md", BRAND), ("guidelines.md", GUIDELINES), ("tokens.json", TOKENS), ("taste.md", TASTE)] {
         let path = dir.join(name);
         if !path.exists() {
             std::fs::write(&path, body)?;
@@ -308,7 +309,7 @@ mod tests {
         std::fs::write(d.join("brand.md"), "mine").unwrap();
         let written = init(&d).unwrap();
         let names: Vec<String> = written.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
-        assert_eq!(names, ["guidelines.md", "tokens.json"], "brand.md was there already");
+        assert_eq!(names, ["guidelines.md", "tokens.json", "taste.md"], "brand.md was there already");
         assert_eq!(std::fs::read_to_string(d.join("brand.md")).unwrap(), "mine");
         assert!(d.join("assets/logo").is_dir() && d.join("components").is_dir());
         // The tokens it starts with read cleanly, in layers, and pass the check's reading.
