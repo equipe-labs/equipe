@@ -638,7 +638,15 @@ pub enum Command {
     /// member's (`member`); `mode: None` puts a member back on the squad's default.
     SetMode { squad: SquadName, member: Option<String>, mode: Option<Mode> },
     /// The person answers a member's request for permission.
-    Decide { squad: SquadName, approval: u64, decision: Decision },
+    Decide {
+        squad: SquadName,
+        approval: u64,
+        decision: Decision,
+        /// What the person wrote with their answer: why not, what instead, or
+        /// what to mind — the member reads it with the answer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        words: Option<String>,
+    },
     /// The person's answers to a member's questions ([`Event::QuestionsAsked`]),
     /// one per question in order — an empty one skips it. They go to the member
     /// as its next message. Answered by [`Event::QuestionsClosed`].
@@ -714,6 +722,13 @@ pub enum Command {
     ForgetLoginAllowance { id: u32, who: String },
     /// Every screen's list of logins, again.
     Logins,
+    /// The person adds a browser profile — another person's accounts in a
+    /// Chrome of their own — or names one again ([`Event::BrowserProfiles`]).
+    SaveBrowserProfile { profile: BrowserProfile },
+    /// The person drops a browser profile: members stop getting its browser.
+    DeleteBrowserProfile { name: String },
+    /// Every screen's list of browser profiles, again.
+    BrowserProfiles,
     /// The screen watches `session`'s browser (`None`: none): equipe sends it
     /// a picture of the page every moment or so ([`Event::BrowserFrame`]).
     WatchBrowser { squad: SquadName, session: Option<SessionId> },
@@ -755,7 +770,12 @@ pub enum Command {
     BrowserNav { page: u64, action: BrowserNavAction, url: Option<String> },
     /// A tab of the person's own in the shared Chrome, at `url` (blank without
     /// one). Answered by [`Event::BrowserTabs`] for the person's lane (`""`).
-    BrowserNewTab { url: Option<String> },
+    BrowserNewTab {
+        url: Option<String>,
+        /// In another browser profile's Chrome (its lane `#name`); `None`: the main one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
+    },
     BrowserCloseTab { page: u64 },
     /// The person takes a member's browser (`lane`, as [`Event::BrowserTabs`]
     /// names it) into their own hands, or gives it back. While they have it the
@@ -817,6 +837,10 @@ pub enum Command {
     /// How the squad moves members between engines as their plans run low
     /// ([`engines::Switching`]). Answered by [`Event::EngineSwitchingChanged`].
     SetEngineSwitching { squad: SquadName, mode: engines::Switching },
+    /// The person lets the PM accept and merge the team's handed-in work
+    /// itself (`on`, the default), putting to them only what needs them — or
+    /// keeps every acceptance for themselves.
+    SetPmAccepts { squad: SquadName, on: bool },
     /// The person makes the moves a card proposes ([`Event::EngineProposed`]):
     /// each at its member's next ticket boundary. Only ever the person's.
     ApplyEngineProposal { squad: SquadName, id: u64 },
@@ -996,6 +1020,18 @@ pub enum BrowserNavAction {
     Stop,
     /// To the `url` given.
     Go,
+}
+
+/// A browser profile besides the person's main one: a Chrome of its own with
+/// its own sign-ins — another person's accounts, to work or test as them.
+/// Members get its browser beside their own (`browser_<name>`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserProfile {
+    /// Its name: lowercase letters, digits and `-`.
+    pub name: String,
+    /// Whose accounts it holds, in the person's words: `jhjung@atinuminvest.co.kr`.
+    #[serde(default)]
+    pub label: String,
 }
 
 /// One tab of the shared Chrome. `id` is the browser's own, stable while the
@@ -1468,9 +1504,13 @@ pub enum Event {
     },
     /// How the squad moves members between engines changed.
     EngineSwitchingChanged { squad: SquadName, mode: engines::Switching },
+    /// Whether the PM accepts the team's work now ([`Command::SetPmAccepts`]).
+    PmAcceptsChanged { squad: SquadName, on: bool },
     /// The squad's projects now ([`Command::AddProject`]): their folders.
     /// The logins kept, without their passwords: every screen's.
     Logins { logins: Vec<vault::Login> },
+    /// The browser profiles besides the main one: every screen's.
+    BrowserProfiles { profiles: Vec<BrowserProfile> },
     /// The squad's routines now, each with its next run.
     RoutinesChanged { squad: SquadName, routines: Vec<routines::Routine> },
     ProjectsChanged {
@@ -1512,6 +1552,7 @@ impl Event {
             | Event::EngineProposed { squad, .. }
             | Event::EngineProposalClosed { squad, .. }
             | Event::EngineSwitchingChanged { squad, .. }
+            | Event::PmAcceptsChanged { squad, .. }
             | Event::ProjectsChanged { squad, .. }
             | Event::RoutinesChanged { squad, .. }
             | Event::Design { squad, .. } => Some(squad),
@@ -1567,9 +1608,11 @@ impl Event {
             | Event::EngineProposed { .. }
             | Event::EngineProposalClosed { .. }
             | Event::EngineSwitchingChanged { .. }
+            | Event::PmAcceptsChanged { .. }
             | Event::ProjectsChanged { .. }
             | Event::RoutinesChanged { .. }
             | Event::Logins { .. }
+            | Event::BrowserProfiles { .. }
             | Event::Design { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
@@ -1606,6 +1649,7 @@ impl Event {
                 | Event::Engines { .. }
                 | Event::SignIn { .. }
                 | Event::Logins { .. }
+                | Event::BrowserProfiles { .. }
                 | Event::BrowserDialogClosed { .. }
                 | Event::BrowserTabs { squad: None, .. }
                 | Event::BrowserControl { squad: None, .. }
@@ -1844,6 +1888,10 @@ pub struct Snapshot {
     /// How the squad moves members between engines.
     #[serde(default, skip_serializing_if = "engines::Switching::is_default")]
     pub engine_switching: engines::Switching,
+    /// Whether the PM accepts the team's work itself ([`Command::SetPmAccepts`]);
+    /// `false` from a daemon that predates it, where the person accepts all.
+    #[serde(default)]
+    pub pm_accepts: bool,
     /// Moves between engines waiting for the person, or made and not yet
     /// seen, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2013,7 +2061,7 @@ mod tests {
         assert_eq!(Mode::parse("Ask"), Some(Mode::Ask));
         assert_eq!(Mode::parse("full-access"), Some(Mode::Full));
         assert_eq!(Mode::parse("yolo"), None);
-        let cmd = Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always };
+        let cmd = Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always, words: None };
         assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "decide", "squad": "acme", "approval": 7, "decision": "always" }));
         let event = Event::ApprovalRequested {
             squad: "acme".into(),
@@ -2179,6 +2227,7 @@ mod tests {
             plan: None,
             plans: vec![EnginePlan { engine: Engine::Codex, usage: PlanUsage::default(), plan_type: None, at: 7 }],
             engine_switching: engines::Switching::Auto,
+            pm_accepts: true,
             engine_proposals: Vec::new(),
             desktop: DesktopState::default(),
             sessions: vec![SessionInfo {

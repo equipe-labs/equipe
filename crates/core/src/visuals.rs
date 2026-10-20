@@ -12,7 +12,8 @@
 //! A reply shows pictures too: each image its Markdown embeds, and the
 //! pictures right in a folder it points at (`markdown`) — given only when a
 //! line the daemon itself recorded for the squad names them, under the same
-//! rules. A ticket whose worktree went (accepted, its merge still to come)
+//! rules; a picture a line embeds by name may be in one of the squad's
+//! projects or a temp folder too, where a quick chart or render lands. A ticket whose worktree went (accepted, its merge still to come)
 //! still shows its hand-in: the pictures are read from its branch, or from
 //! main once merged, by the paths the ticket recorded and no others.
 
@@ -122,7 +123,7 @@ pub fn check(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, String> {
     let real = std::fs::canonicalize(path).map_err(|_| refused(path, "no such file"))?;
     let roots: Vec<PathBuf> = roots.iter().filter_map(|r| std::fs::canonicalize(r).ok()).collect();
     if !roots.iter().any(|root| real.starts_with(root)) {
-        return Err(refused(path, "outside your worktree and the squad's folder"));
+        return Err(refused(path, &format!("{} and the squad's folder", rpc::IMAGE_OUTSIDE)));
     }
     if mime_of(&real).is_none() {
         return Err(refused(path, "a link to something that isn't a picture"));
@@ -251,6 +252,11 @@ pub struct Shown {
     pub folders: HashSet<String>,
     /// A ticket's pictures whose worktree is gone: where git still has each.
     pub kept: HashMap<String, Kept>,
+    /// The pictures the conversation's lines embed by name: given from the
+    /// squad's projects and the scratch folders too.
+    pub said: HashSet<String>,
+    /// The squad's projects.
+    pub projects: Vec<PathBuf>,
 }
 
 /// Where git has a picture of a ticket whose worktree went: in `repo`, at
@@ -298,7 +304,7 @@ pub fn shown(home: &Path, squad: &str) -> Shown {
         return Shown::default();
     }
     let Ok(journal) = crate::journal::Journal::open(&db) else { return Shown::default() };
-    let mut out = Shown { roots: vec![crate::squad_home::path(home, squad)], ..Shown::default() };
+    let mut out = Shown { roots: vec![crate::squad_home::path(home, squad)], projects: journal.projects().unwrap_or_default(), ..Shown::default() };
     for set in journal.questions() {
         out.paths.extend(set.images().map(str::to_owned));
     }
@@ -325,6 +331,7 @@ fn said(journal: &crate::journal::Journal, home: &Path, squad: &str, out: &mut S
         for image in markdown::local_images(text) {
             for base in [&cwd, &folder] {
                 if let Some(path) = markdown::lexical(&image.path, base) {
+                    out.said.insert(path.to_string_lossy().into_owned());
                     out.paths.insert(path.to_string_lossy().into_owned());
                 }
             }
@@ -385,9 +392,24 @@ fn read_kept(path: &Path, kept: &Kept, max: Option<u32>) -> Result<ImageRead, St
 /// Answer a `read_image` for `ask.squad`, at most `cap` pixels on a side
 /// when given (a phone's).
 pub fn serve(home: &Path, ask: &ReadImage, cap: Option<u32>) -> Result<ImageRead, String> {
-    let shown = shown(home, &ask.squad);
+    serve_with(home, ask, cap, &scratch_folders())
+}
+
+/// The folders a member drops a quick render or chart in: this Mac's temp folders.
+fn scratch_folders() -> Vec<PathBuf> {
+    vec![std::env::temp_dir(), PathBuf::from("/tmp"), PathBuf::from("/private/tmp")]
+}
+
+/// [`serve`], with `scratch` as the scratch folders: a picture a line embeds
+/// by name is given from the squad's projects and those too.
+pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[PathBuf]) -> Result<ImageRead, String> {
+    let mut shown = shown(home, &ask.squad);
     if !shown.paths.contains(&ask.path) && !in_folder(&shown, &ask.path) {
         return Err(format!("{} isn't a picture {} shows", ask.path, ask.squad));
+    }
+    if shown.said.contains(&ask.path) {
+        shown.roots.extend(shown.projects.iter().cloned());
+        shown.roots.extend(scratch.iter().cloned());
     }
     let max = match (ask.max, cap) {
         (Some(max), Some(cap)) => Some(max.min(cap)),
@@ -543,6 +565,11 @@ each option first (PNG, JPG, WebP, GIF or SVG, in your worktree or the squad's f
 mod tests {
     use super::*;
     use crate::protocol::decide::Choice;
+
+    /// The daemon's own temp folders hold every test's files: none here.
+    fn serve(home: &Path, ask: &ReadImage, cap: Option<u32>) -> Result<ImageRead, String> {
+        serve_with(home, ask, cap, &[])
+    }
     use std::os::unix::fs::symlink;
 
     fn dir(name: &str) -> PathBuf {
@@ -791,6 +818,40 @@ mod tests {
         assert!(serve(&home, &climbing, None).is_err());
         // Another squad's conversation names nothing of this one's.
         assert!(serve(&home, &ReadImage { squad: "zeta".into(), ..ask(&images.join("평면도.png")) }, None).is_err());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_reply_picture_in_one_of_the_squads_projects_or_a_scratch_folder_shows_and_nothing_else_there() {
+        let home = dir("scratch");
+        let journal = crate::journal::Journal::for_squad(&home, "acme").unwrap();
+        let project = home.join("code/atinum-mcp");
+        let scratch = home.join("tmp");
+        let private = home.join("Pictures");
+        for d in [&project, &scratch, &private] {
+            std::fs::create_dir_all(d.join("docs")).unwrap();
+        }
+        journal.add_project(&project).unwrap();
+        png(&project.join("docs/roadmap-erp.png"), 40, 30, false);
+        png(&project.join("docs/unsaid.png"), 4, 4, false);
+        png(&scratch.join("roadmap.png"), 40, 30, false);
+        png(&private.join("passport.png"), 4, 4, false);
+        let text = format!(
+            "![ERP 로드맵]({})\n![r]({})\n![p]({})",
+            project.join("docs/roadmap-erp.png").display(),
+            scratch.join("roadmap.png").display(),
+            private.join("passport.png").display()
+        );
+        conversation(&journal, 1, &home.join("squads/acme/home"), &[reply(&text)]);
+        let ask = |path: &Path| ReadImage { squad: "acme".into(), path: path.to_string_lossy().into_owned(), max: Some(64) };
+        let serve = |path: &Path| serve_with(&home, &ask(path), None, std::slice::from_ref(&scratch));
+        // A reply's picture in one of the squad's projects, or in a scratch folder: shown.
+        assert_eq!(serve(&project.join("docs/roadmap-erp.png")).unwrap().width, Some(40));
+        assert_eq!(serve(&scratch.join("roadmap.png")).unwrap().width, Some(40));
+        // Never said, though right there; said, but somewhere else of the person's.
+        assert!(serve(&project.join("docs/unsaid.png")).unwrap_err().contains("isn't a picture"));
+        let outside = serve(&private.join("passport.png")).unwrap_err();
+        assert_eq!(rpc::ImageWhy::of(&outside), rpc::ImageWhy::Outside, "{outside}");
         std::fs::remove_dir_all(home).unwrap();
     }
 

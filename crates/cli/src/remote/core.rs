@@ -161,7 +161,7 @@ pub fn pairing_url(relay: &str, id: &str, public: &str, secret: &[u8], name: &st
 /// person's squad, nor see the one-time code that would.
 pub fn allowed(command: Command) -> Option<Command> {
     match command {
-        Command::Decide { squad, approval, decision: Decision::Always } => Some(Command::Decide { squad, approval, decision: Decision::Allow }),
+        Command::Decide { squad, approval, decision: Decision::Always, words } => Some(Command::Decide { squad, approval, decision: Decision::Allow, words }),
         // Merging stays at the console: confirmed from a phone, the work is accepted only.
         Command::ConfirmAccept { squad, id, tickets } => {
             Some(Command::ConfirmAccept { squad, id, tickets: tickets.into_iter().map(|c| equipe_core::protocol::accept::Confirmed::only(c.ticket)).collect() })
@@ -1066,7 +1066,7 @@ pub(crate) mod tests {
         // "Always" from a phone is once.
         let decide = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decide", "squad": "acme", "approval": 3, "decision": "always" } });
         let out = core.on_relay(&phone.send(&c, Some("acme"), decide, now), now);
-        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::Decide { squad: "acme".into(), approval: 3, decision: Decision::Allow } }]);
+        assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: Command::Decide { squad: "acme".into(), approval: 3, decision: Decision::Allow, words: None } }]);
         // A member's questions are the person's to answer, or close, from a phone too.
         let answer = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "answer_questions", "squad": "acme", "id": 5, "answers": [{ "picked": [1] }, {}] } });
         let out = core.on_relay(&phone.send(&c, Some("acme"), answer, now), now);

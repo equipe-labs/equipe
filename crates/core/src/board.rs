@@ -379,6 +379,27 @@ pub const REMEMBER: &str = "remember";
 pub const FORGET: &str = "forget";
 /// A member says when what it is doing will be done — and what it ships, live.
 pub const ESTIMATE: &str = "estimate";
+
+/// Past this many minutes for one agent, work is split across subagents running at once.
+pub const ALONE_AT_MOST: f64 = 20.0;
+
+/// What `estimate` answers: shown — and, when the work would keep one agent
+/// long while no subagent shares it and it could, a push to split it and run
+/// the parts at once. Parallel hands are what a squad is for.
+pub fn estimate_reply(done_in: Option<f64>, shared: bool, has_subagents: bool) -> String {
+    let shown = "Shown to the person.";
+    match done_in {
+        Some(m) if m > ALONE_AT_MOST && !shared && has_subagents => format!(
+            "{shown} {} minutes is long for one agent. If it splits into parts that don't depend on each other — areas \
+to survey, screens, endpoints, files, test suites — hand them to subagents now, several Agent calls in one message so they \
+run at once, each told exactly its part and to report back briefly; then put their results together, check them, and \
+call `estimate` again with the shorter time. Parts that change files must not touch the same ones. Only if it truly \
+can't split, carry on alone.",
+            m.round() as u64
+        ),
+        _ => shown.to_owned(),
+    }
+}
 /// A designer finishes a design QA ticket: the screens pass, or go back to their engineer.
 pub const DESIGN_QA: &str = "design_qa";
 
@@ -702,6 +723,7 @@ once they have done what it needed. Work in progress and done work are the perso
         tools.push(crate::team::tool());
         // Accepting is the person's: the PM only puts it to them on a card.
         tools.push(crate::accept::tool());
+        tools.push(crate::accept::accept_work_tool());
     }
     tools
 }
@@ -801,6 +823,19 @@ pub fn arg_id(args: &Value, key: &str) -> Option<TicketId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_estimate_with_nobody_sharing_it_is_told_to_split_it_across_subagents() {
+        // Long, alone, on an engine with subagents: split it and run the parts at once.
+        let alone = estimate_reply(Some(80.0), false, true);
+        assert!(alone.starts_with("Shown to the person."));
+        assert!(alone.contains("80 minutes") && alone.contains("subagents") && alone.contains("one message"), "{alone}");
+        // Short, already shared out, or no subagents to hand it to: just shown.
+        assert_eq!(estimate_reply(Some(ALONE_AT_MOST), false, true), "Shown to the person.");
+        assert_eq!(estimate_reply(Some(120.0), true, true), "Shown to the person.");
+        assert_eq!(estimate_reply(Some(120.0), false, false), "Shown to the person.");
+        assert_eq!(estimate_reply(None, false, true), "Shown to the person.");
+    }
 
     /// Every ticket number `ticket_ref` finds in `text`, in order.
     fn refs(text: &str) -> Vec<&str> {

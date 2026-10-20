@@ -80,10 +80,22 @@ pub struct LaneRef<'a> {
 /// the other members' by name, the person's own (`""`) last.
 pub fn order<'a>(mut lanes: Vec<LaneRef<'a>>, viewed: Option<SessionId>) -> Vec<LaneRef<'a>> {
     lanes.sort_by(|a, b| {
-        let key = |l: &LaneRef| (l.lane.is_empty(), viewed.is_none() || l.session != viewed, l.name.to_lowercase(), l.lane.to_owned());
+        let key = |l: &LaneRef| (mine(l.lane), viewed.is_none() || l.session != viewed, l.name.to_lowercase(), l.lane.to_owned());
         key(a).cmp(&key(b))
     });
     lanes
+}
+
+/// Whether `lane` is the person's own tabs: the main profile's (`""`) or
+/// another profile's (`#jhjung`).
+pub fn mine(lane: &str) -> bool {
+    lane.is_empty() || lane.starts_with('#')
+}
+
+/// The browser profile `lane` is in: `jhjung` for `acme/qa#jhjung` or
+/// `#jhjung`; `None` for the main one.
+pub fn profile_of(lane: &str) -> Option<&str> {
+    lane.rsplit_once('#').map(|(_, p)| p).filter(|p| !p.is_empty())
 }
 
 /// Titles that say nothing of the page: a wall before it, or a page on its
@@ -299,7 +311,7 @@ impl Handovers {
             }
             return None;
         };
-        if lane.is_empty() || !self.opened.insert((lane.to_owned(), what)) {
+        if mine(lane) || !self.opened.insert((lane.to_owned(), what)) {
             return None;
         }
         Some(match page {
@@ -536,6 +548,24 @@ mod tests {
         let lanes_of = |v: Vec<LaneRef<'static>>| v.into_iter().map(|l| l.lane).collect::<Vec<_>>();
         assert_eq!(lanes_of(order(lanes.clone(), Some(7))), ["acme/mobile", "acme/backend", "acme/designer", ""]);
         assert_eq!(lanes_of(order(lanes, None)), ["acme/backend", "acme/designer", "acme/mobile", ""]);
+    }
+
+    #[test]
+    fn another_profiles_tabs_are_told_apart_and_the_persons_own_go_last() {
+        assert!(mine("") && mine("#jhjung"));
+        assert!(!mine("acme/qa") && !mine("acme/qa#jhjung"));
+        assert_eq!(profile_of("acme/qa#jhjung"), Some("jhjung"));
+        assert_eq!(profile_of("#jhjung"), Some("jhjung"));
+        assert_eq!(profile_of("acme/qa"), None);
+        assert_eq!(profile_of(""), None);
+        let lanes = vec![
+            LaneRef { lane: "#jhjung", session: None, name: "" },
+            LaneRef { lane: "acme/qa#jhjung", session: Some(3), name: "qa" },
+            LaneRef { lane: "", session: None, name: "" },
+            LaneRef { lane: "acme/qa", session: Some(3), name: "qa" },
+        ];
+        let lanes_of = |v: Vec<LaneRef<'static>>| v.into_iter().map(|l| l.lane).collect::<Vec<_>>();
+        assert_eq!(lanes_of(order(lanes, None)), ["acme/qa", "acme/qa#jhjung", "", "#jhjung"]);
     }
 
     #[test]

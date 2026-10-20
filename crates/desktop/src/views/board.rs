@@ -784,10 +784,12 @@ impl Shell {
 
     /// R: the words box at the foot of the peek.
     pub fn board_open_reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(t) = self.picked() else { return };
-        if self.picked_need().is_some_and(|n| matches!(n, Need::Permission(_))) {
-            return;
+        // A request for permission: R writes to the member on it.
+        if let Some(Need::Permission(id)) = self.picked_need() {
+            self.board.view.peek = true;
+            return self.open_words(id, window, cx);
         }
+        let Some(t) = self.picked() else { return };
         // A wait's card has its own boxes: R goes to the first.
         if t.status == TicketStatus::Waiting && !t.asks().is_empty() {
             let id = t.id;
@@ -1602,7 +1604,7 @@ fn empty_note(shell: &Shell, p: Palette, cx: &mut Context<Shell>) -> AnyElement 
 fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     match row {
-        Row::Heading { label, count, tone, hint } => {
+        Row::Heading { label, count, tone, hint, all } => {
             let color = match tone {
                 Tone::ForYou => p.accent,
                 _ => p.muted,
@@ -1621,7 +1623,23 @@ fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, cx: &mut Co
                     _ => None,
                 }, |h, c| h.child(dot(c, 7.)))
                 .child(label.clone())
-                .child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(count.to_string()));
+                .child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(count.to_string()))
+                // The whole section at once: picked, and the bar asks once to confirm.
+                .children(all.clone().map(|all| {
+                    let word = match all.what {
+                        board::AllOf::Accept => t!("board.all_accept"),
+                        board::AllOf::Start => t!("board.all_start"),
+                        board::AllOf::Merge => t!("board.all_merge"),
+                    };
+                    h_flex().flex_1().justify_end().child(
+                        btn(p, SharedString::from(format!("all-{ix}")), word, None, false, shell.can_act()).on_click(cx.listener(move |this, _, _, cx| {
+                            this.board.view.chosen = all.ids.iter().copied().collect();
+                            this.board.view.anchor = None;
+                            this.board.flow = Some(Flow::Bulk { yes: true });
+                            cx.notify();
+                        })),
+                    )
+                }));
             match hint {
                 // What the section means, in one quiet line under its name.
                 Some(hint) => v_flex()

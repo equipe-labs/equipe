@@ -571,7 +571,17 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         })
         .collect();
     let lines = if lines.is_empty() { vec![Line::new(t!("settings.no_members"), t!("settings.no_members_desc"))] } else { lines };
-    vec![Section::new(t!("settings.section_members"), lines).foot(t!("settings.team_foot"))]
+    // Who accepts the team's work: the PM (only what needs the person comes to them), or the person, all of it.
+    let pm_accepts = Line::new(t!("settings.pm_accepts"), t!("settings.pm_accepts_desc"))
+        .words("accept review approve 수락 검토 승인 pm")
+        .control(switch(shell, "pm-accepts", model.pm_accepts, connected, |this, on, _, _| {
+            let squad = this.model.squad.clone();
+            this.send_command(equipe_core::protocol::Command::SetPmAccepts { squad, on });
+        }, cx));
+    vec![
+        Section::new(t!("settings.section_work"), vec![pm_accepts]).foot(t!("settings.pm_accepts_foot")),
+        Section::new(t!("settings.section_members"), lines).foot(t!("settings.team_foot")),
+    ]
 }
 
 /// `el` with a tooltip, in a box of its own that can be hovered.
@@ -670,6 +680,7 @@ fn browser(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     vec![
         Section::new(t!("settings.section_members_browsers"), vec![shown, panel]).foot(t!("settings.squad_foot")),
         Section::new(t!("settings.section_sign_in"), vec![sign_in, pop_out]).foot(t!("settings.sign_in_foot")),
+        super::accounts::profiles_section(shell, cx),
     ]
 }
 
@@ -1073,6 +1084,7 @@ impl Shell {
             Category::Squad => self.ask_devices(cx),
             Category::Engines => self.ask_engines(cx),
             Category::Accounts => self.send_command(Command::Logins),
+            Category::Browser => self.send_command(Command::BrowserProfiles),
             _ => {}
         }
         if self.screen != Screen::Settings {
@@ -1115,6 +1127,7 @@ impl Shell {
             Category::Squad => self.ask_devices(cx),
             Category::Engines => self.ask_engines(cx),
             Category::Accounts => self.send_command(Command::Logins),
+            Category::Browser => self.send_command(Command::BrowserProfiles),
             _ => {}
         }
         if self.settings.category != category {

@@ -164,6 +164,7 @@ pub fn why_words(why: ImageWhy) -> &'static str {
     match why {
         ImageWhy::Missing => t!("visuals.why_missing"),
         ImageWhy::TooBig => t!("visuals.why_too_big"),
+        ImageWhy::Outside => t!("visuals.why_outside"),
         ImageWhy::Unreadable => t!("visuals.why_unreadable"),
     }
 }

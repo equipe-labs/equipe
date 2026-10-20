@@ -1441,12 +1441,17 @@ impl Runtime {
                 };
                 self.hub.op(&json!({ "op": "nav", "page": page, "action": action, "url": url }));
             }
-            Command::BrowserNewTab { url } => {
-                // The person's own tab: the shared Chrome starts for it if it must.
+            Command::BrowserNewTab { url, profile } => {
+                // The person's own tab: the shared Chrome starts for it if it must
+                // (another profile's, its own Chrome).
                 if let Some(npx) = self.config.npx.clone()
                     && self.browser_host(&npx).is_some()
                 {
-                    self.hub.op(&json!({ "op": "newtab", "url": url }));
+                    let mut request = json!({ "op": "newtab", "url": url });
+                    if let Some(p) = profile.filter(|p| browser::profiles(&self.config.home).iter().any(|k| k.name == *p)) {
+                        browser::with_profile(&mut request, &self.config.home, &p);
+                    }
+                    self.hub.op(&request);
                 }
             }
             Command::BrowserCloseTab { page } => {
@@ -1516,6 +1521,23 @@ impl Runtime {
                 let logins = self.logins.clone();
                 self.publish(Event::Logins { logins });
             }
+            Command::SaveBrowserProfile { profile } => {
+                match browser::save_profile(&self.config.home, &profile.name, &profile.label) {
+                    Ok(_) => {}
+                    Err(why) => self.error(None, why, None),
+                }
+                self.publish_browser_profiles();
+            }
+            Command::DeleteBrowserProfile { name } => {
+                if let Err(why) = browser::delete_profile(&self.config.home, &name) {
+                    self.error(None, why, None);
+                }
+                // Its lanes close: members stop getting its browser from their next turn.
+                let suffix = format!("#{name}");
+                self.browsers.retain(|(_, key), _| !key.ends_with(&suffix));
+                self.publish_browser_profiles();
+            }
+            Command::BrowserProfiles => self.publish_browser_profiles(),
             Command::SaveRoutine { squad, routine } => self.save_routine(&squad, routine),
             Command::DeleteRoutine { squad, id } => self.delete_routine(&squad, id),
             Command::RunRoutine { squad, id } => {
@@ -1530,9 +1552,17 @@ impl Runtime {
                     self.focus.remove(&squad);
                 }
             },
-            Command::Decide { squad, approval, decision } => {
-                if self.pending.get(&approval).is_some_and(|p| p.squad == squad) {
-                    self.answer(approval, decision, "");
+            Command::Decide { squad, approval, decision, words } => {
+                let words = words.map(|w| w.trim().to_owned()).filter(|w| !w.is_empty());
+                if let Some(pending) = self.pending.get(&approval).filter(|p| p.squad == squad) {
+                    let (session, tool) = (pending.approval.session, pending.approval.tool.clone());
+                    self.answer_with(approval, decision, "", words.as_deref());
+                    // A permission's yes (or a sign-in's answer) can't carry words:
+                    // they reach the member as the person's own, mid-work.
+                    let carried = tool == CONFIRM || (decision == Decision::Deny && tool != SIGN_IN_TOOL);
+                    if let Some(words) = words.filter(|_| !carried) {
+                        self.submit(session, words).await;
+                    }
                 }
             }
             Command::AnswerQuestions { squad, id, answers, about } => {
@@ -1568,6 +1598,12 @@ impl Runtime {
             }
             Command::SignOut { engine } => self.sign_out(engine),
             Command::SetEngineSwitching { squad, mode } => self.set_engine_switching(&squad, mode).await,
+            Command::SetPmAccepts { squad, on } => {
+                if let Some(journal) = self.journal(&squad) {
+                    let _ = journal.set_pm_accepts(on);
+                }
+                self.publish(Event::PmAcceptsChanged { squad, on });
+            }
             Command::ApplyEngineProposal { squad, id } => self.apply_engine_proposal(&squad, id).await,
             Command::DismissEngineProposal { squad, id } => self.dismiss_engine_proposal(&squad, id),
             Command::UndoEngineProposal { squad, id } => self.undo_engine_proposal(&squad, id).await,
@@ -2805,6 +2841,17 @@ for one project goes to it as tickets for its owners, with that project — and 
             }
             _ => None,
         };
+        // Other people's accounts: a browser in each other profile's Chrome, beside its own.
+        let profile_browsers: Vec<(browser::BrowserProfile, u16)> = match (browser, self.browser_key(id)) {
+            (Some(_), Some((squad, key))) if self.config.browser_host => browser::profiles(&self.config.home)
+                .into_iter()
+                .filter_map(|p| {
+                    let port = self.open_browser(&squad, &browser::in_profile(&key, Some(&p.name)), false)?;
+                    Some((p, port))
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         let Some(session) = self.sessions.get(&id) else {
             return;
         };
@@ -2812,7 +2859,13 @@ for one project goes to it as tickets for its owners, with that project — and 
         // Code run in the browser's own process is outside any sandbox: in auto
         // the person sees the code and says yes; in full it runs.
         let ask_tools: Vec<String> =
-            if browser.is_some() && mode == Mode::Auto { vec![permissions::BROWSER_CODE.to_owned()] } else { Vec::new() };
+            if browser.is_some() && mode == Mode::Auto {
+                std::iter::once(permissions::BROWSER_CODE.to_owned())
+                    .chain(profile_browsers.iter().map(|(p, _)| format!("mcp__{}__browser_run_code_unsafe", browser::server_name(Some(&p.name)))))
+                    .collect()
+            } else {
+                Vec::new()
+            };
         let mcp_config = match (&squad, &session.member, &self.config.equipe_binary) {
             (Some(squad), Some(m), Some(binary)) if board_tools => {
                 let mut servers = json!({ MCP_SERVER: {
@@ -2822,6 +2875,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                 }});
                 if let Some(port) = browser {
                     servers[browser::SERVER] = browser::entry(port);
+                }
+                for (profile, port) in &profile_browsers {
+                    servers[browser::server_name(Some(&profile.name))] = browser::entry(*port);
                 }
                 if desktop {
                     servers[DESKTOP_SERVER] = json!({
@@ -2850,6 +2906,8 @@ for one project goes to it as tickets for its owners, with that project — and 
                 language: language.as_deref(),
                 screen_language: Some(self.config.lang.english_name()),
                 browser: browser.is_some(),
+                profiles: &profile_browsers.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(),
+                pm_accepts: squad.as_deref().and_then(|s| self.journals.get(s)).is_none_or(Journal::pm_accepts),
                 desktop,
                 home: home.as_deref(),
                 memory: memory.as_deref(),
@@ -2944,6 +3002,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                         let mut servers = json!({ MCP_SERVER: codex_app::mcp_server(binary, &args(None), true) });
                         if let Some(port) = browser {
                             servers[browser::SERVER] = codex_app::mcp_http_server(&format!("http://localhost:{port}/mcp"), browses_freely);
+                        }
+                        for (profile, port) in &profile_browsers {
+                            servers[browser::server_name(Some(&profile.name))] = codex_app::mcp_http_server(&format!("http://localhost:{port}/mcp"), browses_freely);
                         }
                         if desktop {
                             servers[DESKTOP_SERVER] = codex_app::mcp_server(binary, &args(Some(DESKTOP_SERVER)), matches!(mode, Mode::Auto | Mode::Full));
@@ -3063,6 +3124,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 let mut allowed: Vec<String> = mcp_config.iter().map(|_| format!("mcp__{MCP_SERVER}")).collect();
                 if browses_freely {
                     allowed.push(format!("mcp__{}", browser::SERVER));
+                    allowed.extend(profile_browsers.iter().map(|(p, _)| format!("mcp__{}", browser::server_name(Some(&p.name)))));
                 }
                 if desktop && matches!(mode, Mode::Auto | Mode::Full) {
                     allowed.push(format!("mcp__{DESKTOP_SERVER}"));
@@ -4096,7 +4158,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         if !self.merging.insert((squad.to_owned(), ticket)) {
             return;
         }
-        let message = format!("equipe: merge T-{ticket} {}\n\nAccepted by the person; merged from {branch}.", found.title);
+        let message = format!("equipe: merge T-{ticket} {}\n\nAccepted; merged from {branch}.", found.title);
         let (internal, squad) = (self.internal.clone(), squad.to_owned());
         tokio::task::spawn_blocking(move || {
             let result = worktree::merge_into_main(&repo, &branch, &message)
@@ -4137,7 +4199,8 @@ for one project goes to it as tickets for its owners, with that project — and 
                         let shown = say!(self, "news.merge_conflict_owner", id = ticket);
                         self.brief_member(squad, &owner, &line, &shown);
                         self.brief_pm(squad, line, None);
-                        say!(self, "error.not_merged_conflict", id = ticket, err = err, who = owner)
+                        let files = worktree::conflict_files(&err).unwrap_or_default();
+                        say!(self, "error.not_merged_conflict", id = ticket, files = files, who = owner)
                     }
                     None => say!(self, "error.not_merged", id = ticket, err = err),
                 };
@@ -4411,6 +4474,19 @@ there, end your turn, and carry on when they say they're done."
             return;
         }
         let squad = call.squad.clone();
+        // The PM accepting its team's work: it waits for the acceptance itself.
+        if call.name == crate::accept::ACCEPT_WORK {
+            let result = match self.member_id(&squad, &call.member) {
+                Some(id) => self.accept_work(&squad, &call.member, id, &call.arguments).await,
+                None => Err("You're not on the squad.".into()),
+            };
+            self.dispatch(&squad).await;
+            let _ = reply.send(match result {
+                Ok(text) => ToolResult { text, is_error: false, image: None },
+                Err(text) => ToolResult { text, is_error: true, image: None },
+            });
+            return;
+        }
         let result = self.run_tool(call);
         // Whatever changed, the rules look again.
         self.dispatch(&squad).await;
@@ -4426,7 +4502,7 @@ there, end your turn, and carry on when they say they're done."
     /// its own. Blocked things are refused, "always allow" rules answered, and
     /// everything else put to the person.
     fn ask_permission(&mut self, call: ToolCall, reply: oneshot::Sender<ToolResult>) {
-        let tool = call.arguments.get("tool_name").and_then(Value::as_str).unwrap_or("?").to_owned();
+        let tool = permissions::canonical(call.arguments.get("tool_name").and_then(Value::as_str).unwrap_or("?")).to_owned();
         let input = call.arguments.get("input").cloned().unwrap_or_else(|| json!({}));
         let (action, reason) = permissions::describe_in(self.config.lang, &tool, &input);
         let Some(id) = self.member_id(&call.squad, &call.member) else {
@@ -4618,6 +4694,12 @@ there, end your turn, and carry on when they say they're done."
     /// Answer a waiting request for permission. "Always" also becomes one of the
     /// squad's rules, so the same kind of thing doesn't ask again.
     fn answer(&mut self, approval_id: u64, decision: Decision, why: &str) {
+        self.answer_with(approval_id, decision, why, None);
+    }
+
+    /// [`Self::answer`], with what the person wrote: a no's reason, or what
+    /// they add to a yes to their member's own question.
+    fn answer_with(&mut self, approval_id: u64, decision: Decision, why: &str, words: Option<&str>) {
         let Some(pending) = self.pending.remove(&approval_id) else {
             return;
         };
@@ -4640,7 +4722,12 @@ there, end your turn, and carry on when they say they're done."
                 None => decision = Decision::Allow,
             }
         }
-        let why = if why.is_empty() && decision == Decision::Deny { "The person declined." } else { why };
+        let said = words.map(|w| format!("The person declined and said: \u{201c}{w}\u{201d}. Don't do it as asked; do what they said instead, or ask."));
+        let why = match &said {
+            Some(said) if decision == Decision::Deny => said.as_str(),
+            _ if why.is_empty() && decision == Decision::Deny => "The person declined.",
+            _ => why,
+        };
         if let Some(preview) = &approval.preview {
             let _ = std::fs::remove_file(preview);
         }
@@ -4652,19 +4739,23 @@ there, end your turn, and carry on when they say they're done."
             }
         } else if approval.tool == CONFIRM {
             // A question the member asked itself: an answer in words, not a permission verdict.
-            let text = match decision {
-                Decision::Allow | Decision::Always => format!("The person said yes. Go ahead: {}", approval.action),
-                Decision::Deny => format!("The person said no ({why}). Don't do it; carry on without it, or say what you need."),
+            let text = match (decision, words) {
+                (Decision::Allow | Decision::Always, None) => format!("The person said yes. Go ahead: {}", approval.action),
+                (Decision::Allow | Decision::Always, Some(w)) => format!("The person said yes. Go ahead: {}\nThey added: \u{201c}{w}\u{201d} — do it their way.", approval.action),
+                (Decision::Deny, Some(_)) => why.to_owned(),
+                (Decision::Deny, None) => format!("The person said no ({why}). Don't do it; carry on without it, or say what you need."),
             };
             ToolResult { text, is_error: false, image: None }
         } else {
             verdict(decision, &input, why)
         });
-        let line = match (decision, &rule) {
-            (Decision::Always, Some(rule)) => say!(self, "notice.always_allowed", rule = rule, action = approval.action),
-            (Decision::Allow | Decision::Always, _) => say!(self, "notice.allowed", action = approval.action),
-            (Decision::Deny, _) if why == "The person declined." => say!(self, "notice.declined", action = approval.action),
-            (Decision::Deny, _) => say!(self, "notice.declined_why", why = why, action = approval.action),
+        let line = match (decision, &rule, words) {
+            (Decision::Deny, _, Some(w)) => say!(self, "notice.declined_said", words = w, action = approval.action),
+            (_, _, Some(w)) => say!(self, "notice.allowed_said", words = w, action = approval.action),
+            (Decision::Always, Some(rule), _) => say!(self, "notice.always_allowed", rule = rule, action = approval.action),
+            (Decision::Allow | Decision::Always, _, _) => say!(self, "notice.allowed", action = approval.action),
+            (Decision::Deny, _, _) if why == "The person declined." => say!(self, "notice.declined", action = approval.action),
+            (Decision::Deny, _, _) => say!(self, "notice.declined_why", why = why, action = approval.action),
         };
         self.publish(Event::Notice { session: approval.session, text: line });
         let verb = match decision {
@@ -4689,6 +4780,12 @@ there, end your turn, and carry on when they say they're done."
             };
             let _ = internal.send(Internal::Logins(result));
         });
+    }
+
+    /// Every screen's list of browser profiles.
+    fn publish_browser_profiles(&mut self) {
+        let profiles = browser::profiles(&self.config.home);
+        self.publish(Event::BrowserProfiles { profiles });
     }
 
     fn logins_changed(&mut self, result: Result<Vec<crate::protocol::vault::Login>, String>) {
@@ -4913,11 +5010,13 @@ there, end your turn, and carry on when they say they're done."
         if !self.browsers.get_mut(&key).is_some_and(|b| b.fits(shown)) {
             // A lane of the shared Chrome; a Chrome of its own if that can't be had.
             let running = match self.browser_host(&npx) {
-                Some(host) => browser::lane(&host, squad, name, &output, shown).ok(),
+                Some(host) => browser::lane(&host, &self.config.home, squad, name, &output, shown).ok(),
                 None => None,
             };
             let running = match running {
                 Some(running) => running,
+                // Another profile's browser lives only in the shared Chrome's host.
+                None if browser::split_profile(name).1.is_some() => return None,
                 None => browser::launch(&npx, &self.config.home, &profile, &output, shown).ok()?,
             };
             let (client, port) = (self.client.clone(), running.port);
@@ -5214,6 +5313,7 @@ there, end your turn, and carry on when they say they're done."
         let Some((squad, key)) = lane.split_once('/') else {
             return (None, None);
         };
+        let key = browser::split_profile(key).0;
         let session = self.sessions.keys().copied().find(|id| self.browser_key(*id).is_some_and(|(q, k)| q == squad && k == key));
         (Some(squad.to_owned()), session)
     }
@@ -5510,8 +5610,9 @@ it back there once they have done it.{again} End your turn now with a short line
                 }
                 let estimate = Some(estimate).filter(|e| !e.is_empty());
                 session.estimate = estimate.clone();
+                let reply = board::estimate_reply(done, !session.subagents.is_empty(), session.engine == Engine::Claude);
                 self.publish(Event::Estimated { session: id, estimate });
-                Ok("Shown to the person.".into())
+                Ok(reply)
             }
             board::REMEMBER | board::FORGET => {
                 let folder = squad_home::path(&self.config.home, &squad);
@@ -5630,6 +5731,7 @@ it back there once they have done it.{again} End your turn now with a short line
             plan: self.plan,
             plans: self.plans.clone(),
             engine_switching: self.journals.get(squad).map(Journal::engine_switching).unwrap_or_default(),
+            pm_accepts: self.journals.get(squad).is_none_or(Journal::pm_accepts),
             engine_proposals: self.engines.proposals(squad),
             desktop: self.desktop.state(),
             allowed,

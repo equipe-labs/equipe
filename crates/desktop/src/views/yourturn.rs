@@ -74,6 +74,14 @@ pub struct TurnUi {
     subscriptions: HashMap<(TicketId, usize, u8), Subscription>,
 }
 
+impl TurnUi {
+    /// Whether one of the cards' boxes — an answer, a note, the words at the
+    /// foot — has the keyboard: what is typed is the box's, never a shortcut's.
+    pub fn typing(&self, window: &Window, cx: &App) -> bool {
+        self.fields.values().chain(self.notes.values()).chain(self.free.values()).any(|f| f.read(cx).focus_handle(cx).is_focused(window))
+    }
+}
+
 /// The card's own: the free box and the send button are no ask's.
 const CARD: usize = usize::MAX;
 /// Which box a subscription is for.

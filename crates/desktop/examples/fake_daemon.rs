@@ -1019,6 +1019,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             plans: switching::plans(),
                             plan: switching::claude().or_else(engines::plan),
                             engine_switching: switching::switching(),
+                            pm_accepts: true,
                             engine_proposals: switching::proposals(),
                             squad: params.squad,
                             projects: vec![repo("web"), repo("app"), repo("api")],
@@ -1198,12 +1199,18 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 }
                                 let _ = events.send(Event::TurnEnded { session, outcome: TurnOutcome::Interrupted, usage: None });
                             }
-                            Command::Decide { squad, approval, decision } => {
+                            Command::Decide { squad, approval, decision, words } => {
+                                eprintln!("decide {approval} {decision:?} {words:?}");
                                 asks().lock().unwrap().retain(|a| a.id != approval);
                                 let _ = events.send(Event::ApprovalResolved { squad, approval, decision });
                             }
                             Command::Focus { project, .. } => {
                                 routes.lock().await.focus = project;
+                            }
+                            // One other person's accounts, as a squad testing two of them keeps.
+                            Command::BrowserProfiles => {
+                                let profiles = vec![equipe_core::protocol::BrowserProfile { name: "jhjung".into(), label: "jhjung@atinuminvest.co.kr".into() }];
+                                let _ = events.send(Event::BrowserProfiles { profiles });
                             }
                             Command::AnswerQuestions { id, answers, .. } => {
                                 if let Some((session, _)) = close_questions(id, Some(answers), &events) {

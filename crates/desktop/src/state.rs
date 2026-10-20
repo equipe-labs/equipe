@@ -287,6 +287,11 @@ pub struct Model {
     pub routines: Vec<equipe_core::protocol::routines::Routine>,
     /// The logins members sign in with, as the daemon keeps them (no passwords).
     pub logins: Vec<equipe_core::protocol::vault::Login>,
+    /// The PM accepts the team's handed-in work itself: the person's inbox
+    /// keeps only what is theirs.
+    pub pm_accepts: bool,
+    /// The browser profiles besides the main one (other people's accounts).
+    pub browser_profiles: Vec<equipe_core::protocol::BrowserProfile>,
     /// The squad's mode, for completion's sake.
     pub mode: Mode,
     /// The Claude plan's usage windows, as last reported.
@@ -314,6 +319,9 @@ pub struct Model {
     alerts: Vec<Alert>,
     /// One quiet line the shell shows under the conversation, until taken.
     flash: Option<String>,
+    /// Something the person asked for went wrong (a merge that didn't land):
+    /// a notice of its own over the box, until taken.
+    problem: Option<String>,
     /// Each member's conversation.
     pub convos: HashMap<SessionId, Convo>,
     /// Whose conversation is on screen.
@@ -424,6 +432,8 @@ impl Model {
             hq: None,
             routines: Vec::new(),
             logins: Vec::new(),
+            pm_accepts: false,
+            browser_profiles: Vec::new(),
             mode: Mode::default(),
             plan: None,
             remote: false,
@@ -437,6 +447,7 @@ impl Model {
             engines: Default::default(),
             alerts: Vec::new(),
             flash: None,
+            problem: None,
             convos: HashMap::new(),
             selected: None,
             focus: None,
@@ -781,6 +792,7 @@ impl Model {
         self.tickets = snapshot.tickets.clone();
         self.projects = snapshot.projects.clone();
         self.hq = snapshot.hq.clone();
+        self.pm_accepts = snapshot.pm_accepts;
         self.routines = snapshot.routines.clone();
         self.order_projects();
         self.mode = snapshot.mode;
@@ -874,8 +886,13 @@ impl Model {
             }
             Event::EngineProposalClosed { squad, id, .. } if *squad == self.squad => self.engines.close(*id),
             Event::EngineSwitchingChanged { squad, mode } if *squad == self.squad => self.engines.mode = *mode,
+            Event::PmAcceptsChanged { squad, on } if *squad == self.squad => {
+                self.pm_accepts = *on;
+                self.revision += 1;
+            }
             Event::RoutinesChanged { squad, routines } if *squad == self.squad => self.routines = routines.clone(),
             Event::Logins { logins } => self.logins = logins.clone(),
+            Event::BrowserProfiles { profiles } => self.browser_profiles = profiles.clone(),
             Event::ProjectsChanged { squad, projects, hq } if *squad == self.squad => {
                 self.hq = hq.clone();
                 // The one just added, said under the box.
@@ -996,7 +1013,7 @@ impl Model {
             }
             Event::SessionClosed { session } if self.lanes.iter().any(|l| l.session == session) => self.fold_lane(session),
             Event::Error { session: None, message, .. } => {
-                self.flash = Some(message);
+                self.problem = Some(message);
                 self.squad_errors += 1;
                 self.board_rev += 1;
             }
@@ -1292,6 +1309,10 @@ impl Model {
         self.flash.take()
     }
 
+    pub fn take_problem(&mut self) -> Option<String> {
+        self.problem.take()
+    }
+
     /// The project a ticket is about: its own; for code, else the squad's first.
     /// A task or action with none is the squad's own, not a project's.
     pub fn ticket_project(&self, ticket: &Ticket) -> Option<PathBuf> {
@@ -1341,11 +1362,23 @@ impl Model {
             TicketStatus::Waiting => Some(Section::Waiting),
             // A designer checks its screens first.
             TicketStatus::Review if t.in_design_qa() => None,
+            // Where the PM accepts, handed-in work is the PM's: the person sees
+            // only what it puts to them, on a card.
+            TicketStatus::Review if self.pm_accepts => None,
             TicketStatus::Review => Some(Section::Review),
+            // …and so are members' proposals; the PM's own are for the person.
+            TicketStatus::Proposed if self.pm_accepts && !self.is_pm_name(&t.created_by) => None,
             TicketStatus::Proposed => Some(Section::Proposed),
+            // A conflict its owner is resolving comes back through the PM.
+            TicketStatus::Done if self.pm_accepts && matches!(t.off_main, Some(equipe_core::protocol::OffMain::Conflict { .. })) => None,
             TicketStatus::Done if t.waits_to_merge() => Some(Section::NotOnMain),
             _ => None,
         }
+    }
+
+    /// Whether `name` is the squad's PM (or one of them).
+    fn is_pm_name(&self, name: &str) -> bool {
+        self.members.iter().any(|m| m.name == name && m.role == equipe_core::roles::PM) || name == equipe_core::roles::PM || name.starts_with("pm-")
     }
 
     pub fn is_acted(&self, t: &Ticket) -> bool {

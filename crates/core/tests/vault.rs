@@ -114,7 +114,7 @@ async fn a_member_signs_in_only_with_the_persons_yes_and_never_sees_the_password
     assert_eq!(approval.reason.as_deref(), Some("Add the DNS record"));
 
     // The person says no: the member hears it, and the use is kept as declined.
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None });
     let answer = asking.await.unwrap();
     assert!(!answer.is_error && answer.text.contains("said no"), "{answer:?}");
     let seen = until(&mut events, |e| matches!(e, Event::Logins { logins } if logins[0].uses.iter().any(|u| u.outcome == "declined"))).await;

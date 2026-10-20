@@ -509,11 +509,11 @@ mod tests {
     fn allowing_the_request_lets_the_member_go_on_and_another_comes_later() {
         let mut demo = Demo::default();
         let id = hello(&mut demo, "a").approvals[0].id;
-        let out = demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Allow }, 1000);
+        let out = demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Allow, words: None }, 1000);
         assert_eq!(out, vec![Event::ApprovalResolved { squad: SQUAD.into(), approval: id, decision: Decision::Allow }]);
         assert!(hello(&mut demo, "a").approvals.is_empty());
         // The same answer again does nothing.
-        assert!(demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Allow }, 1000).is_empty());
+        assert!(demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Allow, words: None }, 1000).is_empty());
         let later: Vec<Event> = demo.due(1000 + 60_000).into_iter().map(|(_, e)| e).collect();
         assert!(later.iter().any(|e| matches!(e, Event::ToolUse { tool, .. } if tool == "Bash")));
         assert!(later.iter().any(|e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 3 && ticket.status == TicketStatus::Review)));
@@ -549,7 +549,7 @@ mod tests {
         let id = hello(&mut demo, "a").approvals[0].id;
         hello(&mut demo, "b");
         demo.command("a", Command::Accept { squad: SQUAD.into(), ticket: 2 }, 0);
-        demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Deny }, 0);
+        demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Deny, words: None }, 0);
         assert!(demo.command("nobody", Command::Accept { squad: SQUAD.into(), ticket: 2 }, 0).is_empty());
         let (a, b) = (hello(&mut demo, "a"), hello(&mut demo, "b"));
         assert_eq!(a.tickets[1].status, TicketStatus::Done);

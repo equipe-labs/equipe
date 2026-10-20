@@ -353,6 +353,10 @@ pub struct Context<'a> {
     pub screen_language: Option<&'a str>,
     /// Whether the member has a browser, signed in as the person.
     pub browser: bool,
+    /// The PM accepts the team's handed-in work itself (the squad's setting).
+    pub pm_accepts: bool,
+    /// The other browser profiles it has a browser in (`browser_<name>`), each another person's accounts.
+    pub profiles: &'a [crate::browser::BrowserProfile],
     /// Whether the member works the Mac's desktop apps (`mcp__desktop__…`).
     pub desktop: bool,
     /// The squad's home, where the member sits between tickets.
@@ -366,6 +370,24 @@ pub struct Context<'a> {
 }
 
 /// What an engine is told about who it is on the team.
+/// The PM's word on acceptance when the person accepts every piece of work.
+const PERSON_ACCEPTS: &str = "Only the person accepts finished work; tell them when something waits for review.";
+/// …and when the PM accepts its team's work itself.
+const PM_ACCEPTS: &str = "Tickets are how the squad splits and runs its work — the person doesn't review each one. You \
+accept your team's finished work yourself: when a member hands in, check it — the hand-in, its diff and pictures, that it \
+does what the ticket asked and breaks nothing else — and call `accept_work` with what you checked; code merges into main. \
+What isn't right goes back to its member with `comment` and what to change. Members' proposals are yours to sort too: take \
+one on with `update_ticket` (status todo), fold it into another, or drop it (cancelled) — don't leave them for the person. \
+Put to the person, with `propose_accept`, only work that needs them: what can't easily be undone or reaches outside — a \
+production deploy or release, live data deleted or migrated, money or billing, security, permissions or accounts, what \
+customers or other people will see or receive — a brand or design direction, or anything they asked to see themselves; \
+tell them in one line what waits and why it's theirs.";
+/// A member's word on acceptance when the person accepts every piece of work.
+const PERSON_ACCEPTS_YOURS: &str = "Only the person accepts your work, with a click on a confirmation card or the board — never their words, nor yours.";
+/// …and when the PM accepts its team's work.
+const PM_ACCEPTS_YOURS: &str = "The PM checks and accepts your work — or puts it to the person when it needs them — never your \
+own words: hand it in with `submit_for_review` and the PM takes it from there.";
+
 pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
     let title = if role.id == CUSTOM.id { format!("{name} (a custom role)") } else { role.title.to_owned() };
     let duties = match (role.id == CUSTOM.id, ctx.edits) {
@@ -439,8 +461,8 @@ that the card is up (\"확인 카드를 띄웠어요\"). Their words aren't the 
 on the card accepts, merges or sends back. Give each ticket to the member whose role fits; own one yourself only when \
 nobody on the team could do it — while you work a ticket, the person waits to talk to you, and there is only one \
 of you. Split work into tickets that can run side by side without \
-touching the same files, and give each to a role (`backend`), not to a numbered member: each member decides for \
-itself when a big ticket is worth splitting across subagents. The team is the person's to change, never yours: when more hands \
+touching the same files, and give each to a role (`backend`), not to a numbered member: a member with a big ticket \
+splits it across subagents running at once, and so do you with yours. The team is the person's to change, never yours: when more hands \
 would unblock work — a ticket waits while its role's members are busy for hours, one role's work piles up past what its \
 members get through — or when the person says in words to add or remove someone (\"add one more mobile\", \"I'll approve \
 adding one\"), call `propose_team_change` right away instead of asking them to type a command: the card it puts in front \
@@ -471,6 +493,9 @@ one line that a confirmation card puts it to them, and note what they said on th
         (false, _) => "You have no board tools on this engine: say plainly when a ticket is done, and the person \
 accepts it.",
     };
+    // Where the person lets the PM accept (the default), the PM checks and
+    // accepts its team's work, and puts to the person only what needs them.
+    let tools = if ctx.pm_accepts && ctx.board_tools { tools.replace(PERSON_ACCEPTS, PM_ACCEPTS).replace(PERSON_ACCEPTS_YOURS, PM_ACCEPTS_YOURS) } else { tools.to_owned() };
     // The person sees when work will be done, and when what ships is live.
     let tools = if ctx.board_tools {
         format!(
@@ -528,6 +553,24 @@ account, team or workspace, without saying so first — the rest of the squad wo
     } else {
         ""
     };
+    // Other people's accounts, each in a browser of its own.
+    let others = if ctx.browser && !ctx.profiles.is_empty() {
+        let list = ctx
+            .profiles
+            .iter()
+            .map(|p| if p.label.is_empty() { format!("`{}`", crate::browser::server_name(Some(&p.name))) } else { format!("`{}` ({})", crate::browser::server_name(Some(&p.name)), p.label) })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            " Besides `browser`, you have a browser for each other person whose accounts the person keeps in equipe — \
+each a Chrome of its own, with its own sign-ins: {list}. Work as the person in `browser`; use another only when the \
+task needs that person's account, and to test what two people do (one submits, the other approves) use both, each \
+as itself. Never sign one person's account in to another's browser; where one isn't signed in yet, hand it to the \
+person with `show_my_browser` as you would yours."
+        )
+    } else {
+        String::new()
+    };
     // How a designer sees its own files: what the browser opens and what it doesn't.
     let render = if ctx.browser && role.id == "designer" {
         " To look at a mockup, open it as a `data:` URL (`data:text/html,…` or `data:image/svg+xml,…`), take a \
@@ -571,7 +614,8 @@ a document, a page — and what you couldn't confirm is marked unconfirmed, neve
 reply with Markdown's image syntax and its absolute path, one to a line: `![Floor plan](/full/path/floor-plan.png)`. \
 equipe shows each right in the conversation on every screen the person uses — this Mac, another one over SSH, their \
 phone — so never tell them to open a folder or a file to see one, and never only list paths. Save a picture you make \
-where you work first (PNG, JPG, WebP, GIF or SVG); a folder of them can be named too, its \
+first (PNG, JPG, WebP, GIF or SVG) where you work — your worktree, the squad's shared folder or the project — or in a temp \
+folder: screens can't be given one from anywhere else; a folder of them can be named too, its \
 absolute path ending in `/`, and its first pictures show as a strip.{}",
         match role.id {
             "designer" => " Show each draft that way as you make it, and give the PM the absolute paths, so it can show them too.",
@@ -625,7 +669,7 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
     };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{render}{desktop}{pictures}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{others}{render}{desktop}{pictures}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
@@ -649,9 +693,13 @@ one sheet of them all, and say what you saw at which moment; `[audio: <path> · 
 and ask what it says unless a tool you have can transcribe it. Side work that \
 is long or stands on its own — running a whole test suite, reading logs, surveying unfamiliar code, researching — \
 hand to subagents (your Agent tool), several at once when the pieces don't depend on each other, and keep only \
-their summaries: your own context stays small. When you judge a ticket big enough and it splits into parts that \
-don't touch the same files, you may give each part a subagent of its own and run them together — the person sees each one \
-at work under your name, so describe each in a few plain words. When your conversation is compacted, keep in the summary the tickets and where each stands, what was decided with the person, \
+their summaries: your own context stays small. Working in parallel is the squad's strength: anything that would \
+take you alone more than about 20 minutes — a big ticket, learning a whole system, a broad survey or research — you \
+split into parts that don't depend on each other and give each a subagent of its own, several Agent calls in one message \
+so they run at once (in the background when you have other work meanwhile), each told exactly its part and to report \
+back briefly; then you put their results together and check them. Parts that change files never touch the same ones; \
+when the change itself can't be split, subagents still take the reading, surveying and testing around it. Work only \
+alone what truly can't split. The person sees each subagent at work under your name, so describe each in a few plain words. When your conversation is compacted, keep in the summary the tickets and where each stands, what was decided with the person, \
 their preferences, and anything they asked for that isn't done. {language} Be concise.",
         duties
     )
@@ -725,7 +773,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, desktop: false, home: None, memory: None, facts: 0, edits: false }
+        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, home: None, memory: None, facts: 0, edits: false }
     }
 
     #[test]
@@ -801,6 +849,47 @@ mod tests {
         for part in ["changing a repository is `code`", "is `task`", "is `action`", "needs no project"] {
             assert!(text.contains(part), "{part}: {text}");
         }
+    }
+
+    #[test]
+    fn big_work_runs_in_parallel_subagents_by_default_not_when_a_member_feels_like_it() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "backend", role: "backend" }];
+        for (r, name) in [("backend", "backend"), (PM, "pm")] {
+            let text = charter(role(r).unwrap(), name, &ctx(&team, &[], true));
+            assert!(text.contains("more than about 20 minutes"), "{name}");
+            assert!(text.contains("in one message"), "{name}");
+            assert!(!text.contains("you may give each part"), "{name}");
+        }
+        let pm = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
+        assert!(!pm.contains("decides for itself"));
+        assert!(pm.contains("splits it across subagents"));
+    }
+
+    #[test]
+    fn where_the_pm_accepts_it_checks_its_teams_work_and_puts_to_the_person_only_what_needs_them() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "frontend", role: "frontend" }];
+        let pm = charter(role(PM).unwrap(), "pm", &Context { pm_accepts: true, ..ctx(&team, &[], true) });
+        for part in ["`accept_work`", "doesn't review each one", "Members' proposals are yours to sort", "production deploy", "call `propose_accept` right away"] {
+            assert!(pm.contains(part), "{part}: {pm}");
+        }
+        assert!(!pm.contains("Only the person accepts finished work"), "{pm}");
+        let member = charter(role("frontend").unwrap(), "frontend", &Context { pm_accepts: true, ..ctx(&team, &[], true) });
+        assert!(member.contains("The PM checks and accepts your work") && !member.contains("Only the person accepts your work"), "{member}");
+        // Kept by the person: as before.
+        let kept = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
+        assert!(kept.contains("Only the person accepts finished work") && !kept.contains("`accept_work`"), "{kept}");
+    }
+
+    #[test]
+    fn a_member_is_told_which_browser_holds_whose_accounts() {
+        let team = [Teammate { name: "qa", role: "qa" }];
+        let profiles = [crate::browser::BrowserProfile { name: "jhjung".into(), label: "jhjung@atinuminvest.co.kr".into() }];
+        let text = charter(role("qa").unwrap(), "qa", &Context { browser: true, profiles: &profiles, ..ctx(&team, &[], true) });
+        assert!(text.contains("`browser_jhjung` (jhjung@atinuminvest.co.kr)") && text.contains("use both"), "{text}");
+        let alone = charter(role("qa").unwrap(), "qa", &Context { browser: true, ..ctx(&team, &[], true) });
+        assert!(!alone.contains("browser_"), "no other profile, nothing about one");
+        let blind = charter(role("qa").unwrap(), "qa", &Context { profiles: &profiles, ..ctx(&team, &[], true) });
+        assert!(!blind.contains("browser_jhjung"), "no browser at all, nothing about its profiles");
     }
 
     #[test]

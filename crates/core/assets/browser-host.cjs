@@ -1,6 +1,10 @@
 // equipe's browser host: one Google Chrome, one profile, for every member of
 // every squad. The person signs in once — Google too, which ends a sign-in it
-// sees copied to another browser — and every member works signed in.
+// sees copied to another browser — and every member works signed in. Another
+// person's accounts (a second Google sign-in, to test what two people do) live
+// in a profile of their own: a Chrome of its own, with its own sign-ins file,
+// started when a lane or a tab first asks for it (`profile`, `profileDir`,
+// `state` on `lane`, `person` and `newtab`).
 //
 // Each member gets a lane: an MCP endpoint of Playwright's own browser tools
 // that sees only the tabs that member opened (and the popups they opened), so
@@ -20,6 +24,7 @@
 // `node browser-host.cjs <profile> <sign-ins file>`, then one JSON request per
 // line on stdin:
 //   {"op":"lane","id":"squad/name","member":"name","color":"r, g, b","port":1234,"output":"/dir","shown":false}
+//     (+ "profile":"jhjung","profileDir":"/…/chromes/jhjung","state":"/…/state.json" for another profile's)
 //   {"op":"show","id":"squad/name","shown":true}
 //   {"op":"close","id":"squad/name"}
 //   {"op":"person","url":"https://…"}
@@ -62,7 +67,6 @@ __GATE__
 // Google's sign-in is this browser's own; the sign-ins file never carries it.
 const own = (domain) => /(^|\.)(google\.[a-z]{2,3}(\.[a-z]{2})?|youtube\.com|googleusercontent\.com)$/.test(String(domain).replace(/^\./, ''));
 
-const PERSON = '';
 const PLACEHOLDER = 'data:text/html;charset=utf-8,' + encodeURIComponent(
   '<!doctype html><title>equipe</title><meta name="color-scheme" content="light dark">'
   + '<body style="font: 14px -apple-system, system-ui; display: grid; place-items: center; height: 90vh; color: #888">'
@@ -121,7 +125,26 @@ const address = (text) => {
   return `https://www.google.com/search?q=${encodeURIComponent(t)}`;
 };
 
-(async () => {
+// Page ids go on from where the daemon says (from the clock), across every
+// profile's Chrome: a host started again never names a tab with an id a
+// screen still holds for another.
+let nextId = Math.max(1, Number(process.env.EQUIPE_FIRST_PAGE) || 1);
+// Input goes in order, each after the one before; so do watching and sizing
+// (two screencasts of a page started at once would leave one running
+// unseen); the rest as they come.
+let inputs = Promise.resolve();
+let pictures = Promise.resolve();
+// A wheel turn still waiting its go: the turns that come meanwhile add to it.
+// Chrome takes a frame (~17 ms) to answer each, a trackpad sends 60–120 a
+// second, so one by one they queued for seconds behind the picture
+// (docs/PERF-2026-10.md); added up, the page goes as far, at once.
+let wheel = null;
+
+/// One profile's Chrome: its own sign-ins, windows and tabs. `name` is
+/// null for the person's main profile, whose own tabs are lane ""; another
+/// profile's own tabs are lane "#name", and its members' lanes end in it too.
+const startProfile = async (name, profile, STATE) => {
+  const PERSON = name ? `#${name}` : '';
   const context = await chromium.launchPersistentContext(profile, {
     channel: 'chrome',
     headless: false,
@@ -141,9 +164,6 @@ const address = (text) => {
   const dialogs = new Map(); // page id -> the dialog waiting for an answer
   const watches = new Map(); // page id -> { cdp, quality, maxW, maxH, fps, seq, lastAck }
   const fits = new Map(); // page id -> { w, h, dpr }: the largest box a panel shows it in
-  // Ids go on from where the daemon says (from the clock): a host started again
-  // never names a tab with an id a screen still holds for another.
-  let nextId = Math.max(1, Number(process.env.EQUIPE_FIRST_PAGE) || 1);
   let claim = null;
   let queue = Promise.resolve();
   let parking = null; // { page, cdp, windowId }
@@ -929,22 +949,47 @@ const address = (text) => {
   await ensureParking();
 
   const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout };
-  // Input goes in order, each after the one before; so do watching and sizing
-  // (two screencasts of a page started at once would leave one running
-  // unseen); the rest as they come.
-  let inputs = Promise.resolve();
-  let pictures = Promise.resolve();
-  // A wheel turn still waiting its go: the turns that come meanwhile add to it.
-  // Chrome takes a frame (~17 ms) to answer each, a trackpad sends 60–120 a
-  // second, so one by one they queued for seconds behind the picture
-  // (docs/PERF-2026-10.md); added up, the page goes as far, at once.
-  let wheel = null;
+  // Its Chrome closed (the person quit it): the host goes, and the daemon starts it again.
+  context.on('close', () => process.exit(0));
+  return { ops, context, scrolling, owns: (pid) => pages.has(pid), hasLane: (id) => lanes.has(id) };
+};
+
+// Each profile's Chrome, by name ("" the main one): started when first asked for.
+const profiles = new Map();
+const profileOf = (request) => {
+  const name = request.profile || '';
+  if (!profiles.has(name)) {
+    if (name && !request.profileDir) return null;
+    profiles.set(name, startProfile(name || null, name ? request.profileDir : profile, name ? request.state : STATE));
+  }
+  return profiles.get(name);
+};
+const started = async () => (await Promise.all([...profiles.values()].map((p) => p.catch(() => null)))).filter(Boolean);
+const byPage = async (pid) => (await started()).find((i) => i.owns(pid)) || null;
+const byLane = async (id) => (await started()).find((i) => i.hasLane(id)) || null;
+/// The Chrome a request is for: a lane's by its profile, a tab's by who has it.
+const target = async (request) => {
+  switch (request.op) {
+    case 'lane': case 'person': case 'newtab': return profileOf(request);
+    case 'show': case 'close': return byLane(request.id);
+    case 'control': case 'goto': return byLane(request.lane);
+    default: return byPage(request.page);
+  }
+};
+
+(async () => {
+  await profileOf({});
   readline.createInterface({ input: process.stdin }).on('line', (line) => {
     let request;
     try { request = JSON.parse(line); } catch { return; }
-    const run = () => Promise.resolve(ops[request.op]?.(request)).catch((err) => console.error(`equipe browser host: ${request.op}: ${err && err.message}`));
+    const run = async () => {
+      const at = await target(request);
+      if (!at) return undefined;
+      return at.ops[request.op]?.(request);
+    };
+    const go = () => run().catch((err) => console.error(`equipe browser host: ${request.op}: ${err && err.message}`));
     const ev = request.op === 'input' ? request.ev : null;
-    if (ev?.t === 'wheel') scrolling(request.page);
+    if (ev?.t === 'wheel') byPage(request.page).then((at) => at?.scrolling(request.page));
     if (ev?.t === 'wheel' && wheel && wheel.page === request.page && (wheel.ev.modifiers || 0) === (ev.modifiers || 0)) {
       wheel.ev.dx = (wheel.ev.dx || 0) + (ev.dx || 0);
       wheel.ev.dy = (wheel.ev.dy || 0) + (ev.dy || 0);
@@ -953,13 +998,15 @@ const address = (text) => {
       return;
     }
     if (request.op === 'input') wheel = ev?.t === 'wheel' ? request : null;
-    if (request.op === 'input') inputs = inputs.then(() => { if (wheel === request) wheel = null; return run(); });
-    else if (['watch', 'unwatch', 'fit', 'unfit'].includes(request.op)) pictures = pictures.then(run);
-    else run();
+    if (request.op === 'input') inputs = inputs.then(() => { if (wheel === request) wheel = null; return go(); });
+    else if (['watch', 'unwatch', 'fit', 'unfit'].includes(request.op)) pictures = pictures.then(go);
+    else go();
   });
-  // The daemon gone, the browser goes with it.
-  process.stdin.on('end', () => context.close().finally(() => process.exit(0)));
-  context.on('close', () => process.exit(0));
+  // The daemon gone, the browsers go with it.
+  process.stdin.on('end', async () => {
+    await Promise.all((await started()).map((i) => i.context.close().catch(() => {})));
+    process.exit(0);
+  });
   emit({ type: 'ready' });
   console.error('equipe browser host: ready');
 })().catch((err) => {
