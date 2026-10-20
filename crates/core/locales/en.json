@@ -133,7 +133,7 @@
   "error.not_committed": "couldn't commit the changes: {err} — they are still in {path}",
   "error.project_not_added": "The project wasn't added: {why}",
   "error.not_merged": "T-{id} wasn't merged: {err}",
-  "error.not_merged_conflict": "T-{id} isn't merged yet: it overlaps with main ({err}). {who} was asked to merge main in and resolve it — then merge it again from the board.",
+  "error.not_merged_conflict": "T-{id} didn't go into main — it clashes with main in {files}. {who} is resolving it; merge it again once it's back for review.",
   "error.not_pushed": "{branch} wasn't pushed: {err}",
   "error.not_waiting": "T-{id} isn't waiting on you — it is {status}.",
   "error.owner_closed": "T-{id} is finished — there is no one to give it to.",

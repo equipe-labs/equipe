@@ -4192,7 +4192,8 @@ for one project goes to it as tickets for its owners, with that project — and 
                         let shown = say!(self, "news.merge_conflict_owner", id = ticket);
                         self.brief_member(squad, &owner, &line, &shown);
                         self.brief_pm(squad, line, None);
-                        say!(self, "error.not_merged_conflict", id = ticket, err = err, who = owner)
+                        let files = worktree::conflict_files(&err).unwrap_or_default();
+                        say!(self, "error.not_merged_conflict", id = ticket, files = files, who = owner)
                     }
                     None => say!(self, "error.not_merged", id = ticket, err = err),
                 };

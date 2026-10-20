@@ -420,6 +420,38 @@ EOF"#;
 }
 
 #[tokio::test]
+async fn said_while_it_waits_on_a_background_command_it_reads_at_once() {
+    // The turn's answer is in, but a command it started runs on in the background
+    // (watching for a deploy): Claude Code is still there and reads what is said —
+    // its input must not have closed with the first result.
+    let turn = r#"cat <<EOF
+{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}
+{"type":"user","isReplay":true,"message":{"role":"user","content":"tell me when it's live"}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_bg","name":"Bash","input":{"command":"until false; do sleep 30; done","description":"Wait for a new deploy","run_in_background":true}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_bg","content":"Command running in background with ID: b1"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"watching the deploy","usage":{"input_tokens":3,"output_tokens":1}}
+EOF
+if IFS= read -r more; then
+text=$(printf '%s' "$more" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["message"]["content"]))')
+cat <<EOF
+{"type":"user","isReplay":true,"message":{"role":"user","content":$text}}
+{"type":"system","subtype":"task_notification","task_id":"b1","tool_use_id":"toolu_bg","status":"killed"}
+{"type":"result","subtype":"success","is_error":false,"result":"answered","usage":{"input_tokens":3,"output_tokens":1}}
+EOF
+else sleep 5; fi"#;
+    let claude = fake_claude(true, turn);
+    let (handle, mut events) = start(&claude);
+    handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
+    until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "tell me when it's live".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::ToolUse { background: true, .. })).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    handle.send(Command::Submit { session: 1, text: "what did we build so far?".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::Steered { .. } | Event::TurnEnded { .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::Steered { text, .. } if text.contains("what did we build so far?"))), "read while the command runs on: {seen:#?}");
+}
+
+#[tokio::test]
 async fn esc_delivers_waiting_memos_at_once() {
     let claude = fake_claude(true, "case \"$*\" in *\"take forever\"*) exec sleep 30;; esac\necho");
     let (handle, mut events) = start(&claude);

@@ -224,6 +224,9 @@ pub struct Composer {
     guard: EnterGuard,
     /// One quiet line over the box: what the last send did.
     pub flash: Option<String>,
+    /// What went wrong with something the person asked for (a merge that
+    /// didn't land): a notice over the box, framed, until closed.
+    pub problem: Option<String>,
     /// ⏎ while attachments still upload: sent the moment they're up (as a
     /// memo when `true`), the person typing on meanwhile; Esc takes it back.
     pub send_when_ready: Option<bool>,
@@ -287,6 +290,7 @@ impl Composer {
             drafts: Drafts::load(Drafts::file(&equipe_providers::credentials::equipe_home())),
             guard: EnterGuard::default(),
             flash: None,
+            problem: None,
             send_when_ready: None,
             choices: Vec::new(),
             pick: 0,
@@ -1502,12 +1506,53 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .flex_none()
         .pb_3()
         // Lined up with the text in the card: its padding and border.
+        .children(composer.problem.clone().map(|problem| problem_notice(p, problem, cx)))
         .children(composer.flash.clone().map(|flash| motion::fade(div().px(px(INSET + 1.)).pb_2().text_size(px(SMALL)).text_color(p.text2).child(flash.clone()), ElementId::Name(format!("flash-{}", crate::render::hash_of(&flash)).into()), motion::BASE)))
         .child(card(shell, cx))
 }
 
 /// The card's inner padding: the text and the bar's controls start here.
 const INSET: f32 = 12.;
+
+/// Something the person asked for that went wrong: framed and marked, so it
+/// never reads as a member's words — closed with ✕.
+fn problem_notice(p: Palette, problem: String, cx: &mut Context<Shell>) -> AnyElement {
+    let id = ElementId::Name(format!("problem-{}", crate::render::hash_of(&problem)).into());
+    motion::fade(
+        h_flex()
+            .w_full()
+            .mb_2()
+            .px_3()
+            .py(px(8.))
+            .gap_2()
+            .items_start()
+            .rounded(px(R_MD))
+            .bg(p.raised)
+            .border_1()
+            .border_color(p.hair)
+            .child(div().flex_none().mt(px(2.)).child(icon(Icon::Warning, ICON_SM, p.amber)))
+            .child(div().flex_1().min_w_0().text_size(px(13.)).line_height(px(19.)).text_color(p.text).child(problem))
+            .child(
+                div()
+                    .id("problem-close")
+                    .flex_none()
+                    .px_1()
+                    .rounded(px(R_SM))
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .text_color(p.muted)
+                    .hover(move |s| s.text_color(p.text).bg(p.wash))
+                    .child("✕")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.composer.problem = None;
+                        cx.notify();
+                    })),
+            ),
+        id,
+        motion::BASE,
+    )
+    .into_any_element()
+}
 
 fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
