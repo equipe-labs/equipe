@@ -95,7 +95,7 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     }
                 }),
                 "key" => shell.update(cx, |shell, cx| {
-                    shell.on_approval_key(&arg, false, cx);
+                    shell.on_approval_key(&arg, false, window, cx);
                 }),
                 "esc" => shell.update(cx, |shell, cx| shell.interrupt(cx)),
                 "up" | "down" => shell.update(cx, |shell, cx| {
@@ -355,6 +355,16 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     }
                     let typed = shell.read(cx).turn.fields.get(&(ticket, n)).map(|f| f.read(cx).value().to_string()).unwrap_or_default();
                     eprintln!("akeys typed: {typed:?}");
+                }
+                // `keys:words` presses each key as the keyboard would, into what has the keyboard.
+                "keys" => {
+                    for ch in arg.chars() {
+                        let key = if ch == ' ' { "space".to_owned() } else { ch.to_string() };
+                        if let Ok(mut stroke) = Keystroke::parse(&key) {
+                            stroke.key_char = Some(ch.to_string());
+                            window.dispatch_keystroke(stroke, cx);
+                        }
+                    }
                 }
                 "answer" | "aok" | "atick" | "apick" | "anote" | "afree" | "asend" => shell.update(cx, |shell, cx| {
                     let mut parts = arg.splitn(3, ',');

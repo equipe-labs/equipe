@@ -638,7 +638,15 @@ pub enum Command {
     /// member's (`member`); `mode: None` puts a member back on the squad's default.
     SetMode { squad: SquadName, member: Option<String>, mode: Option<Mode> },
     /// The person answers a member's request for permission.
-    Decide { squad: SquadName, approval: u64, decision: Decision },
+    Decide {
+        squad: SquadName,
+        approval: u64,
+        decision: Decision,
+        /// What the person wrote with their answer: why not, what instead, or
+        /// what to mind — the member reads it with the answer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        words: Option<String>,
+    },
     /// The person's answers to a member's questions ([`Event::QuestionsAsked`]),
     /// one per question in order — an empty one skips it. They go to the member
     /// as its next message. Answered by [`Event::QuestionsClosed`].
@@ -2013,7 +2021,7 @@ mod tests {
         assert_eq!(Mode::parse("Ask"), Some(Mode::Ask));
         assert_eq!(Mode::parse("full-access"), Some(Mode::Full));
         assert_eq!(Mode::parse("yolo"), None);
-        let cmd = Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always };
+        let cmd = Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always, words: None };
         assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "decide", "squad": "acme", "approval": 7, "decision": "always" }));
         let event = Event::ApprovalRequested {
             squad: "acme".into(),

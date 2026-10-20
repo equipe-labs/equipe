@@ -1198,7 +1198,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 }
                                 let _ = events.send(Event::TurnEnded { session, outcome: TurnOutcome::Interrupted, usage: None });
                             }
-                            Command::Decide { squad, approval, decision } => {
+                            Command::Decide { squad, approval, decision, words } => {
+                                eprintln!("decide {approval} {decision:?} {words:?}");
                                 asks().lock().unwrap().retain(|a| a.id != approval);
                                 let _ = events.send(Event::ApprovalResolved { squad, approval, decision });
                             }

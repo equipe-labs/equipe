@@ -1530,9 +1530,17 @@ impl Runtime {
                     self.focus.remove(&squad);
                 }
             },
-            Command::Decide { squad, approval, decision } => {
-                if self.pending.get(&approval).is_some_and(|p| p.squad == squad) {
-                    self.answer(approval, decision, "");
+            Command::Decide { squad, approval, decision, words } => {
+                let words = words.map(|w| w.trim().to_owned()).filter(|w| !w.is_empty());
+                if let Some(pending) = self.pending.get(&approval).filter(|p| p.squad == squad) {
+                    let (session, tool) = (pending.approval.session, pending.approval.tool.clone());
+                    self.answer_with(approval, decision, "", words.as_deref());
+                    // A permission's yes (or a sign-in's answer) can't carry words:
+                    // they reach the member as the person's own, mid-work.
+                    let carried = tool == CONFIRM || (decision == Decision::Deny && tool != SIGN_IN_TOOL);
+                    if let Some(words) = words.filter(|_| !carried) {
+                        self.submit(session, words).await;
+                    }
                 }
             }
             Command::AnswerQuestions { squad, id, answers, about } => {
@@ -4618,6 +4626,12 @@ there, end your turn, and carry on when they say they're done."
     /// Answer a waiting request for permission. "Always" also becomes one of the
     /// squad's rules, so the same kind of thing doesn't ask again.
     fn answer(&mut self, approval_id: u64, decision: Decision, why: &str) {
+        self.answer_with(approval_id, decision, why, None);
+    }
+
+    /// [`Self::answer`], with what the person wrote: a no's reason, or what
+    /// they add to a yes to their member's own question.
+    fn answer_with(&mut self, approval_id: u64, decision: Decision, why: &str, words: Option<&str>) {
         let Some(pending) = self.pending.remove(&approval_id) else {
             return;
         };
@@ -4640,7 +4654,12 @@ there, end your turn, and carry on when they say they're done."
                 None => decision = Decision::Allow,
             }
         }
-        let why = if why.is_empty() && decision == Decision::Deny { "The person declined." } else { why };
+        let said = words.map(|w| format!("The person declined and said: \u{201c}{w}\u{201d}. Don't do it as asked; do what they said instead, or ask."));
+        let why = match &said {
+            Some(said) if decision == Decision::Deny => said.as_str(),
+            _ if why.is_empty() && decision == Decision::Deny => "The person declined.",
+            _ => why,
+        };
         if let Some(preview) = &approval.preview {
             let _ = std::fs::remove_file(preview);
         }
@@ -4652,19 +4671,23 @@ there, end your turn, and carry on when they say they're done."
             }
         } else if approval.tool == CONFIRM {
             // A question the member asked itself: an answer in words, not a permission verdict.
-            let text = match decision {
-                Decision::Allow | Decision::Always => format!("The person said yes. Go ahead: {}", approval.action),
-                Decision::Deny => format!("The person said no ({why}). Don't do it; carry on without it, or say what you need."),
+            let text = match (decision, words) {
+                (Decision::Allow | Decision::Always, None) => format!("The person said yes. Go ahead: {}", approval.action),
+                (Decision::Allow | Decision::Always, Some(w)) => format!("The person said yes. Go ahead: {}\nThey added: \u{201c}{w}\u{201d} — do it their way.", approval.action),
+                (Decision::Deny, Some(_)) => why.to_owned(),
+                (Decision::Deny, None) => format!("The person said no ({why}). Don't do it; carry on without it, or say what you need."),
             };
             ToolResult { text, is_error: false, image: None }
         } else {
             verdict(decision, &input, why)
         });
-        let line = match (decision, &rule) {
-            (Decision::Always, Some(rule)) => say!(self, "notice.always_allowed", rule = rule, action = approval.action),
-            (Decision::Allow | Decision::Always, _) => say!(self, "notice.allowed", action = approval.action),
-            (Decision::Deny, _) if why == "The person declined." => say!(self, "notice.declined", action = approval.action),
-            (Decision::Deny, _) => say!(self, "notice.declined_why", why = why, action = approval.action),
+        let line = match (decision, &rule, words) {
+            (Decision::Deny, _, Some(w)) => say!(self, "notice.declined_said", words = w, action = approval.action),
+            (_, _, Some(w)) => say!(self, "notice.allowed_said", words = w, action = approval.action),
+            (Decision::Always, Some(rule), _) => say!(self, "notice.always_allowed", rule = rule, action = approval.action),
+            (Decision::Allow | Decision::Always, _, _) => say!(self, "notice.allowed", action = approval.action),
+            (Decision::Deny, _, _) if why == "The person declined." => say!(self, "notice.declined", action = approval.action),
+            (Decision::Deny, _, _) => say!(self, "notice.declined_why", why = why, action = approval.action),
         };
         self.publish(Event::Notice { session: approval.session, text: line });
         let verb = match decision {

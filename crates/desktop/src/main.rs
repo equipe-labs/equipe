@@ -188,6 +188,8 @@ pub struct Shell {
     pub panes: pane::Panes,
     /// The answer boxes of the cards tickets waiting for the person ask on.
     pub turn: views::yourturn::TurnUi,
+    /// The boxes the person writes to a member in, on its request for permission.
+    pub approval_words: views::approvals::Words,
     /// Members' questions: where the person is in each set, and its boxes.
     pub decide: views::decide::DecideUi,
     /// Members' pictures — decisions' options, hand-ins — and the one shown big.
@@ -325,6 +327,7 @@ impl Shell {
             board: BoardUi::new(window, cx, fetched_tx),
             panes: pane::Panes::new(cx),
             turn: Default::default(),
+            approval_words: Default::default(),
             decide: Default::default(),
             shots: Default::default(),
             viewer: None,
@@ -505,6 +508,16 @@ impl Shell {
             if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx)).unwrap_or(false) {
                 return;
             }
+            // Writing to a member on its request: Esc closes the box; every other
+            // key is the box's (⏎ and ⌘⏎ answer from it).
+            match this.update(cx, |shell, cx| shell.on_words_key(key, window, cx)).ok().flatten() {
+                Some(true) => {
+                    cx.stop_propagation();
+                    return;
+                }
+                Some(false) => return,
+                None => {}
+            }
             // A member's picture shown big: ←/→, a pick, Esc — and nothing typed underneath.
             if this.update(cx, |shell, cx| shell.on_viewer_key(key, &modifiers, window, cx)).unwrap_or(false) {
                 cx.stop_propagation();
@@ -571,8 +584,8 @@ impl Shell {
                 return;
             }
             // y / a / ⇧a / n / o answer a request for permission while nothing is typed.
-            if matches!(key, "y" | "a" | "n" | "o") && !(modifiers.control || modifiers.alt || modifiers.platform || modifiers.function) {
-                if this.update(cx, |shell, cx| shell.on_approval_key(key, modifiers.shift, cx)).unwrap_or(false) {
+            if matches!(key, "y" | "a" | "n" | "o" | "r") && !(modifiers.control || modifiers.alt || modifiers.platform || modifiers.function) {
+                if this.update(cx, |shell, cx| shell.on_approval_key(key, modifiers.shift, window, cx)).unwrap_or(false) {
                     cx.stop_propagation();
                 }
                 return;
