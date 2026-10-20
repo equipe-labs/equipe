@@ -34,7 +34,7 @@ or `custom` with `name`), or the role of the member to let go." },
                 "name": { "type": "string", "description": "remove: the member to let go (`mobile-2`), needed when several hold the \
 role. add with role custom: the custom role's name (`writer`)." },
                 "engine": { "type": "string", "enum": ["claude", "codex"], "description": "What the new members run on; left out, \
-equipe picks as it does for /add. Members that change files run on claude." },
+equipe picks as it does for /add. Either engine takes any role, changing files included." },
                 "model": { "type": "string", "description": "A model the engine offers; left out, the role's usual." },
                 "effort": { "type": "string", "enum": EFFORTS, "description": "How hard they think; left out, the engine's default." },
                 "reason": { "type": "string", "description": "Why, in one or two lines in the person's language: what waits and for \
@@ -204,9 +204,6 @@ pub fn check(args: &Value, team: &[Mate<'_>], tickets: &[Ticket], waiting: &[Tea
         Some("codex") => Some(Engine::Codex),
         Some(other) => return Err(format!("No engine called {other}: claude or codex.")),
     };
-    if change == Change::Add && engine == Some(Engine::Codex) && roles::role(&role).is_some_and(|r| r.edits) {
-        return Err(format!("{role} changes files, which runs on claude: leave `engine` out, or say claude."));
-    }
     let model = board::arg_str(args, "model").map(str::to_owned);
     let effort = match board::arg_str(args, "effort").map(str::to_lowercase) {
         Some(e) if !EFFORTS.contains(&e.as_str()) => return Err(format!("No effort called {e}: {}.", EFFORTS.join(", "))),
@@ -342,11 +339,14 @@ mod tests {
         assert!(err(json!({ "change": "add", "role": "qa", "count": 0, "reason": "r" })).contains("1 to 3"));
         assert!(err(json!({ "change": "add", "role": "mobile", "reason": "r", "unblocks": [5] })).contains("no T-5"));
         assert!(err(json!({ "change": "add", "role": "mobile", "reason": "r", "unblocks": [90] })).contains("T-90 is done already"));
-        assert!(err(json!({ "change": "add", "role": "mobile", "reason": "r", "engine": "codex" })).contains("runs on claude"));
         assert!(err(json!({ "change": "add", "role": "mobile", "reason": "r", "engine": "gpt" })).contains("No engine called gpt"));
         assert!(err(json!({ "change": "add", "role": "mobile", "reason": "r", "effort": "huge" })).contains("No effort called huge"));
-        // Codex is fine for a role that doesn't change files.
+        // Either engine takes any role: Codex changes files as Claude does.
         assert!(check_args(json!({ "change": "add", "role": "qa", "reason": "r", "engine": "codex" })).is_ok());
+        for role in ["backend", "frontend", "mobile", "designer", "writer"] {
+            let p = check_args(json!({ "change": "add", "role": role, "reason": "r", "engine": "codex" })).unwrap();
+            assert_eq!(p.engine, Some(Engine::Codex), "{role}");
+        }
     }
 
     #[test]
