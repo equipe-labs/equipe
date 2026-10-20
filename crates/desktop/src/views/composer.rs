@@ -43,6 +43,14 @@ const SAVE_AFTER: Duration = Duration::from_millis(800);
 actions!(composer, [OpenAttach, StopMember, OpenModels, OpenEffort, OpenModes, PasteInline, SendInverted]);
 
 /// The composer's own keys (main.rs binds them with the app's).
+/// Where an attachment goes: the message being written, or an answer to a
+/// member's question (`(set, question)`), whose words carry its tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AttachTo {
+    Composer,
+    Answer(u64, usize),
+}
+
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-u", OpenAttach, None),
@@ -662,21 +670,38 @@ impl Shell {
     /// Attach: each is checked, read on this Mac and sent to the daemon's
     /// machine on a thread of the background pool; its chip shows how far it got.
     pub fn attach_sources(&mut self, sources: Vec<Source>, cx: &mut Context<Self>) {
+        self.attach_sources_to(AttachTo::Composer, sources, cx);
+    }
+
+    /// Where an attachment goes: the strip it waits in.
+    pub fn strip_mut(&mut self, to: AttachTo) -> &mut attach::Strip {
+        match to {
+            AttachTo::Composer => &mut self.composer.strip,
+            AttachTo::Answer(set, question) => self.decide.strips.entry((set, question)).or_default(),
+        }
+    }
+
+    /// Attach `sources` to the message being written, or to an answer.
+    pub fn attach_sources_to(&mut self, to: AttachTo, sources: Vec<Source>, cx: &mut Context<Self>) {
+        let composer = to == AttachTo::Composer;
         let store = self.store();
         let mut over = 0;
         for source in sources {
             if let Some(path) = source.path() {
                 if let Err(why) = attach::check(path) {
-                    self.composer.strip.refuse(&source.name(), source.kind(), why);
+                    self.strip_mut(to).refuse(&source.name(), source.kind(), why);
                     continue;
                 }
-                self.composer.drafts.used(path);
+                if composer {
+                    self.composer.drafts.used(path);
+                }
             }
-            let Some(id) = self.composer.strip.begin(&source) else {
+            let Some(id) = self.strip_mut(to).begin(&source) else {
                 over += 1;
                 continue;
             };
             if let Source::File(path) = &source
+                && composer
                 && source.kind() == Kind::Audio
             {
                 self.write_down(id, path.clone(), cx);
@@ -712,15 +737,14 @@ impl Shell {
                 while let Some(step) = rx.recv().await {
                     let finished = matches!(step, Step::Done(_));
                     let alive = this.update(cx, |this, cx| {
-                        let strip = &mut this.composer.strip;
                         let redraw = match step {
                             Step::Shown(prepared) => {
-                                strip.prepared(id, &prepared);
+                                this.strip_mut(to).prepared(id, &prepared);
                                 true
                             }
-                            Step::Share(share) => strip.progress(id, share),
+                            Step::Share(share) => this.strip_mut(to).progress(id, share),
                             Step::Whole(path) => {
-                                strip.whole(id, path);
+                                this.strip_mut(to).whole(id, path);
                                 false
                             }
                             Step::Seen(seen) => {
@@ -731,8 +755,10 @@ impl Shell {
                                 false
                             }
                             Step::Done(done) => {
-                                strip.finish(id, done);
-                                this.save_drafts_soon(cx);
+                                this.strip_mut(to).finish(id, done);
+                                if composer {
+                                    this.save_drafts_soon(cx);
+                                }
                                 true
                             }
                         };
