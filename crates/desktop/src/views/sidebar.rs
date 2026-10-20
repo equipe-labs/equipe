@@ -279,18 +279,20 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 .absolute()
                 .top_0()
                 .bottom_0()
-                .right(px(-4.))
-                .w(px(8.))
+                // Easy to catch: most of it inside the sidebar, where nothing
+                // else takes the pointer, and a thick line under it.
+                .right(px(-3.))
+                .w(px(12.))
                 .cursor_col_resize()
                 .child(
                     div()
                         .absolute()
                         .top_0()
                         .bottom_0()
-                        .left(px(4.))
-                        .w(px(1.))
+                        .right(px(3.))
+                        .w(px(if ui.sidebar_drag.is_some() { 3. } else { 1. }))
                         .bg(if ui.sidebar_drag.is_some() { p.accent } else { p.hair })
-                        .group_hover("sidebar-edge", move |s| s.bg(p.accent).opacity(0.7)),
+                        .group_hover("sidebar-edge", move |s| s.w(px(3.)).bg(p.accent).opacity(0.8)),
                 )
                 .on_mouse_down(
                     MouseButton::Left,
