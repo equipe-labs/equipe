@@ -500,6 +500,11 @@ impl Shell {
                 }
                 return;
             }
+            // Typing in a "your turn" card's box: T, N, y, 1… are letters there, not
+            // shortcuts. Esc still leaves; Tab and ⌘⏎ are the card's own.
+            if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx)).unwrap_or(false) {
+                return;
+            }
             // A member's picture shown big: ←/→, a pick, Esc — and nothing typed underneath.
             if this.update(cx, |shell, cx| shell.on_viewer_key(key, &modifiers, window, cx)).unwrap_or(false) {
                 cx.stop_propagation();
