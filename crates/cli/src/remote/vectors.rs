@@ -914,6 +914,7 @@ fn snapshot() -> Snapshot {
         plan: Some(plan(Engine::Claude, 86, 41).usage),
         plans: vec![plan(Engine::Claude, 86, 41), plan(Engine::Codex, 12, 18)],
         engine_switching: Switching::Suggest,
+        pm_accepts: true,
         engine_proposals: vec![engine_proposal(Why::Shift, false)],
         suggestions_off: false,
         desktop: Default::default(),

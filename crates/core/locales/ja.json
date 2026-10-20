@@ -253,6 +253,7 @@
   "notice.fresh_full": "── 新しい会話: 前の会話が {window}k トークン中 {used}k を使っていました ──",
   "notice.memory_updated": "✎ {name} がスクワッドの記憶を更新しました: {what} · /memory でスクワッドが知っていることを表示",
   "notice.model": "次のターンから {model}。会話はそのまま続きます。",
+  "notice.pm_accepted": "✓ PM が {ids} を承認して main にマージしました — {checked}",
   "notice.refresh_clean": "デスクでの次の会話はまっさらに始まります — 記憶とボードは引き継がれます。",
   "notice.refresh_summary": "デスクでの次の会話は、この会話の要約と記憶から新しく始まります。",
   "notice.refused": "✗ {why} 拒否: {action}",

@@ -353,6 +353,8 @@ pub struct Context<'a> {
     pub screen_language: Option<&'a str>,
     /// Whether the member has a browser, signed in as the person.
     pub browser: bool,
+    /// The PM accepts the team's handed-in work itself (the squad's setting).
+    pub pm_accepts: bool,
     /// The other browser profiles it has a browser in (`browser_<name>`), each another person's accounts.
     pub profiles: &'a [crate::browser::BrowserProfile],
     /// Whether the member works the Mac's desktop apps (`mcp__desktop__…`).
@@ -368,6 +370,24 @@ pub struct Context<'a> {
 }
 
 /// What an engine is told about who it is on the team.
+/// The PM's word on acceptance when the person accepts every piece of work.
+const PERSON_ACCEPTS: &str = "Only the person accepts finished work; tell them when something waits for review.";
+/// …and when the PM accepts its team's work itself.
+const PM_ACCEPTS: &str = "Tickets are how the squad splits and runs its work — the person doesn't review each one. You \
+accept your team's finished work yourself: when a member hands in, check it — the hand-in, its diff and pictures, that it \
+does what the ticket asked and breaks nothing else — and call `accept_work` with what you checked; code merges into main. \
+What isn't right goes back to its member with `comment` and what to change. Members' proposals are yours to sort too: take \
+one on with `update_ticket` (status todo), fold it into another, or drop it (cancelled) — don't leave them for the person. \
+Put to the person, with `propose_accept`, only work that needs them: what can't easily be undone or reaches outside — a \
+production deploy or release, live data deleted or migrated, money or billing, security, permissions or accounts, what \
+customers or other people will see or receive — a brand or design direction, or anything they asked to see themselves; \
+tell them in one line what waits and why it's theirs.";
+/// A member's word on acceptance when the person accepts every piece of work.
+const PERSON_ACCEPTS_YOURS: &str = "Only the person accepts your work, with a click on a confirmation card or the board — never their words, nor yours.";
+/// …and when the PM accepts its team's work.
+const PM_ACCEPTS_YOURS: &str = "The PM checks and accepts your work — or puts it to the person when it needs them — never your \
+own words: hand it in with `submit_for_review` and the PM takes it from there.";
+
 pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
     let title = if role.id == CUSTOM.id { format!("{name} (a custom role)") } else { role.title.to_owned() };
     let duties = match (role.id == CUSTOM.id, ctx.edits) {
@@ -473,6 +493,9 @@ one line that a confirmation card puts it to them, and note what they said on th
         (false, _) => "You have no board tools on this engine: say plainly when a ticket is done, and the person \
 accepts it.",
     };
+    // Where the person lets the PM accept (the default), the PM checks and
+    // accepts its team's work, and puts to the person only what needs them.
+    let tools = if ctx.pm_accepts && ctx.board_tools { tools.replace(PERSON_ACCEPTS, PM_ACCEPTS).replace(PERSON_ACCEPTS_YOURS, PM_ACCEPTS_YOURS) } else { tools.to_owned() };
     // The person sees when work will be done, and when what ships is live.
     let tools = if ctx.board_tools {
         format!(
@@ -750,7 +773,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], desktop: false, home: None, memory: None, facts: 0, edits: false }
+        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, home: None, memory: None, facts: 0, edits: false }
     }
 
     #[test]
@@ -840,6 +863,21 @@ mod tests {
         let pm = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
         assert!(!pm.contains("decides for itself"));
         assert!(pm.contains("splits it across subagents"));
+    }
+
+    #[test]
+    fn where_the_pm_accepts_it_checks_its_teams_work_and_puts_to_the_person_only_what_needs_them() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "frontend", role: "frontend" }];
+        let pm = charter(role(PM).unwrap(), "pm", &Context { pm_accepts: true, ..ctx(&team, &[], true) });
+        for part in ["`accept_work`", "doesn't review each one", "Members' proposals are yours to sort", "production deploy", "call `propose_accept` right away"] {
+            assert!(pm.contains(part), "{part}: {pm}");
+        }
+        assert!(!pm.contains("Only the person accepts finished work"), "{pm}");
+        let member = charter(role("frontend").unwrap(), "frontend", &Context { pm_accepts: true, ..ctx(&team, &[], true) });
+        assert!(member.contains("The PM checks and accepts your work") && !member.contains("Only the person accepts your work"), "{member}");
+        // Kept by the person: as before.
+        let kept = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
+        assert!(kept.contains("Only the person accepts finished work") && !kept.contains("`accept_work`"), "{kept}");
     }
 
     #[test]

@@ -253,6 +253,7 @@
   "notice.fresh_full": "── 新的對話：上一段已用掉 {window}k 中的 {used}k 權杖 ──",
   "notice.memory_updated": "✎ {name} 為小隊更新了：{what} · /memory 查看小隊知道的內容",
   "notice.model": "從下一輪起使用 {model}。對話繼續。",
+  "notice.pm_accepted": "✓ PM 已接受 {ids} 並合併到 main — {checked}",
   "notice.refresh_clean": "它在工位上的下一段對話將從零開始——它的記憶和看板會保留。",
   "notice.refresh_summary": "它在工位上的下一段對話將重新開始，帶著這段對話的摘要和它的記憶。",
   "notice.refused": "✗ {why} 已拒絕：{action}",

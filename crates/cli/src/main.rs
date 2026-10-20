@@ -1445,6 +1445,7 @@ impl App {
                 | Event::RoutinesChanged { .. }
                 | Event::Logins { .. }
                 | Event::BrowserProfiles { .. }
+                | Event::PmAcceptsChanged { .. }
                 | Event::Allowed { .. }
                 | Event::Design { .. } => {}
                 Event::Error { message, next, .. } => {

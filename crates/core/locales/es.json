@@ -257,6 +257,7 @@
   "notice.fresh_full": "── una conversación nueva: la anterior había llenado {used}k de {window}k tokens ──",
   "notice.memory_updated": "✎ {name} actualizó para el equipo: {what} · /memory muestra lo que sabe el equipo",
   "notice.model": "Desde su próximo turno: {model}. Su conversación continúa.",
+  "notice.pm_accepted": "✓ El PM aceptó {ids} y lo fusionó en main — {checked}",
   "notice.refresh_clean": "Su próxima conversación en el escritorio empieza limpia: su memoria y el tablero se mantienen.",
   "notice.refresh_summary": "Su próxima conversación en el escritorio empieza de nuevo, desde un resumen de esta y su memoria.",
   "notice.refused": "✗ {why} Rechazado: {action}",
