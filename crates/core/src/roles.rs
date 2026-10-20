@@ -353,6 +353,8 @@ pub struct Context<'a> {
     pub screen_language: Option<&'a str>,
     /// Whether the member has a browser, signed in as the person.
     pub browser: bool,
+    /// The other browser profiles it has a browser in (`browser_<name>`), each another person's accounts.
+    pub profiles: &'a [crate::browser::BrowserProfile],
     /// Whether the member works the Mac's desktop apps (`mcp__desktop__…`).
     pub desktop: bool,
     /// The squad's home, where the member sits between tickets.
@@ -528,6 +530,24 @@ account, team or workspace, without saying so first — the rest of the squad wo
     } else {
         ""
     };
+    // Other people's accounts, each in a browser of its own.
+    let others = if ctx.browser && !ctx.profiles.is_empty() {
+        let list = ctx
+            .profiles
+            .iter()
+            .map(|p| if p.label.is_empty() { format!("`{}`", crate::browser::server_name(Some(&p.name))) } else { format!("`{}` ({})", crate::browser::server_name(Some(&p.name)), p.label) })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            " Besides `browser`, you have a browser for each other person whose accounts the person keeps in equipe — \
+each a Chrome of its own, with its own sign-ins: {list}. Work as the person in `browser`; use another only when the \
+task needs that person's account, and to test what two people do (one submits, the other approves) use both, each \
+as itself. Never sign one person's account in to another's browser; where one isn't signed in yet, hand it to the \
+person with `show_my_browser` as you would yours."
+        )
+    } else {
+        String::new()
+    };
     // How a designer sees its own files: what the browser opens and what it doesn't.
     let render = if ctx.browser && role.id == "designer" {
         " To look at a mockup, open it as a `data:` URL (`data:text/html,…` or `data:image/svg+xml,…`), take a \
@@ -626,7 +646,7 @@ titles and bodies, hand-in summaries, comments — whatever language this prompt
     };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
-Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{render}{desktop}{pictures}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
+Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{home}{browser}{others}{render}{desktop}{pictures}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
@@ -730,7 +750,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, desktop: false, home: None, memory: None, facts: 0, edits: false }
+        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], desktop: false, home: None, memory: None, facts: 0, edits: false }
     }
 
     #[test]
@@ -820,6 +840,18 @@ mod tests {
         let pm = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
         assert!(!pm.contains("decides for itself"));
         assert!(pm.contains("splits it across subagents"));
+    }
+
+    #[test]
+    fn a_member_is_told_which_browser_holds_whose_accounts() {
+        let team = [Teammate { name: "qa", role: "qa" }];
+        let profiles = [crate::browser::BrowserProfile { name: "jhjung".into(), label: "jhjung@atinuminvest.co.kr".into() }];
+        let text = charter(role("qa").unwrap(), "qa", &Context { browser: true, profiles: &profiles, ..ctx(&team, &[], true) });
+        assert!(text.contains("`browser_jhjung` (jhjung@atinuminvest.co.kr)") && text.contains("use both"), "{text}");
+        let alone = charter(role("qa").unwrap(), "qa", &Context { browser: true, ..ctx(&team, &[], true) });
+        assert!(!alone.contains("browser_"), "no other profile, nothing about one");
+        let blind = charter(role("qa").unwrap(), "qa", &Context { profiles: &profiles, ..ctx(&team, &[], true) });
+        assert!(!blind.contains("browser_jhjung"), "no browser at all, nothing about its profiles");
     }
 
     #[test]

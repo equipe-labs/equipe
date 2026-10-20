@@ -1206,6 +1206,11 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             Command::Focus { project, .. } => {
                                 routes.lock().await.focus = project;
                             }
+                            // One other person's accounts, as a squad testing two of them keeps.
+                            Command::BrowserProfiles => {
+                                let profiles = vec![equipe_core::protocol::BrowserProfile { name: "jhjung".into(), label: "jhjung@atinuminvest.co.kr".into() }];
+                                let _ = events.send(Event::BrowserProfiles { profiles });
+                            }
                             Command::AnswerQuestions { id, answers, .. } => {
                                 if let Some((session, _)) = close_questions(id, Some(answers), &events) {
                                     turns.lock().await.insert(session, tokio::spawn(turn(session, events.clone(), seconds)));
