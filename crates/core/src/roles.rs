@@ -99,21 +99,30 @@ names, states, responsive rules, motion, accessibility, copy, asset paths); afte
 result in design QA. Taste calls — brand direction, colours, typefaces, which option — are the person's: offer \
 options with reasons and let them decide, and remember what they chose.\n\
 Starting a design system, first find out which case it is. A company with a brand already (a website, an app, a \
-deck): harvest before you design. Open its site in your browser and take what it really uses — the logo from the \
-header, the favicon and `og:image` (the SVG where it is served); colours and type as the pages render them (evaluate \
-`getComputedStyle` on the body, headings, links, buttons, navigation and footer of a few pages, and count each colour \
-by the area it covers) and the webfonts it loads; its voice from its headlines. Ask the person for brand guidelines, \
-a press kit or a deck, and read what they attach. Show one brand audit sheet — swatches with where each was found \
-and how much, type specimens, logo variants, a few lines of its copy — telling the brand (kept) from accidents \
-(one-offs), and ask only what the audit can't answer. Then build the system around it: keep its colours and type, \
-add what a product needs (neutrals, states, dark mode, data colours that don't fight the brand). From nothing: a \
-short brief first (who it is for, three to five adjectives, what it must not look like, two or three references \
-they admire), then three distinct directions as style tiles side by side — palette, type pairing, a button, a card, \
-one real screen each. Either way: tokens in layers (primitive values, then semantic roles like \
-`color.action.primary`, then components'), every component previewed in its states; Korean text set for Korean (a \
-Korean-first family such as Pretendard, line height 1.5–1.7, tabular figures for numbers); and never the default \
-look of AI-made screens — a cream background with serif headlines and beige, or Inter with an indigo gradient — \
-unless the brand is that.\n\
+deck): harvest before you design — `equipe design audit <its site>` (more pages with `--pages`), then ask the person \
+for the logo files, brand guidelines or a deck, and read what they attach. Show them the audit sheet \
+(`design/audit/brand-audit.png`) saying what you read as the brand (kept) and what as accidents (one-offs), and ask \
+only what it can't answer. Then build the system around it: keep its colours, type and shape (radii, line weights), \
+and add what a product needs — neutrals, states, dark values, data colours that don't fight the brand. From \
+nothing: fill `brand.md` with the person first — who it is for, three to five attributes each with what it is not \
+(this, not that), two or three references they admire and one thing it must not look like — then three genuinely \
+different directions, each a tokens file (`design/directions/a.tokens.json`, …) drawn with `equipe design specimen \
+--tokens <file> --png`: the style tiles, side by side in one comparison with your recommendation and why. Either \
+way: `brand.md` holds the voice — one register everywhere (해요체 or 합니다체, buttons and errors too), the words it \
+uses and avoids, how numbers, money and dates are written, and sample lines for a primary button, an empty state, \
+an error, a success and a destructive confirm; tokens in layers (primitive values, then roles like \
+`color.action.primary` aliasing them, then components'); Korean set for Korean (a Korean-first family such as \
+Pretendard first, line height 1.5–1.7, tabular figures for numbers); and never the stock look of AI-made screens — \
+a cream page with serif headlines and beige, or Inter with an indigo gradient — unless the brand is that.\n\
+Your tools, run in your worktree{tools_at}: `equipe design init` lays out a `design/` folder to fill in (brand.md, \
+layered tokens.json, guidelines.md); `audit <url>` harvests a brand from its site as Chrome renders it — colours by \
+the area they cover and where (the logo's own from its file), type families and webfonts, the type scale, radii, \
+shadows, the logo files and its voice — into `design/audit/` with one sheet; `specimen [--tokens <file>] --png` draws \
+a system from its tokens alone (two real screens light and dark, palette with contrast, type, spacing, radius, \
+shadow); `render <file> --widths 390,1280 --dark` draws any HTML or SVG mockup to PNG; `check` says what is wrong — \
+tokens equipe's screen can't read, a missing layer, no dark values, text under AA, no Korean-capable family, no \
+brand.md or logo, the stock look. Look at every picture yourself before you show it, and hand a design system in \
+only when `check` has nothing left to fix, with its specimen.\n\
 Your sources of truth are files: tokens, SVG and HTML mockups, markdown guidelines. Render each one and look at the \
 picture yourself before you show or hand it in; compute contrast ratios instead of judging by eye (WCAG AA at \
 least); mark what you could not check as unconfirmed. You may edit files on your own branch: design notes, tokens, \
@@ -308,6 +317,8 @@ pub struct Context<'a> {
     pub projects: &'a [String],
     /// The project that is the squad's HQ, by name: where its operations live.
     pub hq: Option<&'a str>,
+    /// Where the `equipe` program is, for the tools a role runs (`equipe design …`).
+    pub equipe: Option<&'a str>,
     /// Whether the member's engine has equipe's board tools.
     pub board_tools: bool,
     /// The language the person writes in, once known.
@@ -338,7 +349,7 @@ pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
             role.duties
         ),
         (true, false) => format!("{} In the projects you read and report; you don't change their files.", role.duties),
-        (false, _) => role.duties.to_owned(),
+        (false, _) => role.duties.replace("{tools_at}", &ctx.equipe.map(|path| format!(" (`{path}` if `equipe` isn't on your PATH)")).unwrap_or_default()),
     };
     let mates: Vec<String> = ctx
         .team
@@ -686,7 +697,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, hq: None, board_tools, language: None, screen_language: None, browser: false, desktop: false, home: None, memory: None, facts: 0, edits: false }
+        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, desktop: false, home: None, memory: None, facts: 0, edits: false }
     }
 
     #[test]
@@ -702,6 +713,20 @@ mod tests {
         assert!(screen.contains("in the language they write in; until they have written, in Japanese"), "{screen}");
         let both = charter(role(PM).unwrap(), "pm", &Context { language: Some("Korean"), screen_language: Some("Japanese"), ..ctx(&team, &[], true) });
         assert!(both.contains("writes in Korean") && !both.contains("Japanese"), "what they write wins: {both}");
+    }
+
+    #[test]
+    fn the_designer_starts_a_system_with_its_tools_and_knows_where_they_are() {
+        let team = [Teammate { name: "designer", role: "designer" }];
+        let text = charter(role("designer").unwrap(), "designer", &Context { equipe: Some("/Users/x/.local/bin/equipe"), ..ctx(&team, &[], true) });
+        for tool in ["equipe design audit", "equipe design specimen", "`render <file>", "`check`", "equipe design init"] {
+            assert!(text.contains(tool), "{tool}: {text}");
+        }
+        assert!(text.contains("(`/Users/x/.local/bin/equipe` if `equipe` isn't on your PATH)"), "{text}");
+        assert!(text.contains("this, not that") && text.contains("해요체"), "brand and voice first");
+        assert!(!text.contains("{tools_at}"));
+        let bare = charter(role("designer").unwrap(), "designer", &ctx(&team, &[], true));
+        assert!(bare.contains("run in your worktree:"), "no path known: nothing said about it");
     }
 
     #[test]

@@ -135,3 +135,19 @@ shown only on dark, `…-light` only on light, any other on both.
 - `read_image` `{ squad, path, max? }` for each asset.
 
 See `docs/remote-protocol.md` for the phone's side.
+
+## The designer's tools — `equipe design`
+
+What a designer (or the person) runs in a worktree; the designer's charter
+says when (`roles.rs`).
+
+| Command | What it does |
+|---|---|
+| `init [dir]` | Lays out a `design/` folder to fill in, only what is missing: `brand.md` (who it is for, attributes *this, not that*, references, voice and tone with Korean sample lines), a layered `tokens.json` (palette → roles → components, dark values, Pretendard first) and `guidelines.md`. |
+| `audit <url> [--pages n] [--out dir]` | Harvests an existing brand from its site in the Mac's own Chrome (Playwright, `channel: chrome`): colours by the area they cover, their role (background, text, border) and where; the logo's own colours from its file (an SVG's exact values); type families, loaded webfonts and the type scale; radii and shadows; logo, icon and og:image files; its voice (title, description, headlines, buttons, navigation). Writes `brand-audit.{json,html,png}` and a screenshot per page. |
+| `specimen [dir] [--tokens file] [--png]` | Draws a system from its tokens alone: two real screens light and dark (KPIs, a table, fields with an error, buttons in their states, an empty state), the palette with dark values and contrast, type in Korean and Latin, spacing, radius, shadow. A direction's tokens file makes its style tile. |
+| `render <file…> [--widths 390,1280] [--dark] [--out dir]` | Draws HTML or SVG mockups to PNG at each width, light and dark. |
+| `check [dir] [--json]` | What to fix before handing in: tokens the screen can't read, no semantic layer, no component tokens, no dark values, text under AA (a component's text against its own fill), no Korean-capable family, body line height, no `brand.md` or voice, no logo or dark logo, no component previews, the stock looks of AI-made screens. Exits non-zero on errors. |
+
+The scripts and the one npm package they import (`playwright`, no browser
+download) live in `~/.equipe/design-kit`, set up on first use.

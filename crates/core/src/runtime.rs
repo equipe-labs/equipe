@@ -2755,6 +2755,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         let squad = session.squad.clone();
         let projects = squad.as_deref().map(|s| self.projects_cached(s)).unwrap_or_default();
         let hq = squad.as_deref().and_then(|s| self.journals.get(s)).and_then(Journal::hq).map(|p| board::project_name(&p));
+        let equipe_path = self.config.equipe_binary.as_ref().map(|p| p.to_string_lossy().into_owned());
         let board_tools = session.member.is_some() && has_tools(session) && self.config.equipe_binary.is_some();
         let language = squad.as_deref().and_then(|s| self.journals.get(s)).and_then(Journal::language);
         let edits = session.edits();
@@ -2819,6 +2820,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 team: &mates,
                 projects: &names,
                 hq: hq.as_deref(),
+                equipe: equipe_path.as_deref(),
                 board_tools,
                 language: language.as_deref(),
                 screen_language: Some(self.config.lang.english_name()),
