@@ -540,6 +540,16 @@ impl Journal {
         self.set_meta("engine_switching", mode.code())
     }
 
+    /// Whether the PM accepts and merges the team's handed-in work itself —
+    /// unless the person said no, it does.
+    pub fn pm_accepts(&self) -> bool {
+        self.meta("pm_accepts").as_deref() != Some("off")
+    }
+
+    pub fn set_pm_accepts(&self, on: bool) -> Result<()> {
+        self.set_meta("pm_accepts", if on { "on" } else { "off" })
+    }
+
     /// What engine switching keeps for the squad (`runtime/engines.rs`), as JSON.
     pub fn engines_record(&self) -> Option<String> {
         self.meta("engines")

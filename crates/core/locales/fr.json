@@ -257,6 +257,7 @@
   "notice.fresh_full": "── une nouvelle conversation : la précédente avait rempli {used}k sur {window}k jetons ──",
   "notice.memory_updated": "✎ {name} a mis à jour pour l'équipe : {what} · /memory montre ce que sait l'équipe",
   "notice.model": "À partir de son prochain tour : {model}. Sa conversation continue.",
+  "notice.pm_accepted": "✓ Le PM a accepté {ids} et l’a fusionné dans main — {checked}",
   "notice.refresh_clean": "Sa prochaine conversation au bureau repart à blanc : sa mémoire et le tableau sont conservés.",
   "notice.refresh_summary": "Sa prochaine conversation au bureau repart de zéro, à partir d'un résumé de celle-ci et de sa mémoire.",
   "notice.refused": "✗ {why} Refusé : {action}",

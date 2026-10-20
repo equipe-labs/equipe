@@ -837,6 +837,10 @@ pub enum Command {
     /// How the squad moves members between engines as their plans run low
     /// ([`engines::Switching`]). Answered by [`Event::EngineSwitchingChanged`].
     SetEngineSwitching { squad: SquadName, mode: engines::Switching },
+    /// The person lets the PM accept and merge the team's handed-in work
+    /// itself (`on`, the default), putting to them only what needs them — or
+    /// keeps every acceptance for themselves.
+    SetPmAccepts { squad: SquadName, on: bool },
     /// The person makes the moves a card proposes ([`Event::EngineProposed`]):
     /// each at its member's next ticket boundary. Only ever the person's.
     ApplyEngineProposal { squad: SquadName, id: u64 },
@@ -1500,6 +1504,8 @@ pub enum Event {
     },
     /// How the squad moves members between engines changed.
     EngineSwitchingChanged { squad: SquadName, mode: engines::Switching },
+    /// Whether the PM accepts the team's work now ([`Command::SetPmAccepts`]).
+    PmAcceptsChanged { squad: SquadName, on: bool },
     /// The squad's projects now ([`Command::AddProject`]): their folders.
     /// The logins kept, without their passwords: every screen's.
     Logins { logins: Vec<vault::Login> },
@@ -1546,6 +1552,7 @@ impl Event {
             | Event::EngineProposed { squad, .. }
             | Event::EngineProposalClosed { squad, .. }
             | Event::EngineSwitchingChanged { squad, .. }
+            | Event::PmAcceptsChanged { squad, .. }
             | Event::ProjectsChanged { squad, .. }
             | Event::RoutinesChanged { squad, .. }
             | Event::Design { squad, .. } => Some(squad),
@@ -1601,6 +1608,7 @@ impl Event {
             | Event::EngineProposed { .. }
             | Event::EngineProposalClosed { .. }
             | Event::EngineSwitchingChanged { .. }
+            | Event::PmAcceptsChanged { .. }
             | Event::ProjectsChanged { .. }
             | Event::RoutinesChanged { .. }
             | Event::Logins { .. }
@@ -1880,6 +1888,10 @@ pub struct Snapshot {
     /// How the squad moves members between engines.
     #[serde(default, skip_serializing_if = "engines::Switching::is_default")]
     pub engine_switching: engines::Switching,
+    /// Whether the PM accepts the team's work itself ([`Command::SetPmAccepts`]);
+    /// `false` from a daemon that predates it, where the person accepts all.
+    #[serde(default)]
+    pub pm_accepts: bool,
     /// Moves between engines waiting for the person, or made and not yet
     /// seen, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2215,6 +2227,7 @@ mod tests {
             plan: None,
             plans: vec![EnginePlan { engine: Engine::Codex, usage: PlanUsage::default(), plan_type: None, at: 7 }],
             engine_switching: engines::Switching::Auto,
+            pm_accepts: true,
             engine_proposals: Vec::new(),
             desktop: DesktopState::default(),
             sessions: vec![SessionInfo {

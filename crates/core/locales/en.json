@@ -257,6 +257,7 @@
   "notice.fresh_full": "── a fresh conversation: the last one had filled {used}k of {window}k tokens ──",
   "notice.memory_updated": "✎ {name} updated for the squad: {what} · /memory shows what the squad knows",
   "notice.model": "From its next turn: {model}. Its conversation carries on.",
+  "notice.pm_accepted": "✓ The PM accepted {ids} and merged it into main — {checked}",
   "notice.refresh_clean": "Its next conversation at the desk starts clean — its memory and the board carry over.",
   "notice.refresh_summary": "Its next conversation at the desk starts afresh, from a summary of this one and its memory.",
   "notice.refused": "✗ {why} Refused: {action}",

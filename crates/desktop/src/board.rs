@@ -958,6 +958,24 @@ mod tests {
     }
 
     #[test]
+    fn where_the_pm_accepts_the_inbox_keeps_only_what_is_the_persons() {
+        let mut from_member = ticket(3, "proposed", "/p", &[]);
+        from_member.created_by = "backend".into();
+        let mut conflicted = ticket(7, "done", "/p", &[]);
+        conflicted.branch = Some("b".into());
+        conflicted.merged = Some(false);
+        conflicted.off_main = Some(equipe_core::protocol::OffMain::Conflict { detail: "x".into() });
+        let tickets = vec![ticket(5, "review", "/p", &[]), from_member, ticket(4, "proposed", "/p", &[]), ticket(6, "waiting", "/p", &[]), conflicted];
+        let mut m = model(tickets, &["/p"]);
+        m.pm_accepts = true;
+        // Handed-in work, a member's proposal and a conflict its owner resolves are the PM's;
+        // the PM's own proposal and the person's part stay.
+        assert_eq!(ids(&inbox(&m, &Filter::default())), vec![6, 4]);
+        m.pm_accepts = false;
+        assert_eq!(ids(&inbox(&m, &Filter::default())), vec![6, 5, 3, 4, 7], "the person accepting: all of it, as before");
+    }
+
+    #[test]
     fn the_inbox_runs_permission_waiting_review_proposed_not_on_main() {
         let mut merged_not = ticket(7, "done", "/p", &[]);
         merged_not.branch = Some("b".into());

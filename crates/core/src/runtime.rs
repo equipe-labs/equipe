@@ -1598,6 +1598,12 @@ impl Runtime {
             }
             Command::SignOut { engine } => self.sign_out(engine),
             Command::SetEngineSwitching { squad, mode } => self.set_engine_switching(&squad, mode).await,
+            Command::SetPmAccepts { squad, on } => {
+                if let Some(journal) = self.journal(&squad) {
+                    let _ = journal.set_pm_accepts(on);
+                }
+                self.publish(Event::PmAcceptsChanged { squad, on });
+            }
             Command::ApplyEngineProposal { squad, id } => self.apply_engine_proposal(&squad, id).await,
             Command::DismissEngineProposal { squad, id } => self.dismiss_engine_proposal(&squad, id),
             Command::UndoEngineProposal { squad, id } => self.undo_engine_proposal(&squad, id).await,
@@ -2901,6 +2907,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 screen_language: Some(self.config.lang.english_name()),
                 browser: browser.is_some(),
                 profiles: &profile_browsers.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(),
+                pm_accepts: squad.as_deref().and_then(|s| self.journals.get(s)).is_none_or(Journal::pm_accepts),
                 desktop,
                 home: home.as_deref(),
                 memory: memory.as_deref(),
@@ -4151,7 +4158,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         if !self.merging.insert((squad.to_owned(), ticket)) {
             return;
         }
-        let message = format!("equipe: merge T-{ticket} {}\n\nAccepted by the person; merged from {branch}.", found.title);
+        let message = format!("equipe: merge T-{ticket} {}\n\nAccepted; merged from {branch}.", found.title);
         let (internal, squad) = (self.internal.clone(), squad.to_owned());
         tokio::task::spawn_blocking(move || {
             let result = worktree::merge_into_main(&repo, &branch, &message)
@@ -4467,6 +4474,19 @@ there, end your turn, and carry on when they say they're done."
             return;
         }
         let squad = call.squad.clone();
+        // The PM accepting its team's work: it waits for the acceptance itself.
+        if call.name == crate::accept::ACCEPT_WORK {
+            let result = match self.member_id(&squad, &call.member) {
+                Some(id) => self.accept_work(&squad, &call.member, id, &call.arguments).await,
+                None => Err("You're not on the squad.".into()),
+            };
+            self.dispatch(&squad).await;
+            let _ = reply.send(match result {
+                Ok(text) => ToolResult { text, is_error: false, image: None },
+                Err(text) => ToolResult { text, is_error: true, image: None },
+            });
+            return;
+        }
         let result = self.run_tool(call);
         // Whatever changed, the rules look again.
         self.dispatch(&squad).await;
@@ -5711,6 +5731,7 @@ it back there once they have done it.{again} End your turn now with a short line
             plan: self.plan,
             plans: self.plans.clone(),
             engine_switching: self.journals.get(squad).map(Journal::engine_switching).unwrap_or_default(),
+            pm_accepts: self.journals.get(squad).is_none_or(Journal::pm_accepts),
             engine_proposals: self.engines.proposals(squad),
             desktop: self.desktop.state(),
             allowed,

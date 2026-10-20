@@ -1019,6 +1019,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             plans: switching::plans(),
                             plan: switching::claude().or_else(engines::plan),
                             engine_switching: switching::switching(),
+                            pm_accepts: true,
                             engine_proposals: switching::proposals(),
                             squad: params.squad,
                             projects: vec![repo("web"), repo("app"), repo("api")],

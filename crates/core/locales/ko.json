@@ -253,6 +253,7 @@
   "notice.fresh_full": "── 새 대화: 지난 대화가 {window}k 토큰 중 {used}k를 채웠습니다 ──",
   "notice.memory_updated": "✎ {name}이(가) 스쿼드의 기억을 고쳤습니다: {what} · /memory에서 스쿼드가 아는 것을 봅니다",
   "notice.model": "다음 턴부터 {model}. 대화는 그대로 이어집니다.",
+  "notice.pm_accepted": "✓ PM이 {ids}을(를) 수락하고 main에 합쳤어요 — {checked}",
   "notice.refresh_clean": "책상에서의 다음 대화는 깨끗하게 시작합니다 — 기억과 보드는 그대로 이어집니다.",
   "notice.refresh_summary": "책상에서의 다음 대화는 이 대화의 요약과 기억에서 새로 시작합니다.",
   "notice.refused": "✗ {why} 거절함: {action}",
