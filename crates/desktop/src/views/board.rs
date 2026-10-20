@@ -784,10 +784,12 @@ impl Shell {
 
     /// R: the words box at the foot of the peek.
     pub fn board_open_reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(t) = self.picked() else { return };
-        if self.picked_need().is_some_and(|n| matches!(n, Need::Permission(_))) {
-            return;
+        // A request for permission: R writes to the member on it.
+        if let Some(Need::Permission(id)) = self.picked_need() {
+            self.board.view.peek = true;
+            return self.open_words(id, window, cx);
         }
+        let Some(t) = self.picked() else { return };
         // A wait's card has its own boxes: R goes to the first.
         if t.status == TicketStatus::Waiting && !t.asks().is_empty() {
             let id = t.id;

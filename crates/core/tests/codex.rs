@@ -180,7 +180,7 @@ async fn codex_asks_the_person_and_an_always_becomes_the_squads_rule() {
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
     assert_eq!((approval.tool.as_str(), approval.action.as_str()), ("Bash", "git push origin main"));
     assert!(approval.reason.as_deref().is_some_and(|r| r.contains("Pushing needs the network")), "{:?}", approval.reason);
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Always });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Always, words: None });
     let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(text_of(&turn).contains("Pushed."), "{turn:#?}");
     assert_eq!(sent(&log).iter().find(|m| m["id"] == "srv-1").unwrap()["result"]["decision"], "accept");
@@ -216,7 +216,7 @@ async fn a_declined_command_is_not_run() {
     handle.send(Command::Submit { session: 1, text: "approve the push".into(), about: None });
     let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None });
     let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(text_of(&turn).contains("declined"), "{turn:#?}");
 }

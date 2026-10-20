@@ -2347,7 +2347,7 @@ impl App {
                 _ => None,
             };
             if let Some(decision) = decision {
-                return vec![Command::Decide { squad: self.squad.clone(), approval: approval.id, decision }];
+                return vec![Command::Decide { squad: self.squad.clone(), approval: approval.id, decision, words: None }];
             }
             // The screen a send would go from, in Preview.
             if key.code == KeyCode::Char('o')
@@ -5108,15 +5108,15 @@ mod tests {
         // As every need: a is yes (once), A always, n no.
         assert_eq!(
             app.on_key(key(KeyCode::Char('a')), Instant::now()),
-            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Allow }]
+            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Allow, words: None }]
         );
         assert_eq!(
             app.on_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT), Instant::now()),
-            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always }]
+            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always, words: None }]
         );
         assert_eq!(
             app.on_key(key(KeyCode::Char('n')), Instant::now()),
-            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Deny }]
+            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Deny, words: None }]
         );
         // Mid-sentence, letters are letters.
         type_text(&mut app, "hey");
