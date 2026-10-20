@@ -108,7 +108,8 @@ impl Launcher {
 
     fn command(&self, host: &SshHost, remote: &str) -> Command {
         let mut command = Command::new(&self.program);
-        command.args(self.options()).args(host.args()).arg(remote);
+        // A machine the app's key went onto: offered, so no password is asked (`sshkey.rs`).
+        command.args(self.options()).args(crate::sshkey::identity_options(host)).args(host.args()).arg(remote);
         if let Some(askpass) = &self.askpass {
             command
                 .env("SSH_ASKPASS", &askpass.exe)
