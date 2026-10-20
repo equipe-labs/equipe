@@ -366,6 +366,14 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                         }
                     }
                 }
+                // `afile:117,1,/path/to/file` attaches a file to ask 1's answer of T-117, as a drop on its box does.
+                "afile" => shell.update(cx, |shell, cx| {
+                    let mut parts = arg.splitn(3, ',');
+                    let ticket: u32 = parts.next().and_then(|t| t.parse().ok()).unwrap_or(0);
+                    let n: usize = parts.next().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).saturating_sub(1);
+                    let path = std::path::PathBuf::from(parts.next().unwrap_or_default());
+                    shell.attach_sources_to(crate::views::composer::AttachTo::Turn(ticket, n), vec![crate::attach::Source::File(path)], cx);
+                }),
                 "answer" | "aok" | "atick" | "apick" | "anote" | "afree" | "asend" => shell.update(cx, |shell, cx| {
                     let mut parts = arg.splitn(3, ',');
                     let ticket: u32 = parts.next().and_then(|t| t.parse().ok()).unwrap_or(0);

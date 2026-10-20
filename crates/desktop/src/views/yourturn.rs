@@ -60,6 +60,8 @@ pub enum Slot {
 pub struct TurnUi {
     /// The answer boxes.
     pub fields: HashMap<(TicketId, usize), Entity<TextareaState>>,
+    /// What is attached to each answer — a file the member asked for.
+    pub strips: HashMap<(TicketId, usize), crate::attach::Strip>,
     /// Each ask's note, once "메모 추가" opened it.
     pub notes: HashMap<(TicketId, usize), Entity<TextareaState>>,
     /// The words to the member, at the card's foot.
@@ -110,6 +112,8 @@ pub struct Card {
     pub phase: Phase,
     pub answered: Option<Answered>,
     pub can_send: bool,
+    /// What is attached to each ask's answer.
+    pub attached: Vec<Vec<crate::attach::Item>>,
     pub now: u64,
     /// The one step open, answered in place; the rest are a line each.
     pub current: Option<usize>,
@@ -123,6 +127,7 @@ impl Card {
         let answered = model.answers.get(&id).cloned();
         let phase = rules::phase(t, answered.as_ref());
         let asks = t.map(Ticket::asks).unwrap_or_default();
+        let asks_len = asks.len();
         let wants: Vec<Want> = asks.iter().map(|a| rules::want_of(a)).collect();
         let roots = roots(shell, t);
         let named = asks.iter().map(|a| rules::named(a, &roots)).collect();
@@ -156,6 +161,7 @@ impl Card {
             phase,
             answered,
             can_send,
+            attached: (0..asks_len).map(|n| shell.turn.strips.get(&(id, n)).map(|s| s.items().to_vec()).unwrap_or_default()).collect(),
             now: crate::state::now_unix(),
             current,
         }))
@@ -225,8 +231,11 @@ pub fn looks(shell: &Shell, cx: &App) -> HashMap<TicketId, u64> {
             let mut picks: Vec<(usize, Pick)> = shell.turn.picks.get(&t.id).map(|p| p.iter().map(|(n, p)| (*n, *p)).collect()).unwrap_or_default();
             picks.sort_unstable_by_key(|(n, _)| *n);
             let answered = model.answers.get(&t.id).map(|a| (a.text.clone(), a.here, a.settled));
+            // Attachments: how many, and how far each got.
+            let mut attached: Vec<String> = shell.turn.strips.iter().filter(|((id, _), _)| *id == t.id).map(|((_, n), s)| format!("{n}:{:?}", s.items().iter().map(|i| (i.id, format!("{:?}", i.stage), i.thumb.is_some())).collect::<Vec<_>>())).collect();
+            attached.sort();
             let _ = cx;
-            (t.id, render::hash_of((format!("{:?}", t.status), t.asks(), answered, fields, notes, format!("{picks:?}"), &t.title)))
+            (t.id, render::hash_of((format!("{:?}", t.status), t.asks(), answered, fields, notes, format!("{picks:?}"), &t.title, attached)))
         })
         .collect()
 }
@@ -490,10 +499,26 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
     let files = card.named.get(n).filter(|f| !f.is_empty()).map(|files| h_flex().flex_wrap().gap_1p5().children(files.iter().enumerate().map(|(k, f)| file_chip(p, f, hash(key, n << 8 | k)))));
     let answering = d.place != Place::Side;
     // The box, faded while a pick stands in for it (typing takes the pick back).
+    let to = super::composer::AttachTo::Turn(card.ticket, n);
     let field = card.fields.get(n).cloned().flatten().filter(|_| answering && want != Want::Do).map(|field| {
         let picked = card.picks.contains_key(&n);
-        boxed(p, &field, 14.).when(picked, |c| c.opacity(0.45))
+        div()
+            .w_full()
+            .min_w_0()
+            .px_3()
+            .py(px(2.))
+            .rounded(px(R_SM + 2.))
+            .bg(p.bg)
+            .border_1()
+            .border_color(p.hair)
+            .text_size(px(14.))
+            .child(super::composer::answer_box(&field, to, d.handle.clone()))
+            .on_drop(super::composer::on_answer_drop(to, d.handle.clone()))
+            .when(picked, |c| c.opacity(0.45))
     });
+    // What is attached to the answer — a file the member asked for — and "첨부".
+    let attached = (answering && want != Want::Do && card.fields.get(n).is_some_and(Option::is_some))
+        .then(|| super::composer::answer_attachments(p, to, hash(key, n), card.attached.get(n).cloned().unwrap_or_default(), d.handle.clone()));
     let choices = answering.then(|| choices(card, d, n, want));
     // Words typed: a button on to the next step (one at a time only).
     let typed = matches!(card.replies.get(n), Some(Reply::Text(_)));
@@ -510,7 +535,7 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
         .gap_2p5()
         .items_start()
         .child(number)
-        .child(v_flex().flex_1().min_w_0().gap_2().child(text).children(files).children(field).children(choices).children(note).children(next.map(|b| h_flex().justify_end().child(b))))
+        .child(v_flex().flex_1().min_w_0().gap_2().child(text).children(files).children(field).children(attached).children(choices).children(note).children(next.map(|b| h_flex().justify_end().child(b))))
         .into_any_element()
 }
 
@@ -641,7 +666,7 @@ fn foot(card: &Card, d: &Draw<'_>) -> impl IntoElement {
 /// What a reply says on screen, read back from what was sent.
 fn reply_words(reply: &Reply) -> String {
     match reply {
-        Reply::Text(text) => text.clone(),
+        Reply::Text(text) => crate::attach::shown_words(text),
         Reply::Done => t!("turn.done").into(),
         Reply::Yours => t!("turn.sent_yours").into(),
         Reply::Later => t!("turn.sent_later").into(),
@@ -854,7 +879,8 @@ impl Shell {
     pub fn turn_answers(&self, id: TicketId, asks: &[String], cx: &App) -> asks::Answers {
         let wants: Vec<Want> = asks.iter().map(|a| rules::want_of(a)).collect();
         let read = |f: Option<&Entity<TextareaState>>| f.map(|f| f.read(cx).value().to_string()).unwrap_or_default();
-        let typed: Vec<String> = (0..asks.len()).map(|n| read(self.turn.fields.get(&(id, n)))).collect();
+        // What is attached goes with the words, as tags the member opens.
+        let typed: Vec<String> = (0..asks.len()).map(|n| crate::attach::message(&read(self.turn.fields.get(&(id, n))), &self.answer_tags(super::composer::AttachTo::Turn(id, n)))).collect();
         let notes: Vec<String> = (0..asks.len()).map(|n| read(self.turn.notes.get(&(id, n)))).collect();
         let picks = self.turn.picks.get(&id).cloned().unwrap_or_default();
         rules::answers(&wants, &typed, &picks, &notes, &read(self.turn.free.get(&id)))
@@ -878,6 +904,12 @@ impl Shell {
         if !rules::can_send(&answers) || !self.can_act() || self.model.answers.get(&id).is_some_and(|a| a.here && !a.settled) {
             return;
         }
+        // An attachment still on its way: sent once it's there.
+        if self.turn.strips.iter().any(|((t, _), s)| *t == id && s.busy()) {
+            self.composer.flash = Some(t!("composer.answer_uploading").into());
+            return cx.notify();
+        }
+        self.turn.strips.retain(|(t, _), _| *t != id);
         let note = asks::answer_message(&asks, &answers);
         self.send_command(Command::Resume { squad: self.model.squad.clone(), ticket: id, note: note.clone() });
         self.model.answer_sent(id, note);

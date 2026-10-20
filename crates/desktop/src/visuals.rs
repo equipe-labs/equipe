@@ -300,6 +300,24 @@ pub fn grid(width: f32, n: usize) -> Grid {
     Grid { rows: balance(n, fit), tile: tile_width(width, fit) }
 }
 
+/// [`grid`], with every tile short enough that a whole row — its picture and
+/// its caption — fits `room` points high: where the card is short, smaller
+/// tiles (more to a row) rather than captions cut off under the box below.
+/// Never narrower than [`TILE_SHRUNK`].
+pub fn grid_within(width: f32, n: usize, described: bool, room: f32) -> Grid {
+    let grid = grid(width, n);
+    if tile_height(grid.tile, described) <= room {
+        return grid;
+    }
+    let fixed = tile_height(0., described);
+    let tile = ((room - fixed) / RATIO).floor().max(TILE_SHRUNK).min(grid.tile);
+    let per = per_row(width, tile).min(n.max(1));
+    Grid { rows: balance(n, per), tile }
+}
+
+/// The narrowest a tile gets to fit a short card.
+pub const TILE_SHRUNK: f32 = 120.;
+
 /// `n` tiles in rows of at most `per`, as even as they come: the fuller rows first.
 pub fn balance(n: usize, per: usize) -> Vec<usize> {
     if n == 0 {
@@ -614,6 +632,17 @@ impl Viewer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_short_card_shows_a_whole_row_of_smaller_tiles_rather_than_cut_captions() {
+        let roomy = grid_within(900., 2, true, 2000.);
+        assert_eq!(roomy, grid(900., 2), "room enough: as before");
+        let short = grid_within(900., 2, true, 260.);
+        assert!(tile_height(short.tile, true) <= 260., "{short:?}");
+        assert!(short.tile < roomy.tile && short.rows == vec![2], "{short:?}");
+        // Never smaller than a tile can be read at.
+        assert_eq!(grid_within(900., 3, true, 40.).tile, TILE_SHRUNK);
+    }
 
     #[test]
     fn the_big_view_zooms_in_steps_toward_the_pointer_and_never_off_the_picture() {

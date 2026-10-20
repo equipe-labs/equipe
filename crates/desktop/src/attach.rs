@@ -804,6 +804,25 @@ pub fn saved_of(text: &str) -> Vec<Saved> {
         .collect()
 }
 
+/// Words with attachments in them, as the person reads them back: the
+/// words, then `📎 name` for each attachment — never its tag's path.
+pub fn shown_words(text: &str) -> String {
+    let tags = equipe_core::protocol::tags::find(text);
+    if tags.is_empty() {
+        return text.to_owned();
+    }
+    let mut words = String::new();
+    let mut at = 0;
+    for tag in &tags {
+        words.push_str(&text[at..tag.range.start]);
+        at = tag.range.end;
+    }
+    words.push_str(&text[at..]);
+    let names = tags.iter().map(|t| format!("📎 {}", t.name())).collect::<Vec<_>>().join(" ");
+    let words = words.split_whitespace().collect::<Vec<_>>().join(" ");
+    if words.is_empty() { names } else { format!("{words} {names}") }
+}
+
 /// What was typed, without the characters that can't be seen or that turn
 /// text around (zero-width spaces, bidi overrides, a stray BOM) — the joiners
 /// emoji need stay.
@@ -912,6 +931,15 @@ pub fn take_inbox() -> Vec<Source> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_answer_with_a_file_reads_back_as_its_words_and_the_files_name() {
+        let tag = tag(Kind::File, "/u/abc/allocation-plan.txt", &Meta { lines: Some(2), ..Meta::default() }, &[], None);
+        let both = message("자료 첨부해요", &tag);
+        assert_eq!(shown_words(&both), "자료 첨부해요 📎 allocation-plan.txt");
+        assert_eq!(shown_words(&tag), "📎 allocation-plan.txt");
+        assert_eq!(shown_words("그냥 말"), "그냥 말");
+    }
 
     fn picture_bytes(w: u32, h: u32, kind: Format) -> Vec<u8> {
         let mut out = Cursor::new(Vec::new());

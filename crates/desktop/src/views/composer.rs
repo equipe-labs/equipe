@@ -42,15 +42,17 @@ const SAVE_AFTER: Duration = Duration::from_millis(800);
 
 actions!(composer, [OpenAttach, StopMember, OpenModels, OpenEffort, OpenModes, PasteInline, SendInverted]);
 
-/// The composer's own keys (main.rs binds them with the app's).
-/// Where an attachment goes: the message being written, or an answer to a
-/// member's question (`(set, question)`), whose words carry its tag.
+/// Where an attachment goes: the message being written, an answer to a
+/// member's question (`(set, question)`), or to an ask of a ticket waiting for
+/// the person (`(ticket, ask)`) — whose words carry its tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AttachTo {
     Composer,
     Answer(u64, usize),
+    Turn(u32, usize),
 }
 
+/// The composer's own keys (main.rs binds them with the app's).
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-u", OpenAttach, None),
@@ -682,12 +684,98 @@ impl Shell {
         match to {
             AttachTo::Composer => &mut self.composer.strip,
             AttachTo::Answer(set, question) => self.decide.strips.entry((set, question)).or_default(),
+            AttachTo::Turn(ticket, ask) => self.turn.strips.entry((ticket, ask)).or_default(),
         }
+    }
+
+    /// What is attached to an answer, if anything.
+    pub fn strip_of(&self, to: AttachTo) -> Option<&attach::Strip> {
+        match to {
+            AttachTo::Composer => Some(&self.composer.strip),
+            AttachTo::Answer(set, question) => self.decide.strips.get(&(set, question)),
+            AttachTo::Turn(ticket, ask) => self.turn.strips.get(&(ticket, ask)),
+        }
+    }
+
+    /// The tags an answer's attachments add to its words: what the member opens.
+    pub fn answer_tags(&self, to: AttachTo) -> String {
+        self.strip_of(to).map(attach::Strip::tags).unwrap_or_default()
+    }
+
+    /// ⌘V in an answer's box: files or a picture on the clipboard are attached
+    /// to it; anything else is the box's to paste.
+    pub fn paste_into(&mut self, to: AttachTo, item: &ClipboardItem, cx: &mut Context<Self>) -> bool {
+        match attach::from_clipboard(item) {
+            Some(sources) => {
+                self.attach_sources_to(to, sources, cx);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Files dropped on an answer's box: attached to it; a folder, its path written in.
+    pub fn drop_into(&mut self, to: AttachTo, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer.drag = None;
+        let (files, folders) = attach::from_drop(paths.paths());
+        if let Some(field) = self.answer_field(to).filter(|_| !folders.is_empty()) {
+            field.update(cx, |s, cx| {
+                let mut text = s.value().to_string();
+                for path in &folders {
+                    if !text.is_empty() && !text.ends_with(' ') {
+                        text.push(' ');
+                    }
+                    text.push_str(&path.to_string_lossy());
+                }
+                s.set_value(text, window, cx);
+            });
+        }
+        self.attach_sources_to(to, files, cx);
+    }
+
+    /// "첨부": the system's file picker, into an answer.
+    pub fn pick_into(&mut self, to: AttachTo, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(t!("composer.pick_prompt").into()) });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = picked.await {
+                this.update(cx, |this, cx| this.attach_sources_to(to, paths.into_iter().map(Source::File).collect(), cx)).ok();
+            }
+        })
+        .detach();
+    }
+
+    /// An attachment taken off an answer.
+    pub fn unattach_from(&mut self, to: AttachTo, id: u64, cx: &mut Context<Self>) {
+        self.strip_mut(to).remove(id);
+        self.answer_redrawn(to, cx);
+    }
+
+    /// An answer's box, by where its attachments go.
+    fn answer_field(&self, to: AttachTo) -> Option<Entity<TextareaState>> {
+        match to {
+            AttachTo::Composer => Some(self.composer.state.clone()),
+            AttachTo::Answer(set, question) => self.decide.fields.get(&(set, question)).cloned(),
+            AttachTo::Turn(ticket, ask) => self.turn.fields.get(&(ticket, ask)).cloned(),
+        }
+    }
+
+    /// An answer's attachments changed: its card is drawn — and measured — again.
+    fn answer_redrawn(&mut self, to: AttachTo, cx: &mut Context<Self>) {
+        if let AttachTo::Turn(ticket, _) = to {
+            self.chat_remeasure_turn(ticket, cx);
+        }
+        self.model.revision += 1;
+        cx.notify();
     }
 
     /// Attach `sources` to the message being written, or to an answer.
     pub fn attach_sources_to(&mut self, to: AttachTo, sources: Vec<Source>, cx: &mut Context<Self>) {
         let composer = to == AttachTo::Composer;
+        // The ask being answered stays open while its file goes up: the step
+        // doesn't move on under the person.
+        if let AttachTo::Turn(ticket, n) = to {
+            self.turn.open.insert(ticket, n);
+        }
         let store = self.store();
         let mut over = 0;
         for source in sources {
@@ -767,7 +855,11 @@ impl Shell {
                             }
                         };
                         if redraw {
-                            cx.notify();
+                            if composer {
+                                cx.notify();
+                            } else {
+                                this.answer_redrawn(to, cx);
+                            }
                         }
                     });
                     if alive.is_err() || finished {
@@ -2594,6 +2686,95 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoEleme
     Some(motion::fade(backdrop, "lightbox-in", motion::BASE))
 }
 
+
+/// An answer's attachments, one small chip each — its picture or kind, its
+/// name, how far it got or why it failed, and ✕ — and "첨부" to add one.
+pub fn answer_attachments(p: Palette, to: AttachTo, key: u64, items: Vec<attach::Item>, handle: WeakEntity<Shell>) -> AnyElement {
+    let chips = items.into_iter().map(|item| {
+        let id = item.id;
+        let failed = item.failed().map(str::to_owned);
+        let state = match item.stage {
+            Stage::Preparing => Some(t!("composer.preparing").to_owned()),
+            Stage::Sending(s) => Some(format!("{}%", (s * 100.).round() as u32)),
+            _ => None,
+        };
+        let face = match (&item.thumb, item.kind) {
+            (Some(thumb), Kind::Image) => img(thumb.clone()).size(px(18.)).rounded(px(4.)).object_fit(ObjectFit::Cover).into_any_element(),
+            _ => icon(if item.kind == Kind::Audio { Icon::Mic } else { Icon::File }, ICON_SM, p.muted).into_any_element(),
+        };
+        let off = handle.clone();
+        h_flex()
+            .id(SharedString::from(format!("answer-chip-{key}-{id}")))
+            .h(px(26.))
+            .max_w(px(260.))
+            .pl(px(5.))
+            .pr_1()
+            .gap(px(6.))
+            .items_center()
+            .rounded(px(R_SM + 2.))
+            .bg(p.wash)
+            .border_1()
+            .border_color(if failed.is_some() { p.danger() } else { p.hair })
+            .text_size(px(12.))
+            .child(face)
+            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(p.text).child(item.name.clone()))
+            .children(state.map(|s| div().flex_none().text_color(p.muted).child(s)))
+            .children(failed.map(|why| div().flex_none().max_w(px(120.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(p.danger()).child(why)))
+            .child(
+                div()
+                    .id(SharedString::from(format!("answer-unattach-{key}-{id}")))
+                    .flex_none()
+                    .px_1()
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .text_color(p.muted)
+                    .hover(move |s| s.text_color(p.text).bg(p.hair))
+                    .child("✕")
+                    .on_click(move |_, _, cx| {
+                        off.update(cx, |this, cx| this.unattach_from(to, id, cx)).ok();
+                    }),
+            )
+    });
+    let pick = handle.clone();
+    h_flex()
+        .w_full()
+        .flex_wrap()
+        .gap_1p5()
+        .items_center()
+        .children(chips)
+        .child(
+            h_flex()
+                .id(SharedString::from(format!("answer-attach-{key}")))
+                .h(px(26.))
+                .px_2()
+                .gap_1()
+                .items_center()
+                .rounded(px(R_SM + 2.))
+                .cursor_pointer()
+                .text_size(px(12.))
+                .text_color(p.muted)
+                .hover(move |s| s.text_color(p.text).bg(p.wash))
+                .child(icon(Icon::Paperclip, ICON_SM, p.muted))
+                .child(t!("composer.attach_answer"))
+                .on_click(move |_, _, cx| {
+                    pick.update(cx, |this, cx| this.pick_into(to, cx)).ok();
+                }),
+        )
+        .into_any_element()
+}
+
+/// An answer's box, taking pasted and dropped files as its attachments.
+pub fn answer_box(field: &Entity<TextareaState>, to: AttachTo, handle: WeakEntity<Shell>) -> Textarea {
+    Textarea::new(field).appearance(false).bordered(false).on_paste(move |item, _, cx| handle.update(cx, |shell, cx| shell.paste_into(to, item, cx)).unwrap_or(false))
+}
+
+/// What a box takes when files are dropped on it: attached to its answer, and no further.
+pub fn on_answer_drop(to: AttachTo, handle: WeakEntity<Shell>) -> impl Fn(&ExternalPaths, &mut Window, &mut App) + 'static {
+    move |paths, window, cx| {
+        handle.update(cx, |shell, cx| shell.drop_into(to, paths, window, cx)).ok();
+        cx.stop_propagation();
+    }
+}
 
 #[cfg(test)]
 mod tests {
