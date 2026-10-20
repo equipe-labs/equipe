@@ -57,6 +57,7 @@ mod i18n;
 mod icons;
 mod motion;
 mod relaunch;
+mod roadmap;
 mod sent;
 mod render;
 mod settings;
@@ -171,6 +172,8 @@ pub enum Screen {
     Design,
     /// 현황: every project at a glance, the HQ first (`views/overview.rs`).
     Overview,
+    /// 로드맵: the work as one picture, what waits on what (`views/roadmap.rs`).
+    Roadmap,
 }
 
 pub struct Shell {
@@ -1314,6 +1317,7 @@ impl Shell {
                     Screen::Settings => views::settings::render(self, cx),
                     Screen::Design => views::design::render(self, cx),
                     Screen::Overview => views::overview::render(self, cx),
+                    Screen::Roadmap => views::roadmap::render(self, cx),
                 };
                 v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(self.update_banner(cx)).children(views::disk::banner(self, cx)).child(screen).into_any_element()
             }

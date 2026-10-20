@@ -246,6 +246,7 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     };
                     shell.open_routine(None, preset, window, cx);
                 }),
+                "roadmap" => shell.update(cx, |shell, cx| shell.open_roadmap(cx)),
                 // The sidebar this wide: `sidew:210`.
                 "sidew" => shell.update(cx, |shell, cx| {
                     shell.board.sidebar_width = arg.parse().unwrap_or(crate::views::sidebar::WIDTH);

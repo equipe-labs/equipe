@@ -195,6 +195,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .child(nav("nav-working", IconName::LoaderCircle, t!("board.menu_working").into(), 0, working, on_board && menu == Menu::Working).on_click(cx.listener(|this, _, _, cx| this.open_side_menu(Menu::Working, cx))))
         .child(nav("nav-all", IconName::LayoutDashboard, t!("board.menu_all").into(), 0, 0, on_board && matches!(menu, Menu::All | Menu::View(_))).on_click(cx.listener(|this, _, _, cx| this.open_side_menu(Menu::All, cx))))
         .child(nav("nav-overview", IconName::ChartPie, t!("overview.title").into(), 0, 0, shell.screen == Screen::Overview).on_click(cx.listener(|this, _, _, cx| this.open_overview(cx))))
+        .child(nav("nav-roadmap", IconName::Map, t!("roadmap.title").into(), 0, 0, shell.screen == Screen::Roadmap).on_click(cx.listener(|this, _, _, cx| this.open_roadmap(cx))))
         .child(nav("nav-design", IconName::Palette, t!("design.title").into(), 0, 0, shell.screen == Screen::Design).on_click(cx.listener(|this, _, _, cx| this.open_design(cx))));
 
     // The live work, a group per project; rows that just came arrive, rows
@@ -375,7 +376,7 @@ fn selected_ticket(shell: &Shell) -> Option<TicketId> {
             Some(Need::Ticket(id)) => Some(id),
             _ => None,
         },
-        Screen::Settings | Screen::Design | Screen::Overview => None,
+        Screen::Settings | Screen::Design | Screen::Overview | Screen::Roadmap => None,
     }
 }
 
@@ -1507,6 +1508,7 @@ impl Shell {
             Screen::Settings => self.open_settings(None, window, cx),
             Screen::Design => self.open_design(cx),
             Screen::Overview => self.open_overview(cx),
+            Screen::Roadmap => self.open_roadmap(cx),
         }
         cx.notify();
     }
