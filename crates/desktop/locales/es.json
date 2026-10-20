@@ -1886,6 +1886,7 @@
   "visuals.recommended": "Recomendada",
   "visuals.retry": "Reintentar",
   "visuals.why_missing": "El archivo ya no está",
+  "visuals.why_outside": "Un miembro la guardó donde las pantallas no pueden mostrarla: pídele que la guarde en su carpeta de trabajo",
   "visuals.why_too_big": "Demasiado grande para mostrarlo",
   "visuals.why_unreadable": "No se pudo leer",
   "visuals.zoom_fit": "Ajustar",

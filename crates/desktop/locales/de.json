@@ -1886,6 +1886,7 @@
   "visuals.recommended": "Empfohlen",
   "visuals.retry": "Erneut versuchen",
   "visuals.why_missing": "Die Datei ist nicht da",
+  "visuals.why_outside": "Ein Mitglied hat es dort gespeichert, wo Bildschirme es nicht zeigen können – bitte es, das Bild im Arbeitsordner zu speichern",
   "visuals.why_too_big": "Zu groß zum Anzeigen",
   "visuals.why_unreadable": "Sie ließ sich nicht lesen",
   "visuals.zoom_fit": "Ganz",

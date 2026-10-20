@@ -1834,6 +1834,7 @@
   "visuals.recommended": "推薦",
   "visuals.retry": "重試",
   "visuals.why_missing": "檔案不存在",
+  "visuals.why_outside": "成員把它存在畫面無法顯示的位置——請讓成員重新存到工作資料夾",
   "visuals.why_too_big": "檔案太大，無法顯示",
   "visuals.why_unreadable": "無法讀取此檔案",
   "visuals.zoom_fit": "符合",

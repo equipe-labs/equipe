@@ -1834,6 +1834,7 @@
   "visuals.recommended": "推荐",
   "visuals.retry": "重试",
   "visuals.why_missing": "文件不存在",
+  "visuals.why_outside": "成员把它存在了界面无法显示的位置——请让成员重新存到工作文件夹",
   "visuals.why_too_big": "文件太大，无法显示",
   "visuals.why_unreadable": "无法读取此文件",
   "visuals.zoom_fit": "适应",

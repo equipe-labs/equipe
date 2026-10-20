@@ -447,7 +447,7 @@ pub fn all_failed(looks: &[Option<&Look>]) -> Option<ImageWhy> {
         }
     }
     let count = |w: ImageWhy| whys.iter().filter(|x| **x == w).count();
-    [ImageWhy::Missing, ImageWhy::TooBig, ImageWhy::Unreadable].into_iter().max_by_key(|w| count(*w))
+    [ImageWhy::Missing, ImageWhy::TooBig, ImageWhy::Outside, ImageWhy::Unreadable].into_iter().max_by_key(|w| count(*w))
 }
 
 /// The words members mark the option they recommend with, in the languages

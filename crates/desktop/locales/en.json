@@ -1886,6 +1886,7 @@
   "visuals.recommended": "Recommended",
   "visuals.retry": "Try again",
   "visuals.why_missing": "The file isn't there",
+  "visuals.why_outside": "A member saved it where screens can't be shown it — ask them to save it in their work folder",
   "visuals.why_too_big": "Too large to show",
   "visuals.why_unreadable": "It couldn't be read",
   "visuals.zoom_fit": "Fit",

@@ -1834,6 +1834,7 @@
   "visuals.recommended": "추천",
   "visuals.retry": "다시 시도",
   "visuals.why_missing": "파일이 없어요",
+  "visuals.why_outside": "멤버가 화면에 보여 줄 수 없는 곳에 저장했어요 — 작업 폴더에 다시 저장해 달라고 말해 주세요",
   "visuals.why_too_big": "너무 커서 보여 드릴 수 없어요",
   "visuals.why_unreadable": "읽을 수 없는 파일이에요",
   "visuals.zoom_fit": "맞춤",

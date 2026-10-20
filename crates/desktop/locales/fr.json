@@ -1886,6 +1886,7 @@
   "visuals.recommended": "Recommandée",
   "visuals.retry": "Réessayer",
   "visuals.why_missing": "Le fichier n'est plus là",
+  "visuals.why_outside": "Un membre l’a enregistrée là où les écrans ne peuvent pas l’afficher — demandez-lui de l’enregistrer dans son dossier de travail",
   "visuals.why_too_big": "Trop volumineux pour être affiché",
   "visuals.why_unreadable": "Impossible de le lire",
   "visuals.zoom_fit": "Ajuster",
