@@ -5510,8 +5510,9 @@ it back there once they have done it.{again} End your turn now with a short line
                 }
                 let estimate = Some(estimate).filter(|e| !e.is_empty());
                 session.estimate = estimate.clone();
+                let reply = board::estimate_reply(done, !session.subagents.is_empty(), session.engine == Engine::Claude);
                 self.publish(Event::Estimated { session: id, estimate });
-                Ok("Shown to the person.".into())
+                Ok(reply)
             }
             board::REMEMBER | board::FORGET => {
                 let folder = squad_home::path(&self.config.home, &squad);

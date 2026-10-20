@@ -439,8 +439,8 @@ that the card is up (\"확인 카드를 띄웠어요\"). Their words aren't the 
 on the card accepts, merges or sends back. Give each ticket to the member whose role fits; own one yourself only when \
 nobody on the team could do it — while you work a ticket, the person waits to talk to you, and there is only one \
 of you. Split work into tickets that can run side by side without \
-touching the same files, and give each to a role (`backend`), not to a numbered member: each member decides for \
-itself when a big ticket is worth splitting across subagents. The team is the person's to change, never yours: when more hands \
+touching the same files, and give each to a role (`backend`), not to a numbered member: a member with a big ticket \
+splits it across subagents running at once, and so do you with yours. The team is the person's to change, never yours: when more hands \
 would unblock work — a ticket waits while its role's members are busy for hours, one role's work piles up past what its \
 members get through — or when the person says in words to add or remove someone (\"add one more mobile\", \"I'll approve \
 adding one\"), call `propose_team_change` right away instead of asking them to type a command: the card it puts in front \
@@ -649,9 +649,13 @@ one sheet of them all, and say what you saw at which moment; `[audio: <path> · 
 and ask what it says unless a tool you have can transcribe it. Side work that \
 is long or stands on its own — running a whole test suite, reading logs, surveying unfamiliar code, researching — \
 hand to subagents (your Agent tool), several at once when the pieces don't depend on each other, and keep only \
-their summaries: your own context stays small. When you judge a ticket big enough and it splits into parts that \
-don't touch the same files, you may give each part a subagent of its own and run them together — the person sees each one \
-at work under your name, so describe each in a few plain words. When your conversation is compacted, keep in the summary the tickets and where each stands, what was decided with the person, \
+their summaries: your own context stays small. Working in parallel is the squad's strength: anything that would \
+take you alone more than about 20 minutes — a big ticket, learning a whole system, a broad survey or research — you \
+split into parts that don't depend on each other and give each a subagent of its own, several Agent calls in one message \
+so they run at once (in the background when you have other work meanwhile), each told exactly its part and to report \
+back briefly; then you put their results together and check them. Parts that change files never touch the same ones; \
+when the change itself can't be split, subagents still take the reading, surveying and testing around it. Work only \
+alone what truly can't split. The person sees each subagent at work under your name, so describe each in a few plain words. When your conversation is compacted, keep in the summary the tickets and where each stands, what was decided with the person, \
 their preferences, and anything they asked for that isn't done. {language} Be concise.",
         duties
     )
@@ -801,6 +805,20 @@ mod tests {
         for part in ["changing a repository is `code`", "is `task`", "is `action`", "needs no project"] {
             assert!(text.contains(part), "{part}: {text}");
         }
+    }
+
+    #[test]
+    fn big_work_runs_in_parallel_subagents_by_default_not_when_a_member_feels_like_it() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "backend", role: "backend" }];
+        for (r, name) in [("backend", "backend"), (PM, "pm")] {
+            let text = charter(role(r).unwrap(), name, &ctx(&team, &[], true));
+            assert!(text.contains("more than about 20 minutes"), "{name}");
+            assert!(text.contains("in one message"), "{name}");
+            assert!(!text.contains("you may give each part"), "{name}");
+        }
+        let pm = charter(role(PM).unwrap(), "pm", &ctx(&team, &[], true));
+        assert!(!pm.contains("decides for itself"));
+        assert!(pm.contains("splits it across subagents"));
     }
 
     #[test]
