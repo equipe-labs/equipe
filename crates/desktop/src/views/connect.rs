@@ -36,6 +36,9 @@ pub struct ConnectUi {
 pub struct AskUi {
     pub queue: VecDeque<Prompt>,
     pub input: Entity<InputState>,
+    /// "Don't ask again": once the password worked, the app's key goes onto
+    /// that machine (`sshkey.rs`). On unless the person takes it off.
+    pub remember: bool,
 }
 
 /// How far the connection the window waits on has got.
@@ -166,7 +169,7 @@ impl ConnectUi {
 impl AskUi {
     pub fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("connect.secret_placeholder")));
-        Self { queue: VecDeque::new(), input }
+        Self { queue: VecDeque::new(), input, remember: true }
     }
 }
 
@@ -418,14 +421,47 @@ pub fn question(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     };
     let buttons = |no: (&'static str, &'static str), yes: (&'static str, &'static str)| (no, yes);
     let (card, (no, yes)) = match &prompt.ask {
-        Ask::Secret { label } => (
-            v_flex()
-                .gap_3()
-                .child(heading(p, t!("connect.sign_in_to", who = who), Some(label.clone())))
-                .child(field(p, &shell.ask.input))
-                .child(div().px(px(S3)).text_size(px(12.)).text_color(p.muted).child(t!("connect.secret_note"))),
-            buttons(("ask-cancel", t!("connect.cancel")), ("ask-ok", t!("connect.ok"))),
-        ),
+        Ask::Secret { label } => {
+            // A password over SSH (not a key's passphrase): asked once, if the person wants.
+            let password = shell.endpoint.is_remote() && label.to_lowercase().contains("password");
+            let remember = shell.ask.remember;
+            let check = div()
+                .flex_none()
+                .size(px(16.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.))
+                .border_1()
+                .border_color(if remember { p.accent } else { p.muted })
+                .when(remember, |c| c.bg(p.accent).child(icon(Icon::Check, 11., p.on_accent)));
+            let keep = h_flex()
+                .id("ask-remember")
+                .px(px(S3))
+                .gap_2()
+                .items_start()
+                .cursor_pointer()
+                .child(div().pt(px(2.)).child(check))
+                .child(
+                    v_flex()
+                        .gap(px(2.))
+                        .child(div().text_size(px(SMALL)).text_color(p.text).child(t!("connect.remember")))
+                        .child(div().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("connect.remember_note"))),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.ask.remember = !this.ask.remember;
+                    cx.notify();
+                }));
+            (
+                v_flex()
+                    .gap_3()
+                    .child(heading(p, t!("connect.sign_in_to", who = who), Some(label.clone())))
+                    .child(field(p, &shell.ask.input))
+                    .when(password, |c| c.child(keep))
+                    .when(!password, |c| c.child(div().px(px(S3)).text_size(px(12.)).text_color(p.muted).child(t!("connect.secret_note")))),
+                buttons(("ask-cancel", t!("connect.cancel")), ("ask-ok", t!("connect.ok"))),
+            )
+        }
         Ask::HostKey { host, fingerprint, text } => (
             v_flex()
                 .gap_3()

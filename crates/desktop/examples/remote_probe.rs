@@ -20,6 +20,9 @@ mod i18n;
 mod install;
 #[path = "../src/ssh.rs"]
 mod ssh;
+#[path = "../src/sshkey.rs"]
+#[allow(dead_code)]
+mod sshkey;
 #[path = "../src/target.rs"]
 mod target;
 #[path = "../src/wire.rs"]

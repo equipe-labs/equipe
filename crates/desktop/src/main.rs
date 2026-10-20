@@ -40,6 +40,7 @@ mod quote;
 mod sheet;
 mod sidecar;
 mod ssh;
+mod sshkey;
 #[cfg(feature = "snapshot")]
 mod snapshot;
 mod state;
@@ -229,6 +230,8 @@ pub struct Shell {
     pub remembered: Remembered,
     pub connect: ConnectUi,
     pub ask: AskUi,
+    /// A password just typed with "don't ask again" on: the key goes there once connected.
+    ssh_key_wanted: bool,
     /// "휴대폰 연결": the sheet's state and the paired phones (`pair.rs`).
     pub pairing: pair::Pairing,
     /// The AI platforms, as settings shows them.
@@ -344,6 +347,7 @@ impl Shell {
             remembered,
             connect,
             ask,
+            ssh_key_wanted: false,
             pairing: pair::Pairing::default(),
             engines: engines::Engines::default(),
             forgetting: None,
@@ -820,6 +824,7 @@ impl Shell {
                         // Settings open on its list: the daemon (maybe another one) is asked again.
                         if attached {
                             this.engines.attached();
+                            this.install_ssh_key(cx);
                             // The daemon back on this app's release: the update's line has said its piece.
                             if this.daemon_update.is_some() && notify::stale_daemon(&this.model.daemon_version, env!("CARGO_PKG_VERSION")).is_none() {
                                 this.daemon_update = None;
@@ -1024,6 +1029,11 @@ impl Shell {
 
     pub fn submit_secret(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.ask.input.read(cx).value().to_string();
+        // A password typed with "don't ask again" on: once it works, the key goes there.
+        let password = self.ask.queue.front().is_some_and(|q| matches!(&q.ask, askpass::Ask::Secret { label } if label.to_lowercase().contains("password")));
+        if password && self.ask.remember && self.endpoint.is_remote() {
+            self.ssh_key_wanted = true;
+        }
         self.ask.input.update(cx, |s, cx| s.set_value(String::new(), window, cx));
         self.answer_prompt(askpass::Answer::Text(text), window, cx);
     }
@@ -1120,6 +1130,31 @@ impl Shell {
     pub fn set_links_in_app(&mut self, on: bool) {
         self.remembered.links_in_app = on;
         self.remembered.save(&equipe_providers::credentials::equipe_home());
+    }
+
+    /// Signed in with a password and asked not to be again: the app's key
+    /// goes onto that machine over the connection now open (`sshkey.rs`).
+    fn install_ssh_key(&mut self, cx: &mut Context<Self>) {
+        let Endpoint::Ssh(host) = self.endpoint.clone() else { return };
+        if !std::mem::take(&mut self.ssh_key_wanted) || sshkey::keyed(&host) {
+            return;
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let target = host.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(sshkey::install(&target));
+        });
+        cx.spawn(async move |this, cx| {
+            let done = rx.await.unwrap_or_else(|_| Err("stopped".into()));
+            let _ = this.update(cx, |this, cx| {
+                this.composer.flash = Some(match done {
+                    Ok(()) => t!("connect.remembered", who = host.spec()),
+                    Err(why) => t!("connect.remember_failed", why = why),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// The person makes `path` the squad's HQ, or none: the daemon keeps it
