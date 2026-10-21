@@ -67,6 +67,7 @@ them, and note what they said on the ticket with `comment`, for the PM."
         if checked.is_empty() {
             return Err("Say in `checked` what you checked and found — it is kept on the ticket for the person.".into());
         }
+        let push = args.get("push").and_then(Value::as_bool).unwrap_or(false);
         let mut named: Vec<TicketId> = args.get("tickets").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64()).map(|v| v as TicketId).collect()).unwrap_or_default();
         named.dedup();
         if named.is_empty() {
@@ -92,7 +93,7 @@ them, and note what they said on the ticket with `comment`, for the PM."
             Box::pin(self.accept(squad, ticket)).await;
             // Code lands on main at once: nothing left for the person to merge.
             if !t.kind.in_home() && t.branch.is_some() {
-                self.merge(squad, ticket, false);
+                self.merge(squad, ticket, push);
             }
             accepted.push(ticket);
         }
@@ -102,7 +103,13 @@ them, and note what they said on the ticket with `comment`, for the PM."
             self.publish(Event::Notice { session: id, text });
         }
         let ids = accepted.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
-        let mut reply = if accepted.is_empty() { "Nothing accepted.".to_owned() } else { format!("Accepted {ids}; code is merging into main.") };
+        let mut reply = if accepted.is_empty() {
+            "Nothing accepted.".to_owned()
+        } else if push {
+            format!("Accepted {ids}; code is merging into main and main is being pushed.")
+        } else {
+            format!("Accepted {ids}; code is merging into main.")
+        };
         if !left.is_empty() {
             reply.push_str(&format!(" Left: {}.", left.join("; ")));
         }

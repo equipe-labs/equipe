@@ -201,6 +201,9 @@ async fn the_pm_accepts_its_teams_work_itself_unless_the_person_keeps_that_for_t
     assert!(bare.is_error && bare.text.contains("`checked`"), "{bare:?}");
     assert_eq!(status(&handle, 1).await, TicketStatus::Review);
 
+    // Handed in, the PM is woken to look at it — not left until someone speaks to it.
+    let woken = until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, .. } | Event::TurnEnded { session: 1, .. })).await;
+    assert!(woken.iter().any(|e| matches!(e, Event::TurnEnded { session: 1, .. })), "the PM took a turn on it: {woken:#?}");
     // Checked and accepted: done, merged into main, and what waited on it starts.
     let ok = tool(&handle, "pm", "accept_work", json!({ "tickets": [1, 2], "checked": "Read the diff: the hero renders, nothing else touched." })).await;
     assert!(!ok.is_error && ok.text.contains("Accepted T-1") && ok.text.contains("T-2"), "{ok:?}");
@@ -290,7 +293,7 @@ fn nothing_accepts_or_merges_but_the_persons_commands() {
     let mut expected = vec![
             // The PM's `accept_work`, only while the person lets the PM accept (`SetPmAccepts`).
             "accept.rs: Box::pin(self.accept(squad, ticket)).await;",
-            "accept.rs: self.merge(squad, ticket, false);",
+            "accept.rs: self.merge(squad, ticket, push);",
             "accept.rs: pub(super) async fn confirm_accept(&mut self, squad: &str, id: u64, picked: Vec<Confirmed>) {",
             "accept.rs: Box::pin(self.handle(Command::Reopen { squad, ticket, note: proposal.note.clone() })).await;",
             "accept.rs: Box::pin(self.handle(Command::Accept { squad: squad.clone(), ticket })).await;",

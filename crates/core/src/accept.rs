@@ -34,6 +34,7 @@ right, send it back to its member with `comment` and what to change.",
             "properties": {
                 "tickets": { "type": "array", "items": { "type": "integer" }, "description": "The handed-in tickets you accept." },
                 "checked": { "type": "string", "description": "What you checked and found, in a line — kept on each ticket for the person." },
+                "push": { "type": "boolean", "description": "Push main once merged, so the work goes live where the project deploys from main — when the person asked for it to go live (\"배포해줘\"), or the project always ships what is on main." },
             },
             "required": ["tickets", "checked"],
         },
