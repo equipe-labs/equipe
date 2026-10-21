@@ -1204,6 +1204,9 @@ async fn a_members_ticket_is_a_proposal_until_the_pm_accepts_it() {
     let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), false));
     add(&handle, &mut events, 1, member(&cwd, "pm")).await;
     add(&handle, &mut events, 2, member(&cwd, "qa")).await;
+    // The person accepting everything themselves: a member's ticket waits as a proposal.
+    handle.send(Command::SetPmAccepts { squad: "acme".into(), on: false });
+    until(&mut events, |e| matches!(e, Event::PmAcceptsChanged { on: false, .. })).await;
 
     let proposed =
         tool(&handle, "qa", "create_ticket", serde_json::json!({ "title": "Flaky login test", "body": "-", "owner": "qa" })).await;
@@ -2892,6 +2895,9 @@ async fn news_of_another_project_mid_turn_leaves_the_reply_about_its_own() {
     let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
     add(&handle, &mut events, 1, member(&site, "pm")).await;
     add(&handle, &mut events, 2, member(&site, "designer")).await;
+    // The designer's ticket waits as a proposal: only the news of it reaches the PM.
+    handle.send(Command::SetPmAccepts { squad: "acme".into(), on: false });
+    until(&mut events, |e| matches!(e, Event::PmAcceptsChanged { on: false, .. })).await;
     handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
     handle.send(Command::Submit { session: 1, text: "hi".into(), about: None });
     until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, .. })).await;
