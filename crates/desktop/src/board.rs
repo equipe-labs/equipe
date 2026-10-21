@@ -324,7 +324,9 @@ pub fn rows(model: &Model, view: &View, views: &[SavedView]) -> Vec<Row> {
 pub fn proposals<'a>(model: &'a Model, filter: &Filter) -> Vec<&'a Ticket> {
     // One the person just took on or dropped is out at once, as in 나에게.
     let acted = |t: &Ticket| model.acted.get(&t.id).is_some_and(|look| *look == crate::state::look_of(t));
-    crate::tickets::in_board_order(model.tickets.iter().filter(|t| t.status == TicketStatus::Proposed && model.in_focus(t) && filter.matches(model, t) && !acted(t)).collect())
+    // Where the PM runs the work, only what it put up for the person is theirs to sort.
+    let theirs = |t: &Ticket| model.section_of(t).is_some();
+    crate::tickets::in_board_order(model.tickets.iter().filter(|t| t.status == TicketStatus::Proposed && theirs(t) && model.in_focus(t) && filter.matches(model, t) && !acted(t)).collect())
 }
 
 /// 티켓's triage: the proposals alone, one after another.
@@ -965,14 +967,17 @@ mod tests {
         conflicted.branch = Some("b".into());
         conflicted.merged = Some(false);
         conflicted.off_main = Some(equipe_core::protocol::OffMain::Conflict { detail: "x".into() });
-        let tickets = vec![ticket(5, "review", "/p", &[]), from_member, ticket(4, "proposed", "/p", &[]), ticket(6, "waiting", "/p", &[]), conflicted];
+        let mut stuck = ticket(8, "proposed", "/p", &[]);
+        stuck.note = Some("Couldn't start: b conflicts with the work before it".into());
+        let tickets = vec![ticket(5, "review", "/p", &[]), from_member, ticket(4, "proposed", "/p", &[]), ticket(6, "waiting", "/p", &[]), conflicted, stuck];
         let mut m = model(tickets, &["/p"]);
         m.pm_accepts = true;
-        // Handed-in work, a member's proposal and a conflict its owner resolves are the PM's;
-        // the PM's own proposal and the person's part stay.
+        // Handed-in work, a member's proposal, a conflict its owner resolves and a ticket that
+        // couldn't start are the PM's; the PM's own proposal and the person's part stay.
         assert_eq!(ids(&inbox(&m, &Filter::default())), vec![6, 4]);
+        assert_eq!(proposals(&m, &Filter::default()).iter().map(|t| t.id).collect::<Vec<_>>(), vec![4], "nothing else to sort");
         m.pm_accepts = false;
-        assert_eq!(ids(&inbox(&m, &Filter::default())), vec![6, 5, 3, 4, 7], "the person accepting: all of it, as before");
+        assert_eq!(ids(&inbox(&m, &Filter::default())), vec![6, 5, 3, 4, 8, 7], "the person accepting: all of it, as before");
     }
 
     #[test]

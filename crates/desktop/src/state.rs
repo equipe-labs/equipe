@@ -1385,7 +1385,7 @@ impl Model {
             TicketStatus::Review if self.pm_accepts => None,
             TicketStatus::Review => Some(Section::Review),
             // …and so are members' proposals; the PM's own are for the person.
-            TicketStatus::Proposed if self.pm_accepts && !self.is_pm_name(&t.created_by) => None,
+            TicketStatus::Proposed if self.pm_accepts && (!self.is_pm_name(&t.created_by) || t.could_not_start()) => None,
             TicketStatus::Proposed => Some(Section::Proposed),
             // A conflict its owner is resolving comes back through the PM.
             TicketStatus::Done if self.pm_accepts && matches!(t.off_main, Some(equipe_core::protocol::OffMain::Conflict { .. })) => None,

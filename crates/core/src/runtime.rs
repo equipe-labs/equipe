@@ -3792,7 +3792,8 @@ for one project goes to it as tickets for its owners, with that project — and 
     /// to a proposal with the reason, for the PM or the person to sort out.
     fn cannot_start(&mut self, squad: &str, mut ticket: Ticket, name: &str, reason: &str) {
         ticket.status = TicketStatus::Proposed;
-        ticket.note = Some(format!("Couldn't start: {reason}"));
+        ticket.note = Some(format!("{}{reason}", crate::protocol::COULD_NOT_START));
+        let id = ticket.id;
         if let Some(journal) = self.journal(squad) {
             let _ = journal.save_ticket(&ticket);
             let _ = journal.ticket_event(ticket.id, "equipe", "blocked", reason);
@@ -3801,6 +3802,18 @@ for one project goes to it as tickets for its owners, with that project — and 
         let shown = say!(self, "news.cannot_start", id = ticket.id, name = name, reason = reason);
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
         self.brief_pm(squad, line, Some(shown));
+        // Where the PM runs the work it is the PM's to sort out, now — not the
+        // person's, and not when someone next speaks to it.
+        if self.journal(squad).is_some_and(|j| j.pm_accepts())
+            && let Some(pm) = self.pm_of(squad)
+        {
+            let prompt = format!(
+                "[equipe: T-{id} couldn't start for {name}: {reason}. Sort it out — fix what stops it (where the work it builds on \
+conflicts, have that work's owner merge main in and resolve it), then take it on again with `update_ticket` (status \
+todo); or drop it if it's no longer wanted.]"
+            );
+            let _ = self.internal.send(Internal::Wake { session: pm, prompt });
+        }
     }
 
     /// Member `id` puts its ticket down. Changes are committed to the ticket's
@@ -5444,14 +5457,17 @@ there, end your turn, and carry on when they say they're done."
                 if let Some(missing) = depends_on.iter().find(|d| !tickets.iter().any(|t| t.id == **d)) {
                     return Err(format!("There is no T-{missing} to depend on."));
                 }
-                let owner = board::arg_str(&args, "owner").map(str::to_owned);
                 let proposal = args.get("proposal").and_then(Value::as_bool).unwrap_or(false);
+                // Where the PM runs the work, a member's proposal is simply done:
+                // on the board, its own unless it names someone else.
+                let just_do = !is_pm && self.journal(&squad).is_some_and(|j| j.pm_accepts());
+                let owner = board::arg_str(&args, "owner").map(str::to_owned).or_else(|| just_do.then(|| member.clone()));
                 let ticket = Ticket {
                     id: 0,
                     title: title.to_owned(),
                     body: body.to_owned(),
                     // The PM's are ready, unless it puts one up for the person to take on.
-                    status: if is_pm && !proposal { TicketStatus::Todo } else { TicketStatus::Proposed },
+                    status: if (is_pm && !proposal) || just_do { TicketStatus::Todo } else { TicketStatus::Proposed },
                     kind,
                     owner: owner.clone(),
                     assignee: None,
@@ -5479,6 +5495,11 @@ there, end your turn, and carry on when they say they're done."
                 }
                 if is_pm && proposal {
                     reply = format!("Proposed T-{new_id} — it waits for the person to take it on.");
+                } else if just_do {
+                    reply = format!("T-{new_id} is on the board and starts as soon as its owner is free; the PM is told.");
+                    let line = format!("{member} put T-{new_id} on the board: {title} — drop it (update_ticket, cancelled) if it shouldn't be done");
+                    let shown = say!(self, "news.proposed", name = member, id = new_id, title = title);
+                    self.brief_pm(&squad, line, Some(shown));
                 } else if !is_pm {
                     reply = format!("Proposed T-{new_id} — it waits for the PM or the person to accept it.");
                     let line = format!("{member} proposed T-{new_id}: {title}");
