@@ -748,6 +748,9 @@ enum Internal {
     ProjectAdded { squad: String, result: Result<PathBuf, String> },
     /// The logins changed (or couldn't): what screens see of them now.
     Logins(Result<Vec<crate::protocol::vault::Login>, String>),
+    /// Something waits for a conversation to act on — work handed in for the
+    /// PM to accept: it is woken with `prompt` (read at its next step, at work).
+    Wake { session: SessionId, prompt: String },
     /// Hand ready work out in every squad again (the disk has room once more).
     Dispatch,
     /// Where the engines stand, as just looked at off the loop.
@@ -942,6 +945,7 @@ impl Wake {
             Wake::Internal(Internal::DiskCleaned(..)) => Borrowed("a clean of the disk"),
             Wake::Internal(Internal::ProjectAdded { .. }) => Borrowed("a project added"),
             Wake::Internal(Internal::Logins(_)) => Borrowed("the logins changed"),
+            Wake::Internal(Internal::Wake { .. }) => Borrowed("work waits for a conversation"),
             Wake::Internal(Internal::DiskTrimmed(..)) => Borrowed("a trim of the build caches"),
             Wake::Internal(Internal::Dispatch) => Borrowed("handing out work again"),
             Wake::Request(Some(Request::Disk(_))) => Borrowed("a look at the disk"),
@@ -1108,6 +1112,7 @@ impl Runtime {
                 Internal::DiskCleaned(cleaned, status, asked, reply) => self.on_disk_cleaned(*cleaned, status, asked, reply),
                 Internal::ProjectAdded { squad, result } => self.project_added(&squad, result),
                 Internal::Logins(result) => self.logins_changed(result),
+                Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::DiskTrimmed(freed, lines) => self.on_disk_trimmed(freed, lines),
                 Internal::Dispatch => {
                     let squads: Vec<String> = self.journals.keys().cloned().collect();
@@ -3939,6 +3944,15 @@ for one project goes to it as tickets for its owners, with that project — and 
             let _ = journal.set_ticket_work(ticket.id, &saved);
             let _ = journal.ticket_event(ticket.id, &by, event, summary.as_deref().unwrap_or(""));
         }
+        // Work now ready for review — this ticket handed in, or the one a
+        // designer's QA just passed — when the PM accepts it.
+        let ready_for_pm = if !self.journal(&squad).is_some_and(|j| j.pm_accepts()) {
+            None
+        } else if ticket.ready_for_review() {
+            Some(ticket.id)
+        } else {
+            about.as_ref().map(|(id, _)| *id).filter(|id| self.journal(&squad).and_then(|j| j.ticket(*id).ok().flatten()).is_some_and(|t| t.ready_for_review()))
+        };
         let ticket_id = ticket.id;
         let (about_id, about_title) = about.unwrap_or_else(|| (ticket.id, ticket.title.clone()));
         let to = to.or_else(|| ticket.owner.clone()).unwrap_or_default();
@@ -3955,6 +3969,18 @@ for one project goes to it as tickets for its owners, with that project — and 
         };
         if self.pm_of(&squad) != Some(id) {
             self.brief_pm(&squad, briefing, Some(shown));
+            // Where the PM accepts, work ready for review is its to act on now —
+            // a note it would read only when next spoken to leaves it waiting.
+            if let Some(ready) = ready_for_pm
+                && let Some(pm) = self.pm_of(&squad)
+            {
+                let prompt = format!(
+                    "[equipe: T-{ready} is handed in and ready for you. Check it and accept it with `accept_work` (with \
+`push` when the person asked for it to go live), send it back with `comment`, or — if it needs the person — put it to \
+them with `propose_accept`. Then carry on with what else waits.]"
+                );
+                let _ = self.internal.send(Internal::Wake { session: pm, prompt });
+            }
         }
     }
 
@@ -5282,6 +5308,12 @@ there, end your turn, and carry on when they say they're done."
     /// starting a turn of its own.
     async fn carry_on(&mut self, id: SessionId, notice: String, prompt: String) {
         self.publish(Event::Notice { session: id, text: notice });
+        self.set_going(id, prompt).await;
+    }
+
+    /// Set conversation `id` going on `prompt`: read at its next step when at
+    /// work, else a turn of its own — with what it missed meanwhile.
+    async fn set_going(&mut self, id: SessionId, prompt: String) {
         let Some(session) = self.sessions.get(&id) else { return };
         if session.is_working() {
             if let Some(steer) = session.steer.clone() {

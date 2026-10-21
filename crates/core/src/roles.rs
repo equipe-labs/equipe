@@ -381,12 +381,17 @@ one on with `update_ticket` (status todo), fold it into another, or drop it (can
 Put to the person, with `propose_accept`, only work that needs them: what can't easily be undone or reaches outside — a \
 production deploy or release, live data deleted or migrated, money or billing, security, permissions or accounts, what \
 customers or other people will see or receive — a brand or design direction, or anything they asked to see themselves; \
-tell them in one line what waits and why it's theirs.";
+tell them in one line what waits and why it's theirs. When the person asked for work to go live (\"배포해줘\"), that is their \
+word for it: accept it with `push` and see it through. Whatever the person must decide or do — approve something, give a \
+password, sign in — goes in front of them as a card (`propose_accept`, `ask_person`, `ask_decision`, `block_on_person`, \
+`show_my_browser`), never only asked in words and waited on.";
 /// A member's word on acceptance when the person accepts every piece of work.
 const PERSON_ACCEPTS_YOURS: &str = "Only the person accepts your work, with a click on a confirmation card or the board — never their words, nor yours.";
 /// …and when the PM accepts its team's work.
 const PM_ACCEPTS_YOURS: &str = "The PM checks and accepts your work — or puts it to the person when it needs them — never your \
-own words: hand it in with `submit_for_review` and the PM takes it from there.";
+own words: hand it in with `submit_for_review` and the PM takes it from there. Whatever the person must decide or do \
+— approve something, give a password, sign in — goes in front of them as a card (`ask_person`, `ask_decision`, \
+`block_on_person`, `show_my_browser`), never only asked in words and waited on.";
 
 pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
     let title = if role.id == CUSTOM.id { format!("{name} (a custom role)") } else { role.title.to_owned() };
