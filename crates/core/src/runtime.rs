@@ -67,6 +67,7 @@ mod room;
 mod engines;
 mod design;
 mod accept;
+mod secrets;
 mod design_qa;
 mod team;
 mod tickets;
@@ -146,6 +147,9 @@ pub struct Config {
     /// Members' browsers as lanes of one shared Chrome (the browser host),
     /// rather than a Chrome each: the person signs in once, Google included.
     pub browser_host: bool,
+    /// The person's home folder, where secrets members ask for are saved
+    /// (`ask_secret`); `None`: `$HOME`.
+    pub person_home: Option<PathBuf>,
     /// The language equipe speaks to the person in until a screen says
     /// otherwise: notices, errors. What it tells the models stays English.
     pub lang: crate::i18n::Lang,
@@ -167,6 +171,7 @@ impl Config {
             mac: Box::new(desktop::ThisMac),
             suggest: true,
             browser_host: cfg!(target_os = "macos"),
+            person_home: None,
             lang: crate::i18n::Lang::resolve(crate::i18n::Front::Terminal),
         }
     }
@@ -444,6 +449,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let mut runtime = Runtime {
         vault: std::sync::Arc::new(std::sync::Mutex::new(vault)),
         logins,
+        secret_asks: HashMap::new(),
         desktop: desktop::Desktop::new(mac),
         config,
         // A server that never answers a connection must not hold anything up.
@@ -898,6 +904,9 @@ struct Runtime {
     /// What the screens are told of them, as last kept.
     logins: Vec<crate::protocol::vault::Login>,
     design_busy: std::collections::HashSet<String>,
+    /// Secrets members asked the person for (`ask_secret`), by squad — read
+    /// from its journal when first wanted.
+    secret_asks: HashMap<String, Vec<crate::protocol::secrets::SecretAsk>>,
 }
 
 /// What woke the loop.
@@ -1543,6 +1552,8 @@ impl Runtime {
                 self.publish_browser_profiles();
             }
             Command::BrowserProfiles => self.publish_browser_profiles(),
+            Command::SaveSecret { squad, id, values } => self.save_secret(&squad, id, values).await,
+            Command::DismissSecret { squad, id } => self.dismiss_secret(&squad, id).await,
             Command::SaveRoutine { squad, routine } => self.save_routine(&squad, routine),
             Command::DeleteRoutine { squad, id } => self.delete_routine(&squad, id),
             Command::RunRoutine { squad, id } => {
@@ -5609,6 +5620,7 @@ it back there once they have done it.{again} End your turn now with a short line
                 ))
             }
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
+            crate::secrets::ASK_SECRET => self.ask_secret(&squad, &member, id, &args),
             board::DESIGN_QA => self.finish_design_qa(&squad, id, &args),
             crate::team::PROPOSE_TEAM_CHANGE => self.propose_team_change(&squad, &member, id, &args),
             crate::accept::PROPOSE_ACCEPT => self.propose_accept(&squad, &member, id, &args),
@@ -5764,6 +5776,7 @@ it back there once they have done it.{again} End your turn now with a short line
             plans: self.plans.clone(),
             engine_switching: self.journals.get(squad).map(Journal::engine_switching).unwrap_or_default(),
             pm_accepts: self.journals.get(squad).is_none_or(Journal::pm_accepts),
+            secret_asks: self.secret_asks(squad).clone(),
             engine_proposals: self.engines.proposals(squad),
             desktop: self.desktop.state(),
             allowed,

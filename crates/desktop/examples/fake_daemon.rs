@@ -1020,6 +1020,24 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             plan: switching::claude().or_else(engines::plan),
                             engine_switching: switching::switching(),
                             pm_accepts: true,
+                            // `FAKE_SECRET=1`: backend waits for the NAS login, typed into a card.
+                            secret_asks: if std::env::var_os("FAKE_SECRET").is_some() {
+                                vec![equipe_core::protocol::secrets::SecretAsk {
+                                    id: 41,
+                                    session: 3,
+                                    member: "backend".into(),
+                                    ticket: Some(117),
+                                    why: "NAS 매일 자동 수집에 쓸 NAS 로그인".into(),
+                                    fields: vec![
+                                        equipe_core::protocol::secrets::SecretField { key: "NAS_USER".into(), label: "NAS 아이디".into(), secret: false },
+                                        equipe_core::protocol::secrets::SecretField { key: "NAS_PASSWORD".into(), label: "NAS 비밀번호".into(), secret: true },
+                                    ],
+                                    save_to: "~/.config/atinum/nas.env".into(),
+                                    at: 0,
+                                }]
+                            } else {
+                                Vec::new()
+                            },
                             engine_proposals: switching::proposals(),
                             squad: params.squad,
                             projects: vec![repo("web"), repo("app"), repo("api")],
@@ -1206,6 +1224,10 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             }
                             Command::Focus { project, .. } => {
                                 routes.lock().await.focus = project;
+                            }
+                            Command::SaveSecret { squad, id, values } => {
+                                eprintln!("secret {id}: {} values {values:?}", values.len());
+                                let _ = events.send(Event::SecretClosed { squad, id, saved: true });
                             }
                             // One other person's accounts, as a squad testing two of them keeps.
                             Command::BrowserProfiles => {

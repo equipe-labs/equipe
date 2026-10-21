@@ -186,6 +186,8 @@ pub enum Need {
     /// confirm (`crate::accept`), by its id.
     Accept(u64),
     Ticket(TicketId),
+    /// A secret a member asked the person to type (`ask_secret`), by its id.
+    Secret(u64),
     /// A member's browser page waiting for the person's own hand (a human
     /// check, a sign-in), by its page id ([`BrowserWait`]).
     Browser(u64),
@@ -290,6 +292,8 @@ pub struct Model {
     /// The PM accepts the team's handed-in work itself: the person's inbox
     /// keeps only what is theirs.
     pub pm_accepts: bool,
+    /// Secrets members asked the person to type, oldest first.
+    pub secret_asks: Vec<equipe_core::protocol::secrets::SecretAsk>,
     /// The browser profiles besides the main one (other people's accounts).
     pub browser_profiles: Vec<equipe_core::protocol::BrowserProfile>,
     /// The squad's mode, for completion's sake.
@@ -433,6 +437,7 @@ impl Model {
             routines: Vec::new(),
             logins: Vec::new(),
             pm_accepts: false,
+            secret_asks: Vec::new(),
             browser_profiles: Vec::new(),
             mode: Mode::default(),
             plan: None,
@@ -793,6 +798,7 @@ impl Model {
         self.projects = snapshot.projects.clone();
         self.hq = snapshot.hq.clone();
         self.pm_accepts = snapshot.pm_accepts;
+        self.secret_asks = snapshot.secret_asks.clone();
         self.routines = snapshot.routines.clone();
         self.order_projects();
         self.mode = snapshot.mode;
@@ -886,6 +892,16 @@ impl Model {
             }
             Event::EngineProposalClosed { squad, id, .. } if *squad == self.squad => self.engines.close(*id),
             Event::EngineSwitchingChanged { squad, mode } if *squad == self.squad => self.engines.mode = *mode,
+            Event::SecretAsked { squad, ask } if *squad == self.squad => {
+                if !self.secret_asks.iter().any(|a| a.id == ask.id) {
+                    self.secret_asks.push(ask.clone());
+                    self.revision += 1;
+                }
+            }
+            Event::SecretClosed { squad, id, .. } if *squad == self.squad => {
+                self.secret_asks.retain(|a| a.id != *id);
+                self.revision += 1;
+            }
             Event::PmAcceptsChanged { squad, on } if *squad == self.squad => {
                 self.pm_accepts = *on;
                 self.revision += 1;
@@ -1336,6 +1352,8 @@ impl Model {
         out.extend(self.asked.open().map(|s| (Section::Decide, Need::Questions(s.id))));
         out.extend(self.team.open().map(|c| (Section::Decide, Need::Team(c.id))));
         out.extend(self.accepts.open().map(|c| (Section::Decide, Need::Accept(c.id))));
+        // A secret a member waits for: theirs to type.
+        out.extend(self.secret_asks.iter().map(|a| (Section::Waiting, Need::Secret(a.id))));
         // A page that waits for the person's own hand: their turn, first.
         out.extend(self.browser_waits.iter().map(|w| (Section::Waiting, Need::Browser(w.page))));
         for section in &Section::TICKETS {

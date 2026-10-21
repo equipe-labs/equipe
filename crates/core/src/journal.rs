@@ -542,6 +542,15 @@ impl Journal {
 
     /// Whether the PM accepts and merges the team's handed-in work itself —
     /// unless the person said no, it does.
+    /// Secrets members asked the person for and still wait, as JSON.
+    pub fn secret_asks(&self) -> Option<String> {
+        self.meta("secret_asks")
+    }
+
+    pub fn set_secret_asks(&self, json: &str) -> Result<()> {
+        self.set_meta("secret_asks", json)
+    }
+
     pub fn pm_accepts(&self) -> bool {
         self.meta("pm_accepts").as_deref() != Some("off")
     }

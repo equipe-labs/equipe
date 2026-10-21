@@ -31,6 +31,7 @@ pub mod mock;
 pub mod pairing;
 pub mod roles;
 pub mod routines;
+pub mod secrets;
 pub mod runtime;
 pub mod squad_home;
 pub mod squad_memory;

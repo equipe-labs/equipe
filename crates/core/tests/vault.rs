@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use equipe_core::protocol::rpc::ToolCall;
+use equipe_core::protocol::secrets::SecretValue;
 use equipe_core::protocol::vault::LoginDraft;
 use equipe_core::protocol::{Access, Command, Decision, Event, SessionSpec};
 use equipe_core::runtime::{self, Config, Handle};
@@ -50,6 +51,7 @@ fn config(claude: &Path, home: &Path) -> Config {
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,
+        person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
     }
 }
@@ -122,5 +124,50 @@ async fn a_member_signs_in_only_with_the_persons_yes_and_never_sees_the_password
     for e in &seen {
         assert!(!format!("{e:?}").contains("s3cr3t-pw"));
     }
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_secret_the_person_types_goes_to_its_file_and_never_to_the_member() {
+    let project = scratch("nas").join("nas");
+    std::fs::create_dir_all(&project).unwrap();
+    let home = scratch("home");
+    squads::create(&home, "acme", &project).unwrap();
+    let (handle, mut events) = runtime::start(config(&idle_claude(), &home));
+    for (id, role) in [(1, "pm"), (2, "backend")] {
+        let spec = SessionSpec { engine: None, model: None, access: Access::ReadOnly, cwd: project.clone(), role: Some(role.into()), squad: Some("acme".into()) };
+        handle.send(Command::Start { session: id, spec });
+        until(&mut events, |e| matches!(e, Event::SessionStarted { session, .. } if *session == id)).await;
+    }
+    let ask = |args: serde_json::Value| handle.tool(ToolCall { squad: "acme".into(), member: "backend".into(), name: "ask_secret".into(), arguments: args });
+
+    // Somewhere keys already live: refused, said why.
+    let ssh = ask(json!({ "why": "NAS", "save_to": "~/.ssh/nas", "fields": [{ "key": "NAS_PASSWORD", "label": "비밀번호", "secret": true }] })).await;
+    assert!(ssh.is_error && ssh.text.contains("keys and logins already live"), "{ssh:?}");
+
+    // Asked: a card for the person; the member carries on meanwhile.
+    let asked = ask(json!({ "why": "NAS 매일 자동 수집", "save_to": "~/.config/atinum/nas.env",
+        "fields": [{ "key": "NAS_USER", "label": "NAS 아이디" }, { "key": "NAS_PASSWORD", "label": "비밀번호", "secret": true }] })).await;
+    assert!(!asked.is_error && asked.text.contains("you never see the values"), "{asked:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::SecretAsked { .. })).await;
+    let Some(Event::SecretAsked { ask: card, .. }) = seen.last().cloned() else { panic!() };
+    assert_eq!((card.member.as_str(), card.save_to.as_str(), card.fields.len()), ("backend", "~/.config/atinum/nas.env", 2));
+    assert_eq!(handle.snapshot("acme").await.secret_asks, vec![card.clone()], "a screen attaching sees it");
+
+    // The person types it: saved to the file, readable by them alone; the card closes; the
+    // member hears where it is — never the value.
+    let values = vec![SecretValue("ai".into()), SecretValue("s3cr3t-nas".into())];
+    handle.send(Command::SaveSecret { squad: "acme".into(), id: card.id, values });
+    let seen = until(&mut events, |e| matches!(e, Event::SecretClosed { saved: true, .. })).await;
+    let file = home.join("person/.config/atinum/nas.env");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "NAS_USER=\"ai\"\nNAS_PASSWORD=\"s3cr3t-nas\"\n");
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    let told = until(&mut events, |e| matches!(e, Event::Notice { session: 2, .. })).await;
+    let all = format!("{seen:?}{told:?}");
+    assert!(!all.contains("s3cr3t-nas"), "no event carries the value");
+    assert!(handle.snapshot("acme").await.secret_asks.is_empty());
     handle.shutdown().await;
 }
