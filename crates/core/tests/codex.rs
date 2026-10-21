@@ -61,6 +61,7 @@ fn config(codex: &Path, home: &Path) -> Config {
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,
+        person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
     }
 }

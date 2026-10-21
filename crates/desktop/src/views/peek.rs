@@ -38,6 +38,7 @@ pub fn panel(shell: &Shell, need: Need, cx: &mut Context<Shell>) -> AnyElement {
         Need::Team(id) => super::team::peek(shell, id, cx),
         Need::Accept(id) => super::accept::peek(shell, id, cx),
         Need::Browser(page) => super::browser::need_peek(shell, page, cx),
+        Need::Secret(id) => super::secrets::peek(shell, id, cx),
         Need::Ticket(id) => {
             let Some(t) = shell.model.tickets.iter().find(|t| t.id == id).cloned() else { return div().into_any_element() };
             let width = shell.board.peek_width;

@@ -27,6 +27,7 @@ pub mod peek;
 pub mod quote;
 pub mod settings;
 pub mod roadmap;
+pub mod secrets;
 pub mod routines;
 pub mod sheet;
 pub mod sidebar;

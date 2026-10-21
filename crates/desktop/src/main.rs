@@ -188,6 +188,8 @@ pub struct Shell {
     pub panes: pane::Panes,
     /// The answer boxes of the cards tickets waiting for the person ask on.
     pub turn: views::yourturn::TurnUi,
+    /// The boxes of members' asks for a secret.
+    pub secrets: views::secrets::SecretsUi,
     /// The boxes the person writes to a member in, on its request for permission.
     pub approval_words: views::approvals::Words,
     /// Members' questions: where the person is in each set, and its boxes.
@@ -327,6 +329,7 @@ impl Shell {
             board: BoardUi::new(window, cx, fetched_tx),
             panes: pane::Panes::new(cx),
             turn: Default::default(),
+            secrets: Default::default(),
             approval_words: Default::default(),
             decide: Default::default(),
             shots: Default::default(),
@@ -505,7 +508,7 @@ impl Shell {
             }
             // Typing in a "your turn" card's box or one of the browser panel's: T, N,
             // y, 1… are letters there, not shortcuts. Esc still leaves; Tab and ⌘⏎ are the card's own.
-            if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx) || shell.browser.read(cx).typing(window, cx)).unwrap_or(false) {
+            if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx) || shell.secrets.typing(window, cx) || shell.browser.read(cx).typing(window, cx)).unwrap_or(false) {
                 return;
             }
             // Writing to a member on its request: Esc closes the box; every other
@@ -611,6 +614,7 @@ impl Shell {
         self.composer.follow(&self.model, window, cx);
         self.turn_sync(window, cx);
         self.decide_sync(window, cx);
+        self.secrets_sync(window, cx);
         self.chat_sync(cx);
         self.board_sync(cx);
         self.sync_browser(window, cx);

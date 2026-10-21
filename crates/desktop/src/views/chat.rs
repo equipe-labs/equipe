@@ -524,6 +524,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
 /// through the others. Answered, the next comes to the front.
 fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let cards: Vec<AnyElement> = [
+        super::secrets::docked(shell, cx),
         approvals::approval(shell, cx),
         super::decide::docked(shell, cx),
         super::accept::docked(shell, cx),

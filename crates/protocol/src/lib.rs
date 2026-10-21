@@ -19,6 +19,7 @@ pub mod disk;
 pub mod engines;
 pub mod design;
 pub mod routines;
+pub mod secrets;
 pub mod rpc;
 pub mod stream;
 pub mod tags;
@@ -729,6 +730,11 @@ pub enum Command {
     DeleteBrowserProfile { name: String },
     /// Every screen's list of browser profiles, again.
     BrowserProfiles,
+    /// The person typed what a member asked for with `ask_secret`: saved to
+    /// its file on the daemon's machine, never shown to the member.
+    SaveSecret { squad: SquadName, id: u64, values: Vec<secrets::SecretValue> },
+    /// The person won't give it (now): the member is told.
+    DismissSecret { squad: SquadName, id: u64 },
     /// The screen watches `session`'s browser (`None`: none): equipe sends it
     /// a picture of the page every moment or so ([`Event::BrowserFrame`]).
     WatchBrowser { squad: SquadName, session: Option<SessionId> },
@@ -1511,6 +1517,10 @@ pub enum Event {
     Logins { logins: Vec<vault::Login> },
     /// The browser profiles besides the main one: every screen's.
     BrowserProfiles { profiles: Vec<BrowserProfile> },
+    /// A member asks the person for a secret on a card ([`Command::SaveSecret`]).
+    SecretAsked { squad: SquadName, ask: secrets::SecretAsk },
+    /// It was saved (`saved`) or turned down: the card closes everywhere.
+    SecretClosed { squad: SquadName, id: u64, saved: bool },
     /// The squad's routines now, each with its next run.
     RoutinesChanged { squad: SquadName, routines: Vec<routines::Routine> },
     ProjectsChanged {
@@ -1553,6 +1563,8 @@ impl Event {
             | Event::EngineProposalClosed { squad, .. }
             | Event::EngineSwitchingChanged { squad, .. }
             | Event::PmAcceptsChanged { squad, .. }
+            | Event::SecretAsked { squad, .. }
+            | Event::SecretClosed { squad, .. }
             | Event::ProjectsChanged { squad, .. }
             | Event::RoutinesChanged { squad, .. }
             | Event::Design { squad, .. } => Some(squad),
@@ -1609,6 +1621,8 @@ impl Event {
             | Event::EngineProposalClosed { .. }
             | Event::EngineSwitchingChanged { .. }
             | Event::PmAcceptsChanged { .. }
+            | Event::SecretAsked { .. }
+            | Event::SecretClosed { .. }
             | Event::ProjectsChanged { .. }
             | Event::RoutinesChanged { .. }
             | Event::Logins { .. }
@@ -1892,6 +1906,9 @@ pub struct Snapshot {
     /// `false` from a daemon that predates it, where the person accepts all.
     #[serde(default)]
     pub pm_accepts: bool,
+    /// Secrets members asked for that wait for the person.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secret_asks: Vec<secrets::SecretAsk>,
     /// Moves between engines waiting for the person, or made and not yet
     /// seen, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2228,6 +2245,7 @@ mod tests {
             plans: vec![EnginePlan { engine: Engine::Codex, usage: PlanUsage::default(), plan_type: None, at: 7 }],
             engine_switching: engines::Switching::Auto,
             pm_accepts: true,
+            secret_asks: Vec::new(),
             engine_proposals: Vec::new(),
             desktop: DesktopState::default(),
             sessions: vec![SessionInfo {

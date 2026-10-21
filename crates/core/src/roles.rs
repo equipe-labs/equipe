@@ -504,7 +504,9 @@ accepts it.",
     // The person sees when work will be done, and when what ships is live.
     let tools = if ctx.board_tools {
         format!(
-            "{tools} As you start anything that takes more than a couple of minutes — a ticket, research, subagents' \
+            "{tools} When a command or a config needs a password, key or token — a NAS login, an API key — ask for it \
+with `ask_secret`: the person types it into a card and equipe saves it to a file for you; never ask for one in words or \
+have them type it into a terminal, and never print it. As you start anything that takes more than a couple of minutes — a ticket, research, subagents' \
 work — call `estimate` with honest minutes until it is done, and again when that changes by much; when you push a \
 release, deploy or start anything else that ships, say too when it will be live (CI, build, review) and what. \
 Questions that sharpen a vague ask are `ask_decision` questions too. \

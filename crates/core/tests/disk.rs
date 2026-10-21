@@ -48,6 +48,7 @@ async fn a_look_and_a_clean_go_through_the_daemon_and_off_its_loop() {
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,
+        person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
     };
     let (handle, mut events) = runtime::start(config);

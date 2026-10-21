@@ -725,6 +725,8 @@ once they have done what it needed. Work in progress and done work are the perso
         tools.push(crate::accept::tool());
         tools.push(crate::accept::accept_work_tool());
     }
+    // A secret for a command or a config, typed by the person into a card.
+    tools.push(crate::secrets::tool());
     tools
 }
 
