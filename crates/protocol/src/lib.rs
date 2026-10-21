@@ -20,6 +20,9 @@ pub mod engines;
 pub mod design;
 pub mod routines;
 pub mod secrets;
+
+/// How a ticket that couldn't start says why, in its note.
+pub const COULD_NOT_START: &str = "Couldn't start: ";
 pub mod rpc;
 pub mod stream;
 pub mod tags;
@@ -329,6 +332,12 @@ impl Ticket {
     }
 
     /// Handed in and ready for the person's review: past design QA, if it had one.
+    /// A ticket that was taken on but couldn't start (its workplace couldn't
+    /// be made): back among the proposals, its reason in its note.
+    pub fn could_not_start(&self) -> bool {
+        self.status == TicketStatus::Proposed && self.note.as_deref().is_some_and(|n| n.starts_with(COULD_NOT_START))
+    }
+
     pub fn ready_for_review(&self) -> bool {
         self.status == TicketStatus::Review && self.design_qa.is_none()
     }

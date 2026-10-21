@@ -213,6 +213,11 @@ async fn the_pm_accepts_its_teams_work_itself_unless_the_person_keeps_that_for_t
     assert!(seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })), "{seen:#?}");
     assert!(handle.snapshot("acme").await.pm_accepts, "the PM accepts unless the person says otherwise");
 
+    // A member's proposal is simply done: on the board, its own, no sorting.
+    let put = tool(&handle, "frontend", "create_ticket", json!({ "title": "Footer links", "body": "-" })).await;
+    assert!(!put.is_error && put.text.contains("is on the board"), "{put:?}");
+    let footer = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.title == "Footer links").unwrap();
+    assert_eq!((footer.status == TicketStatus::Proposed, footer.owner.as_deref()), (false, Some("frontend")));
     // The person keeps acceptance for themselves: the PM only puts it on a card.
     handle.send(Command::SetPmAccepts { squad: "acme".into(), on: false });
     until(&mut events, |e| matches!(e, Event::PmAcceptsChanged { on: false, .. })).await;
