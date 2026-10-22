@@ -234,6 +234,9 @@ pub struct Composer {
     guard: EnterGuard,
     /// One quiet line over the box: what the last send did.
     pub flash: Option<String>,
+    /// Words of the conversation quoted to ask about ("Ask about this"),
+    /// over the box until sent — each a blockquote before the question.
+    pub quotes: Vec<String>,
     /// What went wrong with something the person asked for (a merge that
     /// didn't land): a notice over the box, framed, until closed.
     pub problem: Option<String>,
@@ -300,6 +303,7 @@ impl Composer {
             drafts: Drafts::load(Drafts::file(&equipe_providers::credentials::equipe_home())),
             guard: EnterGuard::default(),
             flash: None,
+            quotes: Vec::new(),
             problem: None,
             send_when_ready: None,
             choices: Vec::new(),
@@ -572,7 +576,10 @@ impl Shell {
         }
         self.composer.send_when_ready = None;
         let tags = self.composer.strip.tags();
-        let text = attach::message(&typed, &tags);
+        // What was quoted goes first, a blockquote each; the question after.
+        let quoted = !self.composer.quotes.is_empty() && !typed.trim().starts_with('/');
+        let typed_with_quotes = if quoted { crate::quote::message_all(&self.composer.quotes, &typed) } else { typed.clone() };
+        let text = attach::message(&typed_with_quotes, &tags);
         let carries = !tags.is_empty() && !typed.trim().starts_with('/');
         let plan = compose::plan(&self.model, &text, later);
         if plan.commands.is_empty() && plan.flash.is_none() && plan.effect.is_none() && plan.restore.is_none() {
@@ -585,6 +592,10 @@ impl Shell {
         // The attachments went with the message; one that couldn't be sent keeps them.
         if carries && plan.restore.is_none() && !plan.commands.is_empty() {
             self.composer.strip.clear();
+        }
+        // So did the quotes.
+        if quoted && plan.restore.is_none() && !plan.commands.is_empty() {
+            self.composer.quotes.clear();
         }
         for command in plan.commands {
             self.send_command(command);
@@ -1699,6 +1710,7 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         .on_action(cx.listener(|this, _: &SendInverted, window, cx| this.send_inverted(window, cx)))
         .children(completion(shell, cx))
         .children(menu_layer(shell, cx))
+        .children(quotes(shell, cx))
         .children(strip(shell, cx))
         .child(
             motion::SmoothHeight::new(
@@ -2264,6 +2276,43 @@ fn recipient(p: Palette, model: &Model, text: &str) -> (String, Rgba) {
 /// got, and (in red, until dismissed) why one couldn't be attached.
 /// How close to the attachment limit before the strip shows its count.
 const NEAR_LIMIT: usize = 5;
+
+/// What is quoted to ask about, over the box: a quiet bar at each one's
+/// left, its first two lines, and ✕.
+fn quotes(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
+    if shell.composer.quotes.is_empty() {
+        return None;
+    }
+    let p = shell.palette;
+    let rows = shell.composer.quotes.iter().enumerate().map(|(n, quote)| {
+        h_flex()
+            .id(("composer-quote", n))
+            .w_full()
+            .gap(px(9.))
+            .items_start()
+            .child(div().flex_none().w(px(2.)).h(px(38.)).rounded_full().bg(Rgba { a: 0.6, ..p.accent }))
+            .child(div().flex_1().min_w_0().text_size(px(SMALL)).line_height(px(19.)).text_color(p.text2).line_clamp(2).text_ellipsis().child(quote.clone()))
+            .child(
+                div()
+                    .id(("composer-unquote", n))
+                    .flex_none()
+                    .px_1()
+                    .rounded(px(R_SM))
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .text_color(p.muted)
+                    .hover(move |s| s.text_color(p.text).bg(p.wash))
+                    .child("✕")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if n < this.composer.quotes.len() {
+                            this.composer.quotes.remove(n);
+                        }
+                        cx.notify();
+                    })),
+            )
+    });
+    Some(v_flex().px(px(INSET)).pt(px(INSET)).gap_2().children(rows))
+}
 
 fn strip(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
     let strip = &shell.composer.strip;

@@ -685,9 +685,15 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     match what {
                         "open" => shell.quote_open(window, cx),
                         "copy" => shell.quote_copy(cx),
-                        "type" => shell.quote_type(words, window, cx),
-                        "send" => shell.quote_send(window, cx),
-                        "close" => shell.quote_close(window, cx),
+                        "type" => {
+                            shell.composer.set_text(words, window, cx);
+                            cx.notify();
+                        }
+                        "send" => shell.send(window, cx),
+                        "close" => {
+                            shell.composer.quotes.clear();
+                            cx.notify();
+                        }
                         "jump" => shell.quote_jump_latest(cx),
                         _ => {}
                     }

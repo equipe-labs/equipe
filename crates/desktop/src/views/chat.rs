@@ -1621,9 +1621,11 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
     let p = rows.p;
     let parts = crate::sent::parts(raw);
     // Asked about words of the conversation: the quote over the words.
-    let split = crate::quote::split(&parts.text);
-    let quoted = split.as_ref().map(|(quote, _)| super::quote::in_bubble(p, key, ix, quote, rows.handle.clone()));
-    let text = split.as_ref().map_or(parts.text.as_str(), |(_, rest)| rest.as_str());
+    let (quotes, rest) = crate::quote::split_all(&parts.text);
+    let quoted = (!quotes.is_empty()).then(|| {
+        v_flex().gap_1().children(quotes.iter().enumerate().map(|(n, quote)| super::quote::in_bubble(p, key ^ ((n as u64 + 1) << 40), ix, quote, rows.handle.clone()))).into_any_element()
+    });
+    let text = if quotes.is_empty() { parts.text.as_str() } else { rest.as_str() };
     // The pictures it embeds show under it, their markup out of its words.
     let embedded = equipe_core::visuals::markdown::local_images(text);
     let lexical = |written: &str| equipe_core::visuals::markdown::lexical(written, &rows.base).map(|p| p.to_string_lossy().into_owned());
