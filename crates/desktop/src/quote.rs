@@ -49,6 +49,33 @@ pub fn message(quote: &str, question: &str) -> String {
     if question.is_empty() { quoted } else { format!("{quoted}\n\n{question}") }
 }
 
+/// A message with several quotes, each its own blockquote, then the words.
+pub fn message_all(quotes: &[String], question: &str) -> String {
+    let quoted = quotes.iter().map(|q| message(q, "")).filter(|q| !q.is_empty()).collect::<Vec<_>>().join("
+
+");
+    let question = question.trim();
+    match (quoted.is_empty(), question.is_empty()) {
+        (true, _) => question.to_owned(),
+        (false, true) => quoted,
+        (false, false) => format!("{quoted}
+
+{question}"),
+    }
+}
+
+/// A message read back: every quote it starts with, each a blockquote of
+/// its own, and the words after them.
+pub fn split_all(text: &str) -> (Vec<String>, String) {
+    let mut quotes = Vec::new();
+    let mut rest = text.to_owned();
+    while let Some((quote, after)) = split(rest.trim_start_matches(['\n', ' '])) {
+        quotes.push(quote);
+        rest = after;
+    }
+    (quotes, rest.trim().to_owned())
+}
+
 /// A message read back: the quote it starts with (its `>` lines, one level
 /// of marks taken off) and the words after it. `None`: it starts with none.
 pub fn split(text: &str) -> Option<(String, String)> {
@@ -114,31 +141,16 @@ impl Rect {
 /// How far what floats keeps from the window's edges.
 pub const EDGE: f32 = 12.;
 
-/// The small button: just under the selection's end, its left a little
-/// before the last character, kept inside the window.
-pub fn button_at(end: Rect, size: (f32, f32), window: (f32, f32)) -> (f32, f32) {
-    let x = (end.x - 10.).clamp(EDGE, (window.0 - size.0 - EDGE).max(EDGE));
-    let below = end.bottom() + 6.;
-    let y = if below + size.1 + EDGE <= window.1 { below } else { (end.y - size.1 - 6.).max(EDGE) };
+/// The small button: just over the selection's start, its left at it —
+/// never on the words being read; under the selection's end when there is
+/// no room above. Kept inside the window.
+pub fn button_at(start: Rect, end: Rect, size: (f32, f32), window: (f32, f32)) -> (f32, f32) {
+    let x = start.x.clamp(EDGE, (window.0 - size.0 - EDGE).max(EDGE));
+    let above = start.y - size.1 - 6.;
+    let y = if above >= EDGE { above } else { (end.bottom() + 6.).min(window.1 - size.1 - EDGE).max(EDGE) };
     (x, y)
 }
 
-/// The box: its width for the window, and where it goes — just above the
-/// selection, its left at the selection's start; under its end when there
-/// is no room above. The second value is whether it is above.
-pub fn box_at(start: Rect, end: Rect, height: f32, window: (f32, f32)) -> (f32, (f32, f32), bool) {
-    let width = BOX_WIDTH.min(window.0 - 2. * EDGE).max(200.);
-    let x = start.x.clamp(EDGE, (window.0 - width - EDGE).max(EDGE));
-    let above = start.y - 8. - height;
-    if above >= EDGE {
-        return (width, (x, above), true);
-    }
-    let below = (end.bottom() + 8.).min(window.1 - height - EDGE).max(EDGE);
-    (width, (x, below), false)
-}
-
-/// The box's width, room permitting.
-pub const BOX_WIDTH: f32 = 380.;
 
 #[cfg(test)]
 mod tests {
@@ -202,25 +214,24 @@ mod tests {
     }
 
     #[test]
-    fn the_button_sits_under_the_selection_end_inside_the_window() {
-        let end = Rect { x: 300., y: 200., w: 1., h: 20. };
-        assert_eq!(button_at(end, (120., 28.), (1000., 700.)), (290., 226.));
-        // At the right edge it comes back in; at the foot it goes over the line.
-        assert_eq!(button_at(Rect { x: 990., ..end }, (120., 28.), (1000., 700.)), (868., 226.));
-        assert_eq!(button_at(Rect { y: 670., ..end }, (120., 28.), (1000., 700.)), (290., 636.));
+    fn the_button_sits_over_the_selection_never_on_the_words_read() {
+        let start = Rect { x: 100., y: 200., w: 8., h: 20. };
+        let end = Rect { x: 300., y: 240., w: 8., h: 20. };
+        assert_eq!(button_at(start, end, (120., 28.), (1000., 700.)), (100., 166.), "over its start");
+        assert_eq!(button_at(Rect { x: 990., ..start }, end, (120., 28.), (1000., 700.)), (868., 166.), "inside the window");
+        let top = Rect { y: 20., ..start };
+        assert_eq!(button_at(top, end, (120., 28.), (1000., 700.)), (100., 266.), "no room above: under its end");
     }
 
     #[test]
-    fn the_box_goes_above_the_selection_or_under_it() {
-        let start = Rect { x: 100., y: 400., w: 1., h: 20. };
-        let end = Rect { x: 300., y: 440., w: 1., h: 20. };
-        assert_eq!(box_at(start, end, 120., (1000., 700.)), (BOX_WIDTH, (100., 272.), true));
-        // No room above: under the end.
-        let top = Rect { y: 60., ..start };
-        assert_eq!(box_at(top, end, 120., (1000., 700.)), (BOX_WIDTH, (100., 468.), false));
-        // A narrow window: the box narrows and stays inside.
-        let (w, (x, _), _) = box_at(Rect { x: 300., ..start }, end, 120., (380., 700.));
-        assert_eq!(w, 356.);
-        assert_eq!(x, 12.);
+    fn several_quotes_go_as_blockquotes_of_their_own_and_read_back_so() {
+        let quotes = vec!["첫 인용".to_owned(), "둘째\n\n- 목록".to_owned()];
+        let sent = message_all(&quotes, "둘 다 왜요?");
+        assert_eq!(sent, "> 첫 인용\n\n> 둘째\n>\n> - 목록\n\n둘 다 왜요?");
+        assert_eq!(split_all(&sent), (quotes.clone(), "둘 다 왜요?".to_owned()));
+        assert_eq!(split_all(&message_all(&quotes[..1], "")), (vec!["첫 인용".to_owned()], String::new()));
+        assert_eq!(split_all("그냥 말"), (Vec::new(), "그냥 말".to_owned()));
+        assert_eq!(message_all(&[], "그냥 말"), "그냥 말");
     }
+
 }
