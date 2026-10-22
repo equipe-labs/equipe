@@ -322,8 +322,12 @@ pub fn modal_w(p: Palette, id: &'static str, width: f32, card: impl IntoElement)
             .items_center()
             .justify_center()
             .bg(rgba(0x00000073))
+            // A press on the dimmed window around the box does what Esc does.
+            .on_mouse_down(MouseButton::Left, |_, window, cx| window.dispatch_action(Box::new(crate::DismissOverlay), cx))
             .child(motion::dialog(
                 v_flex()
+                    // A press inside the box is the box's.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .w(px(width))
                     .max_h(px(640.))
                     .p(px(S6))

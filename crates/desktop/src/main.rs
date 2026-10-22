@@ -106,6 +106,8 @@ actions!(equipe, [ToggleSidebar, NewMessage, SearchAll]);
 actions!(equipe, [OpenSettings]);
 // "휴대폰 연결…": a phone paired with the daemon's machine, by QR code.
 actions!(equipe, [PairPhone]);
+// A press outside a box over the window: what Esc does to it.
+actions!(equipe, [DismissOverlay]);
 // The View menu's: the window's size, as a browser zooms (⌘+, ⌘-, ⌘0).
 actions!(equipe, [ZoomIn, ZoomOut, ActualSize]);
 
@@ -1643,6 +1645,12 @@ impl Render for Shell {
             .font_family(SANS)
             .text_color(p.text)
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
+            .on_action(cx.listener(|this, _: &DismissOverlay, window, cx| {
+                if this.overlay_open() {
+                    this.escape_overlay(window, cx);
+                    cx.notify();
+                }
+            }))
             .on_action(cx.listener(|this, _: &NewMessage, window, cx| this.new_message(window, cx)))
             .on_action(cx.listener(|this, _: &SearchAll, window, cx| this.search_everything(window, cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.toggle_settings(window, cx)))

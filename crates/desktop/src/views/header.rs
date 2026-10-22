@@ -34,10 +34,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 pill(p, "conversation-title")
                     .when(open, |b| b.bg(p.wash))
                     .hover(move |s| s.bg(p.wash))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.board.popover = if this.board.popover == Some(Popover::Members) { None } else { Some(Popover::Members) };
-                        cx.notify();
-                    }))
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_popover(Popover::Members, cx)))
                     .child(title(p, m))
                     .children(m.engine.map(|e| super::switching::label(p, e)))
                     .children(ticket.map(|t| div().max_w(px(320.)).truncate().text_size(px(14.)).text_color(p.text2).child(format!("· {}", t.title))))
@@ -136,7 +133,24 @@ fn members(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 .into_any_element()
         })
         .collect();
-    deferred(v_flex().id("member-list").absolute().top(px(32.)).left_0().w(px(220.)).p_1().rounded(px(8.)).bg(p.raised).border_1().border_color(p.hair).shadow_lg().occlude().children(rows)).into_any_element()
+    deferred(
+        v_flex()
+            .id("member-list")
+            .absolute()
+            .top(px(32.))
+            .left_0()
+            .w(px(220.))
+            .p_1()
+            .rounded(px(8.))
+            .bg(p.raised)
+            .border_1()
+            .border_color(p.hair)
+            .shadow_lg()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.popover_outside(cx)))
+            .children(rows),
+    )
+    .into_any_element()
 }
 
 /// The header's controls' shape: the conversation's title and the projects'
@@ -203,7 +217,8 @@ pub fn slice_control(shell: &Shell, place: &'static str, cx: &mut Context<Shell>
         .when(open, |b| b.bg(p.wash))
         .hover(move |s| s.bg(p.wash))
         .on_click(cx.listener(move |this, _, window, cx| {
-            let opening = !(this.board.popover == Some(Popover::Projects) && this.board.slice_place == place);
+            let just_closed = this.popover_just_closed(Popover::Projects);
+            let opening = !(this.board.popover == Some(Popover::Projects) && this.board.slice_place == place) && !just_closed;
             this.board.popover = opening.then_some(Popover::Projects);
             this.board.slice_place = place;
             if opening {
@@ -313,6 +328,7 @@ fn list(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
             .border_color(p.hair)
             .shadow_lg()
             .occlude()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.popover_outside(cx)))
             .when(show_box, |c| {
                 c.child(h_flex().mx_1().mb_1().px_2().h(px(28.)).items_center().rounded(px(6.)).bg(p.code_bg).border_1().border_color(p.hair).text_size(px(SMALL)).child(Input::new(&shell.board.slice_search).appearance(false).bordered(false)))
             })

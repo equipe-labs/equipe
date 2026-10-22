@@ -77,6 +77,9 @@ pub struct BoardUi {
     pub adding_project: bool,
     pub flow: Option<Flow>,
     pub popover: Option<Popover>,
+    /// The popover a press outside just closed, and when: the same press on
+    /// its own control mustn't open it again.
+    pub popover_closed: Option<(Popover, std::time::Instant)>,
     pub list_scroll: ScrollHandle,
     pub peek_scroll: ScrollHandle,
     pub stats: HashMap<TicketId, (Seen, Stat)>,
@@ -102,6 +105,8 @@ pub struct BoardUi {
     pub sub_motion: std::cell::RefCell<super::sidebar::SubMotion>,
     /// A small menu out of the sidebar's foot.
     pub popup: Option<super::sidebar::Popup>,
+    /// The popup a press outside just closed, and when (as `popover_closed`).
+    pub popup_closed: Option<(super::sidebar::Popup, std::time::Instant)>,
     /// The language picked in settings for every screen; `None`: System.
     pub language: Option<equipe_core::i18n::Lang>,
     /// The language the inputs' placeholders were written in: when the one in
@@ -159,6 +164,7 @@ impl BoardUi {
             adding_project: false,
             flow: None,
             popover: None,
+            popover_closed: None,
             list_scroll: ScrollHandle::new(),
             peek_scroll: ScrollHandle::new(),
             stats: HashMap::new(),
@@ -176,6 +182,7 @@ impl BoardUi {
             side_motion: Default::default(),
             sub_motion: Default::default(),
             popup: None,
+            popup_closed: None,
             language: equipe_core::i18n::saved(&equipe_providers::credentials::equipe_home()),
             words: crate::i18n::lang(),
             history: Vec::new(),
@@ -1116,7 +1123,7 @@ impl Shell {
                 cx.notify();
             }
             "f" => {
-                self.board.popover = if self.board.popover == Some(Popover::Filter) { None } else { Some(Popover::Filter) };
+                self.toggle_popover(Popover::Filter, cx);
                 cx.notify();
             }
             "g" => self.board.chord = true,
@@ -1424,7 +1431,7 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                         .cursor_pointer()
                         .hover(move |s| s.bg(p.wash))
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.board.popover = if this.board.popover == Some(Popover::Filter) { None } else { Some(Popover::Filter) };
+                            this.toggle_popover(Popover::Filter, cx);
                             cx.notify();
                         }))
                         .child(t!("board.filter"))
@@ -1448,7 +1455,7 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                             .cursor_pointer()
                             .hover(move |s| s.bg(p.wash))
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.board.popover = if this.board.popover == Some(Popover::Group) { None } else { Some(Popover::Group) };
+                                this.toggle_popover(Popover::Group, cx);
                                 cx.notify();
                             }))
                             .child(div().text_color(p.muted).child(t!("board.group_by")))
@@ -1553,10 +1560,53 @@ fn popover(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 .border_color(p.hair)
                 .shadow_lg()
                 .occlude()
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| this.popover_outside(cx)))
                 .children(body),
         )
         .into_any_element(),
     )
+}
+
+/// How long after a press outside closed a popover its own control's click
+/// (the same press) is taken as that close, not as opening it again.
+const SAME_PRESS: std::time::Duration = std::time::Duration::from_millis(400);
+
+impl Shell {
+    /// A popover's control: opens it, or closes it — and a press that already
+    /// closed it from outside leaves it closed.
+    pub fn toggle_popover(&mut self, which: Popover, cx: &mut Context<Self>) {
+        let just_closed = self.board.popover_closed.take().is_some_and(|(p, at)| p == which && at.elapsed() < SAME_PRESS);
+        self.board.popover = if self.board.popover == Some(which) || just_closed { None } else { Some(which) };
+        cx.notify();
+    }
+
+    /// A press outside the open popover closes it.
+    pub fn popover_outside(&mut self, cx: &mut Context<Self>) {
+        if let Some(which) = self.board.popover.take() {
+            self.board.popover_closed = Some((which, std::time::Instant::now()));
+            cx.notify();
+        }
+    }
+
+    /// Whether popover `which` was closed from outside by the press now under way.
+    pub fn popover_just_closed(&mut self, which: Popover) -> bool {
+        self.board.popover_closed.take().is_some_and(|(p, at)| p == which && at.elapsed() < SAME_PRESS)
+    }
+
+    /// The sidebar's popup control: as [`Shell::toggle_popover`].
+    pub fn toggle_popup(&mut self, which: super::sidebar::Popup, cx: &mut Context<Self>) {
+        let just_closed = self.board.popup_closed.take().is_some_and(|(p, at)| p == which && at.elapsed() < SAME_PRESS);
+        self.board.popup = if self.board.popup == Some(which) || just_closed { None } else { Some(which) };
+        cx.notify();
+    }
+
+    /// A press outside the sidebar's popup closes it.
+    pub fn popup_outside(&mut self, cx: &mut Context<Self>) {
+        if let Some(which) = self.board.popup.take() {
+            self.board.popup_closed = Some((which, std::time::Instant::now()));
+            cx.notify();
+        }
+    }
 }
 
 fn list(shell: &Shell, rows: &[Row], pick: Option<Need>, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
