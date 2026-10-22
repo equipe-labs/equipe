@@ -1190,10 +1190,7 @@ fn footer(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElemen
                 .cursor_pointer()
                 .hover(move |s| s.bg(p.side_hover))
                 .tip_at(p, tip, None, gpui_kit::base::Placement::Right)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.board.popup = if this.board.popup == Some(Popup::Account) { None } else { Some(Popup::Account) };
-                    cx.notify();
-                }))
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_popup(Popup::Account, cx)))
                 .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(dot(if connected { p.accent } else { p.muted }, 7.)))
                 .child(div().flex_none().text_size(px(TEXT)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(squad))
                 .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(p.muted).child(shell.endpoint.label()))
@@ -1275,6 +1272,7 @@ fn popup(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
                 .border_color(p.hair)
                 .shadow_lg()
                 .occlude()
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| this.popup_outside(cx)))
                 .children(rows),
         )
         .into_any_element(),
@@ -1327,10 +1325,7 @@ fn subagents_popover(shell: &Shell, member: SessionId, cx: &mut Context<Shell>) 
         .border_1()
         .border_color(p.hair)
         .occlude()
-        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-            this.board.popup = None;
-            cx.notify();
-        }))
+        .on_mouse_down_out(cx.listener(|this, _, _, cx| this.popup_outside(cx)))
         .child(
             h_flex()
                 .px_2()
@@ -1350,9 +1345,7 @@ fn subagents_popover(shell: &Shell, member: SessionId, cx: &mut Context<Shell>) 
 impl Shell {
     /// "+N개 더" under a member: all its subagents, or away again.
     pub fn toggle_subagents(&mut self, member: SessionId, cx: &mut Context<Self>) {
-        let which = Popup::Subagents(member);
-        self.board.popup = if self.board.popup == Some(which) { None } else { Some(which) };
-        cx.notify();
+        self.toggle_popup(Popup::Subagents(member), cx);
     }
 
     /// A subagent's row: its member's conversation, at the step that handed
