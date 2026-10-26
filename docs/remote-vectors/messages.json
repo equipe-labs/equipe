@@ -755,6 +755,83 @@
         "ts": 1760000000000
       }
     },
+    "event: compact failed": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "member": "backend",
+            "message": "The turn ended before the compaction finished.",
+            "project": "api",
+            "session": 4242,
+            "trigger": "auto",
+            "type": "compact_failed"
+          }
+        },
+        "seq": 61,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: compacted": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "member": "backend",
+            "project": "api",
+            "session": 4242,
+            "took_ms": 81250,
+            "trigger": "auto",
+            "type": "compacted"
+          }
+        },
+        "seq": 59,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: compacting": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "estimate_ms": 95000,
+            "member": "backend",
+            "project": "api",
+            "session": 4242,
+            "started_at": 1760000000000,
+            "trigger": "auto",
+            "type": "compacting"
+          }
+        },
+        "seq": 58,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: compacting (manual)": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "estimate_ms": 2000,
+            "member": "pm",
+            "session": 1001,
+            "started_at": 1760000000000,
+            "trigger": "manual",
+            "type": "compacting"
+          }
+        },
+        "seq": 60,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "event: design": {
       "receives": {
         "rpc": {
@@ -2005,6 +2082,11 @@
                   },
                   {
                     "access": "edit_files",
+                    "compacting": {
+                      "estimate_ms": 95000,
+                      "started_at": 1759999980000,
+                      "trigger": "auto"
+                    },
                     "engine": "claude",
                     "lane": null,
                     "member": {

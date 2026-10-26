@@ -308,6 +308,8 @@ pub struct TurnCollector {
     background: std::collections::HashMap<String, Pending>,
     /// The person's messages Claude Code has read so far — the prompt first.
     replayed: usize,
+    /// Compacting the conversation now: said once, though its status repeats.
+    compacting: bool,
 }
 
 /// A subagent run in the background answers its tool call at once with this;
@@ -357,6 +359,28 @@ impl TurnCollector {
                     name: pending.name,
                     target: pending.target,
                 })]
+            }
+            // Compacting the conversation: `status` `compacting` (repeated, on
+            // an automatic one, as its summary streams), then `status` null
+            // with `compact_result` `success` or `failed` (and
+            // `compact_error`); a `compact_boundary` follows a success.
+            "system" if event.get("subtype").and_then(Value::as_str) == Some("status") => {
+                match (event.get("status").and_then(Value::as_str), event.get("compact_result").and_then(Value::as_str)) {
+                    (Some("compacting"), _) if !self.compacting => {
+                        self.compacting = true;
+                        vec![Activity::Compacting]
+                    }
+                    (_, Some(result)) if self.compacting => {
+                        self.compacting = false;
+                        if result == "success" {
+                            vec![Activity::Compacted]
+                        } else {
+                            let why = event.get("compact_error").and_then(Value::as_str).filter(|e| !e.is_empty()).unwrap_or("Compaction failed");
+                            vec![Activity::CompactFailed(why.to_owned())]
+                        }
+                    }
+                    _ => Vec::new(),
+                }
             }
             // A subagent at work in the background: where it is, and when it is done.
             "system" => {
@@ -1378,6 +1402,34 @@ mod tests {
         })]);
         let err = result.unwrap_err();
         assert!(err.to_string().contains("Not logged in"));
+    }
+
+    #[test]
+    fn compacting_the_conversation_is_said_once_and_its_end_too() {
+        // As Claude Code 2.1.308 printed them on an automatic compaction (2026-10-27),
+        // ids cut: its status repeats while the summary streams.
+        let lines = [
+            r#"{"type":"system","subtype":"status","status":"compacting","compact_output_chars":0,"session_id":"s"}"#,
+            r#"{"type":"system","subtype":"status","status":"compacting","compact_output_chars":812,"session_id":"s"}"#,
+            r#"{"type":"system","subtype":"status","status":null,"compact_result":"success","session_id":"s"}"#,
+            r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto","pre_tokens":40409,"post_tokens":7753,"duration_ms":12361},"session_id":"s"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"This session is being continued from a previous conversation"}]},"isSynthetic":true,"session_id":"s"}"#,
+        ];
+        let mut collector = TurnCollector::new();
+        let seen: Vec<Activity> = lines.iter().flat_map(|l| collector.on_event(&serde_json::from_str(l).unwrap())).collect();
+        assert_eq!(seen, vec![Activity::Compacting, Activity::Compacted]);
+        // The summary it goes on from is not a message of the person's: a steer read next is still one.
+        let replay = |text: &str| json!({ "type": "user", "isReplay": true, "message": { "role": "user", "content": text } });
+        assert!(collector.on_event(&replay("the prompt")).is_empty());
+        assert_eq!(collector.on_event(&replay("and the nav")), vec![Activity::Steered("and the nav".into())]);
+
+        let mut collector = TurnCollector::new();
+        let _ = collector.on_event(&json!({ "type": "system", "subtype": "status", "status": "compacting" }));
+        let failed = collector.on_event(&json!({ "type": "system", "subtype": "status", "status": null, "compact_result": "failed", "compact_error": "Not enough messages to compact." }));
+        assert_eq!(failed, vec![Activity::CompactFailed("Not enough messages to compact.".into())]);
+        // Any other status says nothing.
+        assert!(collector.on_event(&json!({ "type": "system", "subtype": "status", "status": "requesting" })).is_empty());
+        assert!(collector.on_event(&json!({ "type": "system", "subtype": "status", "status": null })).is_empty());
     }
 
     #[test]

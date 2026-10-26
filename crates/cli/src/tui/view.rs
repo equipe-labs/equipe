@@ -9,7 +9,7 @@
 //! the one thing that waits on the person.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -1365,8 +1365,8 @@ fn side_lines(app: &App, theme: Theme, area: Rect) -> (Vec<(Line<'static>, Optio
                         Some(side),
                     ));
                 }
-                // Its subagents, under it, while they work.
-                for text in subagent_rows(agent) {
+                // Its conversation being summarized, and its subagents, under it, while they work.
+                for text in working_rows(agent) {
                     let room = (area.width as usize).saturating_sub(6);
                     lines.push((Line::from(vec![Span::raw("    "), Span::styled(ui::fit(&text, room), theme.dim())]), Some(side)));
                 }
@@ -1479,17 +1479,24 @@ fn member_line(app: &App, agent: &Agent, open: bool, name_width: usize, area: Re
 /// Most subagents shown under a member before the rest are counted.
 const SUBAGENTS_SHOWN: usize = 3;
 
-/// The lines under a member for its subagents at work.
-fn subagent_rows(agent: &Agent) -> Vec<String> {
-    let mut rows: Vec<String> = agent
+/// The lines under a member while it works: its conversation being
+/// compacted — how long so far, and a guess at how long it takes, not
+/// progress — then its subagents at work.
+fn working_rows(agent: &Agent) -> Vec<String> {
+    let compacting = agent.compacting.map(|(since, estimate_ms)| {
+        let so_far = crate::tui::app::elapsed(since.elapsed());
+        let usual = crate::tui::app::elapsed(Duration::from_millis(estimate_ms));
+        format!("⟳ {}", t!("view.compacting", elapsed = so_far, usual = usual))
+    });
+    let mut rows: Vec<String> = compacting.into_iter().collect();
+    rows.extend(agent
         .subagents
         .iter()
         .take(SUBAGENTS_SHOWN)
         .map(|(_, what, step)| match step {
             Some(step) => format!("↳ {what} · {step}"),
             None => format!("↳ {what}"),
-        })
-        .collect();
+        }));
     if agent.subagents.len() > SUBAGENTS_SHOWN {
         rows.push(format!("↳ {}", t!("view.more_subagents", count = agent.subagents.len() - SUBAGENTS_SHOWN)));
     }
@@ -2970,7 +2977,7 @@ fn display_path(path: &std::path::Path) -> String {
 mod tests {
     use super::*;
     use crate::tui::app::App;
-    use equipe_core::protocol::{Command, Engine, Event, Member, Snapshot, Ticket, TicketId, TurnOutcome, Usage, Workspace};
+    use equipe_core::protocol::{Command, CompactTrigger, Engine, Event, Member, Snapshot, Ticket, TicketId, TurnOutcome, Usage, Workspace};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -4140,6 +4147,21 @@ mod tests {
         assert!(!screen(&app, 140, 30).contains("Read the logs"));
         app.on_event(Event::TurnEnded { session: pm, outcome: TurnOutcome::Completed, usage: None });
         assert!(!screen(&app, 140, 30).contains("↳"));
+    }
+
+    #[test]
+    fn a_member_summarizing_its_conversation_says_so_under_it() {
+        let (mut app, pm) = working();
+        app.on_event(Event::Compacting { session: pm, member: Some("pm".into()), project: None, trigger: CompactTrigger::Auto, started_at: 0, estimate_ms: 95_000 });
+        app.squad_width = Some(70);
+        let shot = screen(&app, 140, 30);
+        assert!(shot.contains("⟳ Summarizing its conversation · 0s · usually about 1m 35s"), "{shot}");
+        app.on_event(Event::Compacted { session: pm, member: None, project: None, trigger: CompactTrigger::Auto, took_ms: 1 });
+        assert!(!screen(&app, 140, 30).contains("Summarizing"));
+        // Another one, cut short by the turn's end.
+        app.on_event(Event::Compacting { session: pm, member: None, project: None, trigger: CompactTrigger::Manual, started_at: 0, estimate_ms: 2_000 });
+        app.on_event(Event::TurnEnded { session: pm, outcome: TurnOutcome::Completed, usage: None });
+        assert!(!screen(&app, 140, 30).contains("Summarizing"), "the turn's end takes it");
     }
 
     #[test]

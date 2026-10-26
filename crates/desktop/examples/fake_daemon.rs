@@ -124,6 +124,7 @@ fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
         mode: None,
         effort: None,
         subagents: Vec::new(),
+        compacting: None,
     }
 }
 

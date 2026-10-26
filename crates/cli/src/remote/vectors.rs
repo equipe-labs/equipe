@@ -16,7 +16,7 @@ use equipe_core::protocol::rpc::{Hello, Message};
 use equipe_core::protocol::engines::{Move, Proposal, Switching, Why, Window};
 use equipe_core::protocol::team::{Change, TeamChange};
 use equipe_core::protocol::{
-    Access, Approval, Decision, Engine, EnginePlan, EngineState, EngineStatus, Entry, Event, Member, MemberRef, Mode, PlanUsage, PlanWindow, SessionInfo, SessionState, SignInStep, Snapshot, SubagentInfo, Ticket, TicketKind, TicketStatus, TurnOutcome, Usage, WorkInfo,
+    Access, Approval, CompactTrigger, CompactingInfo, Decision, Engine, EnginePlan, EngineState, EngineStatus, Entry, Event, Member, MemberRef, Mode, PlanUsage, PlanWindow, SessionInfo, SessionState, SignInStep, Snapshot, SubagentInfo, Ticket, TicketKind, TicketStatus, TurnOutcome, Usage, WorkInfo,
 };
 use serde_json::{Value, json};
 
@@ -871,6 +871,7 @@ fn snapshot() -> Snapshot {
                 mode: None,
                 effort: None,
                 subagents: Vec::new(),
+                compacting: None,
             },
             SessionInfo {
                 session: 4242,
@@ -902,6 +903,8 @@ fn snapshot() -> Snapshot {
                 effort: None,
                 // Handed side work, still at it: a screen attaching now lists it under its member.
                 subagents: vec![SubagentInfo { id: "toolu_01".into(), what: "Read the API's error logs".into(), step: Some("Grep TimeoutError".into()), secs: 48 }],
+                // Its conversation being summarized: a screen attaching now says so, timed from `started_at`.
+                compacting: Some(CompactingInfo { trigger: CompactTrigger::Auto, started_at: NOW - 20_000, estimate_ms: 95_000 }),
             },
         ],
         tickets: vec![ticket(TicketStatus::InProgress)],
@@ -1112,6 +1115,13 @@ fn message_vectors() -> Value {
         stat: " src/login.rs | 48 ++++++++++++++++++++++++++++++++++++++++++++++++\n 1 file changed, 48 insertions(+)".into(),
     });
     tell(&mut core, &mut examples, "event: nothing changed", Event::NothingChanged { session: 4242 });
+    // A member's conversation compacted — by its engine mid-turn (auto) or on the person's /compact
+    // (manual) — or failing to; `estimate_ms` is a guess from the last ones, never progress.
+    let (backend, member, project) = (4242, Some("backend".to_owned()), Some("api".to_owned()));
+    tell(&mut core, &mut examples, "event: compacting", Event::Compacting { session: backend, member: member.clone(), project: project.clone(), trigger: CompactTrigger::Auto, started_at: NOW, estimate_ms: 95_000 });
+    tell(&mut core, &mut examples, "event: compacted", Event::Compacted { session: backend, member: member.clone(), project: project.clone(), trigger: CompactTrigger::Auto, took_ms: 81_250 });
+    tell(&mut core, &mut examples, "event: compacting (manual)", Event::Compacting { session: pm, member: Some("pm".into()), project: None, trigger: CompactTrigger::Manual, started_at: NOW, estimate_ms: 2_000 });
+    tell(&mut core, &mut examples, "event: compact failed", Event::CompactFailed { session: backend, member, project, trigger: CompactTrigger::Auto, message: "The turn ended before the compaction finished.".into() });
 
     // Not from a phone.
     ask(&mut core, &mut examples, "engine sign-in is refused", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "sign_in", "engine": "codex" } }));

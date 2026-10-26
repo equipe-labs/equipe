@@ -1169,6 +1169,28 @@ pub enum TurnOutcome {
     Failed,
 }
 
+/// What started a conversation's compaction ([`Event::Compacting`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactTrigger {
+    /// The engine, its context nearly full (Claude Code's or Codex's own), or
+    /// equipe, a desk conversation grown full or gone cold.
+    Auto,
+    /// The person asked for it (`/compact`).
+    Manual,
+}
+
+/// A conversation being compacted, for a screen that attaches meanwhile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactingInfo {
+    pub trigger: CompactTrigger,
+    /// When it began, unix milliseconds.
+    pub started_at: u64,
+    /// How long it may take: how long the last ones of the same engine and
+    /// model took — a guess, not progress.
+    pub estimate_ms: u64,
+}
+
 /// The isolated place an editing session works in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Workspace {
@@ -1442,6 +1464,44 @@ pub enum Event {
     },
     /// The member read a steering message, at this point of its turn.
     Steered { session: SessionId, text: String },
+    /// The member's conversation is being compacted — summarized to make room
+    /// — by its engine (mid-turn) or by equipe (a desk conversation starting
+    /// afresh). It works on once [`Event::Compacted`] or
+    /// [`Event::CompactFailed`] comes. `estimate_ms` is a guess from the
+    /// last compactions of the same engine and model, never progress.
+    Compacting {
+        session: SessionId,
+        /// The member's name; `None` for a plain session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        member: Option<String>,
+        /// The project the conversation is about (`None`: the whole squad).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        trigger: CompactTrigger,
+        /// Unix milliseconds.
+        started_at: u64,
+        estimate_ms: u64,
+    },
+    /// The compaction finished, `took_ms` after it began.
+    Compacted {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        member: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        trigger: CompactTrigger,
+        took_ms: u64,
+    },
+    /// The compaction failed, or its turn ended before it finished.
+    CompactFailed {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        member: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        trigger: CompactTrigger,
+        message: String,
+    },
     /// When the member expects its work done, and what it ships live — as it
     /// said, or nothing any more (`None`).
     Estimated { session: SessionId, estimate: Option<Estimate> },
@@ -1603,6 +1663,9 @@ impl Event {
             | Event::Steered { session, .. }
             | Event::Estimated { session, .. }
             | Event::SubagentStarted { session, .. }
+            | Event::Compacting { session, .. }
+            | Event::Compacted { session, .. }
+            | Event::CompactFailed { session, .. }
             | Event::BrowserFrame { session, .. }
             | Event::SubagentStep { session, .. }
             | Event::SubagentEnded { session, .. }
@@ -1838,6 +1901,9 @@ pub struct SessionInfo {
     /// in the order they started ([`Event::SubagentStarted`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subagents: Vec<SubagentInfo>,
+    /// Its conversation being compacted now ([`Event::Compacting`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compacting: Option<CompactingInfo>,
 }
 
 /// A subagent at work for a member, for a screen that attaches mid-turn.
@@ -2281,6 +2347,7 @@ mod tests {
                 mode: Some(Mode::Ask),
                 effort: Some("high".into()),
                 subagents: vec![SubagentInfo { id: "toolu_1".into(), what: "Read the logs".into(), step: Some("Read build.log".into()), secs: 42 }],
+                compacting: None,
             }],
             allowed: vec!["Bash(npm install:*)".into()],
             browsers_shown: true,

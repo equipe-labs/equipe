@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as Process;
 use std::time::Duration;
 
-use equipe_core::protocol::{Access, Command, Decision, Engine, Event, SessionSpec, TurnOutcome};
+use equipe_core::protocol::{Access, Command, CompactTrigger, Decision, Engine, Event, SessionSpec, TurnOutcome};
 use equipe_core::runtime::{self, Config, Handle};
 use equipe_core::squads;
 use equipe_providers::CredentialStore;
@@ -163,6 +163,18 @@ async fn codex_edits_in_its_own_worktree_and_its_work_lands_on_a_branch() {
     let closed = until(&mut events, |e| matches!(e, Event::SessionClosed { .. })).await;
     let branch = closed.iter().find_map(|e| if let Event::BranchLanded { branch, .. } = e { Some(branch.clone()) } else { None }).expect("a branch");
     assert_eq!(git(&repo, &["show", &format!("{branch}:hello.txt")]), "hi");
+}
+
+#[tokio::test]
+async fn codex_compacting_its_thread_is_said_on_every_screen() {
+    let (codex, _) = fake_codex("");
+    let (handle, mut events) = runtime::start(config(&codex, &scratch("home")));
+    add(&handle, &mut events, 1, SessionSpec { engine: Some(Engine::Codex), model: None, access: Access::ReadOnly, cwd: scratch("cwd"), role: None, squad: None }).await;
+    handle.send(Command::Submit { session: 1, text: "compact".into(), about: None });
+    let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let began = turn.iter().position(|e| matches!(e, Event::Compacting { trigger: CompactTrigger::Auto, estimate_ms: 120_000, .. })).expect("compacting");
+    let done = turn.iter().position(|e| matches!(e, Event::Compacted { .. })).expect("compacted");
+    assert!(began < done, "{turn:#?}");
 }
 
 #[tokio::test]

@@ -10,7 +10,7 @@ use std::time::Duration;
 use equipe_core::journal::{self, Journal};
 use equipe_core::protocol::rpc::{ToolCall, ToolResult};
 use equipe_core::protocol::{
-    Access, Command, Engine, Entry, Event, OffMain, Priority, SessionSpec, SessionState, Ticket, TicketDraft, TicketEdit, TicketStatus, TurnOutcome,
+    Access, Command, CompactTrigger, Engine, Entry, Event, OffMain, Priority, SessionSpec, SessionState, Ticket, TicketDraft, TicketEdit, TicketStatus, TurnOutcome,
 };
 use equipe_core::runtime::{self, Config, Handle};
 use equipe_core::{squad_home, squads};
@@ -1892,11 +1892,101 @@ async fn a_desk_conversation_grown_too_full_starts_afresh_from_a_summary() {
     // 75% full: the next turn starts a fresh conversation, handed where the last left off.
     let ended = turn(&handle, &mut events, "and the pricing?").await;
     assert!(ended.iter().any(|e| matches!(e, Event::Notice { text, .. } if text.contains("a fresh conversation: the last one had filled 150k of 200k"))), "{ended:?}");
+    // equipe's own compaction, for room: said as it begins and ends, before the turn runs.
+    let began = ended.iter().position(|e| matches!(e, Event::Compacting { session: 1, trigger: CompactTrigger::Auto, member: Some(m), .. } if m == "pm")).expect("compacting");
+    let done = ended.iter().position(|e| matches!(e, Event::Compacted { session: 1, trigger: CompactTrigger::Auto, .. })).expect("compacted");
+    assert!(began < done, "{ended:?}");
     let call = calls(&recorded).pop().unwrap();
     assert_eq!(arg(&call, "--resume"), None, "not the old conversation");
     let prompt = arg(&call, "-p").unwrap();
     assert!(prompt.contains("this is a fresh conversation") && prompt.contains("- the person: plan the launch") && prompt.contains("- you: noted"), "{prompt}");
     assert!(prompt.ends_with("and the pricing?"), "{prompt}");
+}
+
+#[tokio::test]
+async fn compact_asked_for_is_a_manual_compaction_and_clear_is_none() {
+    let cwd = scratch("cwd");
+    let (claude, _) = recording_claude(&answering("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&cwd])));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    handle.send(Command::Submit { session: 1, text: "first".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    handle.send(Command::Refresh { session: 1, summary: true });
+    handle.send(Command::Submit { session: 1, text: "second".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let estimate = seen.iter().find_map(|e| match e {
+        Event::Compacting { trigger: CompactTrigger::Manual, estimate_ms, started_at, .. } => Some((*estimate_ms, *started_at)),
+        _ => None,
+    });
+    let (estimate_ms, started_at) = estimate.expect("manual compacting");
+    assert!(estimate_ms > 0 && started_at > 1_700_000_000_000, "a guess, in ms; unix ms");
+    assert!(seen.iter().any(|e| matches!(e, Event::Compacted { trigger: CompactTrigger::Manual, .. })), "{seen:#?}");
+    // Starting clean hands nothing on: no compaction.
+    handle.send(Command::Refresh { session: 1, summary: false });
+    handle.send(Command::Submit { session: 1, text: "third".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::Compacting { .. })), "{seen:#?}");
+}
+
+/// A turn in which Claude Code compacts its conversation for a moment, as
+/// it says it does, before it answers. `ends`: it says the compaction ended.
+fn compacting_then_answering(ends: bool) -> String {
+    let end = if ends { r#"{"type":"system","subtype":"status","status":null,"compact_result":"success"}"# } else { "" };
+    format!(
+        r#"cat <<EOF
+{{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}}
+{{"type":"system","subtype":"status","status":"compacting","compact_output_chars":0}}
+EOF
+sleep 1
+cat <<EOF
+{end}
+{{"type":"stream_event","event":{{"type":"content_block_delta","delta":{{"type":"text_delta","text":"done"}}}}}}
+{{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{{"input_tokens":3,"output_tokens":1}}}}
+EOF"#
+    )
+}
+
+#[tokio::test]
+async fn while_claude_code_compacts_every_screen_knows_and_nothing_said_meanwhile_is_lost() {
+    let cwd = scratch("cwd");
+    let claude = fake_claude(true, &compacting_then_answering(true));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&cwd])));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    handle.send(Command::Submit { session: 1, text: "plan the launch".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::Compacting { .. })).await;
+    let Some(Event::Compacting { trigger, estimate_ms, member, .. }) = seen.last() else { unreachable!() };
+    assert_eq!((*trigger, *estimate_ms, member.as_deref()), (CompactTrigger::Auto, 120_000, Some("pm")), "none before: the cautious guess");
+    // A screen attaching now sees it.
+    let pm = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 1).unwrap();
+    assert_eq!(pm.compacting.map(|c| (c.trigger, c.estimate_ms)), Some((CompactTrigger::Auto, 120_000)));
+
+    // Said while it compacts: not read this turn, it waits, and is delivered after.
+    handle.send(Command::Submit { session: 1, text: "and the pricing?".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let took = seen.iter().find_map(|e| if let Event::Compacted { took_ms, .. } = e { Some(*took_ms) } else { None }).expect("compacted");
+    assert!(took >= 900, "{took}");
+    assert!(seen.iter().any(|e| matches!(e, Event::SteerQueued { text, .. } if text == "and the pricing?")), "{seen:#?}");
+    let pm = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 1).unwrap();
+    assert!(pm.compacting.is_none());
+    let next = until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
+    assert!(matches!(next.last(), Some(Event::UserMessage { text, .. }) if text == "and the pricing?"), "{next:#?}");
+    // The next one's guess is how long that one took.
+    let seen = until(&mut events, |e| matches!(e, Event::Compacting { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::Compacting { estimate_ms, .. }) if *estimate_ms == took), "{seen:#?}");
+}
+
+#[tokio::test]
+async fn a_turn_that_ends_mid_compaction_says_it_failed() {
+    let cwd = scratch("cwd");
+    let claude = fake_claude(true, &compacting_then_answering(false));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&cwd])));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    handle.send(Command::Submit { session: 1, text: "go".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let failed = seen.iter().position(|e| matches!(e, Event::CompactFailed { message, .. } if message.contains("ended before"))).expect("failed");
+    assert_eq!(failed, seen.len() - 2, "just before the turn's end: {seen:#?}");
+    let pm = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 1).unwrap();
+    assert!(pm.compacting.is_none());
 }
 
 #[tokio::test]

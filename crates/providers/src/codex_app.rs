@@ -584,6 +584,9 @@ impl TurnCollector {
                 changes.into_iter().map(|(path, kind, _)| (change_tool(&kind).to_owned(), Some(path))).collect()
             }
             "mcpToolCall" => vec![mcp_tool(item)],
+            // Compacting the thread to make room (app-server v2's
+            // `contextCompaction` item; `thread/compacted` is its deprecated echo).
+            "contextCompaction" => return vec![Activity::Compacting],
             _ => return Vec::new(),
         };
         let now = Instant::now();
@@ -609,6 +612,7 @@ impl TurnCollector {
                 }
                 out
             }
+            "contextCompaction" => vec![Activity::Compacted],
             // The person's words, read: the prompt, then what they said while it worked.
             "userMessage" => {
                 self.read += 1;
@@ -1465,6 +1469,15 @@ mod tests {
         let said = |text: &str| item("userMessage", json!({ "id": text, "content": [{ "type": "text", "text": text }] }));
         assert!(c.on_notification("item/completed", &said("the prompt")).is_empty());
         assert_eq!(c.on_notification("item/completed", &said("not the footer")), vec![Activity::Steered("not the footer".into())]);
+    }
+
+    #[test]
+    fn compacting_the_thread_is_said_as_it_starts_and_ends() {
+        // From the app-server's v2 schema (codex-cli 0.154.0): a `contextCompaction` item.
+        let mut c = TurnCollector::new();
+        let compaction = item("contextCompaction", json!({ "id": "k1" }));
+        assert_eq!(c.on_notification("item/started", &compaction), vec![Activity::Compacting]);
+        assert_eq!(c.on_notification("item/completed", &compaction), vec![Activity::Compacted]);
     }
 
     #[test]

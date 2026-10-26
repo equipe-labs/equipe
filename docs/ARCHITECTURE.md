@@ -726,6 +726,42 @@ But the person can talk to anyone, the way a CEO can walk over to any desk — T
 Approvals never pass through the PM: equipe asks the person directly, because no
 agent's word — the PM's included — can authorize a merge or a deploy.
 
+### A conversation being compacted
+
+A member's conversation is sometimes summarized to make room, and every screen
+is told while it happens (`compacting` → `compacted` or `compact_failed`; the
+snapshot's session carries `compacting` meanwhile — `runtime/compact.rs`). Three
+kinds, one set of events:
+
+- **Claude Code's own**, mid-turn, its context nearly full: it prints
+  `{"type":"system","subtype":"status","status":"compacting"}` (repeated, with
+  `compact_output_chars`, as the summary streams), then `status` `null` with
+  `compact_result` `success` or `failed` (and `compact_error`), then a
+  `compact_boundary` whose `compact_metadata.trigger` is `auto` or `manual`. Seen
+  from Claude Code 2.1.308 on 2026-10-27, both a typed `/compact` and an automatic
+  one (forced with `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`). The summary it goes on from
+  comes as a `user` line marked `isSynthetic`, not `isReplay`: it is not counted as
+  a steer read. equipe never types `/compact` into Claude Code, so its compactions
+  are `auto`.
+- **Codex's**, mid-turn: a `contextCompaction` item started and completed (the
+  app-server's v2 schema, codex-cli 0.154.0; `thread/compacted` is its deprecated
+  echo). Not yet seen from a live Codex.
+- **equipe's own**, at a desk conversation's start (`refresh_desk`): the last
+  messages handed to a fresh conversation, because it grew full or cold (`auto`)
+  or the person asked with `/compact` (`manual`). It takes no model, so it begins
+  and ends at once. `/clear` hands nothing on and is no compaction.
+
+`estimate_ms` is a guess, not progress: the longest of the last five
+compactions of the same engine and model (`~/.equipe/compactions.json`), or two
+minutes before there are any (two seconds for equipe's own). A turn that ends
+mid-compaction says `compact_failed` just before `turn_ended`.
+
+What the person says meanwhile is never lost: a message sent while the member
+works is a steer (Claude Code, Codex) that the engine reads at its next step,
+after the compaction; one not read by the turn's end becomes a memo, delivered
+after it — the same as at any other moment of a turn. equipe's own compaction
+happens before the turn starts, as its prompt is put together.
+
 ### Permission modes
 
 How much a member may do on its own while it works a ticket — the squad's

@@ -902,6 +902,7 @@
   "view.more_steps.other": "{count} étapes de plus",
   "view.more_subagents.one": "+{count} sous-agent de plus",
   "view.more_subagents.other": "+{count} sous-agents de plus",
+  "view.compacting": "Résumé de sa conversation · {elapsed} · d’habitude environ {usual}",
   "view.more_waiting": "{n} de plus en attente",
   "view.new_lines.one": "↓ {count} nouvelle ligne",
   "view.new_lines.other": "↓ {count} nouvelles lignes",

@@ -20,7 +20,7 @@ use std::time::Duration;
 use equipe_protocol::rpc::{ToolCall, ToolResult};
 use equipe_protocol::transcript::scope;
 use equipe_protocol::{
-    Access, Approval, BrowserNavAction, Command, Decision, Engine, Entry, Event, Member, MemberRef, Mode, SessionId, SessionInfo,
+    Access, Approval, BrowserNavAction, Command, CompactTrigger, Decision, Engine, Entry, Event, Member, MemberRef, Mode, SessionId, SessionInfo,
     Estimate, OffMain, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
 };
 use equipe_providers::claude_code::{self, Activity};
@@ -71,6 +71,7 @@ mod secrets;
 mod design_qa;
 mod team;
 mod tickets;
+mod compact;
 
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
@@ -464,6 +465,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         focus: HashMap::new(),
         said_about: None,
         builds_trimmed: None,
+        compactions: compact::CompactTimes::default(),
         browsers: HashMap::new(),
         host: None,
         hub: browser::Hub::new(),
@@ -637,6 +639,9 @@ struct Session {
     /// back — its id, what it was handed, its latest step, since when — for a
     /// screen that attaches now.
     subagents: Vec<(String, String, Option<String>, std::time::Instant)>,
+    /// Its conversation being compacted now: as the screens were told, the
+    /// key its time is kept under, and since when.
+    compacting: Option<(equipe_protocol::CompactingInfo, String, std::time::Instant)>,
     /// For the PM: what happened with the team since the PM's last turn. It
     /// travels with the PM's next message, so the PM keeps up without spending a
     /// turn on every exchange.
@@ -822,6 +827,8 @@ struct Runtime {
     said_about: Option<Option<String>>,
     /// When members' build caches were last looked at.
     builds_trimmed: Option<std::time::Instant>,
+    /// How long members' conversations took to compact, for the next one's guess.
+    compactions: compact::CompactTimes,
     /// Members' browsers, kept between turns: by squad and member.
     browsers: HashMap<(String, String), browser::Running>,
     /// The one Chrome members' browsers are lanes of, once started.
@@ -1093,6 +1100,7 @@ impl Runtime {
                 Internal::Event(event) => match *event {
                     // What the engine echoes as it reads the person's steers: each said as it was.
                     Event::Steered { session, text } => self.steered(session, &text),
+                    event @ (Event::Compacting { .. } | Event::Compacted { .. } | Event::CompactFailed { .. }) => self.on_engine_compaction(event),
                     event => {
                         // A build that failed for want of room says so plainly.
                         let no_room = room::says_no_room(&event).then(|| event.session()).flatten();
@@ -1200,6 +1208,12 @@ impl Runtime {
     /// the screens following its squad. `squad` names the squad of an event that
     /// has no session to say it (a failed start, a board error).
     fn publish_in(&mut self, squad: Option<&str>, mut event: Event) {
+        // A turn that ends mid-compaction cuts it short: said first.
+        if let Event::TurnEnded { session, .. } = &event
+            && self.sessions.get(session).is_some_and(|s| s.compacting.is_some())
+        {
+            self.compaction_ended(*session, Some(compact::CUT_SHORT.to_owned()));
+        }
         // A ticket waiting for the person carries what it asks, item by item
         // (kept in its note); any other, nothing.
         if let Event::TicketChanged { ticket, .. } = &mut event {
@@ -2253,6 +2267,7 @@ runbooks and reports live there, and work across the projects or on running them
                 taken_back: Vec::new(),
                 send_now_prompt: None,
                 subagents: Vec::new(),
+                compacting: None,
                 answers_person: false,
                 effort: None,
                 briefing: Vec::new(),
@@ -2717,6 +2732,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             taken_back: Vec::new(),
             send_now_prompt: None,
             subagents: Vec::new(),
+            compacting: None,
             answers_person: false,
             effort: None,
             briefing: Vec::new(),
@@ -5758,6 +5774,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         .iter()
                         .map(|(id, what, step, since)| equipe_protocol::SubagentInfo { id: id.clone(), what: what.clone(), step: step.clone(), secs: since.elapsed().as_secs() })
                         .collect(),
+                    compacting: s.compacting.as_ref().map(|(info, ..)| info.clone()),
                 }
             })
             .collect();
@@ -5940,6 +5957,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         taken_back: Vec::new(),
                         send_now_prompt: None,
                         subagents: Vec::new(),
+                        compacting: None,
                         briefing: journal.waiting(record.id, "briefing").unwrap_or_default(),
                         memory,
                         mode: record.mode,
@@ -6012,11 +6030,19 @@ check what is already done in your worktree first."
         let (used, window) = session.desk_context.unwrap_or((0, 0));
         let full = window > 0 && used * 100 / window >= REFRESH_FULL_PERCENT;
         let cold = used >= REFRESH_COLD_TOKENS && session.last_turn.is_some_and(|t| t.elapsed() > REFRESH_COLD_AFTER);
-        let summary = match session.refresh.take() {
+        let asked = session.refresh.take();
+        let summary = match asked {
             Some(summary) => summary,
             None if full || cold => true,
             None => return None,
         };
+        // Handed on with a summary: a compaction of equipe's own, the person's
+        // (`/compact`) or for room. Starting clean (`/clear`) is none.
+        if summary {
+            let trigger = if asked.is_some() { CompactTrigger::Manual } else { CompactTrigger::Auto };
+            self.compaction_began(id, compact::By::Equipe, trigger);
+        }
+        let session = self.sessions.get_mut(&id)?;
         session.claude_session = None;
         session.desk_context = None;
         session.context = None;
@@ -6048,6 +6074,7 @@ check what is already done in your worktree first."
             let _ = journal.clear_engine_session(id);
         }
         self.publish(Event::Notice { session: id, text: shown });
+        self.compaction_ended(id, None);
         Some(if summary && !tail.is_empty() {
             format!(
                 "[equipe: this is a fresh conversation — {why}. Where the last one left off, latest last:\n{tail}\nYour memory and the board hold the rest.]"
@@ -6695,6 +6722,12 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
         Activity::SubagentStep { id: sub, step } => Event::SubagentStep { session: id, id: sub, step },
         Activity::SubagentEnded { id: sub } => Event::SubagentEnded { session: id, id: sub },
         Activity::Steered(text) => Event::Steered { session: id, text },
+        // Filled in on the loop, which knows who it is and how long the last ones took.
+        Activity::Compacting => {
+            Event::Compacting { session: id, member: None, project: None, trigger: CompactTrigger::Auto, started_at: 0, estimate_ms: 0 }
+        }
+        Activity::Compacted => Event::Compacted { session: id, member: None, project: None, trigger: CompactTrigger::Auto, took_ms: 0 },
+        Activity::CompactFailed(message) => Event::CompactFailed { session: id, member: None, project: None, trigger: CompactTrigger::Auto, message },
         Activity::Plan { five_hour, seven_day } => {
             let window = |w: Option<(f64, i64)>| {
                 w.map(|(used, resets_at)| equipe_protocol::PlanWindow { used_percent: (used * 100.0).round().clamp(0.0, 100.0) as u8, resets_at })

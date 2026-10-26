@@ -880,6 +880,7 @@
   "view.more_steps.other": "ほか{count}ステップ",
   "view.more_subagents.one": "+サブエージェント{count}個",
   "view.more_subagents.other": "+サブエージェント{count}個",
+  "view.compacting": "会話を要約中 · {elapsed} · いつもは約{usual}",
   "view.more_waiting": "ほか{n}件待機中",
   "view.new_lines.one": "↓ 新しい行 {count}",
   "view.new_lines.other": "↓ 新しい行 {count}",

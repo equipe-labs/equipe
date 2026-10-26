@@ -62,6 +62,13 @@ pub enum Activity {
     SubagentEnded { id: String },
     /// A message sent while the turn ran was read, at this point of it.
     Steered(String),
+    /// The engine began compacting the conversation — summarizing it to make
+    /// room — before its next request. Said once, however often it repeats.
+    Compacting,
+    /// The compaction finished.
+    Compacted,
+    /// The compaction failed: why, as the engine said it.
+    CompactFailed(String),
 }
 
 /// How a tool use ended, as the engine answered it.

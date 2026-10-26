@@ -902,6 +902,7 @@
   "view.more_steps.other": "{count} more steps",
   "view.more_subagents.one": "+{count} more subagent",
   "view.more_subagents.other": "+{count} more subagents",
+  "view.compacting": "Summarizing its conversation · {elapsed} · usually about {usual}",
   "view.more_waiting": "{n} more waiting",
   "view.new_lines.one": "↓ {count} new line",
   "view.new_lines.other": "↓ {count} new lines",

@@ -1068,6 +1068,7 @@ mod tests {
             steering_in: vec![],
             lane: None,
             estimate: None,
+            compacting: None,
         }
     }
 

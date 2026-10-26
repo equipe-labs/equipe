@@ -527,6 +527,19 @@ mod tests {
     }
 
     #[test]
+    fn a_compaction_makes_no_line_and_leaves_the_reply_open() {
+        use crate::CompactTrigger::Auto;
+        let mut t = Transcript::default();
+        t.apply(&delta("Look"));
+        let (member, project) = (Some("pm".to_owned()), None);
+        assert!(t.apply(&Event::Compacting { session: 1, member: member.clone(), project: project.clone(), trigger: Auto, started_at: 1, estimate_ms: 2 }).is_empty());
+        assert!(t.apply(&Event::Compacted { session: 1, member: member.clone(), project: project.clone(), trigger: Auto, took_ms: 2 }).is_empty());
+        assert!(t.apply(&Event::CompactFailed { session: 1, member, project, trigger: Auto, message: "x".into() }).is_empty());
+        t.apply(&delta("ing."));
+        assert_eq!(t.entries(), &[Entry::Reply { text: "Looking.".into() }]);
+    }
+
+    #[test]
     fn a_steer_read_ends_the_reply_so_far() {
         let mut t = Transcript::default();
         t.apply(&delta("Look"));

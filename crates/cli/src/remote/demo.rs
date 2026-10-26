@@ -153,6 +153,7 @@ fn session(id: SessionId, role: &str, project: &str, recent: Vec<Entry>, work: O
         mode: None,
         effort: None,
         subagents: Vec::new(),
+        compacting: None,
     }
 }
 

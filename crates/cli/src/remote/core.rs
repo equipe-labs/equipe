@@ -1001,6 +1001,7 @@ pub(crate) mod tests {
             work: None,
             mode: None,
             effort: None,
+            compacting: None,
         };
         let snapshot = Snapshot { squad: "acme".into(), sessions: (1..=8).map(session).collect(), ..Snapshot::default() };
         assert!(serde_json::to_string(&snapshot).unwrap().len() > 2 * RELAY_FRAME_MAX);
