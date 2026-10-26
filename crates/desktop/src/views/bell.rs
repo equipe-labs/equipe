@@ -84,6 +84,10 @@ impl Shell {
     /// first time there is something to tell, the sheet waits for them,
     /// saying why before macOS asks.
     pub fn announce(&mut self, alerts: Vec<Alert>, window: &Window, cx: &mut Context<Self>) {
+        // With several windows open, the first tells: nothing comes twice.
+        if cx.windows().first().is_some_and(|w| w.window_id() != window.window_handle().window_id()) {
+            return;
+        }
         let pings = self.remembered.pings;
         let alerts: Vec<Alert> = notify::only_awaited(alerts, &self.bell.awaiting).into_iter().filter(|a| pings.wants(a)).collect();
         // In sight, the cards say it — but a browser waiting for the person's

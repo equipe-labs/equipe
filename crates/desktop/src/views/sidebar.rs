@@ -190,13 +190,41 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let nav_rows = v_flex()
         .gap(px(1.))
         .child(nav("nav-new", IconName::Plus, t!("sidebar.new_message").into(), 0, 0, false).on_click(cx.listener(|this, _, window, cx| this.new_message(window, cx))))
-        .child(nav("nav-pm", IconName::Bot, t!("sidebar.pm_talk").into(), 0, 0, pm_on).on_click(cx.listener(|this, _, window, cx| this.open_side(Side::Pm, window, cx))))
-        .child(nav("nav-inbox", IconName::Inbox, t!("board.menu_inbox").into(), needs, 0, on_board && menu == Menu::Inbox).on_click(cx.listener(|this, _, _, cx| this.open_side_menu(Menu::Inbox, cx))))
-        .child(nav("nav-working", IconName::LoaderCircle, t!("board.menu_working").into(), 0, working, on_board && menu == Menu::Working).on_click(cx.listener(|this, _, _, cx| this.open_side_menu(Menu::Working, cx))))
-        .child(nav("nav-all", IconName::LayoutDashboard, t!("board.menu_all").into(), 0, 0, on_board && matches!(menu, Menu::All | Menu::View(_))).on_click(cx.listener(|this, _, _, cx| this.open_side_menu(Menu::All, cx))))
-        .child(nav("nav-overview", IconName::ChartPie, t!("overview.title").into(), 0, 0, shell.screen == Screen::Overview).on_click(cx.listener(|this, _, _, cx| this.open_overview(cx))))
-        .child(nav("nav-roadmap", IconName::Map, t!("roadmap.title").into(), 0, 0, shell.screen == Screen::Roadmap).on_click(cx.listener(|this, _, _, cx| this.open_roadmap(cx))))
-        .child(nav("nav-design", IconName::Palette, t!("design.title").into(), 0, 0, shell.screen == Screen::Design).on_click(cx.listener(|this, _, _, cx| this.open_design(cx))));
+        .child(nav("nav-pm", IconName::Bot, t!("sidebar.pm_talk").into(), 0, 0, pm_on).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Chat, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
+                this.open_side(Side::Pm, window, cx);
+            }
+        })))
+        .child(nav("nav-inbox", IconName::Inbox, t!("board.menu_inbox").into(), needs, 0, on_board && menu == Menu::Inbox).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Board, menu: Menu::Inbox, member: None, ticket: None }), window, cx) {
+                this.open_side_menu(Menu::Inbox, cx);
+            }
+        })))
+        .child(nav("nav-working", IconName::LoaderCircle, t!("board.menu_working").into(), 0, working, on_board && menu == Menu::Working).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Board, menu: Menu::Working, member: None, ticket: None }), window, cx) {
+                this.open_side_menu(Menu::Working, cx);
+            }
+        })))
+        .child(nav("nav-all", IconName::LayoutDashboard, t!("board.menu_all").into(), 0, 0, on_board && matches!(menu, Menu::All | Menu::View(_))).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Board, menu: Menu::All, member: None, ticket: None }), window, cx) {
+                this.open_side_menu(Menu::All, cx);
+            }
+        })))
+        .child(nav("nav-overview", IconName::ChartPie, t!("overview.title").into(), 0, 0, shell.screen == Screen::Overview).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Overview, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
+                this.open_overview(cx);
+            }
+        })))
+        .child(nav("nav-roadmap", IconName::Map, t!("roadmap.title").into(), 0, 0, shell.screen == Screen::Roadmap).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Roadmap, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
+                this.open_roadmap(cx);
+            }
+        })))
+        .child(nav("nav-design", IconName::Palette, t!("design.title").into(), 0, 0, shell.screen == Screen::Design).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Design, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
+                this.open_design(cx);
+            }
+        })));
 
     // The live work, a group per project; rows that just came arrive, rows
     // that just went leave, eased (`SideMotion`).
@@ -461,7 +489,15 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, cx: &mut C
         .cursor_pointer()
         .hover(move |s| s.bg(p.side_hover))
         .tip_at(p, name_tip, None, gpui_kit::base::Placement::Right)
-        .on_click(cx.listener(move |this, _, window, cx| this.side_head_click(HeadClick::Name, name_project.clone(), window, cx)))
+        .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+            // ⌘-click: the project in a tab of its own (the squad's folder has no slice to open).
+            if let Some(project) = name_project.clone()
+                && this.open_elsewhere(e, super::elsewhere::Goal::Project(project), window, cx)
+            {
+                return;
+            }
+            this.side_head_click(HeadClick::Name, name_project.clone(), window, cx)
+        }))
         .child(ident)
         .child(crate::ui::steady(label, FontWeight::SEMIBOLD, focused, true).text_color(name_color))
         .when(hq, |n| n.child(hq_badge(p)));
@@ -621,7 +657,12 @@ fn ticket_row(shell: &Shell, t: &Ticket, live: Live, on: bool, arrives: bool, cx
     // stands, who is on it, what it asks.
     let row = super::ticket_card::hover_link(row_shell(p, ("ticket", id as usize), on), id, super::ticket_card::Side::Right)
         .group(group.clone())
-        .on_click(cx.listener(move |this, _, window, cx| this.open_ticket_row(id, window, cx)))
+        .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+            let goal = super::elsewhere::Goal::Place(Place { screen: Screen::Chat, menu: this.board.view.menu, member: None, ticket: Some(id) });
+            if !this.open_elsewhere(e, goal, window, cx) {
+                this.open_ticket_row(id, window, cx);
+            }
+        }))
         .child(mark_element(p, mark, if mark == Mark::Spinner { shell.spin(cx) } else { 0. }))
         .child(fading_title(p, t.title.clone(), on, false))
         .children(time.map(|time| div().flex_none().text_size(px(11.)).text_color(p.muted).when(yes, |d| d.group_hover(group.clone(), |s| s.invisible())).child(time)))
@@ -927,7 +968,12 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, cx: &mut Co
     row_shell(p, ("member", session), on)
         .h(px(TEAM_ROW))
         .group(group.clone())
-        .on_click(cx.listener(move |this, _, window, cx| this.select_member(session, window, cx)))
+        .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+            let goal = super::elsewhere::Goal::Place(Place { screen: Screen::Chat, menu: this.board.view.menu, member: Some(session), ticket: None });
+            if !this.open_elsewhere(e, goal, window, cx) {
+                this.select_member(session, window, cx);
+            }
+        }))
         .child(mark_element(p, mark, if mark == Mark::Spinner { shell.spin(cx) } else { 0. }))
         // Name, then what it is doing against the right edge, then its engine:
         // each in the same place on every row.
@@ -1456,7 +1502,7 @@ impl Shell {
     // ── back and forward ──
 
     /// Where the window is now, for back and forward.
-    fn place(&self) -> Place {
+    pub fn place(&self) -> Place {
         Place { screen: self.screen, menu: self.board.view.menu, member: self.model.selected, ticket: self.model.opened }
     }
 
@@ -1489,7 +1535,7 @@ impl Shell {
         }
     }
 
-    fn go_to(&mut self, place: Place, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn go_to(&mut self, place: Place, window: &mut Window, cx: &mut Context<Self>) {
         match place.screen {
             Screen::Board => {
                 self.board.view.menu = place.menu;
