@@ -412,6 +412,18 @@ impl Sandbox {
         Ok(out.lines().filter(|l| !l.is_empty() && !l.ends_with(".gitkeep")).map(str::to_owned).collect())
     }
 
+    /// The files the worktree differs in from where the branch started —
+    /// committed or not, new files included — by path.
+    pub fn touched_files(&self) -> Result<Vec<String>> {
+        let quiet = ["-c", "core.quotePath=false"];
+        let tracked = git(&self.path, &[&quiet[..], &["diff", "--name-only", &self.base]].concat())?;
+        let new = git(&self.path, &[&quiet[..], &["ls-files", "--others", "--exclude-standard"]].concat())?;
+        let mut files: Vec<String> = tracked.lines().chain(new.lines()).filter(|l| !l.is_empty()).map(str::to_owned).collect();
+        files.sort();
+        files.dedup();
+        Ok(files)
+    }
+
     /// Whether the branch has any commit beyond where it started.
     pub fn has_commits(&self) -> bool {
         git(&self.repo, &["rev-list", "--count", &format!("{}..{}", self.base, self.branch)])

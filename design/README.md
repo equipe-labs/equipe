@@ -11,7 +11,7 @@
 | `scripts/contrast.mjs`의 조합 목록 | `docs/contrast.md` |
 | `scripts/sheets.mjs`·`reference/components.css` | `components/*-{light,dark}.png` (`npm run sheets`) |
 
-값이나 이름을 바꾸려면 `tokens/`를 고치고 `npm run check`. 생성 파일의 형식(이름·단위)이 문제면 `scripts/build.mjs`를 고친다. 생성 파일만 고치면 다음 빌드에서 사라지고, 원천과 어긋난 값이 화면에 남는다. 다른 저장소(equipe-site·equipe-app)는 생성 파일을 복사해 쓰고 거기서도 고치지 않는다.
+값이나 이름을 바꾸려면 `tokens/`를 고치고 `npm run check`. 생성 파일의 형식(이름·단위)이 문제면 `scripts/build.mjs`를 고친다. 생성 파일만 고치면 다음 빌드에서 사라지고, 원천과 어긋난 값이 화면에 남는다. 다른 저장소(equipe-site·equipe-app)는 생성 파일을 복사해 쓰고 거기서도 고치지 않는다. 사본은 `copies.json`에 적고, 원천에선 `npm run check:copies`, 각 저장소 CI에선 사본마다 한 줄(`curl … | diff`)로 어긋남을 잡는다(`docs/DESIGN-SYSTEM.md` 'Copies').
 
 ## 폴더
 
@@ -39,6 +39,7 @@ npm run contrast     # 대비 계산 → docs/contrast.md (미달이 있으면 �
 npm run lint:css     # reference/components.css에 원시값이 없는지
 npm run check        # 위 셋 한 번에
 npm run sheets       # components/*.png 재렌더 (Chrome 필요, 글꼴은 Google Fonts·jsDelivr 네트워크)
+npm run check:copies # copies.json에 적은 다른 저장소의 사본이 생성 파일과 같은지 (../<저장소> 또는 <저장소>=<경로>)
 ```
 `crates/core`의 테스트(`design::tokens`)가 `tokens.json`을 데몬과 같은 파서로 읽어 문제가 하나도 없는지, 라이트·다크가 다 있는지 확인한다.
 

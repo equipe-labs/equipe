@@ -11,15 +11,32 @@ daemon, so a screen on another Mac or the phone never reads the daemon's disk.
 
 | Whose | Folder |
 |---|---|
-| The squad's | `~/.equipe/squads/<squad>/home/design/` — `design/` at the top of the squad's folder |
-| A project's own | `<repository>/design/` — when a project looks different from the rest of the squad |
+| A project's own | `<repository>/design/` — its tokens, components, brand and mockups, versioned with its code |
+| The squad's | `~/.equipe/squads/<squad>/home/design/` — only the principles every project shares |
 | A draft | `design/` in the worktree of a ticket **in review** — shown as "검토 중 · T-n" until the person accepts it |
 
-The squad's folder is where the designer starts and where task tickets'
-work lands when the person accepts it, so a designer's brand or design task
-updates `design/` in its worktree and the change becomes the squad's on
-acceptance. A code ticket on a project with its own look changes that
-repository's `design/` the same way.
+A project's design assets are made in its repository from the start, never
+drafted in the squad's folder and carried over later. The designer's work on
+them is a `code` ticket on that repository, and on it the designer changes
+only `design/`: `submit_for_review` refuses a designer's code-ticket hand-in
+whose worktree changes anything outside it — committed or not, new files
+included — and names the files, to undo and propose to an engineer
+(`runtime::design_qa`). Applying the system to screens is an engineer's
+ticket. The designer's own code ticket skips design QA. A task ticket still
+lands the squad's `design/` on acceptance, for the shared principles.
+
+## Done means on a screen
+
+A design system, token or component change is done when it is on a real
+screen of at least one platform, checked with before and after screenshots —
+or when the designer has proposed the code ticket that applies it, one for
+each platform. Colours and sizes are judged on a real screen of the product,
+not only on a sheet of swatches. A component's rules (`components/*.md` and
+its preview) are the spec the platform ticket turns into a component in that
+platform's code; design QA compares the built screens with that component
+and the sheet. What the designer couldn't confirm — a licence, a platform
+default, a taste check — goes up as a proposal ticket each, in the same
+hand-in. The designer's charter says all this (`roles.rs`).
 
 A folder counts as a design system when it holds `tokens.json` or
 `guidelines.md`. A project's `design/` without either is just a folder.
@@ -41,6 +58,40 @@ equipe's own is [`design/`](../design/README.md) at the top of this
 repository: its layered sources are in `design/tokens/`, and `npm run build`
 there writes `design/tokens.json` (light as `$value`, dark in
 `$extensions.mode.dark`) — a generated file, never edited by hand.
+
+## Copies
+
+Another repository may use a generated file — the CSS, Swift, Kotlin or
+Rust of the tokens — as a copy, never edited there. Each copy is listed in
+the source's `design/copies.json`:
+
+```json
+{
+  "source": "https://raw.githubusercontent.com/<owner>/<repo>/main/design/",
+  "copies": [
+    { "from": "build/swift/EquipeTokens.swift", "repo": "equipe-app", "to": "ios/Shared/EquipeTokens.swift" }
+  ]
+}
+```
+
+and checked two ways:
+
+- **From the source**, after a build: `npm run check:copies` in `design/`
+  compares each copy byte for byte with its generated file, finding the
+  other repositories next to this one (`../<repo>`) or where given
+  (`npm run check:copies -- equipe-app=~/src/equipe-app`). A copy that
+  differs, is missing, or a repository not checked out fails it.
+- **In each repository that copies**, one CI line per copy, so a hand edit or
+  a stale copy fails its build:
+
+  ```sh
+  curl -fsSL "$SOURCE/build/swift/EquipeTokens.swift" | diff -u - ios/Shared/EquipeTokens.swift
+  ```
+
+  (`$SOURCE` is `source` above; a private source checks it out instead.)
+
+To update a copy: change the tokens, `npm run build`, copy the generated file
+again, and commit both — the source first, so the copy's CI compares with it.
 
 ## `tokens.json`
 
