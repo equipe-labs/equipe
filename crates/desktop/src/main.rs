@@ -44,6 +44,9 @@ mod state;
 mod stream;
 mod target;
 mod theme;
+// The design system's generated file, included from its source (`design/`), never copied or edited here.
+#[path = "../../../design/build/rust/tokens.rs"]
+mod tokens;
 mod team;
 mod tickets;
 mod tips;

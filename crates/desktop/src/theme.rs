@@ -4,6 +4,8 @@
 
 use gpui_kit::*;
 
+use crate::tokens;
+
 /// Light or dark, as the person picked in settings (kept with the window's
 /// other choices, in `target.rs`); the Mac's by default.
 pub use crate::target::Appearance;
@@ -67,10 +69,8 @@ pub struct Palette {
     pub accent_bg: Rgba,
     pub code_bg: Rgba,
     pub raised: Rgba,
-    /// The main action's fill (a button, the composer's send): in the dark a
-    /// deep slate of the accent's hue, a step above the cards, with the text
-    /// colour on it — emphasis that belongs to the window rather than a white
-    /// slab; in the light, the text colour, inverted.
+    /// The main action's fill (a button, the composer's send): the text
+    /// colour, inverted — near-black in the light, bone in the dark.
     pub primary: Rgba,
     pub on_primary: Rgba,
     /// Words or a mark on an `accent` fill (a count badge, a tick).
@@ -82,6 +82,11 @@ pub struct Palette {
     /// Something went wrong.
     pub red: Rgba,
     members: [Rgba; 8],
+}
+
+/// A token colour (`0xRRGGBBAA`) as GPUI draws it.
+fn c(token: u32) -> Rgba {
+    rgba(token)
 }
 
 impl Palette {
@@ -109,57 +114,59 @@ impl Palette {
     }
 
     fn dark() -> Self {
+        let t = tokens::palette(true);
         Self {
-            bg: rgb(0x0A0A0C),
+            bg: c(t.color_bg),
             side: rgb(0x0E0E11),
             side_hover: rgb(0x19191D),
             side_sel: rgb(0x222227),
             wash: rgba(0xFFFFFF0E),
-            text: rgb(0xEFEDE7),
+            text: c(t.color_text),
             prose: rgb(0xE4E2DC),
             text2: rgb(0xCFCCC4),
             // At least 4.5:1 (WCAG AA, small text) on every surface it sits
             // on, the selected sidebar row and the popover included.
-            muted: rgb(0x8A8C93),
-            hair: rgba(0xE9E6DF24),
-            accent: rgb(0xB4CDE6),
-            accent_bg: rgba(0xB4CDE61A),
-            code_bg: rgb(0x111114),
-            raised: rgb(0x141417),
-            primary: rgb(0x2F4256),
-            on_primary: rgb(0xEFEDE7),
-            on_accent: rgb(0x0A0A0C),
-            amber: rgb(0xE2B865),
-            orange: rgb(0xEC9A62),
-            red: rgb(0xEE7B74),
+            muted: c(t.color_muted),
+            hair: c(t.color_line),
+            accent: c(t.color_accent),
+            accent_bg: c(t.color_accent_bg),
+            code_bg: c(t.color_sunken),
+            raised: c(t.color_raised),
+            primary: c(t.color_action),
+            on_primary: c(t.color_on_action),
+            on_accent: c(t.color_on_accent),
+            amber: c(t.color_work),
+            orange: c(t.color_wait),
+            red: c(t.color_err),
             members: [0xE8BE78, 0xEC96BE, 0x78BEF0, 0x8CD096, 0xB6A2F2, 0x6ED4C8, 0xF0A06E, 0xCDD478].map(rgb),
         }
     }
 
     fn light() -> Self {
+        let t = tokens::palette(false);
         Self {
-            bg: rgb(0xF6F5F1),
+            bg: c(t.color_bg),
             side: rgb(0xEFEEE9),
             side_hover: rgb(0xE6E5DF),
             side_sel: rgb(0xDDDCD5),
             wash: rgba(0x0000000B),
-            text: rgb(0x15161A),
+            text: c(t.color_text),
             prose: rgb(0x1F2024),
             text2: rgb(0x3A3C42),
-            muted: rgb(0x5E6068),
-            hair: rgba(0x14141424),
-            accent: rgb(0x2E5C8A),
-            accent_bg: rgba(0x2E5C8A17),
-            code_bg: rgb(0xECEBE6),
-            raised: rgb(0xFFFFFF),
-            primary: rgb(0x15161A),
-            on_primary: rgb(0xF6F5F1),
-            on_accent: rgb(0xF6F5F1),
+            muted: c(t.color_muted),
+            hair: c(t.color_line),
+            accent: c(t.color_accent),
+            accent_bg: c(t.color_accent_bg),
+            code_bg: c(t.color_sunken),
+            raised: c(t.color_raised),
+            primary: c(t.color_action),
+            on_primary: c(t.color_on_action),
+            on_accent: c(t.color_on_accent),
             // Darker than the dark appearance's, to be read as words (a
             // status in the sidebar) at 4.5:1 on any surface.
-            amber: rgb(0x825600),
-            orange: rgb(0xA04610),
-            red: rgb(0xAD2E27),
+            amber: c(t.color_work),
+            orange: c(t.color_wait),
+            red: c(t.color_err),
             members: [0xA06814, 0xB0326E, 0x1E68AA, 0x28803C, 0x6446BE, 0x14807A, 0xB4501E, 0x6E7814].map(rgb),
         }
     }
@@ -196,24 +203,24 @@ pub const SANS: &str = "Helvetica Neue";
 // wants more leading than Latin: reading text is 15 on 25 (1.65).
 
 /// Reading text: replies, your messages, the composer.
-pub const BODY: f32 = 15.;
-pub const BODY_LINE: f32 = 25.;
+pub const BODY: f32 = tokens::TYPE_BODY.size;
+pub const BODY_LINE: f32 = tokens::TYPE_BODY.line;
 /// The interface: rows, buttons, menus.
-pub const UI: f32 = 14.;
+pub const UI: f32 = tokens::TYPE_UI.size;
 /// Text at the interface size read as text (a ticket's description, an ask).
 pub const UI_PROSE_LINE: f32 = 23.;
 /// Secondary text: notes, tool rows, thoughts, hints.
-pub const SMALL: f32 = 13.;
-pub const SMALL_LINE: f32 = 20.;
+pub const SMALL: f32 = tokens::TYPE_SMALL.size;
+pub const SMALL_LINE: f32 = tokens::TYPE_SMALL.line;
 /// Meta: how long, when, how many.
-pub const META: f32 = 12.;
-pub const META_LINE: f32 = 18.;
+pub const META: f32 = tokens::TYPE_META.size;
+pub const META_LINE: f32 = tokens::TYPE_META.line;
 
 /// The conversation's column, the composer's with it.
-pub const COLUMN: f32 = 720.;
+pub const COLUMN: f32 = tokens::LAYOUT_COLUMN;
 /// The measure: a reply's text is no wider than this — about 40 Korean
 /// characters, or 75 Latin, at 15. Cards, the composer and the column are wider.
-pub const MEASURE: f32 = 600.;
+pub const MEASURE: f32 = tokens::LAYOUT_MEASURE;
 /// Between paragraphs: 0.7 of the body size.
 pub const PARAGRAPH_GAP: f32 = 11.;
 /// Between a list's items: tighter than paragraphs, so a list reads as one.
@@ -243,22 +250,22 @@ pub const MONO: &str = "Menlo";
 // Controls are 28 tall with 16-point icons; a text field is 36; a menu or list
 // row is 32. Motion is short and eases out (`crate::motion`).
 
-pub const S3: f32 = 12.;
-pub const S6: f32 = 24.;
+pub const S3: f32 = tokens::SPACE_3;
+pub const S6: f32 = tokens::SPACE_5;
 
-pub const R_SM: f32 = 6.;
-pub const R_MD: f32 = 8.;
-pub const R_LG: f32 = 12.;
-pub const R_XL: f32 = 16.;
+pub const R_SM: f32 = tokens::RADIUS_SM;
+pub const R_MD: f32 = tokens::RADIUS_MD;
+pub const R_LG: f32 = tokens::RADIUS_LG;
+pub const R_XL: f32 = tokens::RADIUS_XL;
 
 /// Buttons, pickers and icon buttons.
-pub const CONTROL: f32 = 28.;
+pub const CONTROL: f32 = tokens::SIZE_BUTTON;
 /// A one-line text field, and the buttons on its line.
-pub const FIELD: f32 = 36.;
+pub const FIELD: f32 = tokens::SIZE_FIELD;
 /// A row of a menu, a list or a chooser.
-pub const ROW: f32 = 32.;
-pub const ICON: f32 = 16.;
-pub const ICON_SM: f32 = 14.;
+pub const ROW: f32 = tokens::SIZE_ROW;
+pub const ICON: f32 = tokens::SIZE_ICON_SM;
+pub const ICON_SM: f32 = tokens::SIZE_ICON_SM;
 /// Popovers and tooltips sit this far from what opened them.
 pub const GAP: f32 = 6.;
 
@@ -287,23 +294,23 @@ impl Palette {
 
     /// What went wrong.
     pub fn danger(&self) -> Rgba {
-        if self.is_dark() { rgb(0xF0918A) } else { rgb(0xB3261E) }
+        c(tokens::palette(self.is_dark()).color_err)
     }
 
     pub fn danger_bg(&self) -> Rgba {
-        if self.is_dark() { rgba(0xF0918A1F) } else { rgba(0xB3261E14) }
+        c(tokens::palette(self.is_dark()).color_err_bg)
     }
 
     // ── controls ──
 
     /// The main button under the pointer: a step lighter (dark) or softer (light).
     pub fn primary_hover(&self) -> Rgba {
-        if self.is_dark() { rgb(0x384D63) } else { rgb(0x2C2E34) }
+        c(tokens::palette(self.is_dark()).color_action_hover)
     }
 
     /// The main button held down: a step deeper.
     pub fn primary_press(&self) -> Rgba {
-        if self.is_dark() { rgb(0x283849) } else { rgb(0x050506) }
+        c(tokens::palette(self.is_dark()).color_action_pressed)
     }
 
     /// A key hint inside the main button (⌘↵): the label's colour, held back.
@@ -383,6 +390,25 @@ mod tests {
         assert!(Palette::new(Appearance::Dark.resolve(WindowAppearance::Light)).is_dark());
         assert!(Appearance::ALL.iter().all(|a| Appearance::parse(a.code()) == Some(*a)));
         assert_eq!(Appearance::parse("sepia"), None);
+    }
+
+    /// The window's colours, scale and motion come from the design system's
+    /// generated tokens, not from values kept here.
+    #[test]
+    fn colours_scale_and_motion_come_from_the_tokens() {
+        use crate::tokens;
+        for (appearance, dark) in [(WindowAppearance::Dark, true), (WindowAppearance::Light, false)] {
+            let (p, t) = (Palette::new(appearance), tokens::palette(dark));
+            assert_eq!(p.accent, gpui_kit::rgba(t.color_accent));
+            assert_eq!(p.primary, gpui_kit::rgba(t.color_action));
+            assert_eq!(p.on_primary, gpui_kit::rgba(t.color_on_action));
+            assert_eq!(p.primary_hover(), gpui_kit::rgba(t.color_action_hover));
+            assert_eq!(p.danger(), gpui_kit::rgba(t.color_err));
+            assert_eq!(p.code_bg, gpui_kit::rgba(t.color_sunken));
+        }
+        assert_eq!((super::CONTROL, super::FIELD, super::ROW, super::R_LG, super::BODY), (28., 36., 32., 12., 15.));
+        assert_eq!(crate::motion::SLOW.as_millis() as u64, tokens::MOTION_DURATION_SLOW_MS);
+        assert_eq!(crate::motion::float_shadow(1.).len(), tokens::ELEVATION_FLOAT.len());
     }
 
     #[test]

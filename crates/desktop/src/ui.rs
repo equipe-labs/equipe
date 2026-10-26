@@ -65,7 +65,10 @@ impl Kind {
             Kind::Ghost => Look { fill: None, text: p.text2, key: p.muted, edge: clear, hover: p.wash, press: p.press() },
             Kind::Danger => {
                 let red = p.danger();
-                Look { fill: None, text: red, key: Rgba { a: 0.7, ..red }, edge: Rgba { a: 0.45, ..red }, hover: p.danger_bg(), press: Rgba { a: (p.danger_bg().a * 1.8).min(1.), ..red } }
+                // The v1 `err-bg` wash (12%) takes the light words to 4.4:1 on a hovered card
+                // (T-160 token note): hover a lighter one, the press keeps the token's.
+                let hover = Rgba { a: p.danger_bg().a * 0.65, ..p.danger_bg() };
+                Look { fill: None, text: red, key: Rgba { a: 0.75, ..red }, edge: Rgba { a: 0.45, ..red }, hover, press: Rgba { a: (p.danger_bg().a * 1.8).min(1.), ..red } }
             }
         }
     }
@@ -361,13 +364,16 @@ mod tests {
         }
     }
 
-    /// The main button is calm in the dark: no lighter than the text it
-    /// carries is dark, and nowhere near the white slab it was.
+    /// The main button is the text colour's fill in both appearances (design
+    /// system v1, chosen by the person 2026-10-27): in the dark, bone rather
+    /// than the slate it was.
     #[test]
-    fn the_dark_primary_is_a_fill_not_a_slab() {
-        let p = Palette::new(WindowAppearance::Dark);
-        assert!(contrast(p.primary, p.bg) < 3., "the main button glares: {:.2}", contrast(p.primary, p.bg));
-        assert!(contrast(p.primary, p.raised) > 1.3, "the main button vanishes into the card");
+    fn the_main_button_is_the_text_colours_fill() {
+        for appearance in [WindowAppearance::Dark, WindowAppearance::Light] {
+            let p = Palette::new(appearance);
+            assert_eq!(p.primary, p.text, "{appearance:?}");
+            assert!(contrast(p.primary, p.bg) >= 7., "{appearance:?}: {:.2}", contrast(p.primary, p.bg));
+        }
     }
 
     /// The knob reads on the track when on (3:1, a control's part), and the
