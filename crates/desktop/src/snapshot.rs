@@ -81,9 +81,15 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
             let started = std::time::Instant::now();
             let timed = verb.clone();
             let _ = cx.update_window(handle, move |_, window, cx| match verb.as_str() {
+                "windows" => eprintln!("windows: {}", cx.windows().len()),
                 "shot" => match window.render_to_image() {
                     Ok(image) => eprintln!("shot {arg}: {:?}", image.save(&arg)),
                     Err(err) => eprintln!("shot failed: {err}"),
+                },
+                // The window opened last (⌘-click), as it looks.
+                "shotlast" => match cx.windows().last().map(|w| w.update(cx, |_, window, _| window.render_to_image())) {
+                    Some(Ok(Ok(image))) => eprintln!("shot {arg}: {:?}", image.save(&arg)),
+                    _ => eprintln!("shot failed"),
                 },
                 "say" | "type" | "memo" => shell.update(cx, |shell, cx| {
                     shell.composer.set_text(&arg, window, cx);
@@ -644,13 +650,15 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     window.dispatch_event(moved, cx);
                 }
                 // A click (press and release) at `x,y`.
-                "click" => {
+                // `cmdclick:` and `shiftclick:` the same with ⌘ or ⇧ held (a new tab, a new window).
+                "click" | "cmdclick" | "shiftclick" => {
                     let (x, y) = arg.split_once(',').map(|(x, y)| (x.trim().parse().unwrap_or(0.), y.trim().parse().unwrap_or(0.))).unwrap_or((0f32, 0f32));
                     let at = point(px(x), px(y));
-                    let down = MouseDownEvent { button: MouseButton::Left, position: at, modifiers: Modifiers::default(), click_count: 1, first_mouse: false };
+                    let modifiers = Modifiers { platform: verb == "cmdclick", shift: verb == "shiftclick", ..Default::default() };
+                    let down = MouseDownEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1, first_mouse: false };
                     let down = window.input_from_platform(PlatformInput::MouseDown(down));
                     window.dispatch_event(down, cx);
-                    let up = MouseUpEvent { button: MouseButton::Left, position: at, modifiers: Modifiers::default(), click_count: 1 };
+                    let up = MouseUpEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1 };
                     let up = window.input_from_platform(PlatformInput::MouseUp(up));
                     window.dispatch_event(up, cx);
                 }

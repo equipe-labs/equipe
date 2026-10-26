@@ -190,6 +190,8 @@ pub struct Shell {
     pub panes: pane::Panes,
     /// The answer boxes of the cards tickets waiting for the person ask on.
     pub turn: views::yourturn::TurnUi,
+    /// Where this window was opened to go (⌘-click elsewhere), once connected.
+    pub goal: Option<views::elsewhere::Goal>,
     /// The boxes of members' asks for a secret.
     pub secrets: views::secrets::SecretsUi,
     /// The boxes the person writes to a member in, on its request for permission.
@@ -331,6 +333,7 @@ impl Shell {
             board: BoardUi::new(window, cx, fetched_tx),
             panes: pane::Panes::new(cx),
             turn: Default::default(),
+            goal: None,
             secrets: Default::default(),
             approval_words: Default::default(),
             decide: Default::default(),
@@ -603,10 +606,21 @@ impl Shell {
                 cx.stop_propagation();
             }
         }));
+        // Several windows: what is drawn inside text views reaches the shell of
+        // the window in front — where the click is.
+        shell._subscriptions.push(cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() {
+                cx.set_global(render::ShellRef(cx.entity().downgrade()));
+            }
+        }));
         shell.attach(Target::new(endpoint, env!("CARGO_PKG_VERSION")), window, cx);
         shell.composer.focus(window, cx);
-        shell.watch_inbox(cx);
-        shell.open_start(window, cx);
+        // One more window: the first takes what other apps share and
+        // greets the person; this one only goes where it was opened to go.
+        if !views::elsewhere::opening_another() {
+            shell.watch_inbox(cx);
+            shell.open_start(window, cx);
+        }
         shell
     }
 
@@ -620,6 +634,7 @@ impl Shell {
         self.chat_sync(cx);
         self.board_sync(cx);
         self.sync_browser(window, cx);
+        self.reach_goal(window, cx);
     }
 
     /// Tell the browser panel what it follows: this daemon and squad, the
@@ -1997,7 +2012,7 @@ fn main() {
                 let _ = window.update(cx, |_, window, _| window.activate_window());
             }
             None => {
-                open_main_window(cx);
+                open_app_window(cx);
             }
         }
         cx.activate(true);
@@ -2012,18 +2027,25 @@ fn main() {
         app_menu(cx);
         views::composer::bind_keys(cx);
         #[allow(unused_variables)]
-        let (handle, shell) = open_main_window(cx);
+        let (handle, shell) = open_app_window(cx);
         cx.activate(true);
         #[cfg(feature = "snapshot")]
         snapshot::run(handle, shell, cx);
     });
 }
 
-/// The app's one window, with the conversation in it: at launch, and again
-/// from the Dock after it was closed.
-fn open_main_window(cx: &mut App) -> (AnyWindowHandle, Entity<Shell>) {
+/// A window of the app, with the conversation in it: at launch, from the
+/// Dock after it was closed, and for a place opened elsewhere
+/// (`views::elsewhere`) — a little down and right of the others, so it is
+/// seen to open. All in one tab group, so the Mac can make tabs of them.
+pub fn open_app_window(cx: &mut App) -> (AnyWindowHandle, Entity<Shell>) {
     {
-        let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
+        let others = cx.windows().len() as f32;
+        let mut bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
+        if others > 0. {
+            bounds.origin.x += px(28. * others);
+            bounds.origin.y += px(28. * others);
+        }
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(760.), px(520.))),
@@ -2032,6 +2054,7 @@ fn open_main_window(cx: &mut App) -> (AnyWindowHandle, Entity<Shell>) {
                 appears_transparent: true,
                 traffic_light_position: Some(point(px(views::sidebar::LIGHTS_AT.0), px(views::sidebar::LIGHTS_AT.1))),
             }),
+            tabbing_identifier: Some("equipe".to_owned()),
             ..Default::default()
         };
         let (handle, shell) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Shell::new(window, cx))).expect("failed to open window");

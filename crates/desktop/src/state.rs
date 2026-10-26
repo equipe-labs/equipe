@@ -1325,6 +1325,11 @@ impl Model {
         self.flash.take()
     }
 
+    /// Connected to the daemon, and told how things stand.
+    pub fn attached(&self) -> bool {
+        matches!(self.conn, Conn::Connected { .. })
+    }
+
     pub fn take_problem(&mut self) -> Option<String> {
         self.problem.take()
     }
