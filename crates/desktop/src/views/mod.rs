@@ -10,6 +10,7 @@ pub mod bell;
 pub mod board;
 pub mod browser;
 pub mod chat;
+pub mod compact;
 pub mod composer;
 pub mod connect;
 pub mod decide;

@@ -512,6 +512,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 .max_w(px(COLUMN))
                 .px_4()
                 .child(v_flex().min_h_0().children(approvals::for_you(shell, cx)).children(dock(shell, cx)).children(super::asklist::hint(shell, cx)))
+                .children(super::compact::band(shell, cx))
                 .child(div().flex_none().child(composer::render(shell, cx))),
         )
         .children(lightbox(shell, cx));
@@ -860,6 +861,7 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             .child(icon(Icon::Clock, 12., p.muted))
             .child(format!("{} · {}", worked.took(), worked.at))
             .into_any_element(),
+        Block::Summarized => super::compact::divider(p, rows.tones.added).into_any_element(),
         Block::Note(text) => {
             // A ticket's heading (`── T-12 …`).
             let chapter = text.starts_with('─');
@@ -989,7 +991,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
     };
     let group: SharedString = format!("reply-{key}").into();
     // After a group of calls or the news, a little air before the words.
-    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::HandOver { .. } | Block::Thought { .. } | Block::Worked(_));
+    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::HandOver { .. } | Block::Thought { .. } | Block::Worked(_) | Block::Summarized);
     let actions = (!live && rows.turn_ends.contains(&ix)).then(|| {
         let raw = text.to_owned();
         let mut items: Vec<AnyElement> = vec![action_button(p, ("reply-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))).into_any_element()];

@@ -328,6 +328,8 @@ pub struct Model {
     problem: Option<String>,
     /// Each member's conversation.
     pub convos: HashMap<SessionId, Convo>,
+    /// What is to be said to VoiceOver ([`Model::take_voice`]).
+    voice: Vec<Say>,
     /// Whose conversation is on screen.
     pub selected: Option<SessionId>,
     /// The ticket open on screen: its work in place of a conversation.
@@ -454,6 +456,7 @@ impl Model {
             flash: None,
             problem: None,
             convos: HashMap::new(),
+            voice: Vec::new(),
             selected: None,
             focus: None,
             opened: None,
@@ -754,9 +757,9 @@ impl Model {
             // The connecting screen's, kept by the shell.
             Update::Bridge(_) | Update::Leg(_) | Update::Door(_) => false,
             Update::Event(event) => {
-                let before = (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint());
+                let before = (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint(), self.compact_hint());
                 self.on_event(event, now);
-                let mut changed = before != (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint());
+                let mut changed = before != (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint(), self.compact_hint());
                 // The footer's "last event" moves when the minute does.
                 if let Conn::Connected { last_event } = &mut self.conn {
                     let stamp = Some(now);
@@ -768,6 +771,20 @@ impl Model {
                 changed
             }
         }
+    }
+
+    /// Which conversations are being summarized, to tell when the sidebar
+    /// must be drawn again.
+    fn compact_hint(&self) -> Vec<(SessionId, bool)> {
+        let mut now: Vec<(SessionId, bool)> = self.convos.iter().filter_map(|(s, c)| c.compact.map(|k| (*s, matches!(k, crate::convo::Compact::Running { .. })))).collect();
+        now.sort_unstable();
+        now
+    }
+
+    /// How long a member's conversation (or a lane's) has been summarized, if it is.
+    pub fn compacting_of(&self, member: SessionId) -> Option<std::time::Duration> {
+        let lanes = self.lanes.iter().filter(|l| l.of == member).map(|l| l.session);
+        std::iter::once(member).chain(lanes).filter_map(|s| self.convos.get(&s)).filter_map(|c| c.compacting_for()).max()
     }
 
     /// What settings show of the squad, to tell when it changed.
@@ -947,6 +964,16 @@ impl Model {
                 && viewed
             {
                 self.revision += 1;
+            }
+            // A summary beginning, done or failed in the conversation on
+            // screen is said to VoiceOver, once (the seconds never are).
+            if viewed {
+                match &event {
+                    Event::Compacting { trigger, .. } => self.voice.push(Say::Started(id, *trigger == equipe_core::protocol::CompactTrigger::Manual)),
+                    Event::Compacted { .. } => self.voice.push(Say::Done),
+                    Event::CompactFailed { .. } => self.voice.push(Say::Failed),
+                    _ => {}
+                }
             }
             // An answer: the shell tells it if it is to what the person last wrote.
             if let Event::TurnEnded { outcome: TurnOutcome::Completed | TurnOutcome::Incomplete, .. } = &event
@@ -1317,6 +1344,11 @@ impl Model {
             })
     }
 
+    /// What VoiceOver is to be told, once.
+    pub fn take_voice(&mut self) -> Vec<Say> {
+        std::mem::take(&mut self.voice)
+    }
+
     pub fn take_alerts(&mut self) -> Vec<Alert> {
         std::mem::take(&mut self.alerts)
     }
@@ -1580,6 +1612,20 @@ pub fn local_midnight(unix: u64) -> u64 {
 /// Now, in unix seconds: for the shell to hand the model.
 pub fn now_unix() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Something for VoiceOver to say about the conversation on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Say {
+    /// A summary began in this session's conversation (`true`: the person's `/compact`).
+    Started(SessionId, bool),
+    Done,
+    Failed,
+}
+
+/// Unix milliseconds now.
+pub fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
 /// A span of time, short: `45s`, `25m`, `3h`, `2d`.
