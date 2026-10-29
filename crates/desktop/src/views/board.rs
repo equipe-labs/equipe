@@ -31,6 +31,10 @@ const HEADING: f32 = 30.;
 /// The peek's width, and the window width under which it lies over the list.
 pub const PEEK: f32 = 420.;
 pub const PEEK_BESIDE_FROM: f32 = 1100.;
+/// The narrowest the ticket panel is dragged to.
+pub const PEEK_LEAST: f32 = 320.;
+/// What the list keeps beside a panel dragged wide.
+const LIST_LEAST: f32 = 420.;
 
 /// A question or a note being written about the pick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,8 +73,13 @@ pub struct BoardUi {
     /// The project list's search, and which header opened it.
     pub slice_search: Entity<InputState>,
     pub slice_place: &'static str,
+    /// The project list's box takes a folder's path to add, not a name to find.
+    pub adding_project: bool,
     pub flow: Option<Flow>,
     pub popover: Option<Popover>,
+    /// The popover a press outside just closed, and when: the same press on
+    /// its own control mustn't open it again.
+    pub popover_closed: Option<(Popover, std::time::Instant)>,
     pub list_scroll: ScrollHandle,
     pub peek_scroll: ScrollHandle,
     pub stats: HashMap<TicketId, (Seen, Stat)>,
@@ -96,6 +105,8 @@ pub struct BoardUi {
     pub sub_motion: std::cell::RefCell<super::sidebar::SubMotion>,
     /// A small menu out of the sidebar's foot.
     pub popup: Option<super::sidebar::Popup>,
+    /// The popup a press outside just closed, and when (as `popover_closed`).
+    pub popup_closed: Option<(super::sidebar::Popup, std::time::Instant)>,
     /// The language picked in settings for every screen; `None`: System.
     pub language: Option<equipe_core::i18n::Lang>,
     /// The language the inputs' placeholders were written in: when the one in
@@ -115,6 +126,8 @@ pub struct BoardUi {
     pub peek_width: f32,
     /// A width the peek is held at (the snapshot script's `peekw:`).
     pub peek_held: Option<f32>,
+    /// The ticket panel's edge being dragged: where it was pressed, and its width then.
+    pub peek_drag: Option<(f32, f32)>,
     /// Sends what is held back when its time comes (`Shell::ensure_undo_timer`).
     _undo_timer: Option<Task<()>>,
     /// 티켓's own: menus, the board's drag, the new ticket sheet, the page's edits.
@@ -148,8 +161,10 @@ impl BoardUi {
             naming: cx.new(|cx| InputState::new(window, cx).placeholder(t!("board.view_name_placeholder"))),
             slice_search: cx.new(|cx| InputState::new(window, cx).placeholder(t!("header.find_project"))),
             slice_place: "",
+            adding_project: false,
             flow: None,
             popover: None,
+            popover_closed: None,
             list_scroll: ScrollHandle::new(),
             peek_scroll: ScrollHandle::new(),
             stats: HashMap::new(),
@@ -167,6 +182,7 @@ impl BoardUi {
             side_motion: Default::default(),
             sub_motion: Default::default(),
             popup: None,
+            popup_closed: None,
             language: equipe_core::i18n::saved(&equipe_providers::credentials::equipe_home()),
             words: crate::i18n::lang(),
             history: Vec::new(),
@@ -176,6 +192,7 @@ impl BoardUi {
             list_width: 900.,
             peek_width: PEEK,
             peek_held: None,
+            peek_drag: None,
             _undo_timer: None,
             tk: super::tickets::TicketsUi::new(window, cx),
         }
@@ -242,10 +259,16 @@ impl Shell {
         let slice = self.board.slice_search.clone();
         let mut tickets = self.tickets_subscriptions(window, cx);
         tickets.extend(vec![
-            cx.subscribe_in(&slice, window, |_, _, event: &InputEvent, _, cx| {
-                if matches!(event, InputEvent::Change) {
-                    cx.notify();
+            cx.subscribe_in(&slice, window, |this, input, event: &InputEvent, _, cx| match event {
+                InputEvent::Change => cx.notify(),
+                // A path typed to add: sent as it is, read on the daemon's machine.
+                InputEvent::PressEnter { .. } if this.board.adding_project => {
+                    let path = input.read(cx).value().trim().to_owned();
+                    if !path.is_empty() {
+                        this.add_project(path, cx);
+                    }
                 }
+                _ => {}
             }),
             cx.subscribe_in(&search, window, |this, input, event: &InputEvent, window, cx| match event {
                 InputEvent::Change => {
@@ -500,6 +523,11 @@ impl Shell {
             }
             // A page waiting for the person: the panel, on it, in their hands.
             Need::Browser(page) => self.reveal_browser(page, cx),
+            // Typed into its card, in the peek.
+            Need::Secret(_) => {
+                self.board.view.peek = true;
+                cx.notify();
+            }
         }
     }
 
@@ -519,7 +547,7 @@ impl Shell {
                     self.board_yes(cx);
                 }
             }
-            Some(Need::Questions(_) | Need::Team(_) | Need::Accept(_) | Need::Browser(_)) | None => {}
+            Some(Need::Questions(_) | Need::Team(_) | Need::Accept(_) | Need::Browser(_) | Need::Secret(_)) | None => {}
         }
     }
 
@@ -731,6 +759,7 @@ impl Shell {
             }
             // Closed on its card (✕), where what it closes is in sight.
             Some(Need::Questions(_) | Need::Browser(_)) | None => {}
+            Some(Need::Secret(id)) => self.dismiss_secret_card(id, cx),
         }
     }
 
@@ -768,10 +797,12 @@ impl Shell {
 
     /// R: the words box at the foot of the peek.
     pub fn board_open_reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(t) = self.picked() else { return };
-        if self.picked_need().is_some_and(|n| matches!(n, Need::Permission(_))) {
-            return;
+        // A request for permission: R writes to the member on it.
+        if let Some(Need::Permission(id)) = self.picked_need() {
+            self.board.view.peek = true;
+            return self.open_words(id, window, cx);
         }
+        let Some(t) = self.picked() else { return };
         // A wait's card has its own boxes: R goes to the first.
         if t.status == TicketStatus::Waiting && !t.asks().is_empty() {
             let id = t.id;
@@ -1092,7 +1123,7 @@ impl Shell {
                 cx.notify();
             }
             "f" => {
-                self.board.popover = if self.board.popover == Some(Popover::Filter) { None } else { Some(Popover::Filter) };
+                self.toggle_popover(Popover::Filter, cx);
                 cx.notify();
             }
             "g" => self.board.chord = true,
@@ -1145,12 +1176,45 @@ impl Shell {
         self.board.wide = width >= PEEK_BESIDE_FROM;
         let peek = self.board.view.peek && self.board.wide && self.board.view.page.is_none();
         let side = if self.board.sidebar_hidden { 0. } else { self.board.sidebar_width };
-        // Over the list, it takes no more than the room there is.
-        let room = if self.board.wide { PEEK } else { PEEK.min(width - side) };
-        self.board.peek_width = self.board.peek_held.unwrap_or(room).max(240.);
+        // As wide as the person dragged it, else the usual; beside the list it
+        // leaves the list its room, over it no more than there is.
+        let most = if self.board.wide { width - side - LIST_LEAST } else { width - side };
+        let wanted = self.board.peek_held.or(self.remembered.peek_width).unwrap_or(PEEK);
+        self.board.peek_width = wanted.min(most).max(PEEK_LEAST);
         self.board.list_width = width - side - if peek { self.board.peek_width } else { 0. } - 16.;
         self.note_place();
     }
+}
+
+/// The ticket panel's left edge: drag to make it wider or narrower (kept),
+/// double-click for the usual width.
+fn peek_edge(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+    let p = shell.palette;
+    let dragging = shell.board.peek_drag.is_some();
+    div()
+        .id("peek-edge")
+        .group("peek-edge")
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(px(-4.))
+        .w(px(8.))
+        .cursor_col_resize()
+        .child(div().absolute().top_0().bottom_0().left(px(4.)).w(px(1.)).bg(if dragging { p.accent } else { p.hair }).group_hover("peek-edge", move |s| s.bg(p.accent).opacity(0.7)))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, e: &MouseDownEvent, _, cx| {
+                if e.click_count >= 2 {
+                    this.remembered.peek_width = None;
+                    this.board.peek_held = None;
+                    this.remembered.save(&equipe_providers::credentials::equipe_home());
+                } else {
+                    this.board.peek_drag = Some((f32::from(e.position.x), this.board.peek_width));
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }),
+        )
 }
 
 fn flow_ticket(flow: Flow) -> Option<TicketId> {
@@ -1241,7 +1305,13 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             let list = if shell.tickets_board() { super::tickets::board(shell, cx) } else { list(shell, &rows, pick, cx).into_any_element() };
             let peek = pick.filter(|_| view.peek).map(|need| super::peek::panel(shell, need, cx));
             match (peek, shell.board.wide) {
-                (Some(peek), true) => h_flex().flex_1().min_h_0().items_start().child(list).child(div().w(px(shell.board.peek_width)).h_full().flex_none().border_l_1().border_color(p.hair).child(peek)).into_any_element(),
+                (Some(peek), true) => h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .items_start()
+                    .child(list)
+                    .child(div().relative().w(px(shell.board.peek_width)).h_full().flex_none().border_l_1().border_color(p.hair).child(peek).child(peek_edge(shell, cx)))
+                    .into_any_element(),
                 (Some(peek), false) => div()
                     .flex_1()
                     .min_h_0()
@@ -1250,7 +1320,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                     // Over the list: the pointer, a press and the wheel are
                     // the peek's, at its ends too — the rows under it neither
                     // light up nor scroll.
-                    .child(div().absolute().top_0().right_0().bottom_0().w(px(shell.board.peek_width)).bg(p.bg).border_l_1().border_color(p.hair).shadow_lg().occlude().child(peek))
+                    .child(div().absolute().top_0().right_0().bottom_0().w(px(shell.board.peek_width)).bg(p.bg).border_l_1().border_color(p.hair).shadow_lg().occlude().child(peek).child(peek_edge(shell, cx)))
                     .into_any_element(),
                 (None, _) => list.into_any_element(),
             }
@@ -1361,7 +1431,7 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                         .cursor_pointer()
                         .hover(move |s| s.bg(p.wash))
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.board.popover = if this.board.popover == Some(Popover::Filter) { None } else { Some(Popover::Filter) };
+                            this.toggle_popover(Popover::Filter, cx);
                             cx.notify();
                         }))
                         .child(t!("board.filter"))
@@ -1385,7 +1455,7 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                             .cursor_pointer()
                             .hover(move |s| s.bg(p.wash))
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.board.popover = if this.board.popover == Some(Popover::Group) { None } else { Some(Popover::Group) };
+                                this.toggle_popover(Popover::Group, cx);
                                 cx.notify();
                             }))
                             .child(div().text_color(p.muted).child(t!("board.group_by")))
@@ -1490,10 +1560,53 @@ fn popover(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 .border_color(p.hair)
                 .shadow_lg()
                 .occlude()
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| this.popover_outside(cx)))
                 .children(body),
         )
         .into_any_element(),
     )
+}
+
+/// How long after a press outside closed a popover its own control's click
+/// (the same press) is taken as that close, not as opening it again.
+const SAME_PRESS: std::time::Duration = std::time::Duration::from_millis(400);
+
+impl Shell {
+    /// A popover's control: opens it, or closes it — and a press that already
+    /// closed it from outside leaves it closed.
+    pub fn toggle_popover(&mut self, which: Popover, cx: &mut Context<Self>) {
+        let just_closed = self.board.popover_closed.take().is_some_and(|(p, at)| p == which && at.elapsed() < SAME_PRESS);
+        self.board.popover = if self.board.popover == Some(which) || just_closed { None } else { Some(which) };
+        cx.notify();
+    }
+
+    /// A press outside the open popover closes it.
+    pub fn popover_outside(&mut self, cx: &mut Context<Self>) {
+        if let Some(which) = self.board.popover.take() {
+            self.board.popover_closed = Some((which, std::time::Instant::now()));
+            cx.notify();
+        }
+    }
+
+    /// Whether popover `which` was closed from outside by the press now under way.
+    pub fn popover_just_closed(&mut self, which: Popover) -> bool {
+        self.board.popover_closed.take().is_some_and(|(p, at)| p == which && at.elapsed() < SAME_PRESS)
+    }
+
+    /// The sidebar's popup control: as [`Shell::toggle_popover`].
+    pub fn toggle_popup(&mut self, which: super::sidebar::Popup, cx: &mut Context<Self>) {
+        let just_closed = self.board.popup_closed.take().is_some_and(|(p, at)| p == which && at.elapsed() < SAME_PRESS);
+        self.board.popup = if self.board.popup == Some(which) || just_closed { None } else { Some(which) };
+        cx.notify();
+    }
+
+    /// A press outside the sidebar's popup closes it.
+    pub fn popup_outside(&mut self, cx: &mut Context<Self>) {
+        if let Some(which) = self.board.popup.take() {
+            self.board.popup_closed = Some((which, std::time::Instant::now()));
+            cx.notify();
+        }
+    }
 }
 
 fn list(shell: &Shell, rows: &[Row], pick: Option<Need>, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
@@ -1547,7 +1660,7 @@ fn empty_note(shell: &Shell, p: Palette, cx: &mut Context<Shell>) -> AnyElement 
 fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     match row {
-        Row::Heading { label, count, tone, hint } => {
+        Row::Heading { label, count, tone, hint, all } => {
             let color = match tone {
                 Tone::ForYou => p.accent,
                 _ => p.muted,
@@ -1566,7 +1679,23 @@ fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, cx: &mut Co
                     _ => None,
                 }, |h, c| h.child(dot(c, 7.)))
                 .child(label.clone())
-                .child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(count.to_string()));
+                .child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(count.to_string()))
+                // The whole section at once: picked, and the bar asks once to confirm.
+                .children(all.clone().map(|all| {
+                    let word = match all.what {
+                        board::AllOf::Accept => t!("board.all_accept"),
+                        board::AllOf::Start => t!("board.all_start"),
+                        board::AllOf::Merge => t!("board.all_merge"),
+                    };
+                    h_flex().flex_1().justify_end().child(
+                        btn(p, SharedString::from(format!("all-{ix}")), word, None, false, shell.can_act()).on_click(cx.listener(move |this, _, _, cx| {
+                            this.board.view.chosen = all.ids.iter().copied().collect();
+                            this.board.view.anchor = None;
+                            this.board.flow = Some(Flow::Bulk { yes: true });
+                            cx.notify();
+                        })),
+                    )
+                }));
             match hint {
                 // What the section means, in one quiet line under its name.
                 Some(hint) => v_flex()
@@ -1750,7 +1879,10 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
     // title · flags · detail · when · time.
     let compact = shell.board.list_width < 720.;
     let show_project = model.focus.is_none() && model.projects.len() > 1;
-    let (flags_w, detail_w, eta_w) = if compact { (72., 120., 44.) } else { (120., 176., 56.) };
+    // Narrower still (a ticket panel dragged wide beside it): the flags and
+    // the estimate go, so what is left is never cut at the edge.
+    let narrow = shell.board.list_width < 560.;
+    let (flags_w, detail_w, eta_w) = if narrow { (0., 96., 0.) } else if compact { (72., 120., 44.) } else { (120., 176., 56.) };
     let project_col = |t: Option<&Ticket>| {
         let color = t.and_then(|t| hue_of(p, model, t));
         let name = t.map(|t| model.ticket_project_name(t).unwrap_or_else(|| t!("board.squad_folder").into()));
@@ -1796,6 +1928,21 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .pl_2()
                 .child(div().w(px(14.)).flex_none())
                 .child(super::browser::need_mark(p))
+                .child(div().w(px(44.)).flex_none())
+                .when(show_project, |r| r.child(project_col(None)))
+                .child(div().flex_1().min_w(px(120.)).truncate().text_color(p.text).child(title))
+                .child(div().w(px(flags_w)).flex_none())
+                .child(cell(detail_w).text_color(color).child(name))
+                .child(cell(eta_w))
+                .child(cell(34.))
+                .into_any_element()
+        }
+        Need::Secret(id) => {
+            let Some((title, name, color)) = super::secrets::row_text(shell, id) else { return div().into_any_element() };
+            base(SharedString::from(format!("secret-{id}")), cx)
+                .pl_2()
+                .child(div().w(px(14.)).flex_none())
+                .child(super::secrets::mark(p))
                 .child(div().w(px(44.)).flex_none())
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(120.)).truncate().text_color(p.text).child(title))

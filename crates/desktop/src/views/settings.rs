@@ -72,6 +72,8 @@ pub struct SettingsUi {
     pub scroll: ScrollHandle,
     /// The AI platforms' buttons, for Tab (`super::engines::KEYS` a card).
     pub engine_keys: Vec<FocusHandle>,
+    /// 계정's form and second clicks.
+    pub accounts: super::accounts::AccountsUi,
 }
 
 impl SettingsUi {
@@ -85,6 +87,7 @@ impl SettingsUi {
             anchors: Rc::default(),
             scroll: ScrollHandle::new(),
             engine_keys: (0..crate::engines::PLATFORMS.len() * super::engines::KEYS).map(|_| cx.focus_handle().tab_stop(true)).collect(),
+            accounts: super::accounts::AccountsUi::new(window, cx),
         }
     }
 
@@ -189,7 +192,7 @@ fn switch(shell: &Shell, id: &str, on: bool, enabled: bool, flip: impl Fn(&mut S
 }
 
 /// A few fixed choices side by side, the one in use raised.
-fn segmented<T: Copy + PartialEq + 'static>(shell: &Shell, id: &str, options: Vec<(T, String)>, now: T, set: impl Fn(&mut Shell, T, &mut Window, &mut Context<Shell>) + 'static, cx: &mut Context<Shell>) -> AnyElement {
+pub(crate) fn segmented<T: Copy + PartialEq + 'static>(shell: &Shell, id: &str, options: Vec<(T, String)>, now: T, set: impl Fn(&mut Shell, T, &mut Window, &mut Context<Shell>) + 'static, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let set = Rc::new(set);
     let raised = if p.is_dark() { p.side_sel } else { p.raised };
@@ -376,6 +379,8 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     language.control = Some(picker(shell, Pop::Language, language_label(shell), 0., cx));
     let looks = Appearance::ALL.into_iter().map(|a| (a, appearance_word(a).to_owned())).collect();
     let appearance = Line::new(t!("settings.appearance"), t!("settings.appearance_desc")).words("appearance theme dark light").control(segmented(shell, "appearance", looks, shell.remembered.appearance, |this, a, window, cx| this.set_appearance(a, window, cx), cx));
+    let link_places = vec![(false, t!("settings.links_mac").to_owned()), (true, t!("settings.links_app").to_owned())];
+    let links = Line::new(t!("settings.links"), t!("settings.links_desc")).words("link url browser open 링크 브라우저").control(segmented(shell, "links", link_places, shell.remembered.links_in_app, |this, on, _, _| this.set_links_in_app(on), cx));
     let zoom = Line::new(t!("settings.zoom"), t!("settings.zoom_desc")).words("zoom size scale text font larger smaller bigger").control(zoom_stepper(shell, cx));
     let starts = Start::ALL.into_iter().map(|s| (s, start_word(s).to_owned())).collect();
     let start = Line::new(t!("settings.start"), t!("settings.start_desc")).words("launch").control(segmented(shell, "start", starts, shell.remembered.start, |this, s, _, _| this.set_start(s), cx));
@@ -418,7 +423,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     vec![
         Section::new(t!("settings.section_look"), vec![language, appearance, zoom]).foot(format!("{} {}", t!("settings.language_note"), t!("settings.this_mac_foot"))),
         Section::new(t!("settings.section_start"), vec![start]),
-        Section::new(t!("settings.section_conversation"), vec![follow]),
+        Section::new(t!("settings.section_conversation"), vec![follow, links]),
         Section::new(t!("settings.section_notifications"), notifications).foot(t!("settings.notifications_foot")),
     ]
 }
@@ -566,7 +571,17 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         })
         .collect();
     let lines = if lines.is_empty() { vec![Line::new(t!("settings.no_members"), t!("settings.no_members_desc"))] } else { lines };
-    vec![Section::new(t!("settings.section_members"), lines).foot(t!("settings.team_foot"))]
+    // Who accepts the team's work: the PM (only what needs the person comes to them), or the person, all of it.
+    let pm_accepts = Line::new(t!("settings.pm_accepts"), t!("settings.pm_accepts_desc"))
+        .words("accept review approve 수락 검토 승인 pm")
+        .control(switch(shell, "pm-accepts", model.pm_accepts, connected, |this, on, _, _| {
+            let squad = this.model.squad.clone();
+            this.send_command(equipe_core::protocol::Command::SetPmAccepts { squad, on });
+        }, cx));
+    vec![
+        Section::new(t!("settings.section_work"), vec![pm_accepts]).foot(t!("settings.pm_accepts_foot")),
+        Section::new(t!("settings.section_members"), lines).foot(t!("settings.team_foot")),
+    ]
 }
 
 /// `el` with a tooltip, in a box of its own that can be hovered.
@@ -665,6 +680,7 @@ fn browser(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     vec![
         Section::new(t!("settings.section_members_browsers"), vec![shown, panel]).foot(t!("settings.squad_foot")),
         Section::new(t!("settings.section_sign_in"), vec![sign_in, pop_out]).foot(t!("settings.sign_in_foot")),
+        super::accounts::profiles_section(shell, cx),
     ]
 }
 
@@ -751,6 +767,7 @@ fn sections(shell: &Shell, category: Category, cx: &mut Context<Shell>) -> Vec<S
         Category::Permissions => permissions(shell, cx),
         Category::Projects => projects(shell, cx),
         Category::Browser => browser(shell, cx),
+        Category::Accounts => super::accounts::sections(shell, cx),
         Category::Keys => keys(shell),
         Category::About => about(shell, cx),
     }
@@ -765,6 +782,7 @@ fn intro(category: Category) -> &'static str {
         Category::Permissions => t!("settings.intro_permissions"),
         Category::Projects => t!("settings.intro_projects"),
         Category::Browser => t!("settings.intro_browser"),
+        Category::Accounts => t!("settings.intro_accounts"),
         Category::Keys => t!("settings.intro_keys"),
         Category::About => t!("settings.intro_about"),
     }
@@ -1065,6 +1083,8 @@ impl Shell {
         match category.unwrap_or(self.settings.category) {
             Category::Squad => self.ask_devices(cx),
             Category::Engines => self.ask_engines(cx),
+            Category::Accounts => self.send_command(Command::Logins),
+            Category::Browser => self.send_command(Command::BrowserProfiles),
             _ => {}
         }
         if self.screen != Screen::Settings {
@@ -1106,6 +1126,8 @@ impl Shell {
         match category {
             Category::Squad => self.ask_devices(cx),
             Category::Engines => self.ask_engines(cx),
+            Category::Accounts => self.send_command(Command::Logins),
+            Category::Browser => self.send_command(Command::BrowserProfiles),
             _ => {}
         }
         if self.settings.category != category {

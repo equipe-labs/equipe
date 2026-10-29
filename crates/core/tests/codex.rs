@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as Process;
 use std::time::Duration;
 
-use equipe_core::protocol::{Access, Command, Decision, Engine, Event, SessionSpec, TurnOutcome};
+use equipe_core::protocol::{Access, Command, CompactTrigger, Decision, Engine, Event, SessionSpec, TurnOutcome};
 use equipe_core::runtime::{self, Config, Handle};
 use equipe_core::squads;
 use equipe_providers::CredentialStore;
@@ -61,6 +61,7 @@ fn config(codex: &Path, home: &Path) -> Config {
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,
+        person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
     }
 }
@@ -165,6 +166,18 @@ async fn codex_edits_in_its_own_worktree_and_its_work_lands_on_a_branch() {
 }
 
 #[tokio::test]
+async fn codex_compacting_its_thread_is_said_on_every_screen() {
+    let (codex, _) = fake_codex("");
+    let (handle, mut events) = runtime::start(config(&codex, &scratch("home")));
+    add(&handle, &mut events, 1, SessionSpec { engine: Some(Engine::Codex), model: None, access: Access::ReadOnly, cwd: scratch("cwd"), role: None, squad: None }).await;
+    handle.send(Command::Submit { session: 1, text: "compact".into(), about: None });
+    let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let began = turn.iter().position(|e| matches!(e, Event::Compacting { trigger: CompactTrigger::Auto, estimate_ms: 120_000, .. })).expect("compacting");
+    let done = turn.iter().position(|e| matches!(e, Event::Compacted { .. })).expect("compacted");
+    assert!(began < done, "{turn:#?}");
+}
+
+#[tokio::test]
 async fn codex_asks_the_person_and_an_always_becomes_the_squads_rule() {
     let (codex, log) = fake_codex("");
     let cwd = scratch("site");
@@ -180,7 +193,7 @@ async fn codex_asks_the_person_and_an_always_becomes_the_squads_rule() {
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
     assert_eq!((approval.tool.as_str(), approval.action.as_str()), ("Bash", "git push origin main"));
     assert!(approval.reason.as_deref().is_some_and(|r| r.contains("Pushing needs the network")), "{:?}", approval.reason);
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Always });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Always, words: None });
     let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(text_of(&turn).contains("Pushed."), "{turn:#?}");
     assert_eq!(sent(&log).iter().find(|m| m["id"] == "srv-1").unwrap()["result"]["decision"], "accept");
@@ -216,7 +229,7 @@ async fn a_declined_command_is_not_run() {
     handle.send(Command::Submit { session: 1, text: "approve the push".into(), about: None });
     let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None });
     let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(text_of(&turn).contains("declined"), "{turn:#?}");
 }

@@ -424,7 +424,7 @@ impl Bridge {
                     return (vec![], vec![toast(t!("telegram.already_answered"))]);
                 }
                 let said = if decision == Decision::Deny { t!("telegram.declined") } else { t!("telegram.allowed") };
-                (vec![(squad.clone(), Command::Decide { squad, approval: id, decision })], vec![toast(said)])
+                (vec![(squad.clone(), Command::Decide { squad, approval: id, decision, words: None })], vec![toast(said)])
             }
             Act::Accept(squad, ticket) => {
                 if !self.is(&squad, ticket, TicketStatus::Review) {
@@ -985,6 +985,7 @@ mod tests {
             mode: None,
             effort: None,
             subagents: Vec::new(),
+            compacting: None,
         }
     }
 
@@ -1048,7 +1049,7 @@ mod tests {
         b.sent(Key::Approval("acme".into(), 7), 100);
         let allow = buttons(&outs[0])[0].1.clone();
         let (commands, said) = b.on_button("cb", &allow);
-        assert_eq!(commands, vec![("acme".to_owned(), Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Allow })]);
+        assert_eq!(commands, vec![("acme".to_owned(), Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Allow, words: None })]);
         assert_eq!(said, vec![Out::Toast { callback: "cb".into(), text: "Allowed".into() }]);
         let outs = b.on_event("acme", &Event::ApprovalResolved { squad: "acme".into(), approval: 7, decision: Decision::Allow });
         assert!(matches!(&outs[..], [Out::Edit { message: 100, text }] if text.ends_with("<b>✅ Allowed</b>")), "{outs:?}");
@@ -1102,7 +1103,7 @@ mod tests {
         b.on_event("acme", &Event::TextDelta { session: 1, text: "earlier work".into() });
         b.on_event("acme", &Event::UserMessage { session: 1, text: "Ship the site today?".into() });
         b.on_event("acme", &Event::TextDelta { session: 1, text: "Checking the board.".into() });
-        b.on_event("acme", &Event::ToolUse { session: 1, tool: "board".into(), target: None });
+        b.on_event("acme", &Event::ToolUse { session: 1, tool: "board".into(), target: None, label: None, background: false });
         b.on_event("acme", &Event::TextDelta { session: 1, text: "Yes — after T-3.".into() });
         let outs = b.on_event("acme", &Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None });
         assert_eq!(outs.len(), 1);

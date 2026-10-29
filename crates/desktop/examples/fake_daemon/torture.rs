@@ -156,7 +156,7 @@ fn long_block() -> String {
 }
 
 fn tool(session: SessionId, tool: &str, target: &str) -> Event {
-    Event::ToolUse { session, tool: tool.into(), target: Some(target.into()) }
+    Event::ToolUse { session, tool: tool.into(), target: Some(target.into()), label: None, background: false }
 }
 
 fn done(session: SessionId, tool: &str, target: &str, outcome: ToolOutcome) -> Event {

@@ -372,8 +372,19 @@ const ANSWERS: &[&str] = &[
 /// What `ask` wants back: an OK when it asks for a look (and says what an OK
 /// would be), words when it asks something, else a thing to do.
 pub fn want_of(ask: &str) -> Want {
-    let lower = ask.to_lowercase();
-    let has = |words: &[&str]| words.iter().any(|w| lower.contains(w));
+    // A link's `?` and words aren't the ask's: `…/new?plan=free` asks nothing.
+    let lower: String = ask.to_lowercase().split_whitespace().filter(|w| !w.contains("://")).collect::<Vec<_>>().join(" ");
+    // A Korean word counts at a word's start only: `설정해 주세요` is a thing
+    // to do, not `정해 주세요`.
+    let has = |words: &[&str]| {
+        words.iter().any(|w| {
+            let hangul = |c: char| ('\u{AC00}'..='\u{D7A3}').contains(&c);
+            if !w.starts_with(hangul) {
+                return lower.contains(w);
+            }
+            lower.match_indices(w).any(|(at, _)| !lower[..at].chars().next_back().is_some_and(hangul))
+        })
+    };
     if has(CONFIRMS) {
         Want::Confirm
     } else if has(ANSWERS) {
@@ -482,6 +493,14 @@ impl crate::Ticket {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_setting_to_make_is_a_thing_to_do_not_a_question() {
+        assert_eq!(want_of("대상은 '내부(Internal)'로 설정해 주세요."), Want::Do);
+        assert_eq!(want_of("어느 쪽으로 할지 정해 주세요"), Want::Answer);
+        assert_eq!(want_of("이름을 골라 주세요"), Want::Answer);
+        assert_eq!(want_of("https://github.com/account/organizations/new?plan=free 에 들어가 조직을 만들어 주세요"), Want::Do, "a link's ? asks nothing");
+    }
 
     /// The line the person saw, its asks joined with ", ".
     const JOINED: &str = "심사 연락처(App Review Information)를 알려 주세요: 이름, 전화번호(국가번호 포함), 이메일. 심사팀만 보고 공개되지 않습니다., 회사 iOS 엔지니어 리뷰를 언제, 누가 할지 정해 주세요. equipe-app 규칙상 스토어 출시 전에 꼭 받아야 합니다., 스크린샷과 문구를 확인해 주세요: outputs/T-117 앱스토어 제출/screenshots-6.9/ (en·ko 5장씩, 실제 앱 화면) 와 listing.json. ko 스크린샷 속 티켓 제목은 데모 데이터라 영어입니다. 그대로 둬도 되면 '괜찮음'이라고만 답해 주세요.";

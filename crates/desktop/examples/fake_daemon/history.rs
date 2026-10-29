@@ -123,16 +123,16 @@ pub fn history(n: usize) -> Vec<Entry> {
         for k in 0..rng.below(9) {
             let file = format!("{SITE}/src/{}.rs", ["orders", "gallery", "search", "onboarding", "limit"][((turn + k) % 5) as usize]);
             let entry = match rng.below(4) {
-                0 => Entry::Tool { tool: "Read".into(), target: Some(file), outcome: Some(Box::new(ToolOutcome { ok: true, ms: Some(40), ..Default::default() })) },
+                0 => Entry::Tool { tool: "Read".into(), target: Some(file), outcome: Some(Box::new(ToolOutcome { ok: true, ms: Some(40), ..Default::default() })), label: None, background: false },
                 1 => {
                     let output: String = (0..5 + rng.below(25)).map(|l| format!("test orders::page_{l} ... ok\n")).collect();
-                    Entry::Tool { tool: "Bash".into(), target: Some("cargo test -p api".into()), outcome: Some(Box::new(ToolOutcome { ok: true, exit: Some(0), ms: Some(8_400), output, ..Default::default() })) }
+                    Entry::Tool { tool: "Bash".into(), target: Some("cargo test -p api".into()), outcome: Some(Box::new(ToolOutcome { ok: true, exit: Some(0), ms: Some(8_400), output, ..Default::default() })), label: None, background: false }
                 }
                 2 => {
                     let diff = format!("diff --git a/{file} b/{file}\n--- a/{file}\n+++ b/{file}\n@@ -10,3 +10,4 @@\n     let limit = limit.clamp(1, 100);\n-    let rows = db.query(SQL, (after, limit)).await?;\n+    let rows = db.query(SQL, (after, limit + 1)).await?;\n+    let more = rows.len() > limit as usize;\n");
-                    Entry::Tool { tool: "Edit".into(), target: Some(file), outcome: Some(Box::new(ToolOutcome { ok: true, ms: Some(12), diff: Some(diff), ..Default::default() })) }
+                    Entry::Tool { tool: "Edit".into(), target: Some(file), outcome: Some(Box::new(ToolOutcome { ok: true, ms: Some(12), diff: Some(diff), ..Default::default() })), label: None, background: false }
                 }
-                _ => Entry::Tool { tool: "Grep".into(), target: Some("fn orders".into()), outcome: Some(Box::new(ToolOutcome { ok: true, ms: Some(90), ..Default::default() })) },
+                _ => Entry::Tool { tool: "Grep".into(), target: Some("fn orders".into()), outcome: Some(Box::new(ToolOutcome { ok: true, ms: Some(90), ..Default::default() })), label: None, background: false },
             };
             out.push(entry);
         }

@@ -103,12 +103,36 @@ pub fn configure(view: TextView, p: Palette, look: Look, scope: u64, full: Arc<H
             let shown = block.code();
             let whole = full.get(shown.as_ref()).cloned().unwrap_or_else(|| shown.to_string());
             let label = block.lang().and_then(|l| code::label(&l));
+            // A shell's lines: typed into the terminal, for the person to run.
+            let shell_lang = block.lang().is_some_and(|l| matches!(l.as_ref(), "sh" | "bash" | "zsh" | "shell" | "console" | "fish"));
+            let command = shell_lang.then(|| crate::term::command_of(&whole));
             let copied = window.use_keyed_state(("copied", super::hash_of(&whole)), cx, |_, _| None::<Instant>);
             let is_copied = copied.read(cx).is_some_and(|at| at.elapsed() < COPIED_FOR);
             h_flex()
                 .gap_1()
                 .items_center()
                 .children(label.map(|l| div().px_1().font_family(MONO).text_size(px(11.5)).text_color(muted).child(l)))
+                .children(command.map(|command| {
+                    h_flex()
+                        .id("run-in-terminal")
+                        .h(px(24.))
+                        .px(px(7.))
+                        .gap(px(5.))
+                        .items_center()
+                        .rounded(px(5.))
+                        .cursor_pointer()
+                        .text_size(px(11.5))
+                        .text_color(muted)
+                        .hover(move |s| s.bg(wash).text_color(text))
+                        .child(icon(Icon::Terminal, 12., muted))
+                        .child(t!("term.run_here"))
+                        .on_click(move |_, window, cx| {
+                            let command = command.clone();
+                            if let Some(shell) = cx.try_global::<super::ShellRef>().and_then(|s| s.0.upgrade()) {
+                                shell.update(cx, |shell, cx| shell.open_terminal(Some(command), window, cx));
+                            }
+                        })
+                }))
                 .child(
                     div()
                         .id("copy")
@@ -135,7 +159,7 @@ pub fn configure(view: TextView, p: Palette, look: Look, scope: u64, full: Arc<H
                         }),
                 )
         })
-        .on_link_click(move |url, event, _, cx| follow(url, event.modifiers(), scope, cx))
+        .on_link_click(move |url, event, window, cx| follow(url, event.modifiers(), scope, window, cx))
         .image_source(|uri| {
             let url = uri.to_string();
             match url.strip_prefix("file://") {
@@ -168,11 +192,24 @@ pub fn nested(p: Palette, id: (&'static str, u64), markdown: &str, look: Look) -
 /// A link in a reply was clicked: a ticket opens on the board, a page in the
 /// browser, a file in Quick Look (⌘: in its app, ⌥: in Finder), a control
 /// does what it says.
-pub fn follow(url: &str, modifiers: Modifiers, scope: u64, cx: &mut App) {
+pub fn follow(url: &str, modifiers: Modifiers, scope: u64, window: &mut Window, cx: &mut App) {
     let base = cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade()).map(|s| base_dir(s.read(cx))).unwrap_or_default();
     match links::classify(url, &base) {
+        // ⌘-click (⇧, ⌥⌘): in a window of its own, as a link opens elsewhere.
+        Link::Ticket(n) if crate::views::elsewhere::wants_window(&modifiers) => crate::views::elsewhere::open(crate::views::elsewhere::Goal::Ticket(n), cx),
         Link::Ticket(n) => with_shell(cx, |shell, cx| shell.open_ticket(n, cx)),
-        Link::Web(url) => cx.open_url(&url),
+        // Where the person chose (settings), ⌘-click the other place.
+        Link::Web(url) => {
+            if let Some(shell) = cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade()) {
+                shell.update(cx, |shell, cx| shell.open_link(&url, modifiers.platform, window, cx));
+            } else {
+                cx.open_url(&url);
+            }
+        }
+        // A document opens beside the conversation, on this Mac or another.
+        Link::File { path, .. } if !modifiers.platform && !modifiers.alt && crate::doc::is_doc(&path.to_string_lossy()) => {
+            with_shell(cx, |shell, cx| shell.open_doc(path, cx));
+        }
         Link::File { path, .. } => {
             let how = if modifiers.platform {
                 Open::Edit

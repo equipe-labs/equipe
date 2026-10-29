@@ -153,6 +153,7 @@ fn session(id: SessionId, role: &str, project: &str, recent: Vec<Entry>, work: O
         mode: None,
         effort: None,
         subagents: Vec::new(),
+        compacting: None,
     }
 }
 
@@ -177,7 +178,7 @@ impl Scene {
             ],
             None,
         );
-        let frontend = session(FRONTEND, "frontend", PROJECTS[0], vec![Entry::Tool { tool: "Edit".into(), target: Some("src/pages/index.tsx".into()), outcome: None }], Some(3));
+        let frontend = session(FRONTEND, "frontend", PROJECTS[0], vec![Entry::Tool { tool: "Edit".into(), target: Some("src/pages/index.tsx".into()), outcome: None, label: None, background: false }], Some(3));
         let backend = session(BACKEND, "backend", PROJECTS[1], vec![], None);
         let tickets = vec![
             ticket(1, "Set up the project", TicketStatus::Done, Some("backend"), Some("Repository, CI and a first deploy.")),
@@ -267,7 +268,7 @@ impl Scene {
                     s.tokens += text.len() as u64 / 4;
                 }
             }
-            Event::ToolUse { session, tool, target } => self.entry(*session, Entry::Tool { tool: tool.clone(), target: target.clone(), outcome: None }),
+            Event::ToolUse { session, tool, target, label, background } => self.entry(*session, Entry::Tool { tool: tool.clone(), target: target.clone(), outcome: None, label: label.clone(), background: *background }),
             Event::Thread { session, project } => self.entry(*session, Entry::Thread { project: project.clone() }),
             Event::TurnEnded { session, .. } => self.state(*session, SessionState::Ready),
             _ => {}
@@ -326,7 +327,7 @@ impl Scene {
                 let end = if decision == Decision::Deny {
                     self.say(s, start, "Understood — I won't do that. I'll leave it for you and carry on with the rest.")
                 } else {
-                    self.at(start, Event::ToolUse { session: s, tool: asked.tool.clone(), target: Some(asked.action.clone()) });
+                    self.at(start, Event::ToolUse { session: s, tool: asked.tool.clone(), target: Some(asked.action.clone()), label: None, background: false });
                     let end = self.say(s, start + 900, "Done. It worked; I'm carrying on with the ticket.");
                     // The landing page, built, is handed in.
                     if let Some(t) = asked.ticket.and_then(|id| self.find(id)).filter(|t| t.id == 3 && t.status == TicketStatus::InProgress) {
@@ -509,11 +510,11 @@ mod tests {
     fn allowing_the_request_lets_the_member_go_on_and_another_comes_later() {
         let mut demo = Demo::default();
         let id = hello(&mut demo, "a").approvals[0].id;
-        let out = demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Allow }, 1000);
+        let out = demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Allow, words: None }, 1000);
         assert_eq!(out, vec![Event::ApprovalResolved { squad: SQUAD.into(), approval: id, decision: Decision::Allow }]);
         assert!(hello(&mut demo, "a").approvals.is_empty());
         // The same answer again does nothing.
-        assert!(demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Allow }, 1000).is_empty());
+        assert!(demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Allow, words: None }, 1000).is_empty());
         let later: Vec<Event> = demo.due(1000 + 60_000).into_iter().map(|(_, e)| e).collect();
         assert!(later.iter().any(|e| matches!(e, Event::ToolUse { tool, .. } if tool == "Bash")));
         assert!(later.iter().any(|e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 3 && ticket.status == TicketStatus::Review)));
@@ -549,7 +550,7 @@ mod tests {
         let id = hello(&mut demo, "a").approvals[0].id;
         hello(&mut demo, "b");
         demo.command("a", Command::Accept { squad: SQUAD.into(), ticket: 2 }, 0);
-        demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Deny }, 0);
+        demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Deny, words: None }, 0);
         assert!(demo.command("nobody", Command::Accept { squad: SQUAD.into(), ticket: 2 }, 0).is_empty());
         let (a, b) = (hello(&mut demo, "a"), hello(&mut demo, "b"));
         assert_eq!(a.tickets[1].status, TicketStatus::Done);

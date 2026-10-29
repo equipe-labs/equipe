@@ -213,7 +213,7 @@ cat > "$app/Contents/Info.plist" <<EOF
 	<key>NSMicrophoneUsageDescription</key>
 	<string>equipe uses the microphone when you dictate a message. The sound never leaves this Mac.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>equipe turns what you say into text on this Mac and puts it in the message box.</string>$updates_plist
+	<string>equipe turns what you say, or a recording you attach, into text on this Mac.</string>$updates_plist
 </dict>
 </plist>
 EOF

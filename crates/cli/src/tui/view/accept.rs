@@ -113,6 +113,7 @@ mod tests {
             mode: None,
             effort: None,
             subagents: Vec::new(),
+            compacting: None,
         }
     }
 

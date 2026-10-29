@@ -16,7 +16,7 @@ use equipe_core::protocol::rpc::{Hello, Message};
 use equipe_core::protocol::engines::{Move, Proposal, Switching, Why, Window};
 use equipe_core::protocol::team::{Change, TeamChange};
 use equipe_core::protocol::{
-    Access, Approval, Decision, Engine, EnginePlan, EngineState, EngineStatus, Entry, Event, Member, MemberRef, Mode, PlanUsage, PlanWindow, SessionInfo, SessionState, SignInStep, Snapshot, SubagentInfo, Ticket, TicketKind, TicketStatus, TurnOutcome, Usage, WorkInfo,
+    Access, Approval, CompactTrigger, CompactingInfo, Decision, Engine, EnginePlan, EngineState, EngineStatus, Entry, Event, Member, MemberRef, Mode, PlanUsage, PlanWindow, SessionInfo, SessionState, SignInStep, Snapshot, SubagentInfo, Ticket, TicketKind, TicketStatus, TurnOutcome, Usage, WorkInfo,
 };
 use serde_json::{Value, json};
 
@@ -837,6 +837,8 @@ fn snapshot() -> Snapshot {
     Snapshot {
         squad: SQUAD.into(),
         projects: vec!["/Users/you/projects/site".into(), "/Users/you/projects/api".into()],
+        hq: None,
+        routines: Vec::new(),
         sessions: vec![
             SessionInfo {
                 session: 1001,
@@ -869,6 +871,7 @@ fn snapshot() -> Snapshot {
                 mode: None,
                 effort: None,
                 subagents: Vec::new(),
+                compacting: None,
             },
             SessionInfo {
                 session: 4242,
@@ -886,7 +889,7 @@ fn snapshot() -> Snapshot {
                 recent: vec![
                     Entry::Thread { project: Some("api".into()) },
                     Entry::Landed { branch: "equipe/backend-t37-9f8e7d6c".into(), stat: " src/session.rs | 12 ++++++------\n 1 file changed, 6 insertions(+), 6 deletions(-)".into() },
-                    Entry::Tool { tool: "Bash".into(), target: Some("cargo test".into()), outcome: None },
+                    Entry::Tool { tool: "Bash".into(), target: Some("cargo test".into()), outcome: None, label: None, background: false },
                 ],
                 queued: vec![],
                 queued_project: None,
@@ -900,6 +903,8 @@ fn snapshot() -> Snapshot {
                 effort: None,
                 // Handed side work, still at it: a screen attaching now lists it under its member.
                 subagents: vec![SubagentInfo { id: "toolu_01".into(), what: "Read the API's error logs".into(), step: Some("Grep TimeoutError".into()), secs: 48 }],
+                // Its conversation being summarized: a screen attaching now says so, timed from `started_at`.
+                compacting: Some(CompactingInfo { trigger: CompactTrigger::Auto, started_at: NOW - 20_000, estimate_ms: 95_000 }),
             },
         ],
         tickets: vec![ticket(TicketStatus::InProgress)],
@@ -912,6 +917,8 @@ fn snapshot() -> Snapshot {
         plan: Some(plan(Engine::Claude, 86, 41).usage),
         plans: vec![plan(Engine::Claude, 86, 41), plan(Engine::Codex, 12, 18)],
         engine_switching: Switching::Suggest,
+        pm_accepts: true,
+        secret_asks: Vec::new(),
         engine_proposals: vec![engine_proposal(Why::Shift, false)],
         suggestions_off: false,
         desktop: Default::default(),
@@ -1061,7 +1068,7 @@ fn message_vectors() -> Value {
     tell(&mut core, &mut examples, "event: user message", Event::UserMessage { session: pm, text: "로그인 화면 다음에 뭐 할까?".into() });
     tell(&mut core, &mut examples, "event: message queued", Event::MessageQueued { session: pm, text: "그리고 테스트도".into(), project: None });
     tell(&mut core, &mut examples, "event: text delta", Event::TextDelta { session: pm, text: "보드를 보면".into() });
-    tell(&mut core, &mut examples, "event: tool use", Event::ToolUse { session: pm, tool: "board".into(), target: None });
+    tell(&mut core, &mut examples, "event: tool use", Event::ToolUse { session: pm, tool: "board".into(), target: None, label: None, background: false });
     // Side work handed to a subagent: it starts, takes steps, hands back (the snapshot lists those still at it).
     tell(&mut core, &mut examples, "event: subagent started", Event::SubagentStarted { session: pm, id: "toolu_02".into(), what: "Compare the two login flows".into() });
     tell(&mut core, &mut examples, "event: subagent step", Event::SubagentStep { session: pm, id: "toolu_02".into(), step: "Read src/login.tsx".into() });
@@ -1108,6 +1115,13 @@ fn message_vectors() -> Value {
         stat: " src/login.rs | 48 ++++++++++++++++++++++++++++++++++++++++++++++++\n 1 file changed, 48 insertions(+)".into(),
     });
     tell(&mut core, &mut examples, "event: nothing changed", Event::NothingChanged { session: 4242 });
+    // A member's conversation compacted — by its engine mid-turn (auto) or on the person's /compact
+    // (manual) — or failing to; `estimate_ms` is a guess from the last ones, never progress.
+    let (backend, member, project) = (4242, Some("backend".to_owned()), Some("api".to_owned()));
+    tell(&mut core, &mut examples, "event: compacting", Event::Compacting { session: backend, member: member.clone(), project: project.clone(), trigger: CompactTrigger::Auto, started_at: NOW, estimate_ms: 95_000 });
+    tell(&mut core, &mut examples, "event: compacted", Event::Compacted { session: backend, member: member.clone(), project: project.clone(), trigger: CompactTrigger::Auto, took_ms: 81_250 });
+    tell(&mut core, &mut examples, "event: compacting (manual)", Event::Compacting { session: pm, member: Some("pm".into()), project: None, trigger: CompactTrigger::Manual, started_at: NOW, estimate_ms: 2_000 });
+    tell(&mut core, &mut examples, "event: compact failed", Event::CompactFailed { session: backend, member, project, trigger: CompactTrigger::Auto, message: "The turn ended before the compaction finished.".into() });
 
     // Not from a phone.
     ask(&mut core, &mut examples, "engine sign-in is refused", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "sign_in", "engine": "codex" } }));

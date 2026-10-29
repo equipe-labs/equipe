@@ -20,7 +20,7 @@ use std::time::Duration;
 use equipe_protocol::rpc::{ToolCall, ToolResult};
 use equipe_protocol::transcript::scope;
 use equipe_protocol::{
-    Access, Approval, BrowserNavAction, Command, Decision, Engine, Entry, Event, Member, MemberRef, Mode, SessionId, SessionInfo,
+    Access, Approval, BrowserNavAction, Command, CompactTrigger, Decision, Engine, Entry, Event, Member, MemberRef, Mode, SessionId, SessionInfo,
     Estimate, OffMain, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
 };
 use equipe_providers::claude_code::{self, Activity};
@@ -42,6 +42,9 @@ use crate::eta;
 use crate::journal::{self, Journal, SessionRecord, TicketWork};
 use crate::permissions;
 use crate::roles::{self, Teammate};
+use crate::routines;
+use crate::vault;
+use equipe_protocol::routines::Routine;
 use crate::squad_home;
 use crate::squad_memory;
 use crate::steers;
@@ -64,9 +67,11 @@ mod room;
 mod engines;
 mod design;
 mod accept;
+mod secrets;
 mod design_qa;
 mod team;
 mod tickets;
+mod compact;
 
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
@@ -76,6 +81,8 @@ const BRIEF_REPLY_CHARS: usize = 400;
 
 /// Closed tickets a snapshot still shows, newest first.
 const CLOSED_TICKETS_SHOWN: usize = 20;
+/// The routines one squad may keep.
+const MAX_ROUTINES: usize = 20;
 
 /// The MCP server equipe gives members; its tools are `mcp__equipe__*`.
 const MCP_SERVER: &str = "equipe";
@@ -85,6 +92,8 @@ const ENGINE_QUESTION_TOOL: &str = "AskUserQuestion";
 pub const DESKTOP_SERVER: &str = "desktop";
 /// The tool name a member's own question shows under, among approvals.
 const CONFIRM: &str = "Confirm";
+/// An approval to sign a member in with a kept login (`vault`).
+const SIGN_IN_TOOL: &str = "Sign in";
 
 /// How long `busy` waits for the loop before it answers with what the loop is on.
 pub const ANSWER_WAIT: Duration = Duration::from_secs(3);
@@ -139,6 +148,9 @@ pub struct Config {
     /// Members' browsers as lanes of one shared Chrome (the browser host),
     /// rather than a Chrome each: the person signs in once, Google included.
     pub browser_host: bool,
+    /// The person's home folder, where secrets members ask for are saved
+    /// (`ask_secret`); `None`: `$HOME`.
+    pub person_home: Option<PathBuf>,
     /// The language equipe speaks to the person in until a screen says
     /// otherwise: notices, errors. What it tells the models stays English.
     pub lang: crate::i18n::Lang,
@@ -160,6 +172,7 @@ impl Config {
             mac: Box::new(desktop::ThisMac),
             suggest: true,
             browser_host: cfg!(target_os = "macos"),
+            person_home: None,
             lang: crate::i18n::Lang::resolve(crate::i18n::Front::Terminal),
         }
     }
@@ -430,7 +443,14 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let (host_tx, host_rx) = mpsc::unbounded_channel();
     let mut config = config;
     let mac = std::mem::replace(&mut config.mac, Box::new(desktop::ThisMac));
+    // The logins: their passwords in the Keychain (in memory for tests).
+    let secrets: Box<dyn vault::Secrets> = if std::env::var_os("EQUIPE_VAULT_IN_MEMORY").is_some() { Box::new(vault::InMemory::default()) } else { Box::new(vault::Keychain) };
+    let vault = vault::Vault::open(&config.home, secrets);
+    let logins = vault.logins.clone();
     let mut runtime = Runtime {
+        vault: std::sync::Arc::new(std::sync::Mutex::new(vault)),
+        logins,
+        secret_asks: HashMap::new(),
         desktop: desktop::Desktop::new(mac),
         config,
         // A server that never answers a connection must not hold anything up.
@@ -445,6 +465,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         focus: HashMap::new(),
         said_about: None,
         builds_trimmed: None,
+        compactions: compact::CompactTimes::default(),
         browsers: HashMap::new(),
         host: None,
         hub: browser::Hub::new(),
@@ -475,6 +496,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         settled_at: None,
         merging: std::collections::HashSet::new(),
         disk: Default::default(),
+        awake: Default::default(),
         sign_ins: HashMap::new(),
         next_sign_in: 1,
         codex_binary: crate::engines::codex_binary(),
@@ -617,6 +639,9 @@ struct Session {
     /// back — its id, what it was handed, its latest step, since when — for a
     /// screen that attaches now.
     subagents: Vec<(String, String, Option<String>, std::time::Instant)>,
+    /// Its conversation being compacted now: as the screens were told, the
+    /// key its time is kept under, and since when.
+    compacting: Option<(equipe_protocol::CompactingInfo, String, std::time::Instant)>,
     /// For the PM: what happened with the team since the PM's last turn. It
     /// travels with the PM's next message, so the PM keeps up without spending a
     /// turn on every exchange.
@@ -728,6 +753,15 @@ enum Internal {
     DiskReport(Box<crate::disk::DiskReport>, std::time::Instant),
     /// What a clean gave back, the free space after it, and who asked.
     DiskCleaned(Box<crate::disk::DiskCleaned>, Option<crate::disk::DiskStatus>, std::time::Instant, Option<oneshot::Sender<crate::disk::DiskCleaned>>),
+    /// What a trim of the build caches gave back when the disk ran short, one line each.
+    DiskTrimmed(u64, Vec<String>),
+    /// A project the person added, or why it wasn't.
+    ProjectAdded { squad: String, result: Result<PathBuf, String> },
+    /// The logins changed (or couldn't): what screens see of them now.
+    Logins(Result<Vec<crate::protocol::vault::Login>, String>),
+    /// Something waits for a conversation to act on — work handed in for the
+    /// PM to accept: it is woken with `prompt` (read at its next step, at work).
+    Wake { session: SessionId, prompt: String },
     /// Hand ready work out in every squad again (the disk has room once more).
     Dispatch,
     /// Where the engines stand, as just looked at off the loop.
@@ -793,6 +827,8 @@ struct Runtime {
     said_about: Option<Option<String>>,
     /// When members' build caches were last looked at.
     builds_trimmed: Option<std::time::Instant>,
+    /// How long members' conversations took to compact, for the next one's guess.
+    compactions: compact::CompactTimes,
     /// Members' browsers, kept between turns: by squad and member.
     browsers: HashMap<(String, String), browser::Running>,
     /// The one Chrome members' browsers are lanes of, once started.
@@ -857,6 +893,8 @@ struct Runtime {
     merging: std::collections::HashSet<(String, TicketId)>,
     /// The disk's room, as last looked at or as a write said (`room.rs`).
     disk: room::DiskWatch,
+    /// The Mac held awake while members work or a screen is attached.
+    awake: crate::awake::Awake,
     /// Sign-ins under way on this machine, by engine: which one, and its task.
     sign_ins: HashMap<Engine, (u64, JoinHandle<()>)>,
     next_sign_in: u64,
@@ -867,7 +905,15 @@ struct Runtime {
     /// Squads whose design systems a screen looks at, and their stamp as
     /// last sent; those being looked at off the loop now (`design`).
     design_watch: HashMap<String, u64>,
+    /// The logins kept (`vault`): touched off the loop only — the Keychain
+    /// may ask the person before it answers.
+    vault: std::sync::Arc<std::sync::Mutex<vault::Vault>>,
+    /// What the screens are told of them, as last kept.
+    logins: Vec<crate::protocol::vault::Login>,
     design_busy: std::collections::HashSet<String>,
+    /// Secrets members asked the person for (`ask_secret`), by squad — read
+    /// from its journal when first wanted.
+    secret_asks: HashMap<String, Vec<crate::protocol::secrets::SecretAsk>>,
 }
 
 /// What woke the loop.
@@ -913,6 +959,10 @@ impl Wake {
             Wake::Internal(Internal::Disk(..)) => Borrowed("the disk's free space"),
             Wake::Internal(Internal::DiskReport(..)) => Borrowed("what uses the disk"),
             Wake::Internal(Internal::DiskCleaned(..)) => Borrowed("a clean of the disk"),
+            Wake::Internal(Internal::ProjectAdded { .. }) => Borrowed("a project added"),
+            Wake::Internal(Internal::Logins(_)) => Borrowed("the logins changed"),
+            Wake::Internal(Internal::Wake { .. }) => Borrowed("work waits for a conversation"),
+            Wake::Internal(Internal::DiskTrimmed(..)) => Borrowed("a trim of the build caches"),
             Wake::Internal(Internal::Dispatch) => Borrowed("handing out work again"),
             Wake::Request(Some(Request::Disk(_))) => Borrowed("a look at the disk"),
             Wake::Request(Some(Request::DiskClean(..))) => Borrowed("a clean of the disk"),
@@ -1000,6 +1050,7 @@ impl Runtime {
                         let _ = tx.send(Event::Error { session: None, message: say!(self, "error.disk_full"), next: None });
                     }
                     self.subscribers.push((Some(squad.clone()), tx));
+                    self.keep_awake();
                     let _ = reply.send((self.snapshot(&squad), rx));
                     // A screen that shows the plans' usage gets Codex's fresh, soon after.
                     self.read_codex_usage(true);
@@ -1049,6 +1100,7 @@ impl Runtime {
                 Internal::Event(event) => match *event {
                     // What the engine echoes as it reads the person's steers: each said as it was.
                     Event::Steered { session, text } => self.steered(session, &text),
+                    event @ (Event::Compacting { .. } | Event::Compacted { .. } | Event::CompactFailed { .. }) => self.on_engine_compaction(event),
                     event => {
                         // A build that failed for want of room says so plainly.
                         let no_room = room::says_no_room(&event).then(|| event.session()).flatten();
@@ -1075,6 +1127,10 @@ impl Runtime {
                 Internal::Disk(status, asked) => self.on_disk(status, asked),
                 Internal::DiskReport(report, asked) => self.on_disk_report(*report, asked),
                 Internal::DiskCleaned(cleaned, status, asked, reply) => self.on_disk_cleaned(*cleaned, status, asked, reply),
+                Internal::ProjectAdded { squad, result } => self.project_added(&squad, result),
+                Internal::Logins(result) => self.logins_changed(result),
+                Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
+                Internal::DiskTrimmed(freed, lines) => self.on_disk_trimmed(freed, lines),
                 Internal::Dispatch => {
                     let squads: Vec<String> = self.journals.keys().cloned().collect();
                     for squad in squads {
@@ -1105,6 +1161,7 @@ impl Runtime {
             Wake::Frames => self.take_frames(),
             Wake::DesignTick => self.design_tick(),
             Wake::Minute => {
+                self.keep_awake();
                 pulse.step("minute tick: idle lanes");
                 self.fold_idle_lanes();
                 self.trim_builds();
@@ -1115,6 +1172,8 @@ impl Runtime {
                 self.let_helpers_go().await;
                 pulse.step("minute tick: stale tickets");
                 self.tidy_check();
+                pulse.step("minute tick: routines");
+                self.run_due_routines().await;
                 pulse.step("minute tick: engines");
                 self.engines_tick().await;
                 // Work that reached main outside equipe: every ten minutes is soon
@@ -1149,6 +1208,12 @@ impl Runtime {
     /// the screens following its squad. `squad` names the squad of an event that
     /// has no session to say it (a failed start, a board error).
     fn publish_in(&mut self, squad: Option<&str>, mut event: Event) {
+        // A turn that ends mid-compaction cuts it short: said first.
+        if let Event::TurnEnded { session, .. } = &event
+            && self.sessions.get(session).is_some_and(|s| s.compacting.is_some())
+        {
+            self.compaction_ended(*session, Some(compact::CUT_SHORT.to_owned()));
+        }
         // A ticket waiting for the person carries what it asks, item by item
         // (kept in its note); any other, nothing.
         if let Event::TicketChanged { ticket, .. } = &mut event {
@@ -1158,7 +1223,7 @@ impl Runtime {
             ticket.updated_at = Some(now_secs());
         }
         // Where a member's browser goes, to bring it back there on screen.
-        if let Event::ToolUse { session, tool, target: Some(url) } = &event
+        if let Event::ToolUse { session, tool, target: Some(url), .. } = &event
             && tool.ends_with("browser_navigate")
             && let Some(key) = self.browser_key(*session)
         {
@@ -1404,12 +1469,17 @@ impl Runtime {
                 };
                 self.hub.op(&json!({ "op": "nav", "page": page, "action": action, "url": url }));
             }
-            Command::BrowserNewTab { url } => {
-                // The person's own tab: the shared Chrome starts for it if it must.
+            Command::BrowserNewTab { url, profile } => {
+                // The person's own tab: the shared Chrome starts for it if it must
+                // (another profile's, its own Chrome).
                 if let Some(npx) = self.config.npx.clone()
                     && self.browser_host(&npx).is_some()
                 {
-                    self.hub.op(&json!({ "op": "newtab", "url": url }));
+                    let mut request = json!({ "op": "newtab", "url": url });
+                    if let Some(p) = profile.filter(|p| browser::profiles(&self.config.home).iter().any(|k| k.name == *p)) {
+                        browser::with_profile(&mut request, &self.config.home, &p);
+                    }
+                    self.hub.op(&request);
                 }
             }
             Command::BrowserCloseTab { page } => {
@@ -1470,6 +1540,40 @@ impl Runtime {
                     self.publish(Event::Notice { session, text });
                 }
             }
+            Command::AddProject { squad, path } => self.add_project(squad, path),
+            Command::SetHq { squad, path } => self.set_hq(&squad, path),
+            Command::SaveLogin { draft } => self.with_vault(move |vault| vault.save(draft, now_secs()).map(|_| ())),
+            Command::DeleteLogin { id } => self.with_vault(move |vault| vault.delete(id)),
+            Command::ForgetLoginAllowance { id, who } => self.with_vault(move |vault| vault.forget(id, &who)),
+            Command::Logins => {
+                let logins = self.logins.clone();
+                self.publish(Event::Logins { logins });
+            }
+            Command::SaveBrowserProfile { profile } => {
+                match browser::save_profile(&self.config.home, &profile.name, &profile.label) {
+                    Ok(_) => {}
+                    Err(why) => self.error(None, why, None),
+                }
+                self.publish_browser_profiles();
+            }
+            Command::DeleteBrowserProfile { name } => {
+                if let Err(why) = browser::delete_profile(&self.config.home, &name) {
+                    self.error(None, why, None);
+                }
+                // Its lanes close: members stop getting its browser from their next turn.
+                let suffix = format!("#{name}");
+                self.browsers.retain(|(_, key), _| !key.ends_with(&suffix));
+                self.publish_browser_profiles();
+            }
+            Command::BrowserProfiles => self.publish_browser_profiles(),
+            Command::SaveSecret { squad, id, values } => self.save_secret(&squad, id, values).await,
+            Command::DismissSecret { squad, id } => self.dismiss_secret(&squad, id).await,
+            Command::SaveRoutine { squad, routine } => self.save_routine(&squad, routine),
+            Command::DeleteRoutine { squad, id } => self.delete_routine(&squad, id),
+            Command::RunRoutine { squad, id } => {
+                let now = now_secs();
+                self.run_routine(&squad, id, now).await;
+            }
             Command::Focus { squad, project } => match project {
                 Some(name) => {
                     self.focus.insert(squad, name);
@@ -1478,9 +1582,17 @@ impl Runtime {
                     self.focus.remove(&squad);
                 }
             },
-            Command::Decide { squad, approval, decision } => {
-                if self.pending.get(&approval).is_some_and(|p| p.squad == squad) {
-                    self.answer(approval, decision, "");
+            Command::Decide { squad, approval, decision, words } => {
+                let words = words.map(|w| w.trim().to_owned()).filter(|w| !w.is_empty());
+                if let Some(pending) = self.pending.get(&approval).filter(|p| p.squad == squad) {
+                    let (session, tool) = (pending.approval.session, pending.approval.tool.clone());
+                    self.answer_with(approval, decision, "", words.as_deref());
+                    // A permission's yes (or a sign-in's answer) can't carry words:
+                    // they reach the member as the person's own, mid-work.
+                    let carried = tool == CONFIRM || (decision == Decision::Deny && tool != SIGN_IN_TOOL);
+                    if let Some(words) = words.filter(|_| !carried) {
+                        self.submit(session, words).await;
+                    }
                 }
             }
             Command::AnswerQuestions { squad, id, answers, about } => {
@@ -1516,6 +1628,12 @@ impl Runtime {
             }
             Command::SignOut { engine } => self.sign_out(engine),
             Command::SetEngineSwitching { squad, mode } => self.set_engine_switching(&squad, mode).await,
+            Command::SetPmAccepts { squad, on } => {
+                if let Some(journal) = self.journal(&squad) {
+                    let _ = journal.set_pm_accepts(on);
+                }
+                self.publish(Event::PmAcceptsChanged { squad, on });
+            }
             Command::ApplyEngineProposal { squad, id } => self.apply_engine_proposal(&squad, id).await,
             Command::DismissEngineProposal { squad, id } => self.dismiss_engine_proposal(&squad, id),
             Command::UndoEngineProposal { squad, id } => self.undo_engine_proposal(&squad, id).await,
@@ -1623,8 +1741,187 @@ impl Runtime {
         }
     }
 
+    /// The person adds a folder as a project: checked, and started as a
+    /// repository if it is none yet, off the loop (git).
+    fn add_project(&mut self, squad: String, path: PathBuf) {
+        let (home, internal) = (self.config.home.clone(), self.internal.clone());
+        let user_home = std::env::var_os("HOME").map(PathBuf::from);
+        tokio::task::spawn_blocking(move || {
+            let result = crate::squads::add_folder(&home, &squad, &path.to_string_lossy(), user_home.as_deref());
+            let _ = internal.send(Internal::ProjectAdded { squad, result });
+        });
+    }
+
+    /// A project added: every screen of the squad has the list again, and the
+    /// PM knows where it is.
+    fn project_added(&mut self, squad: &str, result: Result<PathBuf, String>) {
+        match result {
+            Ok(path) => {
+                let name = crate::board::project_name(&path);
+                crate::daemon_log!("equipe: {squad} has a new project, {name} ({})", path.display());
+                self.publish_projects(squad);
+                self.brief_pm(squad, format!("The person added a project to the squad: {name}, at {}.", path.display()), None);
+            }
+            Err(why) => {
+                let message = say!(self, "error.project_not_added", why = why);
+                self.squad_error(squad, message);
+            }
+        }
+    }
+
+    /// Awake while wanted: a member at work, or a screen attached (the first
+    /// subscriber is the daemon's own handle).
+    fn keep_awake(&mut self) {
+        let screens = self.subscribers.iter().skip(1).any(|(follows, screen)| follows.is_some() && !screen.is_closed());
+        let working = self.sessions.values().any(Session::is_working);
+        let want = screens || working;
+        if self.awake.want(want) {
+            crate::daemon_log!("equipe: {}", if want { "keeping this Mac awake: the squad works or a screen is attached" } else { "this Mac may sleep again" });
+        }
+    }
+
     fn journal(&mut self, squad: &str) -> Option<&Journal> {
         journal_for(&mut self.journals, &self.config.home, squad)
+    }
+
+    /// Every screen of the squad has its projects again, and which is its HQ.
+    fn publish_projects(&mut self, squad: &str) {
+        let projects = self.projects(squad);
+        let hq = self.hq(squad);
+        self.publish(Event::ProjectsChanged { squad: squad.to_owned(), projects, hq });
+    }
+
+    fn hq(&mut self, squad: &str) -> Option<PathBuf> {
+        self.journal(squad).and_then(|j| j.hq())
+    }
+
+    /// The person makes a project the squad's HQ (or none): the PM is told
+    /// what goes there from now on.
+    fn set_hq(&mut self, squad: &str, path: Option<PathBuf>) {
+        if path.as_ref().is_some_and(|p| !self.projects(squad).contains(p)) {
+            return;
+        }
+        let before = self.hq(squad);
+        if before == path {
+            return;
+        }
+        if let Some(Err(err)) = self.journal(squad).map(|j| j.set_hq(path.as_deref())) {
+            crate::daemon_log!("equipe: {squad}: the HQ wasn't kept: {err}");
+            return;
+        }
+        self.publish_projects(squad);
+        let line = match &path {
+            Some(hq) => format!(
+                "The person made {} the squad's HQ: from now on the plan across the projects, the roadmap, decisions, \
+runbooks and reports live there, and work across the projects or on running them is filed in it.",
+                board::project_name(hq)
+            ),
+            None => "The person took the HQ mark off: no project is the squad's HQ now.".to_owned(),
+        };
+        self.brief_pm(squad, line, None);
+    }
+
+    // ── routines ──
+
+    fn routines(&mut self, squad: &str) -> Vec<Routine> {
+        self.journal(squad).map(Journal::routines).unwrap_or_default()
+    }
+
+    /// Kept, and every screen of the squad has them again.
+    fn keep_routines(&mut self, squad: &str, routines: Vec<Routine>) {
+        if let Some(Err(err)) = self.journal(squad).map(|j| j.set_routines(&routines)) {
+            crate::daemon_log!("equipe: {squad}: the routines weren't kept: {err}");
+        }
+        self.publish(Event::RoutinesChanged { squad: squad.to_owned(), routines });
+    }
+
+    /// The person makes or changes a routine: numbered if new, its next run worked out.
+    fn save_routine(&mut self, squad: &str, mut routine: Routine) {
+        routine.title = routine.title.trim().to_owned();
+        routine.prompt = routine.prompt.trim().to_owned();
+        if routine.title.is_empty() || routine.prompt.is_empty() || !routine.when.is_valid() {
+            let message = say!(self, "error.routine_invalid");
+            return self.squad_error(squad, message);
+        }
+        let mut all = self.routines(squad);
+        routine.next_run = Some(routines::next_run(routine.when, now_secs(), &routines::Local));
+        let full = all.len() >= MAX_ROUTINES;
+        match all.iter_mut().find(|r| r.id == routine.id && routine.id != 0) {
+            Some(old) => {
+                routine.last_run = old.last_run;
+                *old = routine;
+            }
+            None if full => {
+                let message = say!(self, "error.routines_full", max = MAX_ROUTINES);
+                return self.squad_error(squad, message);
+            }
+            None => {
+                routine.id = all.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+                routine.last_run = None;
+                all.push(routine);
+            }
+        }
+        self.keep_routines(squad, all);
+    }
+
+    fn delete_routine(&mut self, squad: &str, id: u32) {
+        let mut all = self.routines(squad);
+        let before = all.len();
+        all.retain(|r| r.id != id);
+        if all.len() != before {
+            self.keep_routines(squad, all);
+        }
+    }
+
+    /// A routine handed to the PM as the person's message — after its turn
+    /// if one runs — about the HQ when the squad has one. `false`: no PM to hand it to.
+    async fn run_routine(&mut self, squad: &str, id: u32, now: u64) -> bool {
+        let mut all = self.routines(squad);
+        let Some(routine) = all.iter().find(|r| r.id == id).cloned() else {
+            return false;
+        };
+        let Some(pm) = self.pm_of(squad) else {
+            return false;
+        };
+        crate::daemon_log!("equipe: {squad}: routine {} ({}) handed to the PM", routine.id, routine.title);
+        let about = self.hq(squad).map(|hq| board::project_name(&hq));
+        let text = routines::message(&routine);
+        self.said_about = Some(about);
+        match self.sessions.get(&pm) {
+            Some(s) if s.is_working() => self.leave_memo(pm, text),
+            _ => self.submit(pm, text).await,
+        }
+        self.said_about = None;
+        if let Some(r) = all.iter_mut().find(|r| r.id == id) {
+            r.last_run = Some(now);
+            r.next_run = Some(routines::next_run(r.when, now, &routines::Local));
+        }
+        self.keep_routines(squad, all);
+        true
+    }
+
+    /// Each minute: the routines due, run; a run missed for long, let go.
+    async fn run_due_routines(&mut self) {
+        let now = now_secs();
+        let squads: Vec<String> = self.journals.keys().cloned().collect();
+        for squad in squads {
+            let all = self.routines(&squad);
+            for r in &all {
+                match routines::due(r, now) {
+                    routines::Due::Run => {
+                        self.run_routine(&squad, r.id, now).await;
+                    }
+                    routines::Due::Skip => {
+                        let mut kept = self.routines(&squad);
+                        if let Some(k) = kept.iter_mut().find(|k| k.id == r.id) {
+                            k.next_run = Some(routines::next_run(k.when, now, &routines::Local));
+                        }
+                        self.keep_routines(&squad, kept);
+                    }
+                    routines::Due::Wait => {}
+                }
+            }
+        }
     }
 
     fn projects(&mut self, squad: &str) -> Vec<PathBuf> {
@@ -1970,6 +2267,7 @@ impl Runtime {
                 taken_back: Vec::new(),
                 send_now_prompt: None,
                 subagents: Vec::new(),
+                compacting: None,
                 answers_person: false,
                 effort: None,
                 briefing: Vec::new(),
@@ -2434,6 +2732,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             taken_back: Vec::new(),
             send_now_prompt: None,
             subagents: Vec::new(),
+            compacting: None,
             answers_person: false,
             effort: None,
             briefing: Vec::new(),
@@ -2548,6 +2847,8 @@ for one project goes to it as tickets for its owners, with that project — and 
         };
         let squad = session.squad.clone();
         let projects = squad.as_deref().map(|s| self.projects_cached(s)).unwrap_or_default();
+        let hq = squad.as_deref().and_then(|s| self.journals.get(s)).and_then(Journal::hq).map(|p| board::project_name(&p));
+        let equipe_path = self.config.equipe_binary.as_ref().map(|p| p.to_string_lossy().into_owned());
         let board_tools = session.member.is_some() && has_tools(session) && self.config.equipe_binary.is_some();
         let language = squad.as_deref().and_then(|s| self.journals.get(s)).and_then(Journal::language);
         let edits = session.edits();
@@ -2572,6 +2873,17 @@ for one project goes to it as tickets for its owners, with that project — and 
             }
             _ => None,
         };
+        // Other people's accounts: a browser in each other profile's Chrome, beside its own.
+        let profile_browsers: Vec<(browser::BrowserProfile, u16)> = match (browser, self.browser_key(id)) {
+            (Some(_), Some((squad, key))) if self.config.browser_host => browser::profiles(&self.config.home)
+                .into_iter()
+                .filter_map(|p| {
+                    let port = self.open_browser(&squad, &browser::in_profile(&key, Some(&p.name)), false)?;
+                    Some((p, port))
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         let Some(session) = self.sessions.get(&id) else {
             return;
         };
@@ -2579,7 +2891,13 @@ for one project goes to it as tickets for its owners, with that project — and 
         // Code run in the browser's own process is outside any sandbox: in auto
         // the person sees the code and says yes; in full it runs.
         let ask_tools: Vec<String> =
-            if browser.is_some() && mode == Mode::Auto { vec![permissions::BROWSER_CODE.to_owned()] } else { Vec::new() };
+            if browser.is_some() && mode == Mode::Auto {
+                std::iter::once(permissions::BROWSER_CODE.to_owned())
+                    .chain(profile_browsers.iter().map(|(p, _)| format!("mcp__{}__browser_run_code_unsafe", browser::server_name(Some(&p.name)))))
+                    .collect()
+            } else {
+                Vec::new()
+            };
         let mcp_config = match (&squad, &session.member, &self.config.equipe_binary) {
             (Some(squad), Some(m), Some(binary)) if board_tools => {
                 let mut servers = json!({ MCP_SERVER: {
@@ -2589,6 +2907,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                 }});
                 if let Some(port) = browser {
                     servers[browser::SERVER] = browser::entry(port);
+                }
+                for (profile, port) in &profile_browsers {
+                    servers[browser::server_name(Some(&profile.name))] = browser::entry(*port);
                 }
                 if desktop {
                     servers[DESKTOP_SERVER] = json!({
@@ -2611,10 +2932,14 @@ for one project goes to it as tickets for its owners, with that project — and 
             let ctx = roles::Context {
                 team: &mates,
                 projects: &names,
+                hq: hq.as_deref(),
+                equipe: equipe_path.as_deref(),
                 board_tools,
                 language: language.as_deref(),
                 screen_language: Some(self.config.lang.english_name()),
                 browser: browser.is_some(),
+                profiles: &profile_browsers.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(),
+                pm_accepts: squad.as_deref().and_then(|s| self.journals.get(s)).is_none_or(Journal::pm_accepts),
                 desktop,
                 home: home.as_deref(),
                 memory: memory.as_deref(),
@@ -2709,6 +3034,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                         let mut servers = json!({ MCP_SERVER: codex_app::mcp_server(binary, &args(None), true) });
                         if let Some(port) = browser {
                             servers[browser::SERVER] = codex_app::mcp_http_server(&format!("http://localhost:{port}/mcp"), browses_freely);
+                        }
+                        for (profile, port) in &profile_browsers {
+                            servers[browser::server_name(Some(&profile.name))] = codex_app::mcp_http_server(&format!("http://localhost:{port}/mcp"), browses_freely);
                         }
                         if desktop {
                             servers[DESKTOP_SERVER] = codex_app::mcp_server(binary, &args(Some(DESKTOP_SERVER)), matches!(mode, Mode::Auto | Mode::Full));
@@ -2828,6 +3156,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 let mut allowed: Vec<String> = mcp_config.iter().map(|_| format!("mcp__{MCP_SERVER}")).collect();
                 if browses_freely {
                     allowed.push(format!("mcp__{}", browser::SERVER));
+                    allowed.extend(profile_browsers.iter().map(|(p, _)| format!("mcp__{}", browser::server_name(Some(&p.name)))));
                 }
                 if desktop && matches!(mode, Mode::Auto | Mode::Full) {
                     allowed.push(format!("mcp__{DESKTOP_SERVER}"));
@@ -3479,7 +3808,8 @@ for one project goes to it as tickets for its owners, with that project — and 
     /// to a proposal with the reason, for the PM or the person to sort out.
     fn cannot_start(&mut self, squad: &str, mut ticket: Ticket, name: &str, reason: &str) {
         ticket.status = TicketStatus::Proposed;
-        ticket.note = Some(format!("Couldn't start: {reason}"));
+        ticket.note = Some(format!("{}{reason}", crate::protocol::COULD_NOT_START));
+        let id = ticket.id;
         if let Some(journal) = self.journal(squad) {
             let _ = journal.save_ticket(&ticket);
             let _ = journal.ticket_event(ticket.id, "equipe", "blocked", reason);
@@ -3488,6 +3818,18 @@ for one project goes to it as tickets for its owners, with that project — and 
         let shown = say!(self, "news.cannot_start", id = ticket.id, name = name, reason = reason);
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
         self.brief_pm(squad, line, Some(shown));
+        // Where the PM runs the work it is the PM's to sort out, now — not the
+        // person's, and not when someone next speaks to it.
+        if self.journal(squad).is_some_and(|j| j.pm_accepts())
+            && let Some(pm) = self.pm_of(squad)
+        {
+            let prompt = format!(
+                "[equipe: T-{id} couldn't start for {name}: {reason}. Sort it out — fix what stops it (where the work it builds on \
+conflicts, have that work's owner merge main in and resolve it), then take it on again with `update_ticket` (status \
+todo); or drop it if it's no longer wanted.]"
+            );
+            let _ = self.internal.send(Internal::Wake { session: pm, prompt });
+        }
     }
 
     /// Member `id` puts its ticket down. Changes are committed to the ticket's
@@ -3642,6 +3984,15 @@ for one project goes to it as tickets for its owners, with that project — and 
             let _ = journal.set_ticket_work(ticket.id, &saved);
             let _ = journal.ticket_event(ticket.id, &by, event, summary.as_deref().unwrap_or(""));
         }
+        // Work now ready for review — this ticket handed in, or the one a
+        // designer's QA just passed — when the PM accepts it.
+        let ready_for_pm = if !self.journal(&squad).is_some_and(|j| j.pm_accepts()) {
+            None
+        } else if ticket.ready_for_review() {
+            Some(ticket.id)
+        } else {
+            about.as_ref().map(|(id, _)| *id).filter(|id| self.journal(&squad).and_then(|j| j.ticket(*id).ok().flatten()).is_some_and(|t| t.ready_for_review()))
+        };
         let ticket_id = ticket.id;
         let (about_id, about_title) = about.unwrap_or_else(|| (ticket.id, ticket.title.clone()));
         let to = to.or_else(|| ticket.owner.clone()).unwrap_or_default();
@@ -3658,6 +4009,18 @@ for one project goes to it as tickets for its owners, with that project — and 
         };
         if self.pm_of(&squad) != Some(id) {
             self.brief_pm(&squad, briefing, Some(shown));
+            // Where the PM accepts, work ready for review is its to act on now —
+            // a note it would read only when next spoken to leaves it waiting.
+            if let Some(ready) = ready_for_pm
+                && let Some(pm) = self.pm_of(&squad)
+            {
+                let prompt = format!(
+                    "[equipe: T-{ready} is handed in and ready for you. Check it and accept it with `accept_work` (with \
+`push` when the person asked for it to go live), send it back with `comment`, or — if it needs the person — put it to \
+them with `propose_accept`. Then carry on with what else waits.]"
+                );
+                let _ = self.internal.send(Internal::Wake { session: pm, prompt });
+            }
         }
     }
 
@@ -3861,7 +4224,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         if !self.merging.insert((squad.to_owned(), ticket)) {
             return;
         }
-        let message = format!("equipe: merge T-{ticket} {}\n\nAccepted by the person; merged from {branch}.", found.title);
+        let message = format!("equipe: merge T-{ticket} {}\n\nAccepted; merged from {branch}.", found.title);
         let (internal, squad) = (self.internal.clone(), squad.to_owned());
         tokio::task::spawn_blocking(move || {
             let result = worktree::merge_into_main(&repo, &branch, &message)
@@ -3889,8 +4252,24 @@ for one project goes to it as tickets for its owners, with that project — and 
                     let _ = journal.save_ticket(&found);
                     let _ = journal.ticket_event(ticket, "equipe", "not merged", &err);
                 }
-                self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: found });
-                let message = say!(self, "error.not_merged", id = ticket, err = err);
+                self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: found.clone() });
+                // A conflict is work: its owner merges main in and resolves it,
+                // and the person merges again from the board.
+                let owner = found.owner.clone().or_else(|| found.assignee.clone()).filter(|_| err.contains(" conflicts with "));
+                let message = match owner {
+                    Some(owner) => {
+                        let branch = found.branch.clone().unwrap_or_else(|| "its branch".into());
+                        let line = format!(
+                            "T-{ticket} couldn't be merged into main: {err}. In the ticket's worktree, merge main into {branch}, resolve the conflict keeping what both sides meant, run the tests and commit. Then say it's ready: the person merges it again from the board."
+                        );
+                        let shown = say!(self, "news.merge_conflict_owner", id = ticket);
+                        self.brief_member(squad, &owner, &line, &shown);
+                        self.brief_pm(squad, line, None);
+                        let files = worktree::conflict_files(&err).unwrap_or_default();
+                        say!(self, "error.not_merged_conflict", id = ticket, files = files, who = owner)
+                    }
+                    None => say!(self, "error.not_merged", id = ticket, err = err),
+                };
                 return self.squad_error(squad, message);
             }
         };
@@ -3900,6 +4279,11 @@ for one project goes to it as tickets for its owners, with that project — and 
             Some(Ok(())) => {
                 line.push_str(" and pushed it");
                 news = "news.merged_pushed";
+            }
+            // A project kept on this machine only: merged is all there is to do.
+            Some(Err(err)) if err == worktree::NO_ORIGIN => {
+                line.push_str(" (it has no remote to push to)");
+                news = "news.merged_local";
             }
             Some(Err(err)) => {
                 let message = say!(self, "error.not_pushed", branch = main, err = err);
@@ -4117,6 +4501,9 @@ for one project goes to it as tickets for its owners, with that project — and 
         if call.name == board::ASK_PERSON {
             return self.ask_person(call, reply);
         }
+        if call.name == board::SIGN_IN {
+            return self.ask_sign_in(call, reply);
+        }
         if call.name == board::SHOW_BROWSER {
             let url = call.arguments["url"].as_str().map(str::to_owned);
             let why = call.arguments["why"].as_str().unwrap_or_default().to_owned();
@@ -4153,6 +4540,19 @@ there, end your turn, and carry on when they say they're done."
             return;
         }
         let squad = call.squad.clone();
+        // The PM accepting its team's work: it waits for the acceptance itself.
+        if call.name == crate::accept::ACCEPT_WORK {
+            let result = match self.member_id(&squad, &call.member) {
+                Some(id) => self.accept_work(&squad, &call.member, id, &call.arguments).await,
+                None => Err("You're not on the squad.".into()),
+            };
+            self.dispatch(&squad).await;
+            let _ = reply.send(match result {
+                Ok(text) => ToolResult { text, is_error: false, image: None },
+                Err(text) => ToolResult { text, is_error: true, image: None },
+            });
+            return;
+        }
         let result = self.run_tool(call);
         // Whatever changed, the rules look again.
         self.dispatch(&squad).await;
@@ -4168,7 +4568,7 @@ there, end your turn, and carry on when they say they're done."
     /// its own. Blocked things are refused, "always allow" rules answered, and
     /// everything else put to the person.
     fn ask_permission(&mut self, call: ToolCall, reply: oneshot::Sender<ToolResult>) {
-        let tool = call.arguments.get("tool_name").and_then(Value::as_str).unwrap_or("?").to_owned();
+        let tool = permissions::canonical(call.arguments.get("tool_name").and_then(Value::as_str).unwrap_or("?")).to_owned();
         let input = call.arguments.get("input").cloned().unwrap_or_else(|| json!({}));
         let (action, reason) = permissions::describe_in(self.config.lang, &tool, &input);
         let Some(id) = self.member_id(&call.squad, &call.member) else {
@@ -4360,10 +4760,20 @@ there, end your turn, and carry on when they say they're done."
     /// Answer a waiting request for permission. "Always" also becomes one of the
     /// squad's rules, so the same kind of thing doesn't ask again.
     fn answer(&mut self, approval_id: u64, decision: Decision, why: &str) {
+        self.answer_with(approval_id, decision, why, None);
+    }
+
+    /// [`Self::answer`], with what the person wrote: a no's reason, or what
+    /// they add to a yes to their member's own question.
+    fn answer_with(&mut self, approval_id: u64, decision: Decision, why: &str, words: Option<&str>) {
         let Some(pending) = self.pending.remove(&approval_id) else {
             return;
         };
         let Pending { squad, approval, input, reply } = pending;
+        if approval.tool == SIGN_IN_TOOL {
+            self.publish(Event::ApprovalResolved { squad: squad.clone(), approval: approval_id, decision });
+            return self.sign_in_answered(squad, approval, input, decision, reply);
+        }
         let mut decision = decision;
         let rule = (decision == Decision::Always).then(|| permissions::rule_for(&approval.tool, &approval.action)).flatten();
         if decision == Decision::Always {
@@ -4378,7 +4788,12 @@ there, end your turn, and carry on when they say they're done."
                 None => decision = Decision::Allow,
             }
         }
-        let why = if why.is_empty() && decision == Decision::Deny { "The person declined." } else { why };
+        let said = words.map(|w| format!("The person declined and said: \u{201c}{w}\u{201d}. Don't do it as asked; do what they said instead, or ask."));
+        let why = match &said {
+            Some(said) if decision == Decision::Deny => said.as_str(),
+            _ if why.is_empty() && decision == Decision::Deny => "The person declined.",
+            _ => why,
+        };
         if let Some(preview) = &approval.preview {
             let _ = std::fs::remove_file(preview);
         }
@@ -4390,19 +4805,23 @@ there, end your turn, and carry on when they say they're done."
             }
         } else if approval.tool == CONFIRM {
             // A question the member asked itself: an answer in words, not a permission verdict.
-            let text = match decision {
-                Decision::Allow | Decision::Always => format!("The person said yes. Go ahead: {}", approval.action),
-                Decision::Deny => format!("The person said no ({why}). Don't do it; carry on without it, or say what you need."),
+            let text = match (decision, words) {
+                (Decision::Allow | Decision::Always, None) => format!("The person said yes. Go ahead: {}", approval.action),
+                (Decision::Allow | Decision::Always, Some(w)) => format!("The person said yes. Go ahead: {}\nThey added: \u{201c}{w}\u{201d} — do it their way.", approval.action),
+                (Decision::Deny, Some(_)) => why.to_owned(),
+                (Decision::Deny, None) => format!("The person said no ({why}). Don't do it; carry on without it, or say what you need."),
             };
             ToolResult { text, is_error: false, image: None }
         } else {
             verdict(decision, &input, why)
         });
-        let line = match (decision, &rule) {
-            (Decision::Always, Some(rule)) => say!(self, "notice.always_allowed", rule = rule, action = approval.action),
-            (Decision::Allow | Decision::Always, _) => say!(self, "notice.allowed", action = approval.action),
-            (Decision::Deny, _) if why == "The person declined." => say!(self, "notice.declined", action = approval.action),
-            (Decision::Deny, _) => say!(self, "notice.declined_why", why = why, action = approval.action),
+        let line = match (decision, &rule, words) {
+            (Decision::Deny, _, Some(w)) => say!(self, "notice.declined_said", words = w, action = approval.action),
+            (_, _, Some(w)) => say!(self, "notice.allowed_said", words = w, action = approval.action),
+            (Decision::Always, Some(rule), _) => say!(self, "notice.always_allowed", rule = rule, action = approval.action),
+            (Decision::Allow | Decision::Always, _, _) => say!(self, "notice.allowed", action = approval.action),
+            (Decision::Deny, _, _) if why == "The person declined." => say!(self, "notice.declined", action = approval.action),
+            (Decision::Deny, _, _) => say!(self, "notice.declined_why", why = why, action = approval.action),
         };
         self.publish(Event::Notice { session: approval.session, text: line });
         let verb = match decision {
@@ -4412,6 +4831,157 @@ there, end your turn, and carry on when they say they're done."
         };
         self.audit(&squad, approval.ticket, "you", verb, &approval.action);
         self.publish(Event::ApprovalResolved { squad, approval: approval_id, decision });
+    }
+
+    // ── logins (`vault`) ──
+
+    /// Change the logins off the loop (the Keychain may ask the person first),
+    /// then tell every screen.
+    fn with_vault(&mut self, change: impl FnOnce(&mut vault::Vault) -> Result<(), String> + Send + 'static) {
+        let (vault, internal) = (self.vault.clone(), self.internal.clone());
+        tokio::task::spawn_blocking(move || {
+            let result = match vault.lock() {
+                Ok(mut v) => change(&mut v).map(|()| v.logins.clone()),
+                Err(_) => Err("the logins are unreadable".into()),
+            };
+            let _ = internal.send(Internal::Logins(result));
+        });
+    }
+
+    /// Every screen's list of browser profiles.
+    fn publish_browser_profiles(&mut self) {
+        let profiles = browser::profiles(&self.config.home);
+        self.publish(Event::BrowserProfiles { profiles });
+    }
+
+    fn logins_changed(&mut self, result: Result<Vec<crate::protocol::vault::Login>, String>) {
+        match result {
+            Ok(logins) => {
+                self.logins = logins.clone();
+                self.publish(Event::Logins { logins });
+            }
+            Err(why) => {
+                crate::daemon_log!("equipe: a login wasn't kept: {why}");
+                let message = say!(self, "error.login_not_kept", why = why);
+                self.publish(Event::Error { session: None, message, next: None });
+            }
+        }
+    }
+
+    /// A member asks to sign in to a site: with a login the person lets it use
+    /// already, at once; otherwise a card puts it to the person. The tool's
+    /// answer waits for how it went.
+    fn ask_sign_in(&mut self, call: ToolCall, reply: oneshot::Sender<ToolResult>) {
+        let text = |key: &str| call.arguments.get(key).and_then(Value::as_str).map(str::trim).unwrap_or_default().to_owned();
+        let (site, account, why) = (text("site"), text("account"), text("why"));
+        let Some(id) = self.member_id(&call.squad, &call.member) else {
+            let _ = reply.send(ToolResult::error("Unknown member."));
+            return;
+        };
+        if self.config.npx.is_none() {
+            let _ = reply.send(ToolResult::error("You have no browser on this machine (Node.js isn't installed), so there is nothing to sign in with."));
+            return;
+        }
+        let kept: Vec<&crate::protocol::vault::Login> = self.logins.iter().filter(|l| vault::serves(&l.site, &site)).collect();
+        let login = match (kept.as_slice(), account.is_empty()) {
+            ([], _) => {
+                let _ = reply.send(ToolResult::error(format!(
+                    "The person keeps no login for {}. Ask them to add one in equipe (Settings › Accounts), or hand them your browser with `show_my_browser` to sign in themselves.",
+                    vault::site_of(&site)
+                )));
+                return;
+            }
+            ([one], true) => (*one).clone(),
+            (many, true) => {
+                let names: Vec<&str> = many.iter().map(|l| l.username.as_str()).collect();
+                let _ = reply.send(ToolResult::error(format!("The person keeps several logins for {}: {}. Call `sign_in` again with `account`.", vault::site_of(&site), names.join(", "))));
+                return;
+            }
+            (many, false) => match many.iter().find(|l| l.username.eq_ignore_ascii_case(&account)) {
+                Some(l) => (*l).clone(),
+                None => {
+                    let names: Vec<&str> = many.iter().map(|l| l.username.as_str()).collect();
+                    let _ = reply.send(ToolResult::error(format!("No login {account} for {}; kept: {}.", vault::site_of(&site), names.join(", "))));
+                    return;
+                }
+            },
+        };
+        let input = json!({ "login": login.id, "site": site });
+        let who = format!("{}/{}", call.squad, call.member);
+        let ticket = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
+        let approval = Approval {
+            id: self.next_approval,
+            session: id,
+            member: call.member.clone(),
+            ticket,
+            tool: SIGN_IN_TOOL.to_owned(),
+            action: format!("{} · {}", login.site, login.username),
+            reason: (!why.is_empty()).then_some(why),
+            preview: None,
+        };
+        // Let through already: no card, straight to the form.
+        if login.allowed.contains(&who) {
+            return self.sign_in_answered(call.squad, approval, input, Decision::Allow, reply);
+        }
+        self.next_approval += 1;
+        self.pending.insert(approval.id, Pending { squad: call.squad.clone(), approval: approval.clone(), input, reply });
+        self.publish(Event::ApprovalRequested { squad: call.squad.clone(), approval: approval.clone() });
+        let (internal, approval_id) = (self.internal.clone(), approval.id);
+        tokio::spawn(async move {
+            tokio::time::sleep(APPROVAL_WAIT).await;
+            let _ = internal.send(Internal::ApprovalTimedOut(approval_id));
+        });
+    }
+
+    /// The person answered a sign-in card (or the member may already): on a
+    /// yes, equipe opens the member's browser on the site and types the login
+    /// in itself — the member hears only how it went.
+    fn sign_in_answered(&mut self, squad: String, approval: Approval, input: Value, decision: Decision, reply: oneshot::Sender<ToolResult>) {
+        let id = input["login"].as_u64().unwrap_or_default() as u32;
+        let member = approval.member.clone();
+        let who = format!("{squad}/{member}");
+        let login = self.logins.iter().find(|l| l.id == id).cloned();
+        let Some(login) = login.filter(|_| decision != Decision::Deny) else {
+            let _ = reply.send(ToolResult { text: "The person said no: don't sign in there; carry on without it, or say what you need.".into(), is_error: false, image: None });
+            let declined_in = squad.clone();
+            self.with_vault(move |v| {
+                v.used(id, now_secs(), &declined_in, &member, "declined");
+                Ok(())
+            });
+            self.audit(&squad, approval.ticket, "you", "declined", &approval.action);
+            return;
+        };
+        if decision == Decision::Always {
+            let who = who.clone();
+            self.with_vault(move |v| v.allow(id, &who));
+        }
+        self.audit(&squad, approval.ticket, "you", if decision == Decision::Always { "always allowed" } else { "allowed" }, &approval.action);
+        let Some(port) = self.browser_key(approval.session).and_then(|(sq, key)| self.open_browser(&sq, &key, false)) else {
+            let _ = reply.send(ToolResult::error("Your browser couldn't be started."));
+            return;
+        };
+        let (client, vault, internal) = (self.client.clone(), self.vault.clone(), self.internal.clone());
+        let start = login.url.clone().unwrap_or_else(|| format!("https://{}", login.site));
+        let (site, username) = (login.site.clone(), login.username.clone());
+        tokio::spawn(async move {
+            let outcome = sign_in_page(&client, port, &vault, id, &site, &start, &username).await;
+            let (text, is_error, kept) = match &outcome {
+                Ok(step) => (format!("Signed in to {site} as {username} — the form was filled and submitted ({step}). Look at the page to confirm, then carry on."), false, "signed_in"),
+                Err(SignIn::NoForm) => (format!("No sign-in form on the page equipe opened for {site}. Open the page with the form yourself, then call `sign_in` again."), true, "no_form"),
+                Err(SignIn::Failed(why)) => (format!("Couldn't sign in to {site}: {why}"), true, "failed"),
+            };
+            let _ = reply.send(ToolResult { text, is_error, image: None });
+            let result = tokio::task::spawn_blocking(move || match vault.lock() {
+                Ok(mut v) => {
+                    v.used(id, now_secs(), &squad, &member, kept);
+                    Ok(v.logins.clone())
+                }
+                Err(_) => Err("the logins are unreadable".into()),
+            })
+            .await
+            .unwrap_or_else(|_| Err("stopped".into()));
+            let _ = internal.send(Internal::Logins(result));
+        });
     }
 
     /// Tell the screens the squad's "always allow" rules, all of them.
@@ -4506,11 +5076,13 @@ there, end your turn, and carry on when they say they're done."
         if !self.browsers.get_mut(&key).is_some_and(|b| b.fits(shown)) {
             // A lane of the shared Chrome; a Chrome of its own if that can't be had.
             let running = match self.browser_host(&npx) {
-                Some(host) => browser::lane(&host, squad, name, &output, shown).ok(),
+                Some(host) => browser::lane(&host, &self.config.home, squad, name, &output, shown).ok(),
                 None => None,
             };
             let running = match running {
                 Some(running) => running,
+                // Another profile's browser lives only in the shared Chrome's host.
+                None if browser::split_profile(name).1.is_some() => return None,
                 None => browser::launch(&npx, &self.config.home, &profile, &output, shown).ok()?,
             };
             let (client, port) = (self.client.clone(), running.port);
@@ -4776,6 +5348,12 @@ there, end your turn, and carry on when they say they're done."
     /// starting a turn of its own.
     async fn carry_on(&mut self, id: SessionId, notice: String, prompt: String) {
         self.publish(Event::Notice { session: id, text: notice });
+        self.set_going(id, prompt).await;
+    }
+
+    /// Set conversation `id` going on `prompt`: read at its next step when at
+    /// work, else a turn of its own — with what it missed meanwhile.
+    async fn set_going(&mut self, id: SessionId, prompt: String) {
         let Some(session) = self.sessions.get(&id) else { return };
         if session.is_working() {
             if let Some(steer) = session.steer.clone() {
@@ -4807,6 +5385,7 @@ there, end your turn, and carry on when they say they're done."
         let Some((squad, key)) = lane.split_once('/') else {
             return (None, None);
         };
+        let key = browser::split_profile(key).0;
         let session = self.sessions.keys().copied().find(|id| self.browser_key(*id).is_some_and(|(q, k)| q == squad && k == key));
         (Some(squad.to_owned()), session)
     }
@@ -4894,14 +5473,17 @@ there, end your turn, and carry on when they say they're done."
                 if let Some(missing) = depends_on.iter().find(|d| !tickets.iter().any(|t| t.id == **d)) {
                     return Err(format!("There is no T-{missing} to depend on."));
                 }
-                let owner = board::arg_str(&args, "owner").map(str::to_owned);
                 let proposal = args.get("proposal").and_then(Value::as_bool).unwrap_or(false);
+                // Where the PM runs the work, a member's proposal is simply done:
+                // on the board, its own unless it names someone else.
+                let just_do = !is_pm && self.journal(&squad).is_some_and(|j| j.pm_accepts());
+                let owner = board::arg_str(&args, "owner").map(str::to_owned).or_else(|| just_do.then(|| member.clone()));
                 let ticket = Ticket {
                     id: 0,
                     title: title.to_owned(),
                     body: body.to_owned(),
                     // The PM's are ready, unless it puts one up for the person to take on.
-                    status: if is_pm && !proposal { TicketStatus::Todo } else { TicketStatus::Proposed },
+                    status: if (is_pm && !proposal) || just_do { TicketStatus::Todo } else { TicketStatus::Proposed },
                     kind,
                     owner: owner.clone(),
                     assignee: None,
@@ -4929,6 +5511,11 @@ there, end your turn, and carry on when they say they're done."
                 }
                 if is_pm && proposal {
                     reply = format!("Proposed T-{new_id} — it waits for the person to take it on.");
+                } else if just_do {
+                    reply = format!("T-{new_id} is on the board and starts as soon as its owner is free; the PM is told.");
+                    let line = format!("{member} put T-{new_id} on the board: {title} — drop it (update_ticket, cancelled) if it shouldn't be done");
+                    let shown = say!(self, "news.proposed", name = member, id = new_id, title = title);
+                    self.brief_pm(&squad, line, Some(shown));
                 } else if !is_pm {
                     reply = format!("Proposed T-{new_id} — it waits for the PM or the person to accept it.");
                     let line = format!("{member} proposed T-{new_id}: {title}");
@@ -5070,6 +5657,7 @@ it back there once they have done it.{again} End your turn now with a short line
                 ))
             }
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
+            crate::secrets::ASK_SECRET => self.ask_secret(&squad, &member, id, &args),
             board::DESIGN_QA => self.finish_design_qa(&squad, id, &args),
             crate::team::PROPOSE_TEAM_CHANGE => self.propose_team_change(&squad, &member, id, &args),
             crate::accept::PROPOSE_ACCEPT => self.propose_accept(&squad, &member, id, &args),
@@ -5103,8 +5691,9 @@ it back there once they have done it.{again} End your turn now with a short line
                 }
                 let estimate = Some(estimate).filter(|e| !e.is_empty());
                 session.estimate = estimate.clone();
+                let reply = board::estimate_reply(done, !session.subagents.is_empty(), session.engine == Engine::Claude);
                 self.publish(Event::Estimated { session: id, estimate });
-                Ok("Shown to the person.".into())
+                Ok(reply)
             }
             board::REMEMBER | board::FORGET => {
                 let folder = squad_home::path(&self.config.home, &squad);
@@ -5185,6 +5774,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         .iter()
                         .map(|(id, what, step, since)| equipe_protocol::SubagentInfo { id: id.clone(), what: what.clone(), step: step.clone(), secs: since.elapsed().as_secs() })
                         .collect(),
+                    compacting: s.compacting.as_ref().map(|(info, ..)| info.clone()),
                 }
             })
             .collect();
@@ -5204,11 +5794,15 @@ it back there once they have done it.{again} End your turn now with a short line
         let questions = self.question_sets(squad).clone();
         let team_changes = self.team_changes(squad).clone();
         let accepts = self.accepts(squad).clone();
+        let hq = self.hq(squad);
+        let routines = self.routines(squad);
         Snapshot {
+            routines,
             team_changes,
             accepts,
             squad: squad.to_owned(),
             projects,
+            hq,
             sessions,
             tickets,
             mode,
@@ -5219,6 +5813,8 @@ it back there once they have done it.{again} End your turn now with a short line
             plan: self.plan,
             plans: self.plans.clone(),
             engine_switching: self.journals.get(squad).map(Journal::engine_switching).unwrap_or_default(),
+            pm_accepts: self.journals.get(squad).is_none_or(Journal::pm_accepts),
+            secret_asks: self.secret_asks(squad).clone(),
             engine_proposals: self.engines.proposals(squad),
             desktop: self.desktop.state(),
             allowed,
@@ -5361,6 +5957,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         taken_back: Vec::new(),
                         send_now_prompt: None,
                         subagents: Vec::new(),
+                        compacting: None,
                         briefing: journal.waiting(record.id, "briefing").unwrap_or_default(),
                         memory,
                         mode: record.mode,
@@ -5433,11 +6030,19 @@ check what is already done in your worktree first."
         let (used, window) = session.desk_context.unwrap_or((0, 0));
         let full = window > 0 && used * 100 / window >= REFRESH_FULL_PERCENT;
         let cold = used >= REFRESH_COLD_TOKENS && session.last_turn.is_some_and(|t| t.elapsed() > REFRESH_COLD_AFTER);
-        let summary = match session.refresh.take() {
+        let asked = session.refresh.take();
+        let summary = match asked {
             Some(summary) => summary,
             None if full || cold => true,
             None => return None,
         };
+        // Handed on with a summary: a compaction of equipe's own, the person's
+        // (`/compact`) or for room. Starting clean (`/clear`) is none.
+        if summary {
+            let trigger = if asked.is_some() { CompactTrigger::Manual } else { CompactTrigger::Auto };
+            self.compaction_began(id, compact::By::Equipe, trigger);
+        }
+        let session = self.sessions.get_mut(&id)?;
         session.claude_session = None;
         session.desk_context = None;
         session.context = None;
@@ -5469,6 +6074,7 @@ check what is already done in your worktree first."
             let _ = journal.clear_engine_session(id);
         }
         self.publish(Event::Notice { session: id, text: shown });
+        self.compaction_ended(id, None);
         Some(if summary && !tail.is_empty() {
             format!(
                 "[equipe: this is a fresh conversation — {why}. Where the last one left off, latest last:\n{tail}\nYour memory and the board hold the rest.]"
@@ -6103,7 +6709,7 @@ fn has_tools(session: &Session) -> bool {
 fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
     Some(match activity {
         Activity::Text(text) => Event::TextDelta { session: id, text },
-        Activity::Tool { name, target } => Event::ToolUse { session: id, tool: name, target },
+        Activity::Tool { name, target, label, background } => Event::ToolUse { session: id, tool: name, target, label, background },
         Activity::ToolDone(done) => {
             let (output, skipped) = equipe_protocol::ToolOutcome::tail(&done.output);
             let outcome = equipe_protocol::ToolOutcome { ok: done.ok, exit: done.exit, ms: Some(done.ms), output, skipped, diff: done.diff };
@@ -6116,6 +6722,12 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
         Activity::SubagentStep { id: sub, step } => Event::SubagentStep { session: id, id: sub, step },
         Activity::SubagentEnded { id: sub } => Event::SubagentEnded { session: id, id: sub },
         Activity::Steered(text) => Event::Steered { session: id, text },
+        // Filled in on the loop, which knows who it is and how long the last ones took.
+        Activity::Compacting => {
+            Event::Compacting { session: id, member: None, project: None, trigger: CompactTrigger::Auto, started_at: 0, estimate_ms: 0 }
+        }
+        Activity::Compacted => Event::Compacted { session: id, member: None, project: None, trigger: CompactTrigger::Auto, took_ms: 0 },
+        Activity::CompactFailed(message) => Event::CompactFailed { session: id, member: None, project: None, trigger: CompactTrigger::Auto, message },
         Activity::Plan { five_hour, seven_day } => {
             let window = |w: Option<(f64, i64)>| {
                 w.map(|(used, resets_at)| equipe_protocol::PlanWindow { used_percent: (used * 100.0).round().clamp(0.0, 100.0) as u8, resets_at })
@@ -6223,6 +6835,52 @@ fn clear_frames(dir: &Path) {
             let _ = std::fs::remove_file(path);
         }
     }
+}
+
+/// How a sign-in on a page went wrong.
+enum SignIn {
+    NoForm,
+    Failed(String),
+}
+
+/// Sign in on the member's browser at `port`: to the site's sign-in page
+/// unless it is on the site already, then the fill script — twice for a
+/// sign-in that asks the username and the password on pages of their own.
+/// The password is fetched off the loop and goes nowhere but the page.
+async fn sign_in_page(client: &reqwest::Client, port: u16, vault: &std::sync::Arc<std::sync::Mutex<vault::Vault>>, id: u32, site: &str, start: &str, username: &str) -> Result<&'static str, SignIn> {
+    let text_of = |items: Option<Vec<Value>>| -> String { items.unwrap_or_default().iter().filter_map(|i| i.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n") };
+    let here = text_of(browser::call(client, port, "browser_evaluate", json!({ "function": "() => location.href" })).await);
+    if !here.lines().any(|l| vault::serves(site, l.trim().trim_matches('"'))) {
+        browser::navigate(client, port, start).await;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+    }
+    let vault = vault.clone();
+    let password = tokio::task::spawn_blocking(move || vault.lock().map_err(|_| "the logins are unreadable".to_owned()).and_then(|v| v.password(id)))
+        .await
+        .map_err(|_| SignIn::Failed("stopped".into()))?
+        .map_err(|why| SignIn::Failed(format!("the password couldn't be read from the Keychain ({why})")))?;
+    let mut last = "";
+    for _ in 0..2 {
+        let answer = text_of(browser::call(client, port, "browser_evaluate", json!({ "function": vault::fill_script(username, &password) })).await);
+        let step = if answer.contains(r#""step":"password""#) || answer.contains(r#"\"step\":\"password\""#) {
+            "password"
+        } else if answer.contains("username") {
+            "username"
+        } else {
+            ""
+        };
+        match step {
+            "" if last.is_empty() => return Err(SignIn::NoForm),
+            "" => return Ok("username, then password"),
+            "password" => return Ok(if last.is_empty() { "username and password" } else { "username, then password" }),
+            _ => {
+                // The username alone: its next page asks the password.
+                last = "username";
+                tokio::time::sleep(Duration::from_millis(2500)).await;
+            }
+        }
+    }
+    Ok("username; the password page didn't come")
 }
 
 fn now_secs() -> u64 {

@@ -18,12 +18,14 @@ pub enum Category {
     Permissions,
     Projects,
     Browser,
+    /// The logins members sign in with (`views/accounts.rs`).
+    Accounts,
     Keys,
     About,
 }
 
 impl Category {
-    pub const ALL: [Category; 9] = [Category::General, Category::Engines, Category::Squad, Category::Team, Category::Permissions, Category::Projects, Category::Browser, Category::Keys, Category::About];
+    pub const ALL: [Category; 10] = [Category::General, Category::Engines, Category::Squad, Category::Team, Category::Permissions, Category::Projects, Category::Browser, Category::Accounts, Category::Keys, Category::About];
 
     /// As the snapshot tool names it (`settings:team`).
     pub fn code(self) -> &'static str {
@@ -35,6 +37,7 @@ impl Category {
             Category::Permissions => "permissions",
             Category::Projects => "projects",
             Category::Browser => "browser",
+            Category::Accounts => "accounts",
             Category::Keys => "keys",
             Category::About => "about",
         }
@@ -53,6 +56,7 @@ impl Category {
             Category::Permissions => t!("settings.cat_permissions"),
             Category::Projects => t!("settings.cat_projects"),
             Category::Browser => t!("settings.cat_browser"),
+            Category::Accounts => t!("settings.cat_accounts"),
             Category::Keys => t!("settings.cat_keys"),
             Category::About => t!("settings.cat_about"),
         }
@@ -67,6 +71,7 @@ impl Category {
             Category::Permissions => Icon::Shield,
             Category::Projects => Icon::Folder,
             Category::Browser => Icon::Globe,
+            Category::Accounts => Icon::Lock,
             Category::Keys => Icon::Keyboard,
             Category::About => Icon::Info,
         }

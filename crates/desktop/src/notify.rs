@@ -8,7 +8,9 @@
 //! The rules:
 //! - Only while the window is out of sight (another app in front, the window
 //!   hidden, minimised or on another Space); in sight, the sidebar and the
-//!   cards say it. The delegate keeps the rule too (`willPresent`).
+//!   cards say it. The delegate keeps the rule too (`willPresent`). But a
+//!   browser waiting for the person's hands (a sign-in, a handed browser) is
+//!   told in sight too, unless that page is on screen.
 //! - Only the kinds the person wants (settings ▸ 일반 ▸ 알림).
 //! - Permission is asked when it is first useful — the first thing worth
 //!   telling, or a switch turned on — with a sheet saying why first, then

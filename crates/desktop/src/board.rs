@@ -165,11 +165,30 @@ pub enum Tone {
     Plain,
 }
 
+/// What a section's heading does to all of it at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllOf {
+    /// Review: accept every one (and merge, as each project merges).
+    Accept,
+    /// Proposals: start every one.
+    Start,
+    /// Accepted but off main: merge every one.
+    Merge,
+}
+
+/// A section's tickets, done all at once from its heading.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct All {
+    pub what: AllOf,
+    pub ids: Vec<TicketId>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
     /// A section's name and size — and, for one whose name alone doesn't say
-    /// what it means, a line under it that does.
-    Heading { label: String, count: usize, tone: Tone, hint: Option<String> },
+    /// what it means, a line under it that does; and what its heading does to
+    /// all of it at once.
+    Heading { label: String, count: usize, tone: Tone, hint: Option<String>, all: Option<All> },
     /// A thing listed, and how deep under what it waits for (the 의존 순서 grouping).
     Item { need: Need, depth: usize },
     /// The finished group's own line: `끝남 · 7일 12 ▸`.
@@ -305,7 +324,9 @@ pub fn rows(model: &Model, view: &View, views: &[SavedView]) -> Vec<Row> {
 pub fn proposals<'a>(model: &'a Model, filter: &Filter) -> Vec<&'a Ticket> {
     // One the person just took on or dropped is out at once, as in 나에게.
     let acted = |t: &Ticket| model.acted.get(&t.id).is_some_and(|look| *look == crate::state::look_of(t));
-    crate::tickets::in_board_order(model.tickets.iter().filter(|t| t.status == TicketStatus::Proposed && model.in_focus(t) && filter.matches(model, t) && !acted(t)).collect())
+    // Where the PM runs the work, only what it put up for the person is theirs to sort.
+    let theirs = |t: &Ticket| model.section_of(t).is_some();
+    crate::tickets::in_board_order(model.tickets.iter().filter(|t| t.status == TicketStatus::Proposed && theirs(t) && model.in_focus(t) && filter.matches(model, t) && !acted(t)).collect())
 }
 
 /// 티켓's triage: the proposals alone, one after another.
@@ -314,7 +335,7 @@ pub fn triage(model: &Model, filter: &Filter) -> Vec<Row> {
     if list.is_empty() {
         return Vec::new();
     }
-    let mut out = vec![Row::Heading { label: t!("tickets.triage").to_owned(), count: list.len(), tone: Tone::ForYou, hint: Some(t!("tickets.triage_hint").to_owned()) }];
+    let mut out = vec![Row::Heading { label: t!("tickets.triage").to_owned(), count: list.len(), tone: Tone::ForYou, hint: Some(t!("tickets.triage_hint").to_owned()), all: None }];
     out.extend(list.into_iter().map(|t| Row::Item { need: Need::Ticket(t.id), depth: 0 }));
     out
 }
@@ -330,13 +351,21 @@ pub fn inbox(model: &Model, filter: &Filter) -> Vec<Row> {
                 *s == section
                     && match need {
                         Need::Ticket(id) => model.tickets.iter().find(|t| t.id == *id).is_some_and(|t| filter.matches(model, t)),
-                        Need::Permission(_) | Need::Questions(_) | Need::Team(_) | Need::Accept(_) | Need::Browser(_) => filter.is_empty(),
+                        Need::Permission(_) | Need::Questions(_) | Need::Team(_) | Need::Accept(_) | Need::Browser(_) | Need::Secret(_) => filter.is_empty(),
                     }
             })
             .map(|(_, need)| need)
             .collect();
         if !items.is_empty() {
-            out.push(Row::Heading { label: section.label().to_owned(), count: items.len(), tone: Tone::ForYou, hint: section.hint().map(str::to_owned) });
+            let tickets: Vec<TicketId> = items.iter().filter_map(|n| if let Need::Ticket(id) = n { Some(*id) } else { None }).collect();
+            let what = match section {
+                Section::Review => Some(AllOf::Accept),
+                Section::Proposed => Some(AllOf::Start),
+                Section::NotOnMain => Some(AllOf::Merge),
+                _ => None,
+            };
+            let all = what.filter(|_| !tickets.is_empty()).map(|what| All { what, ids: tickets });
+            out.push(Row::Heading { label: section.label().to_owned(), count: items.len(), tone: Tone::ForYou, hint: section.hint().map(str::to_owned), all });
             out.extend(items.into_iter().map(|need| Row::Item { need, depth: 0 }));
         }
     }
@@ -402,7 +431,7 @@ pub fn all(model: &Model, view: &View, filter: &Filter, group: GroupBy) -> Vec<R
                 let list = crate::tickets::in_board_order(open.iter().copied().filter(|t| t.status == *status).collect());
                 if !list.is_empty() {
                     let tone = if matches!(status, TicketStatus::Review | TicketStatus::Waiting) { Tone::ForYou } else { Tone::Plain };
-                    out.push(Row::Heading { label: status_word(*status).to_owned(), count: list.len(), tone, hint: None });
+                    out.push(Row::Heading { label: status_word(*status).to_owned(), count: list.len(), tone, hint: None, all: None });
                     out.extend(list.into_iter().map(|t| item(t, 0)));
                 }
             }
@@ -415,7 +444,7 @@ pub fn all(model: &Model, view: &View, filter: &Filter, group: GroupBy) -> Vec<R
                 if !list.is_empty() {
                     by_status(&mut list);
                     let at = name.as_ref().and_then(|n| model.project_names().iter().position(|x| x == n));
-                    out.push(Row::Heading { label: name.unwrap_or_else(|| t!("board.squad_folder").into()), count: list.len(), tone: Tone::Project(at), hint: None });
+                    out.push(Row::Heading { label: name.unwrap_or_else(|| t!("board.squad_folder").into()), count: list.len(), tone: Tone::Project(at), hint: None, all: None });
                     out.extend(list.into_iter().map(|t| item(t, 0)));
                 }
             }
@@ -428,7 +457,7 @@ pub fn all(model: &Model, view: &View, filter: &Filter, group: GroupBy) -> Vec<R
                 let mut list: Vec<&Ticket> = open.iter().copied().filter(|t| who(t).unwrap_or_default() == name).collect();
                 by_status(&mut list);
                 let label = if name.is_empty() { t!("board.nobody").to_owned() } else { name };
-                out.push(Row::Heading { label, count: list.len(), tone: Tone::Plain, hint: None });
+                out.push(Row::Heading { label, count: list.len(), tone: Tone::Plain, hint: None, all: None });
                 out.extend(list.into_iter().map(|t| item(t, 0)));
             }
         }
@@ -437,7 +466,7 @@ pub fn all(model: &Model, view: &View, filter: &Filter, group: GroupBy) -> Vec<R
                 let mut list: Vec<&Ticket> = open.iter().copied().filter(|t| t.priority == priority).collect();
                 if !list.is_empty() {
                     by_status(&mut list);
-                    out.push(Row::Heading { label: crate::tickets::priority_word(priority).to_owned(), count: list.len(), tone: Tone::Plain, hint: None });
+                    out.push(Row::Heading { label: crate::tickets::priority_word(priority).to_owned(), count: list.len(), tone: Tone::Plain, hint: None, all: None });
                     out.extend(list.into_iter().map(|t| item(t, 0)));
                 }
             }
@@ -445,7 +474,7 @@ pub fn all(model: &Model, view: &View, filter: &Filter, group: GroupBy) -> Vec<R
         GroupBy::Deps => {
             let tree = dependency_tree(model, &open);
             if !tree.is_empty() {
-                out.push(Row::Heading { label: t!("board.group_deps").into(), count: tree.len(), tone: Tone::Plain, hint: None });
+                out.push(Row::Heading { label: t!("board.group_deps").into(), count: tree.len(), tone: Tone::Plain, hint: None, all: None });
                 out.extend(tree.into_iter().map(|(id, depth)| Row::Item { need: Need::Ticket(id), depth }));
             }
         }
@@ -466,7 +495,7 @@ pub fn all(model: &Model, view: &View, filter: &Filter, group: GroupBy) -> Vec<R
     // Cancelled work, when the filter asks for it.
     let cancelled: Vec<&Ticket> = here.iter().copied().filter(|t| t.status == TicketStatus::Cancelled).collect();
     if !cancelled.is_empty() {
-        out.push(Row::Heading { label: status_word(TicketStatus::Cancelled).to_owned(), count: cancelled.len(), tone: Tone::Plain, hint: None });
+        out.push(Row::Heading { label: status_word(TicketStatus::Cancelled).to_owned(), count: cancelled.len(), tone: Tone::Plain, hint: None, all: None });
         out.extend(cancelled.into_iter().map(|t| item(t, 0)));
     }
     out
@@ -652,7 +681,7 @@ pub fn ticket_of(model: &Model, need: Need) -> Option<&Ticket> {
             let ticket = model.asked.get(id)?.ticket?;
             model.tickets.iter().find(|t| t.id == ticket)
         }
-        Need::Team(_) | Need::Accept(_) | Need::Browser(_) => None,
+        Need::Team(_) | Need::Accept(_) | Need::Browser(_) | Need::Secret(_) => None,
     }
 }
 
@@ -931,6 +960,27 @@ mod tests {
     }
 
     #[test]
+    fn where_the_pm_accepts_the_inbox_keeps_only_what_is_the_persons() {
+        let mut from_member = ticket(3, "proposed", "/p", &[]);
+        from_member.created_by = "backend".into();
+        let mut conflicted = ticket(7, "done", "/p", &[]);
+        conflicted.branch = Some("b".into());
+        conflicted.merged = Some(false);
+        conflicted.off_main = Some(equipe_core::protocol::OffMain::Conflict { detail: "x".into() });
+        let mut stuck = ticket(8, "proposed", "/p", &[]);
+        stuck.note = Some("Couldn't start: b conflicts with the work before it".into());
+        let tickets = vec![ticket(5, "review", "/p", &[]), from_member, ticket(4, "proposed", "/p", &[]), ticket(6, "waiting", "/p", &[]), conflicted, stuck];
+        let mut m = model(tickets, &["/p"]);
+        m.pm_accepts = true;
+        // Handed-in work, a member's proposal, a conflict its owner resolves and a ticket that
+        // couldn't start are the PM's; the PM's own proposal and the person's part stay.
+        assert_eq!(ids(&inbox(&m, &Filter::default())), vec![6, 4]);
+        assert_eq!(proposals(&m, &Filter::default()).iter().map(|t| t.id).collect::<Vec<_>>(), vec![4], "nothing else to sort");
+        m.pm_accepts = false;
+        assert_eq!(ids(&inbox(&m, &Filter::default())), vec![6, 5, 3, 4, 8, 7], "the person accepting: all of it, as before");
+    }
+
+    #[test]
     fn the_inbox_runs_permission_waiting_review_proposed_not_on_main() {
         let mut merged_not = ticket(7, "done", "/p", &[]);
         merged_not.branch = Some("b".into());
@@ -947,6 +997,13 @@ mod tests {
         // The review that unblocks something comes first.
         assert_eq!(ids(&rows), vec![4, 6, 5, 3, 7]);
         assert_eq!(m.needs_you_count(), 6);
+        // Each section of work to accept, start or merge is done all at once from its heading.
+        let all: Vec<Option<All>> = rows.iter().filter_map(|r| if let Row::Heading { all, .. } = r { Some(all.clone()) } else { None }).collect();
+        assert_eq!(all[0], None, "a permission is answered one by one");
+        assert_eq!(all[1], None, "the person's own part is theirs to do");
+        assert_eq!(all[2], Some(All { what: AllOf::Accept, ids: vec![6, 5] }));
+        assert_eq!(all[3], Some(All { what: AllOf::Start, ids: vec![3] }));
+        assert_eq!(all[4], Some(All { what: AllOf::Merge, ids: vec![7] }));
     }
 
     #[test]

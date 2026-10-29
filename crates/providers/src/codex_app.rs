@@ -584,11 +584,14 @@ impl TurnCollector {
                 changes.into_iter().map(|(path, kind, _)| (change_tool(&kind).to_owned(), Some(path))).collect()
             }
             "mcpToolCall" => vec![mcp_tool(item)],
+            // Compacting the thread to make room (app-server v2's
+            // `contextCompaction` item; `thread/compacted` is its deprecated echo).
+            "contextCompaction" => return vec![Activity::Compacting],
             _ => return Vec::new(),
         };
         let now = Instant::now();
         self.pending.insert(id.to_owned(), uses.iter().map(|(name, target)| Pending { name: name.clone(), target: target.clone(), since: now }).collect());
-        uses.into_iter().map(|(name, target)| Activity::Tool { name, target }).collect()
+        uses.into_iter().map(|(name, target)| Activity::Tool { name, target, label: None, background: false }).collect()
     }
 
     fn item_completed(&mut self, item: &Value) -> Vec<Activity> {
@@ -609,6 +612,7 @@ impl TurnCollector {
                 }
                 out
             }
+            "contextCompaction" => vec![Activity::Compacted],
             // The person's words, read: the prompt, then what they said while it worked.
             "userMessage" => {
                 self.read += 1;
@@ -670,12 +674,12 @@ impl TurnCollector {
                     .or_else(|| item.get("action").and_then(|a| a.get("query").or_else(|| a.get("url"))).and_then(Value::as_str))
                     .map(|q| q.chars().take(120).collect::<String>());
                 let pending = Pending { name: "WebSearch".into(), target: query.clone(), since: Instant::now() };
-                vec![Activity::Tool { name: "WebSearch".into(), target: query }, Activity::ToolDone(done(pending, true, None, ms, String::new(), None))]
+                vec![Activity::Tool { name: "WebSearch".into(), target: query, label: None, background: false }, Activity::ToolDone(done(pending, true, None, ms, String::new(), None))]
             }
             "imageView" => {
                 let path = item.get("path").and_then(Value::as_str).map(str::to_owned);
                 let pending = Pending { name: "Read".into(), target: path.clone(), since: Instant::now() };
-                vec![Activity::Tool { name: "Read".into(), target: path }, Activity::ToolDone(done(pending, true, None, ms, String::new(), None))]
+                vec![Activity::Tool { name: "Read".into(), target: path, label: None, background: false }, Activity::ToolDone(done(pending, true, None, ms, String::new(), None))]
             }
             // Work handed to a subagent, and back.
             "collabAgentToolCall" => {
@@ -736,7 +740,7 @@ impl TurnCollector {
         }
         self.plan = Some(line.clone());
         let pending = Pending { name: "TodoWrite".into(), target: Some(line.clone()), since: Instant::now() };
-        vec![Activity::Tool { name: "TodoWrite".into(), target: Some(line) }, Activity::ToolDone(done(pending, true, None, Some(0), String::new(), None))]
+        vec![Activity::Tool { name: "TodoWrite".into(), target: Some(line), label: None, background: false }, Activity::ToolDone(done(pending, true, None, Some(0), String::new(), None))]
     }
 
     fn usage(&self) -> Option<TurnUsage> {
@@ -1409,7 +1413,7 @@ mod tests {
         assert_eq!(out[0], Activity::Thinking("Looking".into()));
         let text: String = out.iter().filter_map(|a| if let Activity::Text(t) = a { Some(t.as_str()) } else { None }).collect();
         assert_eq!(text, "On it.Fixed.\n\nDONE", "a tool between messages parts them already; back to back they get a paragraph");
-        assert!(out.contains(&Activity::Tool { name: "Bash".into(), target: Some("cargo test".into()) }));
+        assert!(out.contains(&Activity::Tool { name: "Bash".into(), target: Some("cargo test".into()), label: None, background: false }));
         let Some(Activity::ToolDone(failed)) = out.iter().find(|a| matches!(a, Activity::ToolDone(_))) else { panic!("{out:?}") };
         assert_eq!((failed.ok, failed.exit, failed.ms, failed.output.as_str()), (false, Some(101), 900, "1 failed"));
         assert!(out.contains(&Activity::Output(100)));
@@ -1429,8 +1433,8 @@ mod tests {
         ]);
         let started = c.on_notification("item/started", &item("fileChange", json!({ "id": "p1", "changes": changes, "status": "inProgress" })));
         assert_eq!(started, vec![
-            Activity::Tool { name: "Write".into(), target: Some("/w/hello.txt".into()) },
-            Activity::Tool { name: "Edit".into(), target: Some("/w/README.md".into()) },
+            Activity::Tool { name: "Write".into(), target: Some("/w/hello.txt".into()), label: None, background: false },
+            Activity::Tool { name: "Edit".into(), target: Some("/w/README.md".into()), label: None, background: false },
         ]);
         let done: Vec<ToolDone> = c
             .on_notification("item/completed", &item("fileChange", json!({ "id": "p1", "changes": changes, "status": "completed" })))
@@ -1447,15 +1451,15 @@ mod tests {
     fn board_tools_web_searches_and_plans_read_as_claude_codes_do() {
         let mut c = TurnCollector::new();
         let call = json!({ "id": "m1", "server": "equipe", "tool": "update_ticket", "arguments": { "id": 4, "status": "cancelled" }, "status": "inProgress" });
-        assert_eq!(c.on_notification("item/started", &item("mcpToolCall", call.clone())), vec![Activity::Tool { name: "mcp__equipe__update_ticket".into(), target: Some("T-4 · cancelled".into()) }]);
+        assert_eq!(c.on_notification("item/started", &item("mcpToolCall", call.clone())), vec![Activity::Tool { name: "mcp__equipe__update_ticket".into(), target: Some("T-4 · cancelled".into()), label: None, background: false }]);
         let mut finished = call;
         finished["status"] = json!("completed");
         finished["result"] = json!({ "content": [{ "type": "text", "text": "T-4 cancelled." }] });
         assert!(matches!(&c.on_notification("item/completed", &item("mcpToolCall", finished))[..], [Activity::ToolDone(d)] if d.ok && d.name == "mcp__equipe__update_ticket"));
         let search = c.on_notification("item/completed", &item("webSearch", json!({ "id": "w1", "query": "codex app-server" })));
-        assert_eq!(search[0], Activity::Tool { name: "WebSearch".into(), target: Some("codex app-server".into()) });
+        assert_eq!(search[0], Activity::Tool { name: "WebSearch".into(), target: Some("codex app-server".into()), label: None, background: false });
         let plan = json!({ "threadId": "t", "plan": [{ "step": "Read the code", "status": "completed" }, { "step": "Write the test", "status": "inProgress" }, { "step": "Fix", "status": "pending" }] });
-        assert_eq!(c.on_notification("turn/plan/updated", &plan)[0], Activity::Tool { name: "TodoWrite".into(), target: Some("1/3 · Write the test".into()) });
+        assert_eq!(c.on_notification("turn/plan/updated", &plan)[0], Activity::Tool { name: "TodoWrite".into(), target: Some("1/3 · Write the test".into()), label: None, background: false });
         assert!(c.on_notification("turn/plan/updated", &plan).is_empty(), "the same plan again shows nothing new");
     }
 
@@ -1465,6 +1469,15 @@ mod tests {
         let said = |text: &str| item("userMessage", json!({ "id": text, "content": [{ "type": "text", "text": text }] }));
         assert!(c.on_notification("item/completed", &said("the prompt")).is_empty());
         assert_eq!(c.on_notification("item/completed", &said("not the footer")), vec![Activity::Steered("not the footer".into())]);
+    }
+
+    #[test]
+    fn compacting_the_thread_is_said_as_it_starts_and_ends() {
+        // From the app-server's v2 schema (codex-cli 0.154.0): a `contextCompaction` item.
+        let mut c = TurnCollector::new();
+        let compaction = item("contextCompaction", json!({ "id": "k1" }));
+        assert_eq!(c.on_notification("item/started", &compaction), vec![Activity::Compacting]);
+        assert_eq!(c.on_notification("item/completed", &compaction), vec![Activity::Compacted]);
     }
 
     #[test]

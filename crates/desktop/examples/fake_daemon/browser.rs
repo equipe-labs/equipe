@@ -167,7 +167,7 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
                 *s.seq.entry(FIRST + 4).or_default() += 1;
             }
         }
-        Command::BrowserNewTab { url } => {
+        Command::BrowserNewTab { url, .. } => {
             let id = s.next;
             s.next += 1;
             let url = url.clone().unwrap_or_else(|| "about:blank".into());

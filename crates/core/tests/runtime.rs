@@ -10,7 +10,7 @@ use std::time::Duration;
 use equipe_core::journal::{self, Journal};
 use equipe_core::protocol::rpc::{ToolCall, ToolResult};
 use equipe_core::protocol::{
-    Access, Command, Engine, Entry, Event, OffMain, Priority, SessionSpec, SessionState, Ticket, TicketDraft, TicketEdit, TicketStatus, TurnOutcome,
+    Access, Command, CompactTrigger, Engine, Entry, Event, OffMain, Priority, SessionSpec, SessionState, Ticket, TicketDraft, TicketEdit, TicketStatus, TurnOutcome,
 };
 use equipe_core::runtime::{self, Config, Handle};
 use equipe_core::{squad_home, squads};
@@ -119,6 +119,7 @@ fn config(claude: &Path, home: &Path, persist: bool) -> Config {
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,
+        person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
     }
 }
@@ -417,6 +418,38 @@ EOF"#;
     while let Ok(e) = events.try_recv() {
         assert!(!matches!(e, Event::MessageQueued { .. } | Event::UserMessage { .. }), "{e:?}");
     }
+}
+
+#[tokio::test]
+async fn said_while_it_waits_on_a_background_command_it_reads_at_once() {
+    // The turn's answer is in, but a command it started runs on in the background
+    // (watching for a deploy): Claude Code is still there and reads what is said —
+    // its input must not have closed with the first result.
+    let turn = r#"cat <<EOF
+{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}
+{"type":"user","isReplay":true,"message":{"role":"user","content":"tell me when it's live"}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_bg","name":"Bash","input":{"command":"until false; do sleep 30; done","description":"Wait for a new deploy","run_in_background":true}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_bg","content":"Command running in background with ID: b1"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"watching the deploy","usage":{"input_tokens":3,"output_tokens":1}}
+EOF
+if IFS= read -r more; then
+text=$(printf '%s' "$more" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["message"]["content"]))')
+cat <<EOF
+{"type":"user","isReplay":true,"message":{"role":"user","content":$text}}
+{"type":"system","subtype":"task_notification","task_id":"b1","tool_use_id":"toolu_bg","status":"killed"}
+{"type":"result","subtype":"success","is_error":false,"result":"answered","usage":{"input_tokens":3,"output_tokens":1}}
+EOF
+else sleep 5; fi"#;
+    let claude = fake_claude(true, turn);
+    let (handle, mut events) = start(&claude);
+    handle.send(Command::Start { session: 1, spec: spec(&scratch("cwd"), Access::ReadOnly) });
+    until(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "tell me when it's live".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::ToolUse { background: true, .. })).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    handle.send(Command::Submit { session: 1, text: "what did we build so far?".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::Steered { .. } | Event::TurnEnded { .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::Steered { text, .. } if text.contains("what did we build so far?"))), "read while the command runs on: {seen:#?}");
 }
 
 #[tokio::test]
@@ -1025,6 +1058,8 @@ async fn work_not_on_main_says_why_can_be_kept_on_its_branch_and_settles_when_no
     let two = ticket_changed(&failed).pop().unwrap();
     assert!(matches!(&two.off_main, Some(OffMain::Conflict { detail }) if detail.contains("README.md")), "{two:?}");
     assert!(two.waits_to_merge(), "still the person's call");
+    // Its owner is asked to resolve it, and the person told so.
+    assert!(failed.iter().any(|e| matches!(e, Event::Error { message, .. } if message.contains("frontend"))), "{failed:?}");
 
     // Kept on its branch: it stops asking, and is still not on main.
     handle.send(Command::KeepOnBranch { squad: "acme".into(), ticket: 3 });
@@ -1169,6 +1204,9 @@ async fn a_members_ticket_is_a_proposal_until_the_pm_accepts_it() {
     let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&cwd]), false));
     add(&handle, &mut events, 1, member(&cwd, "pm")).await;
     add(&handle, &mut events, 2, member(&cwd, "qa")).await;
+    // The person accepting everything themselves: a member's ticket waits as a proposal.
+    handle.send(Command::SetPmAccepts { squad: "acme".into(), on: false });
+    until(&mut events, |e| matches!(e, Event::PmAcceptsChanged { on: false, .. })).await;
 
     let proposed =
         tool(&handle, "qa", "create_ticket", serde_json::json!({ "title": "Flaky login test", "body": "-", "owner": "qa" })).await;
@@ -1752,9 +1790,51 @@ async fn running_code_in_the_browser_shows_the_code_to_the_person() {
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
     assert_eq!(approval.action, code, "the person sees the code itself");
     assert!(approval.reason.as_deref().is_some_and(|r| r.contains("outside the sandbox")), "{:?}", approval.reason);
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None });
     let verdict: serde_json::Value = serde_json::from_str(&waiting.await.unwrap().text).unwrap();
     assert_eq!(verdict["behavior"], "allow");
+}
+
+#[tokio::test]
+async fn the_persons_words_on_a_request_reach_the_member_with_their_answer() {
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&repo])));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "backend")).await;
+    let ask = |handle: &Handle, name: &'static str, arguments: serde_json::Value| {
+        let handle = handle.clone();
+        tokio::spawn(async move { tool(&handle, "backend", name, arguments).await })
+    };
+    let requested = |events: &[Event]| match events.last() {
+        Some(Event::ApprovalRequested { approval, .. }) => approval.id,
+        _ => unreachable!(),
+    };
+
+    // No, and why: the member reads the person's words as their no.
+    let code = |c: &str| serde_json::json!({ "tool_name": "mcp__browser__browser_run_code_unsafe", "input": { "code": c } });
+    let waiting = ask(&handle, "approve", code("async (page) => page.click('#delete')"));
+    let id = requested(&until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await);
+    handle.send(Command::Decide { squad: "acme".into(), approval: id, decision: Decision::Deny, words: Some("삭제 말고 보관으로 옮겨".into()) });
+    let verdict: serde_json::Value = serde_json::from_str(&waiting.await.unwrap().text).unwrap();
+    assert_eq!(verdict["behavior"], "deny");
+    assert!(verdict["message"].as_str().unwrap().contains("삭제 말고 보관으로 옮겨"), "{verdict}");
+
+    // A question the member asked: the yes carries the words.
+    let waiting = ask(&handle, "ask_person", serde_json::json!({ "action": "CSR에 삭제 요청 등록", "why": "-" }));
+    let id = requested(&until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await);
+    handle.send(Command::Decide { squad: "acme".into(), approval: id, decision: Decision::Allow, words: Some("제목에 [긴급] 붙여".into()) });
+    let said = waiting.await.unwrap().text;
+    assert!(said.contains("said yes") && said.contains("제목에 [긴급] 붙여"), "{said}");
+
+    // Allowed: the permission can't carry words, so they go to the member as the person's own.
+    let waiting = ask(&handle, "approve", code("async (page) => page.title()"));
+    let id = requested(&until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await);
+    handle.send(Command::Decide { squad: "acme".into(), approval: id, decision: Decision::Allow, words: Some("끝나면 결과 요약해 줘".into()) });
+    let verdict: serde_json::Value = serde_json::from_str(&waiting.await.unwrap().text).unwrap();
+    assert_eq!(verdict["behavior"], "allow");
+    let seen = until(&mut events, |e| matches!(e, Event::UserMessage { session: 2, .. } | Event::SteerQueued { session: 2, .. } | Event::MessageQueued { session: 2, .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::UserMessage { text, .. } | Event::SteerQueued { text, .. } | Event::MessageQueued { text, .. } if text.contains("끝나면 결과 요약해 줘"))), "{seen:#?}");
 }
 
 #[tokio::test]
@@ -1812,11 +1892,101 @@ async fn a_desk_conversation_grown_too_full_starts_afresh_from_a_summary() {
     // 75% full: the next turn starts a fresh conversation, handed where the last left off.
     let ended = turn(&handle, &mut events, "and the pricing?").await;
     assert!(ended.iter().any(|e| matches!(e, Event::Notice { text, .. } if text.contains("a fresh conversation: the last one had filled 150k of 200k"))), "{ended:?}");
+    // equipe's own compaction, for room: said as it begins and ends, before the turn runs.
+    let began = ended.iter().position(|e| matches!(e, Event::Compacting { session: 1, trigger: CompactTrigger::Auto, member: Some(m), .. } if m == "pm")).expect("compacting");
+    let done = ended.iter().position(|e| matches!(e, Event::Compacted { session: 1, trigger: CompactTrigger::Auto, .. })).expect("compacted");
+    assert!(began < done, "{ended:?}");
     let call = calls(&recorded).pop().unwrap();
     assert_eq!(arg(&call, "--resume"), None, "not the old conversation");
     let prompt = arg(&call, "-p").unwrap();
     assert!(prompt.contains("this is a fresh conversation") && prompt.contains("- the person: plan the launch") && prompt.contains("- you: noted"), "{prompt}");
     assert!(prompt.ends_with("and the pricing?"), "{prompt}");
+}
+
+#[tokio::test]
+async fn compact_asked_for_is_a_manual_compaction_and_clear_is_none() {
+    let cwd = scratch("cwd");
+    let (claude, _) = recording_claude(&answering("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&cwd])));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    handle.send(Command::Submit { session: 1, text: "first".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    handle.send(Command::Refresh { session: 1, summary: true });
+    handle.send(Command::Submit { session: 1, text: "second".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let estimate = seen.iter().find_map(|e| match e {
+        Event::Compacting { trigger: CompactTrigger::Manual, estimate_ms, started_at, .. } => Some((*estimate_ms, *started_at)),
+        _ => None,
+    });
+    let (estimate_ms, started_at) = estimate.expect("manual compacting");
+    assert!(estimate_ms > 0 && started_at > 1_700_000_000_000, "a guess, in ms; unix ms");
+    assert!(seen.iter().any(|e| matches!(e, Event::Compacted { trigger: CompactTrigger::Manual, .. })), "{seen:#?}");
+    // Starting clean hands nothing on: no compaction.
+    handle.send(Command::Refresh { session: 1, summary: false });
+    handle.send(Command::Submit { session: 1, text: "third".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::Compacting { .. })), "{seen:#?}");
+}
+
+/// A turn in which Claude Code compacts its conversation for a moment, as
+/// it says it does, before it answers. `ends`: it says the compaction ended.
+fn compacting_then_answering(ends: bool) -> String {
+    let end = if ends { r#"{"type":"system","subtype":"status","status":null,"compact_result":"success"}"# } else { "" };
+    format!(
+        r#"cat <<EOF
+{{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}}
+{{"type":"system","subtype":"status","status":"compacting","compact_output_chars":0}}
+EOF
+sleep 1
+cat <<EOF
+{end}
+{{"type":"stream_event","event":{{"type":"content_block_delta","delta":{{"type":"text_delta","text":"done"}}}}}}
+{{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{{"input_tokens":3,"output_tokens":1}}}}
+EOF"#
+    )
+}
+
+#[tokio::test]
+async fn while_claude_code_compacts_every_screen_knows_and_nothing_said_meanwhile_is_lost() {
+    let cwd = scratch("cwd");
+    let claude = fake_claude(true, &compacting_then_answering(true));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&cwd])));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    handle.send(Command::Submit { session: 1, text: "plan the launch".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::Compacting { .. })).await;
+    let Some(Event::Compacting { trigger, estimate_ms, member, .. }) = seen.last() else { unreachable!() };
+    assert_eq!((*trigger, *estimate_ms, member.as_deref()), (CompactTrigger::Auto, 120_000, Some("pm")), "none before: the cautious guess");
+    // A screen attaching now sees it.
+    let pm = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 1).unwrap();
+    assert_eq!(pm.compacting.map(|c| (c.trigger, c.estimate_ms)), Some((CompactTrigger::Auto, 120_000)));
+
+    // Said while it compacts: not read this turn, it waits, and is delivered after.
+    handle.send(Command::Submit { session: 1, text: "and the pricing?".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let took = seen.iter().find_map(|e| if let Event::Compacted { took_ms, .. } = e { Some(*took_ms) } else { None }).expect("compacted");
+    assert!(took >= 900, "{took}");
+    assert!(seen.iter().any(|e| matches!(e, Event::SteerQueued { text, .. } if text == "and the pricing?")), "{seen:#?}");
+    let pm = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 1).unwrap();
+    assert!(pm.compacting.is_none());
+    let next = until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
+    assert!(matches!(next.last(), Some(Event::UserMessage { text, .. }) if text == "and the pricing?"), "{next:#?}");
+    // The next one's guess is how long that one took.
+    let seen = until(&mut events, |e| matches!(e, Event::Compacting { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::Compacting { estimate_ms, .. }) if *estimate_ms == took), "{seen:#?}");
+}
+
+#[tokio::test]
+async fn a_turn_that_ends_mid_compaction_says_it_failed() {
+    let cwd = scratch("cwd");
+    let claude = fake_claude(true, &compacting_then_answering(false));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&cwd])));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    handle.send(Command::Submit { session: 1, text: "go".into(), about: None });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let failed = seen.iter().position(|e| matches!(e, Event::CompactFailed { message, .. } if message.contains("ended before"))).expect("failed");
+    assert_eq!(failed, seen.len() - 2, "just before the turn's end: {seen:#?}");
+    let pm = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 1).unwrap();
+    assert!(pm.compacting.is_none());
 }
 
 #[tokio::test]
@@ -1882,14 +2052,14 @@ async fn a_member_asks_the_person_before_doing_something_on_their_behalf() {
     assert_eq!(approval.action, "Sign up for PostHog with GitHub (EU region)");
     assert_eq!(approval.reason.as_deref(), Some("T-10 needs a project key"));
     assert!(equipe_core::permissions::rule_for(&approval.tool, &approval.action).is_none(), "never an \"always\"");
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None });
     let answer = waiting.await.unwrap();
     assert!(!answer.is_error && answer.text.contains("yes"), "{}", answer.text);
 
     let waiting = ask("Start the Vercel Pro trial");
     let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None });
     let answer = waiting.await.unwrap();
     assert!(answer.text.contains("no"), "{}", answer.text);
 }
@@ -1982,7 +2152,7 @@ async fn a_request_for_permission_waits_for_the_person_and_always_becomes_a_rule
     assert_eq!(handle.snapshot("acme").await.approvals.len(), 1, "a screen attaching now sees it waiting");
     assert!(!waiting.is_finished(), "the member waits for the person");
 
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Always });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Always, words: None });
     let answer = waiting.await.unwrap();
     let verdict: serde_json::Value = serde_json::from_str(&answer.text).unwrap();
     assert_eq!(verdict["behavior"], "allow");
@@ -1997,7 +2167,7 @@ async fn a_request_for_permission_waits_for_the_person_and_always_becomes_a_rule
     let other = ask(&handle, "curl https://example.com");
     let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None });
     let no: serde_json::Value = serde_json::from_str(&other.await.unwrap().text).unwrap();
     assert_eq!((no["behavior"].as_str(), no["message"].as_str()), (Some("deny"), Some("The person declined.")));
     handle.shutdown().await;
@@ -2020,7 +2190,7 @@ async fn an_always_allow_rule_is_listed_for_screens_and_taken_back_asks_again() 
     let waiting = ask(&handle, "npm install react");
     let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Always });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Always, words: None });
     waiting.await.unwrap();
     let seen = until(&mut events, |e| matches!(e, Event::Allowed { .. })).await;
     assert!(matches!(seen.last(), Some(Event::Allowed { squad, rules }) if squad == "acme" && rules == &["Bash(npm install:*)"]), "{seen:#?}");
@@ -2523,7 +2693,7 @@ async fn a_send_from_a_messaging_app_waits_for_the_persons_yes_every_time() {
         let preview = approval.preview.clone().expect("the screen, to open");
         assert_eq!(std::fs::read(&preview).unwrap(), b"\x89PNG fake");
         assert!(equipe_core::permissions::rule_for(&approval.tool, &approval.action).is_none(), "never an \"always\"");
-        handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision });
+        handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision, words: None });
         let answer = waiting.await.unwrap();
         assert!(!answer.is_error, "{}", answer.text);
         assert!(!Path::new(&preview).exists(), "the screenshot is gone once answered");
@@ -2534,7 +2704,7 @@ async fn a_send_from_a_messaging_app_waits_for_the_persons_yes_every_time() {
     let waiting = send();
     let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None });
     let answer = waiting.await.unwrap();
     assert!(answer.is_error && answer.text.contains("Not sent"), "{}", answer.text);
 
@@ -2815,6 +2985,9 @@ async fn news_of_another_project_mid_turn_leaves_the_reply_about_its_own() {
     let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
     add(&handle, &mut events, 1, member(&site, "pm")).await;
     add(&handle, &mut events, 2, member(&site, "designer")).await;
+    // The designer's ticket waits as a proposal: only the news of it reaches the PM.
+    handle.send(Command::SetPmAccepts { squad: "acme".into(), on: false });
+    until(&mut events, |e| matches!(e, Event::PmAcceptsChanged { on: false, .. })).await;
     handle.send(Command::Focus { squad: "acme".into(), project: Some("site".into()) });
     handle.send(Command::Submit { session: 1, text: "hi".into(), about: None });
     until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, .. })).await;
@@ -3631,7 +3804,7 @@ async fn a_members_send_from_teams_waits_for_the_persons_yes_and_a_password_fiel
     assert_eq!(approval.action, "press return in Microsoft Teams · Chat | Kim Minji\n내일 회의 3시로 옮겨요");
     let preview = approval.preview.clone().expect("the screen, to look at");
     assert!(preview.ends_with(".jpg") && std::fs::read(&preview).unwrap() == b"\xff\xd8fake", "{preview}");
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: equipe_core::protocol::Decision::Deny });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: equipe_core::protocol::Decision::Deny, words: None });
     let answer = waiting.await.unwrap();
     assert!(answer.is_error && answer.text.contains("Not sent"), "{}", answer.text);
     assert_eq!(helper.tools(), ["type_text"]);
@@ -3652,7 +3825,7 @@ async fn a_members_send_from_teams_waits_for_the_persons_yes_and_a_password_fiel
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
     assert_eq!(helper.tools(), ["type_text"], "nothing pressed while the person decides");
     *hands.lock().unwrap() = 1.0;
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: equipe_core::protocol::Decision::Allow });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: equipe_core::protocol::Decision::Allow, words: None });
     let answer = waiting.await.unwrap();
     assert_eq!(answer.text, "key done");
     let reached = helper.reached.lock().unwrap().clone();

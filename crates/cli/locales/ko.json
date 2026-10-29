@@ -880,6 +880,7 @@
   "view.more_steps.other": "{count}단계 더",
   "view.more_subagents.one": "서브에이전트 {count}개 더",
   "view.more_subagents.other": "서브에이전트 {count}개 더",
+  "view.compacting": "대화 요약 중 · {elapsed} · 보통 {usual} 정도",
   "view.more_waiting": "{n}개 더 대기 중",
   "view.new_lines.one": "↓ 새 줄 {count}개",
   "view.new_lines.other": "↓ 새 줄 {count}개",

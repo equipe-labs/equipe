@@ -23,6 +23,7 @@ mod convo;
 mod decide;
 mod daemon;
 mod disk;
+mod doc;
 mod design;
 mod failure;
 mod help;
@@ -33,11 +34,13 @@ mod mem;
 mod notify;
 mod pair;
 mod pane;
+mod portfolio;
 mod queue;
 mod quote;
 mod sheet;
 mod sidecar;
 mod ssh;
+mod sshkey;
 #[cfg(feature = "snapshot")]
 mod snapshot;
 mod state;
@@ -45,13 +48,16 @@ mod stream;
 mod target;
 mod theme;
 mod team;
+mod term;
 mod tickets;
 mod tips;
+mod transcribe;
 mod ui;
 mod i18n;
 mod icons;
 mod motion;
 mod relaunch;
+mod roadmap;
 mod sent;
 mod render;
 mod settings;
@@ -84,10 +90,11 @@ use views::browser::{BrowserPanel, PanelEvent};
 use views::chat::Chat;
 use views::composer::Composer;
 use views::connect::{AskUi, ConnectUi};
+use tips::TipExt as _;
 
 actions!(
     equipe,
-    [ToggleBoard, ToggleBrowser, ChooseTarget, AllProjects, Project1, Project2, Project3, Project4, Project5, Project6, Project7, Project8, Project9, ToggleFolds]
+    [ToggleBoard, ToggleBrowser, ToggleTerminal, ChooseTarget, AllProjects, Project1, Project2, Project3, Project4, Project5, Project6, Project7, Project8, Project9, ToggleFolds]
 );
 // The conversation's: ⌘F, and Escape in its find bar.
 actions!(equipe, [FindInConversation, CloseFind]);
@@ -99,6 +106,8 @@ actions!(equipe, [ToggleSidebar, NewMessage, SearchAll]);
 actions!(equipe, [OpenSettings]);
 // "휴대폰 연결…": a phone paired with the daemon's machine, by QR code.
 actions!(equipe, [PairPhone]);
+// A press outside a box over the window: what Esc does to it.
+actions!(equipe, [DismissOverlay]);
 // The View menu's: the window's size, as a browser zooms (⌘+, ⌘-, ⌘0).
 actions!(equipe, [ZoomIn, ZoomOut, ActualSize]);
 
@@ -163,6 +172,10 @@ pub enum Screen {
     Settings,
     /// 디자인 시스템: the squad's design system (`views/design.rs`).
     Design,
+    /// 현황: every project at a glance, the HQ first (`views/overview.rs`).
+    Overview,
+    /// 로드맵: the work as one picture, what waits on what (`views/roadmap.rs`).
+    Roadmap,
 }
 
 pub struct Shell {
@@ -177,11 +190,19 @@ pub struct Shell {
     pub panes: pane::Panes,
     /// The answer boxes of the cards tickets waiting for the person ask on.
     pub turn: views::yourturn::TurnUi,
+    /// Where this window was opened to go (⌘-click elsewhere), once connected.
+    pub goal: Option<views::elsewhere::Goal>,
+    /// The boxes of members' asks for a secret.
+    pub secrets: views::secrets::SecretsUi,
+    /// The boxes the person writes to a member in, on its request for permission.
+    pub approval_words: views::approvals::Words,
     /// Members' questions: where the person is in each set, and its boxes.
     pub decide: views::decide::DecideUi,
     /// Members' pictures — decisions' options, hand-ins — and the one shown big.
     pub shots: std::rc::Rc<std::cell::RefCell<visuals::Visuals>>,
     pub viewer: Option<visuals::Viewer>,
+    /// How far the big view is zoomed in, and where.
+    pub viewer_zoom: visuals::Zoom,
     /// A reply's list of questions, answered in place.
     pub asklist: views::asklist::AskListUi,
     /// Words selected in the conversation, asked about (`views/quote.rs`).
@@ -191,6 +212,25 @@ pub struct Shell {
     pub design: design::DesignUi,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
     pub browser: Entity<BrowserPanel>,
+    /// The terminal at the right, while one runs.
+    pub(crate) terminal: Option<views::terminal::TermUi>,
+    /// The reply whose command was last typed into the terminal unasked.
+    term_offered: Option<u64>,
+    /// The document open in the panel at the right, if one is.
+    pub(crate) doc: Option<doc::Doc>,
+    doc_reads: u64,
+    /// The side panel's edge being dragged: where it began, and the width then.
+    pub(crate) side_drag: Option<(f32, f32)>,
+    /// The terminal's top edge being dragged (under the conversation): where it began, the height then.
+    pub(crate) term_drag: Option<(f32, f32)>,
+    /// The daemon's machine being brought up to this app's release.
+    pub(crate) daemon_update: Option<DaemonUpdate>,
+    /// The person closed the banner: not again this launch.
+    daemon_update_hidden: bool,
+    /// 현황's releases, as last found.
+    pub overview: views::overview::OverviewUi,
+    /// The banner's "restart now" asked once: the next click restarts.
+    daemon_restart_armed: bool,
     /// The ticket a `T-n` link asked the board to open.
     pub board_ticket: Option<u32>,
     /// Notifications: what macOS allows, the sheet asking, the reply awaited, the Dock's number.
@@ -202,6 +242,8 @@ pub struct Shell {
     pub remembered: Remembered,
     pub connect: ConnectUi,
     pub ask: AskUi,
+    /// A password just typed with "don't ask again" on: the key goes there once connected.
+    ssh_key_wanted: bool,
     /// "휴대폰 연결": the sheet's state and the paired phones (`pair.rs`).
     pub pairing: pair::Pairing,
     /// The AI platforms, as settings shows them.
@@ -223,6 +265,8 @@ pub struct Shell {
     /// The roles a squad just started joins with, once it is open and empty.
     pending_team: Option<Vec<String>>,
     connecting_shown: bool,
+    /// How far the connection being made has got, for its screen.
+    pub(crate) connecting: views::connect::Connecting,
     pub(crate) log_renders: bool,
     /// The tickets on cards to confirm whose size was asked for, as they looked then.
     pub(crate) accept_asked: std::collections::HashMap<equipe_core::protocol::TicketId, (Option<String>, String, Option<bool>)>,
@@ -289,14 +333,28 @@ impl Shell {
             board: BoardUi::new(window, cx, fetched_tx),
             panes: pane::Panes::new(cx),
             turn: Default::default(),
+            goal: None,
+            secrets: Default::default(),
+            approval_words: Default::default(),
             decide: Default::default(),
             shots: Default::default(),
             viewer: None,
+            viewer_zoom: Default::default(),
             asklist: Default::default(),
             quote: Default::default(),
             settings: views::settings::SettingsUi::new(window, cx),
             design: Default::default(),
             browser,
+            terminal: None,
+            term_offered: None,
+            doc: None,
+            doc_reads: 0,
+            side_drag: None,
+            term_drag: None,
+            daemon_update: None,
+            daemon_update_hidden: false,
+            overview: Default::default(),
+            daemon_restart_armed: false,
             board_ticket: None,
             bell: Default::default(),
             update: relaunch::current(),
@@ -304,6 +362,7 @@ impl Shell {
             remembered,
             connect,
             ask,
+            ssh_key_wanted: false,
             pairing: pair::Pairing::default(),
             engines: engines::Engines::default(),
             forgetting: None,
@@ -316,6 +375,7 @@ impl Shell {
             confirm: None,
             pending_team: None,
             connecting_shown: false,
+            connecting: views::connect::Connecting::new(std::time::Instant::now()),
             log_renders: std::env::var_os("EQUIPE_LOG_RENDER").is_some(),
             accept_asked: std::collections::HashMap::new(),
             renders: 0,
@@ -451,6 +511,21 @@ impl Shell {
                 }
                 return;
             }
+            // Typing in a "your turn" card's box or one of the browser panel's: T, N,
+            // y, 1… are letters there, not shortcuts. Esc still leaves; Tab and ⌘⏎ are the card's own.
+            if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx) || shell.secrets.typing(window, cx) || shell.browser.read(cx).typing(window, cx)).unwrap_or(false) {
+                return;
+            }
+            // Writing to a member on its request: Esc closes the box; every other
+            // key is the box's (⏎ and ⌘⏎ answer from it).
+            match this.update(cx, |shell, cx| shell.on_words_key(key, window, cx)).ok().flatten() {
+                Some(true) => {
+                    cx.stop_propagation();
+                    return;
+                }
+                Some(false) => return,
+                None => {}
+            }
             // A member's picture shown big: ←/→, a pick, Esc — and nothing typed underneath.
             if this.update(cx, |shell, cx| shell.on_viewer_key(key, &modifiers, window, cx)).unwrap_or(false) {
                 cx.stop_propagation();
@@ -517,8 +592,8 @@ impl Shell {
                 return;
             }
             // y / a / ⇧a / n / o answer a request for permission while nothing is typed.
-            if matches!(key, "y" | "a" | "n" | "o") && !(modifiers.control || modifiers.alt || modifiers.platform || modifiers.function) {
-                if this.update(cx, |shell, cx| shell.on_approval_key(key, modifiers.shift, cx)).unwrap_or(false) {
+            if matches!(key, "y" | "a" | "n" | "o" | "r") && !(modifiers.control || modifiers.alt || modifiers.platform || modifiers.function) {
+                if this.update(cx, |shell, cx| shell.on_approval_key(key, modifiers.shift, window, cx)).unwrap_or(false) {
                     cx.stop_propagation();
                 }
                 return;
@@ -531,10 +606,21 @@ impl Shell {
                 cx.stop_propagation();
             }
         }));
+        // Several windows: what is drawn inside text views reaches the shell of
+        // the window in front — where the click is.
+        shell._subscriptions.push(cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() {
+                cx.set_global(render::ShellRef(cx.entity().downgrade()));
+            }
+        }));
         shell.attach(Target::new(endpoint, env!("CARGO_PKG_VERSION")), window, cx);
         shell.composer.focus(window, cx);
-        shell.watch_inbox(cx);
-        shell.open_start(window, cx);
+        // One more window: the first takes what other apps share and
+        // greets the person; this one only goes where it was opened to go.
+        if !views::elsewhere::opening_another() {
+            shell.watch_inbox(cx);
+            shell.open_start(window, cx);
+        }
         shell
     }
 
@@ -544,9 +630,11 @@ impl Shell {
         self.composer.follow(&self.model, window, cx);
         self.turn_sync(window, cx);
         self.decide_sync(window, cx);
+        self.secrets_sync(window, cx);
         self.chat_sync(cx);
         self.board_sync(cx);
         self.sync_browser(window, cx);
+        self.reach_goal(window, cx);
     }
 
     /// Tell the browser panel what it follows: this daemon and squad, the
@@ -631,6 +719,10 @@ impl Shell {
         self.sheet = None;
         self.confirm = None;
         self.connecting_shown = false;
+        // Another machine: its files aren't the ones open, nor its shell.
+        self.doc = None;
+        self.terminal = None;
+        self.connecting = views::connect::Connecting::new(std::time::Instant::now());
         // Phones are the daemon's machine's: another machine has its own. A
         // code open closes with the old connection.
         let _ = self.pairing.close();
@@ -720,7 +812,13 @@ impl Shell {
                             }
                             continue;
                         }
+                        // How far a connection got: its screen's, never the model's.
+                        if let daemon::Update::Leg(_) | daemon::Update::Door(_) = &update {
+                            changed |= this.connecting.hear(&update, std::time::Instant::now());
+                            continue;
+                        }
                         if let daemon::Update::Down(_) = &update {
+                            changed |= this.connecting.hear(&update, std::time::Instant::now());
                             this.pairing.disconnected();
                             this.disk.disconnected();
                             this.engines.disconnected();
@@ -754,12 +852,31 @@ impl Shell {
                             _ => {}
                         }
                         let attached = matches!(update, daemon::Update::Attached(_));
+                        let ended = match &update {
+                            daemon::Update::Event(Event::TurnEnded { session, .. }) => Some(*session),
+                            _ => None,
+                        };
                         changed |= this.model.apply(update, now);
                         // A card to confirm shows each ticket's size: asked of git once per look.
                         this.accept_stats();
+                        // A reply asking the person to run something as the machine's
+                        // administrator: the terminal opens with it typed, not run.
+                        if let Some(session) = ended {
+                            this.offer_terminal(session, window, cx);
+                        }
                         // Settings open on its list: the daemon (maybe another one) is asked again.
                         if attached {
                             this.engines.attached();
+                            this.install_ssh_key(cx);
+                            // The daemon back on this app's release: the update's line has said its piece.
+                            if this.daemon_update.is_some() && notify::stale_daemon(&this.model.daemon_version, env!("CARGO_PKG_VERSION")).is_none() {
+                                this.daemon_update = None;
+                                this.daemon_restart_armed = false;
+                            }
+                            // The projects in the order the person left them on this Mac.
+                            let squad = this.model.squad.clone();
+                            this.model.project_order = this.remembered.project_orders.iter().find(|(s, _)| *s == squad).map(|(_, n)| n.clone()).unwrap_or_default();
+                            this.model.order_projects();
                         }
                         if attached && this.screen == Screen::Settings {
                             this.pairing.devices_asked = None;
@@ -783,6 +900,10 @@ impl Shell {
                         this.composer.flash = Some(flash);
                         changed = true;
                     }
+                    if let Some(problem) = this.model.take_problem() {
+                        this.composer.problem = Some(problem);
+                        changed = true;
+                    }
                     if changed {
                         if this.log_renders {
                             eprintln!("daemon update -> redraw");
@@ -796,16 +917,8 @@ impl Shell {
                 }
             }
         }));
-        // Quick connections show nothing; a slow one says so, once.
-        self._connecting = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(CONNECTING_AFTER).await;
-            let _ = this.update(cx, |this, cx| {
-                if this.model.conn == Conn::Connecting {
-                    this.connecting_shown = true;
-                    cx.notify();
-                }
-            });
-        }));
+        // Quick connections show nothing; a slow one says so, with its seconds.
+        self._connecting = Some(self.tick_connecting(CONNECTING_AFTER, cx));
     }
 
     pub fn select_squad(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -870,7 +983,35 @@ impl Shell {
         if let Some(link) = &self.link {
             link.retry();
         }
+        // From a guide: the try is shown leg by leg, and the guide comes back if it fails.
+        if self.endpoint.is_remote() && matches!(self.model.conn, Conn::Down { had_snapshot: false, .. }) {
+            self.connecting = views::connect::Connecting { retrying: true, door: self.connecting.door.take(), ..views::connect::Connecting::new(std::time::Instant::now()) };
+            self.connecting_shown = true;
+            self._connecting = Some(self.tick_connecting(Duration::ZERO, cx));
+        }
         cx.notify();
+    }
+
+    /// The connecting screen, from `after` on and each second while it shows:
+    /// its seconds count and its hints come in on time.
+    fn tick_connecting(&self, after: Duration, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(after).await;
+            loop {
+                let showing = this.update(cx, |this, cx| {
+                    let showing = this.model.conn == Conn::Connecting || (this.connecting.retrying && matches!(this.model.conn, Conn::Down { had_snapshot: false, .. }));
+                    if showing {
+                        this.connecting_shown = true;
+                        cx.notify();
+                    }
+                    showing
+                });
+                if !matches!(showing, Ok(true)) {
+                    break;
+                }
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+            }
+        })
     }
 
     // ── questions from ssh ──
@@ -900,6 +1041,8 @@ impl Shell {
     /// `ssh` wants something from the person: a box over the window.
     fn ask_user(&mut self, prompt: askpass::Prompt, window: &mut Window, cx: &mut Context<Self>) {
         self.ask.queue.push_back(prompt);
+        // ssh asks once the machine answered: signing in.
+        self.connecting.reached(daemon::Leg::SigningIn, std::time::Instant::now());
         if self.ask.queue.len() == 1 {
             self.prepare_question(window, cx);
         }
@@ -933,8 +1076,184 @@ impl Shell {
 
     pub fn submit_secret(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.ask.input.read(cx).value().to_string();
+        // A password typed with "don't ask again" on: once it works, the key goes there.
+        let password = self.ask.queue.front().is_some_and(|q| matches!(&q.ask, askpass::Ask::Secret { label } if label.to_lowercase().contains("password")));
+        if password && self.ask.remember && self.endpoint.is_remote() {
+            self.ssh_key_wanted = true;
+        }
         self.ask.input.update(cx, |s, cx| s.set_value(String::new(), window, cx));
         self.answer_prompt(askpass::Answer::Text(text), window, cx);
+    }
+
+    /// The viewed conversation's last reply, if it asks the person to run a
+    /// `sudo` command: typed into the terminal for them, once per reply.
+    fn offer_terminal(&mut self, session: SessionId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.screen != Screen::Chat || self.model.viewed() != Some(session) {
+            return;
+        }
+        let Some(text) = self.model.convo().and_then(|c| {
+            c.blocks().into_iter().rev().find_map(|b| match b {
+                convo::Block::Reply { text, .. } => Some(text),
+                _ => None,
+            })
+        }) else {
+            return;
+        };
+        let Some(block) = term::shell_blocks(&text).into_iter().find(|b| term::wants_person(b)) else { return };
+        let key = render::hash_of(&text);
+        if self.term_offered == Some(key) {
+            return;
+        }
+        self.term_offered = Some(key);
+        self.open_terminal(Some(term::command_of(&block)), window, cx);
+        self.composer.flash = Some(t!("term.offered").into());
+    }
+
+    // ── the document panel ──
+
+    /// Open `path` (on the daemon's machine) in the panel at the right, read
+    /// off the main thread; the same one again is read again.
+    pub fn open_doc(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        self.doc_reads += 1;
+        let read = self.doc_reads;
+        match &mut self.doc {
+            // Read again in place: where it was scrolled to stays.
+            Some(doc) if doc.path == path => (doc.read, doc.folded) = (read, false),
+            _ => self.doc = Some(doc::Doc::new(path.clone(), read)),
+        }
+        let endpoint = self.endpoint.clone();
+        // Written in a ticket's worktree, or on its branch only: looked for there too.
+        let base = render::base_dir(self);
+        let mine = self.model.viewed().and_then(|s| self.model.members.iter().find(|m| m.session == s)).map(|m| m.name.clone());
+        let tickets: Vec<_> = self
+            .model
+            .tickets
+            .iter()
+            .filter(|t| mine.is_some() && (t.owner == mine || t.assignee == mine))
+            .filter(|t| t.worktree.is_some() || t.branch.is_some())
+            .map(|t| (t.worktree.clone(), t.branch.clone(), t.project.clone()))
+            .collect();
+        let also = doc::elsewhere(&path, &base, &tickets);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || drop(tx.send(doc::read(&endpoint, &path, &also))));
+        cx.spawn(async move |this, cx| {
+            let Ok(got) = rx.await else { return };
+            let _ = this.update(cx, |this, cx| {
+                let Some(doc) = this.doc.as_mut().filter(|d| d.read == read) else { return };
+                match got {
+                    Ok((text, cut)) => (doc.text, doc.cut) = (Some(Ok(text)), cut),
+                    Err(why) => doc.text = Some(Err(why)),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// A web link from a reply: in the browser the person chose (settings),
+    /// or with ⌘ (`other`) in the other — equipe's panel or the Mac's.
+    pub fn open_link(&mut self, url: &str, other: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remembered.links_in_app == other {
+            cx.open_url(url);
+            return;
+        }
+        if self.screen != Screen::Chat {
+            self.show(Screen::Chat, cx);
+        }
+        // The right side is the browser's now.
+        self.doc = None;
+        if let Some(ui) = self.terminal.as_mut().filter(|_| !self.remembered.term_below) {
+            ui.open = false;
+        }
+        if !self.browser.read(cx).open {
+            self.browser.update(cx, |b, cx| b.toggle(window, cx));
+            self.sync_browser(window, cx);
+        }
+        self.browser.update(cx, |b, cx| b.open_tab(url, cx));
+        cx.notify();
+    }
+
+    pub fn set_links_in_app(&mut self, on: bool) {
+        self.remembered.links_in_app = on;
+        self.remembered.save(&equipe_providers::credentials::equipe_home());
+    }
+
+    /// Signed in with a password and asked not to be again: the app's key
+    /// goes onto that machine over the connection now open (`sshkey.rs`).
+    fn install_ssh_key(&mut self, cx: &mut Context<Self>) {
+        let Endpoint::Ssh(host) = self.endpoint.clone() else { return };
+        if !std::mem::take(&mut self.ssh_key_wanted) || sshkey::keyed(&host) {
+            return;
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let target = host.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(sshkey::install(&target));
+        });
+        cx.spawn(async move |this, cx| {
+            let done = rx.await.unwrap_or_else(|_| Err("stopped".into()));
+            let _ = this.update(cx, |this, cx| {
+                this.composer.flash = Some(match done {
+                    Ok(()) => t!("connect.remembered", who = host.spec()),
+                    Err(why) => t!("connect.remember_failed", why = why),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The person makes `path` the squad's HQ, or none: the daemon keeps it
+    /// and tells the PM; every screen hears it back (`ProjectsChanged`).
+    pub fn set_hq(&mut self, path: Option<std::path::PathBuf>, cx: &mut Context<Self>) {
+        self.send_command(equipe_core::protocol::Command::SetHq { squad: self.model.squad.clone(), path });
+        cx.notify();
+    }
+
+    /// Project `name` dragged before `before`: kept for this squad on this Mac.
+    pub fn reorder_project(&mut self, name: &str, before: Option<&str>, cx: &mut Context<Self>) {
+        if before == Some(name) {
+            return;
+        }
+        let names = self.model.move_project(name, before);
+        let squad = self.model.squad.clone();
+        self.remembered.project_orders.retain(|(s, _)| *s != squad);
+        self.remembered.project_orders.push((squad, names));
+        self.remembered.save(&equipe_providers::credentials::equipe_home());
+        self.board_sync(cx);
+        cx.notify();
+    }
+
+    /// The side panel's width now: as the person left it, within the window.
+    pub fn side_width(&self, window: &Window) -> f32 {
+        doc::kept_width(self.remembered.side_width, window.viewport_size().width.into())
+    }
+
+    fn side_released(&mut self, cx: &mut Context<Self>) {
+        if self.side_drag.take().is_some() {
+            self.remembered.save(&equipe_providers::credentials::equipe_home());
+            cx.notify();
+        }
+    }
+
+    /// Folded to a rail at the edge, or open again.
+    pub fn fold_doc(&mut self, folded: bool, cx: &mut Context<Self>) {
+        if let Some(doc) = self.doc.as_mut() {
+            doc.folded = folded;
+            cx.notify();
+        }
+    }
+
+    pub fn reload_doc(&mut self, cx: &mut Context<Self>) {
+        if let Some(path) = self.doc.as_ref().map(|d| d.path.clone()) {
+            self.open_doc(path, cx);
+        }
+    }
+
+    pub fn close_doc(&mut self, cx: &mut Context<Self>) {
+        self.doc = None;
+        cx.notify();
     }
 
     /// Show a file the daemon's machine named (an approval's screen). On this
@@ -1018,8 +1337,12 @@ impl Shell {
         if nothing_attached && !self.endpoint.is_remote() && !install::cli_installed() {
             return install_screen(p);
         }
+        let remote = self.endpoint.is_remote();
         match &self.model.conn {
-            Conn::Down { reason, had_snapshot: false, .. } => v_flex().flex_1().child(self.drag_strip()).child(views::connect::guide_screen(self, &reason.guide(&self.endpoint), cx)).into_any_element(),
+            Conn::Down { had_snapshot: false, .. } | Conn::Connecting if remote && self.connecting_shown && (self.connecting.retrying || self.model.conn == Conn::Connecting) => {
+                v_flex().flex_1().child(self.drag_strip()).child(views::connect::connecting_screen(self, cx)).into_any_element()
+            }
+            Conn::Down { reason, had_snapshot: false, .. } => v_flex().flex_1().child(self.drag_strip()).child(views::connect::guide_screen(self, &reason.guide_at(&self.endpoint, self.connecting.door.as_deref()), cx)).into_any_element(),
             Conn::Connecting => div()
                 .flex_1()
                 .flex()
@@ -1027,12 +1350,7 @@ impl Shell {
                 .justify_center()
                 .text_size(px(BODY))
                 .text_color(p.muted)
-                .when(self.connecting_shown, |d| {
-                    d.child(match &self.endpoint {
-                        Endpoint::Local { .. } => t!("main.connecting_local").to_owned(),
-                        remote => t!("main.connecting_ssh", name = remote.label()),
-                    })
-                })
+                .when(self.connecting_shown, |d| d.child(t!("main.connecting_local")))
                 .into_any_element(),
             conn => {
                 let screen = match self.screen {
@@ -1041,8 +1359,10 @@ impl Shell {
                     Screen::Board => views::board::render(self, cx).into_any_element(),
                     Screen::Settings => views::settings::render(self, cx),
                     Screen::Design => views::design::render(self, cx),
+                    Screen::Overview => views::overview::render(self, cx),
+                    Screen::Roadmap => views::roadmap::render(self, cx),
                 };
-                v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).child(screen).into_any_element()
+                v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(self.update_banner(cx)).children(views::disk::banner(self, cx)).child(screen).into_any_element()
             }
         }
     }
@@ -1093,6 +1413,159 @@ impl Shell {
                 .child(div().flex_1().min_w_0().text_color(p.muted).child(if waits { t!("main.banner_needs_you") } else { t!("main.banner_reconnecting") }))
                 .child(ui::button(p, "banner-retry", ui::Kind::Secondary, t!("main.retry")).icon(icons::Icon::Retry).on_click(cx.listener(|this, _, _, cx| this.retry(cx)))),
         )
+    }
+}
+
+/// Bringing the daemon's machine up to this app's release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DaemonUpdate {
+    Running,
+    /// Installed: the daemon starts again on it once its members are idle.
+    Done,
+    /// The person asked for it now, not once the members are idle.
+    Restarting,
+    Failed(String),
+}
+
+/// What runs on the daemon's machine: the latest equipe over the one there
+/// (`equipe update`, else the install script), then a restart once its
+/// members are idle, left to run on its own. An `equipe` that is the app's
+/// own (a link into an .app) is new with the app already: only the restart.
+const UPDATE_SCRIPT: &str = r#"exe=$(command -v equipe) || { curl -fsSL https://github.com/equipe-labs/equipe/releases/latest/download/install.sh | sh || exit 1; exe=$HOME/.local/bin/equipe; }
+case "$(readlink "$exe" 2>/dev/null)" in
+  *.app/*) ;;
+  *) equipe update >/dev/null 2>&1 || curl -fsSL https://github.com/equipe-labs/equipe/releases/latest/download/install.sh | sh >/dev/null 2>&1 || { echo "the update didn't install" >&2; exit 1; } ;;
+esac
+nohup equipe daemon restart --when-idle >/dev/null 2>&1 &
+"#;
+
+/// The restart now, over a member's turn: the restart left waiting for the
+/// members to be idle gives way to one at once (`[i]` so the pattern doesn't
+/// match this script's own shell).
+const RESTART_NOW_SCRIPT: &str = r#"pkill -f 'daemon restart --when-[i]dle' 2>/dev/null
+command -v equipe >/dev/null || PATH=$HOME/.local/bin:$PATH
+nohup equipe daemon restart >/dev/null 2>&1 &
+"#;
+
+impl Shell {
+    /// The daemon is older than this app: a line over the conversation, with
+    /// the button that updates it where it runs (this Mac, or over SSH).
+    fn update_banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let p = self.palette;
+        let stale = notify::stale_daemon(&self.model.daemon_version, env!("CARGO_PKG_VERSION")).is_some();
+        if !stale && self.daemon_update.is_none() || self.daemon_update_hidden || !matches!(self.model.conn, Conn::Connected { .. }) {
+            return None;
+        }
+        let theirs = self.model.daemon_version.split('+').next().unwrap_or_default().to_owned();
+        let place = self.endpoint.label();
+        // One line, cut short if it must; the whole of it on the pointer.
+        let (words, tone, whole) = match &self.daemon_update {
+            None => (
+                t!("main.update_daemon_short", place = place, theirs = theirs, ours = env!("CARGO_PKG_VERSION")),
+                p.text,
+                Some(t!("main.update_daemon_line", place = place, theirs = theirs, ours = env!("CARGO_PKG_VERSION"))),
+            ),
+            Some(DaemonUpdate::Running) => (t!("main.update_daemon_running", place = place), p.text2, None),
+            Some(DaemonUpdate::Done) => (t!("main.update_daemon_done_short").to_owned(), p.text2, Some(t!("main.update_daemon_done").to_owned())),
+            Some(DaemonUpdate::Failed(why)) => {
+                let all = t!("main.update_daemon_failed", why = why);
+                (all.clone(), p.text, Some(all))
+            }
+            Some(DaemonUpdate::Restarting) => (t!("main.update_daemon_restarting").to_owned(), p.text2, None),
+        };
+        let done = matches!(self.daemon_update, Some(DaemonUpdate::Done));
+        let armed = self.daemon_restart_armed;
+        // Members at work stop mid-turn: the first click says so, the second restarts.
+        let (now_label, now_kind) = if armed { (t!("main.update_daemon_now_sure"), ui::Kind::Danger) } else { (t!("main.update_daemon_now"), ui::Kind::Secondary) };
+        let can = matches!(self.daemon_update, None | Some(DaemonUpdate::Failed(_)));
+        Some(
+            h_flex()
+                .h(px(40.))
+                .flex_none()
+                .px_4()
+                .gap_3()
+                .items_center()
+                .bg(p.accent_bg)
+                .border_b_1()
+                .border_color(p.hair)
+                .text_size(px(SMALL))
+                .child(icons::icon(icons::Icon::ArrowUp, 14., p.accent))
+                .child({
+                    let line = div().id("update-daemon-words").flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(tone).child(words);
+                    match whole {
+                        Some(whole) => line.tip(p, whole, None).into_any_element(),
+                        None => line.into_any_element(),
+                    }
+                })
+                .when(matches!(self.daemon_update, Some(DaemonUpdate::Running | DaemonUpdate::Restarting)), |b| b.child(motion::spinner(13., p.muted)))
+                .when(done, |b| {
+                    b.child(ui::button(p, "restart-daemon-now", now_kind, now_label).on_click(cx.listener(move |this, _, _, cx| {
+                        if armed {
+                            this.restart_daemon_now(cx);
+                        } else {
+                            this.daemon_restart_armed = true;
+                            cx.notify();
+                        }
+                    })))
+                })
+                .when(can, |b| b.child(ui::button(p, "update-daemon", ui::Kind::Primary, t!("main.update_daemon")).on_click(cx.listener(|this, _, _, cx| this.update_daemon(cx)))))
+                .child(ui::icon_button(p, "update-daemon-hide", icons::Icon::X, t!("main.update_daemon_hide"), None).on_click(cx.listener(|this, _, _, cx| {
+                    this.daemon_update_hidden = true;
+                    cx.notify();
+                }))),
+        )
+    }
+
+    /// Update the daemon's machine, off the main thread.
+    fn update_daemon(&mut self, cx: &mut Context<Self>) {
+        self.daemon_update = Some(DaemonUpdate::Running);
+        self.daemon_restart_armed = false;
+        self.on_daemon_machine(UPDATE_SCRIPT, DaemonUpdate::Done, cx);
+    }
+
+    /// The person's second click: the daemon starts again on the new
+    /// release now, members mid-turn or not; the app reconnects on its own.
+    fn restart_daemon_now(&mut self, cx: &mut Context<Self>) {
+        self.daemon_update = Some(DaemonUpdate::Restarting);
+        self.daemon_restart_armed = false;
+        self.on_daemon_machine(RESTART_NOW_SCRIPT, DaemonUpdate::Restarting, cx);
+    }
+
+    /// A script run where the daemon runs (this Mac, or over SSH), off the
+    /// main thread; `then` is the banner's state once it succeeded.
+    fn on_daemon_machine(&mut self, script: &'static str, then: DaemonUpdate, cx: &mut Context<Self>) {
+        let endpoint = self.endpoint.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let done = match &endpoint {
+                Endpoint::Local { .. } => {
+                    let path = format!("{}/.local/bin:/opt/homebrew/bin:/usr/local/bin:{}", std::env::var("HOME").unwrap_or_default(), std::env::var("PATH").unwrap_or_default());
+                    match std::process::Command::new("sh").arg("-c").arg(script).env("PATH", path).stdin(std::process::Stdio::null()).output() {
+                        Ok(out) if out.status.success() => Ok(()),
+                        Ok(out) => Err(String::from_utf8_lossy(&out.stderr).trim().to_owned()),
+                        Err(e) => Err(e.to_string()),
+                    }
+                }
+                Endpoint::Ssh(host) => tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| e.to_string())
+                    .and_then(|rt| rt.block_on(ssh::Launcher::system(None).run(host, script)).map(|_| ()).map_err(|f| f.detail().map_or_else(|| f.guide(&endpoint).short, str::to_owned))),
+            };
+            let _ = tx.send(done);
+        });
+        cx.spawn(async move |this, cx| {
+            let done = rx.await.unwrap_or_else(|_| Err("stopped".into()));
+            let _ = this.update(cx, |this, cx| {
+                this.daemon_update = Some(match done {
+                    Ok(()) => then,
+                    Err(why) => DaemonUpdate::Failed(if why.is_empty() { t!("main.update_daemon_unknown").into() } else { why }),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 }
 
@@ -1187,6 +1660,12 @@ impl Render for Shell {
             .font_family(SANS)
             .text_color(p.text)
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
+            .on_action(cx.listener(|this, _: &DismissOverlay, window, cx| {
+                if this.overlay_open() {
+                    this.escape_overlay(window, cx);
+                    cx.notify();
+                }
+            }))
             .on_action(cx.listener(|this, _: &NewMessage, window, cx| this.new_message(window, cx)))
             .on_action(cx.listener(|this, _: &SearchAll, window, cx| this.search_everything(window, cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.toggle_settings(window, cx)))
@@ -1199,14 +1678,53 @@ impl Render for Shell {
                         this.sidebar_released(cx);
                     }
                 }
+                // The terminal below grows as its top edge goes up.
+                if let Some((y0, h0)) = this.term_drag {
+                    if e.pressed_button == Some(MouseButton::Left) {
+                        this.remembered.term_height = Some(h0 + y0 - f32::from(e.position.y));
+                        cx.notify();
+                    } else if this.term_drag.take().is_some() {
+                        this.remembered.save(&equipe_providers::credentials::equipe_home());
+                    }
+                }
+                // The board's ticket panel too.
+                if let Some((x0, w0)) = this.board.peek_drag {
+                    if e.pressed_button == Some(MouseButton::Left) {
+                        this.remembered.peek_width = Some((w0 + x0 - f32::from(e.position.x)).max(views::board::PEEK_LEAST));
+                        cx.notify();
+                    } else if this.board.peek_drag.take().is_some() {
+                        this.remembered.save(&equipe_providers::credentials::equipe_home());
+                    }
+                }
+                // The side panel grows as its left edge goes left.
+                if let Some((x0, w0)) = this.side_drag {
+                    if e.pressed_button == Some(MouseButton::Left) {
+                        this.remembered.side_width = Some(w0 + x0 - f32::from(e.position.x));
+                        cx.notify();
+                    } else {
+                        this.side_released(cx);
+                    }
+                }
             }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| this.sidebar_released(cx)))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                this.sidebar_released(cx);
+                this.side_released(cx);
+                if this.board.peek_drag.take().is_some() {
+                    this.remembered.save(&equipe_providers::credentials::equipe_home());
+                    cx.notify();
+                }
+                if this.term_drag.take().is_some() {
+                    this.remembered.save(&equipe_providers::credentials::equipe_home());
+                    cx.notify();
+                }
+            }))
             .on_action(cx.listener(|this, _: &ToggleBoard, _, cx| {
                 let next = if this.screen == Screen::Chat { Screen::Board } else { Screen::Chat };
                 this.show(next, cx);
             }))
             .on_action(cx.listener(|this, _: &ChooseTarget, window, cx| this.open_chooser(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleBrowser, window, cx| this.toggle_browser(window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleTerminal, window, cx| this.toggle_terminal(window, cx)))
             // The browser panel's divider follows the pointer wherever it goes.
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
                 let pressed = e.pressed_button == Some(MouseButton::Left);
@@ -1250,8 +1768,18 @@ impl Render for Shell {
                 .children(tips::layer(cx));
         }
         let sidebar = self.sidebar(window, cx);
-        let browser = (self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
-        root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(self.panes.body.clone().cached(StyleRefinement::default().flex_1().min_w_0().h_full())).children(browser))
+        // A document open takes the right side; closed, the browser is back.
+        let doc = (self.screen == Screen::Chat).then(|| views::doc::panel(self, window, cx)).flatten();
+        // Then the terminal, sized to the panel as the window is now.
+        views::terminal::fit(self, window, cx);
+        let terminal = (self.screen == Screen::Chat).then(|| views::terminal::panel(self, window, cx)).flatten();
+        // Under the conversation, or at its right where the document isn't.
+        let (below, terminal) = if self.remembered.term_below { (terminal, None) } else { (None, terminal) };
+        let doc = doc.or(terminal);
+        let browser = (doc.is_none() && self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
+        let body = self.panes.body.clone().cached(StyleRefinement::default().flex_1().min_w_0().min_h_0());
+        let middle = v_flex().flex_1().min_w_0().h_full().child(body).children(below);
+        root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(middle).children(doc).children(browser))
             // The title bar's fixed buttons, by the traffic lights, over the
             // sidebar or the header alike: the same place whatever slides.
             .child(views::sidebar::title_buttons(self, cx))
@@ -1353,6 +1881,7 @@ fn window_bindings() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("cmd-b", ToggleBoard, None),
         KeyBinding::new("cmd-shift-b", ToggleBrowser, None),
+        KeyBinding::new("ctrl-`", ToggleTerminal, None),
         KeyBinding::new("cmd-\\", ToggleSidebar, None),
         KeyBinding::new("cmd-n", NewMessage, None),
         KeyBinding::new("cmd-k", SearchAll, None),
@@ -1483,7 +2012,7 @@ fn main() {
                 let _ = window.update(cx, |_, window, _| window.activate_window());
             }
             None => {
-                open_main_window(cx);
+                open_app_window(cx);
             }
         }
         cx.activate(true);
@@ -1498,18 +2027,25 @@ fn main() {
         app_menu(cx);
         views::composer::bind_keys(cx);
         #[allow(unused_variables)]
-        let (handle, shell) = open_main_window(cx);
+        let (handle, shell) = open_app_window(cx);
         cx.activate(true);
         #[cfg(feature = "snapshot")]
         snapshot::run(handle, shell, cx);
     });
 }
 
-/// The app's one window, with the conversation in it: at launch, and again
-/// from the Dock after it was closed.
-fn open_main_window(cx: &mut App) -> (AnyWindowHandle, Entity<Shell>) {
+/// A window of the app, with the conversation in it: at launch, from the
+/// Dock after it was closed, and for a place opened elsewhere
+/// (`views::elsewhere`) — a little down and right of the others, so it is
+/// seen to open. All in one tab group, so the Mac can make tabs of them.
+pub fn open_app_window(cx: &mut App) -> (AnyWindowHandle, Entity<Shell>) {
     {
-        let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
+        let others = cx.windows().len() as f32;
+        let mut bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
+        if others > 0. {
+            bounds.origin.x += px(28. * others);
+            bounds.origin.y += px(28. * others);
+        }
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(760.), px(520.))),
@@ -1518,6 +2054,7 @@ fn open_main_window(cx: &mut App) -> (AnyWindowHandle, Entity<Shell>) {
                 appears_transparent: true,
                 traffic_light_position: Some(point(px(views::sidebar::LIGHTS_AT.0), px(views::sidebar::LIGHTS_AT.1))),
             }),
+            tabbing_identifier: Some("equipe".to_owned()),
             ..Default::default()
         };
         let (handle, shell) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Shell::new(window, cx))).expect("failed to open window");

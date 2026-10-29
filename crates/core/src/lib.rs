@@ -11,9 +11,11 @@
 //!   rows it is about to draw, addressed by a per-agent `seq`.
 
 pub mod accept;
+pub mod awake;
 pub mod board;
 pub mod browser;
 pub mod design;
+pub mod group;
 pub mod desktop;
 pub mod desktop_gate;
 pub mod disk;
@@ -28,6 +30,8 @@ pub mod permissions;
 pub mod mock;
 pub mod pairing;
 pub mod roles;
+pub mod routines;
+pub mod secrets;
 pub mod runtime;
 pub mod squad_home;
 pub mod squad_memory;
@@ -36,6 +40,7 @@ pub mod switching;
 pub mod steers;
 pub mod store;
 pub mod team;
+pub mod vault;
 pub mod visuals;
 pub mod watchdog;
 pub mod worktree;

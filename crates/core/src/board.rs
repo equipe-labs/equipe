@@ -371,12 +371,35 @@ pub const ASK_PERSON: &str = "ask_person";
 /// A member puts a decision to the person: questions with options to pick.
 pub const ASK_DECISION: &str = "ask_decision";
 pub const SHOW_BROWSER: &str = "show_my_browser";
+/// Sign in to a site in your browser with a login the person keeps (`vault`).
+pub const SIGN_IN: &str = "sign_in";
 /// A member writes a fact into the squad's memory.
 pub const REMEMBER: &str = "remember";
 /// A member takes a wrong or stale fact out of the squad's memory.
 pub const FORGET: &str = "forget";
 /// A member says when what it is doing will be done — and what it ships, live.
 pub const ESTIMATE: &str = "estimate";
+
+/// Past this many minutes for one agent, work is split across subagents running at once.
+pub const ALONE_AT_MOST: f64 = 20.0;
+
+/// What `estimate` answers: shown — and, when the work would keep one agent
+/// long while no subagent shares it and it could, a push to split it and run
+/// the parts at once. Parallel hands are what a squad is for.
+pub fn estimate_reply(done_in: Option<f64>, shared: bool, has_subagents: bool) -> String {
+    let shown = "Shown to the person.";
+    match done_in {
+        Some(m) if m > ALONE_AT_MOST && !shared && has_subagents => format!(
+            "{shown} {} minutes is long for one agent. If it splits into parts that don't depend on each other — areas \
+to survey, screens, endpoints, files, test suites — hand them to subagents now, several Agent calls in one message so they \
+run at once, each told exactly its part and to report back briefly; then put their results together, check them, and \
+call `estimate` again with the shorter time. Parts that change files must not touch the same ones. Only if it truly \
+can't split, carry on alone.",
+            m.round() as u64
+        ),
+        _ => shown.to_owned(),
+    }
+}
 /// A designer finishes a design QA ticket: the screens pass, or go back to their engineer.
 pub const DESIGN_QA: &str = "design_qa";
 
@@ -511,6 +534,23 @@ end your turn.",
             },
         }));
     }
+    tools.push(json!({
+        "name": SIGN_IN,
+        "description": "Sign in to a site in your browser with a login the person keeps in equipe. You never see or type \
+the password: equipe asks the person (unless they already let you use that login), then fills the site's sign-in form \
+in your browser and submits it; you hear how it went. Open the site's sign-in page first, or let equipe open it. If \
+there's no login kept for the site, ask the person to add one in equipe (Settings › Accounts) — or hand them your \
+browser with `show_my_browser` to sign in themselves. Never ask for a password in words, and never read one off a page.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "site": { "type": "string", "description": "The site, by host or address: github.com, https://dash.cloudflare.com/login." },
+                "account": { "type": "string", "description": "The username, when the person keeps several for that site." },
+                "why": { "type": "string", "description": "What you'll do once signed in, in one line, in the person's language: shown to them on the card." },
+            },
+            "required": ["site", "why"],
+        },
+    }));
     tools.push(json!({
         "name": SHOW_BROWSER,
         "description": "Hand your browser to the person — for them to sign in, to look at something with you, or \
@@ -683,7 +723,10 @@ once they have done what it needed. Work in progress and done work are the perso
         tools.push(crate::team::tool());
         // Accepting is the person's: the PM only puts it to them on a card.
         tools.push(crate::accept::tool());
+        tools.push(crate::accept::accept_work_tool());
     }
+    // A secret for a command or a config, typed by the person into a card.
+    tools.push(crate::secrets::tool());
     tools
 }
 
@@ -782,6 +825,19 @@ pub fn arg_id(args: &Value, key: &str) -> Option<TicketId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_estimate_with_nobody_sharing_it_is_told_to_split_it_across_subagents() {
+        // Long, alone, on an engine with subagents: split it and run the parts at once.
+        let alone = estimate_reply(Some(80.0), false, true);
+        assert!(alone.starts_with("Shown to the person."));
+        assert!(alone.contains("80 minutes") && alone.contains("subagents") && alone.contains("one message"), "{alone}");
+        // Short, already shared out, or no subagents to hand it to: just shown.
+        assert_eq!(estimate_reply(Some(ALONE_AT_MOST), false, true), "Shown to the person.");
+        assert_eq!(estimate_reply(Some(120.0), true, true), "Shown to the person.");
+        assert_eq!(estimate_reply(Some(120.0), false, false), "Shown to the person.");
+        assert_eq!(estimate_reply(None, false, true), "Shown to the person.");
+    }
 
     /// Every ticket number `ticket_ref` finds in `text`, in order.
     fn refs(text: &str) -> Vec<&str> {

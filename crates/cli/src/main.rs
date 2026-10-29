@@ -10,6 +10,7 @@
 mod attach;
 mod clip;
 mod daemon;
+mod design;
 mod desktop;
 mod disk;
 mod home;
@@ -248,6 +249,11 @@ enum Command {
         #[command(subcommand)]
         action: DaemonAction,
     },
+    /// The designer's tools: init, check, specimen, render, audit
+    Design {
+        #[command(subcommand)]
+        action: design::DesignAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -413,6 +419,7 @@ async fn main() -> ExitCode {
         Command::Status => app.status().await,
         Command::Try { prompt, engine, model, edit } => app.run_try(&prompt, engine, model.as_deref(), edit).await,
         Command::Daemon { action } => daemon_command(action).await,
+        Command::Design { action } => design::command(action).await.map_err(Failure::new),
         Command::Disk { words, squad, yes } => disk::command(&words, squad, yes).await.map_err(Failure::new),
         Command::Update => update().await,
         Command::Lang { lang } => match lang::command(&equipe_providers::credentials::equipe_home(), lang.as_deref()) {
@@ -1391,6 +1398,7 @@ impl App {
                 Event::SubagentStarted { what, .. } => eprintln!("{}", e.dim(&format!("  ↳ {what}"))),
                 Event::SubagentEnded { .. } => eprintln!("{}", e.dim(&format!("  ↳ {}", t!("main.handed_back")))),
                 Event::SubagentStep { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::Estimated { .. } | Event::MemoWithdrawn { .. } | Event::QueueSent { .. } => {}
+                Event::Compacting { .. } | Event::Compacted { .. } | Event::CompactFailed { .. } => {}
                 Event::ToolResult { .. } | Event::Thinking { .. } => {}
                 Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. }
                 | Event::BrowserWants { .. }
@@ -1434,6 +1442,13 @@ impl App {
                 | Event::EngineProposed { .. }
                 | Event::EngineProposalClosed { .. }
                 | Event::EngineSwitchingChanged { .. }
+                | Event::ProjectsChanged { .. }
+                | Event::RoutinesChanged { .. }
+                | Event::Logins { .. }
+                | Event::BrowserProfiles { .. }
+                | Event::PmAcceptsChanged { .. }
+                | Event::SecretAsked { .. }
+                | Event::SecretClosed { .. }
                 | Event::Allowed { .. }
                 | Event::Design { .. } => {}
                 Event::Error { message, next, .. } => {

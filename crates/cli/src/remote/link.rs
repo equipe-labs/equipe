@@ -37,7 +37,7 @@ enum Input {
     /// An event of a squad a device follows.
     Device(String, String, Event),
     /// A device's squad is followed, or couldn't be.
-    Opened(String, String, Value, Result<(Commands, equipe_core::protocol::rpc::Hello), String>),
+    Opened(String, String, Value, Result<(Commands, Box<equipe_core::protocol::rpc::Hello>), String>),
     /// An event of any squad, for pushes.
     Squad(String, Event),
     /// A member's picture a device asked for, read (`read_image`).
@@ -218,7 +218,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                 let hello = match result {
                     Ok((commands, hello)) => {
                         senders.insert((device.clone(), squad.clone()), commands);
-                        Ok(hello)
+                        Ok(*hello)
                     }
                     Err(why) => Err(why),
                 };
@@ -245,7 +245,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                         match Client::connect(&socket, &version, &squad).await {
                             Ok((client, hello)) => {
                                 let (commands, mut events) = client.split();
-                                let _ = tx.send(Input::Opened(device.clone(), squad.clone(), id, Ok((commands, hello))));
+                                let _ = tx.send(Input::Opened(device.clone(), squad.clone(), id, Ok((commands, Box::new(hello)))));
                                 while let Some(event) = events.recv().await {
                                     if tx.send(Input::Device(device.clone(), squad.clone(), event)).is_err() {
                                         break;

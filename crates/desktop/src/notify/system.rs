@@ -69,8 +69,11 @@ define_class!(
         /// only while it is out of sight (minimised, hidden, on another
         /// Space): show it then; in sight, the window says it already.
         #[unsafe(method(userNotificationCenter:willPresentNotification:withCompletionHandler:))]
-        fn will_present(&self, _centre: &UNUserNotificationCenter, _notification: &UNNotification, done: &block2::DynBlock<dyn Fn(UNNotificationPresentationOptions)>) {
-            let options = if IN_SIGHT.load(Ordering::Relaxed) { UNNotificationPresentationOptions::empty() } else { UNNotificationPresentationOptions::Banner | UNNotificationPresentationOptions::List | UNNotificationPresentationOptions::Sound };
+        fn will_present(&self, _centre: &UNUserNotificationCenter, notification: &UNNotification, done: &block2::DynBlock<dyn Fn(UNNotificationPresentationOptions)>) {
+            // A browser waiting for the person's hands is shown in sight too:
+            // the window posts it then only when that page isn't on screen.
+            let hands = notification.request().identifier().to_string().starts_with("browser:");
+            let options = if IN_SIGHT.load(Ordering::Relaxed) && !hands { UNNotificationPresentationOptions::empty() } else { UNNotificationPresentationOptions::Banner | UNNotificationPresentationOptions::List | UNNotificationPresentationOptions::Sound };
             done.call((options,));
         }
     }

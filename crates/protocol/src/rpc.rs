@@ -309,6 +309,8 @@ pub enum ImageWhy {
     /// No such file — on disk, or on the ticket's branch.
     Missing,
     TooBig,
+    /// Saved somewhere screens aren't given pictures from.
+    Outside,
     /// Anything else: not a picture, not one the squad shows, no answer.
     Unreadable,
 }
@@ -319,6 +321,8 @@ pub const IMAGE_MISSING: &str = "no such file";
 pub const IMAGE_NOT_ON_BRANCH: &str = "no such file on its branch";
 /// …that is too big ("bigger than 30 MB").
 pub const IMAGE_TOO_BIG: &str = "bigger than";
+/// …that is saved outside every folder screens are given pictures from.
+pub const IMAGE_OUTSIDE: &str = "outside your worktree";
 
 impl ImageWhy {
     pub fn of(message: &str) -> Self {
@@ -326,6 +330,8 @@ impl ImageWhy {
             Self::Missing
         } else if message.contains(IMAGE_TOO_BIG) {
             Self::TooBig
+        } else if message.contains(IMAGE_OUTSIDE) {
+            Self::Outside
         } else {
             Self::Unreadable
         }

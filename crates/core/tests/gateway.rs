@@ -62,6 +62,7 @@ fn config(home: &Path, claude: &Path) -> Config {
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,
+        person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
     }
 }
@@ -231,9 +232,10 @@ async fn a_members_tool_call_reaches_the_board_over_the_socket() {
         arguments: serde_json::json!({ "title": "A logo", "body": "Something simple." }),
     };
     let result = gateway::call_tool(&socket, &call).await.unwrap();
-    assert!(!result.is_error && result.text.starts_with("Proposed T-1"), "{result:?}");
+    // Where the PM runs the work (the default), a member's ticket is simply on the board.
+    assert!(!result.is_error && result.text.starts_with("T-1 is on the board"), "{result:?}");
     let seen = until(&mut screen, |e| matches!(e, Event::TicketChanged { .. })).await;
-    assert!(matches!(seen.last(), Some(Event::TicketChanged { ticket, .. }) if ticket.status == TicketStatus::Proposed));
+    assert!(matches!(seen.last(), Some(Event::TicketChanged { ticket, .. }) if ticket.status == TicketStatus::Todo));
 
     let stranger = ToolCall { member: "nobody".into(), ..call };
     assert!(gateway::call_tool(&socket, &stranger).await.unwrap().is_error);

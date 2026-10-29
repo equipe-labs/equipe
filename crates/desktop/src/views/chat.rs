@@ -76,18 +76,16 @@ type Shown = (SessionId, Option<u32>, Option<Option<String>>);
 
 pub struct Chat {
     scroller: Entity<MessageScrollerState>,
+    /// Which of the cards over the composer is in front, when several wait.
+    pub dock_at: usize,
     pub blocks: Rc<Vec<Block>>,
     /// Whose conversation `blocks` are, the ticket it shows the work of, and
     /// the slice of it.
     shown: Option<Shown>,
     /// What each of `blocks` is about (`None`: the whole squad, or not said).
     about: Rc<Vec<Option<String>>>,
-    /// The latest reply came about another project than the one shown.
-    answered_in: Option<Option<String>>,
     /// The conversation follows the project in focus (settings ▸ 일반).
     pub follow: bool,
-    /// Folded stretches of other projects the person opened.
-    pub elsewhere: HashSet<u64>,
     /// The list was drawn anew for another slice: it fades in (by serial).
     faded_in: Option<u64>,
     seen_revision: u64,
@@ -178,9 +176,8 @@ impl Chat {
             blocks: Rc::new(Vec::new()),
             shown: None,
             about: Rc::default(),
-            answered_in: None,
             follow: true,
-            elsewhere: HashSet::new(),
+            dock_at: 0,
             faded_in: None,
             seen_revision: 0,
             expanded: false,
@@ -207,11 +204,10 @@ impl Chat {
         if !moved && model.revision == self.seen_revision && self.expanded == self.shown_expanded {
             return;
         }
-        let mut view = model.conversation(self.follow, &self.elsewhere);
+        let mut view = model.conversation(self.follow);
         crate::yourturn::mark(&mut view.blocks, looks);
         crate::convo::mark_handed(&mut view.blocks);
         self.about = Rc::new(view.about);
-        self.answered_in = view.answered_in;
         let old = std::mem::replace(&mut self.blocks, Rc::new(view.blocks));
         self.seen_revision = model.revision;
         let folds_changed = self.expanded != self.shown_expanded;
@@ -264,12 +260,6 @@ impl Chat {
             }
             cx.notify();
         });
-    }
-
-    /// The `n`th stretch of other projects folded in the conversation (the snapshot script's).
-    #[cfg_attr(not(feature = "snapshot"), allow(dead_code))]
-    pub fn nth_fold(&self, n: usize) -> Option<u64> {
-        self.blocks.iter().filter_map(|b| if let Block::Elsewhere { key, .. } = b { Some(*key) } else { None }).nth(n)
     }
 
     /// Back to the end, following it again.
@@ -478,7 +468,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         }
         // Its own pane: the composer's cursor, a card's box, the header don't
         // lay a day's conversation out again (`pane.rs`).
-        Some(_) => shell.panes.conversation.clone().cached(StyleRefinement::default().flex_1().min_h_0().w_full().max_w(px(COLUMN))).into_any_element(),
+        Some(_) => shell.panes.conversation.clone().cached(StyleRefinement::default().flex_1().min_h_0().w_full()).into_any_element(),
     };
     // A ticket open: its number, title and where it stands, over its work.
     let banner = model.opened.and_then(|id| model.tickets.iter().find(|t| t.id == id)).map(|t| {
@@ -521,11 +511,66 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 .min_h_0()
                 .max_w(px(COLUMN))
                 .px_4()
-                .child(v_flex().min_h_0().children(approvals::for_you(shell, cx)).children(approvals::approval(shell, cx)).children(super::decide::docked(shell, cx)).children(super::accept::docked(shell, cx)).children(super::team::docked(shell, cx)).children(super::switching::docked(shell, cx)).children(super::asklist::hint(shell, cx)))
+                .child(v_flex().min_h_0().children(approvals::for_you(shell, cx)).children(dock(shell, cx)).children(super::asklist::hint(shell, cx)))
                 .child(div().flex_none().child(composer::render(shell, cx))),
         )
         .children(lightbox(shell, cx));
     h_flex().flex_1().min_h_0().items_stretch().child(main).children(side_panel(shell, cx))
+}
+
+/// The cards over the composer — a request, a member's questions, work to
+/// confirm, a change to the team, an engine's — one at a time, so the
+/// conversation stays in sight: the one in front, and "1 / 3 ‹ ›" to go
+/// through the others. Answered, the next comes to the front.
+fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let cards: Vec<AnyElement> = [
+        super::secrets::docked(shell, cx),
+        approvals::approval(shell, cx),
+        super::decide::docked(shell, cx),
+        super::accept::docked(shell, cx),
+        super::team::docked(shell, cx),
+        super::switching::docked(shell, cx),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let count = cards.len();
+    if count == 0 {
+        return None;
+    }
+    let at = shell.chat.dock_at.min(count - 1);
+    let card = cards.into_iter().nth(at)?;
+    if count == 1 {
+        return Some(card);
+    }
+    let p = shell.palette;
+    let step = |id: &'static str, glyph: Icon, by: isize, cx: &mut Context<Shell>| {
+        div()
+            .id(id)
+            .size(px(22.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(R_SM))
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.wash))
+            .child(icon(glyph, 12., p.text2))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.chat.dock_at = (this.chat.dock_at.min(count - 1) as isize + by).rem_euclid(count as isize) as usize;
+                cx.notify();
+            }))
+    };
+    let bar = h_flex()
+        .justify_end()
+        .gap_1()
+        .items_center()
+        .pb_1()
+        .text_size(px(META))
+        .text_color(p.muted)
+        .child(t!("chat.cards_waiting", at = at + 1, count = count))
+        .child(step("dock-prev", Icon::ArrowLeft, -1, cx))
+        .child(step("dock-next", Icon::ArrowRight, 1, cx));
+    Some(v_flex().min_h_0().child(bar).child(card).into_any_element())
 }
 
 /// What a blank conversation says. The PM's names the thread it is.
@@ -707,11 +752,22 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     // button would be (which has the place while you read back).
     let following = shell.chat.scroller.read(cx).is_following_tail();
     // A reply about another project came: a pill to go there, the view stays.
-    let answered = shell.chat.answered_in.clone().map(|about| answered_pill(p, about, cx));
-    let pulse = (replying && following && answered.is_none()).then(|| pulse_pill(p));
+    // Its words: what it is doing while nothing shows it — a command left
+    // running in the background it waits on, or how long the turn has run.
+    let doing = {
+        let waiting_on = shell.chat.blocks.iter().filter_map(|b| if let Block::Steps(lines) = b { Some(lines) } else { None }).flatten().filter(|l| l.background && l.status == Status::Running).map(|l| l.text()).next_back();
+        let took = shell.model.convo().and_then(|c| c.working_for()).map(crate::convo::elapsed);
+        match (waiting_on, took) {
+            (Some(what), Some(took)) => t!("chat.doing_waiting_background", what = what, took = took),
+            (Some(what), None) => t!("chat.doing_waiting_background_now", what = what),
+            (None, Some(took)) => t!("chat.doing_working", took = took),
+            (None, None) => String::new(),
+        }
+    };
+    let pulse = (replying && following).then(|| pulse_pill(p, doing));
     // Our own pill, not the kit's jump button: the kit's put a tooltip with the
     // same word on it, in its own white, over the conversation.
-    let jump = (!following && answered.is_none()).then(|| jump_pill(p, shell.chat.scroller.clone()));
+    let jump = (!following).then(|| jump_pill(p, shell.chat.scroller.clone()));
     // Words selected in it are offered to quote (`views/quote.rs`).
     let scroller = div()
         .flex_1()
@@ -740,16 +796,20 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
         .children(pulse)
         .children(jump)
         .child(
-        MessageScroller::new("conversation", shell.chat.scroller.clone(), move |ix, window, cx| row(&rows, ix, window, cx))
+        // The list is the pane's whole width, so its scrollbar is at the
+        // window's right edge (as a terminal's is); each row keeps the column.
+        MessageScroller::new("conversation", shell.chat.scroller.clone(), move |ix, window, cx| {
+            h_flex().w_full().justify_center().child(div().flex_1().min_w_0().max_w(px(COLUMN - 32. - 2. * TEXT_INSET)).child(row(&rows, ix, window, cx))).into_any_element()
+        })
             .jump_button(false)
-            .with_row_style(StyleRefinement::default().pb(px(8.)).pl(px(TEXT_INSET)).pr(px(TEXT_INSET)))
+            .with_row_style(StyleRefinement::default().pb(px(8.)).pl(px(16. + TEXT_INSET)).pr(px(16. + TEXT_INSET)))
             // Room under the last line, so it never sits on the composer's
             // edge; read back, the rows fade out there under the jump pill.
             .with_list_style(StyleRefinement::default().pt(px(8.)).pb(px(TAIL_ROOM)))
             .with_bottom_fade(p.bg)
     );
     // The pill has its own room under the list, so it covers nothing.
-    let list = v_flex().flex_1().min_h_0().w_full().max_w(px(COLUMN)).px_4().child(scroller).children(answered);
+    let list = v_flex().flex_1().min_h_0().w_full().items_center().child(scroller);
     // Another project's slice: the list fades in at its end.
     match shell.chat.faded_in {
         Some(serial) if serial == shell.chat.serial => motion::fade(list, ("slice-in", serial), motion::BASE).into_any_element(),
@@ -757,62 +817,6 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     }
 }
 
-/// Where a reply about another project came, over the composer: a click goes
-/// to that project (or every project, for the whole squad's).
-fn answered_pill(p: Palette, about: Option<String>, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
-    // A reply about the whole squad is in the all-projects conversation, not "in All".
-    let words = match &about {
-        Some(project) => t!("chat.answered_in", project = project),
-        None => t!("chat.answered_in_all").to_owned(),
-    };
-    let pill = h_flex()
-        .id("answered-in")
-        .h(px(30.))
-        .pl_3()
-        .pr_2()
-        .gap(px(4.))
-        .items_center()
-        .rounded_full()
-        .bg(p.popover())
-        .border_1()
-        .border_color(p.hair)
-        .shadow(motion::float_shadow(0.5))
-        .text_size(px(12.5))
-        .text_color(p.text)
-        .cursor_pointer()
-        .hover(move |s| s.bg(p.wash))
-        .child(words)
-        .child(icon(Icon::ChevronRight, 12., p.muted))
-        .on_click(cx.listener(move |shell, _, window, cx| shell.focus_project(about.clone(), window, cx)));
-    h_flex().flex_none().w_full().pt_1().pb_2().justify_center().child(motion::rise(pill, "answered-in-rise"))
-}
-
-/// A stretch about other projects, folded: a quiet line saying how many
-/// things were said there; a click opens it in place (and closes it again).
-fn elsewhere_row(rows: &Rows, fold: u64, said: usize, open: bool, window: &mut Window, cx: &mut App) -> AnyElement {
-    let p = rows.p;
-    let progress = motion::openness(("elsewhere-open", fold), open, window, cx);
-    let handle = rows.handle.clone();
-    let words = if open { t!("chat.elsewhere_open", count = said) } else { t!("chat.elsewhere_closed", count = said) };
-    let rule = move || div().flex_1().h(px(1.)).bg(p.hair);
-    h_flex()
-        .id(("elsewhere", fold))
-        .my_1()
-        .h(px(28.))
-        .gap(px(10.))
-        .items_center()
-        .cursor_pointer()
-        .text_size(px(META))
-        .text_color(p.muted)
-        .hover(move |s| s.text_color(p.text2))
-        .child(rule())
-        .child(h_flex().flex_none().gap(px(6.)).items_center().child(words).child(chevron(p.muted, progress)))
-        .child(rule())
-        .on_click(move |_, _, cx| {
-            handle.update(cx, |shell, cx| shell.toggle_elsewhere(fold, cx)).ok();
-        })
-        .into_any_element()
-}
 
 pub type Handle = WeakEntity<Shell>;
 
@@ -936,7 +940,6 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             .child(v_flex().pl(px(21.)).font_family(MONO).text_size(px(12.5)).line_height(px(20.)).text_color(p.muted).children(stat.lines().map(|l| div().child(l.trim().to_owned()))))
             .into_any_element(),
         Block::Pending { text, steer, at } => pending_row(rows, key, text, *steer, *at, rows.project_of(ix), cx),
-        Block::Elsewhere { key: fold, said, open } => elsewhere_row(rows, *fold, *said, *open, window, cx),
         Block::HandOver { name, why, live } => handed_row(rows, key, name, why, *live),
     }
 }
@@ -1216,10 +1219,33 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
         activity::Title::Summary(summary) => div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(summary).into_any_element(),
     };
     let one = single.then(|| &lines[0]);
+    // A document read or written: a look at it in the panel, one click away.
+    let doc = one.filter(|_| status != Status::Running && !failed).and_then(|l| l.path.clone()).filter(|path| crate::doc::is_doc(path)).map(|path| {
+        let handle = rows.handle.clone();
+        div()
+            .id(("group-doc", key))
+            .flex_none()
+            .px(px(7.))
+            .py(px(1.))
+            .rounded(px(R_SM))
+            .border_1()
+            .border_color(p.hair)
+            .text_size(px(META))
+            .text_color(p.text2)
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.wash).text_color(p.text))
+            .child(t!("doc.view"))
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                let path = std::path::PathBuf::from(&path);
+                handle.update(cx, |shell, cx| shell.open_doc(path, cx)).ok();
+            })
+    });
     let head = disclosure_head(rows, ("group", key), PART_GROUP, key, false, window, cx)
         .text_color(tone)
         .children(mark)
         .child(title)
+        .children(doc)
         .children(one.and_then(diff_stat).map(|(a, r)| stat_chip(rows, a, r)))
         .children(one.and_then(|l| l.exit.filter(|_| failed)).map(|code| div().flex_none().px_1().rounded(px(4.)).bg(t.danger_bg).text_size(px(META)).text_color(t.danger).child(t!("chat.exit_code", code = code))))
         .children(activity::total_ms(lines).map(|ms| div().flex_none().text_size(px(META)).text_color(p.muted).child(tools::duration(ms))))
@@ -1283,7 +1309,7 @@ fn call_row(rows: &Rows, key: u64, at: u32, line: &ToolLine, rule: bool, window:
         .when(!more, |h| h.cursor_default())
         .children(running.then(|| motion::spinner(11., p.muted)))
         .children(failed.then(|| icon(Icon::Alert, 12., t.danger)))
-        .child(div().flex_none().text_color(if failed { t.danger } else { p.muted }).child(activity::phrase(&line.verb, running)))
+        .child(div().flex_none().text_color(if failed { t.danger } else { p.muted }).child(activity::line_phrase(line, running)))
         .child(linked(rows, ("call-object", key << 8 | at as u64), &line.text(), p.text2, true))
         .children(diff_stat(line).map(|(a, r)| stat_chip(rows, a, r)))
         .children(line.exit.filter(|_| failed).map(|code| div().flex_none().px_1().rounded(px(4.)).bg(t.danger_bg).text_size(px(META)).text_color(t.danger).child(t!("chat.exit_code", code = code))))
@@ -1303,7 +1329,8 @@ fn call_body(rows: &Rows, key: u64, at: u32, line: &ToolLine, failed: bool, _win
     let id = key << 8 | at as u64;
     let mut parts: Vec<AnyElement> = Vec::new();
     let command = line.verb == "run";
-    if let Some(full) = line.full.as_ref().filter(|f| f.chars().count() > 80 || f.contains('\n')) {
+    // Under its description, a command shows whole however short.
+    if let Some(full) = line.full.as_ref().filter(|f| line.label.is_some() || f.chars().count() > 80 || f.contains('\n')) {
         if command || line.output.is_some() {
             parts.push(
                 div()
@@ -1594,9 +1621,11 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
     let p = rows.p;
     let parts = crate::sent::parts(raw);
     // Asked about words of the conversation: the quote over the words.
-    let split = crate::quote::split(&parts.text);
-    let quoted = split.as_ref().map(|(quote, _)| super::quote::in_bubble(p, key, ix, quote, rows.handle.clone()));
-    let text = split.as_ref().map_or(parts.text.as_str(), |(_, rest)| rest.as_str());
+    let (quotes, rest) = crate::quote::split_all(&parts.text);
+    let quoted = (!quotes.is_empty()).then(|| {
+        v_flex().gap_1().children(quotes.iter().enumerate().map(|(n, quote)| super::quote::in_bubble(p, key ^ ((n as u64 + 1) << 40), ix, quote, rows.handle.clone()))).into_any_element()
+    });
+    let text = if quotes.is_empty() { parts.text.as_str() } else { rest.as_str() };
     // The pictures it embeds show under it, their markup out of its words.
     let embedded = equipe_core::visuals::markdown::local_images(text);
     let lexical = |written: &str| equipe_core::visuals::markdown::lexical(written, &rows.base).map(|p| p.to_string_lossy().into_owned());
@@ -1621,7 +1650,7 @@ fn user_row(rows: &Rows, ix: usize, key: u64, raw: &str, open: bool, project: Op
     let look = Look { size: BODY, line: BODY_LINE, color: p.prose, live: false };
     let body = (!text.is_empty()).then(|| {
         let state = rows.views.borrow_mut().get(view_key(key, 2), &escape_markdown(text), cx);
-        TextView::new(&state).style(view::style(p, &look)).selectable(true).on_link_click(|url, event, _, cx| view::follow(url, event.modifiers(), 0, cx)).when(clamped, |v| v.max_lines(USER_LINES))
+        TextView::new(&state).style(view::style(p, &look)).selectable(true).on_link_click(|url, event, window, cx| view::follow(url, event.modifiers(), 0, window, cx)).when(clamped, |v| v.max_lines(USER_LINES))
     });
     let files = attached::attachments(&rows.attached, key, &parts.tags, parts.more, true, cx);
     let group: SharedString = format!("user-{key}").into();
@@ -1758,7 +1787,7 @@ fn jump_pill(p: Palette, scroller: Entity<MessageScrollerState>) -> impl IntoEle
     div().absolute().bottom(px(12.)).left_0().right_0().flex().justify_center().child(motion::rise(pill, "jump-to-latest-in"))
 }
 
-fn pulse_pill(p: Palette) -> impl IntoElement {
+fn pulse_pill(p: Palette, words: String) -> impl IntoElement {
     let dot = move |n: usize| {
         div().size(px(5.)).rounded_full().bg(p.muted).with_animation(
             ("pulse-dot", n),
@@ -1786,7 +1815,8 @@ fn pulse_pill(p: Palette) -> impl IntoElement {
             .border_1()
             .border_color(p.hair)
             .shadow(motion::float_shadow(0.5))
-            .children((0..3).map(dot)),
+            .child(h_flex().gap(px(4.)).children((0..3).map(dot)))
+            .when(!words.is_empty(), |pill| pill.child(div().pl(px(4.)).max_w(px(520.)).truncate().text_size(px(META)).text_color(p.text2).child(words))),
     )
 }
 
@@ -1978,16 +2008,6 @@ impl Shell {
 
     pub fn toggle_folds(&mut self, cx: &mut Context<Self>) {
         self.chat.expanded = !self.chat.expanded;
-        self.chat_sync(cx);
-        cx.notify();
-    }
-
-    /// Open or close a stretch of other projects folded in the conversation.
-    pub fn toggle_elsewhere(&mut self, fold: u64, cx: &mut Context<Self>) {
-        if !self.chat.elsewhere.remove(&fold) {
-            self.chat.elsewhere.insert(fold);
-        }
-        self.model.revision += 1;
         self.chat_sync(cx);
         cx.notify();
     }

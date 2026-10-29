@@ -11,6 +11,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Smaller, quicker builds: no incremental caches (each run starts clean
+  # anyway) and line tables only, which keep a failing test's backtrace readable.
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   test:

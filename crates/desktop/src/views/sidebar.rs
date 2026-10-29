@@ -31,7 +31,7 @@ use crate::{Screen, Shell, motion};
 
 pub const WIDTH: f32 = 260.;
 pub const MIN_WIDTH: f32 = 200.;
-pub const MAX_WIDTH: f32 = 420.;
+pub const MAX_WIDTH: f32 = 480.;
 /// The title bar: the sidebar's strip and every screen's header are this one
 /// row, one height, one hairline under it.
 pub const STRIP: f32 = 44.;
@@ -51,6 +51,16 @@ const BUTTON_GAP: f32 = 2.;
 /// Where the traffic lights go with the window zoomed (`zoom.rs`): AppKit's
 /// lights keep their size and their place from the left, and stay centred on
 /// the title bar, which grows and shrinks with everything else.
+/// A dragged width as kept: within bounds, and the usual width when within
+/// a few points of it, so it is easy to come back to.
+pub fn settle(width: f32) -> f32 {
+    let width = width.clamp(MIN_WIDTH, MAX_WIDTH);
+    if (width - WIDTH).abs() <= SETTLE { WIDTH } else { width }
+}
+
+/// How near the usual width a drag settles on it.
+const SETTLE: f32 = 8.;
+
 pub fn lights_at(zoom: f32) -> (f32, f32) {
     (LIGHTS_AT.0, (STRIP * zoom - LIGHT) / 2.)
 }
@@ -175,16 +185,46 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             .when(badge > 0, |r| {
                 r.child(div().flex_none().min_w(px(18.)).h(px(18.)).px(px(5.)).flex().items_center().justify_center().rounded(px(9.)).bg(p.accent).text_color(p.on_accent).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child(badge.to_string()))
             })
-            .when(count > 0, |r| r.child(div().flex_none().pr(px(4.)).text_size(px(12.)).text_color(p.muted).child(count.to_string())))
+            .when(count > 0, |r| r.child(div().flex_none().min_w(px(18.)).h(px(18.)).px(px(5.)).flex().items_center().justify_center().text_size(px(12.)).text_color(p.muted).child(count.to_string())))
     };
     let nav_rows = v_flex()
         .gap(px(1.))
         .child(nav("nav-new", IconName::Plus, t!("sidebar.new_message").into(), 0, 0, false).on_click(cx.listener(|this, _, window, cx| this.new_message(window, cx))))
-        .child(nav("nav-pm", IconName::Bot, t!("sidebar.pm_talk").into(), 0, 0, pm_on).on_click(cx.listener(|this, _, window, cx| this.open_side(Side::Pm, window, cx))))
-        .child(nav("nav-inbox", IconName::Inbox, t!("board.menu_inbox").into(), needs, 0, on_board && menu == Menu::Inbox).on_click(cx.listener(|this, _, _, cx| this.open_side_menu(Menu::Inbox, cx))))
-        .child(nav("nav-working", IconName::LoaderCircle, t!("board.menu_working").into(), 0, working, on_board && menu == Menu::Working).on_click(cx.listener(|this, _, _, cx| this.open_side_menu(Menu::Working, cx))))
-        .child(nav("nav-all", IconName::LayoutDashboard, t!("board.menu_all").into(), 0, 0, on_board && matches!(menu, Menu::All | Menu::View(_))).on_click(cx.listener(|this, _, _, cx| this.open_side_menu(Menu::All, cx))))
-        .child(nav("nav-design", IconName::Palette, t!("design.title").into(), 0, 0, shell.screen == Screen::Design).on_click(cx.listener(|this, _, _, cx| this.open_design(cx))));
+        .child(nav("nav-pm", IconName::Bot, t!("sidebar.pm_talk").into(), 0, 0, pm_on).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Chat, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
+                this.open_side(Side::Pm, window, cx);
+            }
+        })))
+        .child(nav("nav-inbox", IconName::Inbox, t!("board.menu_inbox").into(), needs, 0, on_board && menu == Menu::Inbox).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Board, menu: Menu::Inbox, member: None, ticket: None }), window, cx) {
+                this.open_side_menu(Menu::Inbox, cx);
+            }
+        })))
+        .child(nav("nav-working", IconName::LoaderCircle, t!("board.menu_working").into(), 0, working, on_board && menu == Menu::Working).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Board, menu: Menu::Working, member: None, ticket: None }), window, cx) {
+                this.open_side_menu(Menu::Working, cx);
+            }
+        })))
+        .child(nav("nav-all", IconName::LayoutDashboard, t!("board.menu_all").into(), 0, 0, on_board && matches!(menu, Menu::All | Menu::View(_))).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Board, menu: Menu::All, member: None, ticket: None }), window, cx) {
+                this.open_side_menu(Menu::All, cx);
+            }
+        })))
+        .child(nav("nav-overview", IconName::ChartPie, t!("overview.title").into(), 0, 0, shell.screen == Screen::Overview).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Overview, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
+                this.open_overview(cx);
+            }
+        })))
+        .child(nav("nav-roadmap", IconName::Map, t!("roadmap.title").into(), 0, 0, shell.screen == Screen::Roadmap).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Roadmap, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
+                this.open_roadmap(cx);
+            }
+        })))
+        .child(nav("nav-design", IconName::Palette, t!("design.title").into(), 0, 0, shell.screen == Screen::Design).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Design, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
+                this.open_design(cx);
+            }
+        })));
 
     // The live work, a group per project; rows that just came arrive, rows
     // that just went leave, eased (`SideMotion`).
@@ -204,10 +244,14 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         (m.arriving(now), m.leaving(now))
     };
     let mut list: Vec<AnyElement> = Vec::new();
+    // The projects under a heading of their own, with the button that adds one.
+    if !groups.is_empty() || !model.projects.is_empty() {
+        list.push(projects_heading(shell, cx));
+    }
     let mut after_rows = false;
     for (ix, g) in groups.iter().enumerate() {
         let folded = shell.remembered.folded.contains(&g.key());
-        let gap = if ix == 0 { 14. } else if after_rows { 10. } else { 2. };
+        let gap = if ix == 0 { 2. } else if after_rows { 10. } else { 2. };
         list.push(project_head(shell, g, folded, gap, cx));
         after_rows = !folded && (!g.is_quiet() || leaving.iter().any(|l| l.key == g.key()));
         if folded {
@@ -254,25 +298,104 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .children(relaunch(p, shell, cx))
         .child(footer(p, shell, cx))
         .children(popup(p, shell, cx))
-        // The edge: drag to resize.
+        // The edge: drag to resize (it settles on the usual width when near
+        // it), double-click for the usual width again. Lit under the pointer.
         .child(
             div()
                 .id("sidebar-edge")
+                .group("sidebar-edge")
                 .absolute()
                 .top_0()
                 .bottom_0()
+                // Easy to catch: most of it inside the sidebar, where nothing
+                // else takes the pointer, and a thick line under it.
                 .right(px(-3.))
-                .w(px(6.))
+                .w(px(12.))
                 .cursor_col_resize()
-                .child(div().absolute().top_0().bottom_0().left(px(3.)).w(px(1.)).bg(if ui.sidebar_drag.is_some() { p.accent } else { p.hair }))
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right(px(3.))
+                        .w(px(if ui.sidebar_drag.is_some() { 3. } else { 1. }))
+                        .bg(if ui.sidebar_drag.is_some() { p.accent } else { p.hair })
+                        .group_hover("sidebar-edge", move |s| s.w(px(3.)).bg(p.accent).opacity(0.8)),
+                )
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                        if e.click_count >= 2 {
+                            this.board.sidebar_drag = Some((f32::from(e.position.x), WIDTH));
+                            this.board.sidebar_width = WIDTH;
+                            this.sidebar_released(cx);
+                            return;
+                        }
                         this.board.sidebar_drag = Some((f32::from(e.position.x), this.board.sidebar_width));
                         cx.notify();
                     }),
                 ),
         )
+}
+
+/// "프로젝트", over the squad's projects, and its "+" (the same as the
+/// project list's "Add a project…").
+fn projects_heading(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let local = !shell.endpoint.is_remote();
+    h_flex()
+        .id("projects-heading")
+        .group("projects-heading")
+        .h(px(26.))
+        .mt(px(14.))
+        .mx_2()
+        .pl_2()
+        .pr_1()
+        .items_center()
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(p.muted)
+        .child(div().flex_1().child(t!("sidebar.projects")))
+        .child(
+            div()
+                .id("projects-add")
+                .size(px(20.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.))
+                .cursor_pointer()
+                .hover(move |s| s.bg(p.side_hover))
+                .tip(p, t!("header.add_project"), None)
+                .child(icon(IconName::Plus, 13., p.muted))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if local {
+                        this.pick_project_folder(cx);
+                    } else {
+                        this.board.popover = Some(super::board::Popover::Projects);
+                        this.board.slice_place = "chat";
+                        this.start_adding_project(window, cx);
+                    }
+                })),
+        )
+        .into_any_element()
+}
+
+/// A project's header being dragged to a new place.
+#[derive(Clone)]
+pub struct ProjectDrag {
+    pub name: String,
+    pub palette: Palette,
+}
+
+/// The project's name under the pointer while it is dragged.
+struct ProjectGhost(ProjectDrag);
+
+impl Render for ProjectGhost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let p = self.0.palette;
+        div().px_3().py_1().rounded(px(6.)).bg(p.popover()).border_1().border_color(p.accent).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(self.0.name.clone())
+    }
 }
 
 /// The ticket the screen shows, for the row's highlight.
@@ -283,7 +406,7 @@ fn selected_ticket(shell: &Shell) -> Option<TicketId> {
             Some(Need::Ticket(id)) => Some(id),
             _ => None,
         },
-        Screen::Settings | Screen::Design => None,
+        Screen::Settings | Screen::Design | Screen::Overview | Screen::Roadmap => None,
     }
 }
 
@@ -291,6 +414,22 @@ fn selected_ticket(shell: &Shell) -> Option<TicketId> {
 /// project slice to it) and, folded, how much is live in it — "2 · 1⚑", at
 /// work and waiting on the person. A project with nothing live is one muted
 /// line with no chevron.
+/// "HQ", beside the name of the project that is the squad's HQ.
+pub fn hq_badge(p: Palette) -> impl IntoElement {
+    div()
+        .flex_none()
+        .px(px(5.))
+        .h(px(16.))
+        .flex()
+        .items_center()
+        .rounded(px(4.))
+        .bg(p.wash)
+        .text_size(px(10.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(p.text2)
+        .child("HQ")
+}
+
 fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let key = g.key();
@@ -324,7 +463,17 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, cx: &mut C
         (Some(_), true) => t!("sidebar.back_to_all"),
         (Some(_), false) => t!("sidebar.switch_project"),
     };
+    // Where the project is, on the daemon's machine: on the pointer, and to copy.
+    let folder = g.name.as_ref().and_then(|n| shell.model.projects.iter().find(|p| &equipe_core::board::project_name(p) == n)).cloned();
+    let name_tip = match &folder {
+        Some(path) => format!("{name_tip}\n{}", path.display()),
+        None => name_tip.to_owned(),
+    };
+    let local = !shell.endpoint.is_remote();
+    let hq = g.name.as_deref().is_some_and(|n| shell.model.is_hq(n));
     let ident = match g.at {
+        // The HQ: a building, not a dot — the squad's own place, not one of its products.
+        Some(_) if hq => icon(IconName::Building2, 12., p.text2).into_any_element(),
         Some(at) => dot(project_color(p, at), 6.).into_any_element(),
         None => icon(IconName::Folder, 12., p.muted).into_any_element(),
     };
@@ -340,9 +489,42 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, cx: &mut C
         .cursor_pointer()
         .hover(move |s| s.bg(p.side_hover))
         .tip_at(p, name_tip, None, gpui_kit::base::Placement::Right)
-        .on_click(cx.listener(move |this, _, window, cx| this.side_head_click(HeadClick::Name, name_project.clone(), window, cx)))
+        .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+            // ⌘-click: the project in a tab of its own (the squad's folder has no slice to open).
+            if let Some(project) = name_project.clone()
+                && this.open_elsewhere(e, super::elsewhere::Goal::Project(project), window, cx)
+            {
+                return;
+            }
+            this.side_head_click(HeadClick::Name, name_project.clone(), window, cx)
+        }))
         .child(ident)
-        .child(crate::ui::steady(label, FontWeight::SEMIBOLD, focused, true).text_color(name_color));
+        .child(crate::ui::steady(label, FontWeight::SEMIBOLD, focused, true).text_color(name_color))
+        .when(hq, |n| n.child(hq_badge(p)));
+    let name: AnyElement = match folder {
+        Some(path) => {
+            use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+            let shell_handle = cx.entity().downgrade();
+            name.context_menu(move |menu, _, _| {
+                let copy = path.clone();
+                // The squad's HQ: where its operations live; one at a time.
+                let (mark, mark_to) = if hq { (t!("sidebar.hq_unset"), None) } else { (t!("sidebar.hq_set"), Some(path.clone())) };
+                let handle = shell_handle.clone();
+                let menu = menu.item(PopupMenuItem::new(mark).on_click(move |_, _, cx| {
+                    let _ = handle.update(cx, |shell, cx| shell.set_hq(mark_to.clone(), cx));
+                }));
+                let menu = menu.item(PopupMenuItem::new(t!("sidebar.copy_project_path")).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.display().to_string()))));
+                if local {
+                    let reveal = path.clone();
+                    menu.item(PopupMenuItem::new(t!("render.file_reveal")).on_click(move |_, _, cx| cx.reveal_path(&reveal)))
+                } else {
+                    menu
+                }
+            })
+            .into_any_element()
+        }
+        None => name.into_any_element(),
+    };
     let counts = (folded && !quiet).then(|| {
         h_flex()
             .flex_none()
@@ -373,9 +555,17 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, cx: &mut C
                 this.new_message(window, cx);
             }))
     });
+    let drag = g.name.clone().map(|name| ProjectDrag { name, palette: p });
+    let target = g.name.clone();
     h_flex()
         .id(SharedString::from(format!("head-row-{key}")))
         .group(group)
+        // Dragged onto another project's header, it goes before that one.
+        .when_some(drag, |row, drag| row.on_drag(drag, |d, _, _, cx| cx.new(|_| ProjectGhost(d.clone()))))
+        .when_some(target, |row, target| {
+            row.drag_over::<ProjectDrag>(move |style, _, _, _| style.border_t_2().border_color(p.accent))
+                .on_drop(cx.listener(move |this, d: &ProjectDrag, _, cx| this.reorder_project(&d.name, Some(&target), cx)))
+        })
         .h(px(26.))
         .mt(px(gap))
         .mx_2()
@@ -467,7 +657,12 @@ fn ticket_row(shell: &Shell, t: &Ticket, live: Live, on: bool, arrives: bool, cx
     // stands, who is on it, what it asks.
     let row = super::ticket_card::hover_link(row_shell(p, ("ticket", id as usize), on), id, super::ticket_card::Side::Right)
         .group(group.clone())
-        .on_click(cx.listener(move |this, _, window, cx| this.open_ticket_row(id, window, cx)))
+        .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+            let goal = super::elsewhere::Goal::Place(Place { screen: Screen::Chat, menu: this.board.view.menu, member: None, ticket: Some(id) });
+            if !this.open_elsewhere(e, goal, window, cx) {
+                this.open_ticket_row(id, window, cx);
+            }
+        }))
         .child(mark_element(p, mark, if mark == Mark::Spinner { shell.spin(cx) } else { 0. }))
         .child(fading_title(p, t.title.clone(), on, false))
         .children(time.map(|time| div().flex_none().text_size(px(11.)).text_color(p.muted).when(yes, |d| d.group_hover(group.clone(), |s| s.invisible())).child(time)))
@@ -773,11 +968,28 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, cx: &mut Co
     row_shell(p, ("member", session), on)
         .h(px(TEAM_ROW))
         .group(group.clone())
-        .on_click(cx.listener(move |this, _, window, cx| this.select_member(session, window, cx)))
+        .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+            let goal = super::elsewhere::Goal::Place(Place { screen: Screen::Chat, menu: this.board.view.menu, member: Some(session), ticket: None });
+            if !this.open_elsewhere(e, goal, window, cx) {
+                this.select_member(session, window, cx);
+            }
+        }))
         .child(mark_element(p, mark, if mark == Mark::Spinner { shell.spin(cx) } else { 0. }))
-        .child(div().flex_none().max_w(px(120.)).truncate().text_size(px(TEXT)).text_color(if on { p.text } else { p.text2 }).child(member.name.clone()))
-        .children(member.engine.map(|e| super::switching::badge(p, e)))
-        .child(fading_title(p, state.words(), on, true).text_size(px(12.)).when(state.waits(), |d| d.text_color(p.orange)).group_hover(group.clone(), |s| s.invisible()))
+        // Name, then what it is doing against the right edge, then its engine:
+        // each in the same place on every row.
+        .child(div().flex_1().min_w(px(36.)).truncate().text_size(px(TEXT)).text_color(if on { p.text } else { p.text2 }).child(member.name.clone()))
+        .child(
+            div()
+                .flex_none()
+                .max_w(relative(0.55))
+                .truncate()
+                .text_right()
+                .text_size(px(12.))
+                .text_color(if state.waits() { p.orange } else { p.muted })
+                .group_hover(group.clone(), |s| s.invisible())
+                .child(state.words()),
+        )
+        .children(member.engine.map(|e| div().flex_none().group_hover(group.clone(), |s| s.invisible()).child(super::switching::mark(p, ("member-engine", session), e))))
         // No room for its subagents' rows: how many, which opens them all.
         .children(folded.map(|n| {
             h_flex()
@@ -956,7 +1168,9 @@ impl SubMotion {
 fn relaunch(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
     use crate::relaunch::{Update, Why};
     let words = crate::relaunch::pill(&shell.update)?;
-    let pill = h_flex().id("relaunch").h(px(34.)).flex_none().mx_3().mb_1().px_3().rounded(px(8.)).items_center().justify_between().text_size(px(TEXT));
+    // Words that shorten with an ellipsis, then the mark, inside the pill whatever the width.
+    let pill = h_flex().id("relaunch").h(px(34.)).flex_none().mx_2().mb_1().px_3().gap_2().overflow_hidden().rounded(px(8.)).items_center().justify_between().text_size(px(TEXT));
+    let mark = |m: &'static str| div().flex_none().child(m);
     Some(match &shell.update {
         Update::Ready(_) => pill
             .bg(p.primary)
@@ -965,8 +1179,8 @@ fn relaunch(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<impl I
             .cursor_pointer()
             .hover(|s| s.opacity(0.9))
             .on_click(cx.listener(|this, _, _, cx| this.relaunch_to_update(cx)))
-            .child(words)
-            .child("→"),
+            .child(div().flex_1().min_w_0().truncate().child(words))
+            .child(mark("→")),
         // Downloading: said quietly, nothing to press.
         Update::Found(_) | Update::Downloading(_) => pill.border_1().border_color(p.hair).text_color(p.muted).child(div().min_w_0().truncate().child(words)),
         // The app can't replace itself where it is: show it in Finder.
@@ -977,8 +1191,8 @@ fn relaunch(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<impl I
             .cursor_pointer()
             .hover(|s| s.bg(p.wash))
             .on_click(|_, _, _| crate::relaunch::reveal())
-            .child(div().min_w_0().truncate().child(words))
-            .child("→"),
+            .child(div().flex_1().min_w_0().truncate().child(words))
+            .child(mark("→")),
         _ => pill
             .border_1()
             .border_color(p.hair)
@@ -986,8 +1200,8 @@ fn relaunch(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<impl I
             .cursor_pointer()
             .hover(|s| s.bg(p.wash))
             .on_click(|_, _, cx| crate::relaunch::check_now(cx))
-            .child(div().min_w_0().truncate().child(words))
-            .child("↻"),
+            .child(div().flex_1().min_w_0().truncate().child(words))
+            .child(mark("↻")),
     })
 }
 
@@ -1022,10 +1236,7 @@ fn footer(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElemen
                 .cursor_pointer()
                 .hover(move |s| s.bg(p.side_hover))
                 .tip_at(p, tip, None, gpui_kit::base::Placement::Right)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.board.popup = if this.board.popup == Some(Popup::Account) { None } else { Some(Popup::Account) };
-                    cx.notify();
-                }))
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_popup(Popup::Account, cx)))
                 .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(dot(if connected { p.accent } else { p.muted }, 7.)))
                 .child(div().flex_none().text_size(px(TEXT)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(squad))
                 .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(p.muted).child(shell.endpoint.label()))
@@ -1107,6 +1318,7 @@ fn popup(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
                 .border_color(p.hair)
                 .shadow_lg()
                 .occlude()
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| this.popup_outside(cx)))
                 .children(rows),
         )
         .into_any_element(),
@@ -1159,10 +1371,7 @@ fn subagents_popover(shell: &Shell, member: SessionId, cx: &mut Context<Shell>) 
         .border_1()
         .border_color(p.hair)
         .occlude()
-        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-            this.board.popup = None;
-            cx.notify();
-        }))
+        .on_mouse_down_out(cx.listener(|this, _, _, cx| this.popup_outside(cx)))
         .child(
             h_flex()
                 .px_2()
@@ -1182,9 +1391,7 @@ fn subagents_popover(shell: &Shell, member: SessionId, cx: &mut Context<Shell>) 
 impl Shell {
     /// "+N개 더" under a member: all its subagents, or away again.
     pub fn toggle_subagents(&mut self, member: SessionId, cx: &mut Context<Self>) {
-        let which = Popup::Subagents(member);
-        self.board.popup = if self.board.popup == Some(which) { None } else { Some(which) };
-        cx.notify();
+        self.toggle_popup(Popup::Subagents(member), cx);
     }
 
     /// A subagent's row: its member's conversation, at the step that handed
@@ -1278,12 +1485,13 @@ impl Shell {
     /// Dragging the sidebar's edge.
     pub fn sidebar_dragged(&mut self, x: f32, cx: &mut Context<Self>) {
         if let Some((x0, w0)) = self.board.sidebar_drag {
-            self.board.sidebar_width = (w0 + x - x0).clamp(MIN_WIDTH, MAX_WIDTH);
+            self.board.sidebar_width = settle(w0 + x - x0);
             cx.notify();
         }
     }
 
     pub fn sidebar_released(&mut self, cx: &mut Context<Self>) {
+        // (A double-click on the edge comes here with the usual width set.)
         if self.board.sidebar_drag.take().is_some() {
             self.remembered.sidebar_width = Some(self.board.sidebar_width);
             self.remembered.save(&equipe_providers::credentials::equipe_home());
@@ -1294,7 +1502,7 @@ impl Shell {
     // ── back and forward ──
 
     /// Where the window is now, for back and forward.
-    fn place(&self) -> Place {
+    pub fn place(&self) -> Place {
         Place { screen: self.screen, menu: self.board.view.menu, member: self.model.selected, ticket: self.model.opened }
     }
 
@@ -1327,7 +1535,7 @@ impl Shell {
         }
     }
 
-    fn go_to(&mut self, place: Place, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn go_to(&mut self, place: Place, window: &mut Window, cx: &mut Context<Self>) {
         match place.screen {
             Screen::Board => {
                 self.board.view.menu = place.menu;
@@ -1340,6 +1548,8 @@ impl Shell {
             },
             Screen::Settings => self.open_settings(None, window, cx),
             Screen::Design => self.open_design(cx),
+            Screen::Overview => self.open_overview(cx),
+            Screen::Roadmap => self.open_roadmap(cx),
         }
         cx.notify();
     }
@@ -1356,11 +1566,20 @@ pub struct Place {
 
 #[cfg(test)]
 mod tests {
-    use super::{Leaving, SUB_ROW, SUBS_SHOWN, SideMotion, Shown, SubLeaving, SubMotion, SubShown, TEAM_ROW, TeamState, sub_rows, subs_cap, team_height};
+    use super::{Leaving, MAX_WIDTH, MIN_WIDTH, SUB_ROW, SUBS_SHOWN, SideMotion, Shown, SubLeaving, SubMotion, SubShown, TEAM_ROW, TeamState, WIDTH, settle, sub_rows, subs_cap, team_height};
     use crate::board::Live;
     use crate::state::{Member, Model, Presence, Verb};
     use equipe_core::protocol::Ticket;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_dragged_width_stays_in_bounds_and_settles_on_the_usual_one() {
+        assert_eq!(settle(100.), MIN_WIDTH);
+        assert_eq!(settle(900.), MAX_WIDTH);
+        assert_eq!(settle(WIDTH + 6.), WIDTH);
+        assert_eq!(settle(WIDTH - 7.), WIDTH);
+        assert_eq!(settle(WIDTH + 30.), WIDTH + 30.);
+    }
 
     fn ticket(id: u32, status: &str, owner: &str) -> Ticket {
         serde_json::from_value(serde_json::json!({"id": id, "title": "t", "body": "", "status": status, "owner": owner, "assignee": null, "project": null, "depends_on": [], "branch": null, "created_by": "pm", "note": null})).unwrap()

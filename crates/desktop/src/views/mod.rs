@@ -1,6 +1,7 @@
 //! One module per screen, so each ticket edits its own file.
 
 pub mod accept;
+pub mod accounts;
 pub mod actions;
 pub mod approvals;
 pub mod asklist;
@@ -15,17 +16,24 @@ pub mod decide;
 pub mod design;
 pub mod diffview;
 pub mod disk;
+pub mod doc;
+pub mod elsewhere;
 pub mod engines;
 pub mod switching;
 pub mod header;
 pub mod icons;
 pub mod pair;
+pub mod overview;
 pub mod peek;
 pub mod quote;
 pub mod settings;
+pub mod roadmap;
+pub mod secrets;
+pub mod routines;
 pub mod sheet;
 pub mod sidebar;
 pub mod team;
+pub mod terminal;
 pub mod ticket_card;
 pub mod tickets;
 pub mod visuals;

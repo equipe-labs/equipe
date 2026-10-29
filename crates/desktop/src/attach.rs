@@ -166,7 +166,7 @@ pub fn check(path: &Path) -> Result<(Kind, u64), String> {
     Ok((kind, meta.len()))
 }
 
-fn file_name(path: &Path) -> String {
+pub(crate) fn file_name(path: &Path) -> String {
     path.file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned())
 }
 
@@ -552,6 +552,11 @@ pub struct Item {
     pub stage: Stage,
     /// The file on this Mac it came from, to offer again in "recent".
     pub origin: Option<PathBuf>,
+    /// A recording being written down on this Mac; its words come as a text file.
+    pub writing: bool,
+    /// The picture whole on this Mac, for its big view (a paste kept in a
+    /// scratch file; a file, where it is) — the thumbnail is chip-sized.
+    pub whole: Option<PathBuf>,
 }
 
 impl Item {
@@ -638,12 +643,12 @@ impl Strip {
         if !self.has_room() {
             return None;
         }
-        Some(self.push(Item { id: 0, kind: source.kind(), name: source.name(), size: source.size(), thumb: None, meta: Meta::default(), stage: Stage::Preparing, origin: source.path().map(Path::to_owned) }))
+        Some(self.push(Item { id: 0, kind: source.kind(), name: source.name(), size: source.size(), thumb: None, meta: Meta::default(), stage: Stage::Preparing, origin: source.path().map(Path::to_owned), writing: false, whole: source.path().map(Path::to_owned) }))
     }
 
     /// One that can't be attached at all: shown as an error until dismissed.
     pub fn refuse(&mut self, name: &str, kind: Kind, why: String) -> u64 {
-        self.push(Item { id: 0, kind, name: name.to_owned(), size: 0, thumb: None, meta: Meta::default(), stage: Stage::Failed(why), origin: None })
+        self.push(Item { id: 0, kind, name: name.to_owned(), size: 0, thumb: None, meta: Meta::default(), stage: Stage::Failed(why), origin: None, writing: false, whole: None })
     }
 
     fn get(&mut self, id: u64) -> Option<&mut Item> {
@@ -684,6 +689,18 @@ impl Strip {
         }
     }
 
+    /// Its recording is being written down, or is done. False when it was taken off.
+    pub fn writing(&mut self, id: u64, on: bool) -> bool {
+        self.get(id).map(|item| item.writing = on).is_some()
+    }
+
+    /// Its picture whole, kept on this Mac.
+    pub fn whole(&mut self, id: u64, path: PathBuf) {
+        if let Some(item) = self.get(id) {
+            item.whole = Some(path);
+        }
+    }
+
     pub fn remove(&mut self, id: u64) {
         self.items.retain(|i| i.id != id);
     }
@@ -704,7 +721,7 @@ impl Strip {
 
     /// Something is still on its way: sending now would leave it behind.
     pub fn busy(&self) -> bool {
-        self.items.iter().any(|i| matches!(i.stage, Stage::Preparing | Stage::Sending(_)))
+        self.items.iter().any(|i| i.writing || matches!(i.stage, Stage::Preparing | Stage::Sending(_)))
     }
 
     pub fn ready(&self) -> usize {
@@ -742,7 +759,7 @@ impl Strip {
         self.items.clear();
         for s in saved.iter().take(MAX_ATTACHMENTS) {
             let thumb = s.thumb.clone().map(|png| Arc::new(Image::from_bytes(ImageFormat::Png, png)));
-            self.push(Item { id: 0, kind: s.kind, name: s.name.clone(), size: s.size, thumb, meta: s.meta.clone(), stage: Stage::Ready(s.ready.clone()), origin: s.origin.clone() });
+            self.push(Item { id: 0, kind: s.kind, name: s.name.clone(), size: s.size, thumb, meta: s.meta.clone(), stage: Stage::Ready(s.ready.clone()), origin: s.origin.clone(), writing: false, whole: s.origin.clone() });
         }
     }
 
@@ -785,6 +802,25 @@ pub fn saved_of(text: &str) -> Vec<Saved> {
             Saved { kind, name, size: 0, meta, ready: Ready { path: tag.path.clone(), tag: text[tag.range.clone()].to_owned() }, thumb: None, origin: None }
         })
         .collect()
+}
+
+/// Words with attachments in them, as the person reads them back: the
+/// words, then `📎 name` for each attachment — never its tag's path.
+pub fn shown_words(text: &str) -> String {
+    let tags = equipe_core::protocol::tags::find(text);
+    if tags.is_empty() {
+        return text.to_owned();
+    }
+    let mut words = String::new();
+    let mut at = 0;
+    for tag in &tags {
+        words.push_str(&text[at..tag.range.start]);
+        at = tag.range.end;
+    }
+    words.push_str(&text[at..]);
+    let names = tags.iter().map(|t| format!("📎 {}", t.name())).collect::<Vec<_>>().join(" ");
+    let words = words.split_whitespace().collect::<Vec<_>>().join(" ");
+    if words.is_empty() { names } else { format!("{words} {names}") }
 }
 
 /// What was typed, without the characters that can't be seen or that turn
@@ -895,6 +931,15 @@ pub fn take_inbox() -> Vec<Source> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_answer_with_a_file_reads_back_as_its_words_and_the_files_name() {
+        let tag = tag(Kind::File, "/u/abc/allocation-plan.txt", &Meta { lines: Some(2), ..Meta::default() }, &[], None);
+        let both = message("자료 첨부해요", &tag);
+        assert_eq!(shown_words(&both), "자료 첨부해요 📎 allocation-plan.txt");
+        assert_eq!(shown_words(&tag), "📎 allocation-plan.txt");
+        assert_eq!(shown_words("그냥 말"), "그냥 말");
+    }
 
     fn picture_bytes(w: u32, h: u32, kind: Format) -> Vec<u8> {
         let mut out = Cursor::new(Vec::new());
@@ -1062,6 +1107,19 @@ mod tests {
         }
         strip.dismiss_failed();
         assert_eq!(strip.failed(), 0);
+    }
+
+    #[test]
+    fn a_recording_being_written_down_holds_the_send() {
+        let mut strip = Strip::default();
+        let memo = strip.begin(&Source::File("/u/memo.m4a".into())).unwrap();
+        assert!(strip.writing(memo, true));
+        strip.finish(memo, Ok(ready("/up/memo.m4a")));
+        assert!(strip.busy(), "sent, but its words are still coming");
+        strip.writing(memo, false);
+        assert!(!strip.busy());
+        strip.remove(memo);
+        assert!(!strip.writing(memo, false), "taken off: its words aren't wanted");
     }
 
     #[test]

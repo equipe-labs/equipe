@@ -17,7 +17,7 @@
 //! `dkey:<key>` (a member's questions' card: `1`–`9`, `up`, `down`, `space`, `enter`, `cmd-enter`, `tab`, `left`, `escape`) · `dtype:<words>` (in its box for the person's own words) · `decided` (open the latest decided row) · `dpick:<id>` (a set in 나에게, peeking) · `dview:<n>` (option n's picture of the card on show, big) · `tview:<ticket>,<n>` (a hand-in's nth picture, big; then `press:right`, `press:enter`) · `rview:<n>` (the nth picture the latest reply showing pictures embeds, big) · `tpick:<id>` (a change to the team in 나에게, peeking) · `tyes` / `tno` (approve or decline the oldest change to the team) · `cpick:<id>` (a card to confirm in 나에게, peeking; `cpick` alone: the oldest) · `ctick:<ticket>` (tick or untick a ticket on the oldest card) · `cyes` / `cno` (confirm or decline the oldest card) · `eyes` / `eno` / `eundo` (the engine card: its yes, its no, undo) · `engines:<off|suggest|auto>` (the squad's engine switching) ·
 //! `qopen` · `qtype:<n>,<words>` · `qsay:<n>,<words>` · `qsend` · `qesc` · `qenter` (a reply's list of questions as a form: open it, type in box n — past the items, the one for anything to add — tap a quick answer, send, cancel; ⏎ in the composer) ·
 //! `design[:<overview|colors|type|spacing|radius|shadow|motion|assets|guidelines>]` (디자인 시스템, at a section) · `dsource:<squad|project:name>` (another system) · `ddraft` (its draft, or back) · `dchanges` (what changed, opened or closed) · `dlight:<n>` / `dlight:off` (asset n big) · `dplay:<token>` (a motion token played, as under the pointer) · `dask` (ask the designer for one) · `dtoc:<n>` (the guidelines' nth heading) ·
-//! `mark:<label>` (a line in the log) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `browser` (the browser panel, ⌘⇧B) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `disk` (the 디스크 panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
+//! `mark:<label>` (a line in the log) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `browser` (the browser panel, ⌘⇧B) · `doc:<path>` (a document in the side panel) · `dfold[:open]` (fold it to a rail, or open it again) · `term[:<line>]` (the terminal, with a line typed at its prompt) · `tkeys:<text>` (typed into it, `~` for Enter) · `tmove` (the terminal to the bottom, or back to the right) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: 직접 하기, 돌려주기) · `breveal:<page>` (a page waiting for the person, as 나에게 opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:ㅎ|하|한` (composed, then committed) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` (휴대폰 연결's sheet) · `pair:allow|deny|retry|close` (its buttons) · `disk` (the 디스크 panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 
 use std::time::Duration;
@@ -81,9 +81,15 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
             let started = std::time::Instant::now();
             let timed = verb.clone();
             let _ = cx.update_window(handle, move |_, window, cx| match verb.as_str() {
+                "windows" => eprintln!("windows: {}", cx.windows().len()),
                 "shot" => match window.render_to_image() {
                     Ok(image) => eprintln!("shot {arg}: {:?}", image.save(&arg)),
                     Err(err) => eprintln!("shot failed: {err}"),
+                },
+                // The window opened last (⌘-click), as it looks.
+                "shotlast" => match cx.windows().last().map(|w| w.update(cx, |_, window, _| window.render_to_image())) {
+                    Some(Ok(Ok(image))) => eprintln!("shot {arg}: {:?}", image.save(&arg)),
+                    _ => eprintln!("shot failed"),
                 },
                 "say" | "type" | "memo" => shell.update(cx, |shell, cx| {
                     shell.composer.set_text(&arg, window, cx);
@@ -95,7 +101,7 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     }
                 }),
                 "key" => shell.update(cx, |shell, cx| {
-                    shell.on_approval_key(&arg, false, cx);
+                    shell.on_approval_key(&arg, false, window, cx);
                 }),
                 "esc" => shell.update(cx, |shell, cx| shell.interrupt(cx)),
                 "up" | "down" => shell.update(cx, |shell, cx| {
@@ -148,11 +154,6 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 "board" => shell.update(cx, |shell, cx| shell.show(crate::Screen::Board, cx)),
                 "chat" => shell.update(cx, |shell, cx| shell.show(crate::Screen::Chat, cx)),
                 "folds" => shell.update(cx, |shell, cx| shell.toggle_folds(cx)),
-                "elsewhere" => shell.update(cx, |shell, cx| {
-                    if let Some(fold) = shell.chat.nth_fold(arg.parse().unwrap_or(0)) {
-                        shell.toggle_elsewhere(fold, cx);
-                    }
-                }),
                 "chooser" => shell.update(cx, |shell, cx| shell.open_chooser(window, cx)),
                 "connect" => shell.update(cx, |shell, cx| shell.connect_typed(&arg, window, cx)),
                 "pass" => shell.update(cx, |shell, cx| {
@@ -222,6 +223,52 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 }),
                 "retry" => shell.update(cx, |shell, cx| shell.retry(cx)),
                 // 디자인 시스템: the screen at a section, another system, its draft, what changed, an asset big.
+                // 현황; `overview:<project>` marks that project the HQ here first (no daemon asked).
+                "overview" => shell.update(cx, |shell, cx| {
+                    if !arg.is_empty() {
+                        shell.model.hq = shell.model.projects.iter().find(|p| equipe_core::board::project_name(p) == arg).cloned();
+                        shell.model.order_projects();
+                    }
+                    shell.open_overview(cx);
+                }),
+                // Two routines on this screen alone (no daemon asked), the second off.
+                "rseed" => shell.update(cx, |shell, cx| {
+                    use equipe_core::protocol::routines::{Routine, Schedule};
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                    shell.model.routines = vec![
+                        Routine { id: 1, title: "주간 리포트".into(), prompt: "-".into(), when: Schedule::Weekly { weekday: 1, hour: 9, minute: 0 }, on: true, last_run: Some(now - 6 * 86_400), next_run: Some(now + 86_400) },
+                        Routine { id: 2, title: "의존성 점검".into(), prompt: "-".into(), when: Schedule::Weekly { weekday: 5, hour: 16, minute: 0 }, on: false, last_run: None, next_run: Some(now + 4 * 86_400) },
+                    ];
+                    cx.notify();
+                }),
+                // The routine form: `rnew` blank, `rnew:weekly|deps|morning` from a preset.
+                "rnew" => shell.update(cx, |shell, cx| {
+                    use crate::views::routines::Preset;
+                    let preset = match arg.as_str() {
+                        "weekly" => Some(Preset::WeeklyReport),
+                        "deps" => Some(Preset::Dependencies),
+                        "morning" => Some(Preset::Morning),
+                        _ => None,
+                    };
+                    shell.open_routine(None, preset, window, cx);
+                }),
+                "roadmap" => shell.update(cx, |shell, cx| shell.open_roadmap(cx)),
+                // Two logins on this screen alone (no daemon asked); `lform` opens the form.
+                "lseed" => shell.update(cx, |shell, cx| {
+                    use equipe_core::protocol::vault::{Login, Use};
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                    shell.model.logins = vec![
+                        Login { id: 1, site: "dash.cloudflare.com".into(), url: Some("https://dash.cloudflare.com/login".into()), username: "abel@ironact.net".into(), note: Some("DNS".into()), allowed: vec!["demo/backend".into()], created_at: now, uses: vec![Use { at: now - 3600, squad: "demo".into(), member: "backend".into(), outcome: "signed_in".into() }] },
+                        Login { id: 2, site: "github.com".into(), url: None, username: "abel-ko".into(), note: None, allowed: vec![], created_at: now, uses: vec![Use { at: now - 86_400, squad: "demo".into(), member: "frontend".into(), outcome: "declined".into() }] },
+                    ];
+                    cx.notify();
+                }),
+                "lform" => shell.update(cx, |shell, cx| shell.open_login_form(None, window, cx)),
+                // The sidebar this wide: `sidew:210`.
+                "sidew" => shell.update(cx, |shell, cx| {
+                    shell.board.sidebar_width = arg.parse().unwrap_or(crate::views::sidebar::WIDTH);
+                    cx.notify();
+                }),
                 "design" => shell.update(cx, |shell, cx| {
                     shell.open_design(cx);
                     if let Some(section) = crate::design::Section::parse(&arg) {
@@ -298,6 +345,41 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 // `apick:117,2,yours` picks (done, yours, later, call, unknown),
                 // `anote:117,2,words` opens a note and types in it, `afree:117,words`
                 // types the words to the member, `asend:117` sends it.
+                // `akeys:117,1,talk now` presses each key as the keyboard would — through
+                // every shortcut on the way — into the box `answer:117,1,` focused a frame before.
+                "akeys" => {
+                    let mut parts = arg.splitn(3, ',');
+                    let ticket: u32 = parts.next().and_then(|t| t.parse().ok()).unwrap_or(0);
+                    let n: usize = parts.next().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).saturating_sub(1);
+                    let words = parts.next().unwrap_or_default().to_owned();
+                    for ch in words.chars() {
+                        let key = if ch == ' ' { "space".to_owned() } else { ch.to_string() };
+                        if let Ok(mut stroke) = Keystroke::parse(&key) {
+                            stroke.key_char = Some(ch.to_string());
+                            window.dispatch_keystroke(stroke, cx);
+                        }
+                    }
+                    let typed = shell.read(cx).turn.fields.get(&(ticket, n)).map(|f| f.read(cx).value().to_string()).unwrap_or_default();
+                    eprintln!("akeys typed: {typed:?}");
+                }
+                // `keys:words` presses each key as the keyboard would, into what has the keyboard.
+                "keys" => {
+                    for ch in arg.chars() {
+                        let key = if ch == ' ' { "space".to_owned() } else { ch.to_string() };
+                        if let Ok(mut stroke) = Keystroke::parse(&key) {
+                            stroke.key_char = Some(ch.to_string());
+                            window.dispatch_keystroke(stroke, cx);
+                        }
+                    }
+                }
+                // `afile:117,1,/path/to/file` attaches a file to ask 1's answer of T-117, as a drop on its box does.
+                "afile" => shell.update(cx, |shell, cx| {
+                    let mut parts = arg.splitn(3, ',');
+                    let ticket: u32 = parts.next().and_then(|t| t.parse().ok()).unwrap_or(0);
+                    let n: usize = parts.next().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).saturating_sub(1);
+                    let path = std::path::PathBuf::from(parts.next().unwrap_or_default());
+                    shell.attach_sources_to(crate::views::composer::AttachTo::Turn(ticket, n), vec![crate::attach::Source::File(path)], cx);
+                }),
                 "answer" | "aok" | "atick" | "apick" | "anote" | "afree" | "asend" => shell.update(cx, |shell, cx| {
                     let mut parts = arg.splitn(3, ',');
                     let ticket: u32 = parts.next().and_then(|t| t.parse().ok()).unwrap_or(0);
@@ -335,6 +417,13 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 // A member's pictures big: option n's of the card on show, or a hand-in's nth.
                 "dview" => shell.update(cx, |shell, cx| shell.view_script(None, arg.parse().unwrap_or(1), cx)),
                 "rview" => shell.update(cx, |shell, cx| shell.reply_view_script(arg.parse().unwrap_or(1), cx)),
+                // The big view zoomed to `vzoom:2` at its centre.
+                "vzoom" => shell.update(cx, |shell, cx| {
+                    if let Some(path) = shell.viewer.as_ref().map(|v| v.item().path.clone()) {
+                        shell.viewer_zoom.set(&path, arg.parse().unwrap_or(2.), (0., 0.));
+                        cx.notify();
+                    }
+                }),
                 "tview" => shell.update(cx, |shell, cx| {
                     let (ticket, n) = arg.split_once(',').unwrap_or((arg.as_str(), "1"));
                     shell.view_script(ticket.parse().ok(), n.parse().unwrap_or(1), cx);
@@ -409,6 +498,15 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     eprintln!("qenter: {took:?}");
                 }),
                 "browser" => shell.update(cx, |shell, cx| shell.toggle_browser(window, cx)),
+                "doc" => shell.update(cx, |shell, cx| shell.open_doc(std::path::PathBuf::from(&arg), cx)),
+                "dfold" => shell.update(cx, |shell, cx| shell.fold_doc(arg != "open", cx)),
+                "term" => shell.update(cx, |shell, cx| shell.open_terminal((!arg.is_empty()).then(|| arg.to_owned()), window, cx)),
+                "tmove" => shell.update(cx, |shell, cx| shell.move_terminal(cx)),
+                "tkeys" => shell.update(cx, |shell, _| {
+                    if let Some(ui) = shell.terminal.as_ref() {
+                        ui.term.write(arg.replace('~', "\r"));
+                    }
+                }),
                 "bopen" => {
                     let panel = shell.read(cx).browser.clone();
                     panel.update(cx, |b, cx| b.open_tab(&arg, cx));
@@ -552,13 +650,15 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     window.dispatch_event(moved, cx);
                 }
                 // A click (press and release) at `x,y`.
-                "click" => {
+                // `cmdclick:` and `shiftclick:` the same with ⌘ or ⇧ held (a new tab, a new window).
+                "click" | "cmdclick" | "shiftclick" => {
                     let (x, y) = arg.split_once(',').map(|(x, y)| (x.trim().parse().unwrap_or(0.), y.trim().parse().unwrap_or(0.))).unwrap_or((0f32, 0f32));
                     let at = point(px(x), px(y));
-                    let down = MouseDownEvent { button: MouseButton::Left, position: at, modifiers: Modifiers::default(), click_count: 1, first_mouse: false };
+                    let modifiers = Modifiers { platform: verb == "cmdclick", shift: verb == "shiftclick", ..Default::default() };
+                    let down = MouseDownEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1, first_mouse: false };
                     let down = window.input_from_platform(PlatformInput::MouseDown(down));
                     window.dispatch_event(down, cx);
-                    let up = MouseUpEvent { button: MouseButton::Left, position: at, modifiers: Modifiers::default(), click_count: 1 };
+                    let up = MouseUpEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1 };
                     let up = window.input_from_platform(PlatformInput::MouseUp(up));
                     window.dispatch_event(up, cx);
                 }
@@ -593,9 +693,15 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     match what {
                         "open" => shell.quote_open(window, cx),
                         "copy" => shell.quote_copy(cx),
-                        "type" => shell.quote_type(words, window, cx),
-                        "send" => shell.quote_send(window, cx),
-                        "close" => shell.quote_close(window, cx),
+                        "type" => {
+                            shell.composer.set_text(words, window, cx);
+                            cx.notify();
+                        }
+                        "send" => shell.send(window, cx),
+                        "close" => {
+                            shell.composer.quotes.clear();
+                            cx.notify();
+                        }
                         "jump" => shell.quote_jump_latest(cx),
                         _ => {}
                     }

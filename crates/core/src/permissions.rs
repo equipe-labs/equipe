@@ -155,6 +155,15 @@ pub const APPROVE_TOOL: &str = "approve";
 /// code; in full it runs.
 pub const BROWSER_CODE: &str = "mcp__browser__browser_run_code_unsafe";
 
+/// A tool as the person is asked about it: any profile's browser running code
+/// (`mcp__browser_jhjung__browser_run_code_unsafe`) is the browser's code tool.
+pub fn canonical(tool: &str) -> &str {
+    match tool.strip_prefix("mcp__browser_").and_then(|rest| rest.split_once("__")) {
+        Some((_, "browser_run_code_unsafe")) => BROWSER_CODE,
+        _ => tool,
+    }
+}
+
 pub fn describe(tool: &str, input: &Value) -> (String, Option<String>) {
     describe_in(crate::i18n::Lang::En, tool, input)
 }
@@ -319,6 +328,14 @@ fn host(url: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn code_in_any_profiles_browser_is_asked_about_as_the_browsers_code() {
+        assert_eq!(canonical("mcp__browser_jhjung__browser_run_code_unsafe"), BROWSER_CODE);
+        assert_eq!(canonical(BROWSER_CODE), BROWSER_CODE);
+        assert_eq!(canonical("mcp__browser_jhjung__browser_click"), "mcp__browser_jhjung__browser_click");
+        assert_eq!(canonical("Bash"), "Bash");
+    }
     use serde_json::json;
 
     #[test]
