@@ -9,7 +9,7 @@
 //! the one thing that waits on the person.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -21,7 +21,7 @@ use equipe_core::board::{project_name, ticket_ref, ticket_ref_from};
 use equipe_core::i18n::label;
 use equipe_core::protocol::{Engine, Entry, Estimate, Priority, SessionId, TicketId, TicketStatus};
 
-use super::app::{Agent, AgentState, App, BoardMenu, BoardRule, Divider, Hit, Live, Pane, Section, Side, Spot, TextView, elapsed, needs_way, relative, section_of, status_word, tool_verb};
+use super::app::{Agent, AgentState, App, BoardMenu, Compacted, BoardRule, Divider, Hit, Live, Pane, Section, Side, Spot, TextView, elapsed, needs_way, relative, section_of, status_word, tool_verb};
 use super::markdown;
 use crate::ui;
 use equipe_core::t;
@@ -72,6 +72,8 @@ pub struct Theme {
     light: bool,
     /// The terminal's background colour, when it told us.
     background: Option<(u8, u8, u8)>,
+    /// The person asked for less motion: what would turn stands still.
+    still: bool,
 }
 
 impl Theme {
@@ -83,12 +85,12 @@ impl Theme {
             Some((r, g, b)) => (0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32) / 255.0 > 0.5,
             None => light_background(),
         };
-        Self { color, truecolor, light, background }
+        Self { color, truecolor, light, background, still: reduce_motion() }
     }
 
     #[cfg(test)]
     pub fn plain() -> Self {
-        Self { color: false, truecolor: false, light: false, background: None }
+        Self { color: false, truecolor: false, light: false, background: None, still: false }
     }
 
     /// A faint wash over the background for the person's own messages: white at
@@ -116,6 +118,16 @@ impl Theme {
         let ms = Self::since_start(now);
         let frame = FRAMES[(ms / 120) as usize % FRAMES.len()];
         Span::styled(frame, self.breath(now))
+    }
+
+    /// The mark of a conversation being summarized: a braille dot turning,
+    /// or `…` standing still when the person asked for less motion.
+    fn turning(self, now: Instant) -> &'static str {
+        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        if self.still {
+            return "…";
+        }
+        FRAMES[(Self::since_start(now) / 80) as usize % FRAMES.len()]
     }
 
     /// From dim to the accent and back every two seconds, on a sine — no
@@ -199,6 +211,31 @@ impl Theme {
         }
     }
 
+    /// The design system's `color.work`, `color.ok` and `color.err`
+    /// (`design/tokens/`), as a terminal can show them.
+    fn work(self) -> Style {
+        self.tone((226, 184, 101), (130, 86, 0), [178, 136], Style::new())
+    }
+
+    fn ok(self) -> Style {
+        self.tone((127, 203, 142), (31, 107, 51), [114, 28], self.bold())
+    }
+
+    fn err(self) -> Style {
+        self.tone((238, 123, 116), (173, 46, 39), [210, 124], self.bold())
+    }
+
+    /// One of those: on a dark or a light terminal, the nearest of 256 for
+    /// each without truecolor, `plain` without colour.
+    fn tone(self, dark: (u8, u8, u8), light: (u8, u8, u8), indexed: [u8; 2], plain: Style) -> Style {
+        match (self.color, self.truecolor, self.light) {
+            (true, true, false) => Style::new().fg(Color::Rgb(dark.0, dark.1, dark.2)),
+            (true, true, true) => Style::new().fg(Color::Rgb(light.0, light.1, light.2)),
+            (true, false, light) => Style::new().fg(Color::Indexed(indexed[usize::from(light)])),
+            _ => plain,
+        }
+    }
+
     fn dim(self) -> Style {
         match (self.color, self.truecolor, self.light) {
             (true, true, false) => Style::new().fg(Color::Rgb(124, 126, 133)),
@@ -226,6 +263,20 @@ impl Theme {
     fn markdown(self) -> markdown::Styles {
         markdown::Styles { plain: Style::new(), code: self.code(), dim: self.dim() }
     }
+}
+
+/// Whether the person asked for less motion: `EQUIPE_REDUCE_MOTION=1` (or
+/// `0` to turn it off), else macOS's Accessibility → Display → Reduce motion.
+fn reduce_motion() -> bool {
+    if let Ok(v) = std::env::var("EQUIPE_REDUCE_MOTION") {
+        return !matches!(v.trim(), "" | "0" | "false" | "no");
+    }
+    cfg!(target_os = "macos")
+        && std::process::Command::new("defaults")
+            .args(["read", "com.apple.universalaccess", "reduceMotion"])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "1")
 }
 
 /// Whether the terminal says its background is light (`COLORFGBG`, set by
@@ -434,10 +485,12 @@ fn watch_height(app: &App, agent: &Agent, room: u16) -> u16 {
 /// The conversation pane under its title: the conversation, then — when there
 /// is any — work waiting for the person, then the live row.
 fn conversation_areas(area: Rect, app: &App, agent: &Agent) -> Areas {
+    let compact = compact_rows(agent, Instant::now()) as u16;
     let live = (agent.scroll_back > 0 && agent.unseen > 0)
         || agent.state == AgentState::Working
         || agent.estimate.as_ref().is_some_and(|e| e.live_at.is_some())
-        || ticket_hint(app).is_some();
+        || ticket_hint(app).is_some()
+        || compact > 0;
     let watch = watch_height(app, agent, area.height);
     // With the side list to its left, what waits and where each project
     // stands are there; without it — a narrow terminal — they show here.
@@ -452,7 +505,7 @@ fn conversation_areas(area: Rect, app: &App, agent: &Agent) -> Areas {
         Constraint::Length(u16::from(card > 0)),
         Constraint::Length(card),
         Constraint::Length(u16::from(live)),
-        Constraint::Length(u16::from(live)),
+        Constraint::Length(if compact > 0 { compact } else { u16::from(live) }),
     ])
     .areas(area);
     Areas { watch, overview, text, card, live }
@@ -1479,15 +1532,51 @@ fn member_line(app: &App, agent: &Agent, open: bool, name_width: usize, area: Re
 /// Most subagents shown under a member before the rest are counted.
 const SUBAGENTS_SHOWN: usize = 3;
 
+/// Messages the person sent a member that wait for it: read, or delivered,
+/// once its conversation is summarized.
+fn waiting_messages(agent: &Agent) -> usize {
+    agent.steering.len() + agent.queued.len()
+}
+
+/// How many lines above the prompt its conversation's summary takes at `now`:
+/// the line, and one for messages waiting; or how it ended, while that shows.
+fn compact_rows(agent: &Agent, now: Instant) -> usize {
+    match (agent.compacting, agent.compacted) {
+        (Some(_), _) => 1 + usize::from(waiting_messages(agent) > 0),
+        (None, Some(end)) if end.showing(now) => 1,
+        _ => 0,
+    }
+}
+
+/// Above the prompt, its conversation being summarized — only how long so
+/// far, never a guess at what is left — and the messages waiting on it; then
+/// for a moment that it is done, or until the person speaks, that it failed.
+fn compact_lines(agent: &Agent, theme: Theme, now: Instant) -> Vec<Line<'static>> {
+    if let Some(since) = agent.compacting {
+        let so_far = elapsed(now.saturating_duration_since(since));
+        let mut text = t!("compact.tui.run", elapsed = so_far);
+        // Standing still, the mark is the ellipsis: once is enough.
+        if theme.still {
+            text = text.replacen('…', "", 1);
+        }
+        let mut lines = vec![Line::from(Span::styled(format!("{} {text}", theme.turning(now)), theme.work()))];
+        let waiting = waiting_messages(agent);
+        if waiting > 0 {
+            lines.push(Line::from(Span::styled(t!("compact.tui.queued", count = waiting), theme.dim())));
+        }
+        return lines;
+    }
+    match agent.compacted.filter(|end| end.showing(now)) {
+        Some(Compacted::Done(_)) => vec![Line::from(Span::styled(format!("✓ {}", t!("compact.tui.done")), theme.ok()))],
+        Some(Compacted::Failed) => vec![Line::from(Span::styled(format!("✕ {}", t!("compact.tui.fail")), theme.err()))],
+        None => Vec::new(),
+    }
+}
+
 /// The lines under a member while it works: its conversation being
-/// compacted — how long so far, and a guess at how long it takes, not
-/// progress — then its subagents at work.
+/// summarized, how long so far, then its subagents at work.
 fn working_rows(agent: &Agent) -> Vec<String> {
-    let compacting = agent.compacting.map(|(since, estimate_ms)| {
-        let so_far = crate::tui::app::elapsed(since.elapsed());
-        let usual = crate::tui::app::elapsed(Duration::from_millis(estimate_ms));
-        format!("⟳ {}", t!("view.compacting", elapsed = so_far, usual = usual))
-    });
+    let compacting = agent.compacting.map(|since| format!("⟳ {}", t!("compact.sidebar", elapsed = crate::tui::app::elapsed(since.elapsed()))));
     let mut rows: Vec<String> = compacting.into_iter().collect();
     rows.extend(agent
         .subagents
@@ -2095,7 +2184,11 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &App, theme: Theme, lay
     // At the bottom, when it applies: the live working row, or what arrived
     // while the person was scrolled up.
     let mut footer: Vec<Line<'static>> = Vec::new();
-    if agent.scroll_back > 0 && agent.unseen > 0 {
+    let compacting = compact_lines(agent, theme, Instant::now());
+    if !compacting.is_empty() {
+        // Its conversation being summarized, or how that ended, before all else.
+        footer = compacting;
+    } else if agent.scroll_back > 0 && agent.unseen > 0 {
         footer.push(Line::from(vec![
             Span::styled(t!("view.new_lines", count = agent.unseen), theme.accent()),
             Span::styled(" · End", theme.dim()),
@@ -3710,7 +3803,7 @@ mod tests {
         let reply = "In /Users/abel/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images/ for T-2/T-3.\n\n\
                      Run `T-8 check`, see [the shots](outputs/T-9/a.png), https://x.y/?t=T-9 or (T-9).";
         app.on_event(Event::TextDelta { session: id, text: reply.into() });
-        let theme = Theme { color: true, truecolor: true, light: false, background: None };
+        let theme = Theme { color: true, truecolor: true, light: false, background: None, still: false };
         let laid = extent(&app, theme, Rect::new(0, 0, 160, 30), &Layouts::default());
         let shot = screen(&app, 160, 30);
         let row = |words: &str| shot.lines().position(|l| l.contains(words)).unwrap_or_else(|| panic!("{shot}")) as u16;
@@ -4150,18 +4243,72 @@ mod tests {
     }
 
     #[test]
-    fn a_member_summarizing_its_conversation_says_so_under_it() {
+    fn a_member_summarizing_its_conversation_says_so_above_the_prompt() {
         let (mut app, pm) = working();
         app.on_event(Event::Compacting { session: pm, member: Some("pm".into()), project: None, trigger: CompactTrigger::Auto, started_at: 0, estimate_ms: 95_000 });
         app.squad_width = Some(70);
+        // Under way: how long so far, never the guess at how long it takes.
         let shot = screen(&app, 140, 30);
-        assert!(shot.contains("⟳ Summarizing its conversation · 0s · usually about 1m 35s"), "{shot}");
+        assert!(shot.contains("Summarizing… 0s"), "{shot}");
+        assert!(shot.contains("⟳ Summarizing · 0s"), "and under the member: {shot}");
+        assert!(!shot.contains("1m 35s") && !shot.contains("usually"), "{shot}");
+        let prompt = shot.lines().position(|l| l.contains("› Message pm")).unwrap();
+        let line = shot.lines().position(|l| l.contains("Summarizing…")).unwrap();
+        assert!(line < prompt && prompt - line <= 2, "just above the prompt: {shot}");
+        assert!(!shot.contains("esc to stop"), "it stands for the working line: {shot}");
+
+        // What the person says meanwhile waits for it.
+        app.on_event(Event::SteerQueued { session: pm, text: "and the footer".into(), project: None });
+        assert!(screen(&app, 140, 30).contains("1 message will be sent when it's done"));
+        app.on_event(Event::SteerQueued { session: pm, text: "the header too".into(), project: None });
+        let shot = screen(&app, 140, 30);
+        assert!(shot.contains("2 messages will be sent when it's done"), "{shot}");
+        let queued = shot.lines().position(|l| l.contains("2 messages")).unwrap();
+        assert_eq!(shot.lines().position(|l| l.contains("Summarizing…")), Some(queued - 1), "{shot}");
+
+        // Done: said for a moment, then the working line again.
         app.on_event(Event::Compacted { session: pm, member: None, project: None, trigger: CompactTrigger::Auto, took_ms: 1 });
-        assert!(!screen(&app, 140, 30).contains("Summarizing"));
-        // Another one, cut short by the turn's end.
+        let shot = screen(&app, 140, 30);
+        assert!(shot.contains("✓ Summarized. You can keep chatting"), "{shot}");
+        assert!(!shot.contains("Summarizing") && !shot.contains("will be sent"), "{shot}");
+        assert!(app.ticking());
+        app.agents[0].compacted = Instant::now().checked_sub(crate::tui::app::COMPACTED_SHOWN).map(Compacted::Done);
+        let shot = screen(&app, 140, 30);
+        assert!(!shot.contains("Summarized"), "gone after a moment: {shot}");
+        assert!(shot.contains("esc to stop"), "{shot}");
+    }
+
+    #[test]
+    fn a_failed_summary_stays_until_the_person_speaks() {
+        let (mut app, pm) = working();
         app.on_event(Event::Compacting { session: pm, member: None, project: None, trigger: CompactTrigger::Manual, started_at: 0, estimate_ms: 2_000 });
-        app.on_event(Event::TurnEnded { session: pm, outcome: TurnOutcome::Completed, usage: None });
-        assert!(!screen(&app, 140, 30).contains("Summarizing"), "the turn's end takes it");
+        // The turn cut short: the daemon says it failed, then that the turn ended.
+        app.on_event(Event::CompactFailed { session: pm, member: None, project: None, trigger: CompactTrigger::Manual, message: "stopped".into() });
+        app.on_event(Event::TurnEnded { session: pm, outcome: TurnOutcome::Interrupted, usage: None });
+        let fail = "✕ Couldn't summarize. The conversation is unchanged · retry with /compact";
+        assert!(screen(&app, 140, 30).contains(fail));
+        app.agents[0].compacted = Some(Compacted::Failed);
+        assert!(screen(&app, 140, 30).contains(fail), "it doesn't go by itself");
+        assert!(!app.ticking(), "nothing to count: no redraws for it");
+        app.on_event(Event::UserMessage { session: pm, text: "go on".into() });
+        assert!(!screen(&app, 140, 30).contains("Couldn't summarize"), "the person's next message takes it");
+    }
+
+    #[test]
+    fn less_motion_stills_the_summary_mark() {
+        let (mut app, pm) = working();
+        app.on_event(Event::Compacting { session: pm, member: None, project: None, trigger: CompactTrigger::Auto, started_at: 0, estimate_ms: 2_000 });
+        let agent = &app.agents[0];
+        let start = Instant::now();
+        let turning = Theme::plain();
+        let marks: Vec<String> = [0, 80, 160].iter().map(|ms| compact_lines(agent, turning, start + std::time::Duration::from_millis(*ms))[0].spans[0].content.to_string()).collect();
+        assert!(marks[0].starts_with(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']), "{marks:?}");
+        assert!(marks[0] != marks[1] || marks[1] != marks[2], "it turns: {marks:?}");
+        let still = Theme { still: true, ..Theme::plain() };
+        let line = |ms: u64| compact_lines(agent, still, start + std::time::Duration::from_millis(ms))[0].spans[0].content.to_string();
+        assert_eq!(line(0), line(80));
+        assert!(line(0).starts_with("… Summarizing "), "{}", line(0));
+        assert_eq!(line(0).matches('…').count(), 1, "{}", line(0));
     }
 
     #[test]
@@ -4242,7 +4389,7 @@ mod tests {
     #[test]
     fn the_persons_messages_sit_on_a_wash_of_the_terminals_background() {
         let (app, _) = working();
-        let theme = Theme { color: true, truecolor: true, light: false, background: Some((20, 20, 24)) };
+        let theme = Theme { color: true, truecolor: true, light: false, background: Some((20, 20, 24)), still: false };
         let mut terminal = Terminal::new(TestBackend::new(100, 22)).unwrap();
         terminal.draw(|f| render(f, &app, theme, &Layouts::default())).unwrap();
         let buffer = terminal.backend().buffer();
@@ -4266,13 +4413,13 @@ mod tests {
         // Anyone else is told apart from the built-in roles, and keeps theirs.
         assert!(look("writer", "writer").1 >= 6);
         assert_eq!(look("writer", "writer"), look("writer", "writer"));
-        let theme = Theme { color: true, truecolor: true, light: false, background: None };
+        let theme = Theme { color: true, truecolor: true, light: false, background: None, still: false };
         assert_ne!(theme.member(0), theme.member(2));
     }
 
     #[test]
     fn the_working_mark_turns_breathes_and_shimmers() {
-        let theme = Theme { color: true, truecolor: true, light: false, background: None };
+        let theme = Theme { color: true, truecolor: true, light: false, background: None, still: false };
         let start = Instant::now();
         let _ = Theme::since_start(start);
         let at = |ms: u64| start + std::time::Duration::from_millis(ms);

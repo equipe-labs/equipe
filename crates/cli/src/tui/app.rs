@@ -329,9 +329,11 @@ pub struct Agent {
     /// Subagents it handed work to this turn and that haven't handed back:
     /// id, what, and their latest step.
     pub subagents: Vec<(String, String, Option<String>)>,
-    /// Its conversation being compacted: since when, and how long the last
-    /// ones took (a guess, not progress).
-    pub compacting: Option<(Instant, u64)>,
+    /// Its conversation being compacted, since when. Only how long so far
+    /// shows: the event's estimate is a guess, not progress.
+    pub compacting: Option<Instant>,
+    /// How its last compaction ended, while that still shows.
+    pub compacted: Option<Compacted>,
     /// Shown as the work on this ticket only — the ticket open on the right.
     pub showing: Option<TicketId>,
     /// A guess at what the person says next to it, after it answered them.
@@ -379,6 +381,7 @@ impl Agent {
             thread_view: None,
             subagents: Vec::new(),
             compacting: None,
+            compacted: None,
             suggestion: None,
             showing: None,
             steering: Vec::new(),
@@ -497,8 +500,9 @@ impl Agent {
             // Begun before this screen attached: its clock from when it began, as far as this one's can tell.
             compacting: info.compacting.map(|c| {
                 let ago = Duration::from_millis(now_ms().saturating_sub(c.started_at));
-                (Instant::now().checked_sub(ago).unwrap_or_else(Instant::now), c.estimate_ms)
+                Instant::now().checked_sub(ago).unwrap_or_else(Instant::now)
             }),
+            compacted: None,
             suggestion: None,
             showing: None,
             steering_in: if info.steering_in.len() == info.steering.len() { info.steering_in } else { vec![None; info.steering.len()] },
@@ -609,6 +613,28 @@ impl Agent {
                 let at = clock_time();
                 self.transcript.push_local(Entry::Note { text: t!("app.worked", took = elapsed(took), at = at) });
             }
+        }
+    }
+}
+
+/// How a member's conversation compaction ended, shown above the prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compacted {
+    /// Done, at this moment: says so for [`COMPACTED_SHOWN`], then goes.
+    Done(Instant),
+    /// It failed: stays until the person says something to it next.
+    Failed,
+}
+
+/// How long "summarized" stays above the prompt.
+pub const COMPACTED_SHOWN: Duration = Duration::from_secs(4);
+
+impl Compacted {
+    /// Still to be shown at `now`.
+    pub fn showing(self, now: Instant) -> bool {
+        match self {
+            Compacted::Done(at) => now.saturating_duration_since(at) < COMPACTED_SHOWN,
+            Compacted::Failed => true,
         }
     }
 }
@@ -1195,6 +1221,15 @@ impl App {
 
     pub fn working(&self) -> usize {
         self.agents.iter().filter(|a| a.state == AgentState::Working).count()
+    }
+
+    /// Something on screen moves or counts by itself: someone at work, a
+    /// conversation being summarized, or "summarized" about to go.
+    pub fn ticking(&self) -> bool {
+        let now = Instant::now();
+        self.agents.iter().chain(self.lanes.iter()).any(|a| {
+            a.state == AgentState::Working || a.compacting.is_some() || a.compacted.is_some_and(|c| matches!(c, Compacted::Done(_)) && c.showing(now))
+        })
     }
 
     /// A member's conversation grew by `lines`. Someone scrolled up to read keeps
@@ -1827,6 +1862,7 @@ impl App {
             Event::UserMessage { .. } => {
                 // Typed on another screen, perhaps: either way it is busy now.
                 agent.start_working();
+                agent.compacted = None;
                 agent.suggestion = None;
                 agent.scroll_back = 0;
                 agent.unseen = 0;
@@ -1835,6 +1871,7 @@ impl App {
                 agent.deliver_memos();
             }
             Event::SteerQueued { text, project, .. } => {
+                agent.compacted = agent.compacted.filter(|c| *c != Compacted::Failed);
                 agent.steering.push(text);
                 agent.steering_in.push(project);
             }
@@ -1870,6 +1907,7 @@ impl App {
                 }
             }
             Event::MessageQueued { text, project, .. } => {
+                agent.compacted = agent.compacted.filter(|c| *c != Compacted::Failed);
                 agent.suggestion = None;
                 agent.queued.push(text);
                 agent.queued_in.push(project);
@@ -1897,8 +1935,19 @@ impl App {
                 }
             }
             Event::SubagentEnded { id, .. } => agent.subagents.retain(|s| s.0 != id),
-            Event::Compacting { estimate_ms, .. } => agent.compacting = Some((Instant::now(), estimate_ms)),
-            Event::Compacted { .. } | Event::CompactFailed { .. } => agent.compacting = None,
+            Event::Compacting { .. } => {
+                agent.compacting = Some(Instant::now());
+                agent.compacted = None;
+            }
+            // Said above the prompt: done for a moment, failed until the person speaks.
+            Event::Compacted { .. } => {
+                agent.compacting = None;
+                agent.compacted = Some(Compacted::Done(Instant::now()));
+            }
+            Event::CompactFailed { .. } => {
+                agent.compacting = None;
+                agent.compacted = Some(Compacted::Failed);
+            }
             Event::TurnEnded { usage, .. } => {
                 agent.subagents.clear();
                 agent.compacting = None;
