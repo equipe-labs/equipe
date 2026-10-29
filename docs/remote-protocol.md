@@ -385,13 +385,29 @@ Each session's events (`params` carry `session`) make its conversation. Besides 
 - `nothing_changed` `{ "session" }` — an editing session closed without changes; no branch kept.
 - `error` `{ "session"?, "message", "next"? }` — `next` is the command that fixes it, when
   there is one.
+- `compacting` `{ "session", "member"?, "project"?, "trigger", "started_at", "estimate_ms" }` —
+  the member's conversation is being compacted (summarized to make room): by its engine
+  mid-turn, or by equipe as a desk conversation starts afresh. `trigger` is `auto` (the
+  engine's context nearly full, or equipe's desk conversation full or cold) or `manual` (the
+  person's `/compact`). `started_at` is unix milliseconds. `estimate_ms` is how long the last
+  compactions of the same engine and model took (the longest of the last five; two minutes
+  before there are any) — **a guess, not progress**: a screen may show time spent against it,
+  never a percentage. `project` absent: the whole squad's conversation.
+- `compacted` `{ "session", "member"?, "project"?, "trigger", "took_ms" }` — done; the member
+  works on.
+- `compact_failed` `{ "session", "member"?, "project"?, "trigger", "message" }` — it failed, or
+  its turn ended first (then just before `turn_ended`).
+  What the person sends meanwhile is handled as at any moment of a turn (`steer_queued`, read
+  after the compaction, or a memo after the turn): nothing is lost.
 
 The snapshot's sessions carry `recent`, the latest lines oldest first, each `{ "kind", … }`:
 `user` / `reply` `{ "text" }`, `tool` `{ "tool", "target", "outcome"? }`, `note` `{ "text" }`,
 `error` `{ "message", "next" }`, `landed` `{ "branch", "stat" }` and `thread` `{ "project" }`
 (lines before any `thread` are about the whole squad). Beside `queued` (memos, and `queued_in`:
 the project each was left about), `steering` lists the steers not read yet, and `steering_in`
-the project each was said about (`null`: the whole squad; absent when there are none).
+the project each was said about (`null`: the whole squad; absent when there are none). A
+session whose conversation is being compacted carries `compacting`
+`{ "trigger", "started_at", "estimate_ms" }` (absent otherwise), for a screen attaching meanwhile.
 
 **Folding.** Events become lines the way `crates/protocol/src/transcript.rs` folds them, the
 same in the journal, the snapshot and every screen, so a screen that attaches later sees what a
@@ -401,7 +417,8 @@ screen that watched saw:
 - A reply is closed by the next line, by `turn_ended`, `work_ended` or `session_closed`.
   Events that make no line and may come mid-sentence — `steer_queued`, `message_queued`,
   `queue_sent`, `memo_withdrawn`, `thinking`, `tool_result`, `output` (a token count),
-  `model_known`, `subagent_*`, `estimated`, `suggestion`, `browser_frame` — leave it open: a steer sent while the member writes
+  `model_known`, `subagent_*`, `compacting`, `compacted`, `compact_failed`, `estimated`,
+  `suggestion`, `browser_frame` — leave it open: a steer sent while the member writes
   doesn't cut its answer; where it is read (`steered`) the reply so far ends and the steer
   follows it.
 - Lines: `user_message` and `steered` → `user`; `notice` → `note`; `thread` → `thread`;

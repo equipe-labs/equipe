@@ -3,13 +3,17 @@
 //! changes; members told when it gets critical, and new build work held back
 //! until there's room again. A write that fails for want of room — a journal's,
 //! a member's build — counts as full at once. What uses the space is looked at
-//! when a screen asks, and given back only on the person's click.
+//! when a screen asks, and given back on the person's click — but for the
+//! build caches no build needs between builds, trimmed as soon as the disk is
+//! short ([`crate::disk::trim_builds`]).
 
 use super::*;
 use crate::disk::{self, DiskCleaned, DiskLevel, DiskReport, DiskStatus};
 
 /// How long a write that failed for want of room keeps the disk full, whatever a look says.
 const NO_ROOM_HOLD: Duration = Duration::from_secs(5 * 60);
+/// The build caches are trimmed on a short disk at most this often.
+const TRIM_EVERY: Duration = Duration::from_secs(10 * 60);
 
 /// What the daemon knows of its disk.
 #[derive(Default)]
@@ -26,6 +30,9 @@ pub(super) struct DiskWatch {
     pub publish: bool,
     /// A clean under way.
     pub cleaning: bool,
+    /// A trim of the build caches under way, and when the last began.
+    pub trimming: bool,
+    pub trimmed: Option<std::time::Instant>,
     /// Members whose build failed for want of room, told once until there's room again.
     pub failed: std::collections::HashSet<SessionId>,
 }
@@ -81,6 +88,35 @@ impl Runtime {
         self.disk.status = DiskStatus { container_free: None, ..status };
         if self.disk.status.level != before {
             self.disk_level_changed(before);
+        }
+        self.trim_if_short();
+    }
+
+    /// Short of room: what no build needs between builds goes at once, off the
+    /// loop — members' incremental caches, and when nearly full their build
+    /// folders untouched for days; each only while cargo isn't building there.
+    /// Rebuilt when wanted, so nobody is asked; logged.
+    fn trim_if_short(&mut self) {
+        let level = self.disk.status.level;
+        if !level.is_warning() || self.disk.trimming || self.disk.trimmed.is_some_and(|at| at.elapsed() < TRIM_EVERY) {
+            return;
+        }
+        (self.disk.trimming, self.disk.trimmed) = (true, Some(std::time::Instant::now()));
+        let (home, internal, deeper) = (self.config.home.clone(), self.internal.clone(), level.holds_builds());
+        tokio::task::spawn_blocking(move || {
+            let (freed, lines) = disk::trim_builds(&home, deeper);
+            let _ = internal.send(Internal::DiskTrimmed(freed, lines));
+        });
+    }
+
+    pub(super) fn on_disk_trimmed(&mut self, freed: u64, lines: Vec<String>) {
+        self.disk.trimming = false;
+        for line in &lines {
+            crate::daemon_log!("equipe: the disk is short: gave back {line}");
+        }
+        if freed > 0 {
+            crate::daemon_log!("equipe: the disk is short: {} of build caches given back", disk::size(freed));
+            self.look_at_disk();
         }
     }
 
@@ -297,7 +333,15 @@ impl Runtime {
             }
         };
         let (home, prefix) = (self.config.home.clone(), format!("t{}-", ticket.id));
+        // Another squad's open ticket of the same number may own a bare `T<id>` simulator.
+        let shared = self.journals.keys().filter(|s| s.as_str() != squad).cloned().collect::<Vec<_>>().iter().any(|other| {
+            self.journal(other).and_then(|j| j.tickets().ok()).is_some_and(|ts| ts.iter().any(|t| t.id == ticket.id && !matches!(t.status, TicketStatus::Done | TicketStatus::Cancelled)))
+        });
+        let (id, owner) = (ticket.id, squad.to_owned());
         tokio::task::spawn_blocking(move || {
+            for line in disk::clear_simulators(id, &owner, shared) {
+                crate::daemon_log!("equipe: {line} (its ticket is done with)");
+            }
             let dir = home.join("worktrees").join(folder);
             for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
                 if entry.file_name().to_string_lossy().starts_with(&prefix) {

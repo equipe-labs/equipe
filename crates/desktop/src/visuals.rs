@@ -300,6 +300,24 @@ pub fn grid(width: f32, n: usize) -> Grid {
     Grid { rows: balance(n, fit), tile: tile_width(width, fit) }
 }
 
+/// [`grid`], with every tile short enough that a whole row — its picture and
+/// its caption — fits `room` points high: where the card is short, smaller
+/// tiles (more to a row) rather than captions cut off under the box below.
+/// Never narrower than [`TILE_SHRUNK`].
+pub fn grid_within(width: f32, n: usize, described: bool, room: f32) -> Grid {
+    let grid = grid(width, n);
+    if tile_height(grid.tile, described) <= room {
+        return grid;
+    }
+    let fixed = tile_height(0., described);
+    let tile = ((room - fixed) / RATIO).floor().max(TILE_SHRUNK).min(grid.tile);
+    let per = per_row(width, tile).min(n.max(1));
+    Grid { rows: balance(n, per), tile }
+}
+
+/// The narrowest a tile gets to fit a short card.
+pub const TILE_SHRUNK: f32 = 120.;
+
 /// `n` tiles in rows of at most `per`, as even as they come: the fuller rows first.
 pub fn balance(n: usize, per: usize) -> Vec<usize> {
     if n == 0 {
@@ -447,7 +465,7 @@ pub fn all_failed(looks: &[Option<&Look>]) -> Option<ImageWhy> {
         }
     }
     let count = |w: ImageWhy| whys.iter().filter(|x| **x == w).count();
-    [ImageWhy::Missing, ImageWhy::TooBig, ImageWhy::Unreadable].into_iter().max_by_key(|w| count(*w))
+    [ImageWhy::Missing, ImageWhy::TooBig, ImageWhy::Outside, ImageWhy::Unreadable].into_iter().max_by_key(|w| count(*w))
 }
 
 /// The words members mark the option they recommend with, in the languages
@@ -493,6 +511,58 @@ pub struct Item {
     pub choice: Option<usize>,
     /// What it is called: the option's label, or the file's name.
     pub label: String,
+}
+
+/// How far the big view is zoomed in on its picture, and where: 1 is the
+/// picture whole in the window; past it, `pan` moves it (px, from centred).
+/// Kept for one picture: another shown starts whole again.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Zoom {
+    pub path: String,
+    pub scale: f32,
+    pub pan: (f32, f32),
+    pub drag: Option<Drag>,
+}
+
+/// A drag under way: where it was pressed, the pan then, and whether it moved.
+pub type Drag = ((f32, f32), (f32, f32), bool);
+
+/// The steps `+` and `−` go through.
+pub const ZOOMS: [f32; 8] = [1., 1.5, 2., 3., 4., 6., 8., 12.];
+
+impl Zoom {
+    /// Its scale for `path`: 1 for a picture it wasn't zoomed on.
+    pub fn of(&self, path: &str) -> (f32, (f32, f32)) {
+        if self.path == path && self.scale > 0. { (self.scale, self.pan) } else { (1., (0., 0.)) }
+    }
+
+    /// To `scale` on `path`, keeping the point `at` (px from the view's
+    /// centre) where it is — the pointer's, or the centre's.
+    pub fn set(&mut self, path: &str, scale: f32, at: (f32, f32)) {
+        let (old, pan) = self.of(path);
+        let scale = scale.clamp(ZOOMS[0], ZOOMS[ZOOMS.len() - 1]);
+        let k = scale / old;
+        self.path = path.to_owned();
+        self.scale = scale;
+        self.pan = if scale <= 1. { (0., 0.) } else { (at.0 - (at.0 - pan.0) * k, at.1 - (at.1 - pan.1) * k) };
+    }
+
+    /// One step in or out.
+    pub fn step(&mut self, path: &str, inward: bool, at: (f32, f32)) {
+        let (now, _) = self.of(path);
+        let next = if inward { ZOOMS.iter().copied().find(|z| *z > now + 0.01) } else { ZOOMS.iter().rev().copied().find(|z| *z < now - 0.01) };
+        if let Some(next) = next {
+            self.set(path, next, at);
+        }
+    }
+
+    /// Kept so the picture (`fit` at scale 1) still covers the view (`room`)
+    /// where it is bigger, and stays centred where it isn't.
+    pub fn clamp(&mut self, fit: (f32, f32), room: (f32, f32)) {
+        let reach = |side: f32, room: f32| ((side * self.scale - room) / 2.).max(0.);
+        let (x, y) = (reach(fit.0, room.0), reach(fit.1, room.1));
+        self.pan = (self.pan.0.clamp(-x, x), self.pan.1.clamp(-y, y));
+    }
 }
 
 /// Pictures shown big over the window, one at a time; ←/→ go through them.
@@ -562,6 +632,49 @@ impl Viewer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_short_card_shows_a_whole_row_of_smaller_tiles_rather_than_cut_captions() {
+        let roomy = grid_within(900., 2, true, 2000.);
+        assert_eq!(roomy, grid(900., 2), "room enough: as before");
+        let short = grid_within(900., 2, true, 260.);
+        assert!(tile_height(short.tile, true) <= 260., "{short:?}");
+        assert!(short.tile < roomy.tile && short.rows == vec![2], "{short:?}");
+        // Never smaller than a tile can be read at.
+        assert_eq!(grid_within(900., 3, true, 40.).tile, TILE_SHRUNK);
+    }
+
+    #[test]
+    fn the_big_view_zooms_in_steps_toward_the_pointer_and_never_off_the_picture() {
+        let mut z = Zoom::default();
+        assert_eq!(z.of("a.png"), (1., (0., 0.)), "whole to start");
+        // In a step at the centre: no pan.
+        z.step("a.png", true, (0., 0.));
+        assert_eq!(z.of("a.png"), (1.5, (0., 0.)));
+        // At a point right of centre: that point stays under the pointer.
+        z.set("a.png", 3., (100., 0.));
+        let (scale, pan) = z.of("a.png");
+        assert_eq!(scale, 3.);
+        assert!((pan.0 - -100.).abs() < 0.01, "{pan:?}: the picture moves left by what grew past the pointer");
+        // Kept to the picture: an 800-wide fit at 3× in a 1000 room reaches 700 each way.
+        z.pan = (-5000., 40.);
+        z.clamp((800., 400.), (1000., 600.));
+        assert_eq!(z.pan, (-700., 40.));
+        // A side that still fits stays centred.
+        z.set("a.png", 1.5, (0., 0.));
+        z.pan = (0., 90.);
+        z.clamp((800., 400.), (1000., 600.));
+        assert_eq!(z.pan.1, 0.);
+        // Out to whole: centred again; and never past the ends.
+        z.set("a.png", 0.2, (300., 300.));
+        assert_eq!(z.of("a.png"), (1., (0., 0.)));
+        z.step("a.png", false, (0., 0.));
+        assert_eq!(z.of("a.png").0, 1.);
+        z.set("a.png", 99., (0., 0.));
+        assert_eq!(z.of("a.png").0, 12.);
+        // Another picture starts whole.
+        assert_eq!(z.of("b.png"), (1., (0., 0.)));
+    }
     use equipe_core::protocol::decide::Choice;
 
     fn shot(bytes: usize) -> Look {

@@ -1,11 +1,11 @@
 //! Asking about words in the conversation, as Claude's apps do: select a
-//! stretch of a reply (a call's output, a message of your own) and, a beat
-//! after the button lets go, a small bar floats under the selection's end —
-//! "인용해서 묻기" and "복사". Asking (a click, ⏎, ⌘⇧R) opens a box just
-//! above the selection: the quote on top (its first two lines, quiet, a bar
-//! at its left), a box that grows for the question, its send at the corner.
-//! ⏎ or ⌘⏎ sends — a message to the member on screen, as the composer sends
-//! one, the quote first as a Markdown blockquote — and Esc puts it away.
+//! stretch of a reply (a call's output, a message of your own) and, the
+//! moment the button lets go, a small bar floats over the selection —
+//! "Ask about this" and "Copy". Asking (a click, ⏎, ⌘⇧R) quotes the words
+//! into the composer, over its box, and puts the keys there: the person
+//! writes the question as any message — their draft and attachments kept,
+//! several quotes at once — and it goes with the quotes first, a Markdown
+//! blockquote each.
 //!
 //! The person's message shows the quote above their words (`in_bubble`); a
 //! click on it goes back to the words quoted and flashes them, if they are
@@ -13,48 +13,38 @@
 //! finding the words, where things float — are `crate::quote`'s.
 
 use std::cell::Cell;
-use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use equipe_core::protocol::SessionId;
 use equipe_core::t;
-use gpui_kit::base::{ElementExt as _, TextSelection};
+use gpui_kit::base::TextSelection;
 use gpui_kit::base::text::RangeHighlight;
-use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::*;
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::decide::Took;
-use crate::compose::EnterGuard;
 use crate::icons::{Icon, icon};
 use crate::motion;
 use crate::quote::{self as rules, Rect};
-use crate::theme::{ICON_SM, META, Palette, R_LG, R_MD, R_SM, SMALL};
+use crate::theme::{Palette, R_MD, R_SM, SMALL};
 use crate::tips::tip;
 use crate::{Screen, Shell};
 
-/// How long after the button lets go the bar shows: a drag that goes on
-/// doesn't make it flicker.
-const SETTLE: Duration = Duration::from_millis(150);
-/// Looked at again this often, this many times, while the selection ends.
-const SETTLE_AGAIN: Duration = Duration::from_millis(60);
-const SETTLE_TRIES: usize = 6;
+/// Looked at again this often, this many times, while the selection ends
+/// (it is first looked at as soon as the release has been handled).
+const SETTLE_AGAIN: Duration = Duration::from_millis(16);
+const SETTLE_TRIES: usize = 12;
 /// The quoted words flash this long, strongly, then fade out over `FADE`.
 const FLASH: Duration = Duration::from_millis(900);
 const FADE: Duration = Duration::from_millis(500);
 /// The bar's size, for keeping it inside the window.
-const BAR: (f32, f32) = (196., 30.);
-/// The box's height before it is laid out, for whether it fits above.
-const BOX_HEIGHT: f32 = 132.;
+const BAR: (f32, f32) = (236., 30.);
 
 #[derive(Default)]
 pub struct QuoteUi {
     /// The words selected in the conversation, offered to quote.
     pub offer: Option<Offer>,
-    /// The box open on a quote.
-    pub ask: Option<Ask>,
-    /// The row whose words are lit (the box's quote, or a flash), to unlight.
+    /// The row whose words are lit (a flash), to unlight.
     lit: Option<usize>,
     /// A press began in the conversation: its release, wherever it lands
     /// (on the composer, a card, outside the window), offers what it selected.
@@ -72,18 +62,6 @@ pub struct Offer {
     /// say where its ends are (a word picked by a double click).
     released: Rect,
     copied: bool,
-}
-
-pub struct Ask {
-    session: SessionId,
-    quote: String,
-    input: Entity<TextareaState>,
-    start: Rect,
-    end: Rect,
-    /// The box's height as last laid out.
-    height: Rc<Cell<f32>>,
-    guard: EnterGuard,
-    _subscriptions: Vec<Subscription>,
 }
 
 /// The selection's ends, in the window's points.
@@ -105,20 +83,21 @@ impl Shell {
     /// The button let go over the conversation: a beat later, words selected
     /// there are offered to quote.
     pub fn quote_pointer_up(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
-        if !std::mem::take(&mut self.quote.pressed) || self.quote.ask.is_some() {
+        if !std::mem::take(&mut self.quote.pressed) {
             return;
         }
         let released = Rect { x: f32::from(at.x), y: f32::from(at.y), w: 1., h: 1. };
         self.quote._settle = Some(cx.spawn_in(window, async move |this, cx| {
-            cx.background_executor().timer(SETTLE).await;
-            // The selection may still be ending (a slow frame): look again a
-            // few times rather than give up on the first.
-            for _ in 0..SETTLE_TRIES {
+            // At once, once the release has been handled; the selection may
+            // still be ending (a slow frame): look again a few times, a frame apart.
+            for n in 0..SETTLE_TRIES {
+                if n > 0 {
+                    cx.background_executor().timer(SETTLE_AGAIN).await;
+                }
                 let Ok(settled) = this.update_in(cx, |shell, window, cx| shell.quote_offer(released, window, cx)) else { return };
                 if settled {
                     return;
                 }
-                cx.background_executor().timer(SETTLE_AGAIN).await;
             }
         }));
     }
@@ -147,7 +126,7 @@ impl Shell {
 
     /// The offer, while its selection still shows in the conversation on screen.
     fn live_offer(&self, window: &Window, cx: &App) -> Option<&Offer> {
-        let offer = self.quote.offer.as_ref().filter(|o| self.screen == Screen::Chat && Some(o.session) == self.model.viewed() && self.quote.ask.is_none())?;
+        let offer = self.quote.offer.as_ref().filter(|o| self.screen == Screen::Chat && Some(o.session) == self.model.viewed())?;
         // Copied, it stays a moment to say so.
         if !offer.copied {
             // Where the selection is drawn now; where the button let go when
@@ -173,68 +152,15 @@ impl Shell {
         cx.notify();
     }
 
-    /// "인용해서 묻기" (or ⏎, ⌘⇧R): the box opens above the selection, the
-    /// keys in its question.
+    /// "Ask about this" (or ⏎, ⌘⇧R): the words quoted into the composer,
+    /// over its box, and the keys there — the person's draft as it was.
     pub fn quote_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(offer) = self.quote.offer.take() else { return };
-        let Some((start, end)) = offer.ends.get() else { return };
-        let who = self.model.selected_member().map(|m| m.name.clone()).unwrap_or_default();
-        let input = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 6).submit_on_enter(false).placeholder(t!("quote.placeholder", name = who)));
-        let mut subscriptions = vec![cx.subscribe_in(&input, window, |_: &mut Shell, _, event: &InputEvent, _, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify();
-            }
-        })];
-        subscriptions.push(cx.observe_in(&input, window, |shell: &mut Shell, input, window, cx| {
-            let composing = input.update(cx, |s, cx| gpui_kit::EntityInputHandler::marked_text_range(s, window, cx).is_some());
-            if let Some(ask) = shell.quote.ask.as_mut() {
-                ask.guard.observe(composing, Instant::now());
-            }
-        }));
-        input.update(cx, |s, cx| s.focus(window, cx));
-        let quote = offer.text;
-        let lit = self.quote_light(&quote, None, false, cx);
-        self.quote.lit = lit;
-        self.quote.ask = Some(Ask { session: offer.session, quote, input, start, end, height: Rc::new(Cell::new(BOX_HEIGHT)), guard: EnterGuard::default(), _subscriptions: subscriptions });
-        cx.notify();
-    }
-
-    /// Esc, or a click away: the box goes, the keys back to the composer.
-    pub fn quote_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.quote.ask.take().is_none() {
-            return;
+        if !self.composer.quotes.contains(&offer.text) {
+            self.composer.quotes.push(offer.text);
         }
-        self.quote_unlight(cx);
-        self.composer.focus(window, cx);
-        cx.notify();
-    }
-
-    /// ⏎ or the send button: the quote and the question, to the member on
-    /// screen, as the composer sends a message.
-    pub fn quote_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(ask) = self.quote.ask.as_mut() else { return };
-        if !ask.guard.allows_send(Instant::now()) {
-            return;
-        }
-        let (question, session) = (ask.input.read(cx).value().to_string(), ask.session);
-        let text = rules::message(&ask.quote, &question);
-        if question.trim().is_empty() || !self.can_act() || Some(session) != self.model.viewed() {
-            return;
-        }
-        let plan = crate::compose::plan(&self.model, &text, false);
-        self.composer.flash = plan.flash;
-        if plan.commands.is_empty() {
-            cx.notify();
-            return;
-        }
-        for command in plan.commands {
-            self.send_command(command);
-        }
-        self.quote.ask = None;
-        self.quote_unlight(cx);
         TextSelection::clear(window, cx);
         self.composer.focus(window, cx);
-        self.chat.follow_tail(cx);
         cx.notify();
     }
 
@@ -309,31 +235,9 @@ impl Shell {
         }
     }
 
-    /// A keystroke, before anyone else sees it: in the box, ⏎ / ⌘⏎ send and
-    /// Esc closes (⇧⏎ is a new line); with words offered, ⏎ or ⌘⇧R opens
-    /// the box and Esc puts the bar away.
+    /// A keystroke, before anyone else sees it: with words offered, ⏎ or
+    /// ⌘⇧R quotes them into the composer and Esc puts the bar away.
     pub fn on_quote_key(&mut self, key: &str, m: &Modifiers, window: &mut Window, cx: &mut Context<Self>) -> Took {
-        if let Some(ask) = &self.quote.ask {
-            if !ask.input.read(cx).focus_handle(cx).is_focused(window) {
-                return Took::Pass;
-            }
-            let input = ask.input.clone();
-            return match key {
-                "escape" => {
-                    self.quote_close(window, cx);
-                    Took::Taken
-                }
-                "enter" if !m.shift && !m.alt && !m.control => {
-                    // The Enter that ends a Korean syllable is only that.
-                    if input.update(cx, |s, cx| gpui_kit::EntityInputHandler::marked_text_range(s, window, cx).is_some()) {
-                        return Took::Typing;
-                    }
-                    self.quote_send(window, cx);
-                    Took::Taken
-                }
-                _ => Took::Typing,
-            };
-        }
         if self.live_offer(window, cx).is_none() {
             return Took::Pass;
         }
@@ -356,20 +260,11 @@ impl Shell {
         }
     }
 
-    /// Dev tool (`snapshot.rs`): words into the box's question.
-    #[cfg(feature = "snapshot")]
-    pub fn quote_type(&mut self, words: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ask) = &self.quote.ask {
-            ask.input.update(cx, |s, cx| s.set_value(words.to_owned(), window, cx));
-            cx.notify();
-        }
-    }
-
     /// Dev tool (`snapshot.rs`): a click on the quote of the latest message of yours that has one.
     #[cfg(feature = "snapshot")]
     pub fn quote_jump_latest(&mut self, cx: &mut Context<Self>) {
         let found = self.chat.blocks.iter().enumerate().rev().find_map(|(ix, b)| match b {
-            crate::convo::Block::User(text) => rules::split(&crate::sent::parts(text).text).map(|(q, _)| (ix, q)),
+            crate::convo::Block::User(text) => rules::split_all(&crate::sent::parts(text).text).0.into_iter().next().map(|q| (ix, q)),
             _ => None,
         });
         if let Some((ix, quote)) = found {
@@ -378,13 +273,10 @@ impl Shell {
     }
 }
 
-/// What floats over the conversation: the box, or the bar under a selection.
+/// What floats over the conversation: the bar over a selection.
 pub fn layer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<AnyElement> {
     if shell.screen != Screen::Chat {
         return None;
-    }
-    if let Some(ask) = shell.quote.ask.as_ref().filter(|a| Some(a.session) == shell.model.viewed()) {
-        return Some(ask_box(shell, ask, window, cx));
     }
     let before = shell.quote.offer.as_ref().and_then(|o| o.ends.get());
     let offer = shell.live_offer(window, cx)?;
@@ -393,13 +285,15 @@ pub fn layer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
     if offer.ends.get() != before {
         window.request_animation_frame();
     }
-    let (_, end) = offer.ends.get()?;
-    let (x, y) = rules::button_at(end, BAR, window_size(window));
-    Some(deferred(anchored().position(point(px(x), px(y))).child(motion::fade(bar(shell.palette, offer.copied, cx), "quote-bar-in", motion::FAST))).with_priority(2).into_any_element())
+    let (start, end) = offer.ends.get()?;
+    let (x, y) = rules::button_at(start, end, BAR, window_size(window));
+    // At once: no fade to wait through.
+    Some(deferred(anchored().position(point(px(x), px(y))).child(bar(shell.palette, offer.copied, cx))).with_priority(2).into_any_element())
 }
 
 /// The bar: ask about the words, or copy them.
 fn bar(p: Palette, copied: bool, cx: &mut Context<Shell>) -> impl IntoElement + Styled + use<> {
+    let key = |k: &'static str| div().px(px(4.)).rounded(px(3.)).bg(p.wash).text_size(px(10.5)).text_color(p.muted).child(k);
     let item = |id: &'static str, glyph: Icon, words: &'static str| {
         h_flex()
             .id(id)
@@ -414,7 +308,7 @@ fn bar(p: Palette, copied: bool, cx: &mut Context<Shell>) -> impl IntoElement + 
             .child(icon(glyph, 13., p.text2))
             .child(words)
     };
-    let ask = tip(item("quote-ask", Icon::Message, t!("quote.ask")), p, t!("quote.ask_tip"), Some("⌘⇧R")).on_click(cx.listener(|shell, _, window, cx| shell.quote_open(window, cx)));
+    let ask = tip(item("quote-ask", Icon::Message, t!("quote.ask")).child(key("⌘⇧R")), p, t!("quote.ask_tip"), Some("⌘⇧R")).on_click(cx.listener(|shell, _, window, cx| shell.quote_open(window, cx)));
     let copy = if copied { item("quote-copy", Icon::Check, t!("quote.copied")) } else { item("quote-copy", Icon::Copy, t!("chat.copy")) }.on_click(cx.listener(|shell, _, _, cx| shell.quote_copy(cx)));
     h_flex()
         .id("quote-bar")
@@ -435,60 +329,6 @@ fn bar(p: Palette, copied: bool, cx: &mut Context<Shell>) -> impl IntoElement + 
         .child(ask)
         .child(div().w(px(1.)).h(px(14.)).bg(p.hair))
         .child(copy)
-}
-
-/// The box: the quote, the question, its send.
-fn ask_box(shell: &Shell, ask: &Ask, window: &Window, cx: &mut Context<Shell>) -> AnyElement {
-    let p = shell.palette;
-    let (width, (x, y), above) = rules::box_at(ask.start, ask.end, ask.height.get(), window_size(window));
-    let can = !ask.input.read(cx).value().trim().is_empty() && shell.can_act();
-    let quote = h_flex()
-        .gap(px(9.))
-        .items_stretch()
-        .child(div().flex_none().w(px(2.)).rounded_full().bg(p.hair))
-        .child(div().flex_1().min_w_0().text_size(px(SMALL)).line_height(px(19.)).text_color(p.muted).line_clamp(2).text_ellipsis().child(ask.quote.clone()));
-    let send = div()
-        .id("quote-send")
-        .size(px(26.))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_full()
-        .bg(if can { p.primary } else { p.wash })
-        .when(can, |b| b.cursor_pointer().on_click(cx.listener(|shell, _, window, cx| shell.quote_send(window, cx))))
-        .child(icon(Icon::ArrowUp, ICON_SM, if can { p.on_primary } else { p.muted }));
-    let send = tip(send, p, t!("quote.send"), Some("⏎"));
-    let field = v_flex()
-        .px(px(10.))
-        .pt(px(8.))
-        .pb(px(6.))
-        .gap(px(4.))
-        .rounded(px(R_MD))
-        .bg(p.bg)
-        .border_1()
-        .border_color(p.hair)
-        .text_size(px(14.))
-        .line_height(px(21.))
-        .child(Textarea::new(&ask.input).appearance(false).bordered(false))
-        .child(h_flex().gap_2().items_center().child(div().flex_1().text_size(px(META)).text_color(p.muted).child(t!("quote.keys"))).child(send));
-    let height = ask.height.clone();
-    let card = v_flex()
-        .id("quote-box")
-        .occlude()
-        .w(px(width))
-        .p(px(10.))
-        .gap(px(9.))
-        .rounded(px(R_LG))
-        .bg(p.popover())
-        .border_1()
-        .border_color(p.hair)
-        .shadow(motion::float_shadow(0.7))
-        .on_mouse_down_out(cx.listener(|shell, _, window, cx| shell.quote_close(window, cx)))
-        .on_prepaint(move |bounds, _, _| height.set(f32::from(bounds.size.height)))
-        .child(quote)
-        .child(field);
-    deferred(anchored().position(point(px(x), px(y))).child(motion::pop(card, "quote-box-in", above))).with_priority(2).into_any_element()
 }
 
 /// The quote at the top of a message of yours: a quiet bar at its left, its

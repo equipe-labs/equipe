@@ -103,7 +103,7 @@ fn meter_row(shell: &Shell, m: &Meter, now: i64, cx: &mut Context<Shell>) -> Any
         .h(px(24.))
         .mx_2()
         .px_2()
-        .gap(px(10.))
+        .gap(px(8.))
         .items_center()
         .rounded(px(6.))
         .cursor_pointer()
@@ -112,7 +112,7 @@ fn meter_row(shell: &Shell, m: &Meter, now: i64, cx: &mut Context<Shell>) -> Any
         .child(
             div()
                 .id(SharedString::from(format!("meter-name-{name}")))
-                .w(px(44.))
+                .w(px(42.))
                 .flex_none()
                 .text_size(px(12.))
                 .text_color(if m.read_at.is_some() { p.text2 } else { p.muted })
@@ -129,40 +129,61 @@ fn meter_row(shell: &Shell, m: &Meter, now: i64, cx: &mut Context<Shell>) -> Any
         };
         row = row.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.5)).text_color(p.muted).child(words));
     }
-    for g in &m.gauges {
-        row = row.child(gauge(p, m, g, now));
+    // One slot per window, the same on every row: a plan with only a weekly
+    // window keeps its bar under the others' weekly bar, not across both.
+    if !m.gauges.is_empty() {
+        // A narrow sidebar has no room for the bars: the label and percent alone.
+        let bars = shell.board.sidebar_width >= BARS_FROM;
+        for window in [equipe_core::protocol::engines::Window::FiveHour, equipe_core::protocol::engines::Window::Weekly] {
+            row = row.child(match m.gauges.iter().find(|g| g.window == window) {
+                Some(g) => gauge(p, m, g, now, bars),
+                None => div().flex_1().min_w(px(if bars { GAUGE_MIN } else { 0. })).into_any_element(),
+            });
+        }
     }
     row.into_any_element()
 }
 
-fn gauge(p: Palette, m: &Meter, g: &Gauge, now: i64) -> AnyElement {
+/// A gauge's least width with its bar: label, gaps, a sliver of bar, percent.
+const GAUGE_MIN: f32 = LABEL_W + 4. + 8. + 4. + PERCENT_W;
+const LABEL_W: f32 = 16.;
+const PERCENT_W: f32 = 30.;
+/// The sidebar width a row's two bars fit in: its margins and padding, the
+/// engine's name, two gauges at their least and the gaps between.
+const BARS_FROM: f32 = 16. + 16. + 42. + 8. + GAUGE_MIN + 8. + GAUGE_MIN + 8.;
+
+fn gauge(p: Palette, m: &Meter, g: &Gauge, now: i64, bars: bool) -> AnyElement {
     let color = if m.stale { p.muted } else { tone_color(p, g.tone) };
     let words = rules::gauge_words(g, now, crate::usage::local_time);
     let fill = (f32::from(g.percent) / 100.).clamp(0., 1.);
     h_flex()
         .id(SharedString::from(format!("gauge-{}-{:?}", rules::engine_name(m.engine), g.window)))
         .flex_1()
-        .min_w_0()
-        .gap(px(5.))
+        // Its label, a sliver of bar and its percent never run into the next.
+        .min_w(px(if bars { GAUGE_MIN } else { 0. }))
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .gap(px(4.))
         .items_center()
+        .when(!bars, |g| g.justify_end())
         .tip_at(p, words, None, gpui_kit::base::Placement::Right)
-        .child(div().flex_none().text_size(px(10.5)).text_color(p.muted).child(rules::window_short(g.window)))
-        .child(
+        .child(div().flex_none().w(px(LABEL_W)).text_size(px(10.5)).text_color(p.muted).child(rules::window_short(g.window)))
+        .when(bars, |gauge| gauge.child(
             div()
                 .flex_1()
-                .min_w(px(14.))
+                .min_w(px(6.))
                 .h(px(4.))
                 .rounded(px(2.))
                 .bg(p.hair)
                 .overflow_hidden()
                 .child(div().h_full().w(relative(fill)).rounded(px(2.)).bg(color)),
-        )
+        ))
         .child(
             div()
                 .flex_none()
-                .min_w(px(26.))
+                .w(px(PERCENT_W))
                 .text_right()
-                .text_size(px(11.))
+                .text_size(px(10.5))
                 .text_color(if g.tone >= Tone::Low && !m.stale { color } else { p.muted })
                 .when(g.tone >= Tone::Low, |d| d.font_weight(FontWeight::SEMIBOLD))
                 .child(format!("{}%", g.percent)),
@@ -170,22 +191,33 @@ fn gauge(p: Palette, m: &Meter, g: &Gauge, now: i64) -> AnyElement {
         .into_any_element()
 }
 
-/// The small badge by a member's name: the engine it runs on.
-pub fn badge(p: Palette, engine: Engine) -> AnyElement {
+/// The engine's mark alone, for a row with no room for its name (the team
+/// list): its name on the pointer.
+pub fn mark(p: Palette, id: impl Into<ElementId>, engine: Engine) -> AnyElement {
+    let (glyph, tint) = if engine == Engine::Codex { (crate::icons::Icon::OpenAiMark, p.text2) } else { (crate::icons::Icon::ClaudeMark, rgb(0xD97757)) };
     div()
+        .id(id.into())
         .flex_none()
-        .h(px(16.))
-        .px(px(5.))
+        .size(px(16.))
         .flex()
         .items_center()
-        .rounded(px(4.))
-        .border_1()
-        .border_color(p.hair)
-        .text_size(px(10.))
-        .line_height(px(14.))
-        .gap(px(3.))
+        .justify_center()
+        .tip_at(p, rules::engine_name(engine).to_owned(), None, gpui_kit::base::Placement::Right)
+        .child(crate::icons::icon(glyph, 11., tint))
+        .into_any_element()
+}
+
+/// The engine as words with its mark, unboxed: inside a control that has an
+/// edge of its own (the header's title).
+pub fn label(p: Palette, engine: Engine) -> AnyElement {
+    let (glyph, tint) = if engine == Engine::Codex { (crate::icons::Icon::OpenAiMark, p.text2) } else { (crate::icons::Icon::ClaudeMark, rgb(0xD97757)) };
+    h_flex()
+        .flex_none()
+        .gap(px(4.))
+        .items_center()
+        .text_size(px(12.))
         .text_color(p.muted)
-        .child(crate::icons::icon(if engine == Engine::Codex { crate::icons::Icon::OpenAiMark } else { crate::icons::Icon::ClaudeMark }, 9., if engine == Engine::Codex { p.text2 } else { rgb(0xD97757) }))
+        .child(crate::icons::icon(glyph, 11., tint))
         .child(rules::engine_name(engine))
         .into_any_element()
 }

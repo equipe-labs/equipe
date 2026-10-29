@@ -60,15 +60,28 @@ pub enum Slot {
 pub struct TurnUi {
     /// The answer boxes.
     pub fields: HashMap<(TicketId, usize), Entity<TextareaState>>,
+    /// What is attached to each answer — a file the member asked for.
+    pub strips: HashMap<(TicketId, usize), crate::attach::Strip>,
     /// Each ask's note, once "메모 추가" opened it.
     pub notes: HashMap<(TicketId, usize), Entity<TextareaState>>,
     /// The words to the member, at the card's foot.
     pub free: HashMap<TicketId, Entity<TextareaState>>,
     /// Each ask's pick, by ticket.
     pub picks: HashMap<TicketId, HashMap<usize, Pick>>,
+    /// The step the person opened (to answer again, or ahead): else the first
+    /// one not yet answered is the one open.
+    pub open: HashMap<TicketId, usize>,
     /// The keys Tab goes through with the boxes (the send button's ask: none, `usize::MAX`).
     keys: HashMap<(TicketId, usize, Slot), FocusHandle>,
     subscriptions: HashMap<(TicketId, usize, u8), Subscription>,
+}
+
+impl TurnUi {
+    /// Whether one of the cards' boxes — an answer, a note, the words at the
+    /// foot — has the keyboard: what is typed is the box's, never a shortcut's.
+    pub fn typing(&self, window: &Window, cx: &App) -> bool {
+        self.fields.values().chain(self.notes.values()).chain(self.free.values()).any(|f| f.read(cx).focus_handle(cx).is_focused(window))
+    }
 }
 
 /// The card's own: the free box and the send button are no ask's.
@@ -99,7 +112,11 @@ pub struct Card {
     pub phase: Phase,
     pub answered: Option<Answered>,
     pub can_send: bool,
+    /// What is attached to each ask's answer.
+    pub attached: Vec<Vec<crate::attach::Item>>,
     pub now: u64,
+    /// The one step open, answered in place; the rest are a line each.
+    pub current: Option<usize>,
 }
 
 impl Card {
@@ -110,6 +127,7 @@ impl Card {
         let answered = model.answers.get(&id).cloned();
         let phase = rules::phase(t, answered.as_ref());
         let asks = t.map(Ticket::asks).unwrap_or_default();
+        let asks_len = asks.len();
         let wants: Vec<Want> = asks.iter().map(|a| rules::want_of(a)).collect();
         let roots = roots(shell, t);
         let named = asks.iter().map(|a| rules::named(a, &roots)).collect();
@@ -118,6 +136,7 @@ impl Card {
         let free = shell.turn.free.get(&id).cloned();
         let picks = shell.turn.picks.get(&id).cloned().unwrap_or_default();
         let answers = shell.turn_answers(id, &asks, cx);
+        let current = shell.turn.open.get(&id).copied().filter(|n| *n < asks.len()).or_else(|| answers.replies.iter().position(|r| r.is_empty()));
         let can_send = rules::can_send(&answers) && shell.can_act();
         let keys = shell.turn.keys.iter().filter(|((t, ..), _)| *t == id).map(|((_, n, slot), f)| ((*n, *slot), f.clone())).collect();
         let who = t.and_then(|t| t.assignee.clone().or(t.owner.clone())).map(|name| {
@@ -142,7 +161,9 @@ impl Card {
             phase,
             answered,
             can_send,
+            attached: (0..asks_len).map(|n| shell.turn.strips.get(&(id, n)).map(|s| s.items().to_vec()).unwrap_or_default()).collect(),
             now: crate::state::now_unix(),
+            current,
         }))
     }
 
@@ -210,8 +231,11 @@ pub fn looks(shell: &Shell, cx: &App) -> HashMap<TicketId, u64> {
             let mut picks: Vec<(usize, Pick)> = shell.turn.picks.get(&t.id).map(|p| p.iter().map(|(n, p)| (*n, *p)).collect()).unwrap_or_default();
             picks.sort_unstable_by_key(|(n, _)| *n);
             let answered = model.answers.get(&t.id).map(|a| (a.text.clone(), a.here, a.settled));
+            // Attachments: how many, and how far each got.
+            let mut attached: Vec<String> = shell.turn.strips.iter().filter(|((id, _), _)| *id == t.id).map(|((_, n), s)| format!("{n}:{:?}", s.items().iter().map(|i| (i.id, format!("{:?}", i.stage), i.thumb.is_some())).collect::<Vec<_>>())).collect();
+            attached.sort();
             let _ = cx;
-            (t.id, render::hash_of((format!("{:?}", t.status), t.asks(), answered, fields, notes, format!("{picks:?}"), &t.title)))
+            (t.id, render::hash_of((format!("{:?}", t.status), t.asks(), answered, fields, notes, format!("{picks:?}"), &t.title, attached)))
         })
         .collect()
 }
@@ -307,7 +331,16 @@ fn boxed(p: Palette, field: &Entity<TextareaState>, size: f32) -> Div {
 fn pending(card: &Card, d: &Draw<'_>, cx: &mut App) -> AnyElement {
     let p = d.p;
     let key = d.key;
-    let items: Vec<AnyElement> = card.asks.iter().enumerate().map(|(n, ask)| item(card, d, n, ask, cx)).collect();
+    // One step at a time: the open one in full, the others a line each —
+    // answered ones with what they say, the ones ahead to open early.
+    let one_at_a_time = d.place != Place::Side && card.asks.len() > 1;
+    let items: Vec<AnyElement> = card
+        .asks
+        .iter()
+        .enumerate()
+        .map(|(n, ask)| if !one_at_a_time || card.current == Some(n) { item(card, d, n, ask, cx) } else { line(card, d, n, ask) })
+        .collect();
+    let progress = one_at_a_time.then(|| steps_bar(card, d));
     let order = card.tab_order(cx);
     let id = card.ticket;
     let handle = d.handle.clone();
@@ -335,7 +368,8 @@ fn pending(card: &Card, d: &Draw<'_>, cx: &mut App) -> AnyElement {
         })
         .when(d.place == Place::Conversation, |c| c.child(header(card, d)))
         .children(card.why.clone().filter(|_| d.place == Place::Conversation).map(|why| div().mt(px(-6.)).text_size(px(12.5)).line_height(px(18.)).text_color(p.muted).child(why)))
-        .child(v_flex().gap(px(18.)).children(items))
+        .children(progress)
+        .child(v_flex().gap(if one_at_a_time { px(6.) } else { px(18.) }).children(items))
         .children(free)
         .when(answering, |c| c.child(foot(card, d)));
     match d.place {
@@ -352,6 +386,82 @@ fn pending(card: &Card, d: &Draw<'_>, cx: &mut App) -> AnyElement {
             .into_any_element(),
         _ => body.into_any_element(),
     }
+}
+
+/// How far along the steps are: a thin bar and `2 / 5`.
+fn steps_bar(card: &Card, d: &Draw<'_>) -> impl IntoElement {
+    let p = d.p;
+    let total = card.asks.len().max(1);
+    let done = card.replies.iter().filter(|r| !r.is_empty()).count();
+    let share = done as f32 / total as f32;
+    h_flex()
+        .gap_2()
+        .items_center()
+        .child(div().flex_1().h(px(4.)).rounded_full().bg(p.hair).overflow_hidden().child(div().h_full().w(relative(share)).rounded_full().bg(d.tones.added)))
+        .child(div().flex_none().text_size(px(12.)).text_color(p.muted).child(t!("turn.steps", done = done, total = total)))
+}
+
+/// A step's mark: its number (✓ when done) in a ring — the same size for
+/// 1 and 10, the digits centred, two of them a size smaller to fit — so the
+/// words after every mark start in one column.
+fn number(n: usize, done: bool, edge: Rgba, fill: Option<Rgba>, ink: Rgba) -> Div {
+    let words = if done { "✓".to_owned() } else { (n + 1).to_string() };
+    let size = if words.chars().count() > 1 { 9.5 } else { 11. };
+    div()
+        .flex_none()
+        .size(px(NUMBER))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .border_1()
+        .border_color(edge)
+        .when_some(fill, |c, f| c.bg(f))
+        .text_size(px(size))
+        .line_height(px(NUMBER - 2.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(ink)
+        .child(div().text_center().child(words))
+}
+
+/// The ring a step's number sits in.
+const NUMBER: f32 = 22.;
+
+/// A step that isn't open: its number (✓ when done), its words on one line,
+/// and what it says back when answered. A click opens it.
+fn line(card: &Card, d: &Draw<'_>, n: usize, ask: &str) -> AnyElement {
+    let p = d.p;
+    let id = card.ticket;
+    let reply = card.replies.get(n).cloned().unwrap_or_default();
+    let set = !reply.is_empty();
+    let done = reply == Reply::Done;
+    let words: String = ask.lines().next().unwrap_or_default().replace("**", "").replace('`', "");
+    let handle = d.handle.clone();
+    h_flex()
+        .id(("turn-line", hash(d.key, n)))
+        // Its number and words in line with the open step's; the hover's
+        // fill reaches past them.
+        .mx(px(-8.))
+        .min_h(px(32.))
+        .px_2()
+        .gap_2p5()
+        .items_center()
+        .rounded(px(R_SM + 2.))
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.wash))
+        .on_click(move |_, window, cx| {
+            handle.update(cx, |shell, cx| shell.turn_open(id, n, window, cx)).ok();
+        })
+        .child(number(
+            n,
+            done,
+            if done { d.tones.added } else if set { p.accent } else { p.hair },
+            done.then_some(Rgba { a: 0.14, ..d.tones.added }),
+            if done { d.tones.added } else { p.text2 },
+        ))
+        .child(div().flex_1().min_w_0().truncate().text_size(px(13.5)).text_color(if set { p.muted } else { p.text2 }).child(words))
+        .children(set.then(|| div().flex_none().max_w(relative(0.4)).truncate().text_size(px(12.)).text_color(if done { d.tones.added } else { p.text2 }).child(reply_words(&reply))))
+        .into_any_element()
 }
 
 /// What a pick is called on its button, and what it does, said in its tooltip.
@@ -381,32 +491,43 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
     } else {
         (p.hair, None, p.text2)
     };
-    let number = div()
-        .flex_none()
-        .size(px(20.))
-        .mt(px(1.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_full()
-        .border_1()
-        .border_color(edge)
-        .when_some(fill, |c, f| c.bg(f))
-        .text_size(px(11.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(ink)
-        .child(if done { "✓".to_owned() } else { (n + 1).to_string() });
+    // On the first line of its words: their line is 22 high, the mark 22.
+    let number = number(n, done, edge, fill, ink);
     let shown = rules::mark_paths(ask, card.named.get(n).map(Vec::as_slice).unwrap_or_default());
     let quiet = done || matches!(reply, Reply::Yours | Reply::Later);
     let text = super::chat::markdown(p, ("turn-ask", hash(key, n)), &shown, crate::theme::UI, crate::theme::UI_PROSE_LINE, if quiet { p.muted } else { p.text }, &d.handle);
     let files = card.named.get(n).filter(|f| !f.is_empty()).map(|files| h_flex().flex_wrap().gap_1p5().children(files.iter().enumerate().map(|(k, f)| file_chip(p, f, hash(key, n << 8 | k)))));
     let answering = d.place != Place::Side;
     // The box, faded while a pick stands in for it (typing takes the pick back).
+    let to = super::composer::AttachTo::Turn(card.ticket, n);
     let field = card.fields.get(n).cloned().flatten().filter(|_| answering && want != Want::Do).map(|field| {
         let picked = card.picks.contains_key(&n);
-        boxed(p, &field, 14.).when(picked, |c| c.opacity(0.45))
+        div()
+            .w_full()
+            .min_w_0()
+            .px_3()
+            .py(px(2.))
+            .rounded(px(R_SM + 2.))
+            .bg(p.bg)
+            .border_1()
+            .border_color(p.hair)
+            .text_size(px(14.))
+            .child(super::composer::answer_box(&field, to, d.handle.clone()))
+            .on_drop(super::composer::on_answer_drop(to, d.handle.clone()))
+            .when(picked, |c| c.opacity(0.45))
     });
+    // What is attached to the answer — a file the member asked for — and "첨부".
+    let attached = (answering && want != Want::Do && card.fields.get(n).is_some_and(Option::is_some))
+        .then(|| super::composer::answer_attachments(p, to, hash(key, n), card.attached.get(n).cloned().unwrap_or_default(), d.handle.clone()));
     let choices = answering.then(|| choices(card, d, n, want));
+    // Words typed: a button on to the next step (one at a time only).
+    let typed = matches!(card.replies.get(n), Some(Reply::Text(_)));
+    let next = (answering && typed && card.asks.len() > 1 && card.current == Some(n)).then(|| {
+        let (handle, id) = (d.handle.clone(), card.ticket);
+        ui::button(p, ("turn-next", hash(key, n)), Kind::Primary, t!("turn.next")).on_click(move |_, _, cx| {
+            handle.update(cx, |shell, cx| shell.turn_next(id, cx)).ok();
+        })
+    });
     let note = card.notes.get(n).cloned().flatten().filter(|_| answering).map(|note| boxed(p, &note, 13.));
     let _ = cx;
     h_flex()
@@ -414,7 +535,7 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
         .gap_2p5()
         .items_start()
         .child(number)
-        .child(v_flex().flex_1().min_w_0().gap_2().child(text).children(files).children(field).children(choices).children(note))
+        .child(v_flex().flex_1().min_w_0().gap_2().child(text).children(files).children(field).children(attached).children(choices).children(note).children(next.map(|b| h_flex().justify_end().child(b))))
         .into_any_element()
 }
 
@@ -545,7 +666,7 @@ fn foot(card: &Card, d: &Draw<'_>) -> impl IntoElement {
 /// What a reply says on screen, read back from what was sent.
 fn reply_words(reply: &Reply) -> String {
     match reply {
-        Reply::Text(text) => text.clone(),
+        Reply::Text(text) => crate::attach::shown_words(text),
         Reply::Done => t!("turn.done").into(),
         Reply::Yours => t!("turn.sent_yours").into(),
         Reply::Later => t!("turn.sent_later").into(),
@@ -708,8 +829,15 @@ impl Shell {
             let (id, n) = k;
             let subscription = cx.subscribe_in(&field, window, move |this, field, event: &InputEvent, window, cx| match event {
                 InputEvent::PressEnter { secondary: true, .. } => this.turn_send(id, window, cx),
+                // Typing into a step keeps it open: its first letter (even one
+                // still being composed) mustn't move the card on to the next.
+                InputEvent::Focus => {
+                    this.turn.open.insert(id, n);
+                }
                 InputEvent::Change => {
-                    // Words typed answer it: a pick standing in for them goes.
+                    // Words typed answer it: a pick standing in for them goes,
+                    // and the step stays open while they are typed.
+                    this.turn.open.insert(id, n);
                     if !field.read(cx).value().trim().is_empty()
                         && let Some(picks) = this.turn.picks.get_mut(&id)
                     {
@@ -751,7 +879,8 @@ impl Shell {
     pub fn turn_answers(&self, id: TicketId, asks: &[String], cx: &App) -> asks::Answers {
         let wants: Vec<Want> = asks.iter().map(|a| rules::want_of(a)).collect();
         let read = |f: Option<&Entity<TextareaState>>| f.map(|f| f.read(cx).value().to_string()).unwrap_or_default();
-        let typed: Vec<String> = (0..asks.len()).map(|n| read(self.turn.fields.get(&(id, n)))).collect();
+        // What is attached goes with the words, as tags the member opens.
+        let typed: Vec<String> = (0..asks.len()).map(|n| crate::attach::message(&read(self.turn.fields.get(&(id, n))), &self.answer_tags(super::composer::AttachTo::Turn(id, n)))).collect();
         let notes: Vec<String> = (0..asks.len()).map(|n| read(self.turn.notes.get(&(id, n)))).collect();
         let picks = self.turn.picks.get(&id).cloned().unwrap_or_default();
         rules::answers(&wants, &typed, &picks, &notes, &read(self.turn.free.get(&id)))
@@ -775,6 +904,12 @@ impl Shell {
         if !rules::can_send(&answers) || !self.can_act() || self.model.answers.get(&id).is_some_and(|a| a.here && !a.settled) {
             return;
         }
+        // An attachment still on its way: sent once it's there.
+        if self.turn.strips.iter().any(|((t, _), s)| *t == id && s.busy()) {
+            self.composer.flash = Some(t!("composer.answer_uploading").into());
+            return cx.notify();
+        }
+        self.turn.strips.retain(|(t, _), _| *t != id);
         let note = asks::answer_message(&asks, &answers);
         self.send_command(Command::Resume { squad: self.model.squad.clone(), ticket: id, note: note.clone() });
         self.model.answer_sent(id, note);
@@ -805,10 +940,31 @@ impl Shell {
         }
     }
 
+    /// Step `n` opened, to answer it again or ahead of the others.
+    pub fn turn_open(&mut self, id: TicketId, n: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.turn.open.insert(id, n);
+        if let Some(field) = self.turn.fields.get(&(id, n)).cloned() {
+            field.update(cx, |s, cx| s.focus(window, cx));
+        }
+        self.chat_remeasure_turn(id, cx);
+        cx.notify();
+    }
+
+    /// The step answered in words is through: on to the next one open.
+    pub fn turn_next(&mut self, id: TicketId, cx: &mut Context<Self>) {
+        self.turn.open.remove(&id);
+        self.chat_remeasure_turn(id, cx);
+        cx.notify();
+    }
+
     /// A pick on ask `n`, or taken back when it was the one picked.
     pub fn turn_pick(&mut self, id: TicketId, n: usize, pick: Pick, window: &mut Window, cx: &mut Context<Self>) {
         let _ = window;
         rules::toggle(self.turn.picks.entry(id).or_default(), n, pick);
+        // Picked: on to the next step not yet answered.
+        if self.turn.picks.get(&id).is_some_and(|p| p.contains_key(&n)) {
+            self.turn.open.remove(&id);
+        }
         self.chat_remeasure_turn(id, cx);
         self.chat_sync(cx);
         cx.notify();

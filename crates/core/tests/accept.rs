@@ -87,6 +87,7 @@ fn config(claude: &Path, home: &Path) -> Config {
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,
+        person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
     }
 }
@@ -191,6 +192,45 @@ async fn the_pm_puts_it_on_a_card_and_only_the_persons_confirmation_accepts_and_
 }
 
 #[tokio::test]
+async fn the_pm_accepts_its_teams_work_itself_unless_the_person_keeps_that_for_themselves() {
+    let (handle, mut events, repo) = handed_in().await;
+    // A member doesn't accept its own or a teammate's work.
+    let refused = tool(&handle, "frontend", "accept_work", json!({ "tickets": [1], "checked": "looks fine" })).await;
+    assert!(refused.is_error && refused.text.contains("Only the PM"), "{refused:?}");
+    // The PM says what it checked, or nothing is accepted.
+    let bare = tool(&handle, "pm", "accept_work", json!({ "tickets": [1] })).await;
+    assert!(bare.is_error && bare.text.contains("`checked`"), "{bare:?}");
+    assert_eq!(status(&handle, 1).await, TicketStatus::Review);
+
+    // Handed in, the PM is woken to look at it — not left until someone speaks to it.
+    let woken = until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, .. } | Event::TurnEnded { session: 1, .. })).await;
+    assert!(woken.iter().any(|e| matches!(e, Event::TurnEnded { session: 1, .. })), "the PM took a turn on it: {woken:#?}");
+    // Checked and accepted: done, merged into main, and what waited on it starts.
+    let ok = tool(&handle, "pm", "accept_work", json!({ "tickets": [1, 2], "checked": "Read the diff: the hero renders, nothing else touched." })).await;
+    assert!(!ok.is_error && ok.text.contains("Accepted T-1") && ok.text.contains("T-2"), "{ok:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
+    assert_eq!(git(&repo, &["show", "main:HERO.md"]), "made by the squad", "on main");
+    assert!(seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })), "{seen:#?}");
+    assert!(handle.snapshot("acme").await.pm_accepts, "the PM accepts unless the person says otherwise");
+
+    // A member's proposal is simply done: on the board, its own, no sorting.
+    let put = tool(&handle, "frontend", "create_ticket", json!({ "title": "Footer links", "body": "-" })).await;
+    assert!(!put.is_error && put.text.contains("is on the board"), "{put:?}");
+    let footer = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.title == "Footer links").unwrap();
+    assert_eq!((footer.status == TicketStatus::Proposed, footer.owner.as_deref()), (false, Some("frontend")));
+    // The person keeps acceptance for themselves: the PM only puts it on a card.
+    handle.send(Command::SetPmAccepts { squad: "acme".into(), on: false });
+    until(&mut events, |e| matches!(e, Event::PmAcceptsChanged { on: false, .. })).await;
+    let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Pricing done." })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Review)).await;
+    let kept = tool(&handle, "pm", "accept_work", json!({ "tickets": [2], "checked": "fine" })).await;
+    assert!(kept.is_error && kept.text.contains("propose_accept"), "{kept:?}");
+    assert_eq!(status(&handle, 2).await, TicketStatus::Review);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn the_persons_words_raise_the_card_a_no_keeps_it_as_it_is_and_the_board_settles_it() {
     let (handle, mut events, _repo) = handed_in().await;
 
@@ -257,6 +297,9 @@ fn nothing_accepts_or_merges_but_the_persons_commands() {
     }
     found.sort();
     let mut expected = vec![
+            // The PM's `accept_work`, only while the person lets the PM accept (`SetPmAccepts`).
+            "accept.rs: Box::pin(self.accept(squad, ticket)).await;",
+            "accept.rs: self.merge(squad, ticket, push);",
             "accept.rs: pub(super) async fn confirm_accept(&mut self, squad: &str, id: u64, picked: Vec<Confirmed>) {",
             "accept.rs: Box::pin(self.handle(Command::Reopen { squad, ticket, note: proposal.note.clone() })).await;",
             "accept.rs: Box::pin(self.handle(Command::Accept { squad: squad.clone(), ticket })).await;",
@@ -271,12 +314,12 @@ fn nothing_accepts_or_merges_but_the_persons_commands() {
             "tickets.rs: board::Move::SendBack => self.reopen(squad, id, String::new()).await,",
     ];
     expected.sort();
-    assert_eq!(found, expected, "accepting, merging and sending back run only on the person's commands");
-    // And no member has a tool that accepts, merges or confirms — the PM only proposes.
+    assert_eq!(found, expected, "accepting, merging and sending back run only on the person's commands — and the PM's accept_work they allow");
+    // And no member has a tool that accepts, merges or confirms — the PM accepts only with `accept_work`.
     for is_pm in [true, false] {
         for tool in equipe_core::board::tools(is_pm) {
             let name = tool["name"].as_str().unwrap();
-            assert!(!name.contains("merge") && !name.contains("confirm") && (!name.contains("accept") || name == "propose_accept"), "{name}");
+            assert!(!name.contains("merge") && !name.contains("confirm") && (!name.contains("accept") || name == "propose_accept" || (is_pm && name == "accept_work")), "{name}");
         }
     }
 }

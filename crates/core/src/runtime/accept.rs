@@ -53,6 +53,69 @@ them, and note what they said on the ticket with `comment`, for the PM."
         }
     }
 
+    /// `accept_work`: the PM accepts handed-in work itself — and merges it into
+    /// main — while the person lets it (`SetPmAccepts`); what it checked is
+    /// kept on each ticket, and the person sees it done in the PM's conversation.
+    pub(super) async fn accept_work(&mut self, squad: &str, member: &str, id: SessionId, args: &Value) -> Result<String, String> {
+        if !self.sessions.get(&id).is_some_and(Session::is_pm) {
+            return Err("Only the PM accepts the team's work. Hand yours in with submit_for_review.".into());
+        }
+        if !self.journal(squad).is_some_and(|j| j.pm_accepts()) {
+            return Err("In this squad the person accepts work themselves: put it to them with propose_accept.".into());
+        }
+        let checked = board::arg_str(args, "checked").map(str::trim).unwrap_or_default().to_owned();
+        if checked.is_empty() {
+            return Err("Say in `checked` what you checked and found — it is kept on the ticket for the person.".into());
+        }
+        let push = args.get("push").and_then(Value::as_bool).unwrap_or(false);
+        let mut named: Vec<TicketId> = args.get("tickets").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64()).map(|v| v as TicketId).collect()).unwrap_or_default();
+        named.dedup();
+        if named.is_empty() {
+            return Err("Name the handed-in tickets you accept in `tickets`.".into());
+        }
+        let (mut accepted, mut left) = (Vec::new(), Vec::new());
+        for ticket in named {
+            let Some(t) = self.find_ticket(squad, ticket) else {
+                left.push(format!("there is no T-{ticket}"));
+                continue;
+            };
+            if let Some(why) = rules::unfit(&t, Verdict::Accept) {
+                left.push(why);
+                continue;
+            }
+            if !t.ready_for_review() {
+                left.push(format!("T-{ticket} waits for its design QA"));
+                continue;
+            }
+            if let Some(journal) = self.journal(squad) {
+                let _ = journal.ticket_event(ticket, member, "accepted by the PM", &checked);
+            }
+            Box::pin(self.accept(squad, ticket)).await;
+            // Code lands on main at once: nothing left for the person to merge.
+            if !t.kind.in_home() && t.branch.is_some() {
+                self.merge(squad, ticket, push);
+            }
+            accepted.push(ticket);
+        }
+        if !accepted.is_empty() {
+            let ids = accepted.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
+            let text = say!(self, "notice.pm_accepted", ids = ids, checked = checked);
+            self.publish(Event::Notice { session: id, text });
+        }
+        let ids = accepted.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
+        let mut reply = if accepted.is_empty() {
+            "Nothing accepted.".to_owned()
+        } else if push {
+            format!("Accepted {ids}; code is merging into main and main is being pushed.")
+        } else {
+            format!("Accepted {ids}; code is merging into main.")
+        };
+        if !left.is_empty() {
+            reply.push_str(&format!(" Left: {}.", left.join("; ")));
+        }
+        Ok(reply)
+    }
+
     /// A screen read the person's own words as plainly accepting: the card
     /// goes up in that conversation, by the same rules; what doesn't fit is
     /// left to the member there to answer.

@@ -59,7 +59,7 @@ pub(crate) fn output_within(mut command: Command, timeout: Duration) -> Result<O
     match rx.recv_timeout(timeout) {
         Ok(out) => out.map_err(|err| format!("couldn't run {program}: {err}")),
         Err(_) => {
-            let _ = Command::new("kill").args(["-KILL", &format!("-{pid}")]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+            crate::group::end(pid, libc::SIGKILL);
             let args: Vec<String> = command.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
             Err(format!("{program} {} took more than {}s and was stopped", args.join(" "), timeout.as_secs()))
         }
@@ -360,9 +360,21 @@ pub fn merge_into_main(repo: &Path, branch: &str, message: &str) -> Result<Strin
 /// Push the main branch to `origin`.
 pub fn push_main(repo: &Path) -> Result<String> {
     off_the_loop("push_main");
+    if !has_origin(repo) {
+        return Err(NO_ORIGIN.into());
+    }
     let main = main_branch(repo)?;
     git_within(repo, &["push", "-q", "origin", &main], PUSH_TIMEOUT)?;
     Ok(main)
+}
+
+/// What `push_main` says when the repository has nowhere to push to: a
+/// local-only project, merged and kept here, not a failure.
+pub const NO_ORIGIN: &str = "no remote named origin";
+
+/// Whether `repo` has a remote named `origin` to push main to.
+pub fn has_origin(repo: &Path) -> bool {
+    git(repo, &["remote", "get-url", "origin"]).is_ok_and(|url| !url.trim().is_empty())
 }
 
 /// Run a git command that makes a commit, as the user — or as equipe when no
@@ -509,9 +521,32 @@ pub fn trim_builds(home: &Path, busy: &[PathBuf], cap: u64) -> Vec<String> {
     done
 }
 
+/// The files a merge that "conflicts with main in a, b — nothing was merged"
+/// names, as the person reads them: by file name, the first three and how
+/// many more. `None` for any other failure.
+pub fn conflict_files(err: &str) -> Option<String> {
+    let (_, rest) = err.split_once(" conflicts with ")?;
+    let (_, files) = rest.split_once(" in ")?;
+    let files = files.split(" — ").next().unwrap_or(files);
+    let names: Vec<&str> = files.split(", ").map(str::trim).filter(|f| !f.is_empty()).map(|f| f.rsplit('/').next().unwrap_or(f)).collect();
+    if names.is_empty() {
+        return None;
+    }
+    let shown = names.iter().take(3).copied().collect::<Vec<_>>().join(", ");
+    Some(if names.len() > 3 { format!("{shown} +{}", names.len() - 3) } else { shown })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_conflict_is_told_by_its_files_names_not_git_words() {
+        let err = "equipe/backend-2-t122-6ad71844 conflicts with main in src/audit.ts, src/http.ts, src/packs.ts, src/server.ts — nothing was merged";
+        assert_eq!(conflict_files(err).as_deref(), Some("audit.ts, http.ts, packs.ts +1"));
+        assert_eq!(conflict_files("b conflicts with main in README.md — nothing was merged").as_deref(), Some("README.md"));
+        assert_eq!(conflict_files("git merge-tree failed: boom"), None);
+    }
 
     #[test]
     fn a_members_build_cache_past_its_cap_loses_incremental_state_then_all_unless_it_builds() {
@@ -857,6 +892,13 @@ mod tests {
         assert!(merge_into_main(&repo, &one, "merge").unwrap_err().contains("nothing was merged"));
         assert_eq!(git(&repo, &["rev-parse", "main"]).unwrap(), head);
         assert_eq!(std::fs::read_to_string(repo.join("README.md")).unwrap(), "mine\n");
+    }
+
+    #[test]
+    fn a_project_with_no_remote_has_nothing_to_push_to() {
+        let repo = repo();
+        assert!(!has_origin(&repo));
+        assert_eq!(push_main(&repo).unwrap_err(), NO_ORIGIN);
     }
 
     #[test]

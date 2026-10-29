@@ -20,6 +20,9 @@ mod i18n;
 mod install;
 #[path = "../src/ssh.rs"]
 mod ssh;
+#[path = "../src/sshkey.rs"]
+#[allow(dead_code)]
+mod sshkey;
 #[path = "../src/target.rs"]
 mod target;
 #[path = "../src/wire.rs"]
@@ -85,6 +88,8 @@ fn main() {
                     Some(Update::Attached(hello)) => println!("attached: daemon {} squad {} ({} sessions, {} tickets)", hello.version, hello.snapshot.squad, hello.snapshot.sessions.len(), hello.snapshot.tickets.len()),
                     Some(Update::Squads(s)) => println!("squads: {:?} last {:?}", s.squads.iter().map(|s| &s.name).collect::<Vec<_>>(), s.last),
                     Some(Update::Bridge(b)) => println!("bridge: {b:?}"),
+                    Some(Update::Leg(leg)) => println!("leg: {leg:?}"),
+                    Some(Update::Door(door)) => println!("door: {door}"),
                     Some(Update::Event(_)) => events += 1,
                     Some(Update::Down(f)) => { println!("down: {f:?}\n  guide: {}", f.guide(&endpoint).title); if f.waits_for_person() { break } }
                     None => break,

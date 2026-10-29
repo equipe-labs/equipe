@@ -49,7 +49,8 @@ impl MarkdownPlugin for FileChips {
         let id = ("file-chip", hash_of((&text, node.source_range().map(|r| r.start))));
         let size = context.font_size() * 0.88;
         let base = cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade()).map(|s| base_dir(s.read(cx))).unwrap_or_default();
-        let openable = exists(&links::resolve(links::path_and_line(&text).0, &base));
+        // A document opens in the panel wherever the daemon is.
+        let openable = crate::doc::is_doc(&text) || exists(&links::resolve(links::path_and_line(&text).0, &base));
         Some(InlineElement::new(file_chip(self.p, id, &text, openable, size)))
     }
 }
@@ -82,15 +83,22 @@ fn exists(path: &std::path::Path) -> bool {
 /// A path in a reply, as written, like any inline code: a quiet fill, no
 /// mark. One on this Mac (`openable`) underlines under the pointer — a click
 /// looks at it, ⌘-click opens it, ⌥-click shows it in Finder — and its menu
-/// also copies its path.
+/// also copies its path. A document (Markdown) opens in the panel at the
+/// right instead, from this Mac or another.
 pub fn file_chip(p: Palette, id: (&'static str, u64), written: &str, openable: bool, size: Pixels) -> impl IntoElement + use<> {
     let label = written.to_owned();
     let written = written.to_owned();
+    // No kind of file at its end: a folder.
+    let folder = {
+        let path = links::path_and_line(&written).0.trim_end_matches('/');
+        let name = path.rsplit('/').next().unwrap_or(path);
+        path.contains('/') && !name.contains('.')
+    };
     let resolve = move |cx: &mut App| -> PathBuf {
         let base = cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade()).map(|s| base_dir(s.read(cx))).unwrap_or_default();
         links::resolve(links::path_and_line(&written).0, &base)
     };
-    let (click, locate) = (resolve.clone(), resolve);
+    let (click, locate, add_locate) = (resolve.clone(), resolve.clone(), resolve);
     let accent = p.accent;
     div()
         .id(id)
@@ -109,6 +117,9 @@ pub fn file_chip(p: Palette, id: (&'static str, u64), written: &str, openable: b
                     _ => Open::Look,
                 };
                 let path = click(cx);
+                if how == Open::Look && crate::doc::is_doc(&path.to_string_lossy()) {
+                    return super::with_shell(cx, |shell, cx| shell.open_doc(path, cx));
+                }
                 open_file(&path, how, cx);
             })
         })
@@ -118,16 +129,27 @@ pub fn file_chip(p: Palette, id: (&'static str, u64), written: &str, openable: b
                 PopupMenuItem::new(label).on_click(move |_, _, cx| {
                     let path = locate(cx);
                     match how {
+                        Some(Open::Look) if crate::doc::is_doc(&path.to_string_lossy()) => super::with_shell(cx, |shell, cx| shell.open_doc(path, cx)),
                         Some(how) => open_file(&path, how, cx),
                         None => cx.write_to_clipboard(ClipboardItem::new_string(path.display().to_string())),
                     }
                 })
             };
-            menu.item(item(t!("render.file_look"), Some(Open::Look)))
+            let menu = menu.item(item(t!("render.file_look"), Some(Open::Look)))
                 .item(item(t!("render.file_open"), Some(Open::Edit)))
                 .item(item(t!("render.file_reveal"), Some(Open::Reveal)))
                 .separator()
-                .item(item(t!("render.file_copy_path"), None))
+                .item(item(t!("render.file_copy_path"), None));
+            // A folder a member made (a new project): one click puts it on the squad.
+            if folder {
+                let locate = add_locate.clone();
+                menu.separator().item(PopupMenuItem::new(t!("render.add_as_project")).on_click(move |_, _, cx| {
+                    let path = locate(cx);
+                    super::with_shell(cx, |shell, cx| shell.add_project(path.display().to_string(), cx));
+                }))
+            } else {
+                menu
+            }
         })
 }
 
@@ -174,6 +196,10 @@ impl MarkdownPlugin for Images {
                 (crate::views::visuals::Shots::of(read, shell.downgrade(), cx), base_dir(read))
             };
             let lexical = |written: &str| equipe_core::visuals::markdown::lexical(written, &base).map(|p| p.to_string_lossy().into_owned());
+            // A folder in a picture's place: its pictures come as the strip under the reply.
+            if !image.url.trim_end_matches('/').rsplit('/').next().is_some_and(|n| n.contains('.')) {
+                return Some(InlineElement::new(div()));
+            }
             if let Some(path) = lexical(&image.url) {
                 let pictures: Vec<(String, String)> = image.all.iter().filter_map(|(w, alt)| Some((lexical(w)?, alt.clone()))).collect();
                 return Some(InlineElement::new(crate::views::visuals::inline(&shots, self.scope, &path, &image.alt, &pictures, self.live, cx)));

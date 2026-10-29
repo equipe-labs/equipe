@@ -30,6 +30,7 @@ use crate::motion;
 use crate::target::Endpoint;
 use crate::theme::{CONTROL, GAP, ICON, ICON_SM, MONO, Palette, R_LG, R_MD, R_SM, R_XL, ROW, SMALL, look};
 use crate::tips::tip;
+use crate::transcribe::Failure;
 use crate::{Screen, Shell, files, media};
 
 /// How tall the box may grow, in lines, before it scrolls inside.
@@ -40,6 +41,16 @@ const ROWS: usize = 8;
 const SAVE_AFTER: Duration = Duration::from_millis(800);
 
 actions!(composer, [OpenAttach, StopMember, OpenModels, OpenEffort, OpenModes, PasteInline, SendInverted]);
+
+/// Where an attachment goes: the message being written, an answer to a
+/// member's question (`(set, question)`), or to an ask of a ticket waiting for
+/// the person (`(ticket, ask)`) — whose words carry its tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AttachTo {
+    Composer,
+    Answer(u64, usize),
+    Turn(u32, usize),
+}
 
 /// The composer's own keys (main.rs binds them with the app's).
 pub fn bind_keys(cx: &mut App) {
@@ -223,6 +234,12 @@ pub struct Composer {
     guard: EnterGuard,
     /// One quiet line over the box: what the last send did.
     pub flash: Option<String>,
+    /// Words of the conversation quoted to ask about ("Ask about this"),
+    /// over the box until sent — each a blockquote before the question.
+    pub quotes: Vec<String>,
+    /// What went wrong with something the person asked for (a merge that
+    /// didn't land): a notice over the box, framed, until closed.
+    pub problem: Option<String>,
     /// ⏎ while attachments still upload: sent the moment they're up (as a
     /// memo when `true`), the person typing on meanwhile; Esc takes it back.
     pub send_when_ready: Option<bool>,
@@ -286,6 +303,8 @@ impl Composer {
             drafts: Drafts::load(Drafts::file(&equipe_providers::credentials::equipe_home())),
             guard: EnterGuard::default(),
             flash: None,
+            quotes: Vec::new(),
+            problem: None,
             send_when_ready: None,
             choices: Vec::new(),
             pick: 0,
@@ -444,9 +463,11 @@ fn placeholder(model: &Model) -> String {
             t!("composer.placeholder_ticket", id = ticket, name = to)
         }
         // To the PM, with a project in focus: about it.
-        None => match model.focus.as_deref().filter(|_| Model::is_pm(member)) {
-            Some(project) => t!("composer.placeholder_to_in", name = member.name, project = project),
-            None => t!("composer.placeholder_to", name = member.name),
+        None => match (model.focus.as_deref(), Model::is_pm(member)) {
+            (Some(project), true) => t!("composer.placeholder_to_in", name = member.name, project = project),
+            // The PM with no project in focus: anything at all, a new project too.
+            (None, true) => t!("composer.placeholder_to_pm_any", name = member.name),
+            _ => t!("composer.placeholder_to", name = member.name),
         },
     }
 }
@@ -548,13 +569,17 @@ impl Shell {
         // person's flow isn't stopped by a progress bar.
         if self.composer.strip.busy() {
             self.composer.send_when_ready = Some(later);
-            self.composer.flash = Some(t!("composer.sends_when_uploaded").into());
+            let writing = self.composer.strip.items().iter().any(|i| i.writing);
+            self.composer.flash = Some(if writing { t!("composer.sends_when_written") } else { t!("composer.sends_when_uploaded") }.into());
             cx.notify();
             return;
         }
         self.composer.send_when_ready = None;
         let tags = self.composer.strip.tags();
-        let text = attach::message(&typed, &tags);
+        // What was quoted goes first, a blockquote each; the question after.
+        let quoted = !self.composer.quotes.is_empty() && !typed.trim().starts_with('/');
+        let typed_with_quotes = if quoted { crate::quote::message_all(&self.composer.quotes, &typed) } else { typed.clone() };
+        let text = attach::message(&typed_with_quotes, &tags);
         let carries = !tags.is_empty() && !typed.trim().starts_with('/');
         let plan = compose::plan(&self.model, &text, later);
         if plan.commands.is_empty() && plan.flash.is_none() && plan.effect.is_none() && plan.restore.is_none() {
@@ -567,6 +592,10 @@ impl Shell {
         // The attachments went with the message; one that couldn't be sent keeps them.
         if carries && plan.restore.is_none() && !plan.commands.is_empty() {
             self.composer.strip.clear();
+        }
+        // So did the quotes.
+        if quoted && plan.restore.is_none() && !plan.commands.is_empty() {
+            self.composer.quotes.clear();
         }
         for command in plan.commands {
             self.send_command(command);
@@ -658,20 +687,128 @@ impl Shell {
     /// Attach: each is checked, read on this Mac and sent to the daemon's
     /// machine on a thread of the background pool; its chip shows how far it got.
     pub fn attach_sources(&mut self, sources: Vec<Source>, cx: &mut Context<Self>) {
+        self.attach_sources_to(AttachTo::Composer, sources, cx);
+    }
+
+    /// Where an attachment goes: the strip it waits in.
+    pub fn strip_mut(&mut self, to: AttachTo) -> &mut attach::Strip {
+        match to {
+            AttachTo::Composer => &mut self.composer.strip,
+            AttachTo::Answer(set, question) => self.decide.strips.entry((set, question)).or_default(),
+            AttachTo::Turn(ticket, ask) => self.turn.strips.entry((ticket, ask)).or_default(),
+        }
+    }
+
+    /// What is attached to an answer, if anything.
+    pub fn strip_of(&self, to: AttachTo) -> Option<&attach::Strip> {
+        match to {
+            AttachTo::Composer => Some(&self.composer.strip),
+            AttachTo::Answer(set, question) => self.decide.strips.get(&(set, question)),
+            AttachTo::Turn(ticket, ask) => self.turn.strips.get(&(ticket, ask)),
+        }
+    }
+
+    /// The tags an answer's attachments add to its words: what the member opens.
+    pub fn answer_tags(&self, to: AttachTo) -> String {
+        self.strip_of(to).map(attach::Strip::tags).unwrap_or_default()
+    }
+
+    /// ⌘V in an answer's box: files or a picture on the clipboard are attached
+    /// to it; anything else is the box's to paste.
+    pub fn paste_into(&mut self, to: AttachTo, item: &ClipboardItem, cx: &mut Context<Self>) -> bool {
+        match attach::from_clipboard(item) {
+            Some(sources) => {
+                self.attach_sources_to(to, sources, cx);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Files dropped on an answer's box: attached to it; a folder, its path written in.
+    pub fn drop_into(&mut self, to: AttachTo, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer.drag = None;
+        let (files, folders) = attach::from_drop(paths.paths());
+        if let Some(field) = self.answer_field(to).filter(|_| !folders.is_empty()) {
+            field.update(cx, |s, cx| {
+                let mut text = s.value().to_string();
+                for path in &folders {
+                    if !text.is_empty() && !text.ends_with(' ') {
+                        text.push(' ');
+                    }
+                    text.push_str(&path.to_string_lossy());
+                }
+                s.set_value(text, window, cx);
+            });
+        }
+        self.attach_sources_to(to, files, cx);
+    }
+
+    /// "첨부": the system's file picker, into an answer.
+    pub fn pick_into(&mut self, to: AttachTo, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(t!("composer.pick_prompt").into()) });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = picked.await {
+                this.update(cx, |this, cx| this.attach_sources_to(to, paths.into_iter().map(Source::File).collect(), cx)).ok();
+            }
+        })
+        .detach();
+    }
+
+    /// An attachment taken off an answer.
+    pub fn unattach_from(&mut self, to: AttachTo, id: u64, cx: &mut Context<Self>) {
+        self.strip_mut(to).remove(id);
+        self.answer_redrawn(to, cx);
+    }
+
+    /// An answer's box, by where its attachments go.
+    fn answer_field(&self, to: AttachTo) -> Option<Entity<TextareaState>> {
+        match to {
+            AttachTo::Composer => Some(self.composer.state.clone()),
+            AttachTo::Answer(set, question) => self.decide.fields.get(&(set, question)).cloned(),
+            AttachTo::Turn(ticket, ask) => self.turn.fields.get(&(ticket, ask)).cloned(),
+        }
+    }
+
+    /// An answer's attachments changed: its card is drawn — and measured — again.
+    fn answer_redrawn(&mut self, to: AttachTo, cx: &mut Context<Self>) {
+        if let AttachTo::Turn(ticket, _) = to {
+            self.chat_remeasure_turn(ticket, cx);
+        }
+        self.model.revision += 1;
+        cx.notify();
+    }
+
+    /// Attach `sources` to the message being written, or to an answer.
+    pub fn attach_sources_to(&mut self, to: AttachTo, sources: Vec<Source>, cx: &mut Context<Self>) {
+        let composer = to == AttachTo::Composer;
+        // The ask being answered stays open while its file goes up: the step
+        // doesn't move on under the person.
+        if let AttachTo::Turn(ticket, n) = to {
+            self.turn.open.insert(ticket, n);
+        }
         let store = self.store();
         let mut over = 0;
         for source in sources {
             if let Some(path) = source.path() {
                 if let Err(why) = attach::check(path) {
-                    self.composer.strip.refuse(&source.name(), source.kind(), why);
+                    self.strip_mut(to).refuse(&source.name(), source.kind(), why);
                     continue;
                 }
-                self.composer.drafts.used(path);
+                if composer {
+                    self.composer.drafts.used(path);
+                }
             }
-            let Some(id) = self.composer.strip.begin(&source) else {
+            let Some(id) = self.strip_mut(to).begin(&source) else {
                 over += 1;
                 continue;
             };
+            if let Source::File(path) = &source
+                && composer
+                && source.kind() == Kind::Audio
+            {
+                self.write_down(id, path.clone(), cx);
+            }
             let store = store.clone();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Step>();
             cx.background_spawn(async move {
@@ -680,6 +817,12 @@ impl Shell {
                     Err(why) => return drop(tx.send(Step::Done(Err(why)))),
                 };
                 let _ = tx.send(Step::Shown(Box::new(prepared_head(&prepared))));
+                if let (attach::Kind::Image, attach::Payload::Bytes { name, bytes }) = (prepared.kind, &prepared.main) {
+                    let path = crate::ssh::scratch_dir().join(format!("{}-{}", std::process::id(), crate::ssh::safe_name(std::path::Path::new(name))));
+                    if std::fs::write(&path, bytes).is_ok() {
+                        let _ = tx.send(Step::Whole(path));
+                    }
+                }
                 let Some(store) = store else {
                     return drop(tx.send(Step::Done(Err(t!("composer.not_connected").into()))));
                 };
@@ -697,13 +840,16 @@ impl Shell {
                 while let Some(step) = rx.recv().await {
                     let finished = matches!(step, Step::Done(_));
                     let alive = this.update(cx, |this, cx| {
-                        let strip = &mut this.composer.strip;
                         let redraw = match step {
                             Step::Shown(prepared) => {
-                                strip.prepared(id, &prepared);
+                                this.strip_mut(to).prepared(id, &prepared);
                                 true
                             }
-                            Step::Share(share) => strip.progress(id, share),
+                            Step::Share(share) => this.strip_mut(to).progress(id, share),
+                            Step::Whole(path) => {
+                                this.strip_mut(to).whole(id, path);
+                                false
+                            }
                             Step::Seen(seen) => {
                                 let mut sent = this.chat.sent.borrow_mut();
                                 for (path, shown) in seen {
@@ -712,13 +858,19 @@ impl Shell {
                                 false
                             }
                             Step::Done(done) => {
-                                strip.finish(id, done);
-                                this.save_drafts_soon(cx);
+                                this.strip_mut(to).finish(id, done);
+                                if composer {
+                                    this.save_drafts_soon(cx);
+                                }
                                 true
                             }
                         };
                         if redraw {
-                            cx.notify();
+                            if composer {
+                                cx.notify();
+                            } else {
+                                this.answer_redrawn(to, cx);
+                            }
                         }
                     });
                     if alive.is_err() || finished {
@@ -732,6 +884,42 @@ impl Shell {
             self.composer.flash = Some(t!("composer.too_many", n = attach::MAX_ATTACHMENTS, over = over));
         }
         cx.notify();
+    }
+
+    /// A recording attached (a voice memo, a call): written down on this Mac
+    /// too, and its words attached beside it as a text file, so a member reads
+    /// what was said, on this Mac's daemon or a far one alike.
+    fn write_down(&mut self, id: u64, path: PathBuf, cx: &mut Context<Self>) {
+        self.composer.strip.writing(id, true);
+        let locale = speech_locale(crate::i18n::lang());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let from = path.clone();
+        // Minutes for a long one: its own thread, not one of the pool's.
+        std::thread::spawn(move || drop(tx.send(crate::transcribe::transcribe(&from, locale, media::audio_duration(&from)))));
+        cx.spawn(async move |this, cx| {
+            let heard = rx.await.unwrap_or_else(|_| Err(Failure::Failed("stopped".into())));
+            let _ = this.update(cx, |this, cx| {
+                // Taken off meanwhile: its words aren't wanted either.
+                if !this.composer.strip.writing(id, false) {
+                    return cx.notify();
+                }
+                let name = attach::file_name(&path);
+                this.composer.flash = Some(match heard {
+                    Ok(words) => {
+                        let stem = path.file_stem().map_or_else(|| name.clone(), |s| s.to_string_lossy().into_owned());
+                        let text = format!("{}\n\n{}\n", t!("composer.transcript_head", name = name), words.trim());
+                        this.attach_sources(vec![Source::Text { name: format!("{}.txt", t!("composer.transcript_name", name = stem)), text }], cx);
+                        t!("composer.transcribed", name = name)
+                    }
+                    Err(Failure::Denied) => t!("composer.transcribe_denied").into(),
+                    Err(Failure::Unsupported) => t!("composer.transcribe_unsupported").into(),
+                    Err(Failure::NoSpeech) => t!("composer.transcribe_no_speech", name = name),
+                    Err(Failure::Failed(why)) => t!("composer.transcribe_failed", why = why),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// ⌘V in the box. True when the clipboard held files or a picture and they
@@ -1385,6 +1573,8 @@ impl Shell {
 /// One step of an attachment on its way, as the UI hears it.
 enum Step {
     Shown(Box<attach::Prepared>),
+    /// A pasted picture's bytes, kept whole in a scratch file for its big view.
+    Whole(PathBuf),
     Share(f32),
     /// What the conversation shows of it once sent, by its paths there.
     Seen(Vec<(String, crate::sent::Shown)>),
@@ -1445,12 +1635,53 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .flex_none()
         .pb_3()
         // Lined up with the text in the card: its padding and border.
+        .children(composer.problem.clone().map(|problem| problem_notice(p, problem, cx)))
         .children(composer.flash.clone().map(|flash| motion::fade(div().px(px(INSET + 1.)).pb_2().text_size(px(SMALL)).text_color(p.text2).child(flash.clone()), ElementId::Name(format!("flash-{}", crate::render::hash_of(&flash)).into()), motion::BASE)))
         .child(card(shell, cx))
 }
 
 /// The card's inner padding: the text and the bar's controls start here.
 const INSET: f32 = 12.;
+
+/// Something the person asked for that went wrong: framed and marked, so it
+/// never reads as a member's words — closed with ✕.
+fn problem_notice(p: Palette, problem: String, cx: &mut Context<Shell>) -> AnyElement {
+    let id = ElementId::Name(format!("problem-{}", crate::render::hash_of(&problem)).into());
+    motion::fade(
+        h_flex()
+            .w_full()
+            .mb_2()
+            .px_3()
+            .py(px(8.))
+            .gap_2()
+            .items_start()
+            .rounded(px(R_MD))
+            .bg(p.raised)
+            .border_1()
+            .border_color(p.hair)
+            .child(div().flex_none().mt(px(2.)).child(icon(Icon::Warning, ICON_SM, p.amber)))
+            .child(div().flex_1().min_w_0().text_size(px(13.)).line_height(px(19.)).text_color(p.text).child(problem))
+            .child(
+                div()
+                    .id("problem-close")
+                    .flex_none()
+                    .px_1()
+                    .rounded(px(R_SM))
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .text_color(p.muted)
+                    .hover(move |s| s.text_color(p.text).bg(p.wash))
+                    .child("✕")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.composer.problem = None;
+                        cx.notify();
+                    })),
+            ),
+        id,
+        motion::BASE,
+    )
+    .into_any_element()
+}
 
 fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
@@ -1479,6 +1710,7 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         .on_action(cx.listener(|this, _: &SendInverted, window, cx| this.send_inverted(window, cx)))
         .children(completion(shell, cx))
         .children(menu_layer(shell, cx))
+        .children(quotes(shell, cx))
         .children(strip(shell, cx))
         .child(
             motion::SmoothHeight::new(
@@ -2045,6 +2277,43 @@ fn recipient(p: Palette, model: &Model, text: &str) -> (String, Rgba) {
 /// How close to the attachment limit before the strip shows its count.
 const NEAR_LIMIT: usize = 5;
 
+/// What is quoted to ask about, over the box: a quiet bar at each one's
+/// left, its first two lines, and ✕.
+fn quotes(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
+    if shell.composer.quotes.is_empty() {
+        return None;
+    }
+    let p = shell.palette;
+    let rows = shell.composer.quotes.iter().enumerate().map(|(n, quote)| {
+        h_flex()
+            .id(("composer-quote", n))
+            .w_full()
+            .gap(px(9.))
+            .items_start()
+            .child(div().flex_none().w(px(2.)).h(px(38.)).rounded_full().bg(Rgba { a: 0.6, ..p.accent }))
+            .child(div().flex_1().min_w_0().text_size(px(SMALL)).line_height(px(19.)).text_color(p.text2).line_clamp(2).text_ellipsis().child(quote.clone()))
+            .child(
+                div()
+                    .id(("composer-unquote", n))
+                    .flex_none()
+                    .px_1()
+                    .rounded(px(R_SM))
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .text_color(p.muted)
+                    .hover(move |s| s.text_color(p.text).bg(p.wash))
+                    .child("✕")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if n < this.composer.quotes.len() {
+                            this.composer.quotes.remove(n);
+                        }
+                        cx.notify();
+                    })),
+            )
+    });
+    Some(v_flex().px(px(INSET)).pt(px(INSET)).gap_2().children(rows))
+}
+
 fn strip(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
     let strip = &shell.composer.strip;
     if strip.is_empty() {
@@ -2109,6 +2378,7 @@ fn chip_detail(item: &attach::Item) -> String {
         Stage::Sending(share) => t!("composer.sending", percent = (share * 100.).round() as u32),
         // The chip names the file already.
         Stage::Failed(why) => why.strip_prefix(&format!("{} — ", item.name)).unwrap_or(why).to_owned(),
+        Stage::Ready(_) if item.writing => t!("composer.writing_down").into(),
         Stage::Ready(_) => {
             let size = attach::size_label(item.size);
             let m = &item.meta;
@@ -2373,6 +2643,8 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoEleme
     // What to show: the file itself on this Mac (a picture, a video's sheet), else the thumbnail.
     let sheet = ready.as_ref().and_then(|r| r.tag.split(" · ").find_map(|f| f.strip_prefix("sheet: ")).map(|s| PathBuf::from(s.trim_end_matches(']'))));
     let shown: Option<ImageSource> = match (item.kind, local, &ready) {
+        // The picture whole, on this Mac or not: a paste's kept copy, a file where it is.
+        (Kind::Image, _, _) if item.whole.as_ref().is_some_and(|p| p.is_file()) => item.whole.clone().map(Into::into),
         (Kind::Image, true, Some(r)) => Some(PathBuf::from(&r.path).into()),
         (Kind::Video, true, Some(_)) => sheet.map(Into::into),
         (Kind::Pdf, _, _) => shell.composer.page.as_ref().filter(|(at, _)| *at == id).map(|(_, page)| page.clone().into()),
@@ -2416,7 +2688,8 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoEleme
                     .justify_center()
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .child(match shown {
-                        Some(source) => img(source).max_w_full().max_h_full().object_fit(ObjectFit::Contain).rounded(px(8.)).into_any_element(),
+                        // As big as the window lets it be, its shape kept.
+                        Some(source) => img(source).size_full().object_fit(ObjectFit::Contain).rounded(px(8.)).into_any_element(),
                         None => div().size(px(160.)).rounded(px(R_XL)).bg(rgba(0xFFFFFF14)).flex().items_center().justify_center().text_size(px(28.)).font_weight(FontWeight::BOLD).text_color(rgb(0xFFFFFF)).child(attach::badge(&item.name, item.kind)).into_any_element(),
                     }),
                 ("lightbox-shown", id),
@@ -2462,6 +2735,95 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoEleme
     Some(motion::fade(backdrop, "lightbox-in", motion::BASE))
 }
 
+
+/// An answer's attachments, one small chip each — its picture or kind, its
+/// name, how far it got or why it failed, and ✕ — and "첨부" to add one.
+pub fn answer_attachments(p: Palette, to: AttachTo, key: u64, items: Vec<attach::Item>, handle: WeakEntity<Shell>) -> AnyElement {
+    let chips = items.into_iter().map(|item| {
+        let id = item.id;
+        let failed = item.failed().map(str::to_owned);
+        let state = match item.stage {
+            Stage::Preparing => Some(t!("composer.preparing").to_owned()),
+            Stage::Sending(s) => Some(format!("{}%", (s * 100.).round() as u32)),
+            _ => None,
+        };
+        let face = match (&item.thumb, item.kind) {
+            (Some(thumb), Kind::Image) => img(thumb.clone()).size(px(18.)).rounded(px(4.)).object_fit(ObjectFit::Cover).into_any_element(),
+            _ => icon(if item.kind == Kind::Audio { Icon::Mic } else { Icon::File }, ICON_SM, p.muted).into_any_element(),
+        };
+        let off = handle.clone();
+        h_flex()
+            .id(SharedString::from(format!("answer-chip-{key}-{id}")))
+            .h(px(26.))
+            .max_w(px(260.))
+            .pl(px(5.))
+            .pr_1()
+            .gap(px(6.))
+            .items_center()
+            .rounded(px(R_SM + 2.))
+            .bg(p.wash)
+            .border_1()
+            .border_color(if failed.is_some() { p.danger() } else { p.hair })
+            .text_size(px(12.))
+            .child(face)
+            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(p.text).child(item.name.clone()))
+            .children(state.map(|s| div().flex_none().text_color(p.muted).child(s)))
+            .children(failed.map(|why| div().flex_none().max_w(px(120.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(p.danger()).child(why)))
+            .child(
+                div()
+                    .id(SharedString::from(format!("answer-unattach-{key}-{id}")))
+                    .flex_none()
+                    .px_1()
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .text_color(p.muted)
+                    .hover(move |s| s.text_color(p.text).bg(p.hair))
+                    .child("✕")
+                    .on_click(move |_, _, cx| {
+                        off.update(cx, |this, cx| this.unattach_from(to, id, cx)).ok();
+                    }),
+            )
+    });
+    let pick = handle.clone();
+    h_flex()
+        .w_full()
+        .flex_wrap()
+        .gap_1p5()
+        .items_center()
+        .children(chips)
+        .child(
+            h_flex()
+                .id(SharedString::from(format!("answer-attach-{key}")))
+                .h(px(26.))
+                .px_2()
+                .gap_1()
+                .items_center()
+                .rounded(px(R_SM + 2.))
+                .cursor_pointer()
+                .text_size(px(12.))
+                .text_color(p.muted)
+                .hover(move |s| s.text_color(p.text).bg(p.wash))
+                .child(icon(Icon::Paperclip, ICON_SM, p.muted))
+                .child(t!("composer.attach_answer"))
+                .on_click(move |_, _, cx| {
+                    pick.update(cx, |this, cx| this.pick_into(to, cx)).ok();
+                }),
+        )
+        .into_any_element()
+}
+
+/// An answer's box, taking pasted and dropped files as its attachments.
+pub fn answer_box(field: &Entity<TextareaState>, to: AttachTo, handle: WeakEntity<Shell>) -> Textarea {
+    Textarea::new(field).appearance(false).bordered(false).on_paste(move |item, _, cx| handle.update(cx, |shell, cx| shell.paste_into(to, item, cx)).unwrap_or(false))
+}
+
+/// What a box takes when files are dropped on it: attached to its answer, and no further.
+pub fn on_answer_drop(to: AttachTo, handle: WeakEntity<Shell>) -> impl Fn(&ExternalPaths, &mut Window, &mut App) + 'static {
+    move |paths, window, cx| {
+        handle.update(cx, |shell, cx| shell.drop_into(to, paths, window, cx)).ok();
+        cx.stop_propagation();
+    }
+}
 
 #[cfg(test)]
 mod tests {

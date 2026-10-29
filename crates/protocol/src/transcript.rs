@@ -79,8 +79,9 @@ impl Transcript {
         // A tool's answer goes onto its line, which was final already: the
         // outcome lives in memory, for the screens, not in the journal.
         if let Event::ToolResult { tool: name, target: on, outcome, .. } = event {
-            let open = self.entries.iter_mut().rev().take(TOOL_LOOKBACK).find_map(|entry| match entry {
-                Entry::Tool { tool, target, outcome: slot } if tool == name && target == on && slot.is_none() => Some(slot),
+            // One run in the background answers long after, past any lookback.
+            let open = self.entries.iter_mut().rev().enumerate().find_map(|(back, entry)| match entry {
+                Entry::Tool { tool, target, outcome: slot, background, .. } if tool == name && target == on && slot.is_none() && (back < TOOL_LOOKBACK || *background) => Some(slot),
                 _ => None,
             });
             if let Some(slot) = open {
@@ -103,7 +104,7 @@ impl Transcript {
                     None => format!("── T-{ticket} · {title}"),
                 },
             }),
-            Event::ToolUse { tool, target, .. } => Some(Entry::Tool { tool: tool.clone(), target: target.clone(), outcome: None }),
+            Event::ToolUse { tool, target, label, background, .. } => Some(Entry::Tool { tool: tool.clone(), target: target.clone(), outcome: None, label: label.clone(), background: *background }),
             Event::TurnEnded { outcome: TurnOutcome::Interrupted, .. } => Some(Entry::Note { text: notes::STOPPED.into() }),
             Event::TurnEnded { outcome: TurnOutcome::Incomplete, .. } => {
                 Some(Entry::Note { text: notes::ENDED_EARLY.into() })
@@ -358,7 +359,7 @@ mod tests {
             Entry::Thread { project: project.map(str::to_owned) }
         }
         fn tool() -> Entry {
-            Entry::Tool { tool: "Read".into(), target: None, outcome: None }
+            Entry::Tool { tool: "Read".into(), target: None, outcome: None, label: None, background: false }
         }
 
         #[test]
@@ -486,8 +487,8 @@ mod tests {
     fn a_tool_use_closes_the_reply_and_starts_a_new_one_after() {
         let mut t = Transcript::default();
         t.apply(&delta("Let me look."));
-        let done = t.apply(&Event::ToolUse { session: 1, tool: "Read".into(), target: Some("a.rs".into()) });
-        assert_eq!(done, vec![Entry::Reply { text: "Let me look.".into() }, Entry::Tool { tool: "Read".into(), target: Some("a.rs".into()), outcome: None }]);
+        let done = t.apply(&Event::ToolUse { session: 1, tool: "Read".into(), target: Some("a.rs".into()), label: None, background: false });
+        assert_eq!(done, vec![Entry::Reply { text: "Let me look.".into() }, Entry::Tool { tool: "Read".into(), target: Some("a.rs".into()), outcome: None, label: None, background: false }]);
         t.apply(&delta("Done."));
         assert_eq!(t.entries().len(), 3);
     }
@@ -526,6 +527,19 @@ mod tests {
     }
 
     #[test]
+    fn a_compaction_makes_no_line_and_leaves_the_reply_open() {
+        use crate::CompactTrigger::Auto;
+        let mut t = Transcript::default();
+        t.apply(&delta("Look"));
+        let (member, project) = (Some("pm".to_owned()), None);
+        assert!(t.apply(&Event::Compacting { session: 1, member: member.clone(), project: project.clone(), trigger: Auto, started_at: 1, estimate_ms: 2 }).is_empty());
+        assert!(t.apply(&Event::Compacted { session: 1, member: member.clone(), project: project.clone(), trigger: Auto, took_ms: 2 }).is_empty());
+        assert!(t.apply(&Event::CompactFailed { session: 1, member, project, trigger: Auto, message: "x".into() }).is_empty());
+        t.apply(&delta("ing."));
+        assert_eq!(t.entries(), &[Entry::Reply { text: "Looking.".into() }]);
+    }
+
+    #[test]
     fn a_steer_read_ends_the_reply_so_far() {
         let mut t = Transcript::default();
         t.apply(&delta("Look"));
@@ -548,7 +562,7 @@ mod tests {
     #[test]
     fn a_tool_result_lands_on_its_call_without_splitting_the_reply() {
         let mut t = Transcript::default();
-        let call = |target: &str| Event::ToolUse { session: 1, tool: "Bash".into(), target: Some(target.into()) };
+        let call = |target: &str| Event::ToolUse { session: 1, tool: "Bash".into(), target: Some(target.into()), label: None, background: false };
         let result = |target: &str, ok: bool| Event::ToolResult {
             session: 1,
             tool: "Bash".into(),

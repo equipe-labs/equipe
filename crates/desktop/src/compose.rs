@@ -528,13 +528,14 @@ fn said(model: &Model, text: &str, later: bool) -> Plan {
         // CLI's `turn/steer`); a daemon that can't steer one leaves a memo.
         Presence::Working if later || target.engine.is_none() => Plan {
             commands: vec![Command::SubmitLater { session: target.session, text: text.to_owned(), about: Some(model.focus.clone()) }],
-            flash: Some(t!("compose.memo_left", name = target.name)),
+            // In sight, its waiting bubble says so already; to someone else, a line.
+            flash: away.then(|| t!("compose.memo_left", name = target.name)),
             ..Plan::default()
         },
         // Steering: read at its next step, the work carrying on.
         Presence::Working => Plan {
             commands: vec![Command::Submit { session: target.session, text: text.to_owned(), about: Some(model.focus.clone()) }],
-            flash: Some(t!("compose.steered", name = target.name)),
+            flash: away.then(|| t!("compose.steered", name = target.name)),
             ..Plan::default()
         },
         Presence::Ready if !away && model.opens_lane() => Plan {
@@ -1067,6 +1068,7 @@ mod tests {
             steering_in: vec![],
             lane: None,
             estimate: None,
+            compacting: None,
         }
     }
 
@@ -1123,8 +1125,11 @@ mod tests {
     #[test]
     fn the_pm_on_a_ticket_of_its_own_answers_beside_it_and_others_are_steered() {
         let mut model = squad(vec![session(1, "pm", SessionState::Working), session(2, "frontend", SessionState::Working)]);
-        // The PM at work at its desk: steered.
-        assert!(plan(&model, "이거 해").flash.unwrap().contains("다음 단계에서 읽습니다"));
+        // The PM at work at its desk: steered — its bubble says "read at the
+        // next step" and the box says Tab leaves a memo: no third line saying it.
+        let p = plan(&model, "이거 해");
+        assert_eq!(p.commands, vec![submit(1, "이거 해")]);
+        assert_eq!(p.flash, None);
         // On a ticket of its own: free to talk, beside the work.
         model.members[0].ticket = Some(4);
         let p = plan(&model, "앱은?");
@@ -1133,7 +1138,11 @@ mod tests {
         // A member on a ticket: what is said steers it.
         model.members[1].ticket = Some(5);
         model.select(2);
-        assert!(plan(&model, "푸터는 빼").flash.unwrap().contains("다음 단계에서 읽습니다"));
+        let p = plan(&model, "푸터는 빼");
+        assert_eq!(p.commands, vec![submit(2, "푸터는 빼")]);
+        assert_eq!(p.flash, None);
+        // A memo to the one in view: its bubble says so too.
+        assert_eq!(super::plan(&model, "끝나면 이것도", true).flash, None);
     }
 
     #[test]

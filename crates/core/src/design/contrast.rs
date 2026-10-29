@@ -80,15 +80,27 @@ fn score(token: &Token, names: &[&str]) -> u8 {
     }
 }
 
+/// The colour best named one of `names` — the system's own roles (under
+/// `color.`) before a component's (`button.primary.text` is the button's
+/// text, not the page's).
 fn best<'a>(tokens: &'a [Token], names: &[&str]) -> Option<&'a Token> {
-    let mut found: Option<(&Token, u8)> = None;
+    let mut found: Option<(&Token, (bool, u8))> = None;
     for t in tokens.iter().filter(|t| t.kind == "color") {
-        let s = score(t, names);
-        if s > 0 && found.is_none_or(|(_, b)| s > b) {
+        let s = (t.name.starts_with("color.") || !t.name.contains('.'), score(t, names));
+        if s.1 > 0 && found.is_none_or(|(_, b)| s > b) {
             found = Some((t, s));
         }
     }
     found.map(|(t, _)| t)
+}
+
+/// What a component's colour is drawn on: its sibling `bg`, `background` or
+/// `fill` (`button.primary.text` on `button.primary.bg`).
+pub fn sibling_fill<'a>(tokens: &'a [Token], token: &Token) -> Option<&'a Token> {
+    if token.name.starts_with("color.") {
+        return None;
+    }
+    tokens.iter().find(|t| t.kind == "color" && t.group() == token.group() && t.name != token.name && ["bg", "background", "fill", "surface"].contains(&t.leaf().to_ascii_lowercase().as_str()))
 }
 
 /// The design system's background in `mode`: a colour named `bg`,
@@ -124,7 +136,7 @@ pub fn measure(tokens: &[Token], token: &Token, mode: Option<&str>, dark: bool) 
     let own = color(token.value_in(mode))?;
     let (base, ink) = if dark { (Color::rgb(0x0A0A0C), Color::rgb(0xEFEDE7)) } else { (Color::WHITE, Color::rgb(0x15161A)) };
     let bg = background(tokens, mode, base);
-    if let Some(under) = drawn_on(tokens, token).and_then(|t| color(t.value_in(mode))) {
+    if let Some(under) = sibling_fill(tokens, token).or_else(|| drawn_on(tokens, token)).and_then(|t| color(t.value_in(mode))) {
         return Some(ratio(own, over(under, bg)));
     }
     if is_surface(token) {

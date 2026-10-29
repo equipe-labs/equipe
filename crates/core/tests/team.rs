@@ -55,6 +55,7 @@ fn config(claude: &Path, home: &Path, persist: bool) -> Config {
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,
+        person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::Ko,
     }
 }
@@ -132,7 +133,11 @@ async fn the_pm_proposes_the_person_approves_and_the_new_member_takes_the_waitin
     let odd = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "astronaut", "reason": "-" })).await;
     assert!(odd.is_error && odd.text.contains("No role called astronaut"), "{odd:?}");
 
-    let said = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "qa", "reason": "T-2가 기다려요 (qa는 T-1 중)", "unblocks": [2] })).await;
+    // Unasked, a few seconds after T-2 came: too soon — qa takes it as it finishes.
+    let soon = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "qa", "reason": "T-2가 기다려요", "unblocks": [2] })).await;
+    assert!(soon.is_error && soon.text.contains("has waited 0 min"), "{soon:?}");
+    // The person asked for one in words: it goes to them.
+    let said = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "qa", "reason": "T-2가 기다려요 (qa는 T-1 중)", "unblocks": [2], "asked": true })).await;
     assert!(!said.is_error && said.text.starts_with("Proposed — the person decides on a card."), "{said:?}");
     let change = proposed(&until(&mut events, |e| matches!(e, Event::TeamChangeProposed { .. })).await);
     assert_eq!((change.change, change.role.as_str(), change.count, change.unblocks.as_slice(), change.by.as_str(), change.session), (Change::Add, "qa", 1, &[2][..], "pm", 1));
@@ -231,7 +236,10 @@ async fn letting_go_a_member_that_left_anyway_no_longer_waits_and_nothing_waits_
 fn nothing_adds_or_lets_go_a_member_but_the_persons_commands() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = vec![src.join("runtime.rs")];
-    files.extend(std::fs::read_dir(src.join("runtime")).unwrap().flatten().map(|e| e.path()));
+    // In name order: a folder lists in a different order on Linux than on macOS.
+    let mut rest: Vec<_> = std::fs::read_dir(src.join("runtime")).unwrap().flatten().map(|e| e.path()).collect();
+    rest.sort();
+    files.extend(rest);
     let mut starts = Vec::new();
     let mut start_commands = Vec::new();
     let mut approvals = Vec::new();
@@ -263,11 +271,11 @@ fn nothing_adds_or_lets_go_a_member_but_the_persons_commands() {
         start_commands,
         [
             "runtime.rs: Command::Start { session, spec } => self.start(session, spec).await,",
-            "team.rs: Box::pin(self.handle(Command::Start { session, spec })).await;",
             // A member moving engines is started again under its own name (or,
             // when the other engine can't take it, where it was): nobody joins.
             "engines.rs: Box::pin(self.handle(Command::Start { session: fresh, spec })).await;",
             "engines.rs: Box::pin(self.handle(Command::Start { session: again, spec })).await;",
+            "team.rs: Box::pin(self.handle(Command::Start { session, spec })).await;",
         ],
         "only the approval sends what /add sends, and moving engines restarts a member"
     );

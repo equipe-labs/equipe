@@ -279,6 +279,8 @@ struct Pending {
     name: String,
     target: Option<String>,
     since: std::time::Instant,
+    /// Runs on in the background: done when its task says so, not when the call answers.
+    background: bool,
     /// The change the call asks for, worked out from its input.
     diff: Option<String>,
 }
@@ -302,8 +304,12 @@ pub struct TurnCollector {
     result: Option<Result<TurnResult>>,
     /// Subagents handed work this turn and not yet back.
     subagents: std::collections::HashSet<String>,
+    /// Commands running on in the background, by their call: done when their task says.
+    background: std::collections::HashMap<String, Pending>,
     /// The person's messages Claude Code has read so far — the prompt first.
     replayed: usize,
+    /// Compacting the conversation now: said once, though its status repeats.
+    compacting: bool,
 }
 
 /// A subagent run in the background answers its tool call at once with this;
@@ -334,6 +340,47 @@ impl TurnCollector {
             "system" if event.get("subtype").and_then(Value::as_str) == Some("init") => {
                 self.model = event.get("model").and_then(Value::as_str).map(str::to_owned);
                 self.model.clone().map(Activity::Model).into_iter().collect()
+            }
+            // A command run in the background finished: its step is done now.
+            "system"
+                if event.get("subtype").and_then(Value::as_str) == Some("task_notification")
+                    && event.get("tool_use_id").and_then(Value::as_str).is_some_and(|id| self.background.contains_key(id)) =>
+            {
+                let id = event.get("tool_use_id").and_then(Value::as_str).unwrap_or_default();
+                let Some(pending) = self.background.remove(id) else { return Vec::new() };
+                let ok = event.get("status").and_then(Value::as_str).is_none_or(|s| s == "completed");
+                let summary = event.get("summary").and_then(Value::as_str).unwrap_or_default().to_owned();
+                vec![Activity::ToolDone(ToolDone {
+                    ok,
+                    exit: None,
+                    ms: u64::try_from(pending.since.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    output: summary,
+                    diff: None,
+                    name: pending.name,
+                    target: pending.target,
+                })]
+            }
+            // Compacting the conversation: `status` `compacting` (repeated, on
+            // an automatic one, as its summary streams), then `status` null
+            // with `compact_result` `success` or `failed` (and
+            // `compact_error`); a `compact_boundary` follows a success.
+            "system" if event.get("subtype").and_then(Value::as_str) == Some("status") => {
+                match (event.get("status").and_then(Value::as_str), event.get("compact_result").and_then(Value::as_str)) {
+                    (Some("compacting"), _) if !self.compacting => {
+                        self.compacting = true;
+                        vec![Activity::Compacting]
+                    }
+                    (_, Some(result)) if self.compacting => {
+                        self.compacting = false;
+                        if result == "success" {
+                            vec![Activity::Compacted]
+                        } else {
+                            let why = event.get("compact_error").and_then(Value::as_str).filter(|e| !e.is_empty()).unwrap_or("Compaction failed");
+                            vec![Activity::CompactFailed(why.to_owned())]
+                        }
+                    }
+                    _ => Vec::new(),
+                }
             }
             // A subagent at work in the background: where it is, and when it is done.
             "system" => {
@@ -403,7 +450,7 @@ impl TurnCollector {
                     return tool_uses(event)
                         .into_iter()
                         .filter_map(|a| match a {
-                            Activity::Tool { name, target } => {
+                            Activity::Tool { name, target, .. } => {
                                 Some(Activity::SubagentStep { id: id.to_owned(), step: format!("{name} {}", target.unwrap_or_default()).trim().to_owned() })
                             }
                             _ => None,
@@ -420,7 +467,7 @@ impl TurnCollector {
                 for block in content_blocks(event).filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use")) {
                     if let (Some(id), Some(name)) = (block.get("id").and_then(Value::as_str), block.get("name").and_then(Value::as_str)) {
                         let input = block.get("input");
-                        let pending = Pending { name: name.to_owned(), target: tool_target(name, input), since: now, diff: input.and_then(|i| input_diff(name, i)) };
+                        let pending = Pending { name: name.to_owned(), target: tool_target(name, input), since: now, background: runs_in_background(name, input), diff: input.and_then(|i| input_diff(name, i)) };
                         self.pending.insert(id.to_owned(), pending);
                     }
                 }
@@ -458,8 +505,13 @@ impl TurnCollector {
                 for block in content_blocks(event).filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")) {
                     let Some(id) = block.get("tool_use_id").and_then(Value::as_str) else { continue };
                     let text = result_text(block);
-                    if let Some(pending) = self.pending.remove(id) {
-                        out.push(Activity::ToolDone(tool_done(pending, block, &text, structured)));
+                    match self.pending.remove(id) {
+                        // Started in the background: it answers at once, and runs on.
+                        Some(pending) if pending.background && block.get("is_error").and_then(Value::as_bool) != Some(true) => {
+                            self.background.insert(id.to_owned(), pending);
+                        }
+                        Some(pending) => out.push(Activity::ToolDone(tool_done(pending, block, &text, structured))),
+                        None => {}
                     }
                     if !text.starts_with(LAUNCHED_IN_BACKGROUND) && self.subagents.remove(id) {
                         out.push(Activity::SubagentEnded { id: id.to_owned() });
@@ -546,10 +598,27 @@ fn tool_uses(event: &Value) -> Vec<Activity> {
         .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
         .filter_map(|block| {
             let name = block.get("name").and_then(Value::as_str)?.to_owned();
-            let target = tool_target(&name, block.get("input"));
-            Some(Activity::Tool { name, target })
+            let input = block.get("input");
+            let target = tool_target(&name, input);
+            let (label, background) = (tool_label(&name, input), runs_in_background(&name, input));
+            Some(Activity::Tool { name, target, label, background })
         })
         .collect()
+}
+
+/// What a command does, in the agent's own words (Bash's `description`):
+/// what a screen shows over the command itself, as Claude Code's does.
+pub(crate) fn tool_label(name: &str, input: Option<&Value>) -> Option<String> {
+    (name == "Bash")
+        .then(|| input?.get("description")?.as_str())
+        .flatten()
+        .map(|d| d.lines().next().unwrap_or("").trim().chars().take(100).collect::<String>())
+        .filter(|d| !d.is_empty())
+}
+
+/// A command started to run on in the background (`run_in_background`).
+fn runs_in_background(name: &str, input: Option<&Value>) -> bool {
+    name == "Bash" && input.and_then(|i| i.get("run_in_background")).and_then(Value::as_bool) == Some(true)
 }
 
 /// The thing a tool use acts on, in one line.
@@ -764,7 +833,8 @@ pub async fn run_turn(
     });
 
     // The turn's first message; Claude Code reads more until its input ends,
-    // which is once the turn has its result and no subagent is still out.
+    // which is once the turn has its result and no subagent or background
+    // command is still out.
     let mut stdin = child.stdin.take();
     if let Some(input) = &mut stdin {
         let _ = input.write_all(user_message(request.prompt).as_bytes()).await;
@@ -800,8 +870,10 @@ pub async fn run_turn(
         match serde_json::from_str::<Value>(line) {
             Ok(event) => {
                 collector.on_event(&event).into_iter().for_each(&mut on_activity);
-                if event.get("type").and_then(Value::as_str) == Some("result") && collector.subagents.is_empty() {
-                    // Done: its input ends, and so does Claude Code.
+                // Done: its input ends, and so does Claude Code — unless a subagent
+                // or a command runs on in the background. Claude Code is still there
+                // then, waiting for it, and reads what the person says meanwhile.
+                if event.get("type").and_then(Value::as_str) == Some("result") && collector.subagents.is_empty() && collector.background.is_empty() {
                     stdin = None;
                 }
             }
@@ -1098,10 +1170,46 @@ mod tests {
             { "type": "tool_use", "name": "TodoWrite", "input": { "todos": [] } },
         ]}}));
         assert_eq!(activity, vec![
-            Activity::Tool { name: "Read".into(), target: Some("/repo/README.md".into()) },
-            Activity::Tool { name: "Bash".into(), target: Some("ls -la".into()) },
-            Activity::Tool { name: "TodoWrite".into(), target: None },
+            Activity::Tool { name: "Read".into(), target: Some("/repo/README.md".into()), label: None, background: false },
+            Activity::Tool { name: "Bash".into(), target: Some("ls -la".into()), label: None, background: false },
+            Activity::Tool { name: "TodoWrite".into(), target: None, label: None, background: false },
         ]);
+    }
+
+    #[test]
+    fn a_command_reads_as_its_description_and_one_in_the_background_runs_until_its_task_ends() {
+        let mut collector = TurnCollector::new();
+        let started = collector.on_event(&json!({ "type": "assistant", "message": { "content": [
+            { "type": "tool_use", "id": "toolu_1", "name": "Bash", "input": { "command": "cargo test -p equipe-desktop", "description": "Run the desktop tests" } },
+            { "type": "tool_use", "id": "toolu_2", "name": "Bash", "input": { "command": "until git log -1 | grep -q x; do sleep 30; done", "description": "Watch for a new commit or deployment", "run_in_background": true } },
+            { "type": "tool_use", "id": "toolu_3", "name": "Read", "input": { "file_path": "/w/a.rs", "description": "not a command's" } },
+        ]}}));
+        assert_eq!(started, vec![
+            Activity::Tool { name: "Bash".into(), target: Some("cargo test -p equipe-desktop".into()), label: Some("Run the desktop tests".into()), background: false },
+            Activity::Tool { name: "Bash".into(), target: Some("until git log -1 | grep -q x; do sleep 30; done".into()), label: Some("Watch for a new commit or deployment".into()), background: true },
+            Activity::Tool { name: "Read".into(), target: Some("/w/a.rs".into()), label: None, background: false },
+        ]);
+        // The one in the background answers at once: not done yet.
+        let answered = collector.on_event(&json!({ "type": "user", "message": { "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_1", "content": "ok" },
+            { "type": "tool_result", "tool_use_id": "toolu_2", "content": "Command running in background with ID: b1" },
+        ]}}));
+        let done: Vec<&str> = answered.iter().filter_map(|a| if let Activity::ToolDone(d) = a { d.target.as_deref() } else { None }).collect();
+        assert_eq!(done, ["cargo test -p equipe-desktop"]);
+        // Its task ends: now it is.
+        let other = collector.on_event(&json!({ "type": "system", "subtype": "task_notification", "tool_use_id": "toolu_9", "status": "completed" }));
+        assert!(other.is_empty(), "not one of ours");
+        let ended = collector.on_event(&json!({ "type": "system", "subtype": "task_notification", "task_id": "b1", "tool_use_id": "toolu_2", "status": "completed", "summary": "New commit 6ad5f11" }));
+        let [Activity::ToolDone(done)] = ended.as_slice() else { panic!("{ended:?}") };
+        assert!(done.ok && done.name == "Bash" && done.output == "New commit 6ad5f11", "{done:?}");
+        assert_eq!(done.target.as_deref(), Some("until git log -1 | grep -q x; do sleep 30; done"));
+        let failed = {
+            let mut c = TurnCollector::new();
+            c.on_event(&json!({ "type": "assistant", "message": { "content": [{ "type": "tool_use", "id": "t", "name": "Bash", "input": { "command": "x", "run_in_background": true } }] }}));
+            c.on_event(&json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": "t", "content": "started" }] }}));
+            c.on_event(&json!({ "type": "system", "subtype": "task_notification", "tool_use_id": "t", "status": "failed" }))
+        };
+        assert!(matches!(failed.as_slice(), [Activity::ToolDone(d)] if !d.ok));
     }
 
     #[test]
@@ -1113,8 +1221,8 @@ mod tests {
         ]}}));
         // The member's own step (shown in its conversation), and the subagent followed.
         assert_eq!(started, vec![
-            Activity::Tool { name: "Agent".into(), target: Some("Run the iOS tests".into()) },
-            Activity::Tool { name: "Task".into(), target: Some("Read the logs".into()) },
+            Activity::Tool { name: "Agent".into(), target: Some("Run the iOS tests".into()), label: None, background: false },
+            Activity::Tool { name: "Task".into(), target: Some("Read the logs".into()), label: None, background: false },
             Activity::SubagentStarted { id: "toolu_1".into(), what: "Run the iOS tests".into() },
             Activity::SubagentStarted { id: "toolu_2".into(), what: "Read the logs".into() },
         ]);
@@ -1294,6 +1402,34 @@ mod tests {
         })]);
         let err = result.unwrap_err();
         assert!(err.to_string().contains("Not logged in"));
+    }
+
+    #[test]
+    fn compacting_the_conversation_is_said_once_and_its_end_too() {
+        // As Claude Code 2.1.308 printed them on an automatic compaction (2026-10-27),
+        // ids cut: its status repeats while the summary streams.
+        let lines = [
+            r#"{"type":"system","subtype":"status","status":"compacting","compact_output_chars":0,"session_id":"s"}"#,
+            r#"{"type":"system","subtype":"status","status":"compacting","compact_output_chars":812,"session_id":"s"}"#,
+            r#"{"type":"system","subtype":"status","status":null,"compact_result":"success","session_id":"s"}"#,
+            r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto","pre_tokens":40409,"post_tokens":7753,"duration_ms":12361},"session_id":"s"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"This session is being continued from a previous conversation"}]},"isSynthetic":true,"session_id":"s"}"#,
+        ];
+        let mut collector = TurnCollector::new();
+        let seen: Vec<Activity> = lines.iter().flat_map(|l| collector.on_event(&serde_json::from_str(l).unwrap())).collect();
+        assert_eq!(seen, vec![Activity::Compacting, Activity::Compacted]);
+        // The summary it goes on from is not a message of the person's: a steer read next is still one.
+        let replay = |text: &str| json!({ "type": "user", "isReplay": true, "message": { "role": "user", "content": text } });
+        assert!(collector.on_event(&replay("the prompt")).is_empty());
+        assert_eq!(collector.on_event(&replay("and the nav")), vec![Activity::Steered("and the nav".into())]);
+
+        let mut collector = TurnCollector::new();
+        let _ = collector.on_event(&json!({ "type": "system", "subtype": "status", "status": "compacting" }));
+        let failed = collector.on_event(&json!({ "type": "system", "subtype": "status", "status": null, "compact_result": "failed", "compact_error": "Not enough messages to compact." }));
+        assert_eq!(failed, vec![Activity::CompactFailed("Not enough messages to compact.".into())]);
+        // Any other status says nothing.
+        assert!(collector.on_event(&json!({ "type": "system", "subtype": "status", "status": "requesting" })).is_empty());
+        assert!(collector.on_event(&json!({ "type": "system", "subtype": "status", "status": null })).is_empty());
     }
 
     #[test]

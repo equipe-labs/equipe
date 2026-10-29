@@ -170,7 +170,7 @@ pub fn failed_build() -> Vec<equipe_core::protocol::Entry> {
     let output = "   Compiling gpui v0.2.0\nerror: failed to write /Users/abel/.equipe/cache/build/demo/frontend/debug/deps/libgpui.rlib: No space left on device (os error 28)\n\nerror: could not compile `gpui` (lib) due to 1 previous error";
     let outcome = ToolOutcome { ok: false, exit: Some(101), ms: Some(48_200), output: output.into(), skipped: 0, diff: None };
     vec![
-        Entry::Tool { tool: "Bash".into(), target: Some("cargo build -p equipe-desktop".into()), outcome: Some(Box::new(outcome)) },
+        Entry::Tool { tool: "Bash".into(), target: Some("cargo build -p equipe-desktop".into()), outcome: Some(Box::new(outcome)), label: None, background: false },
         Entry::Note { text: equipe_core::i18n::core(equipe_core::i18n::Lang::Ko).fill("news.disk_build_failed", &[("name", "frontend".to_owned())]) },
     ]
 }

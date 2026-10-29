@@ -15,6 +15,32 @@ use crate::board;
 
 pub const PROPOSE_ACCEPT: &str = "propose_accept";
 
+/// The PM's own acceptance of its team's work, while the person lets it.
+pub const ACCEPT_WORK: &str = "accept_work";
+
+/// `accept_work`, as an MCP tool definition.
+pub fn accept_work_tool() -> Value {
+    json!({
+        "name": ACCEPT_WORK,
+        "description": "Accept your team's handed-in work yourself and merge it into main, once you have checked it: read \
+the hand-in, look at its diff and pictures, and make sure it does what its ticket asked without breaking anything else. \
+Tickets are how the squad splits and runs its work — the person doesn't review each one. Put to the person instead, with \
+`propose_accept`, only work that needs them: what can't easily be undone or reaches outside — a production deploy or \
+release, live data deleted or migrated, money or billing, security, permissions or accounts, what customers or other \
+people will see or receive — a brand or design direction, or anything they asked to see themselves. When it isn't \
+right, send it back to its member with `comment` and what to change.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tickets": { "type": "array", "items": { "type": "integer" }, "description": "The handed-in tickets you accept." },
+                "checked": { "type": "string", "description": "What you checked and found, in a line — kept on each ticket for the person." },
+                "push": { "type": "boolean", "description": "Push main once merged, so the work goes live where the project deploys from main — when the person asked for it to go live (\"배포해줘\"), or the project always ships what is on main." },
+            },
+            "required": ["tickets", "checked"],
+        },
+    })
+}
+
 /// How long a card the person said no to keeps the same one from coming back.
 pub const DECLINED_FOR: u64 = 120;
 

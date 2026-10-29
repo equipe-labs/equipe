@@ -880,6 +880,7 @@
   "view.more_steps.other": "还有 {count} 步",
   "view.more_subagents.one": "还有 {count} 个子代理",
   "view.more_subagents.other": "还有 {count} 个子代理",
+  "view.compacting": "正在总结对话 · {elapsed} · 通常约 {usual}",
   "view.more_waiting": "还有 {n} 个等待中",
   "view.new_lines.one": "↓ {count} 行新内容",
   "view.new_lines.other": "↓ {count} 行新内容",

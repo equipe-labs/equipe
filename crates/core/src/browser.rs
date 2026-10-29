@@ -135,7 +135,7 @@ impl Drop for Running {
         match &self.kind {
             Kind::Own(child) => {
                 if let Some(pid) = child.id() {
-                    let _ = std::process::Command::new("kill").args(["-TERM", &format!("-{pid}")]).status();
+                    crate::group::end(pid, libc::SIGTERM);
                 }
             }
             Kind::Lane { id, host } => {
@@ -569,7 +569,7 @@ fn read_host(mut out: impl std::io::Read, hub: &Hub, events: &tokio::sync::mpsc:
 
 impl Drop for Host {
     fn drop(&mut self) {
-        let _ = std::process::Command::new("kill").args(["-TERM", &format!("-{}", self.child.id())]).status();
+        crate::group::end(self.child.id(), libc::SIGTERM);
     }
 }
 
@@ -804,6 +804,90 @@ impl Hub {
     }
 }
 
+// ── profiles: other people's accounts, each in a Chrome of its own ──
+
+pub use equipe_protocol::BrowserProfile;
+
+fn profiles_file(home: &Path) -> PathBuf {
+    home.join("browser").join("profiles.json")
+}
+
+/// The profiles besides the main one, by name.
+pub fn profiles(home: &Path) -> Vec<BrowserProfile> {
+    let mut all: Vec<BrowserProfile> = std::fs::read_to_string(profiles_file(home)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    all.retain(|p| valid_profile(&p.name));
+    all.sort_by(|a, b| a.name.cmp(&b.name));
+    all.dedup_by(|a, b| a.name == b.name);
+    all
+}
+
+/// A profile's name: 1–24 of `a-z 0-9 -`, and not the main one's.
+fn valid_profile(name: &str) -> bool {
+    (1..=24).contains(&name.len()) && name != "main" && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') && !name.starts_with('-')
+}
+
+fn write_profiles(home: &Path, all: &[BrowserProfile]) -> std::io::Result<()> {
+    std::fs::create_dir_all(home.join("browser"))?;
+    std::fs::write(profiles_file(home), serde_json::to_string_pretty(all).unwrap_or_default())
+}
+
+/// Add profile `name` (lowercased), or name it `label` again.
+pub fn save_profile(home: &Path, name: &str, label: &str) -> Result<BrowserProfile, String> {
+    let name = name.trim().to_lowercase();
+    if !valid_profile(&name) {
+        return Err(format!("{name:?}: a profile's name is 1–24 lowercase letters, digits or `-`, and not `main`"));
+    }
+    let profile = BrowserProfile { name: name.clone(), label: label.trim().to_owned() };
+    let mut all = profiles(home);
+    all.retain(|p| p.name != name);
+    all.push(profile.clone());
+    all.sort_by(|a, b| a.name.cmp(&b.name));
+    write_profiles(home, &all).map_err(|e| e.to_string())?;
+    Ok(profile)
+}
+
+/// Forget profile `name`. Its Chrome's folder stays, its sign-ins in it, until
+/// the person deletes it: adding the name again finds them.
+pub fn delete_profile(home: &Path, name: &str) -> Result<(), String> {
+    let mut all = profiles(home);
+    all.retain(|p| p.name != name);
+    write_profiles(home, &all).map_err(|e| e.to_string())
+}
+
+/// Where profile `name`'s Chrome keeps itself.
+pub fn profile_dir(home: &Path, name: &str) -> PathBuf {
+    home.join("browser").join("chromes").join(name)
+}
+
+/// Profile `name`'s sign-ins file: its own, so one person's never reach another's.
+pub fn profile_state(home: &Path, name: &str) -> PathBuf {
+    profile_dir(home, name).join("state.json")
+}
+
+/// A conversation's browser `key` in profile `profile` (`None`: the main one).
+pub fn in_profile(key: &str, profile: Option<&str>) -> String {
+    match profile {
+        Some(p) => format!("{key}#{p}"),
+        None => key.to_owned(),
+    }
+}
+
+/// A browser key's conversation key and profile.
+pub fn split_profile(key: &str) -> (&str, Option<&str>) {
+    match key.split_once('#') {
+        Some((key, profile)) => (key, Some(profile)),
+        None => (key, None),
+    }
+}
+
+/// The MCP server a member reaches a profile's browser by: `browser`, `browser_jhjung`.
+pub fn server_name(profile: Option<&str>) -> String {
+    match profile {
+        Some(p) => format!("{SERVER}_{}", p.replace('-', "_")),
+        None => SERVER.to_owned(),
+    }
+}
+
 /// The browser of a member's conversation about `project` beside its own
 /// (`None`: the whole squad's): `pm@site`, `pm@squad`.
 pub fn lane_key(member: &str, project: Option<&str>) -> String {
@@ -812,6 +896,7 @@ pub fn lane_key(member: &str, project: Option<&str>) -> String {
 
 /// Whose browser `key` is: `pm` for `pm@site`.
 pub fn member_of(key: &str) -> &str {
+    let key = split_profile(key).0;
     key.split_once('@').map_or(key, |(member, _)| member)
 }
 
@@ -819,13 +904,18 @@ pub fn member_of(key: &str) -> &str {
 /// `key` is a member's name, or a conversation of it beside its own
 /// ([`lane_key`]): each its own windows, in the member's colour, labelled
 /// with what it is about.
-pub fn lane(host: &SharedHost, squad: &str, key: &str, output: &Path, shown: bool) -> std::io::Result<Running> {
+pub fn lane(host: &SharedHost, home: &Path, squad: &str, key: &str, output: &Path, shown: bool) -> std::io::Result<Running> {
     let id = format!("{squad}/{key}");
     let member = member_of(key);
-    let label = match key.split_once('@') {
+    let (bare, profile) = split_profile(key);
+    let label = match bare.split_once('@') {
         Some((member, "squad")) => format!("{member} (the whole squad)"),
         Some((member, about)) => format!("{member} ({about})"),
         None => member.to_owned(),
+    };
+    let label = match profile {
+        Some(p) => format!("{label} · {p}"),
+        None => label,
     };
     let mut locked = host.lock().map_err(|_| std::io::Error::other("the browser host is unusable"))?;
     let port = match locked.lanes.get(&id) {
@@ -833,12 +923,26 @@ pub fn lane(host: &SharedHost, squad: &str, key: &str, output: &Path, shown: boo
         None => std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?.port(),
     };
     locked.lanes.insert(id.clone(), port);
-    locked.send(&json!({
+    let mut request = json!({
         "op": "lane", "id": id, "member": label, "color": member_color(member),
         "port": port, "output": output, "shown": shown,
-    }));
+    });
+    if let Some(p) = profile {
+        with_profile(&mut request, home, p);
+    }
+    locked.send(&request);
     drop(locked);
     Ok(Running { kind: Kind::Lane { id, host: host.clone() }, port, shown, last_used: std::time::Instant::now() })
+}
+
+/// A request to the host made for profile `name`'s Chrome: started from its
+/// folder, with its own sign-ins file, if it isn't running yet.
+pub fn with_profile(request: &mut Value, home: &Path, name: &str) {
+    let dir = profile_dir(home, name);
+    let _ = std::fs::create_dir_all(&dir);
+    request["profile"] = json!(name);
+    request["profileDir"] = json!(dir);
+    request["state"] = json!(profile_state(home, name));
 }
 
 /// A member's colour, as the console shows it: by role (`frontend-2` is a
@@ -1112,6 +1216,39 @@ mod tests {
         assert_eq!(member_of("pm@site"), "pm");
         assert_eq!(member_of("frontend-2"), "frontend-2");
         assert_eq!(member_color(member_of("frontend-2@app")), member_color("frontend"));
+    }
+
+    #[test]
+    fn another_persons_accounts_live_in_a_browser_profile_of_their_own() {
+        let home = std::env::temp_dir().join(format!("equipe-profiles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(profiles(&home).is_empty(), "none until the person adds one");
+        save_profile(&home, "JHJung", "jhjung@atinuminvest.co.kr").unwrap();
+        save_profile(&home, "qa-2", "").unwrap();
+        save_profile(&home, "jhjung", "정진혁 · jhjung@atinuminvest.co.kr").unwrap();
+        let all = profiles(&home);
+        assert_eq!(all.iter().map(|p| (p.name.as_str(), p.label.as_str())).collect::<Vec<_>>(), [("jhjung", "정진혁 · jhjung@atinuminvest.co.kr"), ("qa-2", "")], "named once, the label as last saved");
+        for bad in ["", "two words", "../up", "main", "a#b", "x".repeat(25).as_str()] {
+            assert!(save_profile(&home, bad, "").is_err(), "{bad:?}");
+        }
+        assert_eq!(profile_dir(&home, "jhjung"), home.join("browser").join("chromes").join("jhjung"));
+        delete_profile(&home, "qa-2").unwrap();
+        assert_eq!(profiles(&home).len(), 1);
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_members_browser_in_another_profile_is_a_lane_and_a_server_of_its_own() {
+        assert_eq!(in_profile("qa", None), "qa");
+        assert_eq!(in_profile("qa", Some("jhjung")), "qa#jhjung");
+        assert_eq!(in_profile("pm@site", Some("jhjung")), "pm@site#jhjung");
+        assert_eq!(split_profile("pm@site#jhjung"), ("pm@site", Some("jhjung")));
+        assert_eq!(split_profile("qa"), ("qa", None));
+        assert_eq!(member_of("pm@site#jhjung"), "pm");
+        assert_eq!(member_of("qa#jhjung"), "qa");
+        assert_eq!(server_name(None), "browser");
+        assert_eq!(server_name(Some("jhjung")), "browser_jhjung");
+        assert_eq!(server_name(Some("qa-2")), "browser_qa_2");
     }
 
     #[test]

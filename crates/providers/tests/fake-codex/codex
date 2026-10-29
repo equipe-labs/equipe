@@ -9,6 +9,7 @@ What a turn does depends on its prompt:
 - "interrupt": starts, then waits for `turn/interrupt`;
 - "steer": waits for `turn/steer`, echoes it, and answers with what it read;
 - "fail": fails the way an exhausted plan does;
+- "compact": compacts its thread (a `contextCompaction` item), then answers;
 - anything else: the recorded turn — a read, a new file written for real, an
   edit, a failing `cargo test`, a board tool, a web search, a plan, token
   usage and the plan's limits — ending "DONE".
@@ -88,6 +89,13 @@ def say(item_id, text, phase="final_answer"):
     for word in text.split(" "):
         notify("item/agentMessage/delta", {"threadId": state["thread"], "turnId": TURN, "itemId": item_id, "delta": word if word == text.split(" ")[0] else " " + word})
     completed("agentMessage", id=item_id, text=text, phase=phase)
+
+
+def compacting_turn():
+    started("contextCompaction", id="k1")
+    completed("contextCompaction", id="k1")
+    say("a1", "Compacted. DONE")
+    turn_completed()
 
 
 def turn_completed(status="completed", error=None):
@@ -233,6 +241,8 @@ def handle(message):
             steer_turn()
         elif "fail" in prompt:
             failing_turn()
+        elif "compact" in prompt:
+            compacting_turn()
         else:
             recorded_turn(prompt)
     elif method == "turn/interrupt":

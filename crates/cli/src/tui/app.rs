@@ -329,6 +329,9 @@ pub struct Agent {
     /// Subagents it handed work to this turn and that haven't handed back:
     /// id, what, and their latest step.
     pub subagents: Vec<(String, String, Option<String>)>,
+    /// Its conversation being compacted: since when, and how long the last
+    /// ones took (a guess, not progress).
+    pub compacting: Option<(Instant, u64)>,
     /// Shown as the work on this ticket only — the ticket open on the right.
     pub showing: Option<TicketId>,
     /// A guess at what the person says next to it, after it answered them.
@@ -375,6 +378,7 @@ impl Agent {
             mode: None,
             thread_view: None,
             subagents: Vec::new(),
+            compacting: None,
             suggestion: None,
             showing: None,
             steering: Vec::new(),
@@ -490,6 +494,11 @@ impl Agent {
             mode: info.mode,
             thread_view: None,
             subagents: Vec::new(),
+            // Begun before this screen attached: its clock from when it began, as far as this one's can tell.
+            compacting: info.compacting.map(|c| {
+                let ago = Duration::from_millis(now_ms().saturating_sub(c.started_at));
+                (Instant::now().checked_sub(ago).unwrap_or_else(Instant::now), c.estimate_ms)
+            }),
             suggestion: None,
             showing: None,
             steering_in: if info.steering_in.len() == info.steering.len() { info.steering_in } else { vec![None; info.steering.len()] },
@@ -602,6 +611,11 @@ impl Agent {
             }
         }
     }
+}
+
+/// Now, in unix milliseconds.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// `1m 05s`, `42s`, `1h 02m` — how long something has been going.
@@ -1883,8 +1897,11 @@ impl App {
                 }
             }
             Event::SubagentEnded { id, .. } => agent.subagents.retain(|s| s.0 != id),
+            Event::Compacting { estimate_ms, .. } => agent.compacting = Some((Instant::now(), estimate_ms)),
+            Event::Compacted { .. } | Event::CompactFailed { .. } => agent.compacting = None,
             Event::TurnEnded { usage, .. } => {
                 agent.subagents.clear();
+                agent.compacting = None;
                 // Unread, it comes back as a memo, delivered now.
                 agent.steering.clear();
                 agent.steering_in.clear();
@@ -2347,7 +2364,7 @@ impl App {
                 _ => None,
             };
             if let Some(decision) = decision {
-                return vec![Command::Decide { squad: self.squad.clone(), approval: approval.id, decision }];
+                return vec![Command::Decide { squad: self.squad.clone(), approval: approval.id, decision, words: None }];
             }
             // The screen a send would go from, in Preview.
             if key.code == KeyCode::Char('o')
@@ -3756,6 +3773,7 @@ mod tests {
             mode: None,
             effort: None,
             subagents: Vec::new(),
+            compacting: None,
         }
     }
 
@@ -5108,15 +5126,15 @@ mod tests {
         // As every need: a is yes (once), A always, n no.
         assert_eq!(
             app.on_key(key(KeyCode::Char('a')), Instant::now()),
-            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Allow }]
+            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Allow, words: None }]
         );
         assert_eq!(
             app.on_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT), Instant::now()),
-            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always }]
+            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always, words: None }]
         );
         assert_eq!(
             app.on_key(key(KeyCode::Char('n')), Instant::now()),
-            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Deny }]
+            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Deny, words: None }]
         );
         // Mid-sentence, letters are letters.
         type_text(&mut app, "hey");
@@ -5227,7 +5245,7 @@ mod tests {
         let (mut app, pm, _) = team();
         app.on_event(Event::UserMessage { session: pm, text: "plan it".into() });
         app.on_event(Event::TextDelta { session: pm, text: "**Done.**".into() });
-        app.on_event(Event::ToolUse { session: pm, tool: "Read".into(), target: Some("a.rs".into()) });
+        app.on_event(Event::ToolUse { session: pm, tool: "Read".into(), target: Some("a.rs".into()), label: None, background: false });
         type_text(&mut app, "/export");
         enter(&mut app);
         assert!(app.export);

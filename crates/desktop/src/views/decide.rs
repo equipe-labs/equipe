@@ -16,7 +16,7 @@ use std::rc::Rc;
 use equipe_core::protocol::Command;
 use equipe_core::protocol::decide::{Answer, Question, QuestionSet};
 use equipe_core::t;
-use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+use gpui_kit::component::input::{InputEvent, TextareaState};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -52,6 +52,8 @@ pub enum Place {
 pub struct DecideUi {
     pub drafts: HashMap<u64, Draft>,
     pub fields: HashMap<(u64, usize), Entity<TextareaState>>,
+    /// What is attached to each answer in their own words, by set and question.
+    pub strips: HashMap<(u64, usize), crate::attach::Strip>,
     subscriptions: HashMap<(u64, usize), Subscription>,
     /// How tall the window is, as last drawn: a card takes only part of it.
     pub room: f32,
@@ -130,7 +132,18 @@ impl Shell {
     /// The words typed in each of a set's boxes, by question.
     fn decide_others(&self, id: u64, cx: &App) -> Vec<String> {
         let count = self.model.asked.get(id).map_or(0, |s| s.questions.len());
-        (0..count).map(|n| self.decide.fields.get(&(id, n)).map(|f| f.read(cx).value().to_string()).unwrap_or_default()).collect()
+        (0..count)
+            .map(|n| {
+                let typed = self.decide.fields.get(&(id, n)).map(|f| f.read(cx).value().to_string()).unwrap_or_default();
+                // What is attached goes with the words, as tags the member opens.
+                crate::attach::message(&typed, &self.answer_tags(super::composer::AttachTo::Answer(id, n)))
+            })
+            .collect()
+    }
+
+    /// Whether an answer of set `id` still has an attachment on its way.
+    fn decide_uploading(&self, id: u64) -> bool {
+        self.decide.strips.iter().any(|((set, _), strip)| *set == id && strip.busy())
     }
 
     /// Whether the box for their own words of set `id`'s question on show has the typing.
@@ -161,7 +174,7 @@ impl Shell {
                 },
                 _ => return Took::Pass,
             },
-            Screen::Settings | Screen::Design => return Took::Pass,
+            Screen::Settings | Screen::Design | Screen::Overview | Screen::Roadmap => return Took::Pass,
         };
         if self.decide.drafts.get(&id).is_none_or(|d| d.collapsed) {
             return Took::Pass;
@@ -228,6 +241,11 @@ impl Shell {
         if !self.can_act() || self.model.asked.get(id).is_none() {
             return;
         }
+        if self.decide_uploading(id) {
+            self.composer.flash = Some(t!("composer.answer_uploading").into());
+            return cx.notify();
+        }
+        self.decide.strips.retain(|(set, _), _| *set != id);
         self.send_command(Command::AnswerQuestions { squad: self.model.squad.clone(), id, answers, about: Some(self.model.focus.clone()) });
         self.model.asked.sent(id);
         self.model.revision += 1;
@@ -455,9 +473,12 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
         Place::Peek => shell.board.peek_width - 34.,
     };
     let width = shots.width(key, guess);
-    let layout = visual::grid(width, q.options.len());
-    let own = (!q.images.is_empty()).then(|| question_pictures(&shots, id, draft.step, &q, width, &layout, cx));
     let described = q.options.iter().any(|o| !o.description.trim().is_empty());
+    // A whole row of tiles fits what the card has left for its options: the
+    // card's height less its question, its box, its attachments and its foot.
+    let tiles_room = (card_tallest(shell, place) - 280.).max(0.);
+    let layout = visual::grid_within(width, q.options.len(), described, tiles_room);
+    let own = (!q.images.is_empty()).then(|| question_pictures(&shots, id, draft.step, &q, width, &layout, cx));
     let tile_h = visual::tile_height(layout.tile, described);
     let grid = q.is_visual().then(|| {
         // Each tile where the layout puts it, in whatever state: nothing reflows.
@@ -492,9 +513,16 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
             .border_color(if other_on { p.accent } else { p.hair })
             .when(typing, |r| r.bg(p.accent_bg))
             .child(icon(Icon::Pencil, 13., if other_on { p.accent } else { p.muted }))
-            .child(div().flex_1().min_w_0().text_size(px(14.)).child(Textarea::new(&field).appearance(false).bordered(false)))
+            .child(div().flex_1().min_w_0().text_size(px(14.)).child(super::composer::answer_box(&field, super::composer::AttachTo::Answer(id, draft.step), handle.clone())))
             .child(key_badge(p, "Tab", false))
+            .on_drop(super::composer::on_answer_drop(super::composer::AttachTo::Answer(id, draft.step), handle.clone()))
             .into_any_element()
+    });
+    // What is attached to this answer, and "첨부" to add more.
+    let attached = other.is_some().then(|| {
+        let to = super::composer::AttachTo::Answer(id, draft.step);
+        let items = shell.strip_of(to).map(|s| s.items().to_vec()).unwrap_or_default();
+        super::composer::answer_attachments(p, to, id << 8 | draft.step as u64, items, handle.clone())
     });
     let multi = q.multi_select.then(|| div().text_size(px(12.)).text_color(p.muted).child(t!("decide.multi_hint")));
     let reduce = cx.reduce_motion();
@@ -525,7 +553,7 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
     // Measured whether or not it is a grid: the question's own pictures size by it too.
     let options = shots.measured(options, key);
     // The box for their own words stays under the options, never scrolled away: Tab reaches it.
-    let body = v_flex().w_full().min_h_0().gap_2().child(div().flex_none().child(head)).when(anything, |b| b.child(options)).children(other.map(|o| div().flex_none().w_full().child(o)));
+    let body = v_flex().w_full().min_h_0().gap_2().child(div().flex_none().child(head)).when(anything, |b| b.child(options)).children(other.map(|o| div().flex_none().w_full().child(o))).children(attached.map(|a| div().flex_none().w_full().child(a)));
     // Each step slides in from the side it came from.
     let body: AnyElement = if reduce || draft.went == 0 {
         body.into_any_element()
@@ -593,11 +621,7 @@ fn card(shell: &Shell, id: u64, place: Place, more: usize, cx: &mut Context<Shel
         .child(h_flex().flex_none().ml_auto().gap_2().children(back).child(skip).child(next));
     let inner = v_flex().w_full().min_h_0().gap_3().child(body).child(foot.flex_none());
     // Never taller than the window has room for: past it, the options scroll.
-    let room = if shell.decide.room > 0. { shell.decide.room } else { 760. };
-    let tallest = match place {
-        Place::Docked => (room * 0.68).max(300.),
-        Place::Peek => (room - 140.).max(320.),
-    };
+    let tallest = card_tallest(shell, place);
     Some(match place {
         Place::Docked => v_flex()
             .id(("decide-card", id))
@@ -724,6 +748,15 @@ fn option_row(p: Palette, id: u64, n: usize, label: &str, description: &str, pic
 
 /// How wide the grid of a card above the composer is, before it was drawn.
 const GRID_GUESS: f32 = 640.;
+
+/// How tall a decision's card may be where it is: past it, its options scroll.
+fn card_tallest(shell: &Shell, place: Place) -> f32 {
+    let room = if shell.decide.room > 0. { shell.decide.room } else { 760. };
+    match place {
+        Place::Docked => (room * 0.72).max(300.),
+        Place::Peek => (room - 140.).max(320.),
+    }
+}
 
 /// An option shown as its picture: the picture whole in the grid's 4:3 box
 /// (a click opens it big, among the others) — or, without one, a quiet box

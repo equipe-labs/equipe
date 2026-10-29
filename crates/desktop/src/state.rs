@@ -186,6 +186,8 @@ pub enum Need {
     /// confirm (`crate::accept`), by its id.
     Accept(u64),
     Ticket(TicketId),
+    /// A secret a member asked the person to type (`ask_secret`), by its id.
+    Secret(u64),
     /// A member's browser page waiting for the person's own hand (a human
     /// check, a sign-in), by its page id ([`BrowserWait`]).
     Browser(u64),
@@ -278,6 +280,22 @@ pub struct Model {
     pub tickets: Vec<Ticket>,
     /// The squad's projects, in the order they joined.
     pub projects: Vec<PathBuf>,
+    /// The order the person dragged the projects into, by name (this Mac's).
+    pub project_order: Vec<String>,
+    /// The project that is the squad's HQ, where its operations live: first
+    /// among the projects, wherever the others were dragged.
+    pub hq: Option<PathBuf>,
+    /// The squad's routines (`protocol::routines`), as the daemon has them.
+    pub routines: Vec<equipe_core::protocol::routines::Routine>,
+    /// The logins members sign in with, as the daemon keeps them (no passwords).
+    pub logins: Vec<equipe_core::protocol::vault::Login>,
+    /// The PM accepts the team's handed-in work itself: the person's inbox
+    /// keeps only what is theirs.
+    pub pm_accepts: bool,
+    /// Secrets members asked the person to type, oldest first.
+    pub secret_asks: Vec<equipe_core::protocol::secrets::SecretAsk>,
+    /// The browser profiles besides the main one (other people's accounts).
+    pub browser_profiles: Vec<equipe_core::protocol::BrowserProfile>,
     /// The squad's mode, for completion's sake.
     pub mode: Mode,
     /// The Claude plan's usage windows, as last reported.
@@ -305,6 +323,9 @@ pub struct Model {
     alerts: Vec<Alert>,
     /// One quiet line the shell shows under the conversation, until taken.
     flash: Option<String>,
+    /// Something the person asked for went wrong (a merge that didn't land):
+    /// a notice of its own over the box, until taken.
+    problem: Option<String>,
     /// Each member's conversation.
     pub convos: HashMap<SessionId, Convo>,
     /// Whose conversation is on screen.
@@ -411,6 +432,13 @@ impl Model {
             conn: Conn::Connecting,
             tickets: Vec::new(),
             projects: Vec::new(),
+            project_order: Vec::new(),
+            hq: None,
+            routines: Vec::new(),
+            logins: Vec::new(),
+            pm_accepts: false,
+            secret_asks: Vec::new(),
+            browser_profiles: Vec::new(),
             mode: Mode::default(),
             plan: None,
             remote: false,
@@ -424,6 +452,7 @@ impl Model {
             engines: Default::default(),
             alerts: Vec::new(),
             flash: None,
+            problem: None,
             convos: HashMap::new(),
             selected: None,
             focus: None,
@@ -596,15 +625,15 @@ impl Model {
         self.convo().filter(|c| follow && c.sliceable()).map(|_| self.focus.clone())
     }
 
-    /// The conversation in view as it shows (see [`Convo::sliced`]); folded
-    /// stretches the person opened are in `open`.
-    pub fn conversation(&self, follow: bool, open: &std::collections::HashSet<u64>) -> crate::convo::Sliced {
+    /// The conversation in view as it shows (see [`Convo::sliced`]): with a
+    /// project in focus, its thread and the squad's — never another project's.
+    pub fn conversation(&self, follow: bool) -> crate::convo::Sliced {
         let Some(convo) = self.convo() else { return Default::default() };
         match self.chat_slice(follow) {
-            Some(slice) => convo.sliced(slice.as_deref(), open),
+            Some(slice) => convo.sliced(slice.as_deref()),
             None => {
                 let blocks = convo.blocks();
-                crate::convo::Sliced { about: vec![None; blocks.len()], blocks, answered_in: None }
+                crate::convo::Sliced { about: vec![None; blocks.len()], blocks }
             }
         }
     }
@@ -638,6 +667,33 @@ impl Model {
     }
 
     /// The names of the squad's projects, as chips show them.
+    /// The projects in the person's order: those they placed first, as
+    /// placed; the rest after, as the daemon lists them.
+    pub fn order_projects(&mut self) {
+        let (order, hq) = (&self.project_order, &self.hq);
+        let rank = |p: &PathBuf| (Some(p) != hq.as_ref(), order.iter().position(|n| *n == equipe_core::board::project_name(p)).unwrap_or(usize::MAX));
+        self.projects.sort_by_key(rank);
+    }
+
+    /// Project `name` moved to where `before` is (`None`: the end). The new
+    /// order, by name, to keep.
+    pub fn move_project(&mut self, name: &str, before: Option<&str>) -> Vec<String> {
+        let mut names = self.project_names();
+        let Some(from) = names.iter().position(|n| n == name) else { return names };
+        let moved = names.remove(from);
+        let to = before.and_then(|b| names.iter().position(|n| n == b)).unwrap_or(names.len());
+        names.insert(to, moved);
+        self.project_order = names.clone();
+        self.order_projects();
+        self.revision += 1;
+        names
+    }
+
+    /// Whether the project called `name` is the squad's HQ.
+    pub fn is_hq(&self, name: &str) -> bool {
+        self.hq.as_ref().is_some_and(|hq| equipe_core::board::project_name(hq) == name)
+    }
+
     pub fn project_names(&self) -> Vec<String> {
         self.projects.iter().map(|p| equipe_core::board::project_name(p)).collect()
     }
@@ -695,7 +751,8 @@ impl Model {
                 self.squad_list = list.squads;
                 false
             }
-            Update::Bridge(_) => false,
+            // The connecting screen's, kept by the shell.
+            Update::Bridge(_) | Update::Leg(_) | Update::Door(_) => false,
             Update::Event(event) => {
                 let before = (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint());
                 self.on_event(event, now);
@@ -739,6 +796,11 @@ impl Model {
         }
         self.tickets = snapshot.tickets.clone();
         self.projects = snapshot.projects.clone();
+        self.hq = snapshot.hq.clone();
+        self.pm_accepts = snapshot.pm_accepts;
+        self.secret_asks = snapshot.secret_asks.clone();
+        self.routines = snapshot.routines.clone();
+        self.order_projects();
         self.mode = snapshot.mode;
         self.plan = snapshot.plan;
         self.suggestions = !snapshot.suggestions_off;
@@ -752,9 +814,7 @@ impl Model {
         self.asked.load(snapshot.questions.clone());
         self.team.load(snapshot.team_changes.clone());
         self.accepts.load(snapshot.accepts.clone());
-        if let Some(note) = crate::notify::stale_daemon(&version, env!("CARGO_PKG_VERSION")) {
-            self.flash = Some(note);
-        }
+        // An older daemon: the banner over the conversation says so, with its button.
         self.daemon_version = version;
         self.member_modes = snapshot.sessions.iter().filter_map(|s| Some((s.session, s.mode?))).collect();
         self.efforts = snapshot.sessions.iter().filter_map(|s| Some((s.session, s.effort.clone()?))).collect();
@@ -832,6 +892,32 @@ impl Model {
             }
             Event::EngineProposalClosed { squad, id, .. } if *squad == self.squad => self.engines.close(*id),
             Event::EngineSwitchingChanged { squad, mode } if *squad == self.squad => self.engines.mode = *mode,
+            Event::SecretAsked { squad, ask } if *squad == self.squad => {
+                if !self.secret_asks.iter().any(|a| a.id == ask.id) {
+                    self.secret_asks.push(ask.clone());
+                    self.revision += 1;
+                }
+            }
+            Event::SecretClosed { squad, id, .. } if *squad == self.squad => {
+                self.secret_asks.retain(|a| a.id != *id);
+                self.revision += 1;
+            }
+            Event::PmAcceptsChanged { squad, on } if *squad == self.squad => {
+                self.pm_accepts = *on;
+                self.revision += 1;
+            }
+            Event::RoutinesChanged { squad, routines } if *squad == self.squad => self.routines = routines.clone(),
+            Event::Logins { logins } => self.logins = logins.clone(),
+            Event::BrowserProfiles { profiles } => self.browser_profiles = profiles.clone(),
+            Event::ProjectsChanged { squad, projects, hq } if *squad == self.squad => {
+                self.hq = hq.clone();
+                // The one just added, said under the box.
+                if let Some(new) = projects.iter().find(|p| !self.projects.contains(p)) {
+                    self.flash = Some(t!("header.project_added", name = equipe_core::board::project_name(new)));
+                }
+                self.projects = projects.clone();
+                self.order_projects();
+            }
             Event::TurnEnded { session, usage: Some(u), .. } if !self.lanes.iter().any(|l| l.session == *session) => {
                 let spent = self.spent.entry(*session).or_default();
                 spent.tokens += u.total();
@@ -943,7 +1029,7 @@ impl Model {
             }
             Event::SessionClosed { session } if self.lanes.iter().any(|l| l.session == session) => self.fold_lane(session),
             Event::Error { session: None, message, .. } => {
-                self.flash = Some(message);
+                self.problem = Some(message);
                 self.squad_errors += 1;
                 self.board_rev += 1;
             }
@@ -1239,6 +1325,15 @@ impl Model {
         self.flash.take()
     }
 
+    /// Connected to the daemon, and told how things stand.
+    pub fn attached(&self) -> bool {
+        matches!(self.conn, Conn::Connected { .. })
+    }
+
+    pub fn take_problem(&mut self) -> Option<String> {
+        self.problem.take()
+    }
+
     /// The project a ticket is about: its own; for code, else the squad's first.
     /// A task or action with none is the squad's own, not a project's.
     pub fn ticket_project(&self, ticket: &Ticket) -> Option<PathBuf> {
@@ -1262,6 +1357,8 @@ impl Model {
         out.extend(self.asked.open().map(|s| (Section::Decide, Need::Questions(s.id))));
         out.extend(self.team.open().map(|c| (Section::Decide, Need::Team(c.id))));
         out.extend(self.accepts.open().map(|c| (Section::Decide, Need::Accept(c.id))));
+        // A secret a member waits for: theirs to type.
+        out.extend(self.secret_asks.iter().map(|a| (Section::Waiting, Need::Secret(a.id))));
         // A page that waits for the person's own hand: their turn, first.
         out.extend(self.browser_waits.iter().map(|w| (Section::Waiting, Need::Browser(w.page))));
         for section in &Section::TICKETS {
@@ -1288,11 +1385,23 @@ impl Model {
             TicketStatus::Waiting => Some(Section::Waiting),
             // A designer checks its screens first.
             TicketStatus::Review if t.in_design_qa() => None,
+            // Where the PM accepts, handed-in work is the PM's: the person sees
+            // only what it puts to them, on a card.
+            TicketStatus::Review if self.pm_accepts => None,
             TicketStatus::Review => Some(Section::Review),
+            // …and so are members' proposals; the PM's own are for the person.
+            TicketStatus::Proposed if self.pm_accepts && (!self.is_pm_name(&t.created_by) || t.could_not_start()) => None,
             TicketStatus::Proposed => Some(Section::Proposed),
+            // A conflict its owner is resolving comes back through the PM.
+            TicketStatus::Done if self.pm_accepts && matches!(t.off_main, Some(equipe_core::protocol::OffMain::Conflict { .. })) => None,
             TicketStatus::Done if t.waits_to_merge() => Some(Section::NotOnMain),
             _ => None,
         }
+    }
+
+    /// Whether `name` is the squad's PM (or one of them).
+    fn is_pm_name(&self, name: &str) -> bool {
+        self.members.iter().any(|m| m.name == name && m.role == equipe_core::roles::PM) || name == equipe_core::roles::PM || name.starts_with("pm-")
     }
 
     pub fn is_acted(&self, t: &Ticket) -> bool {
@@ -1498,6 +1607,36 @@ mod tests {
     const T1: Clock = Clock { hour: 14, minute: 3, second: 12 };
 
     #[test]
+    fn projects_keep_the_order_they_were_dragged_into() {
+        let mut model = Model::new("acme");
+        model.projects = vec!["/c/mcp".into(), "/c/website".into(), "/c/hq".into()];
+        assert_eq!(model.move_project("hq", Some("mcp")), ["hq", "mcp", "website"]);
+        assert_eq!(model.project_names(), ["hq", "mcp", "website"]);
+        assert_eq!(model.move_project("hq", None), ["mcp", "website", "hq"], "dropped at the end");
+        // A list from the daemon keeps the order; a new project goes after.
+        model.projects = vec!["/c/hq".into(), "/c/new".into(), "/c/website".into(), "/c/mcp".into()];
+        model.order_projects();
+        assert_eq!(model.project_names(), ["mcp", "website", "hq", "new"]);
+    }
+
+    #[test]
+    fn the_hq_comes_first_wherever_the_others_were_dragged() {
+        let mut model = Model::new("acme");
+        model.projects = vec!["/c/mcp".into(), "/c/website".into(), "/c/hq".into()];
+        model.project_order = vec!["website".into(), "mcp".into(), "hq".into()];
+        model.hq = Some("/c/hq".into());
+        model.order_projects();
+        assert_eq!(model.project_names(), ["hq", "website", "mcp"]);
+        assert!(model.is_hq("hq") && !model.is_hq("mcp"));
+        // Dragged below another, it stays on top: the HQ is the squad's, not a slot.
+        model.move_project("hq", None);
+        assert_eq!(model.project_names(), ["hq", "website", "mcp"]);
+        // The mark taken off: back where it was dragged.
+        model.apply(Update::Event(Event::ProjectsChanged { squad: "acme".into(), projects: model.projects.clone(), hq: None }), T0);
+        assert_eq!(model.project_names(), ["website", "mcp", "hq"]);
+    }
+
+    #[test]
     fn a_members_page_waiting_for_the_person_is_theirs_to_do_until_it_passes() {
         use equipe_core::protocol::{BrowserPage, HumanCheck};
         let mut model = Model::new("acme");
@@ -1598,6 +1737,7 @@ mod tests {
             mode: None,
             effort: None,
             subagents: Vec::new(),
+            compacting: None,
         }
     }
 
@@ -1631,35 +1771,54 @@ mod tests {
     }
 
     #[test]
-    fn the_conversation_follows_the_project_in_focus_to_its_latest_line() {
+    fn a_project_in_focus_shows_its_own_thread_and_never_another_projects() {
         let mut model = pm_in_two_projects();
-        let none = std::collections::HashSet::new();
-        assert_eq!(model.chat_slice(true), Some(None), "every project: everything");
-        assert_eq!(said(&model.conversation(true, &none)), ["app q", "site q"]);
+        // Every project: everything, each stretch saying its project.
+        assert_eq!(said(&model.conversation(true)), ["app q", "site q"]);
         let before = model.revision;
         assert!(model.set_focus(Some("app".into())));
         assert!(model.revision > before, "a draw is due");
-        assert_eq!(model.chat_slice(true), Some(Some("app".into())), "a new slice: the list starts over at its end");
-        let app = model.conversation(true, &none);
+        assert_eq!(model.chat_slice(true), Some(Some("app".into())));
+        // The app's thread alone: the site's lines are not there at all —
+        // no fold row, no pill pointing at them.
+        let app = model.conversation(true);
         assert_eq!(said(&app), ["app q"]);
-        assert!(matches!(app.blocks.last(), Some(crate::convo::Block::Elsewhere { said: 2, .. })), "the site's turn after, folded: {:?}", app.blocks);
-        assert_eq!(app.answered_in, Some(Some("site".into())), "the latest reply is the site's");
+        assert!(!app.blocks.iter().any(|b| matches!(b, crate::convo::Block::Reply { text, .. } if text == "site a")));
         model.set_focus(Some("site".into()));
-        let site = model.conversation(true, &none);
-        assert!(matches!(site.blocks.last(), Some(crate::convo::Block::Reply { text, .. }) if text == "site a"), "the slice's latest line last");
+        let site = model.conversation(true);
+        assert_eq!(said(&site), ["site q"]);
+        assert!(matches!(site.blocks.last(), Some(crate::convo::Block::Reply { text, .. }) if text == "site a"), "its latest line last");
+        // Following the project off in settings: the whole conversation.
+        assert_eq!(said(&model.conversation(false)), ["app q", "site q"]);
+    }
+
+    #[test]
+    fn what_was_said_to_the_whole_squad_shows_in_every_project() {
+        let mut model = Model::new("acme");
+        let mut pm = session(1, "pm", "pm", SessionState::Ready);
+        let about = |p: Option<&str>| Entry::Thread { project: p.map(Into::into) };
+        let said = |t: &str| Entry::User { text: t.into() };
+        let reply = |t: &str| Entry::Reply { text: t.into() };
+        pm.recent = vec![about(None), said("plan the week"), reply("ok"), about(Some("site")), said("site q"), reply("site a"), about(Some("app")), said("app q"), reply("app a")];
+        model.apply(hello(vec![pm]), T0);
+        model.set_focus(Some("app".into()));
+        assert_eq!(self::said(&model.conversation(true)), ["plan the week", "app q"], "the squad's own lines are every project's; the site's are not");
+        // A project nothing was said about yet: only what was said to everyone.
+        model.projects.push("/c/new".into());
+        model.set_focus(Some("new".into()));
+        assert_eq!(self::said(&model.conversation(true)), ["plan the week"]);
     }
 
     #[test]
     fn with_the_setting_off_the_conversation_is_as_it_always_was() {
         let mut model = pm_in_two_projects();
-        let none = std::collections::HashSet::new();
         let whole = model.convo().unwrap().blocks();
         for focus in [None, Some("app"), Some("site")] {
             model.set_focus(focus.map(str::to_owned));
             assert_eq!(model.chat_slice(false), None);
-            let shown = model.conversation(false, &none);
+            let shown = model.conversation(false);
             assert_eq!(shown.blocks, whole);
-            assert!(shown.about.iter().all(Option::is_none) && shown.answered_in.is_none());
+            assert!(shown.about.iter().all(Option::is_none));
         }
         // A member's conversation never follows the project.
         model.set_focus(Some("app".into()));
@@ -1672,7 +1831,7 @@ mod tests {
         let mut model = Model::new("acme");
         let mut busy = session(2, "frontend", "frontend", SessionState::Working);
         busy.work = Some(WorkInfo { ticket: 61, project: "/p".into(), workspace: None });
-        busy.recent = vec![Entry::Tool { tool: "Edit".into(), target: None, outcome: None }];
+        busy.recent = vec![Entry::Tool { tool: "Edit".into(), target: None, outcome: None, label: None, background: false }];
         assert!(model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), busy]), T0));
         assert_eq!(model.conn, Conn::Connected { last_event: None });
         assert_eq!(model.status(&model.members[1]), Status::Working { ticket: Some(61), verb: Verb::Editing });
@@ -1758,7 +1917,7 @@ mod tests {
 
         assert!(model.apply(Update::Event(Event::WorkStarted { session: 1, ticket: 5, title: "t".into(), project: "/p".into(), workspace: None }), T0));
         assert_eq!(model.status(&model.members[0]), Status::Working { ticket: Some(5), verb: Verb::Thinking });
-        model.apply(Update::Event(Event::ToolUse { session: 1, tool: "Read".into(), target: None }), T0);
+        model.apply(Update::Event(Event::ToolUse { session: 1, tool: "Read".into(), target: None, label: None, background: false }), T0);
         assert_eq!(model.status(&model.members[0]), Status::Working { ticket: Some(5), verb: Verb::Reading });
         model.apply(Update::Event(Event::TurnEnded { session: 1, outcome: equipe_core::protocol::TurnOutcome::Completed, usage: None }), T0);
         assert!(matches!(model.status(&model.members[0]), Status::Ready { ticket: Some(5), .. }));
@@ -2023,7 +2182,7 @@ mod tests {
     /// What the conversation on screen draws: its pending bubbles and the
     /// person's own messages, as the chat pane gets them.
     fn on_screen(model: &Model) -> Vec<crate::convo::Block> {
-        model.conversation(true, &std::collections::HashSet::new()).blocks
+        model.conversation(true).blocks
     }
 
     #[test]

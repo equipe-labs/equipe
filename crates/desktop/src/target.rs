@@ -161,6 +161,18 @@ pub struct Remembered {
     pub board_split: Option<f32>,
     /// How wide the browser panel was left, in px.
     pub browser_width: Option<f32>,
+    /// How wide the document and terminal panel was left, in px.
+    pub side_width: Option<f32>,
+    /// How wide the board's ticket panel (its peek) was left, in px.
+    pub peek_width: Option<f32>,
+    /// A link in a reply opens in equipe's own browser panel, not the Mac's browser.
+    pub links_in_app: bool,
+    /// The order the person dragged each squad's projects into: (squad, names).
+    pub project_orders: Vec<(String, Vec<String>)>,
+    /// The terminal sits under the conversation rather than at its right.
+    pub term_below: bool,
+    /// How tall it was left there, in px.
+    pub term_height: Option<f32>,
     /// What accepting lands, per project (by name), once the person said.
     pub merge_ways: Vec<(String, String)>,
     /// The views the person saved (⌥V), in their order.
@@ -420,6 +432,20 @@ impl Remembered {
                 out.board_split = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("browser-width ") {
                 out.browser_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
+            } else if let Some(rest) = line.strip_prefix("project-order ")
+                && let Some((squad, names)) = rest.split_once(' ')
+            {
+                out.project_orders.push((squad.to_owned(), names.split('\t').filter(|n| !n.is_empty()).map(str::to_owned).collect()));
+            } else if line.trim() == "links in-app" {
+                out.links_in_app = true;
+            } else if line.trim() == "term-below" {
+                out.term_below = true;
+            } else if let Some(rest) = line.strip_prefix("term-height ") {
+                out.term_height = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
+            } else if let Some(rest) = line.strip_prefix("side-width ") {
+                out.side_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
+            } else if let Some(rest) = line.strip_prefix("peek-width ") {
+                out.peek_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
             } else if let Some(rest) = line.strip_prefix("recent ssh ")
                 && let Ok(host) = SshHost::parse(rest)
                 && !out.recent.contains(&host)
@@ -444,6 +470,24 @@ impl Remembered {
         }
         if let Some(width) = self.browser_width {
             text.push_str(&format!("browser-width {width:.0}\n"));
+        }
+        if let Some(width) = self.side_width {
+            text.push_str(&format!("side-width {width:.0}\n"));
+        }
+        if let Some(width) = self.peek_width {
+            text.push_str(&format!("peek-width {width:.0}\n"));
+        }
+        for (squad, names) in &self.project_orders {
+            text.push_str(&format!("project-order {squad} {}\n", names.join("\t")));
+        }
+        if self.links_in_app {
+            text.push_str("links in-app\n");
+        }
+        if self.term_below {
+            text.push_str("term-below\n");
+        }
+        if let Some(height) = self.term_height {
+            text.push_str(&format!("term-height {height:.0}\n"));
         }
         if let Some(width) = self.sidebar_width {
             text.push_str(&format!("sidebar-width {width:.0}\n"));
@@ -624,6 +668,7 @@ mod tests {
         remembered.use_endpoint(&Endpoint::Ssh(host("b:2222")));
         remembered.use_endpoint(&Endpoint::Ssh(host("me@a")));
         remembered.board_split = Some(212.4);
+        remembered.peek_width = Some(560.);
         remembered.sidebar_width = Some(301.6);
         remembered.lang = Some("ko".into());
         remembered.set_merge_way("my site", "merge");
@@ -639,6 +684,7 @@ mod tests {
         assert_eq!(loaded.merge_way("web"), None);
         assert_eq!(loaded.views, vec![KeptView { name: "막힌 것".into(), query: "is:blocked project:app".into(), group: "deps".into(), pinned: true }]);
         assert_eq!(loaded.board_split, Some(212.0), "the board's divider is kept, to the pixel");
+        assert_eq!(loaded.peek_width, Some(560.0), "and how wide its ticket panel was dragged");
         assert_eq!(loaded.last, Some(Endpoint::Ssh(host("me@a"))));
         assert_eq!(loaded.recent, vec![host("me@a"), host("b:2222")]);
 

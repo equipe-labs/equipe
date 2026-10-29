@@ -31,7 +31,15 @@ pub enum Activity {
     /// The engine is using a tool, e.g. `Edit` on a file. Codex's are named
     /// as Claude Code's are — `Bash`, `Edit`, `Write`, `mcp__equipe__board` —
     /// so every screen shows both alike.
-    Tool { name: String, target: Option<String> },
+    Tool {
+        name: String,
+        target: Option<String>,
+        /// What it does in the agent's own words: a command's description.
+        label: Option<String>,
+        /// Started to run on in the background: its `ToolDone` comes when it
+        /// finishes (or never, when the turn ends first).
+        background: bool,
+    },
     /// A tool use came back (the `Tool` with this `name` and `target`).
     ToolDone(ToolDone),
     /// A fragment of the model's reasoning, as the engine shows it — not
@@ -54,6 +62,13 @@ pub enum Activity {
     SubagentEnded { id: String },
     /// A message sent while the turn ran was read, at this point of it.
     Steered(String),
+    /// The engine began compacting the conversation — summarizing it to make
+    /// room — before its next request. Said once, however often it repeats.
+    Compacting,
+    /// The compaction finished.
+    Compacted,
+    /// The compaction failed: why, as the engine said it.
+    CompactFailed(String),
 }
 
 /// How a tool use ended, as the engine answered it.

@@ -97,9 +97,18 @@ pub fn path_and_line(text: &str) -> (&str, Option<u32>) {
 
 /// Whether a code span's text reads as a path: no spaces, a slash or a file
 /// extension, nothing that only code would have.
+/// A path with spaces in its names (`outputs/T-4 데이터 설계/design.md`), not
+/// a command (`cat docs/a.md`): its first space comes after its first slash,
+/// on one line, and it ends in a file with a kind.
+fn spaced_path(text: &str) -> bool {
+    let after_slash = text.find('/').is_some_and(|slash| text.find(' ').is_some_and(|space| space > slash));
+    let named = text.rsplit('/').next().and_then(|name| name.rsplit_once('.')).is_some_and(|(stem, ext)| !stem.trim().is_empty() && !ext.is_empty() && !ext.contains(' '));
+    after_slash && named && !text.contains(['\n', '\t', '\r'])
+}
+
 pub fn looks_like_path(text: &str) -> bool {
     let text = text.trim();
-    if text.is_empty() || text.len() > 240 || text.chars().any(char::is_whitespace) {
+    if text.is_empty() || text.len() > 240 || text.chars().any(char::is_whitespace) && !spaced_path(text) {
         return false;
     }
     if text.contains("://") || text.starts_with('-') || text.contains("::") || text.contains("..") && !text.starts_with("../") {
@@ -160,6 +169,15 @@ fn percent_decode(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_with_spaces_in_its_names_is_a_path() {
+        assert!(looks_like_path("outputs/T-4 데이터 설계/design.md"));
+        assert!(looks_like_path("/Users/me/My Docs/plan.md"));
+        assert!(!looks_like_path("cat docs/a.md"), "a command");
+        assert!(!looks_like_path("see outputs/a b"), "no file at its end");
+        assert!(!looks_like_path("a/b c.md\nrm x"), "one line");
+    }
 
     const BASE: &str = "/work/site";
 

@@ -94,8 +94,60 @@ fn guide(title: impl Into<String>, short: impl Into<String>, text: impl Into<Str
     }
 }
 
+/// What kind of address a machine was reached at, for the steps that fit it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    /// An address on the internet: a router between, ports to forward.
+    Public,
+    /// An address inside a home or office network.
+    Private,
+    /// Tailscale's: `100.64.0.0/10`, `*.ts.net`.
+    Tailnet,
+    /// A `.local` name: the same Wi-Fi only.
+    Nearby,
+    /// A name (DNS or `~/.ssh/config`): could be anywhere.
+    Named,
+}
+
+impl Place {
+    pub fn of(host: &str) -> Self {
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        match host.parse::<std::net::IpAddr>() {
+            Ok(std::net::IpAddr::V4(ip)) => {
+                let [a, b, ..] = ip.octets();
+                if a == 100 && (64..128).contains(&b) {
+                    Self::Tailnet
+                } else if ip.is_private() || ip.is_link_local() || ip.is_loopback() {
+                    Self::Private
+                } else {
+                    Self::Public
+                }
+            }
+            Ok(std::net::IpAddr::V6(ip)) => {
+                let first = ip.segments()[0];
+                if first == 0xfd7a {
+                    Self::Tailnet
+                } else if ip.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80 {
+                    Self::Private
+                } else {
+                    Self::Public
+                }
+            }
+            Err(_) if host.ends_with(".ts.net") => Self::Tailnet,
+            Err(_) if host.ends_with(".local") => Self::Nearby,
+            Err(_) => Self::Named,
+        }
+    }
+}
+
 impl Failure {
     pub fn guide(&self, endpoint: &Endpoint) -> Guide {
+        self.guide_at(endpoint, None)
+    }
+
+    /// As `guide`, knowing the address `ssh` resolved the host to (an alias in
+    /// `~/.ssh/config` names one), for steps that fit where it is.
+    pub fn guide_at(&self, endpoint: &Endpoint, door: Option<&str>) -> Guide {
         let remote = match endpoint {
             Endpoint::Ssh(host) => Some(host),
             Endpoint::Local { .. } => None,
@@ -148,19 +200,32 @@ impl Failure {
                 vec!["sudo apt install openssh-server && sudo systemctl enable --now ssh".into()],
                 self,
             ),
-            Self::Unreachable(_) => guide(
-                t!("failure.unreachable", name = name),
-                t!("failure.unreachable", name = name),
-                t!("failure.unreachable_text", name = name),
-                &[
-                    t!("failure.unreachable_step_name"),
-                    t!("failure.unreachable_step_awake"),
-                    t!("failure.unreachable_step_vpn"),
-                    t!("failure.unreachable_step_ssh"),
-                ],
-                if ssh_line.is_empty() { Vec::new() } else { vec![ssh_line] },
-                self,
-            ),
+            Self::Unreachable(_) => {
+                // The address it went to: `ssh`'s, else the one typed.
+                let address = door.map(|d| d.rsplit_once(':').map_or(d, |(h, _)| h).trim_matches(['[', ']']).to_owned()).or_else(|| remote.map(|h| h.host.clone())).unwrap_or_default();
+                let place = if address.is_empty() { Place::Named } else { Place::of(&address) };
+                let fits = match place {
+                    Place::Public => t!("failure.unreachable_step_public", address = address),
+                    Place::Private => t!("failure.unreachable_step_private", address = address),
+                    Place::Tailnet => t!("failure.unreachable_step_tailnet").into(),
+                    Place::Nearby | Place::Named => t!("failure.unreachable_step_vpn").into(),
+                };
+                let mut steps: Vec<&str> = Vec::new();
+                if matches!(place, Place::Nearby | Place::Named) {
+                    steps.push(t!("failure.unreachable_step_name"));
+                }
+                steps.push(t!("failure.unreachable_step_awake"));
+                steps.push(&fits);
+                steps.push(t!("failure.unreachable_step_ssh"));
+                guide(
+                    t!("failure.unreachable", name = name),
+                    t!("failure.unreachable", name = name),
+                    t!("failure.unreachable_text", name = name),
+                    &steps,
+                    if ssh_line.is_empty() { Vec::new() } else { vec![ssh_line] },
+                    self,
+                )
+            }
             Self::AuthFailed(_) => guide(
                 t!("failure.auth_title", name = name),
                 t!("failure.auth_short", name = name),
@@ -322,6 +387,31 @@ mod tests {
 
     fn lines(text: &str) -> Vec<String> {
         text.lines().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn an_address_is_placed_by_what_it_is() {
+        assert_eq!(Place::of("110.66.18.3"), Place::Public);
+        assert_eq!(Place::of("192.168.0.12"), Place::Private);
+        assert_eq!(Place::of("10.0.0.2"), Place::Private);
+        assert_eq!(Place::of("100.101.12.7"), Place::Tailnet);
+        assert_eq!(Place::of("mini.tail1234.ts.net."), Place::Tailnet);
+        assert_eq!(Place::of("fd7a:115c:a1e0::1"), Place::Tailnet);
+        assert_eq!(Place::of("Mac-mini.local"), Place::Nearby);
+        assert_eq!(Place::of("mini"), Place::Named);
+        assert_eq!(Place::of("2001:4860::8888"), Place::Public);
+    }
+
+    #[test]
+    fn an_unreachable_machine_gets_the_steps_for_where_it_is() {
+        let at = |typed: &str, door: Option<&str>| Failure::Unreachable(String::new()).guide_at(&Endpoint::Ssh(SshHost::parse(typed).unwrap()), door).steps;
+        let public = at("me@110.66.18.3", None);
+        assert!(public.iter().any(|s| s.contains("110.66.18.3") && s.contains("Tailscale")), "{public:?}");
+        assert!(!public.iter().any(|s| s.contains(".local")), "a name's step isn't an address's");
+        let alias = at("mini", Some("192.168.0.12:22"));
+        assert!(alias.iter().any(|s| s.contains("192.168.0.12")), "the address ssh resolved the alias to: {alias:?}");
+        let named = at("mini", None);
+        assert_eq!(named.len(), 4, "a bare name keeps the general steps");
     }
 
     #[test]

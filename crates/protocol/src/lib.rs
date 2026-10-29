@@ -18,11 +18,17 @@ pub mod decide;
 pub mod disk;
 pub mod engines;
 pub mod design;
+pub mod routines;
+pub mod secrets;
+
+/// How a ticket that couldn't start says why, in its note.
+pub const COULD_NOT_START: &str = "Couldn't start: ";
 pub mod rpc;
 pub mod stream;
 pub mod tags;
 pub mod team;
 pub mod transcript;
+pub mod vault;
 
 pub use transcript::Transcript;
 
@@ -326,6 +332,12 @@ impl Ticket {
     }
 
     /// Handed in and ready for the person's review: past design QA, if it had one.
+    /// A ticket that was taken on but couldn't start (its workplace couldn't
+    /// be made): back among the proposals, its reason in its note.
+    pub fn could_not_start(&self) -> bool {
+        self.status == TicketStatus::Proposed && self.note.as_deref().is_some_and(|n| n.starts_with(COULD_NOT_START))
+    }
+
     pub fn ready_for_review(&self) -> bool {
         self.status == TicketStatus::Review && self.design_qa.is_none()
     }
@@ -636,7 +648,15 @@ pub enum Command {
     /// member's (`member`); `mode: None` puts a member back on the squad's default.
     SetMode { squad: SquadName, member: Option<String>, mode: Option<Mode> },
     /// The person answers a member's request for permission.
-    Decide { squad: SquadName, approval: u64, decision: Decision },
+    Decide {
+        squad: SquadName,
+        approval: u64,
+        decision: Decision,
+        /// What the person wrote with their answer: why not, what instead, or
+        /// what to mind — the member reads it with the answer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        words: Option<String>,
+    },
     /// The person's answers to a member's questions ([`Event::QuestionsAsked`]),
     /// one per question in order — an empty one skips it. They go to the member
     /// as its next message. Answered by [`Event::QuestionsClosed`].
@@ -689,6 +709,41 @@ pub enum Command {
     /// The project the person is looking at, by name — new work goes there
     /// unless they say otherwise; `None`: all of the squad's projects.
     Focus { squad: SquadName, project: Option<String> },
+    /// The person adds a project to the squad: a folder on the daemon's
+    /// machine (a git repository; one with no history yet is started as one).
+    /// Answered with [`Event::ProjectsChanged`], or an error saying why not.
+    AddProject { squad: SquadName, path: PathBuf },
+    /// The person makes one of the squad's projects its HQ — where the
+    /// operations across its products live — or none (`None`). Answered with
+    /// [`Event::ProjectsChanged`].
+    SetHq { squad: SquadName, path: Option<PathBuf> },
+    /// The person makes a routine (`id` 0) or changes one: regular work the
+    /// PM is handed on its schedule. Answered with [`Event::RoutinesChanged`].
+    SaveRoutine { squad: SquadName, routine: routines::Routine },
+    DeleteRoutine { squad: SquadName, id: u32 },
+    /// The person runs a routine now, off its schedule.
+    RunRoutine { squad: SquadName, id: u32 },
+    /// The person saves a login for members to sign in with (new, or a
+    /// change): its password to the Keychain, the rest to every screen
+    /// ([`Event::Logins`]).
+    SaveLogin { draft: vault::LoginDraft },
+    DeleteLogin { id: u32 },
+    /// The person takes back a member's "always" for a login (`squad/member`).
+    ForgetLoginAllowance { id: u32, who: String },
+    /// Every screen's list of logins, again.
+    Logins,
+    /// The person adds a browser profile — another person's accounts in a
+    /// Chrome of their own — or names one again ([`Event::BrowserProfiles`]).
+    SaveBrowserProfile { profile: BrowserProfile },
+    /// The person drops a browser profile: members stop getting its browser.
+    DeleteBrowserProfile { name: String },
+    /// Every screen's list of browser profiles, again.
+    BrowserProfiles,
+    /// The person typed what a member asked for with `ask_secret`: saved to
+    /// its file on the daemon's machine, never shown to the member.
+    SaveSecret { squad: SquadName, id: u64, values: Vec<secrets::SecretValue> },
+    /// The person won't give it (now): the member is told.
+    DismissSecret { squad: SquadName, id: u64 },
     /// The screen watches `session`'s browser (`None`: none): equipe sends it
     /// a picture of the page every moment or so ([`Event::BrowserFrame`]).
     WatchBrowser { squad: SquadName, session: Option<SessionId> },
@@ -730,7 +785,12 @@ pub enum Command {
     BrowserNav { page: u64, action: BrowserNavAction, url: Option<String> },
     /// A tab of the person's own in the shared Chrome, at `url` (blank without
     /// one). Answered by [`Event::BrowserTabs`] for the person's lane (`""`).
-    BrowserNewTab { url: Option<String> },
+    BrowserNewTab {
+        url: Option<String>,
+        /// In another browser profile's Chrome (its lane `#name`); `None`: the main one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
+    },
     BrowserCloseTab { page: u64 },
     /// The person takes a member's browser (`lane`, as [`Event::BrowserTabs`]
     /// names it) into their own hands, or gives it back. While they have it the
@@ -792,6 +852,10 @@ pub enum Command {
     /// How the squad moves members between engines as their plans run low
     /// ([`engines::Switching`]). Answered by [`Event::EngineSwitchingChanged`].
     SetEngineSwitching { squad: SquadName, mode: engines::Switching },
+    /// The person lets the PM accept and merge the team's handed-in work
+    /// itself (`on`, the default), putting to them only what needs them — or
+    /// keeps every acceptance for themselves.
+    SetPmAccepts { squad: SquadName, on: bool },
     /// The person makes the moves a card proposes ([`Event::EngineProposed`]):
     /// each at its member's next ticket boundary. Only ever the person's.
     ApplyEngineProposal { squad: SquadName, id: u64 },
@@ -973,6 +1037,18 @@ pub enum BrowserNavAction {
     Go,
 }
 
+/// A browser profile besides the person's main one: a Chrome of its own with
+/// its own sign-ins — another person's accounts, to work or test as them.
+/// Members get its browser beside their own (`browser_<name>`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserProfile {
+    /// Its name: lowercase letters, digits and `-`.
+    pub name: String,
+    /// Whose accounts it holds, in the person's words: `jhjung@atinuminvest.co.kr`.
+    #[serde(default)]
+    pub label: String,
+}
+
 /// One tab of the shared Chrome. `id` is the browser's own, stable while the
 /// tab is open and never given to another tab — not even by a browser started
 /// again: what [`crate::stream`] frames and commands name.
@@ -1091,6 +1167,28 @@ pub enum TurnOutcome {
     Interrupted,
     /// It failed; an [`Event::Error`] says why.
     Failed,
+}
+
+/// What started a conversation's compaction ([`Event::Compacting`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactTrigger {
+    /// The engine, its context nearly full (Claude Code's or Codex's own), or
+    /// equipe, a desk conversation grown full or gone cold.
+    Auto,
+    /// The person asked for it (`/compact`).
+    Manual,
+}
+
+/// A conversation being compacted, for a screen that attaches meanwhile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactingInfo {
+    pub trigger: CompactTrigger,
+    /// When it began, unix milliseconds.
+    pub started_at: u64,
+    /// How long it may take: how long the last ones of the same engine and
+    /// model took — a guess, not progress.
+    pub estimate_ms: u64,
 }
 
 /// The isolated place an editing session works in.
@@ -1266,6 +1364,14 @@ pub enum Event {
         session: SessionId,
         tool: String,
         target: Option<String>,
+        /// What it does, in the agent's own words — a command's description
+        /// ("Watch for a new commit or deployment") — shown over `target`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        /// It runs on in the background: its [`Event::ToolResult`] comes when
+        /// it finishes, which may be long after the call answered.
+        #[serde(default, skip_serializing_if = "is_false")]
+        background: bool,
     },
     /// A tool use came back: the latest [`Event::ToolUse`] with the same
     /// `tool` and `target` still open ended so. A screen that doesn't know
@@ -1358,6 +1464,44 @@ pub enum Event {
     },
     /// The member read a steering message, at this point of its turn.
     Steered { session: SessionId, text: String },
+    /// The member's conversation is being compacted — summarized to make room
+    /// — by its engine (mid-turn) or by equipe (a desk conversation starting
+    /// afresh). It works on once [`Event::Compacted`] or
+    /// [`Event::CompactFailed`] comes. `estimate_ms` is a guess from the
+    /// last compactions of the same engine and model, never progress.
+    Compacting {
+        session: SessionId,
+        /// The member's name; `None` for a plain session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        member: Option<String>,
+        /// The project the conversation is about (`None`: the whole squad).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        trigger: CompactTrigger,
+        /// Unix milliseconds.
+        started_at: u64,
+        estimate_ms: u64,
+    },
+    /// The compaction finished, `took_ms` after it began.
+    Compacted {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        member: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        trigger: CompactTrigger,
+        took_ms: u64,
+    },
+    /// The compaction failed, or its turn ended before it finished.
+    CompactFailed {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        member: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        trigger: CompactTrigger,
+        message: String,
+    },
     /// When the member expects its work done, and what it ships live — as it
     /// said, or nothing any more (`None`).
     Estimated { session: SessionId, estimate: Option<Estimate> },
@@ -1435,6 +1579,26 @@ pub enum Event {
     },
     /// How the squad moves members between engines changed.
     EngineSwitchingChanged { squad: SquadName, mode: engines::Switching },
+    /// Whether the PM accepts the team's work now ([`Command::SetPmAccepts`]).
+    PmAcceptsChanged { squad: SquadName, on: bool },
+    /// The squad's projects now ([`Command::AddProject`]): their folders.
+    /// The logins kept, without their passwords: every screen's.
+    Logins { logins: Vec<vault::Login> },
+    /// The browser profiles besides the main one: every screen's.
+    BrowserProfiles { profiles: Vec<BrowserProfile> },
+    /// A member asks the person for a secret on a card ([`Command::SaveSecret`]).
+    SecretAsked { squad: SquadName, ask: secrets::SecretAsk },
+    /// It was saved (`saved`) or turned down: the card closes everywhere.
+    SecretClosed { squad: SquadName, id: u64, saved: bool },
+    /// The squad's routines now, each with its next run.
+    RoutinesChanged { squad: SquadName, routines: Vec<routines::Routine> },
+    ProjectsChanged {
+        squad: SquadName,
+        projects: Vec<PathBuf>,
+        /// Which of them is the squad's HQ ([`Command::SetHq`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hq: Option<PathBuf>,
+    },
     /// The squad's design systems, as they are now ([`Command::Design`]):
     /// its own first, then each project's that has one, then the drafts
     /// tickets in review hand in. None: there is none yet, and `folder` is
@@ -1467,6 +1631,11 @@ impl Event {
             | Event::EngineProposed { squad, .. }
             | Event::EngineProposalClosed { squad, .. }
             | Event::EngineSwitchingChanged { squad, .. }
+            | Event::PmAcceptsChanged { squad, .. }
+            | Event::SecretAsked { squad, .. }
+            | Event::SecretClosed { squad, .. }
+            | Event::ProjectsChanged { squad, .. }
+            | Event::RoutinesChanged { squad, .. }
             | Event::Design { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             _ => None,
@@ -1494,6 +1663,9 @@ impl Event {
             | Event::Steered { session, .. }
             | Event::Estimated { session, .. }
             | Event::SubagentStarted { session, .. }
+            | Event::Compacting { session, .. }
+            | Event::Compacted { session, .. }
+            | Event::CompactFailed { session, .. }
             | Event::BrowserFrame { session, .. }
             | Event::SubagentStep { session, .. }
             | Event::SubagentEnded { session, .. }
@@ -1520,6 +1692,13 @@ impl Event {
             | Event::EngineProposed { .. }
             | Event::EngineProposalClosed { .. }
             | Event::EngineSwitchingChanged { .. }
+            | Event::PmAcceptsChanged { .. }
+            | Event::SecretAsked { .. }
+            | Event::SecretClosed { .. }
+            | Event::ProjectsChanged { .. }
+            | Event::RoutinesChanged { .. }
+            | Event::Logins { .. }
+            | Event::BrowserProfiles { .. }
             | Event::Design { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
@@ -1555,6 +1734,8 @@ impl Event {
                 | Event::DiskCleaned { .. }
                 | Event::Engines { .. }
                 | Event::SignIn { .. }
+                | Event::Logins { .. }
+                | Event::BrowserProfiles { .. }
                 | Event::BrowserDialogClosed { .. }
                 | Event::BrowserTabs { squad: None, .. }
                 | Event::BrowserControl { squad: None, .. }
@@ -1582,6 +1763,10 @@ pub struct ToolOutcome {
     /// An edit's or a write's change, as a unified diff headed `diff --git`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<String>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -1636,6 +1821,12 @@ pub enum Entry {
         /// How it ended, once it has (and the screen was told).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         outcome: Option<Box<ToolOutcome>>,
+        /// What it does, in the agent's words ([`Event::ToolUse`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        /// Started to run on in the background ([`Event::ToolUse`]).
+        #[serde(default, skip_serializing_if = "is_false")]
+        background: bool,
     },
     /// A quiet line from equipe itself.
     Note { text: String },
@@ -1710,6 +1901,9 @@ pub struct SessionInfo {
     /// in the order they started ([`Event::SubagentStarted`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subagents: Vec<SubagentInfo>,
+    /// Its conversation being compacted now ([`Event::Compacting`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compacting: Option<CompactingInfo>,
 }
 
 /// A subagent at work for a member, for a screen that attaches mid-turn.
@@ -1742,6 +1936,9 @@ pub struct Snapshot {
     /// The squad's projects (repositories), in the order they joined.
     #[serde(default)]
     pub projects: Vec<PathBuf>,
+    /// Which project is the squad's HQ, if one is ([`Command::SetHq`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hq: Option<PathBuf>,
     /// The members, the PM first.
     pub sessions: Vec<SessionInfo>,
     /// Open tickets and the latest closed ones.
@@ -1762,6 +1959,9 @@ pub struct Snapshot {
     /// Handed-in work put to the person to confirm accepting, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accepts: Vec<accept::AcceptProposal>,
+    /// The squad's routines ([`Command::SaveRoutine`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routines: Vec<routines::Routine>,
     /// How many extra members of a role equipe may bring in when its work waits.
     #[serde(default)]
     pub scale: Option<usize>,
@@ -1777,6 +1977,13 @@ pub struct Snapshot {
     /// How the squad moves members between engines.
     #[serde(default, skip_serializing_if = "engines::Switching::is_default")]
     pub engine_switching: engines::Switching,
+    /// Whether the PM accepts the team's work itself ([`Command::SetPmAccepts`]);
+    /// `false` from a daemon that predates it, where the person accepts all.
+    #[serde(default)]
+    pub pm_accepts: bool,
+    /// Secrets members asked for that wait for the person.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secret_asks: Vec<secrets::SecretAsk>,
     /// Moves between engines waiting for the person, or made and not yet
     /// seen, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1946,7 +2153,7 @@ mod tests {
         assert_eq!(Mode::parse("Ask"), Some(Mode::Ask));
         assert_eq!(Mode::parse("full-access"), Some(Mode::Full));
         assert_eq!(Mode::parse("yolo"), None);
-        let cmd = Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always };
+        let cmd = Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always, words: None };
         assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "decide", "squad": "acme", "approval": 7, "decision": "always" }));
         let event = Event::ApprovalRequested {
             squad: "acme".into(),
@@ -2019,7 +2226,7 @@ mod tests {
             Event::MessageQueued { session: 1, text: "also the footer".into(), project: None },
             Event::Notice { session: 2, text: "↪ You → frontend: hi".into() },
             Event::TextDelta { session: 1, text: "안녕".into() },
-            Event::ToolUse { session: 1, tool: "Edit".into(), target: Some("a.rs".into()) },
+            Event::ToolUse { session: 1, tool: "Edit".into(), target: Some("a.rs".into()), label: None, background: false },
             Event::TurnEnded {
                 session: 1,
                 outcome: TurnOutcome::Interrupted,
@@ -2062,6 +2269,8 @@ mod tests {
         let snapshot = Snapshot {
             squad: "acme".into(),
             projects: vec!["/repo".into()],
+            hq: Some("/repo".into()),
+            routines: vec![routines::Routine { id: 1, title: "Weekly report".into(), prompt: "Sum up the week".into(), when: routines::Schedule::Daily { hour: 9, minute: 0 }, on: true, last_run: None, next_run: Some(1) }],
             tickets: vec![ticket(1)],
             mode: Mode::ReadOnly,
             approvals: Vec::new(),
@@ -2110,6 +2319,8 @@ mod tests {
             plan: None,
             plans: vec![EnginePlan { engine: Engine::Codex, usage: PlanUsage::default(), plan_type: None, at: 7 }],
             engine_switching: engines::Switching::Auto,
+            pm_accepts: true,
+            secret_asks: Vec::new(),
             engine_proposals: Vec::new(),
             desktop: DesktopState::default(),
             sessions: vec![SessionInfo {
@@ -2136,6 +2347,7 @@ mod tests {
                 mode: Some(Mode::Ask),
                 effort: Some("high".into()),
                 subagents: vec![SubagentInfo { id: "toolu_1".into(), what: "Read the logs".into(), step: Some("Read build.log".into()), secs: 42 }],
+                compacting: None,
             }],
             allowed: vec!["Bash(npm install:*)".into()],
             browsers_shown: true,

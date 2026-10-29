@@ -540,6 +540,25 @@ impl Journal {
         self.set_meta("engine_switching", mode.code())
     }
 
+    /// Whether the PM accepts and merges the team's handed-in work itself —
+    /// unless the person said no, it does.
+    /// Secrets members asked the person for and still wait, as JSON.
+    pub fn secret_asks(&self) -> Option<String> {
+        self.meta("secret_asks")
+    }
+
+    pub fn set_secret_asks(&self, json: &str) -> Result<()> {
+        self.set_meta("secret_asks", json)
+    }
+
+    pub fn pm_accepts(&self) -> bool {
+        self.meta("pm_accepts").as_deref() != Some("off")
+    }
+
+    pub fn set_pm_accepts(&self, on: bool) -> Result<()> {
+        self.set_meta("pm_accepts", if on { "on" } else { "off" })
+    }
+
     /// What engine switching keeps for the squad (`runtime/engines.rs`), as JSON.
     pub fn engines_record(&self) -> Option<String> {
         self.meta("engines")
@@ -627,6 +646,27 @@ impl Journal {
     pub fn remove_project(&self, path: &Path) -> Result<()> {
         self.conn.execute("DELETE FROM projects WHERE path = ?1", params![path.to_string_lossy()])?;
         Ok(())
+    }
+
+    /// The squad's HQ: the project its operations live in — the plan across
+    /// the products, decisions, runbooks, reports. Only while it is one of
+    /// the squad's projects.
+    pub fn hq(&self) -> Option<PathBuf> {
+        let hq = PathBuf::from(self.meta("hq").filter(|h| !h.is_empty())?);
+        self.projects().ok()?.contains(&hq).then_some(hq)
+    }
+
+    /// The squad's routines, by number.
+    pub fn routines(&self) -> Vec<crate::protocol::routines::Routine> {
+        self.meta("routines").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+    }
+
+    pub fn set_routines(&self, routines: &[crate::protocol::routines::Routine]) -> Result<()> {
+        self.set_meta("routines", &serde_json::to_string(routines).unwrap_or_else(|_| "[]".into()))
+    }
+
+    pub fn set_hq(&self, path: Option<&Path>) -> Result<()> {
+        self.set_meta("hq", &path.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())
     }
 
     // ── the board ──

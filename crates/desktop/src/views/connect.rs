@@ -5,6 +5,7 @@
 
 use equipe_core::t;
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::*;
@@ -12,6 +13,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::askpass::{Answer, Ask, Prompt};
+use crate::daemon::{Leg, Update};
 use crate::failure::Guide;
 use crate::target::Endpoint;
 use crate::icons::{Icon, icon};
@@ -34,6 +36,127 @@ pub struct ConnectUi {
 pub struct AskUi {
     pub queue: VecDeque<Prompt>,
     pub input: Entity<InputState>,
+    /// "Don't ask again": once the password worked, the app's key goes onto
+    /// that machine (`sshkey.rs`). On unless the person takes it off.
+    pub remember: bool,
+}
+
+/// How far the connection the window waits on has got.
+#[derive(Debug, Clone)]
+pub struct Connecting {
+    pub leg: Leg,
+    /// Where it goes, once `ssh` has said.
+    pub door: Option<String>,
+    /// Since when on this leg.
+    pub since: Instant,
+    /// The person pressed Try Again on a guide: this try is shown, not the guide.
+    pub retrying: bool,
+}
+
+/// After this long on a leg, the screen says what may be keeping it.
+pub const SLOW: [(Leg, Duration); 3] = [(Leg::Reaching, Duration::from_secs(6)), (Leg::SigningIn, Duration::from_secs(20)), (Leg::Opening, Duration::from_secs(8))];
+
+impl Connecting {
+    pub fn new(now: Instant) -> Self {
+        Self { leg: Leg::Reaching, door: None, since: now, retrying: false }
+    }
+
+    /// One update from the link; true when the screen changes. A new try
+    /// starts over; a leg only moves forward.
+    pub fn hear(&mut self, update: &Update, now: Instant) -> bool {
+        match update {
+            Update::Leg(Leg::Reaching) if self.leg != Leg::Reaching => {
+                (self.leg, self.since) = (Leg::Reaching, now);
+                true
+            }
+            Update::Leg(leg) => self.reached(*leg, now),
+            Update::Door(door) if self.door.as_ref() != Some(door) => {
+                self.door = Some(door.clone());
+                true
+            }
+            Update::Down(_) => std::mem::take(&mut self.retrying),
+            _ => false,
+        }
+    }
+
+    /// At `leg` now, if that is further.
+    pub fn reached(&mut self, leg: Leg, now: Instant) -> bool {
+        if leg <= self.leg {
+            return false;
+        }
+        (self.leg, self.since) = (leg, now);
+        true
+    }
+
+    /// What may be keeping it, once it has been a while on this leg.
+    pub fn slow(&self, now: Instant) -> Option<&'static str> {
+        let (_, after) = SLOW.iter().find(|(leg, _)| *leg == self.leg)?;
+        (now.saturating_duration_since(self.since) >= *after).then(|| match self.leg {
+            Leg::Reaching => t!("connect.slow_reach"),
+            Leg::SigningIn => t!("connect.slow_sign_in"),
+            Leg::Opening => t!("connect.slow_open"),
+        })
+    }
+}
+
+/// The body while a connection over SSH is being made: each leg, how long the
+/// current one has taken, and what may be keeping it.
+pub fn connecting_screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let c = &shell.connecting;
+    let now = Instant::now();
+    let waited = now.saturating_duration_since(c.since).as_secs();
+    let legs = [(Leg::Reaching, t!("connect.leg_reach")), (Leg::SigningIn, t!("connect.leg_sign_in")), (Leg::Opening, t!("connect.leg_open"))];
+    let rows = legs.into_iter().map(|(leg, label)| {
+        let at = leg.cmp(&c.leg);
+        let mark = match at {
+            std::cmp::Ordering::Less => icon(Icon::Check, 14., p.accent).into_any_element(),
+            std::cmp::Ordering::Equal => motion::spinner(14., p.text2),
+            std::cmp::Ordering::Greater => div().size(px(6.)).rounded_full().bg(p.hair).into_any_element(),
+        };
+        h_flex()
+            .gap_2()
+            .items_center()
+            .min_h(px(24.))
+            .text_size(px(BODY))
+            .child(div().size(px(16.)).flex_none().flex().items_center().justify_center().child(mark))
+            .child(div().min_w_0().text_color(if at == std::cmp::Ordering::Greater { p.muted } else { p.text }).child(label))
+            .when(at == std::cmp::Ordering::Equal && waited >= 3, |row| row.child(div().flex_none().text_size(px(SMALL)).text_color(p.muted).child(t!("connect.seconds", n = waited))))
+    });
+    v_flex()
+        .id("connecting")
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scroll()
+        .items_center()
+        .justify_center()
+        .py_8()
+        .child(motion::rise(
+            v_flex()
+                .w_full()
+                .max_w(px(440.))
+                .px_4()
+                .gap_3()
+                .child(div().text_size(px(18.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("connect.connecting_title", name = shell.endpoint.label())))
+                .children(c.door.clone().map(|door| div().text_size(px(SMALL)).text_color(p.muted).font_family(MONO).child(t!("connect.door", door = door))))
+                .child(v_flex().gap_1().pt_1().children(rows))
+                .children(c.slow(now).map(|why| {
+                    h_flex()
+                        .gap_2()
+                        .items_start()
+                        .p(px(S3))
+                        .rounded(px(R_MD))
+                        .bg(p.wash)
+                        .text_size(px(SMALL))
+                        .line_height(px(20.))
+                        .text_color(p.text2)
+                        .child(div().pt(px(2.)).flex_none().child(icon(Icon::Info, 14., p.muted)))
+                        .child(div().flex_1().min_w_0().child(why))
+                }))
+                .child(h_flex().pt_2().child(ui::button(p, "switch", Kind::Secondary, t!("connect.switch_target")).field().on_click(cx.listener(|this, _, window, cx| this.open_chooser(window, cx))))),
+            "connecting-in",
+        ))
+        .into_any_element()
 }
 
 impl ConnectUi {
@@ -46,7 +169,7 @@ impl ConnectUi {
 impl AskUi {
     pub fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("connect.secret_placeholder")));
-        Self { queue: VecDeque::new(), input }
+        Self { queue: VecDeque::new(), input, remember: true }
     }
 }
 
@@ -199,8 +322,12 @@ pub fn modal_w(p: Palette, id: &'static str, width: f32, card: impl IntoElement)
             .items_center()
             .justify_center()
             .bg(rgba(0x00000073))
+            // A press on the dimmed window around the box does what Esc does.
+            .on_mouse_down(MouseButton::Left, |_, window, cx| window.dispatch_action(Box::new(crate::DismissOverlay), cx))
             .child(motion::dialog(
                 v_flex()
+                    // A press inside the box is the box's.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .w(px(width))
                     .max_h(px(640.))
                     .p(px(S6))
@@ -298,14 +425,47 @@ pub fn question(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     };
     let buttons = |no: (&'static str, &'static str), yes: (&'static str, &'static str)| (no, yes);
     let (card, (no, yes)) = match &prompt.ask {
-        Ask::Secret { label } => (
-            v_flex()
-                .gap_3()
-                .child(heading(p, t!("connect.sign_in_to", who = who), Some(label.clone())))
-                .child(field(p, &shell.ask.input))
-                .child(div().px(px(S3)).text_size(px(12.)).text_color(p.muted).child(t!("connect.secret_note"))),
-            buttons(("ask-cancel", t!("connect.cancel")), ("ask-ok", t!("connect.ok"))),
-        ),
+        Ask::Secret { label } => {
+            // A password over SSH (not a key's passphrase): asked once, if the person wants.
+            let password = shell.endpoint.is_remote() && label.to_lowercase().contains("password");
+            let remember = shell.ask.remember;
+            let check = div()
+                .flex_none()
+                .size(px(16.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.))
+                .border_1()
+                .border_color(if remember { p.accent } else { p.muted })
+                .when(remember, |c| c.bg(p.accent).child(icon(Icon::Check, 11., p.on_accent)));
+            let keep = h_flex()
+                .id("ask-remember")
+                .px(px(S3))
+                .gap_2()
+                .items_start()
+                .cursor_pointer()
+                .child(div().pt(px(2.)).child(check))
+                .child(
+                    v_flex()
+                        .gap(px(2.))
+                        .child(div().text_size(px(SMALL)).text_color(p.text).child(t!("connect.remember")))
+                        .child(div().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("connect.remember_note"))),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.ask.remember = !this.ask.remember;
+                    cx.notify();
+                }));
+            (
+                v_flex()
+                    .gap_3()
+                    .child(heading(p, t!("connect.sign_in_to", who = who), Some(label.clone())))
+                    .child(field(p, &shell.ask.input))
+                    .when(password, |c| c.child(keep))
+                    .when(!password, |c| c.child(div().px(px(S3)).text_size(px(12.)).text_color(p.muted).child(t!("connect.secret_note")))),
+                buttons(("ask-cancel", t!("connect.cancel")), ("ask-ok", t!("connect.ok"))),
+            )
+        }
         Ask::HostKey { host, fingerprint, text } => (
             v_flex()
                 .gap_3()

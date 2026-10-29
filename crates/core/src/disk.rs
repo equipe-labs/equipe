@@ -497,7 +497,22 @@ impl Scan<'_> {
                     DiskWhy::Rebuildable
                 };
                 let label = format!("{} · {squad_name}", member.file_name().to_string_lossy());
-                let at = self.push(DiskGroup::Builds, DiskKind::BuildCache, label, &path, bytes, whole, why != DiskWhy::InUse, why);
+                // A working member's folder stays, but the incremental caches in
+                // it may go between its builds: listed apart, not counted twice.
+                let mut rest = bytes;
+                if why == DiskWhy::InUse {
+                    for cache in incremental_dirs(&path) {
+                        let (size, whole) = measure(&cache, &mut self.budget);
+                        if size < INCREMENTAL_FROM || !idle(cache.parent().unwrap_or(&cache)) {
+                            continue;
+                        }
+                        rest = rest.saturating_sub(size);
+                        let inside = cache.strip_prefix(&path).unwrap_or(&cache).display().to_string();
+                        let at = self.push(DiskGroup::Builds, DiskKind::BuildCache, format!("{label} · {inside}/"), &cache, size, whole, true, DiskWhy::Rebuildable);
+                        self.items[at].squad = Some(squad_name.clone());
+                    }
+                }
+                let at = self.push(DiskGroup::Builds, DiskKind::BuildCache, label, &path, rest, whole, why != DiskWhy::InUse, why);
                 self.items[at].squad = Some(squad_name.clone());
             }
         }
@@ -687,7 +702,15 @@ pub fn clean(known: &Known, ids: &[String]) -> DiskCleaned {
             continue;
         }
         let gone = match item.kind {
-            DiskKind::WorktreeBuild | DiskKind::BuildCache if removable(&item.path, &roots) => std::fs::remove_dir_all(&item.path).is_ok(),
+            // Never under a build: cargo is kept out while it goes, or it stays.
+            DiskKind::BuildCache if removable(&item.path, &roots) => match unbuilt(&item.path, || std::fs::remove_dir_all(&item.path).is_ok()) {
+                Some(gone) => gone,
+                None => {
+                    done.skipped.push((id.clone(), DiskWhy::InUse));
+                    continue;
+                }
+            },
+            DiskKind::WorktreeBuild if removable(&item.path, &roots) => std::fs::remove_dir_all(&item.path).is_ok(),
             DiskKind::Worktree if removable(&item.path, &roots) => {
                 if uncommitted(&item.path) {
                     done.skipped.push((id.clone(), DiskWhy::Uncommitted));
@@ -710,6 +733,108 @@ pub fn clean(known: &Known, ids: &[String]) -> DiskCleaned {
         }
     }
     done
+}
+
+/// From this size an incremental cache is worth listing apart.
+const INCREMENTAL_FROM: u64 = if cfg!(test) { MB } else { 100 * MB };
+
+/// The incremental caches in a build folder: `debug/incremental`, and per
+/// target (`aarch64-apple-darwin/debug/incremental`).
+fn incremental_dirs(build: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut look = |dir: &Path| {
+        for profile in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let cache = profile.path().join("incremental");
+            if std::fs::symlink_metadata(&cache).is_ok_and(|m| m.is_dir()) {
+                found.push(cache);
+            }
+        }
+    };
+    look(build);
+    for target in std::fs::read_dir(build).into_iter().flatten().flatten() {
+        if target.file_name().to_string_lossy().contains('-') && target.path().is_dir() {
+            look(&target.path());
+        }
+    }
+    found
+}
+
+/// Cargo's locks in a build folder or one of its profiles (`debug/.cargo-lock`,
+/// `.cargo-build-lock`, …): held while it builds there.
+fn cargo_locks(dir: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, depth: usize, locks: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else { continue };
+            if meta.is_file() && name.starts_with(".cargo") && name.ends_with("lock") {
+                locks.push(entry.path());
+            } else if meta.is_dir() && depth > 0 && !matches!(name.as_str(), "deps" | "incremental" | "build" | ".fingerprint" | "examples") {
+                walk(&entry.path(), depth - 1, locks);
+            }
+        }
+    }
+    let mut locks = Vec::new();
+    walk(dir, 2, &mut locks);
+    locks
+}
+
+/// Whether cargo is building nowhere in `dir` right now.
+fn idle(dir: &Path) -> bool {
+    unbuilt(dir, || ()).is_some()
+}
+
+/// `f`, with cargo kept out of the build folder `path` is (or is in) while it
+/// runs: each of its locks taken, none waited for. `None` when cargo builds
+/// there now. A cache inside a profile (`debug/incremental`) takes that
+/// profile's locks.
+fn unbuilt<T>(path: &Path, f: impl FnOnce() -> T) -> Option<T> {
+    let dir = if path.file_name().is_some_and(|n| n == "incremental") { path.parent().unwrap_or(path) } else { path };
+    let mut held = Vec::new();
+    for lock in cargo_locks(dir) {
+        let Ok(file) = std::fs::OpenOptions::new().read(true).write(true).open(&lock) else { continue };
+        if file.try_lock().is_err() {
+            return None;
+        }
+        held.push(file);
+    }
+    let out = f();
+    drop(held);
+    Some(out)
+}
+
+/// When the disk runs short: the caches no build needs between builds go,
+/// without asking — incremental caches in members' build folders, and at
+/// `deeper` (nearly full) whole build folders nobody built in for days. Only
+/// where cargo isn't building, kept out while they go. What went, for the log.
+pub fn trim_builds(home: &Path, deeper: bool) -> (u64, Vec<String>) {
+    off_the_loop("disk::trim_builds");
+    let roots = roots(home);
+    let mut freed = 0;
+    let mut done = Vec::new();
+    let mut give = |path: &Path, done: &mut Vec<String>| {
+        let mut budget = Budget::new(Duration::from_secs(10));
+        let (bytes, _) = measure(path, &mut budget);
+        if removable(path, &roots) && unbuilt(path, || std::fs::remove_dir_all(path).is_ok()) == Some(true) {
+            freed += bytes;
+            done.push(format!("{} ({})", path.display(), size(bytes)));
+        }
+    };
+    for squad in std::fs::read_dir(home.join("cache").join("build")).into_iter().flatten().flatten() {
+        for member in std::fs::read_dir(squad.path()).into_iter().flatten().flatten() {
+            let path = member.path();
+            if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
+                continue;
+            }
+            if deeper && newest(&path).is_some_and(|at| at.elapsed().unwrap_or_default() > STALE_AFTER) {
+                give(&path, &mut done);
+                continue;
+            }
+            for cache in incremental_dirs(&path) {
+                give(&cache, &mut done);
+            }
+        }
+    }
+    (freed, done)
 }
 
 /// `git worktree remove` from its repository: the branch stays.
@@ -754,9 +879,61 @@ pub fn clear_builds(home: &Path, worktree: &Path) -> Vec<String> {
     done
 }
 
+/// Whether a simulator named `name` is ticket `id`'s: `T126 iPhone 17 Pro`,
+/// `T-126 …`, `acme T126 …` (`squad` given) — not `T1260 …`.
+fn ticket_simulator(name: &str, id: TicketId, squad: Option<&str>) -> bool {
+    let name = squad.and_then(|s| name.strip_prefix(s)).map_or(name, str::trim_start);
+    [format!("T{id}"), format!("T-{id}")].iter().any(|tag| name == tag || name.strip_prefix(tag.as_str()).is_some_and(|rest| rest.starts_with([' ', '-', '_', '·'])))
+}
+
+/// The simulators made for ticket `id` (named for it, as the mobile role is
+/// told to), shut down and deleted once the ticket is done with: each holds a
+/// booted iPhone's memory and gigabytes of disk. `squad`'s own names always;
+/// a bare `T<id>` only when `shared` is false (no other squad has that
+/// number open). What went, for the log.
+pub fn clear_simulators(id: TicketId, squad: &str, shared: bool) -> Vec<String> {
+    off_the_loop("disk::clear_simulators");
+    if !cfg!(target_os = "macos") {
+        return Vec::new();
+    }
+    let simctl = |args: &[&str]| {
+        let mut command = std::process::Command::new("xcrun");
+        command.arg("simctl").args(args);
+        output_within(command, Duration::from_secs(60)).ok().filter(|o| o.status.success())
+    };
+    let Some(list) = simctl(&["list", "devices", "-j"]) else { return Vec::new() };
+    let Ok(list) = serde_json::from_slice::<serde_json::Value>(&list.stdout) else { return Vec::new() };
+    let mut done = Vec::new();
+    for device in list["devices"].as_object().into_iter().flat_map(|runtimes| runtimes.values()).filter_map(|d| d.as_array()).flatten() {
+        let (Some(name), Some(udid)) = (device["name"].as_str(), device["udid"].as_str()) else { continue };
+        let ours = ticket_simulator(name, id, Some(squad)) && (name.starts_with(squad) || !shared);
+        if !ours {
+            continue;
+        }
+        if device["state"].as_str() == Some("Booted") {
+            simctl(&["shutdown", udid]);
+        }
+        if simctl(&["delete", udid]).is_some() {
+            done.push(format!("deleted simulator {name} ({udid})"));
+        }
+    }
+    done
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_simulator_is_a_tickets_by_its_name() {
+        assert!(ticket_simulator("T126 iPhone 17 Pro", 126, None));
+        assert!(ticket_simulator("T-126 Media", 126, None));
+        assert!(ticket_simulator("T126", 126, None));
+        assert!(ticket_simulator("acme T126 iPhone", 126, Some("acme")));
+        assert!(!ticket_simulator("T1260 iPhone", 126, None));
+        assert!(!ticket_simulator("iPhone 17 Pro", 126, None));
+        assert!(!ticket_simulator("Test T126", 126, None));
+    }
 
     const G: u64 = GB;
 
@@ -1023,6 +1200,81 @@ mod tests {
         let done = clean(&known, &[front.id.clone(), back.id.clone()]);
         assert!(!builds.join("frontend").exists() && builds.join("backend").exists());
         assert_eq!(done.removed, vec![front.id.clone()]);
+    }
+
+    /// Cargo building in `dir` (a profile): its lock held until dropped.
+    fn building_in(dir: &Path) -> std::fs::File {
+        std::fs::create_dir_all(dir).unwrap();
+        let lock = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(dir.join(".cargo-build-lock")).unwrap();
+        lock.lock().unwrap();
+        lock
+    }
+
+    #[test]
+    fn a_working_members_incremental_cache_goes_between_its_builds() {
+        let tree = Tree::new();
+        let back = tree.home.join("cache").join("build").join("acme").join("backend");
+        fill(&back.join("debug").join("deps"), 2 * MB as usize);
+        fill(&back.join("debug").join("incremental"), 2 * MB as usize);
+        let known = Known { home: tree.home.clone(), building: vec![back.clone()], ..Known::default() };
+        let (items, _) = scan(&known, SCAN_BUDGET);
+        let cache = find(&items, DiskKind::BuildCache, &back.join("debug").join("incremental"));
+        assert!(cache.safe && cache.label == "backend · acme · debug/incremental/", "{cache:?}");
+        let whole = find(&items, DiskKind::BuildCache, &back);
+        assert!(!whole.safe && whole.bytes < 3 * MB, "the cache isn't counted twice: {whole:?}");
+
+        // While cargo builds there it isn't offered, and a click from before takes nothing.
+        let held = building_in(&back.join("debug"));
+        assert!(!scan(&known, SCAN_BUDGET).0.iter().any(|i| i.path == cache.path));
+        assert!(clean(&known, std::slice::from_ref(&cache.id)).removed.is_empty());
+        assert!(back.join("debug").join("incremental").exists());
+        drop(held);
+
+        // Let go: free again — after a moment, if a fork elsewhere in this process held it too.
+        let removed = (0..100).map(|_| clean(&known, std::slice::from_ref(&cache.id)).removed).find(|r| !r.is_empty() || { std::thread::sleep(Duration::from_millis(10)); false });
+        assert_eq!(removed, Some(vec![cache.id.clone()]));
+        assert!(!back.join("debug").join("incremental").exists() && back.join("debug").join("deps").exists());
+    }
+
+    #[test]
+    fn a_build_folder_being_built_in_is_never_removed() {
+        let tree = Tree::new();
+        let front = tree.home.join("cache").join("build").join("acme").join("frontend");
+        fill(&front.join("debug").join("deps"), 2 * MB as usize);
+        let known = Known { home: tree.home.clone(), ..Known::default() };
+        let item = find(&scan(&known, SCAN_BUDGET).0, DiskKind::BuildCache, &front).clone();
+        // A build began after the look: the folder stays, and says why.
+        let held = building_in(&front.join("debug"));
+        let done = clean(&known, std::slice::from_ref(&item.id));
+        assert!(done.removed.is_empty() && done.skipped == vec![(item.id.clone(), DiskWhy::InUse)] && front.exists());
+        drop(held);
+    }
+
+    #[test]
+    fn a_short_disk_trims_only_caches_no_build_needs() {
+        let tree = Tree::new();
+        let builds = tree.home.join("cache").join("build").join("acme");
+        fill(&builds.join("pm").join("debug").join("incremental"), MB as usize);
+        fill(&builds.join("pm").join("debug").join("deps"), MB as usize);
+        fill(&builds.join("qa").join("aarch64-apple-darwin").join("debug").join("incremental"), MB as usize);
+        fill(&builds.join("mobile").join("debug").join("incremental"), MB as usize);
+        let held = building_in(&builds.join("mobile").join("debug"));
+        let (freed, done) = trim_builds(&tree.home, false);
+        assert!(!builds.join("pm").join("debug").join("incremental").exists() && builds.join("pm").join("debug").join("deps").exists());
+        assert!(!builds.join("qa").join("aarch64-apple-darwin").join("debug").join("incremental").exists(), "per target too");
+        assert!(builds.join("mobile").join("debug").join("incremental").exists(), "cargo builds there now");
+        assert!(done.len() == 2 && freed >= 2 * MB, "{done:?} {freed}");
+        drop(held);
+
+        // Nearly full: a whole folder nobody built in for days goes too.
+        let old = std::time::SystemTime::now() - STALE_AFTER - Duration::from_secs(60);
+        for dir in [builds.join("pm"), builds.join("pm").join("debug")] {
+            std::fs::File::open(&dir).unwrap().set_modified(old).unwrap();
+        }
+        trim_builds(&tree.home, false);
+        assert!(builds.join("pm").exists(), "only when nearly full");
+        trim_builds(&tree.home, true);
+        assert!(!builds.join("pm").exists() && builds.join("mobile").join("debug").exists());
     }
 
     #[test]
