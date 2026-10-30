@@ -1531,6 +1531,7 @@ impl Runtime {
                 }
             }
             Command::AddProject { squad, path } => self.add_project(squad, path),
+            Command::RemoveProject { squad, path } => self.remove_project(&squad, &path),
             Command::SetHq { squad, path } => self.set_hq(&squad, path),
             Command::SaveLogin { draft } => self.with_vault(move |vault| vault.save(draft, now_secs()).map(|_| ())),
             Command::DeleteLogin { id } => self.with_vault(move |vault| vault.delete(id)),
@@ -1743,6 +1744,28 @@ impl Runtime {
             let result = crate::squads::add_folder(&home, &squad, &path.to_string_lossy(), user_home.as_deref());
             let _ = internal.send(Internal::ProjectAdded { squad, result });
         });
+    }
+
+    /// A project taken off the squad: its folder, tickets and branches stay;
+    /// every screen has the list again, and the PM knows.
+    fn remove_project(&mut self, squad: &str, path: &Path) {
+        let removed = match self.journal(squad) {
+            Some(journal) if journal.projects().unwrap_or_default().iter().any(|p| p == path) => journal.remove_project(path).map_err(|e| e.to_string()),
+            Some(_) => Err(path.display().to_string()),
+            None => return,
+        };
+        match removed {
+            Ok(()) => {
+                let name = crate::board::project_name(path);
+                crate::daemon_log!("equipe: {squad} no longer works on {name} ({})", path.display());
+                self.publish_projects(squad);
+                self.brief_pm(squad, format!("The person took {name} ({}) off the squad's projects; its folder, tickets and branches stay.", path.display()), None);
+            }
+            Err(why) => {
+                let message = say!(self, "error.project_not_removed", why = why);
+                self.squad_error(squad, message);
+            }
+        }
     }
 
     /// A project added: every screen of the squad has the list again, and the

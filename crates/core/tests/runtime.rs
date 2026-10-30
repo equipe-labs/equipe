@@ -3969,3 +3969,20 @@ async fn without_a_designer_changed_screens_go_straight_to_the_person() {
     assert!(!told.is_empty());
     handle.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_project_taken_off_the_squad_leaves_its_list_and_its_folder_stays() {
+    let (site, app) = (scratch("site"), scratch("app"));
+    let home = squad_home(&[&site, &app]);
+    let claude = fake_claude(true, &answering("ok"));
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    handle.send(Command::RemoveProject { squad: "acme".into(), path: app.clone() });
+    let seen = until(&mut events, |e| matches!(e, Event::ProjectsChanged { .. })).await;
+    let Some(Event::ProjectsChanged { projects, .. }) = seen.last() else { unreachable!() };
+    assert!(!projects.contains(&app) && projects.len() == 1, "{projects:?}");
+    assert!(app.is_dir(), "its folder stays");
+    // One it doesn't work on: said, and nothing changes.
+    handle.send(Command::RemoveProject { squad: "acme".into(), path: app.clone() });
+    let failed = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
+    assert!(matches!(failed.last(), Some(Event::Error { message, .. }) if message.contains("wasn't removed")), "{failed:#?}");
+}

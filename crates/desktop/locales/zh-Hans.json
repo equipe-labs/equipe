@@ -2080,5 +2080,19 @@
   "settings.accept_words": "接受 审核 批准 accept review approve pm",
   "accounts.add_words": "登录 密码 账号 login password id",
   "accounts.profile_words": "配置文件 浏览器 browser profile",
-  "accounts.profile_add_words": "配置文件 浏览器 账号 browser profile chrome google"
+  "accounts.profile_add_words": "配置文件 浏览器 账号 browser profile chrome google",
+  "sidebar.project_menu": "更多",
+  "sidebar.remove_project": "从小队中移除…",
+  "sidebar.remove_ask": "要把 {name} 从小队中移除吗？",
+  "sidebar.remove_body": "文件夹和文件保持原样，工单和分支也会保留。",
+  "sidebar.remove_working": "当前在此项目中进行的工单：{n}",
+  "sidebar.remove_yes": "移除",
+  "sidebar.removed": "已移除 {name}",
+  "sidebar.undo_remove": "撤销",
+  "relaunch.daemon": "更新 {place} · {theirs} → {ours}",
+  "relaunch.both": "全部更新并重新启动 · {version}",
+  "relaunch.daemon_running": "正在更新 {place}…",
+  "relaunch.daemon_restarting": "正在重新启动 {place}…",
+  "relaunch.daemon_done": "{place} 已更新 · 立即重新启动",
+  "relaunch.daemon_failed": "{place} 更新失败 · 重试"
 }

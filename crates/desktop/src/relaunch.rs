@@ -169,6 +169,80 @@ pub fn label(version: &str) -> String {
     t!("relaunch.label", version = version)
 }
 
+/// Where the daemon's own update stands, once the person asked for it
+/// (this Mac, or the machine it runs on over SSH).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DaemonUpdate {
+    Running,
+    /// Installed: the daemon starts again on it once its members are idle.
+    Done,
+    /// The person asked for it now, not once the members are idle.
+    Restarting,
+    Failed(String),
+}
+
+/// The daemon the app talks to, as the update pill needs it.
+#[derive(Debug, Clone, Default)]
+pub struct Daemon {
+    /// Where it runs, as the person knows it: "이 Mac", `tinums-mac-mini`.
+    pub place: String,
+    /// Its release (`0.86.4`), and whether that is older than this app's.
+    pub theirs: String,
+    pub older: bool,
+    /// On another machine: its update is its own, over SSH.
+    pub remote: bool,
+    pub update: Option<DaemonUpdate>,
+    /// "Restart now" pressed once: the next press restarts it mid-turn.
+    pub armed: bool,
+}
+
+/// What a press on the update pill does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Act {
+    /// Nothing: said quietly.
+    None,
+    Relaunch,
+    UpdateDaemon,
+    /// The daemon's machine first, then the app restarts into its new version.
+    UpdateBoth,
+    ArmRestart,
+    RestartDaemonNow,
+    Reveal,
+    CheckNow,
+}
+
+/// The one update pill: this app's update and the daemon's, together — the
+/// person needn't know they are two. A daemon at work on its update first,
+/// then the app's version waiting (with a remote daemon behind it, both in
+/// one press), then a daemon behind this app, then the app's download.
+pub fn both(app: &Update, daemon: &Daemon, ours: &str) -> Option<(String, Act, bool)> {
+    let place = &daemon.place;
+    match &daemon.update {
+        Some(DaemonUpdate::Running) => return Some((t!("relaunch.daemon_running", place = place), Act::None, false)),
+        Some(DaemonUpdate::Restarting) => return Some((t!("relaunch.daemon_restarting", place = place), Act::None, false)),
+        Some(DaemonUpdate::Failed(_)) => return Some((t!("relaunch.daemon_failed", place = place), Act::UpdateDaemon, false)),
+        _ => {}
+    }
+    if let Update::Ready(version) = app {
+        let behind = daemon.remote && crate::notify::stale_daemon(&daemon.theirs, version).is_some() && daemon.update.is_none();
+        return Some(if behind { (t!("relaunch.both", version = version), Act::UpdateBoth, true) } else { (label(version), Act::Relaunch, true) });
+    }
+    match &daemon.update {
+        Some(DaemonUpdate::Done) if daemon.armed => return Some((t!("main.update_daemon_now_sure").into(), Act::RestartDaemonNow, false)),
+        Some(DaemonUpdate::Done) => return Some((t!("relaunch.daemon_done", place = place), Act::ArmRestart, false)),
+        _ => {}
+    }
+    if daemon.older {
+        return Some((t!("relaunch.daemon", place = place, theirs = daemon.theirs.as_str(), ours = ours), Act::UpdateDaemon, true));
+    }
+    let words = pill(app)?;
+    Some(match app {
+        Update::Failed { why: Why::Move | Why::Permission, .. } => (words, Act::Reveal, false),
+        Update::Failed { .. } => (words, Act::CheckNow, false),
+        _ => (words, Act::None, false),
+    })
+}
+
 /// What the sidebar's pill says, if anything: being downloaded, waiting, failed.
 pub fn pill(now: &Update) -> Option<String> {
     match now {
@@ -358,6 +432,34 @@ pub fn check_quietly(cx: &gpui_kit::App, stale: std::time::Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn daemon(theirs: &str, remote: bool) -> Daemon {
+        Daemon { place: "mini".into(), theirs: theirs.into(), older: crate::notify::stale_daemon(theirs, "0.87.0").is_some(), remote, ..Daemon::default() }
+    }
+
+    #[test]
+    fn one_pill_says_both_updates_and_one_press_does_both() {
+        let ready = Update::Ready("0.88.0".into());
+        // The app's version waits and the remote daemon is behind it: both, the daemon first.
+        assert_eq!(both(&ready, &daemon("0.87.0", true), "0.87.0").map(|p| p.1), Some(Act::UpdateBoth));
+        // The daemon on this Mac goes with the app: a restart is enough.
+        assert_eq!(both(&ready, &daemon("0.87.0", false), "0.87.0").map(|p| p.1), Some(Act::Relaunch));
+        // Nothing waits for the app, the daemon is behind it: the daemon's.
+        assert_eq!(both(&Update::Idle, &daemon("0.86.4", true), "0.87.0").map(|p| p.1), Some(Act::UpdateDaemon));
+        assert_eq!(both(&Update::Idle, &daemon("0.87.0", true), "0.87.0"), None, "nothing to say");
+        // At work on it: said, nothing to press; done: a press arms, the next restarts now.
+        let mut d = daemon("0.86.4", true);
+        d.update = Some(DaemonUpdate::Running);
+        assert_eq!(both(&ready, &d, "0.87.0").map(|p| p.1), Some(Act::None));
+        d.update = Some(DaemonUpdate::Done);
+        assert_eq!(both(&Update::Idle, &d, "0.87.0").map(|p| p.1), Some(Act::ArmRestart));
+        d.armed = true;
+        assert_eq!(both(&Update::Idle, &d, "0.87.0").map(|p| p.1), Some(Act::RestartDaemonNow));
+        // Done and the app's version waiting: the app's restart, the daemon is already on it.
+        assert_eq!(both(&ready, &d, "0.87.0").map(|p| p.1), Some(Act::Relaunch));
+        d.update = Some(DaemonUpdate::Failed("no route".into()));
+        assert_eq!(both(&Update::Idle, &d, "0.87.0").map(|p| p.1), Some(Act::UpdateDaemon), "failed: a press tries again");
+    }
 
     #[test]
     fn found_then_downloading_then_ready_and_ready_stays_through_later_checks() {

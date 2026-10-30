@@ -2080,5 +2080,19 @@
   "settings.accept_words": "受け入れ レビュー 承認 accept review approve pm",
   "accounts.add_words": "ログイン パスワード アカウント login password id",
   "accounts.profile_words": "プロフィール ブラウザ browser profile",
-  "accounts.profile_add_words": "プロフィール ブラウザ アカウント browser profile chrome google"
+  "accounts.profile_add_words": "プロフィール ブラウザ アカウント browser profile chrome google",
+  "sidebar.project_menu": "その他",
+  "sidebar.remove_project": "スクワッドから外す…",
+  "sidebar.remove_ask": "{name} をスクワッドから外しますか?",
+  "sidebar.remove_body": "フォルダとファイルはそのまま残ります。チケットとブランチも残ります。",
+  "sidebar.remove_working": "現在このプロジェクトで作業中のチケット: {n}件",
+  "sidebar.remove_yes": "外す",
+  "sidebar.removed": "{name} を外しました",
+  "sidebar.undo_remove": "元に戻す",
+  "relaunch.daemon": "{place} を更新 · {theirs} → {ours}",
+  "relaunch.both": "両方を更新して再起動 · {version}",
+  "relaunch.daemon_running": "{place} を更新中…",
+  "relaunch.daemon_restarting": "{place} を再起動中…",
+  "relaunch.daemon_done": "{place} を更新しました · 今すぐ再起動",
+  "relaunch.daemon_failed": "{place} の更新に失敗 · 再試行"
 }

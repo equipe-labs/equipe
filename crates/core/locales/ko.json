@@ -329,5 +329,6 @@
   "squad_home.readme_outputs": "맡긴 일의 결과물 (`outputs/T-12 제목/…`)",
   "squad_home.readme_edit": "파일을 직접 고치거나 넣어도 돼요. equipe가 바뀐 내용을 모두 기억하니 언제든 되돌릴 수 있어요(`/home undo`).",
   "squad_memory.index_title": "스쿼드 기억",
-  "squad_memory.index_intro": "스쿼드가 함께 아는 것들이에요. 파일 하나에 사실 하나이고, 이 목록은 equipe가 파일들로 만들어요. 파일을 고치거나 지우면 다음 대화부터 모든 멤버에게 반영돼요. 직접 고친 내용이 우선해요."
+  "squad_memory.index_intro": "스쿼드가 함께 아는 것들이에요. 파일 하나에 사실 하나이고, 이 목록은 equipe가 파일들로 만들어요. 파일을 고치거나 지우면 다음 대화부터 모든 멤버에게 반영돼요. 직접 고친 내용이 우선해요.",
+  "error.project_not_removed": "프로젝트를 빼지 못했어요: {why}"
 }

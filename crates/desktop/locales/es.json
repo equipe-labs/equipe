@@ -2132,5 +2132,19 @@
   "settings.accept_words": "aceptar revisar aprobar accept review approve pm",
   "accounts.add_words": "acceso contraseña cuenta login password id",
   "accounts.profile_words": "perfil navegador browser profile",
-  "accounts.profile_add_words": "perfil navegador cuenta browser profile chrome google"
+  "accounts.profile_add_words": "perfil navegador cuenta browser profile chrome google",
+  "sidebar.project_menu": "Más",
+  "sidebar.remove_project": "Quitar del equipo…",
+  "sidebar.remove_ask": "¿Quitar {name} del equipo?",
+  "sidebar.remove_body": "La carpeta y sus archivos se quedan donde están. Los tickets y las ramas también.",
+  "sidebar.remove_working": "Tickets en curso en este proyecto: {n}",
+  "sidebar.remove_yes": "Quitar",
+  "sidebar.removed": "Se quitó {name}",
+  "sidebar.undo_remove": "Deshacer",
+  "relaunch.daemon": "Actualizar {place} · {theirs} → {ours}",
+  "relaunch.both": "Actualizar ambos y reiniciar · {version}",
+  "relaunch.daemon_running": "Actualizando {place}…",
+  "relaunch.daemon_restarting": "Reiniciando {place}…",
+  "relaunch.daemon_done": "{place} actualizado · Reiniciar ahora",
+  "relaunch.daemon_failed": "Error al actualizar {place} · Reintentar"
 }

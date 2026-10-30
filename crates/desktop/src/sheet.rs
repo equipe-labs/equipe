@@ -18,6 +18,15 @@ pub struct Ask {
     pub then: Then,
 }
 
+impl Ask {
+    /// Whether yes takes something away — a project off the squad, a member,
+    /// a ticket: its button says so in red.
+    pub fn destructive(&self) -> bool {
+        use equipe_core::protocol::Command;
+        matches!(&self.then, Then::Send(commands) if commands.iter().any(|c| matches!(c, Command::RemoveProject { .. } | Command::Close { .. } | Command::Cancel { .. })))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Then {
     /// Send these commands to the daemon.

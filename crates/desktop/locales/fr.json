@@ -2132,5 +2132,19 @@
   "settings.accept_words": "accepter revue approuver accept review approve pm",
   "accounts.add_words": "connexion mot de passe compte login password id",
   "accounts.profile_words": "profil navigateur browser profile",
-  "accounts.profile_add_words": "profil navigateur compte browser profile chrome google"
+  "accounts.profile_add_words": "profil navigateur compte browser profile chrome google",
+  "sidebar.project_menu": "Plus",
+  "sidebar.remove_project": "Retirer de l'équipe…",
+  "sidebar.remove_ask": "Retirer {name} de l'équipe ?",
+  "sidebar.remove_body": "Le dossier et ses fichiers restent en place. Les tickets et les branches aussi.",
+  "sidebar.remove_working": "Tickets en cours dans ce projet : {n}",
+  "sidebar.remove_yes": "Retirer",
+  "sidebar.removed": "{name} retiré",
+  "sidebar.undo_remove": "Annuler",
+  "relaunch.daemon": "Mettre à jour {place} · {theirs} → {ours}",
+  "relaunch.both": "Tout mettre à jour et redémarrer · {version}",
+  "relaunch.daemon_running": "Mise à jour de {place}…",
+  "relaunch.daemon_restarting": "Redémarrage de {place}…",
+  "relaunch.daemon_done": "{place} mis à jour · Redémarrer maintenant",
+  "relaunch.daemon_failed": "Échec de la mise à jour de {place} · Réessayer"
 }

@@ -2080,5 +2080,19 @@
   "settings.accept_words": "수락 검토 승인 accept review approve pm",
   "accounts.add_words": "아이디 비밀번호 계정 login password id",
   "accounts.profile_words": "프로필 브라우저 browser profile",
-  "accounts.profile_add_words": "프로필 브라우저 계정 browser profile chrome google"
+  "accounts.profile_add_words": "프로필 브라우저 계정 browser profile chrome google",
+  "sidebar.project_menu": "더 보기",
+  "sidebar.remove_project": "스쿼드에서 빼기…",
+  "sidebar.remove_ask": "{name}을(를) 스쿼드에서 뺄까요?",
+  "sidebar.remove_body": "폴더와 파일은 그대로 있어요. 티켓과 브랜치도 남아요.",
+  "sidebar.remove_working": "지금 이 프로젝트에서 작업 중인 티켓: {n}개",
+  "sidebar.remove_yes": "빼기",
+  "sidebar.removed": "{name}을(를) 뺐어요",
+  "sidebar.undo_remove": "되돌리기",
+  "relaunch.daemon": "{place} 업데이트 · {theirs} → {ours}",
+  "relaunch.both": "모두 업데이트하고 다시 시작 · {version}",
+  "relaunch.daemon_running": "{place} 업데이트하는 중…",
+  "relaunch.daemon_restarting": "{place} 다시 시작하는 중…",
+  "relaunch.daemon_done": "{place} 업데이트했어요 · 지금 재시작",
+  "relaunch.daemon_failed": "{place} 업데이트 실패 · 다시 시도"
 }
