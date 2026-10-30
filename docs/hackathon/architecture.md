@@ -1,11 +1,73 @@
-# Architecture: Nemotron review on Nebius Token Factory
+# Architecture: NVIDIA Nemotron on Nebius Token Factory
 
 equipe is a squad of AI coding agents (a PM, engineers, a designer, QA…) that work a
-board of tickets on isolated git branches. The members that *write* code run on Claude
-Code or Codex. This feature adds a reviewer that only *reads*: an **NVIDIA Nemotron**
-model served by **Nebius Token Factory** reviews every code ticket that is handed in.
+board of tickets on isolated git branches. Nemotron on Token Factory plays two parts:
 
-## Flow
+1. **The members themselves** ([below](#members-on-nemotron-codexs-agent-token-factorys-responses-api)):
+   with only a Token Factory key and the free, open-source Codex CLI, members run on an
+   **NVIDIA Nemotron** model — they read, run commands and tests, and change files.
+   *Mock-verified* with the real Codex CLI; not yet run against Token Factory.
+2. **A reviewer that only reads:** a Nemotron model reviews every code ticket handed in.
+
+## Members on Nemotron: Codex's agent, Token Factory's Responses API
+
+```
+ Start a member (runtime.rs start)
+   model nvidia/…                                   → on Token Factory
+   no engine signed in, NEBIUS_API_KEY in the daemon's env, `codex` on PATH
+                                                    → on Token Factory, model =
+                                                      EQUIPE_NEBIUS_MODEL or nemotron::pick_model(GET /v1/models)
+   otherwise                                        → unchanged (Claude Code / the person's Codex)
+        │
+        ▼
+ a turn (runtime.rs start_turn, Engine::Codex)
+   nemotron::Config::codex_provider()  → codex_app::Provider { id "nebius", base_url, env_key "NEBIUS_API_KEY" }
+   env += NEBIUS_API_KEY (the app-server's environment only)
+        │
+        ▼
+ codex_app::run_turn
+   relay::start(base_url)          127.0.0.1:<port>, for this turn only
+   codex app-server -c model_provider="nebius" -c model_providers.nebius.base_url="http://127.0.0.1:<port>"
+                    -c model_providers.nebius.env_key="NEBIUS_API_KEY" -c …wire_api="responses"
+                    -c …requires_openai_auth=false -c web_search="disabled"
+                    -c shell_environment_policy.exclude=["NEBIUS_API_KEY"]
+                    -c features.{multi_agent,goals,image_generation,apps,plugins,
+                                 remote_compaction_v2,view_image,browser_use,computer_use,
+                                 tool_suggest,enable_request_compression}=false
+                    -c model_context_window=131072
+   JSON-RPC as for any Codex member: account/read (requiresOpenaiAuth: false — no ChatGPT
+   sign-in), thread/start|resume, turn/start, approvals → the person, item/* → Activity
+        │
+        ▼  POST /responses  (stream: true, Authorization: Bearer $NEBIUS_API_KEY, model nvidia/…)
+ relay.rs  flatten_request: tools of type "namespace" (MCP servers: equipe's board, a browser)
+           → function tools "mcp__equipe__take_ticket"; earlier calls in `input` likewise
+        │
+        ▼  POST https://api.tokenfactory.nebius.com/v1/responses   (headers passed on, unread)
+ Token Factory → SSE: response.output_item.done {function_call | message}, response.completed {usage}
+        │
+        ▼
+ relay.rs  restore: function_call "mcp__equipe__take_ticket" → { namespace, name } as Codex sent them
+        │
+        ▼
+ codex runs the call (exec_command in the member's worktree/sandbox, or the MCP tool),
+ sends function_call_output in the next request … until a final message: turn/completed
+```
+
+| Where | What |
+|---|---|
+| `crates/core/src/nemotron.rs` | `is_agent_model`, `agent_model`, `agent_effort`, `Config::codex_provider`, `Config::codex_env` |
+| `crates/core/src/runtime.rs` | `start` (engine and model choice, `nebius_ready`, `nothing_signed_in`), `start_turn` (provider, env, no plan limits), `nebius_failure` |
+| `crates/providers/src/codex_app.rs` | `Provider`, `provider_args`, `PLAIN_FEATURES_OFF`, `TurnRequest.provider` |
+| `crates/providers/src/relay.rs` | The loopback relay: `flatten_request`, `restore` |
+| `crates/providers/tests/nebius_codex.rs` | Real `codex` + stand-in Responses API: a shell call, an MCP call, a refused key |
+| `crates/core/tests/nebius.rs` | Engine choice with/without key and sign-ins; `/model nvidia/…`; real `codex` writing a file that lands on a branch |
+
+Choices: no new engine and no new concept for the person — a member on Nemotron is a Codex
+member whose model is `nvidia/…`; Claude Code and the person's ChatGPT Codex are untouched
+when signed in. The key flows by environment only. Codex 0.154 offers `apply_patch` only as
+a freeform tool, so edits go through the shell.
+
+## Review flow
 
 ```
  member calls submit_for_review (a code ticket, on its own branch + worktree)
