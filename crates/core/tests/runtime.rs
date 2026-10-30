@@ -121,6 +121,7 @@ fn config(claude: &Path, home: &Path, persist: bool) -> Config {
         browser_host: false,
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
+        nemotron: None,
     }
 }
 
@@ -3968,4 +3969,113 @@ async fn without_a_designer_changed_screens_go_straight_to_the_person() {
     let told = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("handed in T-1 for your review"))).await;
     assert!(!told.is_empty());
     handle.shutdown().await;
+}
+
+// ── Nemotron reviews (against a mock Token Factory on localhost: no network, no key) ──
+
+/// A mock Token Factory: answers every request with `status` and `body`, and
+/// keeps each request's text. Its base URL, for `EQUIPE_NEBIUS_BASE_URL`.
+async fn mock_token_factory(status: u16, body: String) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1/", listener.local_addr().unwrap());
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept = seen.clone();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let (body, kept) = (body.clone(), kept.clone());
+            tokio::spawn(async move {
+                let mut data = Vec::new();
+                let mut buf = [0u8; 8192];
+                while let Ok(n) = socket.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    data.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&data).into_owned();
+                    let Some(end) = text.find("\r\n\r\n") else { continue };
+                    let length = text[..end].lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap())).unwrap_or(0);
+                    if data.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+                kept.lock().unwrap().push(String::from_utf8_lossy(&data).into_owned());
+                let head = format!("HTTP/1.1 {status} X\r\ncontent-type: application/json\r\nx-request-id: req-mock\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len());
+                let _ = socket.write_all(head.as_bytes()).await;
+                let _ = socket.write_all(body.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    (base, seen)
+}
+
+fn nemotron_at(base: &str) -> equipe_core::nemotron::Config {
+    equipe_core::nemotron::Config::from_vars(|name| match name {
+        "NEBIUS_API_KEY" => Some("sk-mock-not-a-real-key".into()),
+        "EQUIPE_NEBIUS_BASE_URL" => Some(base.into()),
+        "EQUIPE_NEBIUS_MODEL" => Some("nvidia/mock-nemotron".into()),
+        _ => None,
+    })
+    .unwrap()
+}
+
+/// A ticket handed in by the frontend, in a squad whose reviewer asks `base`.
+async fn hand_in_reviewed_at(base: &str) -> (Handle, UnboundedReceiver<Event>, PathBuf) {
+    let repo = repo();
+    let claude = fake_claude(true, &working_turn("HERO.md"));
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(Config { nemotron: Some(nemotron_at(base)), ..config(&claude, &home, false) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Landing hero", "body": "- [ ] A headline and one button.", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
+    // Handed in mid-turn: at the turn's end the work is committed, and reviewed.
+    let handed = tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Hero done." })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    (handle, events, home)
+}
+
+#[tokio::test]
+async fn code_handed_in_is_reviewed_by_nemotron_kept_and_shown_on_every_screen() {
+    let review = r#"{"verdict":"needs_attention","summary":"The button has no handler.","risks":[{"file":"HERO.md","line":1,"why":"Nothing happens on click."}],"missing_tests":["Clicking the button."]}"#;
+    let completion = serde_json::json!({
+        "model": "nvidia/mock-nemotron",
+        "choices": [{ "message": { "role": "assistant", "content": review } }],
+        "usage": { "prompt_tokens": 900, "completion_tokens": 80, "total_tokens": 980 },
+    });
+    let (base, seen) = mock_token_factory(200, completion.to_string()).await;
+    let (handle, mut events, _home) = hand_in_reviewed_at(&base).await;
+
+    let reviewed = until(&mut events, |e| matches!(e, Event::CodeReviewed { .. })).await;
+    let Some(Event::CodeReviewed { squad, review }) = reviewed.last() else { panic!() };
+    assert_eq!((squad.as_str(), review.ticket, review.model.as_str()), ("acme", 1, "nvidia/mock-nemotron"));
+    assert_eq!(review.verdict, equipe_core::protocol::review::ReviewVerdict::NeedsAttention);
+    assert_eq!(review.summary, "The button has no handler.");
+    assert_eq!(review.risks[0].file, "HERO.md");
+    // What the model read: the ticket and the branch's diff, with what was made.
+    let request = seen.lock().unwrap().last().cloned().unwrap();
+    assert!(request.starts_with("POST /v1/chat/completions"), "{request}");
+    assert!(request.contains("Landing hero") && request.contains("+made by the squad"), "{request}");
+    assert!(request.contains("in English"), "{request}");
+
+    // A screen attaching later sees it; the ticket's record says so, by Nemotron.
+    let snapshot = handle.snapshot("acme").await;
+    assert_eq!(snapshot.reviews, vec![review.clone()]);
+    handle.send(Command::TicketHistory { squad: "acme".into(), ticket: 1 });
+    let history = until(&mut events, |e| matches!(e, Event::TicketHistory { .. })).await;
+    let Some(Event::TicketHistory { entries, .. }) = history.last() else { panic!() };
+    assert!(entries.iter().any(|e| e.by == "nemotron" && e.kind == "reviewed" && e.text == "The button has no handler."), "{entries:#?}");
+}
+
+#[tokio::test]
+async fn a_review_that_cant_run_says_why_and_never_the_key() {
+    let (base, _) = mock_token_factory(401, r#"{"error":"invalid key sk-mock-not-a-real-key"}"#.into()).await;
+    let (handle, mut events, _home) = hand_in_reviewed_at(&base).await;
+    let said = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("Nemotron"))).await;
+    let Some(Event::Notice { session, text }) = said.last() else { panic!() };
+    assert_eq!(*session, 2, "in the conversation of the member who handed it in");
+    assert_eq!(text, "Nemotron couldn't review T-1: Nebius Token Factory didn't accept the API key");
+    assert!(!said.iter().any(|e| format!("{e:?}").contains("sk-mock")));
+    assert!(handle.snapshot("acme").await.reviews.is_empty());
 }

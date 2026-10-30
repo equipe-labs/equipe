@@ -357,6 +357,10 @@ impl Journal {
                by TEXT NOT NULL,
                added_at INTEGER NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS reviews (
+               ticket INTEGER PRIMARY KEY,
+               body TEXT
+             );
              CREATE TABLE IF NOT EXISTS conversations (
                id INTEGER PRIMARY KEY,
                project TEXT,
@@ -848,6 +852,24 @@ impl Journal {
             params![id, now(), by, kind, text],
         )?;
         Ok(())
+    }
+
+    /// Keep Nemotron's review of its ticket, in place of one before.
+    pub fn save_review(&self, review: &equipe_protocol::review::CodeReview) -> Result<()> {
+        let body = serde_json::to_string(review).map_err(|e| Error::ToSqlConversionFailure(Box::new(e)))?;
+        self.conn.execute("INSERT OR REPLACE INTO reviews (ticket, body) VALUES (?1, ?2)", params![review.ticket, body])?;
+        Ok(())
+    }
+
+    /// The reviews of `tickets` that were kept, in their order.
+    pub fn reviews(&self, tickets: &[TicketId]) -> Result<Vec<equipe_protocol::review::CodeReview>> {
+        let mut stmt = self.conn.prepare("SELECT body FROM reviews WHERE ticket = ?1")?;
+        let mut found = Vec::new();
+        for id in tickets {
+            let body: Option<String> = stmt.query_row([id], |r| r.get(0)).optional()?;
+            found.extend(body.and_then(|b| serde_json::from_str(&b).ok()));
+        }
+        Ok(found)
     }
 
     /// How long tickets took, from first being assigned to first being handed

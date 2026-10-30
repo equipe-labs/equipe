@@ -828,6 +828,21 @@ fn ticket(status: TicketStatus) -> Ticket {
     }
 }
 
+/// Nemotron's review of the ticket handed in.
+fn code_review() -> equipe_core::protocol::review::CodeReview {
+    use equipe_core::protocol::review::{CodeReview, ReviewPoint, ReviewVerdict};
+    CodeReview {
+        ticket: 38,
+        model: "nvidia/nemotron-example".into(),
+        verdict: ReviewVerdict::NeedsAttention,
+        summary: "A wrong password still gets a session when the lookup fails.".into(),
+        risks: vec![ReviewPoint { file: "src/auth.rs".into(), line: Some(42), why: "The error branch returns Ok: the request goes through.".into() }],
+        missing_tests: vec!["A failed user lookup answers 401.".into()],
+        truncated: false,
+        at: NOW / 1000,
+    }
+}
+
 fn disk_status() -> equipe_core::protocol::disk::DiskStatus {
     use equipe_core::protocol::disk::{DiskLevel, DiskStatus};
     DiskStatus { level: DiskLevel::Critical, free: 4_200_000_000, total: 494_384_795_648, path: "/Users/abel/.equipe".into(), container_free: None }
@@ -922,6 +937,7 @@ fn snapshot() -> Snapshot {
         allowed: vec![],
         browsers_shown: false,
         disk: Some(disk_status()),
+        reviews: vec![code_review()],
     }
 }
 
@@ -975,6 +991,7 @@ fn message_vectors() -> Value {
 
     // The board.
     tell(&mut core, &mut examples, "event: ticket changed", Event::TicketChanged { squad: SQUAD.into(), ticket: ticket(TicketStatus::Review) });
+    tell(&mut core, &mut examples, "event: code reviewed", Event::CodeReviewed { squad: SQUAD.into(), review: code_review() });
 
     // Approvals.
     tell(&mut core, &mut examples, "event: approval requested", Event::ApprovalRequested { squad: SQUAD.into(), approval: approval() });

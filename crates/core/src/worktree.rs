@@ -418,6 +418,13 @@ impl Sandbox {
         git(&self.repo, &["diff", "--stat", &format!("{}..{}", self.base, self.branch)])
     }
 
+    /// The branch's changes since where it started, as a patch — what a
+    /// reviewer reads. Runs git: off the core loop.
+    pub fn diff(&self) -> Result<String> {
+        off_the_loop("a branch's diff");
+        git(&self.repo, &["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", &format!("{}..{}", self.base, self.branch)])
+    }
+
     /// The files the branch changed since where it started, by path.
     pub fn changed_files(&self) -> Result<Vec<String>> {
         let out = git(&self.repo, &["-c", "core.quotePath=false", "diff", "--name-only", &format!("{}..{}", self.base, self.branch)])?;

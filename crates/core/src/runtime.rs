@@ -153,6 +153,9 @@ pub struct Config {
     /// The language equipe speaks to the person in until a screen says
     /// otherwise: notices, errors. What it tells the models stays English.
     pub lang: crate::i18n::Lang,
+    /// An NVIDIA Nemotron model on Nebius Token Factory reviews each code
+    /// ticket handed in (`nemotron`); `None`: no `NEBIUS_API_KEY`, no review.
+    pub nemotron: Option<crate::nemotron::Config>,
 }
 
 impl Config {
@@ -173,6 +176,7 @@ impl Config {
             browser_host: cfg!(target_os = "macos"),
             person_home: None,
             lang: crate::i18n::Lang::resolve(crate::i18n::Front::Terminal),
+            nemotron: crate::nemotron::Config::from_env().ok(),
         }
     }
 
@@ -442,6 +446,9 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let (host_tx, host_rx) = mpsc::unbounded_channel();
     let mut config = config;
     let mac = std::mem::replace(&mut config.mac, Box::new(desktop::ThisMac));
+    if config.persist && config.nemotron.is_none() {
+        crate::daemon_log!("equipe: no NEBIUS_API_KEY in the daemon's environment: handed-in work isn't reviewed by Nemotron");
+    }
     // The logins: their passwords in the Keychain (in memory for tests).
     let secrets: Box<dyn vault::Secrets> = if std::env::var_os("EQUIPE_VAULT_IN_MEMORY").is_some() { Box::new(vault::InMemory::default()) } else { Box::new(vault::Keychain) };
     let vault = vault::Vault::open(&config.home, secrets);
@@ -771,6 +778,8 @@ enum Internal {
     /// A squad's design systems looked at off the loop: their stamp, and —
     /// when they changed or were asked for — what they are.
     Design(String, u64, Option<design::Catalog>),
+    /// Nemotron's review of a code ticket handed in by `member`, or why there is none.
+    Reviewed { squad: String, ticket: TicketId, member: SessionId, result: Result<Box<crate::nemotron::Reviewed>, crate::nemotron::ReviewError> },
 }
 
 /// A request for permission waiting for the person, and the engine waiting on it.
@@ -966,6 +975,7 @@ impl Wake {
             Wake::Internal(Internal::SignInEnded(..)) => Borrowed("a sign-in's end"),
             Wake::Internal(Internal::ClaudeReady(_)) => Borrowed("whether Claude is signed in"),
             Wake::Internal(Internal::Design(..)) => Borrowed("a design system's look"),
+            Wake::Internal(Internal::Reviewed { .. }) => Borrowed("a Nemotron review"),
             Wake::Host(_) => Borrowed("the browser host's news"),
             Wake::Daily => Borrowed("daily prune"),
             Wake::DesktopTick => Borrowed("desktop tick"),
@@ -1145,6 +1155,7 @@ impl Runtime {
                     }
                 }
                 Internal::Design(squad, stamp, catalog) => self.on_design(squad, stamp, catalog),
+                Internal::Reviewed { squad, ticket, member, result } => self.on_reviewed(&squad, ticket, member, result),
             },
             Wake::Host(said) => self.on_host(said).await,
             Wake::Daily => self.prune(),
@@ -3885,6 +3896,13 @@ todo); or drop it if it's no longer wanted.]"
             }
             ticket.worktree = kept_worktree.clone();
         }
+        // Code handed in, committed on its branch: Nemotron reads its diff, off the loop.
+        if how == WorkEnd::HandedIn
+            && !ticket.kind.in_home()
+            && let Some(sandbox) = &work.sandbox
+        {
+            self.ask_for_review(&squad, &ticket, sandbox.clone(), id);
+        }
         let handed_in = match (&how, &summary) {
             (WorkEnd::HandedIn, Some(summary)) if ticket.kind.in_home() => Some(self.home_hand_in(&squad, &ticket, work.sandbox.as_ref(), summary)),
             _ => summary.clone(),
@@ -4027,6 +4045,69 @@ todo); or drop it if it's no longer wanted.]"
 them with `propose_accept`. Then carry on with what else waits.]"
                 );
                 let _ = self.internal.send(Internal::Wake { session: pm, prompt });
+            }
+        }
+    }
+
+    /// An NVIDIA Nemotron model on Nebius Token Factory reads `ticket`'s
+    /// branch against it, off the loop — git, then the network: the review
+    /// comes back as [`Internal::Reviewed`]. Nothing without a key.
+    fn ask_for_review(&mut self, squad: &str, ticket: &Ticket, sandbox: Sandbox, member: SessionId) {
+        let Some(cfg) = self.config.nemotron.clone() else {
+            return;
+        };
+        // The language the person writes in, else their screen's.
+        let language = self.journal(squad).and_then(Journal::language).unwrap_or_else(|| self.config.lang.english_name().to_owned());
+        let mut input = crate::nemotron::ReviewInput { ticket: ticket.id, title: ticket.title.clone(), body: ticket.body.clone(), language, ..Default::default() };
+        let (internal, squad, id) = (self.internal.clone(), squad.to_owned(), ticket.id);
+        crate::daemon_log!("equipe: asking Nemotron on Nebius Token Factory to review T-{} of {squad}", ticket.id);
+        tokio::spawn(async move {
+            let diff = tokio::task::spawn_blocking(move || sandbox.diff()).await;
+            let result = match diff {
+                Ok(Ok(diff)) => {
+                    input.diff = diff;
+                    crate::nemotron::review_detailed(&cfg, input).await.map(Box::new)
+                }
+                Ok(Err(why)) => Err(crate::nemotron::ReviewError::Diff(why)),
+                Err(err) => Err(crate::nemotron::ReviewError::Diff(err.to_string())),
+            };
+            let _ = internal.send(Internal::Reviewed { squad, ticket: id, member, result });
+        });
+    }
+
+    /// A review back: kept, on the ticket's record, and on every screen of the
+    /// squad. None: the log says which error (never the key or the diff), and
+    /// the ticket and the member's conversation why.
+    fn on_reviewed(&mut self, squad: &str, ticket: TicketId, member: SessionId, result: Result<Box<crate::nemotron::Reviewed>, crate::nemotron::ReviewError>) {
+        match result {
+            Ok(reviewed) => {
+                let review = reviewed.review;
+                let usage = reviewed.usage.map_or_else(|| "no usage reported".to_owned(), |u| format!("{} prompt + {} completion tokens", u.prompt, u.completion));
+                crate::daemon_log!(
+                    "equipe: Nemotron reviewed T-{ticket} of {squad}: {:?}, model {}, request {}, {usage}, {} ms{}",
+                    review.verdict,
+                    review.model,
+                    reviewed.request_id.as_deref().unwrap_or("-"),
+                    reviewed.latency.as_millis(),
+                    if review.truncated { ", diff cut short" } else { "" },
+                );
+                if let Some(journal) = self.journal(squad) {
+                    let _ = journal.save_review(&review);
+                    let _ = journal.ticket_event(ticket, "nemotron", "reviewed", &review.summary);
+                }
+                self.publish(Event::CodeReviewed { squad: squad.to_owned(), review });
+            }
+            Err(err) => {
+                crate::daemon_log!("equipe: Nemotron couldn't review T-{ticket} of {squad}: {}", err.kind());
+                let text = say!(self, "review.couldnt_run", id = ticket, why = err.why(self.config.lang));
+                if let Some(journal) = self.journal(squad) {
+                    let _ = journal.ticket_event(ticket, "nemotron", "review failed", &text);
+                }
+                // In the conversation of the member who handed it in, else the PM's.
+                let session = Some(member).filter(|id| self.sessions.contains_key(id)).or_else(|| self.pm_of(squad));
+                if let Some(session) = session {
+                    self.publish(Event::Notice { session, text });
+                }
             }
         }
     }
@@ -5802,7 +5883,11 @@ it back there once they have done it.{again} End your turn now with a short line
         let accepts = self.accepts(squad).clone();
         let hq = self.hq(squad);
         let routines = self.routines(squad);
+        // Nemotron's reviews of the tickets shown.
+        let shown: Vec<TicketId> = tickets.iter().map(|t| t.id).collect();
+        let reviews = self.journals.get(squad).and_then(|j| j.reviews(&shown).ok()).unwrap_or_default();
         Snapshot {
+            reviews,
             routines,
             team_changes,
             accepts,

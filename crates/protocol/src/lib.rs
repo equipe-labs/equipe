@@ -2241,6 +2241,16 @@ mod tests {
             hq: Some("/repo".into()),
             routines: vec![routines::Routine { id: 1, title: "Weekly report".into(), prompt: "Sum up the week".into(), when: routines::Schedule::Daily { hour: 9, minute: 0 }, on: true, last_run: None, next_run: Some(1) }],
             tickets: vec![ticket(1)],
+            reviews: vec![review::CodeReview {
+                ticket: 1,
+                model: "nvidia/nemotron-test".into(),
+                verdict: review::ReviewVerdict::Risky,
+                summary: "The check is skipped on error.".into(),
+                risks: vec![review::ReviewPoint { file: "src/auth.rs".into(), line: Some(42), why: "An error lets the request through.".into() }],
+                missing_tests: vec!["A failed lookup is refused.".into()],
+                truncated: true,
+                at: 3,
+            }],
             mode: Mode::ReadOnly,
             approvals: Vec::new(),
             questions: vec![decide::QuestionSet {

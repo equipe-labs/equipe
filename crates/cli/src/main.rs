@@ -1428,6 +1428,7 @@ impl App {
                 | Event::WorkStarted { .. }
                 | Event::WorkEnded { .. }
                 | Event::TicketChanged { .. }
+                | Event::CodeReviewed { .. }
                 | Event::TicketHistory { .. }
                 | Event::ModeChanged { .. }
                 | Event::ApprovalRequested { .. }
