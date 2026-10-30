@@ -2356,7 +2356,13 @@ runbooks and reports live there, and work across the projects or on running them
         );
         self.publish(Event::SessionStarted { session: id, project, engine, model: model.clone(), workspace, member, squad: squad.clone() });
         if on_nebius {
-            let text = say!(self, "notice.on_nebius", model = model.unwrap_or_default());
+            let model = model.unwrap_or_default();
+            let text = match &self.config.nemotron {
+                // Token Factory and one of NVIDIA's: Nemotron, said as such.
+                Some(cfg) if cfg.provider == crate::nemotron::CODEX_PROVIDER && model.to_ascii_lowercase().starts_with("nvidia/") => say!(self, "notice.on_nebius", model = model),
+                Some(cfg) => say!(self, "notice.on_open_model", model = model, provider = cfg.provider_name.clone()),
+                None => say!(self, "notice.on_nebius", model = model),
+            };
             self.publish(Event::Notice { session: id, text });
         }
         // A new member may be just who a waiting ticket needs.

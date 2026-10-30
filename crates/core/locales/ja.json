@@ -259,6 +259,7 @@
   "notice.memory_updated": "✎ {name} がスクワッドの記憶を更新しました: {what} · /memory でスクワッドが知っていることを表示",
   "notice.model": "次のターンから {model}。会話はそのまま続きます。",
   "notice.on_nebius": "Nebius Token Factory の NVIDIA Nemotron（{model}）で、Codex CLI のエージェント上で動きます。NEBIUS_API_KEY にトークン単位で課金されます。",
+  "notice.on_open_model": "{provider} の {model} で、Codex CLI のエージェント上で動きます。料金は {provider} でトークン単位にかかります。",
   "notice.pm_accepted": "✓ PM が {ids} を承認して main にマージしました — {checked}",
   "notice.refresh_clean": "デスクでの次の会話はまっさらに始まります — 記憶とボードは引き継がれます。",
   "notice.refresh_summary": "デスクでの次の会話は、この会話の要約と記憶から新しく始まります。",

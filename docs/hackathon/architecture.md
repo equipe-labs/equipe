@@ -43,11 +43,17 @@ board of tickets on isolated git branches. Nemotron on Token Factory plays two p
            → function tools "mcp__equipe__take_ticket"; earlier calls in `input` likewise;
            Codex's client_metadata and x-codex-* headers (workspace paths) kept back
         │
-        ▼  POST https://api.tokenfactory.nebius.com/v1/responses   (headers passed on, unread)
- Token Factory → SSE: response.output_item.done {function_call | message}, response.completed {usage}
+        ▼  chat_wire.rs to_chat: instructions + developer messages → one system message;
+        │  message/function_call/function_call_output → user/assistant(tool_calls)/tool;
+        │  function tools → {type:function, function:{…}}; reasoning items, hosted tools dropped
+        ▼  POST https://api.tokenfactory.nebius.com/v1/chat/completions   (stream: true; headers passed on, unread)
+ Token Factory → SSE chat chunks: delta.content, delta.tool_calls[i] (fragments), usage, [DONE]
         │
         ▼
+ chat_wire.rs Translator: → response.created, output_item.added/output_text.delta,
+           output_item.done {message | function_call}, response.completed {usage}
  relay.rs  restore: function_call "mcp__equipe__take_ticket" → { namespace, name } as Codex sent them
+           (EQUIPE_NEBIUS_WIRE=responses: POST …/v1/responses as it is, no translation)
         │
         ▼
  codex runs the call (exec_command in the member's worktree/sandbox, or the MCP tool),
@@ -59,9 +65,20 @@ board of tickets on isolated git branches. Nemotron on Token Factory plays two p
 | `crates/core/src/nemotron.rs` | `is_agent_model`, `agent_model`, `agent_effort`, `Config::codex_provider`, `Config::codex_env` |
 | `crates/core/src/runtime.rs` | `start` (engine and model choice, `nebius_ready`, `nothing_signed_in`), `start_turn` (provider, env, no plan limits), `nebius_failure` |
 | `crates/providers/src/codex_app.rs` | `Provider`, `provider_args`, `PLAIN_FEATURES_OFF`, `TurnRequest.provider` |
-| `crates/providers/src/relay.rs` | The loopback relay: `flatten_request`, `restore` |
-| `crates/providers/tests/nebius_codex.rs` | Real `codex` + stand-in Responses API: a shell call, an MCP call, a refused key |
+| `crates/providers/src/relay.rs` | The loopback relay: `flatten_request`, `restore`, `Wire` |
+| `crates/providers/src/chat_wire.rs` | Responses ↔ Chat Completions: `to_chat`, `Translator` |
+| `crates/providers/tests/nebius_codex.rs` | Real `codex` + stand-in chat server (another model's id) and stand-in Responses API: a shell call, an MCP call, a refused key |
 | `crates/core/tests/nebius.rs` | Engine choice with/without key and sign-ins; `/model nvidia/…`; real `codex` writing a file that lands on a branch |
+
+### Swapping the model
+
+The agent is Codex's; the model is any the provider has. `/model <member> <id>` moves a
+member from its next turn: an id with `/` or `:` (`nvidia/…`, `Qwen/Qwen3-Coder-…`,
+`deepseek-ai/…`, `qwen3-coder:30b`) runs on the open provider; OpenAI's and Anthropic's ids
+stay on their plans. The provider is Token Factory (`NEBIUS_API_KEY`), or any server
+speaking Chat Completions (`EQUIPE_MODEL_BASE_URL`, `EQUIPE_MODEL_API_KEY`, `EQUIPE_MODEL`:
+OpenRouter, Together, Groq, vLLM, Ollama, LM Studio…). Asking in Chat Completions, not
+Responses, is why any of them works: it is the API they all serve.
 
 Choices: no new engine and no new concept for the person — a member on Nemotron is a Codex
 member whose model is `nvidia/…`; Claude Code and the person's ChatGPT Codex are untouched

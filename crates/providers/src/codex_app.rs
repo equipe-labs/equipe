@@ -243,6 +243,9 @@ pub struct Provider {
     pub env_key: String,
     /// More config overrides for its turns (`key=value`, as `-c` takes them).
     pub config: Vec<String>,
+    /// The API it is asked in: Codex's Responses requests are said in chat
+    /// for one that speaks only Chat Completions ([`crate::relay::Wire`]).
+    pub wire: crate::relay::Wire,
 }
 
 /// The app-server's command line for a turn on another provider that speaks
@@ -1237,7 +1240,7 @@ pub async fn run_turn(
 ) -> Result<Turn> {
     // On another provider, through a relay on the loopback that keeps its tools plain.
     let relay = match request.provider {
-        Some(provider) => Some(crate::relay::start(&provider.base_url).await?),
+        Some(provider) => Some(crate::relay::start(&provider.base_url, provider.wire).await?),
         None => None,
     };
     let args = match (request.provider, &relay) {

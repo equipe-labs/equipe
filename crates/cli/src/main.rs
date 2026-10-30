@@ -1499,7 +1499,12 @@ fn plan_label(status: &AuthStatus) -> String {
 /// Whether it is ready. Nothing is asked of Token Factory.
 fn nebius_section(p: &ui::Painter) -> bool {
     println!("{}", p.section("nemotron", t!("main.nebius_section")));
-    let key = equipe_core::nemotron::Config::from_env().is_ok();
+    let cfg = equipe_core::nemotron::Config::from_env().ok();
+    if let Some(cfg) = &cfg {
+        let model = cfg.model.as_deref().map(|m| format!(" · {m}")).unwrap_or_default();
+        println!("{}", p.row(t!("main.row_provider"), &format!("{}{model}", cfg.provider_name)));
+    }
+    let key = cfg.is_some();
     let codex = codex_app::find(codex_app::DEFAULT_BINARY).is_some();
     match (key, codex) {
         (true, true) => {

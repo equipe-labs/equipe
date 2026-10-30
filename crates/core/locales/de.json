@@ -263,6 +263,7 @@
   "notice.memory_updated": "✎ {name} hat für den Squad aktualisiert: {what} · /memory zeigt, was der Squad weiß",
   "notice.model": "Ab dem nächsten Zug: {model}. Das Gespräch geht weiter.",
   "notice.on_nebius": "Läuft mit NVIDIA Nemotron ({model}) über Nebius Token Factory, auf dem Agenten der Codex CLI. Abgerechnet pro Token über deinen NEBIUS_API_KEY.",
+  "notice.on_open_model": "Läuft auf {model} über {provider}, mit dem Agenten der Codex-CLI. {provider} rechnet pro Token ab.",
   "notice.pm_accepted": "✓ Der PM hat {ids} angenommen und in main gemergt — {checked}",
   "notice.refresh_clean": "Sein nächstes Gespräch am Schreibtisch beginnt leer – sein Gedächtnis und das Board bleiben.",
   "notice.refresh_summary": "Sein nächstes Gespräch am Schreibtisch beginnt neu, mit einer Zusammenfassung dieses Gesprächs und seinem Gedächtnis.",

@@ -259,6 +259,7 @@
   "notice.memory_updated": "✎ {name} 为小队更新了：{what} · /memory 查看小队知道的内容",
   "notice.model": "从下一轮起使用 {model}。对话继续。",
   "notice.on_nebius": "通过 Nebius Token Factory 的 NVIDIA Nemotron（{model}）在 Codex CLI 的智能体上运行。按 token 计费到你的 NEBIUS_API_KEY。",
+  "notice.on_open_model": "通过 {provider} 的 {model} 在 Codex CLI 的智能体上运行。由 {provider} 按 token 计费。",
   "notice.pm_accepted": "✓ PM 已接受 {ids} 并合并到 main — {checked}",
   "notice.refresh_clean": "它在工位上的下一段对话将从零开始——它的记忆和看板会保留。",
   "notice.refresh_summary": "它在工位上的下一段对话将重新开始，带着这段对话的摘要和它的记忆。",

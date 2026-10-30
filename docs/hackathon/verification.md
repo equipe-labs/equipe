@@ -134,6 +134,7 @@ cargo test -p equipe-core --lib token_factory
 |---|---|
 | `the_real_codex_runs_a_members_turn_on_a_stand_in_token_factory` | The stand-in answers with a `function_call` to `exec_command`; the command runs in the turn's folder (the file is there); the turn completes with the stand-in's final message; every request is `POST /v1/responses`, `Authorization: Bearer test-not-a-key`, `model: nvidia/nemotron-mock-super`, `stream: true`, function tools only; the second request carries `function_call` + `function_call_output` with the same `call_id`; the key is **not** visible to the command (`$NEBIUS_API_KEY` empty in it); the relay kept each request's status and `x-request-id`. |
 | `an_mcp_servers_tools_reach_the_provider_as_function_tools_and_its_calls_reach_the_server` | An MCP server (a stand-in for equipe's board) — Codex sends its tools in a `namespace`; the stand-in sees them as the function tool `mcp__board__list_tickets`; its call reaches the MCP server as `tools/call list_tickets`; the server's answer goes back to the model; the tools Token Factory can't serve stay off. |
+| `the_real_codex_runs_a_members_turn_on_any_chat_completions_server` | The model swapped (`Qwen/Qwen3-Coder-480B-A35B-Instruct`, provider `custom`, key in `EQUIPE_MODEL_API_KEY`) on a stand-in that speaks **only** Chat Completions and streams its answer in chunks (the call's arguments split across two): every request reaching it is `POST /v1/chat/completions` — none in Responses — with a system message first, the tools as `{type: function, function: {name…}}` and the key's header; the command runs; the second request carries the `tool` message for `call_mock_1`; the turn completes with the final message, assembled from its chunks. |
 | `a_refused_key_ends_the_turn_and_says_so` | A 401 from the provider: Codex tries 6 times in ≈6 s, then the turn fails with `unexpected status 401 Unauthorized … request id: …` (never the key). |
 | `a_providers_args_point_codex_at_it_and_keep_the_requests_plain` | The exact `-c` overrides. |
 | `with_nothing_signed_in_a_token_factory_key_starts_members_on_nemotron` (core) | No Claude Code, Codex signed out, key set: a member starts on Codex with the `nvidia/…` model, says so; its turn's app-server gets the provider overrides and the key in its environment, never on its command line; no plan usage shown. |
@@ -206,7 +207,7 @@ Secrets excluded: never record the key or an `Authorization` header.
 | equipe commit / version | `____` |
 | codex CLI version (`codex --version`) | `____` |
 | Engines signed in during the run (expected: none) | `____` |
-| Endpoint | `https://api.tokenfactory.nebius.com/v1/responses` (or `____` if overridden) |
+| Endpoint | `https://api.tokenfactory.nebius.com/v1/chat/completions` (default since 0.90.0; `…/v1/responses` with `EQUIPE_NEBIUS_WIRE=responses`; or `____` if overridden) |
 | Model id (as the member's notice and the log say) | `____` |
 | Request ids (from the log line) | `____` |
 | Requests / statuses for one member turn | `____` |

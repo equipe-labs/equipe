@@ -186,11 +186,40 @@ setup sees it), run `equipe` as usual — or open the desktop app. `equipe statu
 - **Claude Code or Codex signed in:** nothing changes. Move a Codex member over with
   `/model <member> nvidia/…`, and back with an OpenAI model id.
 
-**How.** For a member whose model is `nvidia/…`, equipe runs `codex app-server` with
-Token Factory as Codex's model provider (`-c model_provider="nebius"`,
-`model_providers.nebius.wire_api="responses"`, `env_key="NEBIUS_API_KEY"`, …), so Codex
-speaks Token Factory's OpenAI-compatible **Responses API** (`POST /v1/responses`, streamed,
-function tools). What such a provider can't serve is turned off for these turns (web
+### Swap the model any time
+
+The agent (Codex's loop, its sandbox, equipe's board tools) stays; the **model** is
+whatever you point it at. Any id with an organization or a tag — `nvidia/…`, `Qwen/…`,
+`deepseek-ai/…`, `meta-llama/…`, `qwen3-coder:30b` — runs on the open provider; OpenAI
+and Anthropic ids (no `/`) stay on their own plans.
+
+- **Another model on Token Factory:** `/model <member> Qwen/Qwen3-Coder-480B-A35B-Instruct`
+  (or any id `equipe review --models` / your account lists), from the next turn on; or
+  `EQUIPE_NEBIUS_MODEL=…` for every member that starts.
+- **Another server entirely** — anything that speaks OpenAI's Chat Completions API
+  (OpenRouter, Together, Groq, Fireworks, vLLM, Ollama, LM Studio…):
+
+  ```bash
+  export EQUIPE_MODEL_BASE_URL=https://openrouter.ai/api/v1   # or http://localhost:11434/v1 for Ollama
+  read -rs EQUIPE_MODEL_API_KEY && export EQUIPE_MODEL_API_KEY  # a server on this machine needs none
+  export EQUIPE_MODEL=qwen/qwen3-coder                          # optional: else a Nemotron, or the first listed
+  equipe daemon stop; equipe daemon run
+  ```
+
+  Set, `EQUIPE_MODEL_BASE_URL` is used in place of Token Factory — for members' turns and
+  for reviews alike.
+
+How: Codex asks its provider in OpenAI's Responses API only. equipe's relay on the loopback
+(`crates/providers/src/relay.rs`, `crates/providers/src/chat_wire.rs`) says each request in
+**Chat Completions** — the API nearly every server speaks — and the server's streamed answer
+back in Responses events, tool calls included. `EQUIPE_MODEL_WIRE=responses` (or
+`EQUIPE_NEBIUS_WIRE`) sends Responses requests as they are, for a server that serves them.
+
+**How.** For a member whose model is `nvidia/…` (or any open model, above), equipe runs
+`codex app-server` with Token Factory as Codex's model provider (`-c model_provider="nebius"`,
+`model_providers.nebius.wire_api="responses"`, `env_key="NEBIUS_API_KEY"`, …), pointed at
+equipe's relay, which asks Token Factory in its OpenAI-compatible **Chat Completions API**
+(`POST /v1/chat/completions`, streamed, function tools). What such a provider can't serve is turned off for these turns (web
 search, image tools, subagents, OpenAI's remote compaction). Codex sends an MCP server's
 tools — equipe's board — grouped in a Responses `namespace`; a small relay on the loopback
 (`crates/providers/src/relay.rs`) passes each request on with them as plain function tools
@@ -206,7 +235,8 @@ model …, N request(s) [statuses], request ids […], … ms, tokens in … out
 or the text.
 
 **What is verified — against a mock, not yet against Token Factory.** The tests run the
-**real installed `codex` 0.154.0** through equipe against a stand-in Responses API on
+**real installed `codex` 0.154.0** through equipe against a stand-in Chat Completions
+server (another model's id, chunked answers) and a stand-in Responses API on
 localhost with a dummy key (`crates/providers/tests/nebius_codex.rs`,
 `crates/core/tests/nebius.rs`; skipped without `codex`): a function call runs a shell
 command in the member's worktree and the file lands on the member's branch; an MCP tool

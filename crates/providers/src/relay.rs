@@ -12,6 +12,10 @@
 //!
 //! The other headers go on as they came, the key among them — passed through,
 //! never read, kept or logged. The model's answer streams back as it streams in.
+//!
+//! To a provider that speaks Chat Completions ([`Wire::Chat`]) each
+//! Responses request is said in chat, and its answer back in Responses
+//! ([`crate::chat_wire`]): any model such a server has can be a member's.
 
 use std::collections::HashMap;
 
@@ -19,6 +23,27 @@ use futures_util::StreamExt as _;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+
+/// The API a provider is asked in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Wire {
+    /// OpenAI's Responses API, as Codex asks: relayed as it is.
+    Responses,
+    /// Chat Completions, which nearly every model server speaks.
+    #[default]
+    Chat,
+}
+
+impl Wire {
+    /// `responses` or `chat` (and `chat_completions`, `chat-completions`).
+    pub fn parse(said: &str) -> Option<Self> {
+        match said.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "responses" => Some(Self::Responses),
+            "chat" | "chat_completions" | "completions" => Some(Self::Chat),
+            _ => None,
+        }
+    }
+}
 
 /// Flattened tool names, back to their namespace and name.
 pub type Names = HashMap<String, (String, String)>;
@@ -151,8 +176,8 @@ impl Drop for Relay {
 }
 
 /// Start a relay to the provider at `upstream` (its base URL, e.g.
-/// `https://api.tokenfactory.nebius.com/v1`).
-pub async fn start(upstream: &str) -> std::io::Result<Relay> {
+/// `https://api.tokenfactory.nebius.com/v1`), asked in `wire`.
+pub async fn start(upstream: &str, wire: Wire) -> std::io::Result<Relay> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let url = format!("http://{}", listener.local_addr()?);
     let upstream = upstream.trim_end_matches('/').to_owned();
@@ -163,7 +188,7 @@ pub async fn start(upstream: &str) -> std::io::Result<Relay> {
         while let Ok((stream, _)) = listener.accept().await {
             let (client, upstream, kept) = (client.clone(), upstream.clone(), kept.clone());
             tokio::spawn(async move {
-                let _ = relay_one(stream, &client, &upstream, &kept).await;
+                let _ = relay_one(stream, &client, &upstream, wire, &kept).await;
             });
         }
     });
@@ -249,7 +274,7 @@ fn dechunk(raw: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-async fn relay_one(mut stream: TcpStream, client: &reqwest::Client, upstream: &str, kept: &Exchanges) -> std::io::Result<()> {
+async fn relay_one(mut stream: TcpStream, client: &reqwest::Client, upstream: &str, wire: Wire, kept: &Exchanges) -> std::io::Result<()> {
     let Some(request) = read_incoming(&mut stream).await? else { return Ok(()) };
     let since = std::time::Instant::now();
     let path = request.path.clone();
@@ -260,9 +285,10 @@ async fn relay_one(mut stream: TcpStream, client: &reqwest::Client, upstream: &s
         }
     };
     // Codex is given the relay's root as the provider's base URL: its paths are the provider's own.
-    let url = format!("{upstream}/{}", request.path.trim_start_matches('/'));
+    let mut url = format!("{upstream}/{}", request.path.trim_start_matches('/'));
     let mut body = request.body;
     let mut names = Names::new();
+    let mut in_chat = false;
     let is_json = request.headers.iter().any(|(n, v)| n == "content-type" && v.contains("json"));
     let encoded = request.headers.iter().any(|(n, v)| n == "content-encoding" && !v.eq_ignore_ascii_case("identity"));
     if request.method == "POST" && is_json && !encoded
@@ -270,16 +296,23 @@ async fn relay_one(mut stream: TcpStream, client: &reqwest::Client, upstream: &s
     {
         names = flatten_request(&mut value);
         let stripped = strip_metadata(&mut value);
-        if !names.is_empty() || stripped {
+        if wire == Wire::Chat && crate::chat_wire::is_responses(&request.path) {
+            in_chat = true;
+            url = format!("{upstream}/chat/completions");
+            body = serde_json::to_vec(&crate::chat_wire::to_chat(&value)).unwrap_or(body);
+        } else if !names.is_empty() || stripped {
             body = serde_json::to_vec(&value).unwrap_or(body);
         }
     }
     let method = reqwest::Method::from_bytes(request.method.as_bytes()).unwrap_or(reqwest::Method::POST);
     let mut outgoing = client.request(method, &url).body(body);
     for (name, value) in &request.headers {
-        if !HOP.contains(&name.as_str()) && !codex_metadata(name) {
+        if !HOP.contains(&name.as_str()) && !codex_metadata(name) && !(in_chat && name == "accept") {
             outgoing = outgoing.header(name.as_str(), value.as_str());
         }
+    }
+    if in_chat {
+        outgoing = outgoing.header("accept", "text/event-stream");
     }
     let response = match outgoing.send().await {
         Ok(response) => response,
@@ -295,6 +328,13 @@ async fn relay_one(mut stream: TcpStream, client: &reqwest::Client, upstream: &s
     };
     let status = response.status();
     let request_id = response.headers().get("x-request-id").and_then(|v| v.to_str().ok()).map(|v| v.chars().take(120).collect::<String>());
+    if in_chat && status.is_success() {
+        let id = request_id.clone().filter(|id| id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')).unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
+        answer_in_responses(&mut stream, response, &id, &names).await?;
+        keep(status.as_u16(), request_id);
+        stream.flush().await?;
+        return stream.shutdown().await;
+    }
     let mut head = format!("HTTP/1.1 {} {}\r\n", status.as_u16(), status.canonical_reason().unwrap_or(""));
     for (name, value) in response.headers() {
         let name = name.as_str();
@@ -344,6 +384,62 @@ async fn relay_one(mut stream: TcpStream, client: &reqwest::Client, upstream: &s
     keep(status.as_u16(), request_id);
     stream.flush().await?;
     stream.shutdown().await
+}
+
+/// A chat answer, streamed or whole, written back as the Responses events of one response.
+async fn answer_in_responses(stream: &mut TcpStream, response: reqwest::Response, id: &str, names: &Names) -> std::io::Result<()> {
+    use crate::chat_wire::{Translator, sse_event};
+    stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n").await?;
+    let mut translator = Translator::new(id);
+    let send = |events: Vec<Value>| {
+        events
+            .into_iter()
+            .map(|mut event| {
+                restore(&mut event, names);
+                sse_event(&event)
+            })
+            .collect::<String>()
+    };
+    let streamed = response.headers().get("content-type").and_then(|v| v.to_str().ok()).is_some_and(|v| v.contains("event-stream"));
+    let mut bytes = response.bytes_stream();
+    if streamed {
+        let mut pending: Vec<u8> = Vec::new();
+        'read: while let Some(Ok(chunk)) = bytes.next().await {
+            pending.extend_from_slice(&chunk);
+            let mut out = String::new();
+            while let Some(at) = pending.iter().position(|b| *b == b'\n') {
+                let line: Vec<u8> = pending.drain(..=at).collect();
+                let line = String::from_utf8_lossy(&line);
+                let Some(data) = line.trim_end_matches(['\r', '\n']).strip_prefix("data:").map(str::trim) else { continue };
+                if data == "[DONE]" {
+                    stream.write_all(out.as_bytes()).await?;
+                    break 'read;
+                }
+                if let Ok(value) = serde_json::from_str::<Value>(data) {
+                    out.push_str(&send(translator.feed(&value)));
+                }
+            }
+            stream.write_all(out.as_bytes()).await?;
+            stream.flush().await?;
+        }
+    } else {
+        // A server that answered whole, though asked to stream: its message as one chunk.
+        let mut all = Vec::new();
+        while let Some(Ok(chunk)) = bytes.next().await {
+            all.extend_from_slice(&chunk);
+        }
+        if let Ok(whole) = serde_json::from_slice::<Value>(&all) {
+            let mut delta = whole.pointer("/choices/0/message").cloned().unwrap_or(Value::Null);
+            if let Some(calls) = delta.get_mut("tool_calls").and_then(Value::as_array_mut) {
+                for (n, call) in calls.iter_mut().enumerate() {
+                    call["index"] = Value::from(n);
+                }
+            }
+            let chunk = serde_json::json!({ "choices": [{ "delta": delta }], "usage": whole.get("usage").cloned().unwrap_or(Value::Null) });
+            stream.write_all(send(translator.feed(&chunk)).as_bytes()).await?;
+        }
+    }
+    stream.write_all(send(translator.finish()).as_bytes()).await
 }
 
 #[cfg(test)]
