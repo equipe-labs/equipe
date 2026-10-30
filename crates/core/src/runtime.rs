@@ -1432,10 +1432,7 @@ impl Runtime {
 
     async fn handle(&mut self, command: Command) {
         match command {
-            Command::Start { session, spec } => {
-                self.refresh_nemotron();
-                self.start(session, spec).await
-            }
+            Command::Start { session, spec } => self.start(session, spec).await,
             Command::Submit { session, text, about } => {
                 // A conversation the person opened is about its own project, whatever the screen shows.
                 self.said_about = self.conversation_about(session).or(about);
@@ -2134,6 +2131,7 @@ runbooks and reports live there, and work across the projects or on running them
     // ── sessions ──
 
     async fn start(&mut self, id: SessionId, spec: SessionSpec) {
+        self.refresh_nemotron();
         if self.sessions.contains_key(&id) {
             return self.error(Some(id), say!(self, "error.already_open", id = id), None);
         }
