@@ -3127,6 +3127,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         mcp_servers: servers.as_ref(),
                         writable: &writable,
                         env: &env,
+                        args: &[],
                     };
                     if let Some(port) = browser {
                         browser::ready(port, Duration::from_secs(90)).await;

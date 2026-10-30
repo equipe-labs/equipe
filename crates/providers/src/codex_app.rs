@@ -205,6 +205,48 @@ pub fn others_off(listing: &Value, ours: &Value) -> Value {
 /// Codex's built-in server for ChatGPT apps.
 const APPS_SERVER: &str = "codex_apps";
 
+// ── another provider ──
+
+/// What Codex can't send a provider that only speaks the Responses API's
+/// function tools: tools of other types (the web search, the namespaces
+/// subagents and apps come in, image generation), images, and compaction on
+/// OpenAI's own endpoint. Turned off for such a provider's turns, so each
+/// request carries plain function tools only (`exec_command`, `write_stdin`,
+/// `request_user_input`, MCP servers' tools). Its edits go through the shell:
+/// `apply_patch` comes only as a freeform tool (codex-cli 0.154.0 has no
+/// function form of it).
+pub const PLAIN_FEATURES_OFF: [&str; 10] =
+    ["multi_agent", "goals", "image_generation", "apps", "plugins", "remote_compaction_v2", "view_image", "browser_use", "computer_use", "tool_suggest"];
+
+/// The app-server's command line for a turn on another provider that speaks
+/// OpenAI's Responses API at `base_url` (`wire_api = "responses"`; Codex
+/// takes no other), as config overrides on top of the person's own: the
+/// provider by `id`, shown as `name`, its key read by Codex itself from the
+/// environment variable `env_key` (never passed on the command line, never
+/// seen by equipe), and the requests kept to what such a provider serves
+/// ([`PLAIN_FEATURES_OFF`]). The ChatGPT sign-in plays no part: Codex asks for
+/// none when the provider doesn't require OpenAI's auth.
+pub fn provider_args(id: &str, name: &str, base_url: &str, env_key: &str) -> Vec<String> {
+    let toml = |value: &str| serde_json::to_string(value).unwrap_or_default();
+    let mut args = Vec::new();
+    let mut set = |key: String, value: String| args.extend(["-c".to_owned(), format!("{key}={value}")]);
+    set("model_provider".into(), toml(id));
+    let provider = format!("model_providers.{id}");
+    set(format!("{provider}.name"), toml(name));
+    set(format!("{provider}.base_url"), toml(base_url));
+    set(format!("{provider}.env_key"), toml(env_key));
+    set(format!("{provider}.wire_api"), toml("responses"));
+    set(format!("{provider}.requires_openai_auth"), "false".into());
+    set("web_search".into(), toml("disabled"));
+    set("model_reasoning_summary".into(), toml("none"));
+    // Its key stays out of the commands the agent runs.
+    set("shell_environment_policy.exclude".into(), format!("[{}]", toml(env_key)));
+    for feature in PLAIN_FEATURES_OFF {
+        set(format!("features.{feature}"), "false".into());
+    }
+    args
+}
+
 // ── one turn ──
 
 /// One turn's input.
@@ -226,6 +268,9 @@ pub struct TurnRequest<'a> {
     pub writable: &'a [PathBuf],
     /// More environment for the app-server, and so for its commands.
     pub env: &'a [(String, String)],
+    /// More of the app-server's command line: another provider's config
+    /// ([`provider_args`]). None: the person's own Codex, as they set it up.
+    pub args: &'a [String],
 }
 
 /// `thread/start`'s parameters; `others`, the person's own MCP servers off.
@@ -928,7 +973,7 @@ pub fn model_ids(listing: &Value) -> Vec<String> {
 
 /// The plan's usage now, without running a turn.
 pub async fn read_limits(binary: &str, cwd: &Path) -> Result<Limits> {
-    let mut server = Server::start(binary, cwd, &[]).await?;
+    let mut server = Server::start(binary, cwd, &[], &[]).await?;
     let read = server.call("account/rateLimits/read", json!({}), ANSWER_WAIT).await?;
     server.close().await;
     read.get("rateLimits").and_then(parse_limits).ok_or_else(|| Error::Protocol("codex reported no usage limits".into()))
@@ -945,7 +990,7 @@ pub struct Account {
 
 /// Read who the person's Codex is signed in as (`account/read`); `None`: signed out.
 pub async fn read_account(binary: &str, cwd: &Path) -> Result<Option<Account>> {
-    let mut server = Server::start(binary, cwd, &[]).await?;
+    let mut server = Server::start(binary, cwd, &[], &[]).await?;
     let read = server.call("account/read", json!({}), ANSWER_WAIT).await?;
     server.close().await;
     Ok(account_of(&read))
@@ -959,7 +1004,7 @@ fn account_of(read: &Value) -> Option<Account> {
 
 /// The models the person's Codex offers, its default first.
 pub async fn list_models(binary: &str, cwd: &Path) -> Result<Vec<String>> {
-    let mut server = Server::start(binary, cwd, &[]).await?;
+    let mut server = Server::start(binary, cwd, &[], &[]).await?;
     let mut ids = Vec::new();
     let mut cursor: Option<String> = None;
     // Pages, as many as there are — a few at most.
@@ -1017,9 +1062,10 @@ struct Server {
 
 impl Server {
     /// Start it in `cwd` and introduce equipe.
-    async fn start(binary: &str, cwd: &Path, env: &[(String, String)]) -> Result<Self> {
+    async fn start(binary: &str, cwd: &Path, args: &[String], env: &[(String, String)]) -> Result<Self> {
         let mut child = Command::new(binary)
             .arg("app-server")
+            .args(args)
             .current_dir(cwd)
             .envs(env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::piped())
@@ -1154,7 +1200,7 @@ pub async fn run_turn(
     stop: Option<oneshot::Receiver<()>>,
     mut on_activity: impl FnMut(Activity),
 ) -> Result<Turn> {
-    let mut server = Server::start(binary, cwd, request.env).await?;
+    let mut server = Server::start(binary, cwd, request.args, request.env).await?;
     // Signed out, the turn would fail somewhere inside: say so first.
     let account = server.call("account/read", json!({}), ANSWER_WAIT).await?;
     if account.get("account").is_none_or(Value::is_null) && account.get("requiresOpenaiAuth").and_then(Value::as_bool) != Some(false) {
