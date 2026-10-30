@@ -121,6 +121,11 @@ pub struct Lane {
     /// The member's own session.
     pub of: SessionId,
     pub project: Option<String>,
+    /// A conversation the person opened with the PM ([`Command::NewConversation`]):
+    /// listed, kept through restarts, put away only by the person. Else one
+    /// the PM runs beside its work, folded back when idle.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub kept: bool,
 }
 
 /// A squad's name: lowercase letters, digits and dashes.
@@ -709,6 +714,16 @@ pub enum Command {
     /// The project the person is looking at, by name — new work goes there
     /// unless they say otherwise; `None`: all of the squad's projects.
     Focus { squad: SquadName, project: Option<String> },
+    /// The person opens a new conversation with the squad's PM — its own,
+    /// beside the PM's others — about `project` (`None`: the whole squad).
+    /// `session` names it, as for [`Command::Start`]. Answered with
+    /// [`Event::LaneOpened`], `kept`.
+    NewConversation { squad: SquadName, session: SessionId, project: Option<String> },
+    /// A conversation with the PM moves to another project (`None`: the
+    /// whole squad): what is said there from now on is about it.
+    MoveConversation { session: SessionId, project: Option<String> },
+    /// A conversation with the PM is put away: it leaves the list.
+    CloseConversation { session: SessionId },
     /// The person adds a project to the squad: a folder on the daemon's
     /// machine (a git repository; one with no history yet is started as one).
     /// Answered with [`Event::ProjectsChanged`], or an error saying why not.
@@ -1237,7 +1252,16 @@ pub enum Event {
     /// The session just started is a lane of member `of`: its conversation
     /// about `project` (`None`: the whole squad's), running beside the member's
     /// others — one turn at a time in each, any number of them at once.
-    LaneOpened { session: SessionId, of: SessionId, project: Option<String> },
+    LaneOpened {
+        session: SessionId,
+        of: SessionId,
+        project: Option<String>,
+        /// A conversation the person opened ([`Lane::kept`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        kept: bool,
+    },
+    /// A conversation with the PM moved to another project ([`Command::MoveConversation`]).
+    LaneMoved { session: SessionId, project: Option<String> },
     /// A member picked up a ticket. Its turns now run in the ticket's project —
     /// in `workspace` when it edits.
     WorkStarted {
@@ -1600,6 +1624,7 @@ impl Event {
             | Event::Suggestion { session, .. }
             | Event::SteerQueued { session, .. }
             | Event::LaneOpened { session, .. }
+            | Event::LaneMoved { session, .. }
             | Event::Steered { session, .. }
             | Event::Estimated { session, .. }
             | Event::SubagentStarted { session, .. }

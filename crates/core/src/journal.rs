@@ -46,6 +46,15 @@ pub fn no_room_for_tests() {
 /// How long conversations are kept before they are pruned to the record.
 pub const DEFAULT_RETENTION_DAYS: u64 = 90;
 
+/// A conversation with the PM the person opened ([`Journal::record_conversation`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationRecord {
+    pub id: SessionId,
+    pub project: Option<String>,
+    pub engine_session: Option<String>,
+    pub title: Option<String>,
+}
+
 /// A session as the journal keeps it — enough to resume it after a restart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecord {
@@ -347,6 +356,15 @@ impl Journal {
                rule TEXT PRIMARY KEY,
                by TEXT NOT NULL,
                added_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS conversations (
+               id INTEGER PRIMARY KEY,
+               project TEXT,
+               engine_session TEXT,
+               title TEXT,
+               open INTEGER NOT NULL DEFAULT 1,
+               created_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL
              );",
         )?;
         for column in ["role TEXT", "name TEXT", "joined INTEGER", "mode TEXT"] {
@@ -916,6 +934,7 @@ impl Journal {
     }
 
     pub fn set_engine_session(&self, id: SessionId, engine_session: &str) -> Result<()> {
+        self.touch_conversation(id, "engine_session", engine_session)?;
         self.touch(id, "engine_session", engine_session)
     }
 
@@ -926,15 +945,49 @@ impl Journal {
 
     /// Forget the engine's conversation: the next turn starts a fresh one.
     pub fn clear_engine_session(&self, id: SessionId) -> Result<()> {
+        self.touch_conversation(id, "engine_session", None::<String>)?;
         self.touch(id, "engine_session", None::<String>)
+    }
+
+    fn touch_conversation(&self, id: SessionId, set: &str, value: impl rusqlite::ToSql) -> Result<()> {
+        self.conn.execute(&format!("UPDATE conversations SET {set} = ?1, updated_at = ?2 WHERE id = ?3"), params![value, now(), id as i64])?;
+        Ok(())
+    }
+
+    /// A conversation the person opened with the PM, about `project`
+    /// (`None`: the whole squad). Its lines are kept as any session's.
+    pub fn record_conversation(&self, id: SessionId, project: Option<&str>) -> Result<()> {
+        let t = now();
+        self.conn.execute(
+            "INSERT OR REPLACE INTO conversations (id, project, open, created_at, updated_at) VALUES (?1, ?2, 1, ?3, ?3)",
+            params![id as i64, project, t],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_conversation_project(&self, id: SessionId, project: Option<&str>) -> Result<()> {
+        self.touch_conversation(id, "project", project)
+    }
+
+    /// Put away: it leaves the list; its lines stay as long as any.
+    pub fn close_conversation(&self, id: SessionId) -> Result<()> {
+        self.touch_conversation(id, "open", false)
+    }
+
+    /// The conversations with the PM still open, oldest first.
+    pub fn conversations(&self) -> Result<Vec<ConversationRecord>> {
+        let mut stmt = self.conn.prepare("SELECT id, project, engine_session, title FROM conversations WHERE open = 1 ORDER BY created_at, id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ConversationRecord { id: r.get::<_, i64>(0)? as u64, project: r.get(1)?, engine_session: r.get(2)?, title: r.get(3)? })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     /// The first message names the session; later ones don't.
     pub fn set_title_if_empty(&self, id: SessionId, title: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE sessions SET title = ?1 WHERE id = ?2 AND title IS NULL",
-            params![title, id as i64],
-        )?;
+        for table in ["sessions", "conversations"] {
+            self.conn.execute(&format!("UPDATE {table} SET title = ?1 WHERE id = ?2 AND title IS NULL"), params![title, id as i64])?;
+        }
         Ok(())
     }
 

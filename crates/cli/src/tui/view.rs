@@ -3289,7 +3289,7 @@ mod tests {
             member: Some(Member { role: "pm".into(), name: "pm".into() }),
             squad: Some("acme".into()),
         });
-        app.on_event(Event::LaneOpened { session: 77, of: pm, project: None });
+        app.on_event(Event::LaneOpened { session: 77, of: pm, project: None, kept: false });
         assert_eq!(app.agents.len(), 1);
         app.on_event(Event::UserMessage { session: 77, text: "how is the app?".into() });
         app.on_event(Event::TextDelta { session: 77, text: "The app is fine.".into() });

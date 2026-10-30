@@ -1589,7 +1589,7 @@
   "sidebar.language": "语言",
   "sidebar.more": "还有 {n} 项",
   "sidebar.needs_you": "轮到你",
-  "sidebar.new_in_project": "在此项目中新建工作",
+  "sidebar.new_in_project": "在此项目中新建对话",
   "sidebar.new_message": "新消息",
   "sidebar.other_machine": "连接到其他机器…",
   "sidebar.pm_talk": "PM",
@@ -1883,5 +1883,11 @@
   "connect.none_match": "没有匹配的机器。输入 user@host 可直接连接。",
   "connect.need_user": "请在 @ 前填写那台机器上的用户名。",
   "connect.did_you_mean": "你是指 {name}（{ip}）吗？",
-  "connect.use_suggestion": "连接到这个地址"
+  "connect.use_suggestion": "连接到这个地址",
+  "sidebar.new_conversation": "新对话",
+  "sidebar.put_away": "收起对话",
+  "sidebar.fewer": "收起",
+  "sidebar.work_working": "进行中 {n}",
+  "sidebar.work_needs_you": "待你确认 {n}",
+  "header.squad_wide": "整个小队"
 }

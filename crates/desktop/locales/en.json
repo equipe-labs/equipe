@@ -173,7 +173,7 @@
   "board.keys_title": "Shortcuts",
   "board.kind_label": "{kind}",
   "board.menu_all": "Tickets",
-  "board.menu_inbox": "Inbox",
+  "board.menu_inbox": "Needs you",
   "board.menu_working": "In progress",
   "board.next_done": "next done {at}",
   "board.nobody": "Unassigned",
@@ -1633,7 +1633,7 @@
   "sidebar.language": "Language",
   "sidebar.more": "+{n} more",
   "sidebar.needs_you": "Your turn",
-  "sidebar.new_in_project": "New work in this project",
+  "sidebar.new_in_project": "New conversation in this project",
   "sidebar.new_message": "New message",
   "sidebar.other_machine": "Connect to another machine…",
   "sidebar.pm_talk": "PM",
@@ -1935,5 +1935,11 @@
   "connect.none_match": "No machine matches. Type user@host to connect to it directly.",
   "connect.need_user": "Put the user name on that machine before the @.",
   "connect.did_you_mean": "Did you mean {name} ({ip})?",
-  "connect.use_suggestion": "Connect to this address"
+  "connect.use_suggestion": "Connect to this address",
+  "sidebar.new_conversation": "New conversation",
+  "sidebar.put_away": "Put away",
+  "sidebar.fewer": "Show fewer",
+  "sidebar.work_working": "{n} working",
+  "sidebar.work_needs_you": "{n} need you",
+  "header.squad_wide": "Whole squad"
 }

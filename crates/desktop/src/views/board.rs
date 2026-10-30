@@ -101,6 +101,11 @@ pub struct BoardUi {
     pub sidebar_shown_at: Option<Instant>,
     /// The sidebar's live rows as last drawn, to ease them in and out.
     pub side_motion: std::cell::RefCell<super::sidebar::SideMotion>,
+    /// The sidebar's projects whose live work shows ticket by ticket, not
+    /// in one line (by [`SideGroup::key`]).
+    pub side_work_open: std::collections::HashSet<String>,
+    /// The sidebar's lists of conversations shown whole (by project; "" the squad's).
+    pub side_talks_all: std::collections::HashSet<String>,
     /// The team block's subagent rows as last drawn, the same way.
     pub sub_motion: std::cell::RefCell<super::sidebar::SubMotion>,
     /// A small menu out of the sidebar's foot.
@@ -180,6 +185,8 @@ impl BoardUi {
             sidebar_drag: None,
             sidebar_shown_at: None,
             side_motion: Default::default(),
+            side_work_open: Default::default(),
+            side_talks_all: Default::default(),
             sub_motion: Default::default(),
             popup: None,
             popup_closed: None,

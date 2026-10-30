@@ -2957,7 +2957,7 @@ async fn the_pm_on_a_ticket_of_its_own_is_still_reached_beside_it() {
     let lane = seen
         .iter()
         .find_map(|e| match e {
-            Event::LaneOpened { session, of: 1, project: None } => Some(*session),
+            Event::LaneOpened { session, of: 1, project: None, kept: false } => Some(*session),
             _ => None,
         })
         .expect("the PM's conversation, beside its ticket");
@@ -3002,6 +3002,75 @@ async fn said_to_the_pm_while_its_conversation_beside_the_work_is_at_it_steers_t
     handle.send(Command::Submit { session: 1, text: "and the footer".into(), about: Some(None) });
     let seen = until(&mut events, |e| matches!(e, Event::SteerQueued { .. } | Event::MessageQueued { .. })).await;
     assert!(matches!(seen.last(), Some(Event::SteerQueued { session, text, project: None }) if *session == lane && text == "and the footer"), "{seen:#?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_person_talks_with_the_pm_in_conversations_of_their_own_kept_through_a_restart() {
+    let site = named("site");
+    let app = named("app");
+    let (claude, recorded) = recording_claude(&answering_per_call("ok"));
+    let home = squad_home(&[&site, &app]);
+    let said = |calls: &[Vec<String>], words: &str| calls.iter().find(|c| arg(c, "-p").is_some_and(|p| p.contains(words))).cloned().unwrap_or_else(|| panic!("no turn said {words}"));
+    {
+        let (handle, mut events) = runtime::start(config(&claude, &home, true));
+        add(&handle, &mut events, 1, member(&site, "pm")).await;
+        handle.send(Command::Submit { session: 1, text: "the pm's own".into(), about: None });
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+
+        // A conversation about the site: its own, beside the PM's.
+        handle.send(Command::NewConversation { squad: "acme".into(), session: 50, project: Some("site".into()) });
+        let opened = until(&mut events, |e| matches!(e, Event::LaneOpened { session: 50, .. })).await;
+        assert!(matches!(opened.last(), Some(Event::LaneOpened { of: 1, project: Some(p), kept: true, .. }) if p == "site"), "{opened:#?}");
+        // The screen looks at the whole squad; the conversation is about the site.
+        handle.send(Command::Submit { session: 50, text: "login is broken".into(), about: Some(None) });
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session: 50, .. })).await;
+        // Said to the PM itself, it is still the PM's own.
+        handle.send(Command::Submit { session: 1, text: "the pm again".into(), about: None });
+        let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+        assert!(matches!(seen.last(), Some(Event::TurnEnded { session: 1, .. })), "{seen:#?}");
+        handle.send(Command::NewConversation { squad: "acme".into(), session: 51, project: None });
+        until(&mut events, |e| matches!(e, Event::LaneOpened { session: 51, .. })).await;
+        handle.send(Command::Submit { session: 51, text: "what next?".into(), about: None });
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session: 51, .. })).await;
+
+        let all = calls(&recorded);
+        let login = said(&all, "login is broken");
+        assert!(arg(&login, "-p").unwrap().contains("looking at the project site"), "{login:?}");
+        assert_eq!(arg(&login, "--resume"), None, "not the PM's own conversation");
+        assert_eq!(arg(&said(&all, "what next?"), "--resume"), None, "nor the other one");
+        // Each carries on its own.
+        handle.send(Command::Submit { session: 50, text: "and the signup?".into(), about: None });
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session: 50, .. })).await;
+        assert_eq!(arg(&said(&calls(&recorded), "and the signup?"), "--resume"), Some("sess-1"));
+
+        handle.send(Command::MoveConversation { session: 51, project: Some("app".into()) });
+        until(&mut events, |e| matches!(e, Event::LaneMoved { session: 51, project: Some(p) } if p == "app")).await;
+        handle.shutdown().await;
+    }
+
+    let (handle, mut events) = runtime::start(config(&claude, &home, true));
+    let snapshot = handle.snapshot("acme").await;
+    let mut kept: Vec<_> = snapshot.sessions.iter().filter_map(|s| s.lane.as_ref().map(|l| (s.session, l.of, l.project.clone(), l.kept, s.title.clone()))).collect();
+    kept.sort();
+    assert_eq!(
+        kept,
+        [(50, 1, Some("site".to_owned()), true, Some("login is broken".to_owned())), (51, 1, Some("app".to_owned()), true, Some("what next?".to_owned()))],
+        "both back, where they were left"
+    );
+    let login = snapshot.sessions.iter().find(|s| s.session == 50).unwrap();
+    assert!(text_entries(&login.recent).contains(&"user: and the signup?".to_owned()), "{:?}", login.recent);
+    handle.send(Command::Submit { session: 50, text: "still there?".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 50, .. })).await;
+    assert_eq!(arg(&said(&calls(&recorded), "still there?"), "--resume"), Some("sess-4"), "picked up where it was left");
+
+    // Put away: it leaves, and stays away.
+    handle.send(Command::CloseConversation { session: 51 });
+    until(&mut events, |e| matches!(e, Event::SessionClosed { session: 51 })).await;
+    handle.shutdown().await;
+    let (handle, _events) = runtime::start(config(&claude, &home, true));
+    let left: Vec<_> = handle.snapshot("acme").await.sessions.iter().filter(|s| s.lane.is_some()).map(|s| s.session).collect();
+    assert_eq!(left, [50]);
     handle.shutdown().await;
 }
 

@@ -170,7 +170,7 @@
   "board.keys_title": "단축키",
   "board.kind_label": "{kind}",
   "board.menu_all": "티켓",
-  "board.menu_inbox": "나에게",
+  "board.menu_inbox": "확인 필요",
   "board.menu_working": "작업 중",
   "board.next_done": "다음 완료 {at}",
   "board.nobody": "담당 없음",
@@ -1589,7 +1589,7 @@
   "sidebar.language": "언어",
   "sidebar.more": "+{n}개 더",
   "sidebar.needs_you": "내 차례",
-  "sidebar.new_in_project": "이 프로젝트에 새 일",
+  "sidebar.new_in_project": "이 프로젝트에 새 대화",
   "sidebar.new_message": "새 메시지",
   "sidebar.other_machine": "다른 컴퓨터에 연결…",
   "sidebar.pm_talk": "PM 대화",
@@ -1883,5 +1883,11 @@
   "connect.none_match": "맞는 기계가 없어요. user@host 형식으로 입력하면 바로 연결해요.",
   "connect.need_user": "@ 앞에 그 기계의 사용자 이름을 넣어 주세요.",
   "connect.did_you_mean": "혹시 {name}({ip})인가요?",
-  "connect.use_suggestion": "이 주소로 연결"
+  "connect.use_suggestion": "이 주소로 연결",
+  "sidebar.new_conversation": "새 대화",
+  "sidebar.put_away": "대화 치우기",
+  "sidebar.fewer": "접기",
+  "sidebar.work_working": "작업 중 {n}",
+  "sidebar.work_needs_you": "확인 필요 {n}",
+  "header.squad_wide": "스쿼드 전체"
 }

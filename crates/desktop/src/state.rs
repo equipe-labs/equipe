@@ -118,6 +118,14 @@ pub struct Lane {
     pub project: Option<String>,
     pub presence: Presence,
     pub verb: Verb,
+    /// A conversation the person opened with the PM: listed in the sidebar,
+    /// opened by itself (`Side::Conversation`), never folded back.
+    pub kept: bool,
+    /// Its first message's first line, once said.
+    pub title: Option<String>,
+    /// When something last happened in it (unix seconds; 0 before this
+    /// window saw anything), for the most lately used first.
+    pub active: u64,
 }
 
 /// What can be opened in the conversation's place: the PM (the one
@@ -127,6 +135,8 @@ pub enum Side {
     Pm,
     Ticket(TicketId),
     Member(SessionId),
+    /// A conversation the person opened with the PM (a kept lane).
+    Conversation(SessionId),
 }
 
 /// The sections of what waits for the person, in their order.
@@ -330,6 +340,13 @@ pub struct Model {
     pub convos: HashMap<SessionId, Convo>,
     /// Whose conversation is on screen.
     pub selected: Option<SessionId>,
+    /// The conversation with the PM open, when one the person opened is
+    /// (`Side::Conversation`): it is what shows and what is said goes to.
+    pub talk: Option<SessionId>,
+    /// A conversation with the PM about to start ("새 대화"), and its project
+    /// (`None`: the whole squad): it is made with its first message, so none
+    /// is left empty.
+    pub draft_talk: Option<(SessionId, Option<String>)>,
     /// The ticket open on screen: its work in place of a conversation.
     pub opened: Option<TicketId>,
     /// The project in focus, by name; `None`: the whole squad.
@@ -455,6 +472,8 @@ impl Model {
             problem: None,
             convos: HashMap::new(),
             selected: None,
+            talk: None,
+            draft_talk: None,
             focus: None,
             opened: None,
             revision: 0,
@@ -492,12 +511,51 @@ impl Model {
         if let Some(ticket) = self.opened {
             return self.convos.iter().find(|(_, c)| c.showing == Some(ticket)).map(|(&id, _)| id);
         }
+        if let Some((draft, _)) = self.draft_talk {
+            return Some(draft);
+        }
+        if let Some(talk) = self.talk.filter(|t| self.lanes.iter().any(|l| l.session == *t)) {
+            return Some(talk);
+        }
         let selected = self.selected?;
         Some(self.lane_of(selected).map_or(selected, |l| l.session))
     }
 
+    /// The member's conversation beside its work, if one runs — not one the
+    /// person opened, which shows only when opened itself.
     fn lane_of(&self, member: SessionId) -> Option<&Lane> {
-        self.lanes.iter().find(|l| l.of == member)
+        self.lanes.iter().find(|l| l.of == member && !l.kept)
+    }
+
+    /// The conversations the person opened with the PM, most lately used first.
+    pub fn conversations(&self) -> Vec<&Lane> {
+        let mut kept: Vec<&Lane> = self.lanes.iter().filter(|l| l.kept).collect();
+        kept.sort_by(|a, b| b.active.cmp(&a.active).then(b.session.cmp(&a.session)));
+        kept
+    }
+
+    /// Start a new conversation with the PM about `project`: empty on
+    /// screen until its first message makes it ([`Command::NewConversation`]).
+    pub fn draft_conversation(&mut self, project: Option<String>) {
+        self.open(Side::Pm);
+        let id = equipe_core::protocol::new_session_id();
+        self.talk = Some(id);
+        self.draft_talk = Some((id, project));
+        self.revision += 1;
+    }
+
+    /// The project the open conversation with the PM is about (`Some(None)`:
+    /// the whole squad) — one the person opened, or one about to start.
+    pub fn talk_project(&self) -> Option<Option<String>> {
+        if let Some((_, project)) = &self.draft_talk {
+            return Some(project.clone());
+        }
+        self.talking().map(|l| l.project.clone())
+    }
+
+    /// The conversation open now, if it is one the person opened.
+    pub fn talking(&self) -> Option<&Lane> {
+        self.talk.and_then(|t| self.lanes.iter().find(|l| l.session == t))
     }
 
     /// The team as the sidebar lists it: the PM first, then whoever needs
@@ -522,6 +580,9 @@ impl Model {
         if let Some(ticket) = self.opened {
             return Some(Side::Ticket(ticket));
         }
+        if let Some(talk) = self.talking() {
+            return Some(Side::Conversation(talk.session));
+        }
         let selected = self.selected_member()?;
         Some(if Self::is_pm(selected) { Side::Pm } else { Side::Member(selected.session) })
     }
@@ -534,8 +595,16 @@ impl Model {
             convo.showing = None;
         }
         self.opened = None;
+        self.talk = None;
+        self.draft_talk = None;
         self.revision += 1;
         match side {
+            Side::Conversation(session) => {
+                let Some(of) = self.lanes.iter().find(|l| l.session == session && l.kept).map(|l| l.of) else { return false };
+                self.selected = Some(of);
+                self.talk = Some(session);
+                true
+            }
             Side::Pm => {
                 self.selected = self.members.iter().find(|m| Self::is_pm(m)).or(self.members.first()).map(|m| m.session);
                 true
@@ -591,6 +660,12 @@ impl Model {
     /// of its own is free to talk: what is said opens its conversation beside
     /// the work.
     pub fn viewed_presence(&self) -> Option<Presence> {
+        if self.draft_talk.is_some() {
+            return Some(Presence::Ready);
+        }
+        if let Some(talk) = self.talking() {
+            return Some(talk.presence);
+        }
         let member = self.selected_member()?;
         if self.opened.is_some() {
             return Some(member.presence);
@@ -622,7 +697,8 @@ impl Model {
     /// to follow the project (`follow`) and it is the PM's. `None`: whole, as
     /// it always was.
     pub fn chat_slice(&self, follow: bool) -> Option<Option<String>> {
-        self.convo().filter(|c| follow && c.sliceable()).map(|_| self.focus.clone())
+        // A conversation the person opened is one project's already: whole.
+        self.convo().filter(|c| follow && c.sliceable() && self.talk.is_none()).map(|_| self.focus.clone())
     }
 
     /// The conversation in view as it shows (see [`Convo::sliced`]): with a
@@ -834,6 +910,10 @@ impl Model {
                     project: lane.project.clone(),
                     presence: if s.state == SessionState::Working { Presence::Working } else { Presence::Ready },
                     verb: Verb::of_entry(s.recent.iter().rev().find(|e| matches!(e, Entry::Tool { .. } | Entry::Reply { .. } | Entry::User { .. }))),
+                    kept: lane.kept,
+                    title: s.title.clone(),
+                    // Kept as this window last saw them, else in the daemon's order.
+                    active: self.lanes.iter().find(|l| l.session == s.session).map_or(0, |l| l.active),
                 })
             })
             .collect();
@@ -1019,7 +1099,13 @@ impl Model {
                 self.desktop_stopped = desktop.stopped;
                 self.desktop = desktop;
             }
-            Event::LaneOpened { session, of, project } => self.open_lane(session, of, project),
+            Event::LaneOpened { session, of, project, kept } => self.open_lane(session, of, project, kept),
+            Event::LaneMoved { session, project } => {
+                if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == session) {
+                    lane.project = project;
+                    self.revision += 1;
+                }
+            }
             // Taken back, or sent at once: the member's count follows its conversation's.
             Event::MemoWithdrawn { session, .. } | Event::QueueSent { session, .. } => {
                 let memos = self.convos.get(&session).map(|c| c.queue.memo_count());
@@ -1057,7 +1143,16 @@ impl Model {
             }
             other => {
                 let Some(id) = other.session() else { return };
+                let unix = self.unix;
                 if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == id) {
+                    if matches!(other, Event::UserMessage { .. } | Event::TurnEnded { .. }) {
+                        lane.active = unix;
+                    }
+                    if let Event::UserMessage { text, .. } = &other
+                        && lane.title.is_none()
+                    {
+                        lane.title = text.lines().next().map(str::to_owned);
+                    }
                     match other {
                         Event::UserMessage { .. } => (lane.presence, lane.verb) = (Presence::Working, Verb::Thinking),
                         Event::ToolUse { tool, .. } => (lane.presence, lane.verb) = (Presence::Working, Verb::of_tool(&tool)),
@@ -1121,17 +1216,23 @@ impl Model {
     }
 
     /// A session just started turns out to be a lane: it leaves the list.
-    fn open_lane(&mut self, session: SessionId, of: SessionId, project: Option<String>) {
+    fn open_lane(&mut self, session: SessionId, of: SessionId, project: Option<String>, kept: bool) {
         let Some(at) = self.members.iter().position(|m| m.session == session) else { return };
         let lane = self.members.remove(at);
         let main = self.convos.get(&of).cloned();
         if let Some(convo) = self.convos.get_mut(&session) {
             match &main {
-                Some(main) => convo.open_lane(main),
-                None => convo.lane = true,
+                // A conversation the person opened starts empty; one beside
+                // the work picks up where the member's left off.
+                Some(main) if !kept => convo.open_lane(main),
+                _ => convo.lane = true,
             }
         }
-        self.lanes.push(Lane { session, of, project, presence: lane.presence, verb: lane.verb });
+        self.lanes.push(Lane { session, of, project, presence: lane.presence, verb: lane.verb, kept, title: None, active: self.unix });
+        // The new conversation this window started: made now, and open.
+        if self.draft_talk.as_ref().is_some_and(|(draft, _)| *draft == session) {
+            self.draft_talk = None;
+        }
         self.revision += 1;
     }
 
@@ -1140,6 +1241,15 @@ impl Model {
     fn fold_lane(&mut self, session: SessionId) {
         let Some(at) = self.lanes.iter().position(|l| l.session == session) else { return };
         let lane = self.lanes.remove(at);
+        // A conversation put away goes, lines and all; the PM is shown instead.
+        if lane.kept {
+            self.convos.remove(&session);
+            if self.talk == Some(session) {
+                self.talk = None;
+            }
+            self.revision += 1;
+            return;
+        }
         if let Some(convo) = self.convos.remove(&session)
             && let Some(main) = self.convos.get_mut(&lane.of)
         {
@@ -2158,7 +2268,7 @@ mod tests {
         model.apply(Update::Event(Event::UserMessage { session: 1, text: "사이트는?".into() }), T0);
         model.members[0].ticket = Some(9);
         model.apply(Update::Event(Event::SessionStarted { session: 77, project: "/p".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Who { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) }), T0);
-        model.apply(Update::Event(Event::LaneOpened { session: 77, of: 1, project: None }), T0);
+        model.apply(Update::Event(Event::LaneOpened { session: 77, of: 1, project: None, kept: false }), T0);
         model
     }
 
@@ -2273,7 +2383,7 @@ mod tests {
     #[test]
     fn a_snapshot_keeps_lanes_apart_from_members() {
         let mut lane = session(9, "pm", "pm", SessionState::Working);
-        lane.lane = Some(equipe_core::protocol::Lane { of: 1, project: Some("app".into()) });
+        lane.lane = Some(equipe_core::protocol::Lane { of: 1, project: Some("app".into()), kept: false });
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), lane]), T0);
         assert_eq!(model.members.len(), 1);
