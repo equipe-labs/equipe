@@ -65,6 +65,8 @@ fn token_factory(base: &str, model: Option<&str>) -> equipe_core::nemotron::Conf
         "NEBIUS_API_KEY" => Some(KEY.into()),
         "EQUIPE_NEBIUS_BASE_URL" => Some(base.into()),
         "EQUIPE_NEBIUS_MODEL" => model.map(str::to_owned),
+        // The stand-in here speaks Responses; chat is covered in the providers' tests.
+        "EQUIPE_NEBIUS_WIRE" => Some("responses".into()),
         _ => None,
     })
     .unwrap()
