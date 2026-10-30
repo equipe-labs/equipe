@@ -86,19 +86,18 @@ fn sse(id: &str, item: &Value) -> String {
     events.iter().map(|e| format!("event: {}\ndata: {e}\n\n", e["type"].as_str().unwrap_or_default())).collect()
 }
 
-/// The stand-in's answer to `seen`: the turn's first request gets the call,
-/// a request carrying its output the final message; anything else a message.
-fn answer(seen: &Seen, n: usize) -> (u16, &'static str, String) {
+/// The stand-in's answer to `seen`: the next of `calls` (a tool's name and
+/// arguments) not yet answered in its input, else the final message.
+fn answer(seen: &Seen, n: usize, calls: &[(String, Value)]) -> (u16, &'static str, String) {
     if seen.method == "GET" {
         return (200, "application/json", json!({ "object": "list", "data": [{ "id": MODEL, "object": "model" }] }).to_string());
     }
     let input = seen.body["input"].as_array().cloned().unwrap_or_default();
-    let has_tool = seen.body["tools"].as_array().into_iter().flatten().any(|t| t["name"] == "exec_command");
-    let answered = input.iter().any(|i| i["type"] == "function_call_output");
-    let item = if has_tool && !answered {
-        json!({ "type": "function_call", "id": "fc_1", "call_id": "call_mock_1", "name": "exec_command", "arguments": json!({ "cmd": COMMAND }).to_string(), "status": "completed" })
-    } else {
-        json!({ "type": "message", "id": format!("msg_{n}"), "role": "assistant", "status": "completed", "content": [{ "type": "output_text", "text": FINAL, "annotations": [] }] })
+    let offered = |name: &str| seen.body["tools"].as_array().into_iter().flatten().any(|t| t["name"] == name);
+    let answered = input.iter().filter(|i| i["type"] == "function_call_output").count();
+    let item = match calls.get(answered) {
+        Some((name, arguments)) if offered(name) => json!({ "type": "function_call", "id": format!("fc_{answered}"), "call_id": format!("call_mock_{}", answered + 1), "name": name, "arguments": arguments.to_string(), "status": "completed" }),
+        _ => json!({ "type": "message", "id": format!("msg_{n}"), "role": "assistant", "status": "completed", "content": [{ "type": "output_text", "text": FINAL, "annotations": [] }] }),
     };
     (200, "text/event-stream", sse(&format!("resp_mock_{n}"), &item))
 }
@@ -141,14 +140,15 @@ async fn read_request(stream: &mut tokio::net::TcpStream) -> Option<Seen> {
 }
 
 /// The stand-in Responses API on a free local port: its base URL, and what it got.
-async fn stand_in() -> (String, Arc<Mutex<Vec<Seen>>>) {
+async fn stand_in(calls: Vec<(String, Value)>) -> (String, Arc<Mutex<Vec<Seen>>>) {
+    let calls = Arc::new(calls);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let seen = Arc::new(Mutex::new(Vec::<Seen>::new()));
     let log = seen.clone();
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
-            let log = log.clone();
+            let (log, calls) = (log.clone(), calls.clone());
             tokio::spawn(async move {
                 while let Some(request) = read_request(&mut stream).await {
                     let n = {
@@ -156,7 +156,7 @@ async fn stand_in() -> (String, Arc<Mutex<Vec<Seen>>>) {
                         log.push(request.clone());
                         log.len()
                     };
-                    let (status, kind, body) = answer(&request, n);
+                    let (status, kind, body) = answer(&request, n, &calls);
                     let head = format!("HTTP/1.1 {status} OK\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nx-request-id: mock-{n}\r\n\r\n", body.len());
                     if stream.write_all(head.as_bytes()).await.is_err() || stream.write_all(body.as_bytes()).await.is_err() {
                         return;
@@ -186,14 +186,14 @@ async fn the_real_codex_runs_a_members_turn_on_a_stand_in_token_factory() {
         eprintln!("skipped: no `codex` installed (or $EQUIPE_CODEX)");
         return;
     };
-    let (base_url, seen) = stand_in().await;
+    let (base_url, seen) = stand_in(vec![("exec_command".into(), json!({ "cmd": COMMAND }))]).await;
     let cwd = scratch("work");
     // Codex's own home, empty: no ChatGPT sign-in, none of the person's config or threads.
     let codex_home = scratch("codex-home");
     let env = vec![("CODEX_HOME".to_owned(), codex_home.to_string_lossy().into_owned()), ("NEBIUS_API_KEY".to_owned(), KEY.to_owned())];
-    let args = codex_app::provider_args("nebius", "Nebius Token Factory", &base_url, "NEBIUS_API_KEY");
-    assert!(!args.iter().any(|a| a.contains(KEY)), "the key never goes on the command line");
-    let request = TurnRequest { prompt: "Write made.txt.", model: Some(MODEL), access: Access::EditFiles, env: &env, args: &args, ..Default::default() };
+    let provider = nebius(&base_url);
+    assert!(!codex_app::provider_args(&provider, &base_url).iter().any(|a| a.contains(KEY)), "the key never goes on the command line");
+    let request = TurnRequest { prompt: "Write made.txt.", model: Some(MODEL), access: Access::EditFiles, env: &env, provider: Some(&provider), ..Default::default() };
 
     let mut activities = Vec::new();
     let run = codex_app::run_turn(&codex, &cwd, request, None, None, None, |a| activities.push(a));
@@ -218,6 +218,7 @@ async fn the_real_codex_runs_a_members_turn_on_a_stand_in_token_factory() {
     assert!(activities.iter().any(|a| matches!(a, Activity::Model(m) if m == MODEL)), "{context}");
     assert!(activities.iter().any(|a| matches!(a, Activity::ToolDone(d) if d.name == "Bash" && d.ok)), "the command showed as Bash{context}");
 
+    // Through equipe's relay, at the provider's own path.
     let turns: Vec<&Seen> = seen.iter().filter(|s| s.method == "POST" && s.path == "/v1/responses").collect();
     assert!(turns.len() >= 2, "a request for the call and one with its output{context}");
     for request in &turns {
@@ -234,9 +235,19 @@ async fn the_real_codex_runs_a_members_turn_on_a_stand_in_token_factory() {
     let _ = std::fs::remove_dir_all(&codex_home);
 }
 
+fn nebius(base_url: &str) -> codex_app::Provider {
+    codex_app::Provider {
+        id: "nebius".into(),
+        name: "Nebius Token Factory".into(),
+        base_url: base_url.into(),
+        env_key: "NEBIUS_API_KEY".into(),
+        config: vec!["model_context_window=131072".into()],
+    }
+}
+
 #[test]
 fn a_providers_args_point_codex_at_it_and_keep_the_requests_plain() {
-    let args = codex_app::provider_args("nebius", "Nebius Token Factory", "https://api.tokenfactory.nebius.com/v1/", "NEBIUS_API_KEY");
+    let args = codex_app::provider_args(&nebius("https://ignored.example"), "https://api.tokenfactory.nebius.com/v1/");
     let pairs: Vec<&str> = args.chunks(2).map(|p| {
         assert_eq!(p[0], "-c");
         p[1].as_str()
@@ -251,7 +262,91 @@ fn a_providers_args_point_codex_at_it_and_keep_the_requests_plain() {
         "web_search=\"disabled\"",
         "features.multi_agent=false",
         "features.remote_compaction_v2=false",
+        "shell_environment_policy.exclude=[\"NEBIUS_API_KEY\"]",
+        "model_context_window=131072",
     ] {
         assert!(pairs.contains(&want), "{want} in {pairs:?}");
     }
+}
+
+/// An MCP server for the test, in Python: one tool, `list_tickets`; each
+/// message it gets written down in `log`.
+fn board_server(dir: &std::path::Path, log: &std::path::Path) -> PathBuf {
+    let script = dir.join("board.py");
+    std::fs::write(
+        &script,
+        format!(
+            r#"import json, sys
+for line in sys.stdin:
+    m = json.loads(line)
+    open({log:?}, "a").write(json.dumps(m) + "\n")
+    if "id" not in m:
+        continue
+    method = m.get("method")
+    if method == "initialize":
+        r = {{"protocolVersion": m["params"].get("protocolVersion", "2025-06-18"), "capabilities": {{"tools": {{}}}}, "serverInfo": {{"name": "board", "version": "1"}}}}
+    elif method == "tools/list":
+        r = {{"tools": [{{"name": "list_tickets", "description": "The board's tickets.", "inputSchema": {{"type": "object", "properties": {{}}}}}}]}}
+    elif method == "tools/call":
+        r = {{"content": [{{"type": "text", "text": "T-1 Add login (ready)"}}], "isError": False}}
+    else:
+        r = {{}}
+    sys.stdout.write(json.dumps({{"jsonrpc": "2.0", "id": m["id"], "result": r}}) + "\n")
+    sys.stdout.flush()
+"#,
+            log = log.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    script
+}
+
+#[tokio::test]
+async fn an_mcp_servers_tools_reach_the_provider_as_function_tools_and_its_calls_reach_the_server() {
+    let Some(codex) = installed_codex() else {
+        eprintln!("skipped: no `codex` installed (or $EQUIPE_CODEX)");
+        return;
+    };
+    let Some(python) = codex_app::find("python3") else {
+        eprintln!("skipped: no python3 for the stand-in MCP server");
+        return;
+    };
+    let (base_url, seen) = stand_in(vec![("mcp__board__list_tickets".into(), json!({}))]).await;
+    let cwd = scratch("mcp-work");
+    let codex_home = scratch("mcp-codex-home");
+    let mcp_log = cwd.join("mcp.jsonl");
+    let script = board_server(&codex_home, &mcp_log);
+    let servers = json!({ "board": codex_app::mcp_server(&python, &[script.to_string_lossy().into_owned()], true) });
+    let env = vec![("CODEX_HOME".to_owned(), codex_home.to_string_lossy().into_owned()), ("NEBIUS_API_KEY".to_owned(), KEY.to_owned())];
+    let provider = nebius(&base_url);
+    let request = TurnRequest { prompt: "What's on the board?", model: Some(MODEL), access: Access::EditFiles, env: &env, provider: Some(&provider), mcp_servers: Some(&servers), ..Default::default() };
+    let mut activities = Vec::new();
+    let outcome = tokio::time::timeout(Duration::from_secs(120), codex_app::run_turn(&codex, &cwd, request, None, None, None, |a| activities.push(a))).await;
+
+    let seen = seen.lock().unwrap().clone();
+    let evidence = serde_json::to_string_pretty(&seen.iter().map(Seen::shape).collect::<Vec<_>>()).unwrap();
+    let mcp: Vec<Value> = std::fs::read_to_string(&mcp_log).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    eprintln!("MOCK-VERIFIED (not a real Token Factory run). What reached the stand-in through equipe's relay:\n{evidence}");
+    let context = format!("\nrequests:\n{evidence}\nmcp: {mcp:?}\nactivities: {activities:?}\noutcome: {outcome:?}");
+    let turn = outcome.unwrap_or_else(|_| panic!("the turn didn't end in 120s{context}")).unwrap_or_else(|err| panic!("the turn failed: {err}{context}"));
+    assert_eq!(turn.result.text, FINAL, "{context}");
+
+    let turns: Vec<&Seen> = seen.iter().filter(|s| s.method == "POST" && s.path == "/v1/responses").collect();
+    assert!(turns.len() >= 2, "{context}");
+    for request in &turns {
+        let tools = request.body["tools"].as_array().cloned().unwrap_or_default();
+        assert!(tools.iter().all(|t| t["type"] == "function"), "no namespace reaches the provider{context}");
+        assert!(!tools.iter().any(|t| t["name"].as_str().is_some_and(|n| n.contains("agent") || n.contains("goal"))), "what it can't serve stays off with servers of its own too{context}");
+        assert!(tools.iter().any(|t| t["name"] == "mcp__board__list_tickets"), "the server's tool, by its flat name{context}");
+        assert_eq!(request.header("authorization"), Some(format!("Bearer {KEY}").as_str()), "the key passes through the relay{context}");
+    }
+    let call = mcp.iter().find(|m| m["method"] == "tools/call").unwrap_or_else(|| panic!("the call reached the MCP server{context}"));
+    assert_eq!(call["params"]["name"], "list_tickets", "{context}");
+    let back = turns.last().unwrap().body["input"].as_array().cloned().unwrap_or_default();
+    assert!(back.iter().any(|i| i["type"] == "function_call" && i["name"] == "mcp__board__list_tickets" && i.get("namespace").is_none()), "the earlier call, flat{context}");
+    let output = back.iter().find(|i| i["type"] == "function_call_output").map(|i| i["output"].to_string()).unwrap_or_default();
+    assert!(output.contains("T-1 Add login"), "the server's answer went back to the model{context}");
+    assert!(activities.iter().any(|a| matches!(a, Activity::ToolDone(d) if d.name == "mcp__board__list_tickets" && d.ok)), "{context}");
+    let _ = std::fs::remove_dir_all(&cwd);
+    let _ = std::fs::remove_dir_all(&codex_home);
 }

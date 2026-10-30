@@ -1,0 +1,363 @@
+//! A relay on this machine's loopback between `codex app-server` and another
+//! provider speaking OpenAI's Responses API, for one turn: what Codex sends
+//! goes on unchanged but for one thing — tools grouped in a `namespace` (how
+//! Codex 0.154 sends an MCP server's tools, equipe's board among them) become
+//! plain function tools named `<namespace>__<tool>`, and the calls the model
+//! makes to them come back to Codex in its own shape (`namespace` and
+//! `name`). A provider that serves only function tools then serves them all.
+//!
+//! The request's headers go on as they came, its key among them — passed
+//! through, never read, kept or logged. Nothing but the tools' shape is
+//! touched: the model's answer streams back as it streams in.
+
+use std::collections::HashMap;
+
+use futures_util::StreamExt as _;
+use serde_json::Value;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+
+/// Flattened tool names, back to their namespace and name.
+pub type Names = HashMap<String, (String, String)>;
+
+/// The flat name of `tool` in `namespace`: `mcp__equipe` and `take_ticket`
+/// make `mcp__equipe__take_ticket`, as Claude Code names MCP tools.
+pub fn flat_name(namespace: &str, tool: &str) -> String {
+    format!("{}__{tool}", namespace.trim_end_matches('_'))
+}
+
+/// A request's body made plain: its namespaces' tools as function tools, and
+/// earlier calls to them, in its input, by their flat names. What came from
+/// where, to put the model's calls back.
+pub fn flatten_request(body: &mut Value) -> Names {
+    let mut names = Names::new();
+    if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
+        let mut flat = Vec::with_capacity(tools.len());
+        for tool in tools.drain(..) {
+            if tool.get("type").and_then(Value::as_str) != Some("namespace") {
+                flat.push(tool);
+                continue;
+            }
+            let namespace = tool.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+            for mut inner in tool.get("tools").and_then(Value::as_array).cloned().unwrap_or_default() {
+                let Some(name) = inner.get("name").and_then(Value::as_str).map(str::to_owned) else { continue };
+                let joined = flat_name(&namespace, &name);
+                inner["name"] = Value::String(joined.clone());
+                names.insert(joined, (namespace.clone(), name));
+                flat.push(inner);
+            }
+        }
+        *tools = flat;
+    }
+    if let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) {
+        for item in input.iter_mut() {
+            let kind = item.get("type").and_then(Value::as_str).unwrap_or_default();
+            if !matches!(kind, "function_call" | "function_call_output") {
+                continue;
+            }
+            let Some(map) = item.as_object_mut() else { continue };
+            let Some(namespace) = map.remove("namespace").and_then(|n| n.as_str().map(str::to_owned)) else { continue };
+            if let Some(name) = map.get("name").and_then(Value::as_str).map(str::to_owned) {
+                let joined = flat_name(&namespace, &name);
+                names.insert(joined.clone(), (namespace, name));
+                map.insert("name".into(), Value::String(joined));
+            }
+        }
+    }
+    names
+}
+
+/// The model's calls to flattened tools, anywhere in a streamed event or a
+/// whole response, put back as Codex named them. Whether anything changed.
+pub fn restore(value: &mut Value, names: &Names) -> bool {
+    if names.is_empty() {
+        return false;
+    }
+    let mut changed = false;
+    let mut fix = |item: &mut Value| {
+        if item.get("type").and_then(Value::as_str) != Some("function_call") {
+            return;
+        }
+        let Some((namespace, name)) = item.get("name").and_then(Value::as_str).and_then(|n| names.get(n)).cloned() else { return };
+        item["name"] = Value::String(name);
+        item["namespace"] = Value::String(namespace);
+        changed = true;
+    };
+    if let Some(item) = value.get_mut("item") {
+        fix(item);
+    }
+    if let Some(Value::Array(items)) = value.get_mut("response").and_then(|r| r.get_mut("output")) {
+        items.iter_mut().for_each(&mut fix);
+    }
+    if let Some(Value::Array(items)) = value.get_mut("output") {
+        items.iter_mut().for_each(&mut fix);
+    }
+    changed
+}
+
+/// One line of a server-sent stream, its calls put back.
+fn restore_line(line: &str, names: &Names) -> Option<String> {
+    let data = line.strip_prefix("data:")?;
+    let mut value: Value = serde_json::from_str(data.trim()).ok()?;
+    restore(&mut value, names).then(|| format!("data: {value}"))
+}
+
+/// The relay, running until dropped.
+pub struct Relay {
+    /// Where Codex sends what it would send the provider: its base URL.
+    pub url: String,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for Relay {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Start a relay to the provider at `upstream` (its base URL, e.g.
+/// `https://api.tokenfactory.nebius.com/v1`).
+pub async fn start(upstream: &str) -> std::io::Result<Relay> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}", listener.local_addr()?);
+    let upstream = upstream.trim_end_matches('/').to_owned();
+    let client = reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(15)).build().map_err(std::io::Error::other)?;
+    let task = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let (client, upstream) = (client.clone(), upstream.clone());
+            tokio::spawn(async move {
+                let _ = relay_one(stream, &client, &upstream).await;
+            });
+        }
+    });
+    Ok(Relay { url, task })
+}
+
+/// A request read off the loopback.
+struct Incoming {
+    method: String,
+    path: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+/// Headers that are the connection's own, not the request's.
+const HOP: [&str; 6] = ["host", "content-length", "connection", "transfer-encoding", "accept-encoding", "keep-alive"];
+
+async fn read_incoming(stream: &mut TcpStream) -> std::io::Result<Option<Incoming>> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 16 * 1024];
+    let end = loop {
+        if let Some(at) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break at;
+        }
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            return Ok(None);
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.len() > 1 << 20 {
+            return Ok(None);
+        }
+    };
+    let head = String::from_utf8_lossy(&buf[..end]).into_owned();
+    let mut lines = head.split("\r\n");
+    let mut first = lines.next().unwrap_or_default().split_whitespace();
+    let (Some(method), Some(path)) = (first.next(), first.next()) else { return Ok(None) };
+    let headers: Vec<(String, String)> = lines.filter_map(|l| l.split_once(':')).map(|(n, v)| (n.trim().to_ascii_lowercase(), v.trim().to_owned())).collect();
+    let header = |name: &str| headers.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str());
+    let mut body = buf[end + 4..].to_vec();
+    if header("transfer-encoding").is_some_and(|t| t.eq_ignore_ascii_case("chunked")) {
+        loop {
+            if let Some(decoded) = dechunk(&body) {
+                body = decoded;
+                break;
+            }
+            let n = stream.read(&mut chunk).await?;
+            if n == 0 {
+                return Ok(None);
+            }
+            body.extend_from_slice(&chunk[..n]);
+        }
+    } else {
+        let length: usize = header("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+        while body.len() < length {
+            let n = stream.read(&mut chunk).await?;
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..n]);
+        }
+        body.truncate(length);
+    }
+    Ok(Some(Incoming { method: method.to_owned(), path: path.to_owned(), headers, body }))
+}
+
+/// A chunked body, whole once its last chunk is in; `None` until then.
+fn dechunk(raw: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    loop {
+        let line_end = raw[at..].windows(2).position(|w| w == b"\r\n")? + at;
+        let size = usize::from_str_radix(String::from_utf8_lossy(&raw[at..line_end]).split(';').next()?.trim(), 16).ok()?;
+        at = line_end + 2;
+        if size == 0 {
+            return Some(out);
+        }
+        if raw.len() < at + size + 2 {
+            return None;
+        }
+        out.extend_from_slice(&raw[at..at + size]);
+        at += size + 2;
+    }
+}
+
+async fn relay_one(mut stream: TcpStream, client: &reqwest::Client, upstream: &str) -> std::io::Result<()> {
+    let Some(request) = read_incoming(&mut stream).await? else { return Ok(()) };
+    // Codex is given the relay's root as the provider's base URL: its paths are the provider's own.
+    let url = format!("{upstream}/{}", request.path.trim_start_matches('/'));
+    let mut body = request.body;
+    let mut names = Names::new();
+    let is_json = request.headers.iter().any(|(n, v)| n == "content-type" && v.contains("json"));
+    let encoded = request.headers.iter().any(|(n, v)| n == "content-encoding" && !v.eq_ignore_ascii_case("identity"));
+    if request.method == "POST" && is_json && !encoded
+        && let Ok(mut value) = serde_json::from_slice::<Value>(&body)
+    {
+        names = flatten_request(&mut value);
+        if !names.is_empty() {
+            body = serde_json::to_vec(&value).unwrap_or(body);
+        }
+    }
+    let method = reqwest::Method::from_bytes(request.method.as_bytes()).unwrap_or(reqwest::Method::POST);
+    let mut outgoing = client.request(method, &url).body(body);
+    for (name, value) in &request.headers {
+        if !HOP.contains(&name.as_str()) {
+            outgoing = outgoing.header(name.as_str(), value.as_str());
+        }
+    }
+    let response = match outgoing.send().await {
+        Ok(response) => response,
+        Err(err) => {
+            // The provider unreachable: said as a gateway's error, the way Codex expects one.
+            let said = format!("{{\"error\":{{\"message\":\"the provider couldn't be reached: {}\"}}}}", err.without_url().to_string().replace('"', "'"));
+            let head = format!("HTTP/1.1 502 Bad Gateway\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", said.len());
+            stream.write_all(head.as_bytes()).await?;
+            stream.write_all(said.as_bytes()).await?;
+            return stream.shutdown().await;
+        }
+    };
+    let status = response.status();
+    let mut head = format!("HTTP/1.1 {} {}\r\n", status.as_u16(), status.canonical_reason().unwrap_or(""));
+    for (name, value) in response.headers() {
+        let name = name.as_str();
+        if HOP.contains(&name) || name == "content-encoding" {
+            continue;
+        }
+        if let Ok(value) = value.to_str() {
+            head.push_str(&format!("{name}: {value}\r\n"));
+        }
+    }
+    head.push_str("connection: close\r\n\r\n");
+    stream.write_all(head.as_bytes()).await?;
+    let streamed = response.headers().get("content-type").and_then(|v| v.to_str().ok()).is_some_and(|v| v.contains("event-stream"));
+    let mut bytes = response.bytes_stream();
+    if names.is_empty() {
+        // Nothing to put back: as it comes.
+        while let Some(Ok(chunk)) = bytes.next().await {
+            stream.write_all(&chunk).await?;
+        }
+    } else if streamed {
+        let mut pending: Vec<u8> = Vec::new();
+        while let Some(Ok(chunk)) = bytes.next().await {
+            pending.extend_from_slice(&chunk);
+            while let Some(at) = pending.iter().position(|b| *b == b'\n') {
+                let line: Vec<u8> = pending.drain(..=at).collect();
+                let text = String::from_utf8_lossy(&line);
+                match restore_line(text.trim_end_matches(['\r', '\n']), &names) {
+                    Some(fixed) => stream.write_all(format!("{fixed}\n").as_bytes()).await?,
+                    None => stream.write_all(&line).await?,
+                }
+            }
+            stream.flush().await?;
+        }
+        stream.write_all(&pending).await?;
+    } else {
+        let mut all = Vec::new();
+        while let Some(Ok(chunk)) = bytes.next().await {
+            all.extend_from_slice(&chunk);
+        }
+        if let Ok(mut value) = serde_json::from_slice::<Value>(&all)
+            && restore(&mut value, &names)
+        {
+            all = serde_json::to_vec(&value).unwrap_or(all);
+        }
+        stream.write_all(&all).await?;
+    }
+    stream.flush().await?;
+    stream.shutdown().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn request() -> Value {
+        json!({
+            "model": "nvidia/x",
+            "tools": [
+                { "type": "function", "name": "exec_command", "parameters": {} },
+                { "type": "namespace", "name": "mcp__equipe", "description": "Tools in the mcp__equipe namespace.", "tools": [
+                    { "type": "function", "name": "take_ticket", "description": "Take a ticket.", "strict": false, "parameters": { "type": "object" } },
+                    { "type": "function", "name": "hand_in", "parameters": { "type": "object" } }
+                ] }
+            ],
+            "input": [
+                { "type": "message", "role": "user", "content": [] },
+                { "type": "function_call", "call_id": "c1", "name": "take_ticket", "namespace": "mcp__equipe", "arguments": "{}" },
+                { "type": "function_call_output", "call_id": "c1", "output": "ok" }
+            ]
+        })
+    }
+
+    #[test]
+    fn namespaced_tools_go_as_function_tools_and_earlier_calls_by_their_flat_names() {
+        let mut body = request();
+        let names = flatten_request(&mut body);
+        let tools: Vec<(&str, &str)> = body["tools"].as_array().unwrap().iter().map(|t| (t["type"].as_str().unwrap(), t["name"].as_str().unwrap())).collect();
+        assert_eq!(tools, [("function", "exec_command"), ("function", "mcp__equipe__take_ticket"), ("function", "mcp__equipe__hand_in")]);
+        assert_eq!(body["tools"][1]["description"], "Take a ticket.");
+        assert_eq!(body["input"][1], json!({ "type": "function_call", "call_id": "c1", "name": "mcp__equipe__take_ticket", "arguments": "{}" }));
+        assert_eq!(names.get("mcp__equipe__hand_in"), Some(&("mcp__equipe".to_owned(), "hand_in".to_owned())));
+        assert_eq!(body["model"], "nvidia/x");
+        // Nothing namespaced: nothing changes.
+        let mut plain = json!({ "tools": [{ "type": "function", "name": "exec_command" }], "input": [] });
+        let before = plain.clone();
+        assert!(flatten_request(&mut plain).is_empty());
+        assert_eq!(plain, before);
+    }
+
+    #[test]
+    fn the_models_calls_come_back_as_codex_named_them() {
+        let names = flatten_request(&mut request());
+        let call = json!({ "type": "function_call", "id": "fc", "call_id": "c2", "name": "mcp__equipe__hand_in", "arguments": "{\"ticket\":3}" });
+        let mut done = json!({ "type": "response.output_item.done", "output_index": 0, "item": call.clone() });
+        assert!(restore(&mut done, &names));
+        assert_eq!((done["item"]["namespace"].as_str(), done["item"]["name"].as_str()), (Some("mcp__equipe"), Some("hand_in")));
+        assert_eq!(done["item"]["arguments"], "{\"ticket\":3}");
+        let mut completed = json!({ "type": "response.completed", "response": { "id": "r", "output": [call.clone(), { "type": "function_call", "name": "exec_command" }] } });
+        assert!(restore(&mut completed, &names));
+        assert_eq!(completed["response"]["output"][0]["name"], "hand_in");
+        assert_eq!(completed["response"]["output"][1], json!({ "type": "function_call", "name": "exec_command" }));
+        let line = format!("data: {}", json!({ "type": "response.output_item.added", "item": call }));
+        assert!(restore_line(&line, &names).is_some_and(|l| l.contains("\"namespace\":\"mcp__equipe\"")));
+        assert_eq!(restore_line("event: response.completed", &names), None);
+        assert_eq!(restore_line("data: [DONE]", &names), None);
+    }
+
+    #[test]
+    fn a_chunked_body_is_read_whole() {
+        assert_eq!(dechunk(b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n").as_deref(), Some(&b"hello world"[..]));
+        assert_eq!(dechunk(b"5\r\nhel"), None);
+    }
+}
