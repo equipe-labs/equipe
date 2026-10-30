@@ -364,13 +364,15 @@ impl Journal {
                title TEXT,
                open INTEGER NOT NULL DEFAULT 1,
                created_at INTEGER NOT NULL,
-               updated_at INTEGER NOT NULL
+               updated_at INTEGER NOT NULL,
+               cwd TEXT
              );",
         )?;
         for column in ["role TEXT", "name TEXT", "joined INTEGER", "mode TEXT"] {
             let _ = conn.execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), []);
         }
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN merged INTEGER", []);
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN cwd TEXT", []);
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN off_main TEXT", []);
         // The person's say on how soon and in which order: normal and by number
         // for tickets from before.
@@ -956,11 +958,13 @@ impl Journal {
 
     /// A conversation the person opened with the PM, about `project`
     /// (`None`: the whole squad). Its lines are kept as any session's.
-    pub fn record_conversation(&self, id: SessionId, project: Option<&str>) -> Result<()> {
+    /// A conversation with the PM, held where the PM works (`cwd`), which
+    /// its replies' pictures are read from.
+    pub fn record_conversation(&self, id: SessionId, project: Option<&str>, cwd: &Path) -> Result<()> {
         let t = now();
         self.conn.execute(
-            "INSERT OR REPLACE INTO conversations (id, project, open, created_at, updated_at) VALUES (?1, ?2, 1, ?3, ?3)",
-            params![id as i64, project, t],
+            "INSERT OR REPLACE INTO conversations (id, project, open, created_at, updated_at, cwd) VALUES (?1, ?2, 1, ?3, ?3, ?4)",
+            params![id as i64, project, t, cwd.to_string_lossy()],
         )?;
         Ok(())
     }
@@ -1060,14 +1064,17 @@ impl Journal {
 
     /// The latest `limit` lines of the squad's conversations that name a path
     /// (a `/` in them), newest first, each with where its session works — what
-    /// a reply's pictures and folders are read from (`crate::visuals`).
+    /// a reply's pictures and folders are read from (`crate::visuals`). The
+    /// person's conversations with the PM count, from where the PM works (one
+    /// opened before that was kept: where the open PM works now).
     pub fn said_with_paths(&self, limit: u64) -> Result<Vec<(PathBuf, Entry)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.cwd, e.body FROM entries e JOIN sessions s ON s.id = e.session
-             WHERE e.body LIKE '%/%' ORDER BY e.at DESC, e.seq DESC LIMIT ?1",
+            "SELECT COALESCE(s.cwd, c.cwd, (SELECT p.cwd FROM sessions p WHERE p.role = 'pm' AND p.open = 1 ORDER BY p.id LIMIT 1)), e.body
+             FROM entries e LEFT JOIN sessions s ON s.id = e.session LEFT JOIN conversations c ON c.id = e.session
+             WHERE e.body LIKE '%/%' AND (s.id IS NOT NULL OR c.id IS NOT NULL) ORDER BY e.at DESC, e.seq DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map(params![limit as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-        Ok(rows.filter_map(|row| row.ok()).filter_map(|(cwd, body)| Some((PathBuf::from(cwd), serde_json::from_str(&body).ok()?))).collect())
+        let rows = stmt.query_map(params![limit as i64], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)))?;
+        Ok(rows.filter_map(|row| row.ok()).filter_map(|(cwd, body)| Some((PathBuf::from(cwd?), serde_json::from_str(&body).ok()?))).collect())
     }
 
     pub fn open_sessions(&self) -> Result<Vec<SessionRecord>> {
@@ -1189,6 +1196,24 @@ mod tests {
             tokens: 0,
             open: true,
         }
+    }
+
+    #[test]
+    fn what_a_conversation_with_the_pm_says_is_read_from_where_the_pm_works() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        let pm = SessionRecord { cwd: "/squad/pm".into(), member: Some(Member { role: "pm".into(), name: "pm".into() }), ..record(1) };
+        j.record_session(&pm).unwrap();
+        j.record_conversation(50, Some("web"), Path::new("/squad/pm")).unwrap();
+        j.append(50, &Entry::Reply { text: "![shot](shots/home.png)".into() }).unwrap();
+        // One kept before conversations knew where they were held.
+        j.record_conversation(51, None, Path::new("/elsewhere")).unwrap();
+        j.conn.execute("UPDATE conversations SET cwd = NULL WHERE id = 51", []).unwrap();
+        j.append(51, &Entry::Reply { text: "see /tmp/a.png".into() }).unwrap();
+        // A line of nothing known is left out.
+        j.append(99, &Entry::Reply { text: "/nowhere".into() }).unwrap();
+        let said = j.said_with_paths(10).unwrap();
+        let cwds: Vec<_> = said.iter().map(|(cwd, _)| cwd.to_string_lossy().into_owned()).collect();
+        assert_eq!(cwds, ["/squad/pm", "/squad/pm"], "{said:?}");
     }
 
     #[test]

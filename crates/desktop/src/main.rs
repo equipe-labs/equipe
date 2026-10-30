@@ -1464,7 +1464,12 @@ impl Shell {
             return None;
         }
         let theirs = self.model.daemon_version.split('+').next().unwrap_or_default().to_owned();
-        let place = self.endpoint.label();
+        // A Tailscale device by its name (`tinums-mac-mini`), not its address.
+        let place = match &self.endpoint {
+            Endpoint::Ssh(host) => tailnet::peer_for(&self.connect.peers, &host.host).map(|peer| peer.short().to_owned()),
+            Endpoint::Local { .. } => None,
+        }
+        .unwrap_or_else(|| self.endpoint.label());
         // One line, cut short if it must; the whole of it on the pointer.
         let (words, tone, whole) = match &self.daemon_update {
             None => (
