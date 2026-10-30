@@ -104,6 +104,7 @@ CLAUDE CODE  your claude · signs itself in
 | `equipe login` | Pick an engine and sign in (`codex` / `claude`, `--again`, `--no-browser`) |
 | `equipe logout` | Forget equipe's Codex login (Claude Code keeps its own) |
 | `equipe status` | Which engines are ready, on which plan, with which models |
+| `equipe review` | An NVIDIA Nemotron model on Nebius Token Factory reviews this repository's changes — against `HEAD`, or `--base <ref>` — with only `NEBIUS_API_KEY` (see [Nemotron review](#nemotron-review-on-nebius-token-factory)). `--models` lists the account's Nemotron models |
 | `equipe roles` | The roles a squad can have, what each does and the model it gets |
 | `equipe squads` | Your squads and the projects each works on |
 | `equipe lang [code\|auto]` · `/lang` | The language equipe speaks to you — ko, en, ja, zh-Hans, zh-Hant, es, fr, de — one pick for the console, the app and what the daemon says in conversations (the app picks it in Settings, live). Nothing picked (`auto`): `LANGUAGE`/`LC_ALL`/`LC_MESSAGES`/`LANG` in a terminal, then the system's preferred languages in order (on a Mac, the language set for equipe alone in System Settings › General › Language & Region › Applications included), else English. `EQUIPE_LANG` overrides everything. Members write to you in the language you write in |
@@ -150,6 +151,90 @@ says whether that's a subscription or per-token API billing.
 > Anthropic's advertised Pro/Max limits assume ordinary, individual use. A whole
 > squad on one subscription will reach them; plan to give Claude Code the roles that
 > need it most.
+
+## Nemotron review on Nebius Token Factory
+
+**What.** When a member hands in a code ticket, an **NVIDIA Nemotron** model on
+**Nebius Token Factory** reads the branch's diff against the ticket and writes a
+short review: a verdict (*looks good* · *needs attention* · *risky*), a summary,
+up to five risks as `file:line — why`, and up to five tests the change is missing.
+It shows in the desktop app's ticket peek, under the hand-in, and is kept on the
+ticket's record. It is **advice only**: it never accepts, merges or sends work back —
+you (or the PM, if you let it accept) still decide.
+
+**Why.** The members that write the code (Claude Code, Codex) should not be the only
+ones who read it. A second model, from another vendor and with a narrow job —
+correctness bugs, security, data loss, acceptance criteria the diff doesn't meet —
+gives the person a place to start before they accept.
+
+**Where the call happens.** `crates/core/src/nemotron.rs` is the whole client:
+`POST <base>/chat/completions` (and `GET <base>/models` to pick a model), OpenAI-compatible,
+`Authorization: Bearer $NEBIUS_API_KEY`. The daemon calls it off its main loop when a
+code ticket is handed in (`runtime.rs`, `end_work` → `ask_for_review` → `on_reviewed`),
+stores the result in the squad's journal (`reviews` table) and sends
+`Event::CodeReviewed` to every screen. `equipe review` calls the same client from the
+command line.
+
+**Try it with only a Nebius key** — no squad, no Claude or ChatGPT plan needed:
+
+```bash
+read -rs NEBIUS_API_KEY && export NEBIUS_API_KEY   # paste the key; it isn't echoed or kept in history
+cd your-repo
+equipe review --models          # the NVIDIA Nemotron models your account offers
+equipe review                   # your uncommitted changes (working tree + staged) against HEAD
+equipe review --base main       # what this branch changed since it left main
+equipe review --base main --goal "Refuse expired tokens with 401"   # and check it against what it should do
+```
+
+New files are reviewed once they're added (`git add -N` is enough). It prints the
+verdict, summary, risks, missing tests, the model id, the tokens used and Token
+Factory's request id.
+
+For the squad's automatic reviews, the **daemon** needs the key in *its*
+environment. A daemon started by a login service (`equipe daemon install`) does not see
+your shell's variables, so run it in a terminal instead:
+
+```bash
+equipe daemon stop
+read -rs NEBIUS_API_KEY && export NEBIUS_API_KEY
+equipe daemon run               # in the foreground; Ctrl-C stops it
+```
+
+Without a key nothing is sent anywhere: the daemon logs once that reviews are off.
+
+| Variable | |
+|---|---|
+| `NEBIUS_API_KEY` | Your Token Factory API key. Read from the environment only — never written to disk, logged, or shown (`Debug` redacts it; error messages never include it or the auth header). |
+| `EQUIPE_NEBIUS_MODEL` | A model id to use. Unset: equipe lists `GET /models` and picks an NVIDIA Nemotron chat model (`nvidia/…` with `nemotron` in the id; Super, then Ultra, then Nano). No such model → a clear error, no fallback to another vendor's. |
+| `EQUIPE_NEBIUS_BASE_URL` | Another server with the same API (default `https://api.tokenfactory.nebius.com/v1/`). The tests point it at a local mock. |
+| `EQUIPE_NEBIUS_MAX_TOKENS` | The longest answer asked for (default 2048). |
+
+`.env.example` lists them; equipe itself doesn't read `.env` files.
+
+**Expected cost per review — an estimate, not a measurement.** No review has been
+measured against the real API yet. The diff is cut at 48,000 characters (≈12k tokens
+at ~4 characters per token) and the ticket at 6,000; with the instructions, the input
+is at most ≈14k tokens and usually far less (a 200-line change is ≈2–3k). The answer
+is capped at 2,048 tokens and is usually a few hundred. Cost ≈ input tokens × the
+model's input price + output tokens × its output price — look the prices up for the
+model you use on Token Factory's pricing page. With *hypothetical* prices of $0.10 per
+million input tokens and $0.40 per million output tokens, the largest possible review
+would be about 14,000 × 0.10/10⁶ + 2,048 × 0.40/10⁶ ≈ $0.0022. Each automatic review
+also makes one `GET /models` call unless `EQUIPE_NEBIUS_MODEL` is set.
+
+**Security notes.**
+- The diff and the ticket are sent to Nebius Token Factory. Don't enable it on code
+  you may not send to a third party; without `NEBIUS_API_KEY` nothing is sent.
+- The prompt tells the model that the diff and ticket are data, never instructions,
+  and fences them. What comes back is treated as untrusted: thinking blocks dropped,
+  only the first JSON object read, control characters and terminal escape sequences
+  removed, every field cut to a short length, at most five risks and five tests.
+  An answer that isn't a review is an error — a review is never made up.
+- The daemon's log records the model id, Token Factory's request id, token counts and
+  latency — never the key, the diff or the review's text.
+- Requests time out after 90 s (10 s to connect); a rate limit (429), a server error or
+  a timeout is tried again at most twice, with backoff (a `Retry-After` of up to 10 s is
+  honoured); 400/401/403 are not retried.
 
 ## Install
 

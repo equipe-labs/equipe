@@ -1,0 +1,83 @@
+1
+00:00:00,500 --> 00:00:07,000
+This is equipe: a squad of AI coding agents that works like a team —
+
+2
+00:00:07,000 --> 00:00:14,000
+a PM, engineers, a board of tickets, and you accepting the work.
+
+3
+00:00:14,000 --> 00:00:21,500
+I ask the PM for a small change. It writes a ticket with acceptance criteria
+
+4
+00:00:21,500 --> 00:00:29,500
+and hands it to an engineer, who works on its own git branch, in its own worktree,
+
+5
+00:00:29,500 --> 00:00:38,000
+so my checkout is never touched.
+
+6
+00:00:38,000 --> 00:00:46,000
+When the work is done, the engineer hands it in.
+
+7
+00:00:46,000 --> 00:00:58,000
+Until now, the only one who had read this code was the agent that wrote it.
+
+8
+00:00:58,000 --> 00:01:07,000
+So every hand-in now goes to an NVIDIA Nemotron model on Nebius Token Factory.
+
+9
+00:01:07,000 --> 00:01:16,000
+It reads the diff against the ticket and comes back with a verdict, a short summary,
+
+10
+00:01:16,000 --> 00:01:25,000
+risks with the file and line, and the tests the change is missing —
+
+11
+00:01:25,000 --> 00:01:32,000
+in my language.
+
+12
+00:01:32,000 --> 00:01:41,000
+It's advice, not authority: the review goes on the ticket's record, and I still decide —
+
+13
+00:01:41,000 --> 00:01:50,000
+here I send it back with the risk it found.
+
+14
+00:01:50,000 --> 00:01:58,000
+You don't need the whole squad to try it. With only a Nebius key,
+
+15
+00:01:58,000 --> 00:02:08,000
+equipe review lists the account's Nemotron models and reviews any git repository's changes —
+
+16
+00:02:08,000 --> 00:02:16,000
+same client, real tokens, real request id.
+
+17
+00:02:16,000 --> 00:02:23,000
+Under the hood it's one small Rust client: an OpenAI-compatible chat completion to Token Factory.
+
+18
+00:02:23,000 --> 00:02:30,000
+The diff is treated as data, not instructions; the answer must be one bounded JSON review,
+
+19
+00:02:30,000 --> 00:02:36,000
+or it's rejected — never made up. The key stays in the environment and never reaches the logs.
+
+20
+00:02:36,000 --> 00:02:42,000
+equipe is open source under MIT.
+
+21
+00:02:42,000 --> 00:02:48,000
+A team of agents, and a second pair of eyes from NVIDIA Nemotron on Nebius.
