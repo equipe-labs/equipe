@@ -101,6 +101,13 @@ impl Config {
         Self::from_vars(|name| std::env::var(name).ok())
     }
 
+    /// From the environment, else with the key saved under equipe's `home`
+    /// ([`save_key`]: from a screen's settings or `equipe login nebius`).
+    pub fn from_env_or_saved(home: &std::path::Path) -> Result<Self, ReviewError> {
+        let saved = saved_key(home);
+        Self::from_vars(|name| std::env::var(name).ok().filter(|v| !v.trim().is_empty()).or_else(|| (name == "NEBIUS_API_KEY").then(|| saved.clone()).flatten()))
+    }
+
     /// From variables as `var` reads them, by name (the environment, or a test's).
     pub fn from_vars(var: impl Fn(&str) -> Option<String>) -> Result<Self, ReviewError> {
         use equipe_providers::relay::Wire;
@@ -310,6 +317,68 @@ impl Config {
             Err(ReviewError::NoModel) if self.provider == CUSTOM_PROVIDER => ids.iter().find(|id| !id.trim().is_empty()).cloned().ok_or(ReviewError::NoModel),
             picked => picked,
         }
+    }
+}
+
+// ── the key saved on this machine ──
+//
+// For a person who doesn't start the daemon from a shell (the desktop app, a
+// login service): the key pasted once into equipe's settings, or given to
+// `equipe login nebius`, kept in a file under equipe's home that only they can
+// read. The environment's `NEBIUS_API_KEY`, when set, still comes first.
+
+/// Where the saved key is kept.
+pub fn key_path(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("keys").join("nebius")
+}
+
+/// The saved key, if there is one.
+pub fn saved_key(home: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(key_path(home)).ok().map(|k| k.trim().to_owned()).filter(|k| !k.is_empty())
+}
+
+/// Whether `key` looks like a key: no spaces or line breaks inside, not too short or long.
+pub fn key_is_plausible(key: &str) -> bool {
+    let key = key.trim();
+    (8..=4096).contains(&key.len()) && !key.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// Save `key`, readable and writable by the person alone (the folder too).
+pub fn save_key(home: &std::path::Path, key: &str) -> std::io::Result<()> {
+    let path = key_path(home);
+    let dir = path.parent().unwrap_or(home);
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(".nebius.tmp");
+    let _ = std::fs::remove_file(&tmp);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+        std::io::Write::write_all(&mut file, key.trim().as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    std::fs::write(&tmp, key.trim())?;
+    std::fs::rename(&tmp, &path)
+}
+
+/// Forget the saved key. Whether there was one.
+pub fn forget_key(home: &std::path::Path) -> std::io::Result<bool> {
+    match std::fs::remove_file(key_path(home)) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+/// Where the key in use comes from.
+pub fn key_source(home: &std::path::Path) -> equipe_protocol::NebiusKey {
+    if std::env::var("NEBIUS_API_KEY").ok().is_some_and(|k| !k.trim().is_empty()) {
+        equipe_protocol::NebiusKey::Environment
+    } else if saved_key(home).is_some() {
+        equipe_protocol::NebiusKey::Saved
+    } else {
+        equipe_protocol::NebiusKey::None
     }
 }
 
@@ -998,6 +1067,28 @@ mod tests {
 
         assert_eq!(agent_effort(Some("high")), Some("high"));
         assert_eq!((agent_effort(Some("ultra")), agent_effort(Some("max")), agent_effort(None)), (None, None, None));
+    }
+
+    #[test]
+    fn a_key_saved_on_this_machine_is_the_persons_alone() {
+        let home = std::env::temp_dir().join(format!("equipe-key-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(saved_key(&home), None);
+        assert!(key_is_plausible("sk-abc12345") && !key_is_plausible("short") && !key_is_plausible("two words here") && !key_is_plausible("a\nb12345678"));
+        save_key(&home, "  sk-saved-12345\n").unwrap();
+        assert_eq!(saved_key(&home).as_deref(), Some("sk-saved-12345"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(std::fs::metadata(key_path(&home)).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(std::fs::metadata(key_path(&home).parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        save_key(&home, "sk-replaced-123").unwrap();
+        assert_eq!(saved_key(&home).as_deref(), Some("sk-replaced-123"), "a new key replaces the old");
+        assert!(forget_key(&home).unwrap());
+        assert!(!forget_key(&home).unwrap());
+        assert_eq!(saved_key(&home), None);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

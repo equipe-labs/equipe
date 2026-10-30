@@ -69,12 +69,24 @@ impl From<Engine> for protocol::Engine {
     }
 }
 
+/// What `equipe login` signs in to: an engine, or Nebius Token Factory with a key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum SignIn {
+    /// Your installed Codex CLI on your ChatGPT plan, signed in by Codex itself
+    Codex,
+    /// Your installed Claude Code, signed in by Claude Code itself
+    Claude,
+    /// NVIDIA Nemotron on Nebius Token Factory: your API key, saved on this machine
+    Nebius,
+}
+
 #[derive(Subcommand)]
 enum Command {
-    /// Sign in to an engine (asks which at a terminal)
+    /// Sign in to an engine (asks which at a terminal); `nebius` saves your
+    /// Nebius Token Factory API key for NVIDIA Nemotron
     Login {
         #[arg(value_enum)]
-        engine: Option<Engine>,
+        engine: Option<SignIn>,
         /// Minutes to wait for the browser (codex)
         #[arg(long, default_value_t = 10)]
         timeout: u64,
@@ -429,7 +441,11 @@ async fn main() -> ExitCode {
     };
 
     let outcome = match command {
-        Command::Login { engine, timeout, no_browser, again } => app.login(engine, timeout, no_browser, again).await,
+        Command::Login { engine: Some(SignIn::Nebius), .. } => login_nebius(),
+        Command::Login { engine, timeout, no_browser, again } => {
+            let engine = engine.map(|e| if e == SignIn::Claude { Engine::Claude } else { Engine::Codex });
+            app.login(engine, timeout, no_browser, again).await
+        }
         Command::Logout => app.logout(),
         Command::Status => app.status().await,
         Command::Try { prompt, engine, model, edit } => app.run_try(&prompt, engine, model.as_deref(), edit).await,
@@ -1420,7 +1436,7 @@ impl App {
                 Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. }
                 | Event::BrowserWants { .. }
                 | Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. }
-                | Event::DiskLevel { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. }  | Event::Engines { .. } | Event::SignIn { .. } => {}
+                | Event::DiskLevel { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. }  | Event::Engines { .. } | Event::Nebius { .. } | Event::SignIn { .. } => {}
                 Event::TurnEnded { outcome, usage, .. } => {
                     printer.end(outcome, usage);
                     core.send(Cmd::Close { session: ID });
@@ -1495,11 +1511,31 @@ fn plan_label(status: &AuthStatus) -> String {
 
 /// Prints the section on NVIDIA Nemotron through Nebius Token Factory: members
 /// on the Codex CLI's agent with only a Token Factory key — no sign-in. Read
+/// `equipe login nebius`: the person's Nebius Token Factory key, pasted (not
+/// shown) and saved on this machine, readable only by them — the daemon uses
+/// it when `NEBIUS_API_KEY` isn't in its environment.
+fn login_nebius() -> CmdResult {
+    let p = ui::out();
+    let home = equipe_providers::credentials::equipe_home();
+    println!("{}", p.note(0, t!("main.nebius_login_intro")));
+    let pasted = dialoguer::Password::new().with_prompt(t!("main.nebius_key_prompt")).interact().map_err(|err| Failure::new(err.to_string()))?;
+    if !equipe_core::nemotron::key_is_plausible(&pasted) {
+        return Err(Failure::new(t!("main.nebius_bad_key")));
+    }
+    equipe_core::nemotron::save_key(&home, &pasted).map_err(|err| Failure::new(err.to_string()))?;
+    println!("{}", p.ok_line(&t!("main.nebius_saved", path = equipe_core::nemotron::key_path(&home).display())));
+    if codex_app::find(codex_app::DEFAULT_BINARY).is_none() {
+        println!("{}", p.row("", &p.hint("npm install -g @openai/codex")));
+    }
+    println!("{}", p.note(2, t!("main.nebius_saved_next")));
+    Ok(())
+}
+
 /// off this shell's environment, which a daemon started from it has too.
 /// Whether it is ready. Nothing is asked of Token Factory.
 fn nebius_section(p: &ui::Painter) -> bool {
     println!("{}", p.section("nemotron", t!("main.nebius_section")));
-    let cfg = equipe_core::nemotron::Config::from_env().ok();
+    let cfg = equipe_core::nemotron::Config::from_env_or_saved(&equipe_providers::credentials::equipe_home()).ok();
     if let Some(cfg) = &cfg {
         let model = cfg.model.as_deref().map(|m| format!(" · {m}")).unwrap_or_default();
         println!("{}", p.row(t!("main.row_provider"), &format!("{}{model}", cfg.provider_name)));
@@ -1514,7 +1550,7 @@ fn nebius_section(p: &ui::Painter) -> bool {
         }
         (false, _) => {
             println!("{}", p.row(t!("main.row_key"), &p.fail(t!("main.nebius_no_key"))));
-            println!("{}", p.row("", &p.hint("export NEBIUS_API_KEY=…")));
+            println!("{}", p.row("", &p.hint("equipe login nebius")));
             false
         }
         (true, false) => {

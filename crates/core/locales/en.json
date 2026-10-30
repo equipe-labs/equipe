@@ -125,6 +125,8 @@
   "error.no_engine": "No engine is ready. Sign in to Codex or Claude Code first — or set NEBIUS_API_KEY in the daemon's environment to run members on NVIDIA Nemotron.",
   "error.nebius_needs_codex": "NVIDIA Nemotron members run on the Codex CLI's agent (free, open source; no ChatGPT sign-in needed). Install the codex CLI first.",
   "error.nebius_no_key": "NEBIUS_API_KEY isn't set in the daemon's environment. Export it, then restart the daemon from that shell.",
+  "error.nebius_key_invalid": "That doesn't look like a Nebius API key: paste the whole key, with no spaces.",
+  "error.nebius_key_not_saved": "The Nebius key couldn't be saved: {why}",
   "error.nebius_no_model": "No NVIDIA Nemotron model to start on: {why}. Set EQUIPE_NEBIUS_MODEL to one your Token Factory account offers.",
   "error.nebius_unauthorized": "Nebius Token Factory refused the key. Check NEBIUS_API_KEY, then restart the daemon from that shell.",
   "error.no_member": "No one called {name} on the squad.",

@@ -159,6 +159,8 @@ pub struct Engines {
     pub terminal: Option<Instant>,
     /// Bumped on each card's change, for its animation.
     pub turn: u64,
+    /// Nebius Token Factory on the daemon's machine, as it last said.
+    pub nebius: Option<equipe_core::protocol::NebiusStatus>,
 }
 
 impl Engines {
@@ -245,6 +247,11 @@ impl Engines {
                         self.terminal = None;
                     }
                 }
+                Effect { changed: true, open: None }
+            }
+            Event::Nebius { status } => {
+                self.nebius = Some(status.clone());
+                self.turn += 1;
                 Effect { changed: true, open: None }
             }
             Event::SignIn { engine, step } => {
@@ -505,4 +512,15 @@ mod tests {
         assert!(rows[0].0.contains("42%") && rows[0].0.contains("1시간 10분"), "{rows:?}");
         assert_eq!(rows[1].1, 100, "a bar never runs past full");
     }
+
+    #[test]
+    fn nebius_as_the_daemon_says_it() {
+        use equipe_core::protocol::{NebiusKey, NebiusStatus};
+        let mut e = Engines::default();
+        assert!(e.nebius.is_none(), "nothing said yet: still checking");
+        let status = NebiusStatus { key: NebiusKey::Saved, codex: true, model: None, provider: "Nebius Token Factory".into() };
+        assert!(e.on_event(&Event::Nebius { status: status.clone() }).changed);
+        assert_eq!(e.nebius, Some(status));
+    }
+
 }

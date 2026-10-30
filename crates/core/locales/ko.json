@@ -122,6 +122,8 @@
   "error.no_engine": "준비된 엔진이 없어요. 먼저 Codex나 Claude Code에 로그인하거나, 데몬 환경에 NEBIUS_API_KEY를 설정하면 NVIDIA Nemotron으로 멤버를 돌릴 수 있어요.",
   "error.nebius_needs_codex": "NVIDIA Nemotron 멤버는 Codex CLI의 에이전트로 일해요(무료·오픈소스, ChatGPT 로그인 필요 없음). 먼저 codex CLI를 설치하세요.",
   "error.nebius_no_key": "데몬 환경에 NEBIUS_API_KEY가 없어요. 키를 export한 뒤 그 셸에서 데몬을 다시 시작하세요.",
+  "error.nebius_key_invalid": "Nebius API 키 형식이 아니에요. 공백 없이 키 전체를 붙여 넣어 주세요.",
+  "error.nebius_key_not_saved": "Nebius 키를 저장하지 못했어요: {why}",
   "error.nebius_no_model": "시작할 NVIDIA Nemotron 모델이 없어요: {why}. Token Factory 계정이 제공하는 모델로 EQUIPE_NEBIUS_MODEL을 설정하세요.",
   "error.nebius_unauthorized": "Nebius Token Factory가 키를 거절했어요. NEBIUS_API_KEY를 확인한 뒤 그 셸에서 데몬을 다시 시작하세요.",
   "error.no_member": "스쿼드에 {name}이(가) 없어요.",

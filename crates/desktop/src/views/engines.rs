@@ -5,8 +5,9 @@
 
 use std::time::Instant;
 
-use equipe_core::protocol::{Engine, EngineState};
+use equipe_core::protocol::{Command, Engine, EngineState, NebiusKey};
 use equipe_core::t;
+use gpui_kit::component::input::Input;
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -16,7 +17,7 @@ use super::settings::{Line, Section, command_chip, value};
 use crate::engines::{self, Card, PLATFORMS, Platform, SignsIn, Tone, Usage};
 use crate::icons::{Icon, icon};
 use crate::state::Conn;
-use crate::theme::{ICON_SM, MONO, Palette, R_MD, R_SM};
+use crate::theme::{CONTROL, ICON_SM, MONO, Palette, R_MD, R_SM};
 use crate::ui::{self, Kind};
 use crate::{Screen, Shell};
 
@@ -80,6 +81,7 @@ fn button(shell: &Shell, at: usize, slot: usize, id: &'static str, kind: Kind, l
 pub(super) fn sections(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let now = Instant::now();
     let mut sections: Vec<Section> = PLATFORMS.iter().enumerate().map(|(at, platform)| card(shell, at, platform, now, cx)).collect();
+    sections.push(nebius(shell, cx));
     if let Some(last) = sections.pop() {
         sections.push(last.foot(t!("engines.foot", host = host(shell))));
     }
@@ -190,6 +192,102 @@ fn card(shell: &Shell, at: usize, platform: &'static Platform, now: Instant, cx:
         }
     } else if shell.engines.no_answer(now) {
         lines.push(Line::new(t!("engines.no_answer"), t!("engines.no_answer_desc")).warn(true).words(words).control(command_chip(p, SharedString::from(format!("engine-restart-{at}")), "equipe daemon restart --when-idle")));
+    }
+    Section::new("", lines)
+}
+
+/// NVIDIA's green, for Nebius Token Factory's tile.
+const NVIDIA_GREEN: u32 = 0x76b900;
+
+/// Nebius Token Factory: the person's own API key, pasted here once and kept
+/// on the daemon's machine — members run on Nemotron with it, and every
+/// handed-in ticket gets a Nemotron review. The key never comes back to a screen.
+fn nebius(shell: &Shell, cx: &mut Context<Shell>) -> Section {
+    let p = shell.palette;
+    let ui = &shell.settings;
+    let connected = matches!(shell.model.conn, Conn::Connected { .. });
+    let status = shell.engines.nebius.clone();
+    let words = "nebius token factory nvidia nemotron api key open model byok".to_owned();
+    let key = status.as_ref().map_or(NebiusKey::None, |s| s.key);
+    let (tone, said) = match (&status, key) {
+        (None, _) if connected => (None, t!("engines.checking").to_owned()),
+        (None, _) => (Some(Tone::Unknown), t!("engines.unknown").to_owned()),
+        (Some(_), NebiusKey::None) => (Some(Tone::Needs), t!("engines.nebius_none").to_owned()),
+        (Some(s), _) if !s.codex => (Some(Tone::Needs), t!("engines.nebius_needs_codex_short").to_owned()),
+        (Some(_), NebiusKey::Environment) => (Some(Tone::Ready), t!("engines.nebius_ready_env").to_owned()),
+        (Some(_), NebiusKey::Saved) => (Some(Tone::Ready), t!("engines.nebius_ready_saved", host = host(shell))),
+    };
+    let tile = div()
+        .flex_none()
+        .size(px(30.))
+        .rounded(px(R_MD))
+        .bg(rgb(NVIDIA_GREEN))
+        .border_1()
+        .border_color(rgba(0xffffff1f))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(icon(Icon::Brain, 18., rgb(0xffffff)));
+    let head = h_flex()
+        .gap_3()
+        .items_center()
+        .child(tile)
+        .child(h_flex().gap_2().items_center().child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child("Nebius Token Factory")).child(pill(p, tone, said)));
+    let get_key = ui::button(p, "nebius-get-key", Kind::Secondary, t!("engines.nebius_get_key")).icon(Icon::External).on_click(|_, _, cx| cx.open_url("https://tokenfactory.nebius.com"));
+    let mut lines = vec![Line::new("Nebius Token Factory", t!("engines.nebius_who")).label_el(head).words(words.clone()).control(get_key)];
+
+    // The key: pasted, saved on the daemon's machine, never shown again.
+    let field = div()
+        .flex_1()
+        .h(px(CONTROL + 4.))
+        .px_3()
+        .flex()
+        .items_center()
+        .rounded(px(R_MD))
+        .border_1()
+        .border_color(p.hair)
+        .bg(p.code_bg)
+        .text_size(px(13.))
+        .child(Input::new(&ui.nebius_key).appearance(false).bordered(false));
+    let save = ui::button(p, "nebius-save", Kind::Primary, if key == NebiusKey::Saved { t!("engines.nebius_replace") } else { t!("engines.nebius_save") })
+        .disabled(!connected)
+        .on_click(cx.listener(|this, _, window, cx| this.save_nebius_key(window, cx)));
+    let mut row = h_flex().w_full().gap_2().items_center().child(field).child(save);
+    if key == NebiusKey::Saved {
+        let forgetting = ui.nebius_forgetting;
+        row = row.child(
+            ui::button(p, "nebius-forget", if forgetting { Kind::Danger } else { Kind::Ghost }, if forgetting { t!("engines.nebius_forget_sure") } else { t!("engines.nebius_forget") })
+                .disabled(!connected)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if this.settings.nebius_forgetting {
+                        this.settings.nebius_forgetting = false;
+                        this.send_command(Command::SetNebiusKey { key: None });
+                    } else {
+                        this.settings.nebius_forgetting = true;
+                    }
+                    cx.notify();
+                })),
+        );
+    }
+    let below = v_flex()
+        .w_full()
+        .gap_1p5()
+        .child(row)
+        .children(ui.nebius_problem.clone().map(|why| div().text_size(px(12.)).text_color(p.danger()).child(why)))
+        .child(div().text_size(px(12.)).text_color(p.muted).child(t!("engines.nebius_desc", host = host(shell))))
+        .when(key == NebiusKey::Environment, |v| v.child(div().text_size(px(12.)).text_color(p.muted).child(t!("engines.nebius_env_note"))));
+    lines.push(Line::new(t!("engines.nebius_key_label"), "").words(format!("{words} key paste save")).below(below));
+
+    // Its agent: the Codex CLI, free and with no sign-in.
+    if status.as_ref().is_some_and(|s| !s.codex) {
+        lines.push(
+            Line::new(t!("engines.nebius_needs_codex"), t!("engines.install_desc", host = host(shell)))
+                .words(format!("{words} codex install"))
+                .below(h_flex().child(command_chip(p, SharedString::from("nebius-codex-install"), "npm install -g @openai/codex"))),
+        );
+    }
+    if let Some(model) = status.as_ref().and_then(|s| s.model.clone()) {
+        lines.push(Line::new(t!("engines.nebius_model"), "").words(format!("{words} model")).control(value(p, model)));
     }
     Section::new("", lines)
 }
@@ -327,6 +425,21 @@ impl LineExt for Line {
 
 impl Shell {
     /// Where the engines stand, from the daemon; the page says so if it never answers.
+    /// The pasted key to the daemon, once it reads like one; the box is emptied at once.
+    pub fn save_nebius_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let input = self.settings.nebius_key.clone();
+        let key = input.read(cx).value().trim().to_owned();
+        if !equipe_core::nemotron::key_is_plausible(&key) {
+            self.settings.nebius_problem = Some(t!("engines.nebius_bad_key").to_owned());
+            return cx.notify();
+        }
+        self.settings.nebius_problem = None;
+        self.settings.nebius_forgetting = false;
+        input.update(cx, |i, cx| i.set_value(String::new(), window, cx));
+        self.send_command(Command::SetNebiusKey { key: Some(key) });
+        cx.notify();
+    }
+
     pub fn ask_engines(&mut self, cx: &mut Context<Self>) {
         if !matches!(self.model.conn, Conn::Connected { .. }) {
             return;

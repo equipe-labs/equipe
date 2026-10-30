@@ -122,6 +122,8 @@
   "error.no_engine": "使えるエンジンがありません。先に Codex か Claude Code にサインインするか、デーモンの環境に NEBIUS_API_KEY を設定すると NVIDIA Nemotron でメンバーを動かせます。",
   "error.nebius_needs_codex": "NVIDIA Nemotron のメンバーは Codex CLI のエージェントで動きます（無料・オープンソース、ChatGPT のサインイン不要）。先に codex CLI をインストールしてください。",
   "error.nebius_no_key": "デーモンの環境に NEBIUS_API_KEY がありません。export してから、そのシェルでデーモンを再起動してください。",
+  "error.nebius_key_invalid": "Nebius の API キーではないようです。空白を含めずにキー全体を貼り付けてください。",
+  "error.nebius_key_not_saved": "Nebius のキーを保存できませんでした: {why}",
   "error.nebius_no_model": "開始できる NVIDIA Nemotron モデルがありません: {why}。Token Factory のアカウントで使えるモデルを EQUIPE_NEBIUS_MODEL に設定してください。",
   "error.nebius_unauthorized": "Nebius Token Factory がキーを拒否しました。NEBIUS_API_KEY を確認し、そのシェルでデーモンを再起動してください。",
   "error.no_member": "スクワッドに {name} はいません。",
