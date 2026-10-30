@@ -910,6 +910,8 @@ fn sub_more_row(p: Palette, member: SessionId, more: usize, cx: &mut Context<She
 pub enum TeamState {
     /// At work — on a ticket, when it is on one.
     Working(Option<TicketId>),
+    /// Its conversation is being summarized, for this many seconds.
+    Compacting(u64),
     /// It asks the person's permission.
     Asks,
     /// Its ticket waits on the person: 내 차례.
@@ -923,6 +925,7 @@ impl TeamState {
         match model.status(member) {
             Status::NeedsYou(_) if model.approvals.first_for(member.session).is_some() => TeamState::Asks,
             Status::NeedsYou(_) => TeamState::YourTurn,
+            Status::Working { .. } | Status::Ready { .. } if model.compacting_of(member.session).is_some() => TeamState::Compacting(model.compacting_of(member.session).map_or(0, |d| d.as_secs())),
             Status::Working { ticket, .. } => TeamState::Working(ticket),
             Status::Ready { .. } => TeamState::Resting,
             Status::Closed => TeamState::Closed,
@@ -934,6 +937,7 @@ impl TeamState {
         match self {
             TeamState::Working(Some(id)) => t!("sidebar.working_on", id = id),
             TeamState::Working(None) => t!("sidebar.working").to_owned(),
+            TeamState::Compacting(secs) => t!("compact.sidebar", elapsed = crate::convo::elapsed(std::time::Duration::from_secs(secs))),
             TeamState::Asks => t!("state.section_permission").to_owned(),
             TeamState::YourTurn => t!("sidebar.needs_you").to_owned(),
             TeamState::Resting => t!("sidebar.idle").to_owned(),
@@ -958,8 +962,12 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, cx: &mut Co
     let on = side != Side::Pm && shell.screen == Screen::Chat && shell.model.opened.is_none() && shell.model.side_open() == Some(side);
     let session = member.session;
     let state = TeamState::of(&shell.model, member);
+    // Its seconds count up: drawn again when the next one is.
+    if matches!(state, TeamState::Compacting(_)) {
+        shell.wake_at(std::time::Instant::now() + std::time::Duration::from_secs(1), cx);
+    }
     let mark = match state {
-        TeamState::Working(_) => Mark::Spinner,
+        TeamState::Working(_) | TeamState::Compacting(_) => Mark::Spinner,
         TeamState::Asks | TeamState::YourTurn => Mark::Waits,
         TeamState::Closed => Mark::Hollow,
         TeamState::Resting => Mark::Ring(p.member(hue)),
@@ -1587,6 +1595,22 @@ mod tests {
 
     fn member(session: u64, name: &str, presence: Presence, ticket: Option<u32>) -> Member {
         Member { session, name: name.into(), role: name.into(), presence, verb: Verb::Working, ticket, memos: 0, context: None, model: None, engine: None, estimate: None, target: None, last_seen: 0, failed: false }
+    }
+
+    #[test]
+    fn a_member_whose_conversation_is_summarized_says_so_with_the_seconds() {
+        let mut model = Model::new("acme");
+        model.members = vec![member(1, "pm", Presence::Ready, None), member(2, "frontend", Presence::Working, Some(12))];
+        let mut convo = crate::convo::Convo::new(std::path::PathBuf::from("/work"), false);
+        convo.compact = Some(crate::convo::Compact::Running { manual: false, since: std::time::Instant::now() - std::time::Duration::from_secs(72) });
+        model.convos.insert(2, convo);
+        let state = TeamState::of(&model, &model.members[1]);
+        assert_eq!(state, TeamState::Compacting(72));
+        assert_eq!(state.words(), "대화 요약 중 · 1분 12초");
+        assert!(!state.waits());
+        // Done: back to what it was.
+        model.convos.get_mut(&2).unwrap().compact = Some(crate::convo::Compact::Done { at: std::time::Instant::now() });
+        assert_eq!(TeamState::of(&model, &model.members[1]), TeamState::Working(Some(12)));
     }
 
     #[test]

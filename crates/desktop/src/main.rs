@@ -66,6 +66,7 @@ mod update;
 mod usage;
 mod views;
 mod visuals;
+mod voiceover;
 mod wire;
 mod yourturn;
 mod zoom;
@@ -895,6 +896,7 @@ impl Shell {
                     // Only the kinds the person wants (settings → 알림).
                     let alerts = this.model.take_alerts();
                     this.announce(alerts, window, cx);
+                    this.speak(cx);
                     this.sync_badge();
                     if let Some(flash) = this.model.take_flash() {
                         this.composer.flash = Some(flash);

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use equipe_core::protocol::transcript::scope;
-use equipe_core::protocol::{Entry, Event, SessionInfo, TicketId, ToolOutcome, Transcript, TurnOutcome};
+use equipe_core::protocol::{CompactTrigger, Entry, Event, SessionInfo, TicketId, ToolOutcome, Transcript, TurnOutcome};
 use equipe_core::t;
 
 use crate::activity::News;
@@ -40,6 +40,23 @@ impl Sub {
     }
 }
 
+/// How long a summary may run before the band says it is taking a while.
+pub const COMPACT_LONG: Duration = Duration::from_secs(60);
+/// How long "요약했어요" stays up before it goes.
+pub const COMPACT_DONE_SHOWN: Duration = Duration::from_secs(4);
+
+/// Where a conversation's compaction stands (`Event::Compacting` and after).
+/// No percentage: the engine gives no progress, only time spent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compact {
+    /// Under way since `since`; `manual` when the person asked (`/compact`).
+    Running { manual: bool, since: Instant },
+    /// Done at `at`; the band goes after [`COMPACT_DONE_SHOWN`].
+    Done { at: Instant },
+    /// Failed: the conversation is as it was. Stays until closed or retried.
+    Failed,
+}
+
 #[derive(Debug, Clone)]
 pub struct Convo {
     pub transcript: Transcript,
@@ -52,6 +69,8 @@ pub struct Convo {
     pub suggestion: Option<String>,
     /// Subagents it handed work to this turn and that haven't handed back.
     pub subagents: Vec<Sub>,
+    /// Its conversation being summarized, or just was.
+    pub compact: Option<Compact>,
     /// Where it works now; tool paths are shown relative to it.
     pub base: PathBuf,
     desk: PathBuf,
@@ -72,6 +91,16 @@ pub struct Convo {
 /// seconds. A private-use character, so no other note starts so.
 pub const THOUGHT: char = '\u{E000}';
 
+/// The transcript line where a summary finished: the divider "요약했어요".
+pub const COMPACTED: char = '\u{E002}';
+
+/// When something began, `ms` since the unix epoch, as an `Instant` (never
+/// later than `now`; a clock a little off just shows a shorter time).
+fn since_ms(ms: u64, now: Instant) -> Instant {
+    let ago = crate::state::now_unix_ms().saturating_sub(ms);
+    now.checked_sub(Duration::from_millis(ago)).unwrap_or(now)
+}
+
 /// The transcript line where a turn ended: `WORKED` + its seconds + `:` + the
 /// time of day + `@` + the unix second — worded when drawn, so in the
 /// language in use then.
@@ -85,6 +114,7 @@ impl Convo {
             queue: crate::queue::Queue::default(),
             suggestion: None,
             subagents: Vec::new(),
+            compact: None,
             desk: base.clone(),
             base,
             is_pm,
@@ -107,6 +137,10 @@ impl Convo {
             .iter()
             .map(|s| Sub { id: s.id.clone(), what: s.what.clone(), step: s.step.clone(), since: now.checked_sub(Duration::from_secs(s.secs)).unwrap_or(now) })
             .collect();
+        convo.compact = info.compacting.as_ref().map(|c| Compact::Running {
+            manual: c.trigger == CompactTrigger::Manual,
+            since: since_ms(c.started_at, now),
+        });
         // Attached mid-turn: the clock starts now, not when the turn did.
         if info.state == equipe_core::protocol::SessionState::Working {
             convo.working_since = Some(now);
@@ -181,6 +215,14 @@ impl Convo {
                 }
             }
             Event::SubagentEnded { id, .. } => self.subagents.retain(|s| s.id != *id),
+            Event::Compacting { trigger, started_at, .. } => {
+                self.compact = Some(Compact::Running { manual: *trigger == CompactTrigger::Manual, since: since_ms(*started_at, now) });
+            }
+            Event::Compacted { .. } => {
+                self.compact = Some(Compact::Done { at: now });
+                self.transcript.push_local(Entry::Note { text: COMPACTED.to_string() });
+            }
+            Event::CompactFailed { .. } => self.compact = Some(Compact::Failed),
             Event::TurnEnded { outcome, .. } => {
                 self.subagents.clear();
                 // Unread, it comes back as a memo, delivered now.
@@ -190,6 +232,22 @@ impl Convo {
             _ => {}
         }
         true
+    }
+
+    /// How long the summary has run, while it does.
+    pub fn compacting_for(&self) -> Option<Duration> {
+        match self.compact {
+            Some(Compact::Running { since, .. }) => Some(since.elapsed()),
+            _ => None,
+        }
+    }
+
+    /// Close the band (a failure the person has read, a finished one that
+    /// has been up long enough).
+    pub fn close_compact(&mut self) {
+        if !matches!(self.compact, Some(Compact::Running { .. })) {
+            self.compact = None;
+        }
     }
 
     /// The reasoning in progress, finished: a line saying how long it took,
@@ -541,6 +599,8 @@ pub enum Block {
     Thought { n: usize, secs: u64, text: String },
     /// Reasoning going on now: its latest line.
     Thinking(String),
+    /// A summary finished here: the divider.
+    Summarized,
     Error { message: String, next: Option<String> },
     Landed { branch: String, stat: String },
     /// Said while the member works, waiting: a steer (read at its next
@@ -571,7 +631,7 @@ impl Block {
             Block::Steps(lines) => Some(lines.iter().map(|l| format!("{} {}", verb_word(&l.verb), l.targets.join(" "))).collect::<Vec<_>>().join("\n")),
             Block::Error { message, .. } => Some(message.clone()),
             Block::Landed { branch, stat } => Some(format!("{branch}\n{stat}")),
-            Block::Thought { .. } | Block::Thinking(_) => None,
+            Block::Thought { .. } | Block::Thinking(_) | Block::Summarized => None,
         }
     }
 }
@@ -681,6 +741,7 @@ pub fn build_blocks(entries: &[Cow<'_, Entry>], base: &Path) -> Vec<Block> {
                 blocks.push(Block::Reply { text: text.clone(), first: !replied, live: false, worked: None });
                 replied = true;
             }
+            Entry::Note { text } if text.starts_with(COMPACTED) => blocks.push(Block::Summarized),
             Entry::Note { text } => match (thought_of(text), worked_of(text)) {
                 (Some((n, secs)), _) => blocks.push(Block::Thought { n, secs, text: String::new() }),
                 (None, Some(worked)) => match blocks.last_mut() {
@@ -1444,5 +1505,82 @@ mod tests {
         assert_eq!(relative("cargo test -p api", &base), "cargo test -p api");
         assert_eq!(relative(&base.display().to_string(), &base), base.display().to_string());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn compacting(started_ago_ms: u64, trigger: CompactTrigger) -> Event {
+        Event::Compacting { session: 1, member: Some("pm".into()), project: None, trigger, started_at: crate::state::now_unix_ms() - started_ago_ms, estimate_ms: 120_000 }
+    }
+
+    #[test]
+    fn a_summary_runs_from_when_the_engine_began_it_and_ends_in_a_divider() {
+        let mut c = convo(false);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "go".into() }, compacting(12_000, CompactTrigger::Auto)]);
+        let Some(Compact::Running { manual: false, .. }) = c.compact else { panic!("{:?}", c.compact) };
+        let ran = c.compacting_for().unwrap();
+        assert!(ran >= Duration::from_secs(12) && ran < Duration::from_secs(14), "counts from started_at: {ran:?}");
+        // The open reply and the turn go on: no line for the start.
+        assert!(!c.blocks().iter().any(|b| matches!(b, Block::Summarized)));
+        feed(&mut c, &[Event::Compacted { session: 1, member: None, project: None, trigger: CompactTrigger::Auto, took_ms: 12_000 }]);
+        assert!(matches!(c.compact, Some(Compact::Done { .. })));
+        assert_eq!(c.compacting_for(), None);
+        assert!(matches!(c.blocks().last(), Some(Block::Summarized)), "{:?}", c.blocks());
+    }
+
+    #[test]
+    fn a_failed_summary_stays_until_closed_or_tried_again_and_a_running_one_is_not_closed() {
+        let mut c = convo(false);
+        feed(&mut c, &[compacting(0, CompactTrigger::Manual)]);
+        assert!(matches!(c.compact, Some(Compact::Running { manual: true, .. })));
+        c.close_compact();
+        assert!(matches!(c.compact, Some(Compact::Running { .. })), "a running one can't be closed");
+        feed(&mut c, &[Event::CompactFailed { session: 1, member: None, project: None, trigger: CompactTrigger::Manual, message: "x".into() }]);
+        assert_eq!(c.compact, Some(Compact::Failed));
+        assert!(!c.blocks().iter().any(|b| matches!(b, Block::Summarized)), "no divider for a failure");
+        feed(&mut c, &[compacting(0, CompactTrigger::Manual)]);
+        assert!(matches!(c.compact, Some(Compact::Running { .. })), "tried again");
+        feed(&mut c, &[Event::CompactFailed { session: 1, member: None, project: None, trigger: CompactTrigger::Manual, message: "x".into() }]);
+        c.close_compact();
+        assert_eq!(c.compact, None);
+    }
+
+    #[test]
+    fn attaching_mid_summary_shows_it_with_the_time_already_spent() {
+        let info = SessionInfo {
+            session: 1,
+            project: "/work/site".into(),
+            member: None,
+            engine: equipe_core::protocol::Engine::Claude,
+            model: None,
+            access: equipe_core::protocol::Access::EditFiles,
+            workspace: None,
+            state: SessionState::Working,
+            title: None,
+            tokens: 0,
+            context: None,
+            recent: vec![],
+            queued: vec![],
+            queued_project: None,
+            queued_in: vec![],
+            steering: vec![],
+            steering_in: vec![],
+            lane: None,
+            estimate: None,
+            work: None,
+            mode: None,
+            effort: None,
+            subagents: vec![],
+            compacting: Some(equipe_core::protocol::CompactingInfo { trigger: CompactTrigger::Auto, started_at: crate::state::now_unix_ms() - 30_000, estimate_ms: 90_000 }),
+        };
+        let c = Convo::from_info(&info, Instant::now());
+        assert!(c.compacting_for().unwrap() >= Duration::from_secs(30));
+        assert!(matches!(c.compact, Some(Compact::Running { manual: false, .. })));
+    }
+
+    #[test]
+    fn the_message_said_meanwhile_waits_behind_the_summary() {
+        let mut c = convo(false);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "go".into() }, compacting(0, CompactTrigger::Auto), Event::SteerQueued { session: 1, text: "also".into(), project: None }]);
+        assert_eq!(c.queue.items().len(), 1);
+        assert!(matches!(c.compact, Some(Compact::Running { .. })), "the box is not shut: it keeps what is said");
     }
 }

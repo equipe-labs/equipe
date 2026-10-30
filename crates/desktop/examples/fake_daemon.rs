@@ -18,6 +18,10 @@
 //! cargo run -p equipe-desktop --example fake_daemon &
 //! cargo run -p equipe-desktop
 //! ```
+//! `FAKE_COMPACT=auto|manual|long|queued|done|fail` has the PM's (and frontend's)
+//! conversation being summarized when a screen attaches — `long` for 75 seconds
+//! already, `queued` with two messages waiting; `done` and `fail` end it after
+//! `FAKE_COMPACT_AFTER` ms (default 4000). "다시 시도" (`/compact`) starts it again.
 //! `FAKE_SECONDS` (default 4) is how long a reply streams; `FAKE_SAID` adds a
 //! last message of the person's to the PM's history (attachment tags and all).
 //! `FAKE_CARDS=1` ends it on a reply naming T-42 (a review), T-117 and T-999
@@ -88,7 +92,7 @@ use std::time::Duration;
 use equipe_core::gateway;
 use equipe_core::protocol::decide::{Answer, Choice, Question, QuestionSet};
 use equipe_core::protocol::rpc::{self, Hello, Message};
-use equipe_core::protocol::{Access, Approval, Command, Engine, Entry, Estimate, Event, Member, Priority, SessionId, SessionInfo, SessionState, Snapshot, SubagentInfo, Ticket, TicketEntry, TicketStatus, TurnOutcome, Usage, WorkInfo};
+use equipe_core::protocol::{Access, Approval, Command, CompactTrigger, CompactingInfo, Engine, Entry, Estimate, Event, Member, Priority, SessionId, SessionInfo, SessionState, Snapshot, SubagentInfo, Ticket, TicketEntry, TicketStatus, TurnOutcome, Usage, WorkInfo};
 use equipe_providers::credentials::equipe_home;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -456,6 +460,10 @@ const BUSY: [(u32, SessionId, &str, &str); 4] = [
 /// start, take steps and hand back over time, round and round — backend's
 /// first already at it when a screen attaches (in the snapshot, as a daemon
 /// lists them). `FAKE_SUBAGENTS_MS` (default 1500) is the beat.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
 fn subagents_on() -> bool {
     std::env::var("FAKE_SUBAGENTS").is_ok_and(|v| v == "1")
 }
@@ -1003,6 +1011,34 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history.push(Entry::Reply { text: "네, 새 커밋과 새 배포를 지켜보고 있어요. 올라오면 화면을 확인해서 보여 드릴게요.".into() });
                         }
                         let mut pm_info = info(1, "pm", history);
+                        if let Some(mode) = std::env::var("FAKE_COMPACT").ok().filter(|m| !m.is_empty()) {
+                            let ago = |secs: u64| now_ms().saturating_sub(secs * 1000);
+                            let (trigger, secs) = match mode.as_str() {
+                                "manual" => (CompactTrigger::Manual, 12),
+                                "long" => (CompactTrigger::Auto, 75),
+                                "done" | "fail" => (CompactTrigger::Auto, 5),
+                                _ => (CompactTrigger::Auto, 12),
+                            };
+                            pm_info.compacting = Some(CompactingInfo { trigger, started_at: ago(secs), estimate_ms: 120_000 });
+                            frontend.compacting = Some(CompactingInfo { trigger: CompactTrigger::Auto, started_at: ago(41), estimate_ms: 120_000 });
+                            if mode == "queued" {
+                                pm_info.steering = vec!["그리고 웹도 확인해 줘".into(), "끝나면 알려 줘".into()];
+                                pm_info.steering_in = vec![None, None];
+                            }
+                            if mode == "done" || mode == "fail" {
+                                let events = events.clone();
+                                let after = std::env::var("FAKE_COMPACT_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+                                let fail = mode == "fail";
+                                tokio::spawn(async move {
+                                    tokio::time::sleep(Duration::from_millis(after)).await;
+                                    let _ = events.send(if fail {
+                                        Event::CompactFailed { session: 1, member: Some("pm".into()), project: None, trigger: CompactTrigger::Auto, message: "timeout".into() }
+                                    } else {
+                                        Event::Compacted { session: 1, member: Some("pm".into()), project: None, trigger: CompactTrigger::Auto, took_ms: after }
+                                    });
+                                });
+                            }
+                        }
                         if pm_waits {
                             pm_info.state = SessionState::Working;
                         }
@@ -1211,6 +1247,9 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 let _ = events.send(Event::TurnEnded { session, outcome: TurnOutcome::Interrupted, usage: None });
                                 let _ = events.send(Event::UserMessage { session, text: order.join("\n\n") });
                                 turns.lock().await.insert(session, tokio::spawn(turn(session, events.clone(), seconds)));
+                            }
+                            Command::Refresh { session, summary: true } => {
+                                let _ = events.send(Event::Compacting { session, member: None, project: None, trigger: CompactTrigger::Manual, started_at: now_ms(), estimate_ms: 120_000 });
                             }
                             Command::Interrupt { session } => {
                                 if let Some(task) = turns.lock().await.remove(&session) {
