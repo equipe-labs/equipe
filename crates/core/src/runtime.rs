@@ -3211,6 +3211,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                         }
                     })
                     .await;
+                    // On Token Factory: what was asked of it, for the log — never the key or the text.
+                    if let (true, Ok(turn)) = (nebius, &outcome) {
+                        crate::daemon_log!("{}", nebius_log(model.as_deref().unwrap_or_default(), turn));
+                    }
                     // Stopped: the turn's end was said already, and what follows it done.
                     if outcome.as_ref().is_ok_and(|turn| turn.result.status == "interrupted") {
                         return;
@@ -6989,6 +6993,27 @@ fn codex_cli_failure(err: equipe_providers::Error, lang: crate::i18n::Lang) -> (
     }
 }
 
+/// A member's turn on Token Factory, for the daemon's log: the model, each
+/// request's status and Token Factory's id for it, the time, the tokens.
+fn nebius_log(model: &str, turn: &codex_app::Turn) -> String {
+    let requests = &turn.provider_requests;
+    let statuses: Vec<String> = requests.iter().map(|r| r.status.to_string()).collect();
+    let ids: Vec<&str> = requests.iter().filter_map(|r| r.request_id.as_deref()).collect();
+    let ms: u64 = requests.iter().map(|r| r.ms).sum();
+    let usage = turn.result.usage.as_ref();
+    let tokens = |n: Option<u64>| n.map_or_else(|| "?".to_owned(), |n| n.to_string());
+    format!(
+        "equipe: turn on Nemotron via Nebius Token Factory: model {model}, {} request(s) [{}], request ids [{}], {ms} ms on requests, tokens in {} (cached {}) out {}, {}",
+        requests.len(),
+        statuses.join(" "),
+        ids.join(" "),
+        tokens(usage.and_then(|u| u.input_tokens)),
+        tokens(usage.and_then(|u| u.cache_tokens)),
+        tokens(usage.and_then(|u| u.output_tokens)),
+        turn.result.status,
+    )
+}
+
 /// A turn on Token Factory that failed: a refused key is Token Factory's, not Codex's sign-in.
 fn nebius_failure(err: equipe_providers::Error, lang: crate::i18n::Lang) -> (String, Option<&'static str>) {
     let words = crate::i18n::core(lang);
@@ -7134,6 +7159,21 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_turn_on_token_factory_logs_its_requests_never_its_text() {
+        let turn = codex_app::Turn {
+            result: TurnResult { text: "secret answer".into(), status: "completed".into(), usage: Some(equipe_providers::turn::TurnUsage { input_tokens: Some(1200), output_tokens: Some(40), cache_tokens: None, context_tokens: None, context_window: None }) },
+            thread_id: None,
+            provider_requests: vec![
+                equipe_providers::relay::Exchange { path: "/responses".into(), status: 200, request_id: Some("req-1".into()), ms: 900 },
+                equipe_providers::relay::Exchange { path: "/responses".into(), status: 200, request_id: Some("req-2".into()), ms: 600 },
+            ],
+        };
+        let line = nebius_log("nvidia/x", &turn);
+        assert_eq!(line, "equipe: turn on Nemotron via Nebius Token Factory: model nvidia/x, 2 request(s) [200 200], request ids [req-1 req-2], 1500 ms on requests, tokens in 1200 (cached ?) out 40, completed");
+        assert!(!line.contains("secret"));
+    }
 
     #[test]
     fn a_turn_on_token_factory_with_its_key_refused_says_whose_key() {

@@ -102,11 +102,33 @@ fn restore_line(line: &str, names: &Names) -> Option<String> {
     restore(&mut value, names).then(|| format!("data: {value}"))
 }
 
+/// One request relayed: what the provider said, by its own request id, and
+/// how long it took to the last byte. Nothing of what was sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Exchange {
+    pub path: String,
+    /// The provider's status; 502 when it couldn't be reached.
+    pub status: u16,
+    /// The provider's id for it (`x-request-id`), when it names one.
+    pub request_id: Option<String>,
+    pub ms: u64,
+}
+
+type Exchanges = std::sync::Arc<std::sync::Mutex<Vec<Exchange>>>;
+
 /// The relay, running until dropped.
 pub struct Relay {
     /// Where Codex sends what it would send the provider: its base URL.
     pub url: String,
+    exchanges: Exchanges,
     task: tokio::task::JoinHandle<()>,
+}
+
+impl Relay {
+    /// The requests relayed so far, in order.
+    pub fn exchanges(&self) -> Vec<Exchange> {
+        self.exchanges.lock().map(|e| e.clone()).unwrap_or_default()
+    }
 }
 
 impl Drop for Relay {
@@ -122,15 +144,17 @@ pub async fn start(upstream: &str) -> std::io::Result<Relay> {
     let url = format!("http://{}", listener.local_addr()?);
     let upstream = upstream.trim_end_matches('/').to_owned();
     let client = reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(15)).build().map_err(std::io::Error::other)?;
+    let exchanges = Exchanges::default();
+    let kept = exchanges.clone();
     let task = tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
-            let (client, upstream) = (client.clone(), upstream.clone());
+            let (client, upstream, kept) = (client.clone(), upstream.clone(), kept.clone());
             tokio::spawn(async move {
-                let _ = relay_one(stream, &client, &upstream).await;
+                let _ = relay_one(stream, &client, &upstream, &kept).await;
             });
         }
     });
-    Ok(Relay { url, task })
+    Ok(Relay { url, exchanges, task })
 }
 
 /// A request read off the loopback.
@@ -212,8 +236,16 @@ fn dechunk(raw: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-async fn relay_one(mut stream: TcpStream, client: &reqwest::Client, upstream: &str) -> std::io::Result<()> {
+async fn relay_one(mut stream: TcpStream, client: &reqwest::Client, upstream: &str, kept: &Exchanges) -> std::io::Result<()> {
     let Some(request) = read_incoming(&mut stream).await? else { return Ok(()) };
+    let since = std::time::Instant::now();
+    let path = request.path.clone();
+    let keep = |status: u16, request_id: Option<String>| {
+        let ms = u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if let Ok(mut all) = kept.lock() {
+            all.push(Exchange { path: path.clone(), status, request_id, ms });
+        }
+    };
     // Codex is given the relay's root as the provider's base URL: its paths are the provider's own.
     let url = format!("{upstream}/{}", request.path.trim_start_matches('/'));
     let mut body = request.body;
@@ -241,12 +273,14 @@ async fn relay_one(mut stream: TcpStream, client: &reqwest::Client, upstream: &s
             // The provider unreachable: said as a gateway's error, the way Codex expects one.
             let said = format!("{{\"error\":{{\"message\":\"the provider couldn't be reached: {}\"}}}}", err.without_url().to_string().replace('"', "'"));
             let head = format!("HTTP/1.1 502 Bad Gateway\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", said.len());
+            keep(502, None);
             stream.write_all(head.as_bytes()).await?;
             stream.write_all(said.as_bytes()).await?;
             return stream.shutdown().await;
         }
     };
     let status = response.status();
+    let request_id = response.headers().get("x-request-id").and_then(|v| v.to_str().ok()).map(|v| v.chars().take(120).collect::<String>());
     let mut head = format!("HTTP/1.1 {} {}\r\n", status.as_u16(), status.canonical_reason().unwrap_or(""));
     for (name, value) in response.headers() {
         let name = name.as_str();
@@ -293,6 +327,7 @@ async fn relay_one(mut stream: TcpStream, client: &reqwest::Client, upstream: &s
         }
         stream.write_all(&all).await?;
     }
+    keep(status.as_u16(), request_id);
     stream.flush().await?;
     stream.shutdown().await
 }

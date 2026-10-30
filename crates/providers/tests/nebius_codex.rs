@@ -221,6 +221,8 @@ async fn the_real_codex_runs_a_members_turn_on_a_stand_in_token_factory() {
     assert_eq!(turn.result.status, "completed", "{context}");
     assert_eq!(turn.result.text, FINAL, "{context}");
     assert!(turn.thread_id.is_some(), "{context}");
+    // What equipe's relay kept of each request: the provider's status and its id for it.
+    assert!(turn.provider_requests.len() >= 2 && turn.provider_requests.iter().all(|r| r.status == 200 && r.request_id.as_deref().is_some_and(|id| id.starts_with("mock-"))), "{:?}{context}", turn.provider_requests);
     assert_eq!(made.as_deref(), Some("written by nemotron"), "the command ran in the turn's folder{context}");
     assert_eq!(key_seen.as_deref(), Some("absent"), "the key stays out of the agent's commands{context}");
     assert!(activities.iter().any(|a| matches!(a, Activity::Model(m) if m == MODEL)), "{context}");

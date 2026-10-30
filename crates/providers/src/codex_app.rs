@@ -369,6 +369,8 @@ fn text_input(text: &str) -> Value {
 pub struct Turn {
     pub result: TurnResult,
     pub thread_id: Option<String>,
+    /// On another provider: each request relayed to it ([`crate::relay`]).
+    pub provider_requests: Vec<crate::relay::Exchange>,
 }
 
 /// Codex asks before it acts: `tool` and `input` say what, as Claude Code's
@@ -1372,12 +1374,13 @@ pub async fn run_turn(
     }
     .await;
     let diagnostics = server.close().await;
+    let requests = relay.as_ref().map(crate::relay::Relay::exchanges).unwrap_or_default();
     // Stopped: however it wound down, it ended because it was told to.
     if stopping.is_some() {
-        return Ok(Turn { result: collector.interrupted(), thread_id: Some(thread) });
+        return Ok(Turn { result: collector.interrupted(), thread_id: Some(thread), provider_requests: requests });
     }
     looped?;
-    collector.finish(&diagnostics).map(|result| Turn { result, thread_id: Some(thread) })
+    collector.finish(&diagnostics).map(|result| Turn { result, thread_id: Some(thread), provider_requests: requests })
 }
 
 #[cfg(test)]
