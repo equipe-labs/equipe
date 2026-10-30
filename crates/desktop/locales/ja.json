@@ -2094,5 +2094,12 @@
   "relaunch.daemon_running": "{place} を更新中…",
   "relaunch.daemon_restarting": "{place} を再起動中…",
   "relaunch.daemon_done": "{place} を更新しました · 今すぐ再起動",
-  "relaunch.daemon_failed": "{place} の更新に失敗 · 再試行"
+  "relaunch.daemon_failed": "{place} の更新に失敗 · 再試行",
+  "peek.review_kicker": "Nemotron レビュー · {model}",
+  "peek.review_looks_good": "問題なさそう",
+  "peek.review_missing_tests": "足りないテスト",
+  "peek.review_needs_attention": "要確認",
+  "peek.review_risks": "リスク",
+  "peek.review_risky": "リスクあり",
+  "peek.review_truncated": "diff が長いため、先頭だけをレビューしました。"
 }

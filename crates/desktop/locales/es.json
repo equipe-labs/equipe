@@ -2146,5 +2146,12 @@
   "relaunch.daemon_running": "Actualizando {place}…",
   "relaunch.daemon_restarting": "Reiniciando {place}…",
   "relaunch.daemon_done": "{place} actualizado · Reiniciar ahora",
-  "relaunch.daemon_failed": "Error al actualizar {place} · Reintentar"
+  "relaunch.daemon_failed": "Error al actualizar {place} · Reintentar",
+  "peek.review_kicker": "Revisión de Nemotron · {model}",
+  "peek.review_looks_good": "Se ve bien",
+  "peek.review_missing_tests": "Pruebas que faltan",
+  "peek.review_needs_attention": "Requiere atención",
+  "peek.review_risks": "Riesgos",
+  "peek.review_risky": "Arriesgado",
+  "peek.review_truncated": "El diff era largo: solo se revisó el principio."
 }

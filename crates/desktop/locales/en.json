@@ -2146,5 +2146,12 @@
   "relaunch.daemon_running": "Updating {place}…",
   "relaunch.daemon_restarting": "Restarting {place}…",
   "relaunch.daemon_done": "{place} updated · Restart now",
-  "relaunch.daemon_failed": "{place} update failed · Try again"
+  "relaunch.daemon_failed": "{place} update failed · Try again",
+  "peek.review_kicker": "Nemotron review · {model}",
+  "peek.review_looks_good": "Looks good",
+  "peek.review_missing_tests": "Missing tests",
+  "peek.review_needs_attention": "Needs attention",
+  "peek.review_risks": "Risks",
+  "peek.review_risky": "Risky",
+  "peek.review_truncated": "The diff was long: only its start was reviewed."
 }

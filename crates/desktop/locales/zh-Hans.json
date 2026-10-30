@@ -2094,5 +2094,12 @@
   "relaunch.daemon_running": "正在更新 {place}…",
   "relaunch.daemon_restarting": "正在重新启动 {place}…",
   "relaunch.daemon_done": "{place} 已更新 · 立即重新启动",
-  "relaunch.daemon_failed": "{place} 更新失败 · 重试"
+  "relaunch.daemon_failed": "{place} 更新失败 · 重试",
+  "peek.review_kicker": "Nemotron 审查 · {model}",
+  "peek.review_looks_good": "看起来没问题",
+  "peek.review_missing_tests": "缺少的测试",
+  "peek.review_needs_attention": "需要留意",
+  "peek.review_risks": "风险",
+  "peek.review_risky": "有风险",
+  "peek.review_truncated": "diff 较长：只审查了开头部分。"
 }

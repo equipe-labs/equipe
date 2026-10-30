@@ -18,6 +18,7 @@ mod i18n;
 mod lang;
 mod onboard;
 mod remote;
+mod review;
 mod settings;
 mod telegram;
 mod tui;
@@ -100,6 +101,20 @@ enum Command {
         /// Let the agent edit files — on a new branch, in an isolated worktree
         #[arg(long)]
         edit: bool,
+    },
+    /// Review this repository's changes with an NVIDIA Nemotron model on Nebius
+    /// Token Factory (needs only NEBIUS_API_KEY): the working tree and what is
+    /// staged against HEAD (new files once added), or `--base <ref>`'s commits
+    Review {
+        /// Review `<ref>...HEAD` instead: what the branch changed since it left `<ref>`
+        #[arg(long)]
+        base: Option<String>,
+        /// List the NVIDIA Nemotron models your Nebius account offers
+        #[arg(long)]
+        models: bool,
+        /// What the change should do — its acceptance criteria — for the review to check
+        #[arg(long)]
+        goal: Option<String>,
     },
     /// List the built-in squad roles
     Roles,
@@ -418,6 +433,7 @@ async fn main() -> ExitCode {
         Command::Logout => app.logout(),
         Command::Status => app.status().await,
         Command::Try { prompt, engine, model, edit } => app.run_try(&prompt, engine, model.as_deref(), edit).await,
+        Command::Review { base, models, goal } => review::command(base, models, goal).await,
         Command::Daemon { action } => daemon_command(action).await,
         Command::Design { action } => design::command(action).await.map_err(Failure::new),
         Command::Disk { words, squad, yes } => disk::command(&words, squad, yes).await.map_err(Failure::new),
@@ -1428,6 +1444,7 @@ impl App {
                 | Event::WorkStarted { .. }
                 | Event::WorkEnded { .. }
                 | Event::TicketChanged { .. }
+                | Event::CodeReviewed { .. }
                 | Event::TicketHistory { .. }
                 | Event::ModeChanged { .. }
                 | Event::ApprovalRequested { .. }

@@ -2146,5 +2146,12 @@
   "relaunch.daemon_running": "{place} wird aktualisiert…",
   "relaunch.daemon_restarting": "{place} startet neu…",
   "relaunch.daemon_done": "{place} aktualisiert · Jetzt neu starten",
-  "relaunch.daemon_failed": "Aktualisierung von {place} fehlgeschlagen · Erneut versuchen"
+  "relaunch.daemon_failed": "Aktualisierung von {place} fehlgeschlagen · Erneut versuchen",
+  "peek.review_kicker": "Nemotron-Prüfung · {model}",
+  "peek.review_looks_good": "Sieht gut aus",
+  "peek.review_missing_tests": "Fehlende Tests",
+  "peek.review_needs_attention": "Genauer ansehen",
+  "peek.review_risks": "Risiken",
+  "peek.review_risky": "Riskant",
+  "peek.review_truncated": "Der Diff war lang: nur sein Anfang wurde geprüft."
 }

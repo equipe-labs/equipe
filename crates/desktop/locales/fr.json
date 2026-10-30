@@ -2146,5 +2146,12 @@
   "relaunch.daemon_running": "Mise à jour de {place}…",
   "relaunch.daemon_restarting": "Redémarrage de {place}…",
   "relaunch.daemon_done": "{place} mis à jour · Redémarrer maintenant",
-  "relaunch.daemon_failed": "Échec de la mise à jour de {place} · Réessayer"
+  "relaunch.daemon_failed": "Échec de la mise à jour de {place} · Réessayer",
+  "peek.review_kicker": "Relecture Nemotron · {model}",
+  "peek.review_looks_good": "Ça a l'air bon",
+  "peek.review_missing_tests": "Tests manquants",
+  "peek.review_needs_attention": "À regarder",
+  "peek.review_risks": "Risques",
+  "peek.review_risky": "Risqué",
+  "peek.review_truncated": "Le diff était long : seul son début a été relu."
 }

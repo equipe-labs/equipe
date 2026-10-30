@@ -2094,5 +2094,12 @@
   "relaunch.daemon_running": "{place} 업데이트하는 중…",
   "relaunch.daemon_restarting": "{place} 다시 시작하는 중…",
   "relaunch.daemon_done": "{place} 업데이트했어요 · 지금 재시작",
-  "relaunch.daemon_failed": "{place} 업데이트 실패 · 다시 시도"
+  "relaunch.daemon_failed": "{place} 업데이트 실패 · 다시 시도",
+  "peek.review_kicker": "Nemotron 리뷰 · {model}",
+  "peek.review_looks_good": "괜찮아 보여요",
+  "peek.review_missing_tests": "빠진 테스트",
+  "peek.review_needs_attention": "살펴볼 게 있어요",
+  "peek.review_risks": "위험",
+  "peek.review_risky": "위험해요",
+  "peek.review_truncated": "diff가 길어서 앞부분만 리뷰했어요."
 }

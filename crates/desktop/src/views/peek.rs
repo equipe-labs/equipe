@@ -224,6 +224,43 @@ fn kicker(p: Palette, text: impl Into<SharedString>) -> Div {
     div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child(text.into())
 }
 
+/// Nemotron's review of the hand-in (Nebius Token Factory), as plain text:
+/// who read it, the verdict, the summary, risks by file and line, the tests
+/// missing. Advice for the person; it decides nothing.
+fn code_review(p: Palette, review: &equipe_core::protocol::review::CodeReview) -> AnyElement {
+    use equipe_core::protocol::review::ReviewVerdict;
+    let (word, tone) = match review.verdict {
+        ReviewVerdict::LooksGood => (t!("peek.review_looks_good"), p.accent),
+        ReviewVerdict::NeedsAttention => (t!("peek.review_needs_attention"), p.amber),
+        ReviewVerdict::Risky => (t!("peek.review_risky"), p.red),
+    };
+    let line = |text: String| h_flex().gap_2().items_start().text_size(px(13.)).line_height(px(20.)).text_color(p.text2).child(div().flex_none().text_color(p.muted).child("·")).child(div().flex_1().min_w_0().child(text));
+    let chip = div().flex_none().px_2().rounded(px(999.)).border_1().border_color(tone).text_color(tone).text_size(px(11.)).line_height(px(18.)).font_weight(FontWeight::SEMIBOLD).child(word);
+    let mut block = v_flex()
+        .gap_1()
+        .child(kicker(p, t!("peek.review_kicker", model = review.model)))
+        .child(h_flex().gap_2().items_start().child(chip).child(div().flex_1().min_w_0().text_size(px(13.)).line_height(px(20.)).text_color(p.text).child(review.summary.clone())));
+    if !review.risks.is_empty() {
+        block = block.child(div().pt_1().text_size(px(11.)).text_color(p.muted).child(t!("peek.review_risks")));
+        block = block.children(review.risks.iter().map(|r| {
+            let place = match (r.file.as_str(), r.line) {
+                ("", _) => String::new(),
+                (file, Some(n)) => format!("{file}:{n} — "),
+                (file, None) => format!("{file} — "),
+            };
+            line(format!("{place}{}", r.why))
+        }));
+    }
+    if !review.missing_tests.is_empty() {
+        block = block.child(div().pt_1().text_size(px(11.)).text_color(p.muted).child(t!("peek.review_missing_tests")));
+        block = block.children(review.missing_tests.iter().map(|m| line(m.clone())));
+    }
+    if review.truncated {
+        block = block.child(div().text_size(px(11.)).text_color(p.muted).child(t!("peek.review_truncated")));
+    }
+    block.into_any_element()
+}
+
 /// Icon, number, status; the title; where, who, the branch, how big, how long.
 fn head(shell: &Shell, t: &Ticket, wide: bool, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
@@ -323,6 +360,9 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
             out.extend(super::visuals::gallery(shell, key, t.id, &t.images, guess, cx));
             if let Some(note) = t.note.as_deref().filter(|n| !n.trim().is_empty()) {
                 out.push(v_flex().gap_1().child(kicker(p, t!("peek.hand_in"))).child(md("peek-note", note)).into_any_element());
+            }
+            if let Some(review) = model.reviews.get(&t.id) {
+                out.push(code_review(p, review));
             }
             out.extend(super::decide::for_ticket(shell, t.id, cx));
             // On the page the description above carries its checklist already.

@@ -12,7 +12,8 @@ base64 = "0.23.1"
 # Members' pictures, sent to screens as thumbnails (`visuals`).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 libc = "0.2.190"
-reqwest = { version = "0.13.5", default-features = false }
+# Nemotron reviews on Nebius Token Factory, over TLS (`nemotron`).
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

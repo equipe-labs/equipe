@@ -1704,6 +1704,9 @@ impl App {
                 self.on_ticket(ticket);
                 return Vec::new();
             }
+            // Nemotron's reviews show in the desktop's ticket peek and in
+            // `equipe review`; the console's board doesn't draw them yet.
+            Event::CodeReviewed { .. } => return Vec::new(),
             Event::ApprovalRequested { approval, .. } => {
                 self.approvals.push(approval);
                 return Vec::new();

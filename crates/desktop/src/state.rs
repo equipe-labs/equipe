@@ -394,6 +394,8 @@ pub struct Model {
     browser_tabs: HashMap<String, LaneTabs>,
     /// Tickets' records, as the daemon last sent them (a ticket page asks).
     pub histories: HashMap<TicketId, Vec<TicketEntry>>,
+    /// Nemotron's reviews of handed-in work, by ticket (Nebius Token Factory).
+    pub reviews: HashMap<TicketId, equipe_core::protocol::review::CodeReview>,
     /// Bumped whenever a ticket or a record changes, so the screens draw again.
     pub board_rev: u64,
     /// Bumped on every error the daemon says about the squad (a refused edit).
@@ -494,6 +496,7 @@ impl Model {
             browser_asked: HashMap::new(),
             browser_tabs: HashMap::new(),
             histories: HashMap::new(),
+            reviews: HashMap::new(),
             board_rev: 0,
             squad_errors: 0,
         }
@@ -876,6 +879,7 @@ impl Model {
         self.pm_accepts = snapshot.pm_accepts;
         self.secret_asks = snapshot.secret_asks.clone();
         self.routines = snapshot.routines.clone();
+        self.reviews = snapshot.reviews.iter().map(|r| (r.ticket, r.clone())).collect();
         self.order_projects();
         self.mode = snapshot.mode;
         self.plan = snapshot.plan;
@@ -1048,6 +1052,10 @@ impl Model {
                     self.histories.insert(ticket, entries);
                     self.board_rev += 1;
                 }
+            }
+            Event::CodeReviewed { squad, review } if squad == self.squad => {
+                self.reviews.insert(review.ticket, review);
+                self.board_rev += 1;
             }
             Event::ApprovalRequested { squad, approval } => {
                 if squad == self.squad && !self.approvals.has(approval.id) {
@@ -1264,6 +1272,10 @@ impl Model {
         let qa_passed = ticket.ready_for_review() && self.tickets.iter().any(|t| t.id == ticket.id && t.in_design_qa());
         if let Some(alert) = self.tickets.iter().find(|t| t.id == ticket.id).and_then(|old| crate::notify::merge_alert(old, ticket, self.ticket_project_name(ticket))) {
             self.alerts.push(alert);
+        }
+        // Work back in hand: its review was of what came before.
+        if !matches!(ticket.status, TicketStatus::Review | TicketStatus::Done) {
+            self.reviews.remove(&ticket.id);
         }
         if was != Some(ticket.status) {
             self.since.insert(ticket.id, self.unix);
@@ -2052,6 +2064,26 @@ mod tests {
         model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket }), T0);
         assert_eq!(model.status(&model.members[0]), Status::NeedsYou(Some(3)));
         assert_eq!(model.needs_you(), vec![(Section::Waiting, Need::Ticket(3))]);
+    }
+
+    #[test]
+    fn nemotron_reviews_come_with_the_snapshot_and_as_they_arrive() {
+        use equipe_core::protocol::review::{CodeReview, ReviewVerdict};
+        let review = |ticket, verdict| CodeReview { ticket, model: "nvidia/mock".into(), verdict, summary: "s".into(), ..Default::default() };
+        let mut model = Model::new("acme");
+        let snapshot = Snapshot { squad: "acme".into(), reviews: vec![review(3, ReviewVerdict::Risky)], ..Default::default() };
+        model.apply(Update::Attached(Hello { version: "x".into(), snapshot }), T0);
+        assert_eq!(model.reviews.get(&3).map(|r| r.verdict), Some(ReviewVerdict::Risky));
+        let rev = model.board_rev;
+        model.apply(Update::Event(Event::CodeReviewed { squad: "acme".into(), review: review(3, ReviewVerdict::LooksGood) }), T0);
+        assert_eq!(model.reviews.get(&3).map(|r| r.verdict), Some(ReviewVerdict::LooksGood));
+        assert!(model.board_rev > rev, "the peek draws again");
+        // Sent back, its review goes: it was of the work before.
+        model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(3, "in_progress", None) }), T0);
+        assert!(!model.reviews.contains_key(&3));
+        // Another squad's is not this one's.
+        model.apply(Update::Event(Event::CodeReviewed { squad: "zeta".into(), review: review(4, ReviewVerdict::Risky) }), T0);
+        assert!(!model.reviews.contains_key(&4));
     }
 
     fn ticket(id: u32, status: &str, note: Option<&str>) -> Ticket {
