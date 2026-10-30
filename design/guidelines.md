@@ -52,12 +52,12 @@ equipe(CLI·데몬·데스크톱)의 디자인 규칙이다. 값은 `tokens.json
 - 앱 아이콘 = 마크 타일을 전체 면(1024²)에 채운 것. OS가 모서리를 깎는다(iOS 마스크, 안드로이드 적응형 아이콘 — 전경 레이어 `e.`, 배경 void).
 - 다크/틴트 변형: 점은 단색으로 돌아간다(T-72·T-88의 틴트와 같음). 라이트·다크 모두 타일은 void.
 - GitHub 조직 아바타는 BRAND.md의 "라벨형"(bone 바탕 + 검은 `e` + 점)을 유지하되 점 색은 D1에 따른다 — 어두운 테마·밝은 테마 모두에서 구분되려는 의도(BRAND.md Assets).
-- **글꼴 의존 주의**: 지금 마크는 글자(Helvetica Neue Bold)를 텍스트로 그려 렌더한다(`icon-mac.html`). 배포용 마스터 SVG는 **글자를 윤곽선으로 변환**해야 한다. Helvetica Neue는 Apple/Linotype 글꼴이라 윤곽선 로고로 재배포해도 되는지 **라이선스 미확인** → §7.
+- **글꼴 의존 해소 (T-178, 2026-10-31)**: 마스터 SVG는 이제 글자 요소 없이 `e`를 윤곽선 path로 그린다(`assets/logo/mark.svg`, 라이트 타일 `mark-light.svg`, 타일 없는 전경 `mark-glyph.svg`, 워드마크 `wordmark-light.svg`·`wordmark-on-dark.svg`). 윤곽선의 원본은 **TeX Gyre Heros Bold**(Helvetica 계열 자유 글꼴, [GUST Font License](https://www.gust.org.pl/projects/e-foundry/licenses) — 사용·수정·재배포 허용, 글꼴 파일을 고쳐 배포할 때만 이름 변경 의무; 사본 `assets/logo/GUST-FONT-LICENSE.txt`). 옛 Helvetica Neue 렌더와 겹쳐 본 차이는 윤곽선 가장자리 1~2% 안(`brand/logo-outline-compare.png`). Helvetica Neue 윤곽선은 **쓰지 않는다**: Mac 번들 글꼴 소프트웨어는 Linotype/Monotype·Apple 소유이고(글꼴 파일 저작권 문구 확인) 로고용 윤곽선 변환·재배포를 허용한다는 공개 문서를 찾지 못했다 — 불확실하면 쓰지 않는 것이 원칙(미확인, 쓰려면 Monotype 로고 라이선스 문의 필요). Inter Bold(OFL)도 시험했으나 `e` 꼬리가 비스듬히 잘리고 더 커서 눈에 띄게 달라져 채택하지 않았다.
 
 ### 1.5 자산 목록
 | 파일 | 상태 |
 |---|---|
-| 마크 SVG(윤곽선) `mark.svg`, 워드마크 `wordmark.svg`(라이트·다크·모노) | **없음 — 만들어야 함**(§7 라이선스 확인 후) |
+| 마크 SVG(윤곽선) `mark.svg`·`mark-light.svg`·`mark-glyph.svg`, 워드마크 `wordmark-light.svg`·`wordmark-on-dark.svg` | **있음**(T-178, 윤곽선·Heros 기반) — 모노 워드마크는 아직 없음 |
 | 앱 아이콘 PNG 1024(라이트·다크·틴트), 맥 `.icns` | T-72·T-88에 있음(점 색·모양만 재렌더) |
 | 사이트 `favicon.svg/.ico`, `apple-touch-icon.png`, `og.png`, `logo.png` | 있음 — 마크 교체 필요(T-105 "바꿔야 하는 파일" 목록 그대로) |
 | 시안(이 폴더) | `logo-usage.png`, `logo-in-use.png` |
