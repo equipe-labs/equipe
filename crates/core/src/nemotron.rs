@@ -551,6 +551,66 @@ pub fn clean_line(text: &str, max: usize) -> String {
     }
 }
 
+// ── members on Token Factory ──
+//
+// A member whose model is one of Token Factory's NVIDIA models
+// ([`is_agent_model`]) runs on Codex's own agent — the person's free,
+// open-source `codex` CLI, as `codex app-server` — with Token Factory as
+// Codex's model provider ([`codex_args`]): it reads files, runs commands and
+// tests as any Codex member does, and Nemotron decides what to do. No ChatGPT
+// sign-in is needed, nor Claude Code: only `NEBIUS_API_KEY` in the daemon's
+// environment, which Codex reads there itself.
+
+/// The id Codex knows Token Factory by, in a member's turns.
+pub const CODEX_PROVIDER: &str = "nebius";
+/// Its name, as Codex shows it.
+pub const PROVIDER_NAME: &str = "Nebius Token Factory";
+/// The context Codex plans a member's conversation for (when it compacts):
+/// a window every Nemotron chat model on Token Factory has at least.
+pub const AGENT_CONTEXT_WINDOW: u32 = 131_072;
+/// The efforts Token Factory's Responses API takes; others are left out.
+const EFFORTS: [&str; 6] = ["none", "minimal", "low", "medium", "high", "xhigh"];
+
+/// Whether `model` runs on Token Factory: one of NVIDIA's (`nvidia/…`).
+/// OpenAI's and Anthropic's ids have no `/`.
+pub fn is_agent_model(model: &str) -> bool {
+    model.trim().to_ascii_lowercase().starts_with("nvidia/")
+}
+
+impl Config {
+    /// Token Factory as Codex's provider for a member's turn, at this
+    /// config's base URL. Codex reads the key from `NEBIUS_API_KEY` itself
+    /// ([`Config::codex_env`]): it is never on the command line.
+    pub fn codex_provider(&self) -> equipe_providers::codex_app::Provider {
+        equipe_providers::codex_app::Provider {
+            id: CODEX_PROVIDER.to_owned(),
+            name: PROVIDER_NAME.to_owned(),
+            base_url: self.base_url.trim().trim_end_matches('/').to_owned(),
+            env_key: "NEBIUS_API_KEY".to_owned(),
+            config: vec![format!("model_context_window={AGENT_CONTEXT_WINDOW}")],
+        }
+    }
+
+    /// The key, for the app-server's environment only: where Codex reads it.
+    pub fn codex_env(&self) -> (String, String) {
+        ("NEBIUS_API_KEY".to_owned(), self.key.clone())
+    }
+}
+
+/// The effort a member's turn asks Token Factory for: the person's, when it takes it.
+pub fn agent_effort(effort: Option<&str>) -> Option<&str> {
+    effort.filter(|e| EFFORTS.contains(e))
+}
+
+/// The model a member starts on: `EQUIPE_NEBIUS_MODEL`, else the best of the
+/// account's Nemotron models ([`pick_model`]).
+pub async fn agent_model(cfg: &Config) -> Result<String, ReviewError> {
+    match &cfg.model {
+        Some(model) => Ok(model.clone()),
+        None => pick_model(&models(cfg).await?),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Against a stand-in Token Factory on localhost (a mock: canned answers,
@@ -849,5 +909,35 @@ mod tests {
         assert_eq!(clean_line("abcdef", 4), "abc…");
         assert_eq!(cut("ab\ncd\nef", 5), ("ab\ncd", true));
         assert_eq!(cut("short", 50), ("short", false));
+    }
+    #[test]
+    fn a_member_on_token_factory_runs_on_codex_with_its_config() {
+        assert!(is_agent_model("nvidia/Llama-3_3-Nemotron-Super-49B-v1_5") && is_agent_model(" NVIDIA/x "));
+        assert!(!is_agent_model("gpt-5.5") && !is_agent_model("claude-opus-4-7") && !is_agent_model("Qwen/Qwen3-32B"));
+        let real = Config::from_vars(|n| (n == "NEBIUS_API_KEY").then(|| "sk-never-on-the-command-line".to_owned())).unwrap().codex_provider();
+        assert_eq!((real.id.as_str(), real.base_url.as_str(), real.env_key.as_str()), ("nebius", "https://api.tokenfactory.nebius.com/v1", "NEBIUS_API_KEY"));
+        assert_eq!(real.config, ["model_context_window=131072"]);
+        let local = config("http://127.0.0.1:9/v1/");
+        assert_eq!(local.codex_provider().base_url, "http://127.0.0.1:9/v1");
+        let args = equipe_providers::codex_app::provider_args(&real, "http://127.0.0.1:1");
+        assert!(!args.iter().any(|a| a.contains("sk-")), "the key is never on the command line");
+        assert_eq!(local.codex_env(), ("NEBIUS_API_KEY".to_owned(), "sk-mock-not-a-real-key".to_owned()));
+        assert!(!format!("{local:?}").contains("sk-mock"));
+
+        assert_eq!(agent_effort(Some("high")), Some("high"));
+        assert_eq!((agent_effort(Some("ultra")), agent_effort(Some("max")), agent_effort(None)), (None, None, None));
+    }
+
+    #[tokio::test]
+    async fn a_member_starts_on_the_model_asked_for_or_the_accounts_best_nemotron() {
+        let (base, count, _) = mock(vec![]).await;
+        assert_eq!(agent_model(&config(&base)).await.unwrap(), "nvidia/mock-nemotron-super");
+        assert_eq!(count.load(Ordering::SeqCst), 0, "asked for: nothing listed");
+        let listing = json!({ "data": [{ "id": "Qwen/Qwen3-32B" }, { "id": "nvidia/Nemotron-Nano-9B-v2" }, { "id": "nvidia/Llama-3_3-Nemotron-Super-49B-v1_5" }] }).to_string();
+        let (base, _, seen) = mock(vec![ok(listing)]).await;
+        let mut cfg = config(&base);
+        cfg.model = None;
+        assert_eq!(agent_model(&cfg).await.unwrap(), "nvidia/Llama-3_3-Nemotron-Super-49B-v1_5");
+        assert!(seen.lock().unwrap()[0].starts_with("GET /v1/models "));
     }
 }

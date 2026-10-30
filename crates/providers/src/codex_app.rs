@@ -205,6 +205,74 @@ pub fn others_off(listing: &Value, ours: &Value) -> Value {
 /// Codex's built-in server for ChatGPT apps.
 const APPS_SERVER: &str = "codex_apps";
 
+// ── another provider ──
+
+/// What Codex can't send a provider that only speaks the Responses API's
+/// function tools: tools of other types (the web search, the namespaces
+/// subagents and apps come in, image generation), images, compaction on
+/// OpenAI's own endpoint, and compressed bodies. Turned off for such a
+/// provider's turns, so each request carries function tools only
+/// (`exec_command`, `write_stdin`, `request_user_input`), and MCP servers'
+/// tools, which Codex sends in a `namespace`, flattened on the way
+/// ([`crate::relay`]). Its edits go through the shell: `apply_patch` comes
+/// only as a freeform tool (codex-cli 0.154.0 has no function form of it).
+pub const PLAIN_FEATURES_OFF: [&str; 11] = [
+    "multi_agent",
+    "goals",
+    "image_generation",
+    "apps",
+    "plugins",
+    "remote_compaction_v2",
+    "view_image",
+    "browser_use",
+    "computer_use",
+    "tool_suggest",
+    "enable_request_compression",
+];
+
+/// Another provider speaking OpenAI's Responses API, for a turn to run on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Provider {
+    /// The id Codex knows it by.
+    pub id: String,
+    /// Its name, as Codex shows it.
+    pub name: String,
+    /// Its API's root, before `/responses`.
+    pub base_url: String,
+    /// The environment variable Codex reads its key from.
+    pub env_key: String,
+    /// More config overrides for its turns (`key=value`, as `-c` takes them).
+    pub config: Vec<String>,
+}
+
+/// The app-server's command line for a turn on another provider that speaks
+/// OpenAI's Responses API at `base_url` (`wire_api = "responses"`; Codex
+/// takes no other), as config overrides on top of the person's own: the
+/// provider by its id, its key read by Codex itself from the environment
+/// variable it names (never passed on the command line, never seen by
+/// equipe), and the requests kept to what such a provider serves
+/// ([`PLAIN_FEATURES_OFF`]). The ChatGPT sign-in plays no part: Codex asks for
+/// none when the provider doesn't require OpenAI's auth. The key is kept out
+/// of the commands the agent runs (`shell_environment_policy.exclude`, which
+/// for these turns stands in for the person's own list).
+pub fn provider_args(provider: &Provider, base_url: &str) -> Vec<String> {
+    let toml = |value: &str| serde_json::to_string(value).unwrap_or_default();
+    let id = &provider.id;
+    let mut config = vec![format!("model_provider={}", toml(id))];
+    let at = format!("model_providers.{id}");
+    config.push(format!("{at}.name={}", toml(&provider.name)));
+    config.push(format!("{at}.base_url={}", toml(base_url)));
+    config.push(format!("{at}.env_key={}", toml(&provider.env_key)));
+    config.push(format!("{at}.wire_api={}", toml("responses")));
+    config.push(format!("{at}.requires_openai_auth=false"));
+    config.push(format!("web_search={}", toml("disabled")));
+    config.push(format!("model_reasoning_summary={}", toml("none")));
+    config.push(format!("shell_environment_policy.exclude=[{}]", toml(&provider.env_key)));
+    config.extend(PLAIN_FEATURES_OFF.iter().map(|feature| format!("features.{feature}=false")));
+    config.extend(provider.config.iter().cloned());
+    config.into_iter().flat_map(|c| ["-c".to_owned(), c]).collect()
+}
+
 // ── one turn ──
 
 /// One turn's input.
@@ -226,6 +294,9 @@ pub struct TurnRequest<'a> {
     pub writable: &'a [PathBuf],
     /// More environment for the app-server, and so for its commands.
     pub env: &'a [(String, String)],
+    /// Another provider to run the turn on ([`Provider`]); `None`: the
+    /// person's own Codex, as they set it up.
+    pub provider: Option<&'a Provider>,
 }
 
 /// `thread/start`'s parameters; `others`, the person's own MCP servers off.
@@ -237,6 +308,13 @@ pub fn start_params(request: &TurnRequest<'_>, cwd: &Path, others: Option<&Value
         "config": thread_config(request.mcp_servers, others),
         "serviceName": CLIENT_NAME,
     });
+    // A thread's `features` stand in for the command line's: on another
+    // provider, what it can't serve stays off in them too.
+    if request.provider.is_some() {
+        for feature in PLAIN_FEATURES_OFF {
+            params["config"]["features"][feature] = json!(false);
+        }
+    }
     if let Some(model) = request.model {
         params["model"] = json!(model);
     }
@@ -291,6 +369,8 @@ fn text_input(text: &str) -> Value {
 pub struct Turn {
     pub result: TurnResult,
     pub thread_id: Option<String>,
+    /// On another provider: each request relayed to it ([`crate::relay`]).
+    pub provider_requests: Vec<crate::relay::Exchange>,
 }
 
 /// Codex asks before it acts: `tool` and `input` say what, as Claude Code's
@@ -928,7 +1008,7 @@ pub fn model_ids(listing: &Value) -> Vec<String> {
 
 /// The plan's usage now, without running a turn.
 pub async fn read_limits(binary: &str, cwd: &Path) -> Result<Limits> {
-    let mut server = Server::start(binary, cwd, &[]).await?;
+    let mut server = Server::start(binary, cwd, &[], &[]).await?;
     let read = server.call("account/rateLimits/read", json!({}), ANSWER_WAIT).await?;
     server.close().await;
     read.get("rateLimits").and_then(parse_limits).ok_or_else(|| Error::Protocol("codex reported no usage limits".into()))
@@ -945,7 +1025,7 @@ pub struct Account {
 
 /// Read who the person's Codex is signed in as (`account/read`); `None`: signed out.
 pub async fn read_account(binary: &str, cwd: &Path) -> Result<Option<Account>> {
-    let mut server = Server::start(binary, cwd, &[]).await?;
+    let mut server = Server::start(binary, cwd, &[], &[]).await?;
     let read = server.call("account/read", json!({}), ANSWER_WAIT).await?;
     server.close().await;
     Ok(account_of(&read))
@@ -959,7 +1039,7 @@ fn account_of(read: &Value) -> Option<Account> {
 
 /// The models the person's Codex offers, its default first.
 pub async fn list_models(binary: &str, cwd: &Path) -> Result<Vec<String>> {
-    let mut server = Server::start(binary, cwd, &[]).await?;
+    let mut server = Server::start(binary, cwd, &[], &[]).await?;
     let mut ids = Vec::new();
     let mut cursor: Option<String> = None;
     // Pages, as many as there are — a few at most.
@@ -1017,9 +1097,10 @@ struct Server {
 
 impl Server {
     /// Start it in `cwd` and introduce equipe.
-    async fn start(binary: &str, cwd: &Path, env: &[(String, String)]) -> Result<Self> {
+    async fn start(binary: &str, cwd: &Path, args: &[String], env: &[(String, String)]) -> Result<Self> {
         let mut child = Command::new(binary)
             .arg("app-server")
+            .args(args)
             .current_dir(cwd)
             .envs(env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::piped())
@@ -1154,7 +1235,16 @@ pub async fn run_turn(
     stop: Option<oneshot::Receiver<()>>,
     mut on_activity: impl FnMut(Activity),
 ) -> Result<Turn> {
-    let mut server = Server::start(binary, cwd, request.env).await?;
+    // On another provider, through a relay on the loopback that keeps its tools plain.
+    let relay = match request.provider {
+        Some(provider) => Some(crate::relay::start(&provider.base_url).await?),
+        None => None,
+    };
+    let args = match (request.provider, &relay) {
+        (Some(provider), Some(relay)) => provider_args(provider, &relay.url),
+        _ => Vec::new(),
+    };
+    let mut server = Server::start(binary, cwd, &args, request.env).await?;
     // Signed out, the turn would fail somewhere inside: say so first.
     let account = server.call("account/read", json!({}), ANSWER_WAIT).await?;
     if account.get("account").is_none_or(Value::is_null) && account.get("requiresOpenaiAuth").and_then(Value::as_bool) != Some(false) {
@@ -1284,12 +1374,13 @@ pub async fn run_turn(
     }
     .await;
     let diagnostics = server.close().await;
+    let requests = relay.as_ref().map(crate::relay::Relay::exchanges).unwrap_or_default();
     // Stopped: however it wound down, it ended because it was told to.
     if stopping.is_some() {
-        return Ok(Turn { result: collector.interrupted(), thread_id: Some(thread) });
+        return Ok(Turn { result: collector.interrupted(), thread_id: Some(thread), provider_requests: requests });
     }
     looped?;
-    collector.finish(&diagnostics).map(|result| Turn { result, thread_id: Some(thread) })
+    collector.finish(&diagnostics).map(|result| Turn { result, thread_id: Some(thread), provider_requests: requests })
 }
 
 #[cfg(test)]

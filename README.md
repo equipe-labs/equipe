@@ -152,6 +152,88 @@ says whether that's a subscription or per-token API billing.
 > squad on one subscription will reach them; plan to give Claude Code the roles that
 > need it most.
 
+**NVIDIA Nemotron on Nebius Token Factory — bring your key.** With neither plan, a Token
+Factory key and the free, open-source Codex CLI (no `codex login`) run every member on a
+Nemotron model, billed per token to your key — see
+[Run the whole squad on Nebius Token Factory](#run-the-whole-squad-on-nebius-token-factory).
+
+## Run the whole squad on Nebius Token Factory
+
+**What.** Every member — the PM, the engineers, QA — can run on an **NVIDIA Nemotron**
+model on **Nebius Token Factory**, with no Claude Code and no ChatGPT plan. The agent loop
+is the **Codex CLI**'s own (free and open source; *no* `codex login` is needed for this):
+Nemotron decides, and Codex's tools read files, run commands and tests, and change files,
+in the member's worktree and sandbox, as for any Codex member. equipe's board tools (take a
+ticket, hand it in, ask the person) reach the model like Codex's own.
+
+```bash
+npm install -g @openai/codex                        # or: brew install codex
+read -rs NEBIUS_API_KEY && export NEBIUS_API_KEY    # paste the key; it isn't echoed or kept in history
+export EQUIPE_NEBIUS_MODEL=nvidia/…                 # optional: a model your account offers (see `equipe review --models`)
+equipe daemon stop; equipe daemon run               # from this shell, so the daemon has the key; Ctrl-C stops it
+```
+
+Then, in another terminal (with `NEBIUS_API_KEY` exported there too, so the first-run
+setup sees it), run `equipe` as usual — or open the desktop app. `equipe status` has a
+`nemotron` section that says whether the key and the codex CLI are there.
+
+**Which members go on it.**
+- **Nothing signed in** (no Claude Code, Codex not logged in) and a key in the daemon's
+  environment: every member starts on Nemotron — `EQUIPE_NEBIUS_MODEL`, else the account's
+  best Nemotron chat model (Super, then Ultra, then Nano, from `GET /models`). Each says so
+  when it joins: *"Runs on NVIDIA Nemotron (nvidia/…) through Nebius Token Factory…"*, and
+  its model shows as `nvidia/…` wherever models are shown.
+- **Claude Code or Codex signed in:** nothing changes. Move a Codex member over with
+  `/model <member> nvidia/…`, and back with an OpenAI model id.
+
+**How.** For a member whose model is `nvidia/…`, equipe runs `codex app-server` with
+Token Factory as Codex's model provider (`-c model_provider="nebius"`,
+`model_providers.nebius.wire_api="responses"`, `env_key="NEBIUS_API_KEY"`, …), so Codex
+speaks Token Factory's OpenAI-compatible **Responses API** (`POST /v1/responses`, streamed,
+function tools). What such a provider can't serve is turned off for these turns (web
+search, image tools, subagents, OpenAI's remote compaction). Codex sends an MCP server's
+tools — equipe's board — grouped in a Responses `namespace`; a small relay on the loopback
+(`crates/providers/src/relay.rs`) passes each request on with them as plain function tools
+(`mcp__equipe__take_ticket`) and puts the model's calls back as Codex named them; Codex's own
+metadata for OpenAI (`client_metadata`, `x-codex-*` headers — the workspace's paths among it)
+stays on your machine. The key
+goes to the app-server in its environment only — never on a command line — Codex reads it
+there, the agent's own commands don't see it, and the relay passes the request's header on
+without reading, keeping or logging it. Code: `crates/core/src/nemotron.rs` (members on
+Token Factory), `crates/providers/src/codex_app.rs` (`Provider`, `provider_args`). Each
+member turn leaves one line in the daemon's log — `turn on Nemotron via Nebius Token Factory:
+model …, N request(s) [statuses], request ids […], … ms, tokens in … out …` — never the key
+or the text.
+
+**What is verified — against a mock, not yet against Token Factory.** The tests run the
+**real installed `codex` 0.154.0** through equipe against a stand-in Responses API on
+localhost with a dummy key (`crates/providers/tests/nebius_codex.rs`,
+`crates/core/tests/nebius.rs`; skipped without `codex`): a function call runs a shell
+command in the member's worktree and the file lands on the member's branch; an MCP tool
+call reaches the MCP server and its answer goes back to the model; every request is
+`POST /v1/responses` with `Authorization: Bearer <the key>`, the `nvidia/…` model and
+function tools only; a refused key (401) ends the turn with *"Nebius Token Factory refused
+the key"*. **No member has run on the real Token Factory yet** — how well a given Nemotron
+model drives Codex's tools is untested; see
+[verification.md](docs/hackathon/verification.md) for the owner's real run.
+
+**Limits.**
+- Files change through shell commands (`exec_command`): Codex 0.154 offers its
+  `apply_patch` tool only in a form a function-tool provider can't serve. Edits show as
+  `Bash` steps, not as diffs of their own (the branch's diff is still reviewed as usual).
+- No web search, image input or subagents on these turns. No plan usage to show — Token
+  Factory bills per token. The context is planned at 131,072 tokens (Codex compacts
+  before that). Effort levels Token Factory doesn't take (`max`, `ultra`) are left out.
+- For these turns, `shell_environment_policy.exclude` is `["NEBIUS_API_KEY"]` in place of
+  any list of your own in `~/.codex/config.toml`.
+- A refused key is retried by Codex a few times (seconds) before the turn fails.
+
+**Cost — no measured numbers.** An agent turn is not one request: every tool call is
+another round trip that resends the conversation (Codex's instructions alone are ≈17k
+characters), so one ticket can take many requests and hundreds of thousands of input
+tokens on a long task. Watch your Token Factory usage page while trying it, set a spending
+limit there, and stop a member with Esc. equipe shows each turn's tokens as Codex reports them.
+
 ## Nemotron review on Nebius Token Factory
 
 **What.** When a member hands in a code ticket, an **NVIDIA Nemotron** model on

@@ -9,6 +9,7 @@ pub mod credentials;
 pub mod error;
 pub mod openai;
 pub mod pkce;
+pub mod relay;
 pub mod turn;
 
 pub use credentials::{AuthMethod, CredentialStore, Credentials};

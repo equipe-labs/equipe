@@ -1314,7 +1314,7 @@ impl Runtime {
         if self.codex_reading || self.codex_read.is_some_and(|at| at.elapsed() < CODEX_USAGE_EVERY) {
             return;
         }
-        let members = self.sessions.values().any(|s| s.engine == Engine::Codex && has_tools(s));
+        let members = self.sessions.values().any(|s| s.engine == Engine::Codex && has_tools(s) && !s.model.as_deref().is_some_and(crate::nemotron::is_agent_model));
         if !(members || asked) || codex_app::find(&self.config.codex_binary).is_none() {
             return;
         }
@@ -1342,6 +1342,17 @@ impl Runtime {
             self.plan_types.insert(Engine::Codex, plan.clone());
         }
         self.publish(Event::PlanUsage { usage: codex_plan(&limits), engine: Engine::Codex });
+    }
+
+    /// Whether members can run on Nemotron through Token Factory: a key in the
+    /// daemon's environment, and the Codex CLI to run them on.
+    fn nebius_ready(&self) -> bool {
+        self.config.nemotron.is_some() && codex_app::find(&self.config.codex_binary).is_some()
+    }
+
+    /// Whether no engine is signed in: neither Claude Code nor Codex.
+    async fn nothing_signed_in(&mut self) -> bool {
+        first_ready_engine(&[Engine::Claude, Engine::Codex], &self.config.store, &self.config.claude_binary, &self.config.codex_binary).await.is_none()
     }
 
     /// The models the person's Codex CLI offers, its default first; kept a while.
@@ -2098,8 +2109,16 @@ runbooks and reports live there, and work across the projects or on running them
             (None, None) => {}
         }
 
+        // NVIDIA's models on Nebius Token Factory run on Codex's agent (`nemotron`).
+        let mut on_nebius = spec.model.as_deref().is_some_and(crate::nemotron::is_agent_model);
         let engine = match spec.engine {
+            // Named, but nothing at all is signed in: Nemotron, rather than failing.
+            Some(_) if !on_nebius && self.nebius_ready() && self.nothing_signed_in().await => {
+                on_nebius = true;
+                Engine::Codex
+            }
             Some(engine) => engine,
+            None if on_nebius => Engine::Codex,
             None => {
                 let preference = match (role, edits) {
                     (Some(_), Some(true)) => [Engine::Claude, Engine::Codex],
@@ -2110,6 +2129,11 @@ runbooks and reports live there, and work across the projects or on running them
                 };
                 match first_ready_engine(&preference, &self.config.store, &self.config.claude_binary, &self.config.codex_binary).await {
                     Some(engine) => engine,
+                    // Nothing signed in, but a Token Factory key: Nemotron, on Codex's agent.
+                    None if self.nebius_ready() => {
+                        on_nebius = true;
+                        Engine::Codex
+                    }
                     None => {
                         let message = say!(self, "error.no_engine");
                         return fail(self, message, Some("equipe login"));
@@ -2120,6 +2144,10 @@ runbooks and reports live there, and work across the projects or on running them
         // The person's own Codex CLI runs an agent with tools; without it, Codex
         // is equipe's own sign-in, which only answers.
         let codex_cli = engine == Engine::Codex && codex_app::find(&self.config.codex_binary).is_some();
+        on_nebius &= engine == Engine::Codex;
+        if on_nebius && !codex_cli {
+            return fail(self, say!(self, "error.nebius_needs_codex"), Some("npm install -g @openai/codex"));
+        }
         if spec.access == Access::EditFiles && engine == Engine::Codex && !codex_cli {
             return fail(self, say!(self, "error.codex_edits"), Some("codex login"));
         }
@@ -2128,12 +2156,30 @@ runbooks and reports live there, and work across the projects or on running them
         let mut codex_cred = None;
         match engine {
             Engine::Codex if codex_cli => {
-                match codex_app::login_status(&self.config.codex_binary).await {
-                    Ok(Some(sign_in)) if sign_in.signed_in() => {}
-                    Ok(_) => return fail(self, say!(self, "error.codex_cli_signed_out"), Some("equipe login codex")),
-                    Err(err) => return fail(self, err.to_string(), Some("equipe status")),
+                if !on_nebius {
+                    match codex_app::login_status(&self.config.codex_binary).await {
+                        Ok(Some(sign_in)) if sign_in.signed_in() => {}
+                        // Signed out, nothing else signed in, and a Token Factory key: Nemotron instead of failing.
+                        Ok(_) if self.config.nemotron.is_some() && self.nothing_signed_in().await => on_nebius = true,
+                        Ok(_) => return fail(self, say!(self, "error.codex_cli_signed_out"), Some("equipe login codex")),
+                        Err(err) => return fail(self, err.to_string(), Some("equipe status")),
+                    }
                 }
-                if model.is_none() {
+                if on_nebius {
+                    let Some(cfg) = self.config.nemotron.clone() else {
+                        return fail(self, say!(self, "error.nebius_no_key"), Some("export NEBIUS_API_KEY=…; equipe daemon stop; equipe daemon run"));
+                    };
+                    if !model.as_deref().is_some_and(crate::nemotron::is_agent_model) {
+                        let picked = match tokio::time::timeout(SERVER_WAIT, crate::nemotron::agent_model(&cfg)).await {
+                            Ok(picked) => picked,
+                            Err(_) => Err(crate::nemotron::ReviewError::Timeout),
+                        };
+                        match picked {
+                            Ok(picked) => model = Some(picked),
+                            Err(why) => return fail(self, say!(self, "error.nebius_no_model", why = why.why(self.config.lang)), Some("EQUIPE_NEBIUS_MODEL")),
+                        }
+                    }
+                } else if model.is_none() {
                     // What this account offers, as its own Codex lists it — no id hardcoded.
                     let catalog = match self.codex_catalog().await {
                         Ok(catalog) => catalog,
@@ -2308,7 +2354,11 @@ runbooks and reports live there, and work across the projects or on running them
                 turn_began: None,
             },
         );
-        self.publish(Event::SessionStarted { session: id, project, engine, model, workspace, member, squad: squad.clone() });
+        self.publish(Event::SessionStarted { session: id, project, engine, model: model.clone(), workspace, member, squad: squad.clone() });
+        if on_nebius {
+            let text = say!(self, "notice.on_nebius", model = model.unwrap_or_default());
+            self.publish(Event::Notice { session: id, text });
+        }
         // A new member may be just who a waiting ticket needs.
         if let Some(squad) = squad {
             self.dispatch(&squad).await;
@@ -3058,7 +3108,18 @@ for one project goes to it as tickets for its owners, with that project — and 
                 let binary = self.config.codex_binary.clone();
                 let lang = self.config.lang;
                 let model = session.model.clone();
-                let effort = session.effort.clone();
+                let mut effort = session.effort.clone();
+                // NVIDIA's models: Codex's agent with Token Factory as its provider.
+                let nebius = model.as_deref().is_some_and(crate::nemotron::is_agent_model);
+                let provider = match (&self.config.nemotron, nebius) {
+                    (Some(cfg), true) => {
+                        env.push(cfg.codex_env());
+                        effort = crate::nemotron::agent_effort(effort.as_deref()).map(str::to_owned);
+                        Some(cfg.codex_provider())
+                    }
+                    (None, true) => return self.error(Some(id), say!(self, "error.nebius_no_key"), Some("export NEBIUS_API_KEY=…; equipe daemon stop; equipe daemon run")),
+                    (_, false) => None,
+                };
                 // equipe's servers only, as Claude Code gets them: the board's tools
                 // never ask; the browser's and the desktop's ask unless the mode lets them.
                 let servers = match (&squad, &session.member, &self.config.equipe_binary) {
@@ -3127,6 +3188,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         mcp_servers: servers.as_ref(),
                         writable: &writable,
                         env: &env,
+                        provider: provider.as_ref(),
                     };
                     if let Some(port) = browser {
                         browser::ready(port, Duration::from_secs(90)).await;
@@ -3136,6 +3198,8 @@ for one project goes to it as tickets for its owners, with that project — and 
                             streamed = true;
                         }
                         match activity {
+                            // Token Factory bills per token: no plan, no limits to show.
+                            Activity::Limits(_) if nebius => {}
                             Activity::Limits(limits) => {
                                 let _ = internal.send(Internal::CodexLimits(Some(limits)));
                             }
@@ -3147,12 +3211,16 @@ for one project goes to it as tickets for its owners, with that project — and 
                         }
                     })
                     .await;
+                    // On Token Factory: what was asked of it, for the log — never the key or the text.
+                    if let (true, Ok(turn)) = (nebius, &outcome) {
+                        crate::daemon_log!("{}", nebius_log(model.as_deref().unwrap_or_default(), turn));
+                    }
                     // Stopped: the turn's end was said already, and what follows it done.
                     if outcome.as_ref().is_ok_and(|turn| turn.result.status == "interrupted") {
                         return;
                     }
                     let thread = outcome.as_ref().ok().and_then(|turn| turn.thread_id.clone());
-                    let result = outcome.map(|turn| turn.result).map_err(|err| codex_cli_failure(err, lang));
+                    let result = outcome.map(|turn| turn.result).map_err(|err| if nebius { nebius_failure(err, lang) } else { codex_cli_failure(err, lang) });
                     let reply = finish_turn(&emit, id, result, streamed);
                     let _ = internal.send(Internal::Done(TurnDone { session: id, prompt, reply, claude_session: thread, ticket }));
                 })
@@ -6925,6 +6993,39 @@ fn codex_cli_failure(err: equipe_providers::Error, lang: crate::i18n::Lang) -> (
     }
 }
 
+/// A member's turn on Token Factory, for the daemon's log: the model, each
+/// request's status and Token Factory's id for it, the time, the tokens.
+fn nebius_log(model: &str, turn: &codex_app::Turn) -> String {
+    let requests = &turn.provider_requests;
+    let statuses: Vec<String> = requests.iter().map(|r| r.status.to_string()).collect();
+    let ids: Vec<&str> = requests.iter().filter_map(|r| r.request_id.as_deref()).collect();
+    let ms: u64 = requests.iter().map(|r| r.ms).sum();
+    let usage = turn.result.usage.as_ref();
+    let tokens = |n: Option<u64>| n.map_or_else(|| "?".to_owned(), |n| n.to_string());
+    format!(
+        "equipe: turn on Nemotron via Nebius Token Factory: model {model}, {} request(s) [{}], request ids [{}], {ms} ms on requests, tokens in {} (cached {}) out {}, {}",
+        requests.len(),
+        statuses.join(" "),
+        ids.join(" "),
+        tokens(usage.and_then(|u| u.input_tokens)),
+        tokens(usage.and_then(|u| u.cache_tokens)),
+        tokens(usage.and_then(|u| u.output_tokens)),
+        turn.result.status,
+    )
+}
+
+/// A turn on Token Factory that failed: a refused key is Token Factory's, not Codex's sign-in.
+fn nebius_failure(err: equipe_providers::Error, lang: crate::i18n::Lang) -> (String, Option<&'static str>) {
+    let words = crate::i18n::core(lang);
+    let message = err.to_string();
+    let lower = message.to_ascii_lowercase();
+    let refused = matches!(err, equipe_providers::Error::CodexSignedOut) || lower.contains("401") || lower.contains("403") || lower.contains("unauthorized");
+    if refused {
+        return (words.get("error.nebius_unauthorized").to_owned(), Some("https://tokenfactory.nebius.com"));
+    }
+    codex_cli_failure(err, lang)
+}
+
 fn codex_failure(err: equipe_providers::Error) -> (String, Option<&'static str>) {
     let next = matches!(err, equipe_providers::Error::Unauthorized { .. }).then_some("equipe login codex");
     (err.to_string(), next)
@@ -7058,6 +7159,34 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_turn_on_token_factory_logs_its_requests_never_its_text() {
+        let turn = codex_app::Turn {
+            result: TurnResult { text: "secret answer".into(), status: "completed".into(), usage: Some(equipe_providers::turn::TurnUsage { input_tokens: Some(1200), output_tokens: Some(40), cache_tokens: None, context_tokens: None, context_window: None }) },
+            thread_id: None,
+            provider_requests: vec![
+                equipe_providers::relay::Exchange { path: "/responses".into(), status: 200, request_id: Some("req-1".into()), ms: 900 },
+                equipe_providers::relay::Exchange { path: "/responses".into(), status: 200, request_id: Some("req-2".into()), ms: 600 },
+            ],
+        };
+        let line = nebius_log("nvidia/x", &turn);
+        assert_eq!(line, "equipe: turn on Nemotron via Nebius Token Factory: model nvidia/x, 2 request(s) [200 200], request ids [req-1 req-2], 1500 ms on requests, tokens in 1200 (cached ?) out 40, completed");
+        assert!(!line.contains("secret"));
+    }
+
+    #[test]
+    fn a_turn_on_token_factory_with_its_key_refused_says_whose_key() {
+        let lang = crate::i18n::Lang::En;
+        // As codex 0.154 reports a 401 from the provider (mock-verified).
+        let refused = equipe_providers::Error::Backend { message: "unexpected status 401 Unauthorized: Invalid API key, url: http://127.0.0.1:1/responses".into(), code: Some("other".into()) };
+        let (said, next) = nebius_failure(refused, lang);
+        assert!(said.contains("Nebius Token Factory refused the key"), "{said}");
+        assert_eq!(next, Some("https://tokenfactory.nebius.com"));
+        assert!(nebius_failure(equipe_providers::Error::CodexSignedOut, lang).0.contains("NEBIUS_API_KEY"));
+        let other = nebius_failure(equipe_providers::Error::Protocol("stream ended".into()), lang);
+        assert_eq!(other, ("stream ended".to_owned(), None));
+    }
 
     #[cfg(debug_assertions)]
     #[tokio::test]

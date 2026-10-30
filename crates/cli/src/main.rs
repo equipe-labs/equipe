@@ -1215,8 +1215,10 @@ impl App {
         let codex_ready = self.codex_section(&p).await;
         println!();
         let claude_ready = self.claude_section(&p).await;
+        println!();
+        let nebius_ready = nebius_section(&p);
 
-        let ready: Vec<_> = [(codex_ready, "codex"), (claude_ready, "claude")]
+        let ready: Vec<_> = [(codex_ready, "codex"), (claude_ready, "claude"), (nebius_ready, "nemotron")]
             .into_iter()
             .filter_map(|(ok, name)| ok.then_some(name))
             .collect();
@@ -1488,6 +1490,33 @@ fn plan_label(status: &AuthStatus) -> String {
         t!("main.plan", plan = plan)
     } else {
         t!("main.billed_per_token").to_owned()
+    }
+}
+
+/// Prints the section on NVIDIA Nemotron through Nebius Token Factory: members
+/// on the Codex CLI's agent with only a Token Factory key — no sign-in. Read
+/// off this shell's environment, which a daemon started from it has too.
+/// Whether it is ready. Nothing is asked of Token Factory.
+fn nebius_section(p: &ui::Painter) -> bool {
+    println!("{}", p.section("nemotron", t!("main.nebius_section")));
+    let key = equipe_core::nemotron::Config::from_env().is_ok();
+    let codex = codex_app::find(codex_app::DEFAULT_BINARY).is_some();
+    match (key, codex) {
+        (true, true) => {
+            println!("{}", p.row(t!("main.row_key"), &p.ok(t!("main.nebius_ready"))));
+            println!("{}", p.row("", &p.hint("equipe daemon stop; equipe daemon run")));
+            true
+        }
+        (false, _) => {
+            println!("{}", p.row(t!("main.row_key"), &p.fail(t!("main.nebius_no_key"))));
+            println!("{}", p.row("", &p.hint("export NEBIUS_API_KEY=…")));
+            false
+        }
+        (true, false) => {
+            println!("{}", p.row(t!("main.row_key"), &p.fail(t!("main.nebius_needs_codex"))));
+            println!("{}", p.row("", &p.hint("npm install -g @openai/codex")));
+            false
+        }
     }
 }
 

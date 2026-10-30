@@ -12,7 +12,8 @@ Two kinds of evidence, kept apart:
    is **implemented but unverified**.
 
 No real Token Factory request was made while building this (no key on the build machine,
-no approval to spend credits).
+no approval to spend credits). That holds for both features: the Nemotron **review**
+(§1–2) and **members running on Nemotron** (§3).
 
 ## 1. Mock tests
 
@@ -108,4 +109,111 @@ Secrets excluded: never record the key, an `Authorization` header, or a full dif
 | Cost shown in the Token Factory console for this request, if visible | `____` |
 | Daemon run (optional): log line `equipe: Nemotron reviewed T-… model …, request …, … tokens, … ms` | `____` |
 | Screenshot / recording file (key not visible) | `____` |
+| Recorded by | `____` |
+
+## 3. Members on Nemotron (the whole squad on Token Factory)
+
+### 3.1 Mock-verified (done) — the real `codex`, a stand-in Token Factory
+
+These run the **real installed Codex CLI** (`codex-cli 0.154.0` on the build machine) through
+equipe's own code against a **stand-in Responses API on localhost** with the dummy key
+`test-not-a-key`. They are skipped automatically where `codex` isn't installed
+(`EQUIPE_CODEX` names another binary). They prove the plumbing — provider config, the
+relay, the key's path, the request shape, tool calls and their outputs, the engine choice —
+**not** that Token Factory accepts these requests or that a Nemotron model drives the tools well.
+
+```bash
+cargo test -p equipe-providers --test nebius_codex -- --nocapture   # prints what codex sent
+cargo test -p equipe-core --test nebius -- --nocapture
+cargo test -p equipe-providers relay
+cargo test -p equipe-core --lib nemotron
+cargo test -p equipe-core --lib token_factory
+```
+
+| Test | Checks |
+|---|---|
+| `the_real_codex_runs_a_members_turn_on_a_stand_in_token_factory` | The stand-in answers with a `function_call` to `exec_command`; the command runs in the turn's folder (the file is there); the turn completes with the stand-in's final message; every request is `POST /v1/responses`, `Authorization: Bearer test-not-a-key`, `model: nvidia/nemotron-mock-super`, `stream: true`, function tools only; the second request carries `function_call` + `function_call_output` with the same `call_id`; the key is **not** visible to the command (`$NEBIUS_API_KEY` empty in it); the relay kept each request's status and `x-request-id`. |
+| `an_mcp_servers_tools_reach_the_provider_as_function_tools_and_its_calls_reach_the_server` | An MCP server (a stand-in for equipe's board) — Codex sends its tools in a `namespace`; the stand-in sees them as the function tool `mcp__board__list_tickets`; its call reaches the MCP server as `tools/call list_tickets`; the server's answer goes back to the model; the tools Token Factory can't serve stay off. |
+| `a_refused_key_ends_the_turn_and_says_so` | A 401 from the provider: Codex tries 6 times in ≈6 s, then the turn fails with `unexpected status 401 Unauthorized … request id: …` (never the key). |
+| `a_providers_args_point_codex_at_it_and_keep_the_requests_plain` | The exact `-c` overrides. |
+| `with_nothing_signed_in_a_token_factory_key_starts_members_on_nemotron` (core) | No Claude Code, Codex signed out, key set: a member starts on Codex with the `nvidia/…` model, says so; its turn's app-server gets the provider overrides and the key in its environment, never on its command line; no plan usage shown. |
+| `with_nothing_signed_in_a_member_named_for_an_engine_starts_on_nemotron_too` (core) | Same, for a member named for Claude or Codex. |
+| `with_another_engine_signed_in_a_signed_out_codex_still_says_how_to_sign_in` (core) | Claude Code signed in: nothing moves to Nemotron unless its model is `nvidia/…`. |
+| `a_signed_in_codex_runs_as_before_with_a_key_present` (core) | A ChatGPT-signed-in Codex: the account's own model, no overrides, plan usage as before. |
+| `a_member_moved_to_an_nvidia_model_runs_its_next_turn_on_token_factory` (core) | `/model nvidia/…` → the next turn on Token Factory, an effort it doesn't take left out; back to an OpenAI model → the person's own Codex. |
+| `without_a_key_nothing_signed_in_says_so_and_how` (core) | No key: "No engine is ready … or set NEBIUS_API_KEY …". |
+| `mock_verified_a_member_with_nothing_signed_in_writes_code_on_nemotron_through_the_real_codex` (core) | The daemon's runtime, the real `codex` in an empty `CODEX_HOME` (signed out), the stand-in: a member writes `made.rs` in its worktree, and on close it lands on the member's branch. |
+
+What Codex 0.154.0 sent the stand-in, through equipe's relay (captured by the first test,
+`--nocapture`; the relay keeps Codex's `client_metadata` and `x-codex-*` headers back):
+
+```
+POST /v1/responses   accept: text/event-stream   authorization: Bearer test-not-a-key
+body keys: include input instructions model parallel_tool_calls
+           prompt_cache_key reasoning store stream tool_choice tools
+model: nvidia/nemotron-mock-super   stream: true   store: false   tool_choice: auto
+parallel_tool_calls: true   reasoning: {summary: auto}   include: [reasoning.encrypted_content]
+tools: function exec_command, function write_stdin, function request_user_input
+       (+ function mcp__<server>__<tool> for each MCP tool, flattened by equipe's relay)
+input, 1st request: message(developer) message(user) message(user)
+input, 2nd request: … function_call(call_mock_1) function_call_output(call_mock_1)
+answers used: SSE response.created → response.output_item.added/done {function_call | message}
+              → response.completed {usage}
+```
+
+Results on `nebius-engine` (2026-10-30, macOS, codex-cli 0.154.0 installed): `cargo clippy
+--workspace --all-targets -- -D warnings` clean; `cargo test --workspace --no-fail-fast`: 1,599
+passed, 0 failed — the tests above included, with the real `codex`. Mock only.
+
+### 3.2 The owner's real run (not done)
+
+Needs: a Token Factory key, a **budget decision** (an agent turn is many requests; none is
+approved yet), the codex CLI (`npm install -g @openai/codex` or `brew install codex`; no
+`codex login`), and a build of this branch. Claude Code and Codex may stay signed out — that
+is the point. The key never goes on a command line or in a file.
+
+```bash
+cd <checkout of nebius-engine> && cargo build --release -p equipe
+EQUIPE="$PWD/target/release/equipe"; git rev-parse HEAD; "$EQUIPE" --version; codex --version
+read -rs NEBIUS_API_KEY && export NEBIUS_API_KEY
+"$EQUIPE" review --models                      # pick a model; optional: export EQUIPE_NEBIUS_MODEL=<it>
+"$EQUIPE" status                               # the "nemotron" section says ready
+"$EQUIPE" daemon stop
+"$EQUIPE" daemon run 2>&1 | tee /tmp/equipe-nemotron-e2e.log   # this shell has the key
+
+# another terminal: the same key exported, then a throwaway repository
+read -rs NEBIUS_API_KEY && export NEBIUS_API_KEY
+tmp=$(mktemp -d) && cd "$tmp" && git init -q && printf '# demo\n' > README.md && git add . && git -c user.name=e2e -c user.email=e2e@example.com commit -qm init
+"$EQUIPE"                                       # first run: a squad here; members join on Nemotron
+# ask the PM for one small code ticket, e.g. "Add a `hello` CLI in Rust that prints Hello and a test for it"
+# watch: members say "Runs on NVIDIA Nemotron (…) through Nebius Token Factory"; Bash steps run cargo;
+# the ticket is handed in; the Nemotron review appears on it.
+grep 'turn on Nemotron via Nebius Token Factory' /tmp/equipe-nemotron-e2e.log
+```
+
+Each member turn logs one line: `equipe: turn on Nemotron via Nebius Token Factory: model …,
+N request(s) [statuses], request ids […], … ms on requests, tokens in … (cached …) out …,
+completed` — never the key or the text. Stop with Esc / `equipe daemon stop` when done;
+check the spend on the Token Factory console.
+
+### Evidence template (real member run)
+
+Secrets excluded: never record the key or an `Authorization` header.
+
+| Field | Value |
+|---|---|
+| Date and time (UTC) | `____` |
+| equipe commit / version | `____` |
+| codex CLI version (`codex --version`) | `____` |
+| Engines signed in during the run (expected: none) | `____` |
+| Endpoint | `https://api.tokenfactory.nebius.com/v1/responses` (or `____` if overridden) |
+| Model id (as the member's notice and the log say) | `____` |
+| Request ids (from the log line) | `____` |
+| Requests / statuses for one member turn | `____` |
+| Tokens for that turn (in / cached / out) | `____` |
+| Latency (ms on requests; the turn's wall time) | `____` |
+| Outcome | `SUCCESS / FAILURE` — `____` (what the member did: files changed, commands and tests run, handed in or not; or the error shown) |
+| Ticket handed in, and its Nemotron review verdict | `____` |
+| Cost shown in the Token Factory console | `____` |
+| Screenshot / recording (key not visible) | `____` |
 | Recorded by | `____` |
