@@ -200,11 +200,18 @@ async fn onboard(home: &Path, repo: Option<Folder>) -> Result<Start, String> {
     let signed_in = |ready: bool| if ready { t!("onboard.signed_in") } else { t!("onboard.not_signed_in") };
     eprintln!("  {} {:<13}{}", mark(claude_ready), "claude code", e.dim(signed_in(claude_ready)));
     eprintln!("  {} {:<13}{}", mark(codex), "codex", e.dim(signed_in(codex)));
-    if !claude_ready && !codex {
+    // Without either: NVIDIA Nemotron on Nebius Token Factory, on the Codex CLI's agent, with only a key.
+    let nebius = equipe_core::nemotron::Config::from_env().is_ok() && equipe_providers::codex_app::find(equipe_providers::codex_app::DEFAULT_BINARY).is_some();
+    if nebius {
+        eprintln!("  {} {:<13}{}", mark(true), "nemotron", e.dim(t!("onboard.nebius_ready")));
+    }
+    if !claude_ready && !codex && !nebius {
         eprintln!();
         return Err(t!("onboard.no_engine").into());
     }
-    if !claude_ready {
+    if !claude_ready && !codex {
+        eprintln!("\n{}", e.note(2, t!("onboard.nebius_only")));
+    } else if !claude_ready {
         eprintln!("\n{}", e.note(2, t!("onboard.needs_claude")));
     }
     eprintln!();

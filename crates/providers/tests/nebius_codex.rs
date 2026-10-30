@@ -141,6 +141,11 @@ async fn read_request(stream: &mut tokio::net::TcpStream) -> Option<Seen> {
 
 /// The stand-in Responses API on a free local port: its base URL, and what it got.
 async fn stand_in(calls: Vec<(String, Value)>) -> (String, Arc<Mutex<Vec<Seen>>>) {
+    serve(calls, None).await
+}
+
+/// The stand-in, or one refusing every request with `refuse` (a status).
+async fn serve(calls: Vec<(String, Value)>, refuse: Option<u16>) -> (String, Arc<Mutex<Vec<Seen>>>) {
     let calls = Arc::new(calls);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -156,7 +161,10 @@ async fn stand_in(calls: Vec<(String, Value)>) -> (String, Arc<Mutex<Vec<Seen>>>
                         log.push(request.clone());
                         log.len()
                     };
-                    let (status, kind, body) = answer(&request, n, &calls);
+                    let (status, kind, body) = match refuse {
+                        Some(status) => (status, "application/json", json!({ "error": { "message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key" } }).to_string()),
+                        None => answer(&request, n, &calls),
+                    };
                     let head = format!("HTTP/1.1 {status} OK\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nx-request-id: mock-{n}\r\n\r\n", body.len());
                     if stream.write_all(head.as_bytes()).await.is_err() || stream.write_all(body.as_bytes()).await.is_err() {
                         return;
@@ -347,6 +355,28 @@ async fn an_mcp_servers_tools_reach_the_provider_as_function_tools_and_its_calls
     let output = back.iter().find(|i| i["type"] == "function_call_output").map(|i| i["output"].to_string()).unwrap_or_default();
     assert!(output.contains("T-1 Add login"), "the server's answer went back to the model{context}");
     assert!(activities.iter().any(|a| matches!(a, Activity::ToolDone(d) if d.name == "mcp__board__list_tickets" && d.ok)), "{context}");
+    let _ = std::fs::remove_dir_all(&cwd);
+    let _ = std::fs::remove_dir_all(&codex_home);
+}
+
+#[tokio::test]
+async fn a_refused_key_ends_the_turn_and_says_so() {
+    let Some(codex) = installed_codex() else {
+        eprintln!("skipped: no `codex` installed (or $EQUIPE_CODEX)");
+        return;
+    };
+    let (base_url, seen) = serve(Vec::new(), Some(401)).await;
+    let (cwd, codex_home) = (scratch("refused-work"), scratch("refused-codex-home"));
+    let env = vec![("CODEX_HOME".to_owned(), codex_home.to_string_lossy().into_owned()), ("NEBIUS_API_KEY".to_owned(), KEY.to_owned())];
+    let provider = nebius(&base_url);
+    let request = TurnRequest { prompt: "hi", model: Some(MODEL), access: Access::ReadOnly, env: &env, provider: Some(&provider), ..Default::default() };
+    let outcome = tokio::time::timeout(Duration::from_secs(90), codex_app::run_turn(&codex, &cwd, request, None, None, None, |_| {})).await;
+    let tries = seen.lock().unwrap().len();
+    eprintln!("refused: {outcome:?} after {tries} request(s)");
+    let err = outcome.expect("a refused key ends the turn, it doesn't hang").expect_err("and the turn fails");
+    let said = err.to_string();
+    assert!(matches!(err, equipe_providers::Error::CodexSignedOut) || said.contains("401") || said.to_ascii_lowercase().contains("unauthorized"), "{said}");
+    assert!(!said.contains(KEY), "{said}");
     let _ = std::fs::remove_dir_all(&cwd);
     let _ = std::fs::remove_dir_all(&codex_home);
 }

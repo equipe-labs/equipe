@@ -7125,6 +7125,19 @@ fn now_secs() -> u64 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_turn_on_token_factory_with_its_key_refused_says_whose_key() {
+        let lang = crate::i18n::Lang::En;
+        // As codex 0.154 reports a 401 from the provider (mock-verified).
+        let refused = equipe_providers::Error::Backend { message: "unexpected status 401 Unauthorized: Invalid API key, url: http://127.0.0.1:1/responses".into(), code: Some("other".into()) };
+        let (said, next) = nebius_failure(refused, lang);
+        assert!(said.contains("Nebius Token Factory refused the key"), "{said}");
+        assert_eq!(next, Some("https://tokenfactory.nebius.com"));
+        assert!(nebius_failure(equipe_providers::Error::CodexSignedOut, lang).0.contains("NEBIUS_API_KEY"));
+        let other = nebius_failure(equipe_providers::Error::Protocol("stream ended".into()), lang);
+        assert_eq!(other, ("stream ended".to_owned(), None));
+    }
+
     #[cfg(debug_assertions)]
     #[tokio::test]
     #[should_panic(expected = "must not run on the core loop")]
