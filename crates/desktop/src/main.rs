@@ -49,6 +49,7 @@ mod target;
 mod theme;
 mod team;
 mod term;
+mod tailnet;
 mod tickets;
 mod tips;
 mod transcribe;
@@ -456,11 +457,14 @@ impl Shell {
         let board_subscriptions = shell.board_subscriptions(window, cx);
         shell._subscriptions.extend(board_subscriptions);
         let (connect_input, ask_input) = (shell.connect.input.clone(), shell.ask.input.clone());
-        shell._subscriptions.push(cx.subscribe_in(&connect_input, window, |this, input, event: &InputEvent, window, cx| {
-            if matches!(event, InputEvent::PressEnter { .. }) {
-                let text = input.read(cx).value().to_string();
-                this.connect_typed(&text, window, cx);
+        shell._subscriptions.push(cx.subscribe_in(&connect_input, window, |this, _, event: &InputEvent, window, cx| match event {
+            InputEvent::PressEnter { .. } => this.choose_first(window, cx),
+            // The list narrows as it is typed; a refusal goes with the text that earned it.
+            InputEvent::Change => {
+                this.connect.error = None;
+                cx.notify();
             }
+            _ => {}
         }));
         shell._subscriptions.push(cx.subscribe_in(&ask_input, window, |this, _, event: &InputEvent, window, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
@@ -613,6 +617,7 @@ impl Shell {
                 cx.set_global(render::ShellRef(cx.entity().downgrade()));
             }
         }));
+        shell.load_peers(cx);
         shell.attach(Target::new(endpoint, env!("CARGO_PKG_VERSION")), window, cx);
         shell.composer.focus(window, cx);
         // One more window: the first takes what other apps share and
@@ -940,6 +945,8 @@ impl Shell {
         }
         self.connect.open = true;
         self.connect.error = None;
+        self.connect.show_hidden = false;
+        self.probe_hosts(cx);
         let input = self.connect.input.clone();
         input.update(cx, |s, cx| {
             s.set_value(String::new(), window, cx);

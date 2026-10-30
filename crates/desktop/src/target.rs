@@ -157,6 +157,9 @@ pub struct KeptView {
 pub struct Remembered {
     pub last: Option<Endpoint>,
     pub recent: Vec<SshHost>,
+    /// Hosts of `~/.ssh/config` the person hid from the chooser (the file is
+    /// theirs: hidden here, not edited there).
+    pub hidden_hosts: Vec<String>,
     /// How tall the board's list was left, in px (the divider the person dragged).
     pub board_split: Option<f32>,
     /// How wide the browser panel was left, in px.
@@ -451,6 +454,11 @@ impl Remembered {
                 && !out.recent.contains(&host)
             {
                 out.recent.push(host);
+            } else if let Some(rest) = line.strip_prefix("hide ssh ")
+                && !rest.trim().is_empty()
+                && !out.hidden_hosts.iter().any(|h| h == rest.trim())
+            {
+                out.hidden_hosts.push(rest.trim().to_owned());
             }
         }
         out.recent.truncate(RECENT);
@@ -464,6 +472,9 @@ impl Remembered {
         }
         for host in &self.recent {
             text.push_str(&format!("recent ssh {}\n", host.spec()));
+        }
+        for host in &self.hidden_hosts {
+            text.push_str(&format!("hide ssh {host}\n"));
         }
         if let Some(split) = self.board_split {
             text.push_str(&format!("board-split {split:.0}\n"));
@@ -555,6 +566,19 @@ impl Remembered {
             self.recent.retain(|h| h != host);
             self.recent.insert(0, host.clone());
             self.recent.truncate(RECENT);
+        }
+    }
+
+    /// Take a host off the recent ones (one typed wrong, one gone).
+    pub fn forget(&mut self, host: &SshHost) {
+        self.recent.retain(|h| h != host);
+    }
+
+    /// Hide a host of `~/.ssh/config` from the chooser, or show it again.
+    pub fn hide_host(&mut self, name: &str, hidden: bool) {
+        self.hidden_hosts.retain(|h| h != name);
+        if hidden {
+            self.hidden_hosts.push(name.to_owned());
         }
     }
 
@@ -693,6 +717,25 @@ mod tests {
         local.save(&dir);
         assert_eq!(Remembered::load(&dir).last, Some(Endpoint::this_mac()));
         assert_eq!(Remembered::load(&dir).recent.len(), 2, "this Mac isn't a host to remember");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_recent_host_is_forgotten_and_a_config_host_hidden_across_launches() {
+        let dir = std::env::temp_dir().join(format!("eq-target-forget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut remembered = Remembered::default();
+        remembered.use_endpoint(&Endpoint::Ssh(host("atinumai@110.66.18.3")));
+        remembered.use_endpoint(&Endpoint::Ssh(host("atinumai@100.66.18.3")));
+        remembered.forget(&host("atinumai@110.66.18.3"));
+        remembered.hide_host("ironact-prod", true);
+        remembered.hide_host("vision", true);
+        remembered.hide_host("vision", false);
+        remembered.save(&dir);
+
+        let loaded = Remembered::load(&dir);
+        assert_eq!(loaded.recent, vec![host("atinumai@100.66.18.3")], "the one typed wrong is gone");
+        assert_eq!(loaded.hidden_hosts, vec!["ironact-prod".to_owned()], "hidden stays hidden; shown again is shown");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
