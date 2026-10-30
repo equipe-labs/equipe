@@ -29,6 +29,7 @@ pub mod tags;
 pub mod team;
 pub mod transcript;
 pub mod vault;
+pub mod review;
 pub mod words;
 
 pub use transcript::Transcript;
@@ -1277,6 +1278,9 @@ pub enum Event {
     WorkEnded { session: SessionId, ticket: TicketId },
     /// A ticket was created or changed. Carries the whole ticket.
     TicketChanged { squad: SquadName, ticket: Ticket },
+    /// An NVIDIA Nemotron model on Nebius Token Factory read a handed-in
+    /// ticket's diff ([`review::CodeReview`]): what to look at before accepting.
+    CodeReviewed { squad: SquadName, review: review::CodeReview },
     /// A ticket's record, oldest first ([`Command::TicketHistory`]).
     TicketHistory { squad: SquadName, ticket: TicketId, entries: Vec<TicketEntry> },
     /// The squad's default mode, or one member's, changed. `mode: None`: the
@@ -1582,6 +1586,7 @@ impl Event {
     pub fn squad(&self) -> Option<&str> {
         match self {
             Event::TicketChanged { squad, .. }
+            | Event::CodeReviewed { squad, .. }
             | Event::TicketHistory { squad, .. }
             | Event::ModeChanged { squad, .. }
             | Event::ApprovalRequested { squad, .. }
@@ -1641,6 +1646,7 @@ impl Event {
             | Event::Output { session, .. } => Some(*session),
             Event::Error { session, .. } => *session,
             Event::TicketChanged { .. }
+            | Event::CodeReviewed { .. }
             | Event::TicketHistory { .. }
             | Event::ModeChanged { .. }
             | Event::ApprovalRequested { .. }
@@ -1961,6 +1967,9 @@ pub struct Snapshot {
     /// The disk's room, when it is short ([`disk::DiskLevel::Low`] or worse).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk: Option<disk::DiskStatus>,
+    /// Nemotron's reviews of the tickets in review ([`Event::CodeReviewed`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reviews: Vec<review::CodeReview>,
 }
 
 #[cfg(test)]
