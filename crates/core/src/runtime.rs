@@ -2729,7 +2729,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         if self.config.persist
             && let Some(journal) = journal_for(&mut self.journals, &self.config.home, squad)
         {
-            let _ = journal.record_conversation(id, project.as_deref());
+            let _ = journal.record_conversation(id, project.as_deref(), &lane.cwd);
         }
         self.publish_lane(id, lane, pm, project, true);
     }
