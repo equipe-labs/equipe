@@ -243,6 +243,11 @@ impl Catalog {
         self.words.get(key).or_else(|| self.english.get(key)).map_or(key, String::as_str)
     }
 
+    /// The word for `key` in this language only — no English in its place.
+    pub fn own(&self, key: &str) -> Option<&str> {
+        self.words.get(key).map(String::as_str)
+    }
+
     /// The word for `key` said of `n` things: its plural form for `n` in the
     /// language (`key.one`, `key.other`), else in English, else `key` itself.
     pub fn plural<'a>(&'a self, key: &'a str, n: u64) -> &'a str {
@@ -379,13 +384,15 @@ pub struct Words {
     /// `Lang::index` of the language in use; `u8::MAX` until one is.
     current: AtomicU8,
     tables: [OnceLock<Catalog>; 8],
+    /// [`Words::every`]'s lists, by key.
+    lists: std::sync::Mutex<std::collections::BTreeMap<String, &'static [&'static str]>>,
 }
 
 impl Words {
     /// `files` as `include_str!` brings them in; `first` says the language
     /// to start in, asked the first time a word is.
     pub const fn new(files: &'static [(&'static str, &'static str)], first: fn() -> Lang) -> Self {
-        Self { files, first, current: AtomicU8::new(u8::MAX), tables: [const { OnceLock::new() }; 8] }
+        Self { files, first, current: AtomicU8::new(u8::MAX), tables: [const { OnceLock::new() }; 8], lists: std::sync::Mutex::new(std::collections::BTreeMap::new()) }
     }
 
     /// The language in use.
@@ -414,6 +421,28 @@ impl Words {
     pub fn set(&self, lang: Lang) {
         self.current.store(lang.index() as u8, Ordering::Release);
     }
+
+    /// `key`'s words in every language, each language's list `|`-separated:
+    /// what text is matched against when it may be in any language (what a
+    /// member wrote, a page's words), whichever one the screen is in.
+    /// Read once per key and kept.
+    pub fn every(&'static self, key: &str) -> &'static [&'static str] {
+        let mut lists = self.lists.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(list) = lists.get(key) {
+            return list;
+        }
+        let mut out: Vec<&'static str> = Vec::new();
+        for lang in Lang::ALL {
+            for word in self.of(lang).own(key).unwrap_or_default().split('|').filter(|w| !w.is_empty()) {
+                if !out.contains(&word) {
+                    out.push(word);
+                }
+            }
+        }
+        let list: &'static [&'static str] = Vec::leak(out);
+        lists.insert(key.to_owned(), list);
+        list
+    }
 }
 
 /// equipe core's own words, in every language.
@@ -429,6 +458,11 @@ pub const FILES: &[(&str, &str)] = &[
 ];
 
 static CORE: Words = Words::new(FILES, || Lang::En);
+
+/// core's `key` words in every language (`Words::every`).
+pub fn every(key: &str) -> &'static [&'static str] {
+    CORE.every(key)
+}
 
 /// equipe core's words in `lang`: what the daemon says to the person.
 pub fn core(lang: Lang) -> &'static Catalog {
@@ -671,6 +705,18 @@ macro_rules! words {
         #[allow(dead_code)]
         pub fn set(lang: $crate::i18n::Lang) {
             WORDS.set(lang)
+        }
+
+        /// `key`'s words in every language (`Words::every`).
+        #[allow(dead_code)]
+        pub fn every(key: &str) -> &'static [&'static str] {
+            WORDS.every(key)
+        }
+
+        /// The words in `lang`, whichever is in use.
+        #[allow(dead_code)]
+        pub fn of(lang: $crate::i18n::Lang) -> &'static $crate::i18n::Catalog {
+            WORDS.of(lang)
         }
     };
 }
