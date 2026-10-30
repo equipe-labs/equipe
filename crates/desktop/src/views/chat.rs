@@ -119,6 +119,8 @@ pub struct Chat {
     pub picked: Option<(String, u64)>,
     /// Bubbles taken back, fading out until the daemon says they are gone.
     pub leaving: Rc<HashSet<String>>,
+    /// Tab reaches the summary band's "다시 시도" and its close.
+    pub compact_focus: (FocusHandle, FocusHandle),
 }
 
 /// ⌘F: words looked for in the conversation, the rows they are in, and the
@@ -176,6 +178,7 @@ impl Chat {
             blocks: Rc::new(Vec::new()),
             shown: None,
             about: Rc::default(),
+            compact_focus: (cx.focus_handle().tab_stop(true), cx.focus_handle().tab_stop(true)),
             follow: true,
             dock_at: 0,
             faded_in: None,

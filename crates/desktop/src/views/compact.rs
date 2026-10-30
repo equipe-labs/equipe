@@ -27,6 +27,18 @@ const LOOP: Duration = Duration::from_millis(1600);
 /// motion is reduced (`motion.duration.reduced`).
 const IN: Duration = Duration::from_millis(120);
 const IN_REDUCED: Duration = Duration::from_millis(100);
+/// It goes with a fade this long (`motion.duration.slow`), reduced: 100 ms.
+const OUT: Duration = Duration::from_millis(200);
+
+/// `color.sunken`: the track and the chip's face (the design system's own).
+fn sunken(p: &Palette) -> Rgba {
+    if crate::render::is_dark(p) { rgb(0x111114) } else { rgb(0xEAE7E0) }
+}
+
+/// The reduced-motion setting; for pictures, `EQUIPE_REDUCE_MOTION` stands in.
+fn reduced(cx: &App) -> bool {
+    cx.reduce_motion() || (cfg!(feature = "snapshot") && std::env::var_os("EQUIPE_REDUCE_MOTION").is_some())
+}
 
 /// What the band says in one state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +67,7 @@ pub fn queued(n: usize) -> String {
 /// and a few seconds after it is done.
 pub fn shown(compact: &Compact, now: Instant) -> bool {
     match compact {
-        Compact::Done { at } => now.saturating_duration_since(*at) < COMPACT_DONE_SHOWN,
+        Compact::Done { at } => now.saturating_duration_since(*at) < COMPACT_DONE_SHOWN + OUT,
         _ => true,
     }
 }
@@ -73,7 +85,7 @@ pub fn band(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let tones = crate::render::tones(&p);
     let ran = convo.compacting_for().unwrap_or_default();
     let said = words(&compact, ran);
-    let reduce = cx.reduce_motion();
+    let reduce = reduced(cx);
     let (glyph, tone) = match compact {
         Compact::Running { .. } => (Icon::Compact, p.amber),
         Compact::Done { .. } => (Icon::Check, tones.added),
@@ -82,14 +94,18 @@ pub fn band(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     match compact {
         // The seconds count up; the band goes when the few seconds are over.
         Compact::Running { .. } => shell.wake_at(now + Duration::from_secs(1), cx),
-        Compact::Done { at } => shell.wake_at(at + COMPACT_DONE_SHOWN, cx),
+        Compact::Done { at } => {
+            shell.wake_at(at + COMPACT_DONE_SHOWN, cx);
+            shell.wake_at(at + COMPACT_DONE_SHOWN + OUT, cx);
+        }
         Compact::Failed => {}
     }
+    let done = matches!(compact, Compact::Done { .. });
     let waiting = if matches!(compact, Compact::Running { .. }) { convo.queue.items().len() } else { 0 };
     let head = h_flex()
         .gap_3()
         .items_baseline()
-        .child(div().min_w_0().flex_1().text_size(px(SMALL)).line_height(px(SMALL_LINE)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(said.title))
+        .child(swap(div().min_w_0().flex_1().text_size(px(SMALL)).line_height(px(SMALL_LINE)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(said.title), done, reduce))
         .when(matches!(compact, Compact::Running { .. }), |h| h.child(div().flex_none().min_w(px(48.)).text_right().text_size(px(SMALL)).line_height(px(SMALL_LINE)).text_color(p.muted).child(elapsed(ran))));
     let text = v_flex()
         .min_w_0()
@@ -104,11 +120,11 @@ pub fn band(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .flex_none()
             .gap_1()
             .items_center()
-            .child(ui::button(p, "compact-retry", ui::Kind::Secondary, t!("compact.retry")).on_click(cx.listener(move |shell, _, _, cx| {
+            .child(ui::button(p, "compact-retry", ui::Kind::Secondary, t!("compact.retry")).focus(&shell.chat.compact_focus.0).on_click(cx.listener(move |shell, _, _, cx| {
                 shell.send_command(Command::Refresh { session, summary: true });
                 shell.close_compact(session, cx);
             })))
-            .child(ui::icon_button(p, "compact-close", Icon::X, t!("compact.close"), None).on_click(cx.listener(move |shell, _, _, cx| shell.close_compact(session, cx))))
+            .child(ui::icon_button(p, "compact-close", Icon::X, t!("compact.close"), None).focus(&shell.chat.compact_focus.1).on_click(cx.listener(move |shell, _, _, cx| shell.close_compact(session, cx))))
     });
     let card = h_flex()
         .id("compaction")
@@ -124,18 +140,34 @@ pub fn band(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         .border_color(p.hair)
         .aria_label(said.title)
         .aria_description(said.body)
-        .child(div().flex_none().pt(px(1.)).child(icon(glyph, 20., tone)))
+        .child(swap(div().flex_none().pt(px(1.)).child(icon(glyph, 20., tone)), done, reduce))
         .child(text)
         .children(actions);
-    // It comes in with a fade and a small rise; motion reduced, a fade alone.
-    let id = ("compaction-in", matches!(compact, Compact::Running { .. }) as u64 | (matches!(compact, Compact::Failed) as u64) << 1);
+    // It comes in with a fade and a small rise (motion reduced, a fade alone);
+    // done, it goes with a fade once its few seconds are over.
+    let fast = if reduce { IN_REDUCED } else { IN };
+    let leaving = matches!(compact, Compact::Done { at } if now.saturating_duration_since(at) >= COMPACT_DONE_SHOWN);
+    if leaving {
+        let out = if reduce { IN_REDUCED } else { OUT };
+        return Some(card.with_animation("compaction-out", Animation::new(out).with_easing(motion::ease_out), |el, t| el.opacity(1. - t)).into_any_element());
+    }
+    let id = ("compaction-in", matches!(compact, Compact::Failed) as u64);
     Some(
-        card.with_animation(id, Animation::new(if reduce { IN_REDUCED } else { IN }).with_easing(motion::ease_out), move |el, t| {
+        card.with_animation(id, Animation::new(fast).with_easing(motion::ease_out), move |el, t| {
             let el = el.opacity(t);
             if reduce { el } else { el.top(px(6. * (1. - t))) }
         })
         .into_any_element(),
     )
+}
+
+/// What changes as the summary ends (its mark and its title) fades in, the
+/// band itself staying put.
+fn swap(el: Div, done: bool, reduce: bool) -> AnyElement {
+    if !done {
+        return el.into_any_element();
+    }
+    el.with_animation("compaction-swap", Animation::new(if reduce { IN_REDUCED } else { IN }).with_easing(motion::ease_out), |el, t| el.opacity(t)).into_any_element()
 }
 
 /// The flowing bar: a piece a third of the track wide runs along it,
@@ -148,12 +180,12 @@ fn bar(p: Palette, tone: Rgba, reduce: bool) -> impl IntoElement {
         // Redrawn no more than 20 times a second, as the other loops are.
         piece.with_animation("compaction-flow", Animation::new(LOOP).repeat().with_max_fps(20.), |el, t| el.left(relative(t * (1. - PIECE)))).into_any_element()
     };
-    div().relative().w_full().h(px(4.)).mt_1().overflow_hidden().rounded_full().bg(p.wash).child(piece)
+    div().relative().w_full().h(px(4.)).mt_1().overflow_hidden().rounded_full().bg(sunken(&p)).child(piece)
 }
 
 /// The note of what waits behind the summary.
 fn chip(p: Palette, words: String) -> impl IntoElement {
-    div().px_2().py(px(2.)).rounded_full().bg(p.wash).text_size(px(META)).line_height(px(META_LINE)).text_color(p.text2).child(words)
+    div().px_2().py(px(2.)).rounded_full().bg(sunken(&p)).text_size(px(META)).line_height(px(META_LINE)).text_color(p.text2).child(words)
 }
 
 /// The divider the conversation keeps where a summary finished.
@@ -204,7 +236,8 @@ mod tests {
     fn done_goes_after_four_seconds_a_failure_stays_and_nothing_gives_up_on_a_long_one() {
         let at = Instant::now();
         assert!(shown(&Compact::Done { at }, at + Duration::from_secs(3)));
-        assert!(!shown(&Compact::Done { at }, at + Duration::from_secs(4)));
+        assert!(shown(&Compact::Done { at }, at + Duration::from_secs(4)), "fading out");
+        assert!(!shown(&Compact::Done { at }, at + Duration::from_millis(4200)));
         assert!(shown(&Compact::Failed, at + Duration::from_secs(3600)));
         assert!(shown(&Compact::Running { manual: false, since: at }, at + Duration::from_secs(3600)));
     }
