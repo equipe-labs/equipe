@@ -1011,7 +1011,6 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history.push(Entry::Reply { text: "네, 새 커밋과 새 배포를 지켜보고 있어요. 올라오면 화면을 확인해서 보여 드릴게요.".into() });
                         }
                         let mut pm_info = info(1, "pm", history);
-                        let mut frontend = frontend;
                         if let Some(mode) = std::env::var("FAKE_COMPACT").ok().filter(|m| !m.is_empty()) {
                             let ago = |secs: u64| now_ms().saturating_sub(secs * 1000);
                             let (trigger, secs) = match mode.as_str() {
