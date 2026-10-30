@@ -1350,6 +1350,11 @@ impl Runtime {
         self.config.nemotron.is_some() && codex_app::find(&self.config.codex_binary).is_some()
     }
 
+    /// Whether no engine is signed in: neither Claude Code nor Codex.
+    async fn nothing_signed_in(&mut self) -> bool {
+        first_ready_engine(&[Engine::Claude, Engine::Codex], &self.config.store, &self.config.claude_binary, &self.config.codex_binary).await.is_none()
+    }
+
     /// The models the person's Codex CLI offers, its default first; kept a while.
     async fn codex_catalog(&mut self) -> Result<Vec<String>, String> {
         if let Some((at, models)) = &self.codex_models
@@ -2107,6 +2112,11 @@ runbooks and reports live there, and work across the projects or on running them
         // NVIDIA's models on Nebius Token Factory run on Codex's agent (`nemotron`).
         let mut on_nebius = spec.model.as_deref().is_some_and(crate::nemotron::is_agent_model);
         let engine = match spec.engine {
+            // Named, but nothing at all is signed in: Nemotron, rather than failing.
+            Some(_) if !on_nebius && self.nebius_ready() && self.nothing_signed_in().await => {
+                on_nebius = true;
+                Engine::Codex
+            }
             Some(engine) => engine,
             None if on_nebius => Engine::Codex,
             None => {
@@ -2149,8 +2159,8 @@ runbooks and reports live there, and work across the projects or on running them
                 if !on_nebius {
                     match codex_app::login_status(&self.config.codex_binary).await {
                         Ok(Some(sign_in)) if sign_in.signed_in() => {}
-                        // Signed out, with a Token Factory key: Nemotron instead of failing.
-                        Ok(_) if self.config.nemotron.is_some() => on_nebius = true,
+                        // Signed out, nothing else signed in, and a Token Factory key: Nemotron instead of failing.
+                        Ok(_) if self.config.nemotron.is_some() && self.nothing_signed_in().await => on_nebius = true,
                         Ok(_) => return fail(self, say!(self, "error.codex_cli_signed_out"), Some("equipe login codex")),
                         Err(err) => return fail(self, err.to_string(), Some("equipe status")),
                     }

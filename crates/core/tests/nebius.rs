@@ -168,6 +168,37 @@ async fn with_nothing_signed_in_a_token_factory_key_starts_members_on_nemotron()
 }
 
 #[tokio::test]
+async fn with_nothing_signed_in_a_member_named_for_an_engine_starts_on_nemotron_too() {
+    let (codex, _, _) = fake_codex("FAKE_CODEX_SIGNED_OUT=1");
+    let nemotron = token_factory("http://127.0.0.1:9/v1/", Some(MODEL));
+    let (handle, mut events) = runtime::start(config(&codex, &scratch("home"), Some(nemotron)));
+    for (id, engine) in [(1, Engine::Claude), (2, Engine::Codex)] {
+        let spec = SessionSpec { engine: Some(engine), ..plain(&scratch("cwd"), Access::ReadOnly) };
+        let started = add(&handle, &mut events, id, spec).await;
+        let Some(Event::SessionStarted { engine: Engine::Codex, model, .. }) = started.last() else { panic!("{started:#?}") };
+        assert_eq!(model.as_deref(), Some(MODEL));
+    }
+}
+
+#[tokio::test]
+async fn with_another_engine_signed_in_a_signed_out_codex_still_says_how_to_sign_in() {
+    let (codex, _, _) = fake_codex("FAKE_CODEX_SIGNED_OUT=1");
+    let mut config = config(&codex, &scratch("home"), Some(token_factory("http://127.0.0.1:9/v1/", Some(MODEL))));
+    let claude = scratch("bin").join("claude");
+    write_script(&claude, "#!/bin/sh\necho '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"subscriptionType\":\"max\"}'\n");
+    config.claude_binary = claude.to_string_lossy().into_owned();
+    let (handle, mut events) = runtime::start(config);
+    let spec = SessionSpec { engine: Some(Engine::Codex), ..plain(&scratch("cwd"), Access::ReadOnly) };
+    let failed = add(&handle, &mut events, 1, spec).await;
+    let Some(Event::Error { message, .. }) = failed.last() else { panic!("{failed:#?}") };
+    assert!(message.contains("Codex CLI isn't signed in"), "the person picks per member with /model: {message}");
+    // Picked by model: on Nemotron, Claude signed in or not.
+    let spec = SessionSpec { engine: Some(Engine::Codex), model: Some(MODEL.into()), ..plain(&scratch("cwd"), Access::ReadOnly) };
+    let started = add(&handle, &mut events, 2, spec).await;
+    assert!(matches!(started.last(), Some(Event::SessionStarted { engine: Engine::Codex, .. })), "{started:#?}");
+}
+
+#[tokio::test]
 async fn without_a_key_nothing_signed_in_says_so_and_how() {
     let (codex, _, _) = fake_codex("FAKE_CODEX_SIGNED_OUT=1");
     let (handle, mut events) = runtime::start(config(&codex, &scratch("home"), None));
