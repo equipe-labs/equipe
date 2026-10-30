@@ -243,9 +243,10 @@ command in the member's worktree and the file lands on the member's branch; an M
 call reaches the MCP server and its answer goes back to the model; every request is
 `POST /v1/responses` with `Authorization: Bearer <the key>`, the `nvidia/…` model and
 function tools only; a refused key (401) ends the turn with *"Nebius Token Factory refused
-the key"*. **No member has run on the real Token Factory yet** — how well a given Nemotron
-model drives Codex's tools is untested; see
-[verification.md](docs/hackathon/verification.md) for the owner's real run.
+the key"*. **Real run (2026-10-30):** on the real Token Factory, `nvidia/Nemotron-3.5-Super-VL`
+drove Codex to write and run `hello.py` in 2 requests (both 200, 3.2 s, 9,820 tokens in / 196
+out), and reviewed a change with an auth bypass correctly — see
+[verification.md](docs/hackathon/verification.md#real-runs-2026-10-30).
 
 **Limits.**
 - Files change through shell commands (`exec_command`): Codex 0.154 offers its

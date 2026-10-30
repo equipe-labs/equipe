@@ -6,14 +6,47 @@ Two kinds of evidence, kept apart:
    plays Token Factory with canned answers. They prove equipe's own behaviour — request
    shape, retries, errors, parsing, redaction, persistence, events. They do **not** prove
    that Nebius Token Factory or any NVIDIA model answered.
-2. **A real end-to-end run** (not done yet): the owner, with their own key, calls the real
-   Token Factory with a real NVIDIA Nemotron model. Until that is recorded below, the
-   hackathon's "runtime call to Nebius Token Factory with an NVIDIA open model" requirement
-   is **implemented but unverified**.
+2. **A real end-to-end run** (**done, 2026-10-30 16:15 UTC**): the owner's key, the real
+   Token Factory, a real NVIDIA Nemotron model — both a review and a member's coding turn.
+   See [Real runs](#real-runs-2026-10-30) right below.
 
-No real Token Factory request was made while building this (no key on the build machine,
-no approval to spend credits). That holds for both features: the Nemotron **review**
-(§1–2) and **members running on Nemotron** (§3).
+## Real runs (2026-10-30)
+
+Run on the owner's Mac with the owner's Token Factory key (read from a local file into the
+environment; never printed, logged or committed), equipe **0.90.0** (`e1c864b`), codex-cli
+**0.154.0**, endpoint `https://api.tokenfactory.nebius.com/v1` asked in Chat Completions.
+
+**1. Models (`equipe review --models`, `GET /v1/models`)** — the account's Nemotron models:
+`nvidia/Nemotron-3.5-Super-VL`, `nvidia/nemotron-3-super-120b-a12b`,
+`nvidia/Nemotron-3-Ultra-550b-a55b`, `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`,
+`nvidia/Nemotron-3_5-Lightning`; equipe picked `nvidia/Nemotron-3.5-Super-VL`.
+
+**2. A review (`equipe review`, `POST /v1/chat/completions`)** — a throwaway repository whose
+change makes `check_token` return `{"id": "anonymous", "admin": True}` when the lookup
+raises. 16:15:32 UTC. Verdict **needs attention / risky**: "an exception in lookup returns an
+anonymous admin user: authentication bypass and privilege escalation", risk at `auth.py:5`,
+three missing tests (the exception path, `None`, a valid token). **534 prompt + 848
+completion tokens, 3.4 s, request id `773218c7f601b833c5c62f27d525f002`.** SUCCESS.
+
+**3. A member's coding turn on Nemotron** (`crates/providers/tests/real_token_factory.rs`,
+run by hand with `-- --ignored --nocapture`): the person's installed `codex app-server` in an
+empty `CODEX_HOME` (no ChatGPT sign-in), driven by `codex_app::run_turn` — the daemon's own
+path — with Token Factory as its provider behind equipe's relay. Task: "create hello.py that
+prints `Hello from Nemotron`, then run it". Model `nvidia/Nemotron-3.5-Super-VL`.
+
+| | |
+|---|---|
+| What the member did | one `Bash` step: `echo 'print("Hello from Nemotron")' > hello.py && python3 hello.py` → exit 0; final answer "Created `hello.py` and ran it — it prints `Hello from Nemotron`." |
+| Checked after | `hello.py` exists; `python3 hello.py` prints `Hello from Nemotron` |
+| Requests | 2, both `200` (`POST /v1/chat/completions`, streamed) |
+| Request ids | `15eab69a82d6f65f0efb5d589197a28a`, `e4c1f0651d131607313e729857b1ed67` |
+| Tokens | in 9,820 (cached 4,352), out 196 |
+| Latency | 3,159 ms on requests; 3,514 ms wall |
+| Outcome | **SUCCESS** — turn `completed` |
+
+Cost in the Token Factory console: `[OWNER INPUT REQUIRED]` (not read by us). Not yet run for
+real: a whole squad through the daemon (PM → ticket → hand-in → review) — the pieces above
+are the same code it runs.
 
 ## 1. Mock tests
 

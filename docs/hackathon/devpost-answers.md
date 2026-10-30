@@ -51,8 +51,11 @@ CLI — no Claude or ChatGPT subscription — every member runs on an NVIDIA Nem
 - **Verified against a mock, not yet against Token Factory:** tests run the real installed
   Codex CLI through equipe against a stand-in Responses API — a shell command runs, an MCP
   tool call reaches its server, a member's file lands on its branch, and every request carries
-  the `nvidia/…` model and function tools only. `[OWNER INPUT REQUIRED — after the real run in
-  verification.md §3.2, replace this line with what it showed, or keep it as is]`
+  the `nvidia/…` model and function tools only.
+- **Verified on the real Token Factory (2026-10-30):** `nvidia/Nemotron-3.5-Super-VL` drove
+  the Codex CLI to write `hello.py` and run it (2 requests, both 200, 3.2 s, 9,820 tokens in /
+  196 out), and its review of a change that let a failed token lookup through as an admin
+  flagged the auth bypass at the right line (534 + 848 tokens, 3.4 s).
 
 **A reviewer with a narrow job:**
 
