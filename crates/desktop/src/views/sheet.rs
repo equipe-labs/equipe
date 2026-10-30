@@ -29,7 +29,12 @@ pub fn question(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                     .gap_2()
                     .justify_end()
                     .child(button(p, "ask-cancel", t!("sheet.cancel"), false).on_click(cx.listener(|this, _, window, cx| this.answer_question(false, window, cx))))
-                    .child(button(p, "ask-yes", ask.yes.clone(), true).on_click(cx.listener(|this, _, window, cx| this.answer_question(true, window, cx)))),
+                    // Taking something away: red, not the window's primary.
+                    .child(
+                        button(p, "ask-yes", ask.yes.clone(), true)
+                            .when(ask.destructive(), |b| b.bg(p.red).text_color(p.on_accent))
+                            .on_click(cx.listener(|this, _, window, cx| this.answer_question(true, window, cx))),
+                    ),
             ),
     ))
 }

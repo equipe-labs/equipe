@@ -329,5 +329,6 @@
   "squad_home.readme_outputs": "交办任务的成果（`outputs/T-12 标题/…`）",
   "squad_home.readme_edit": "你可以直接修改或放入文件。equipe 会记住每一处改动，随时都能撤回（`/home undo`）。",
   "squad_memory.index_title": "小队的记忆",
-  "squad_memory.index_intro": "小队共同知道的事：一个文件一条事实，这份列表由 equipe 根据文件生成。修改或删除文件后，从下一轮对话起所有成员都会知道。你写的内容优先。"
+  "squad_memory.index_intro": "小队共同知道的事：一个文件一条事实，这份列表由 equipe 根据文件生成。修改或删除文件后，从下一轮对话起所有成员都会知道。你写的内容优先。",
+  "error.project_not_removed": "无法移除项目：{why}"
 }

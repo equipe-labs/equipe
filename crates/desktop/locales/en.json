@@ -2132,5 +2132,19 @@
   "settings.accept_words": "accept review approve pm",
   "accounts.add_words": "login password id",
   "accounts.profile_words": "browser profile",
-  "accounts.profile_add_words": "browser profile chrome google"
+  "accounts.profile_add_words": "browser profile chrome google",
+  "sidebar.project_menu": "More",
+  "sidebar.remove_project": "Remove from squad…",
+  "sidebar.remove_ask": "Remove {name} from the squad?",
+  "sidebar.remove_body": "Its folder and files stay where they are. Tickets and branches stay too.",
+  "sidebar.remove_working": "Tickets at work in it right now: {n}",
+  "sidebar.remove_yes": "Remove",
+  "sidebar.removed": "Removed {name}",
+  "sidebar.undo_remove": "Undo",
+  "relaunch.daemon": "Update {place} · {theirs} → {ours}",
+  "relaunch.both": "Update both and restart · {version}",
+  "relaunch.daemon_running": "Updating {place}…",
+  "relaunch.daemon_restarting": "Restarting {place}…",
+  "relaunch.daemon_done": "{place} updated · Restart now",
+  "relaunch.daemon_failed": "{place} update failed · Try again"
 }

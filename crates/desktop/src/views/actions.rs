@@ -193,7 +193,15 @@ impl Shell {
         let Some(Ask { then, .. }) = self.confirm.take() else { return };
         if yes {
             match then {
-                Then::Send(commands) => commands.into_iter().for_each(|c| self.send_command(c)),
+                Then::Send(commands) => {
+                    for command in commands {
+                        // Taken off the squad: said under the projects, with the way back.
+                        if let equipe_core::protocol::Command::RemoveProject { path, .. } = &command {
+                            self.board.removed_project = Some(super::sidebar::Removed { name: equipe_core::board::project_name(path), path: path.clone(), at: std::time::Instant::now() });
+                        }
+                        self.send_command(command);
+                    }
+                }
                 Then::Job(job, after) => self.run_job(job, after, cx),
             }
         }

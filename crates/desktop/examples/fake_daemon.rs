@@ -1240,6 +1240,16 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             Command::Focus { project, .. } => {
                                 routes.lock().await.focus = project;
                             }
+                            // Off the squad: the list without it, as the daemon sends it.
+                            Command::RemoveProject { squad, path } => {
+                                eprintln!("remove project {}", path.display());
+                                let projects = [repo("web"), repo("app"), repo("api")].into_iter().filter(|p| *p != path).collect();
+                                let _ = events.send(Event::ProjectsChanged { squad, projects, hq: None });
+                            }
+                            Command::AddProject { squad, path } => {
+                                eprintln!("add project {path:?}");
+                                let _ = events.send(Event::ProjectsChanged { squad, projects: vec![repo("web"), repo("app"), repo("api")], hq: None });
+                            }
                             Command::SaveSecret { squad, id, values } => {
                                 eprintln!("secret {id}: {} values {values:?}", values.len());
                                 let _ = events.send(Event::SecretClosed { squad, id, saved: true });

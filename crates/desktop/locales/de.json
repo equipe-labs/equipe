@@ -2132,5 +2132,19 @@
   "settings.accept_words": "annehmen prüfen genehmigen accept review approve pm",
   "accounts.add_words": "anmeldung passwort konto login password id",
   "accounts.profile_words": "profil browser profile",
-  "accounts.profile_add_words": "profil konto browser profile chrome google"
+  "accounts.profile_add_words": "profil konto browser profile chrome google",
+  "sidebar.project_menu": "Mehr",
+  "sidebar.remove_project": "Aus dem Squad entfernen…",
+  "sidebar.remove_ask": "{name} aus dem Squad entfernen?",
+  "sidebar.remove_body": "Ordner und Dateien bleiben, wo sie sind. Tickets und Branches bleiben auch.",
+  "sidebar.remove_working": "Gerade laufende Tickets darin: {n}",
+  "sidebar.remove_yes": "Entfernen",
+  "sidebar.removed": "{name} entfernt",
+  "sidebar.undo_remove": "Rückgängig",
+  "relaunch.daemon": "{place} aktualisieren · {theirs} → {ours}",
+  "relaunch.both": "Beide aktualisieren und neu starten · {version}",
+  "relaunch.daemon_running": "{place} wird aktualisiert…",
+  "relaunch.daemon_restarting": "{place} startet neu…",
+  "relaunch.daemon_done": "{place} aktualisiert · Jetzt neu starten",
+  "relaunch.daemon_failed": "Aktualisierung von {place} fehlgeschlagen · Erneut versuchen"
 }

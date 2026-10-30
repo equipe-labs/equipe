@@ -2080,5 +2080,19 @@
   "settings.accept_words": "接受 審核 批准 accept review approve pm",
   "accounts.add_words": "登入 密碼 帳號 login password id",
   "accounts.profile_words": "設定檔 瀏覽器 browser profile",
-  "accounts.profile_add_words": "設定檔 瀏覽器 帳號 browser profile chrome google"
+  "accounts.profile_add_words": "設定檔 瀏覽器 帳號 browser profile chrome google",
+  "sidebar.project_menu": "更多",
+  "sidebar.remove_project": "從小隊中移除…",
+  "sidebar.remove_ask": "要把 {name} 從小隊中移除嗎？",
+  "sidebar.remove_body": "資料夾和檔案保持原樣，工單和分支也會保留。",
+  "sidebar.remove_working": "目前在此專案中進行的工單：{n}",
+  "sidebar.remove_yes": "移除",
+  "sidebar.removed": "已移除 {name}",
+  "sidebar.undo_remove": "復原",
+  "relaunch.daemon": "更新 {place} · {theirs} → {ours}",
+  "relaunch.both": "全部更新並重新啟動 · {version}",
+  "relaunch.daemon_running": "正在更新 {place}…",
+  "relaunch.daemon_restarting": "正在重新啟動 {place}…",
+  "relaunch.daemon_done": "{place} 已更新 · 立即重新啟動",
+  "relaunch.daemon_failed": "{place} 更新失敗 · 重試"
 }

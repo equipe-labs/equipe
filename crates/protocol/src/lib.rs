@@ -729,6 +729,9 @@ pub enum Command {
     /// machine (a git repository; one with no history yet is started as one).
     /// Answered with [`Event::ProjectsChanged`], or an error saying why not.
     AddProject { squad: SquadName, path: PathBuf },
+    /// The person takes a project off the squad: its folder, tickets and
+    /// branches stay where they are. Answered with [`Event::ProjectsChanged`].
+    RemoveProject { squad: SquadName, path: PathBuf },
     /// The person makes one of the squad's projects its HQ — where the
     /// operations across its products live — or none (`None`). Answered with
     /// [`Event::ProjectsChanged`].

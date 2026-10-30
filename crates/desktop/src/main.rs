@@ -58,6 +58,7 @@ mod i18n;
 mod icons;
 mod motion;
 mod relaunch;
+use relaunch::DaemonUpdate;
 mod roadmap;
 mod sent;
 mod render;
@@ -91,7 +92,6 @@ use views::browser::{BrowserPanel, PanelEvent};
 use views::chat::Chat;
 use views::composer::Composer;
 use views::connect::{AskUi, ConnectUi};
-use tips::TipExt as _;
 
 actions!(
     equipe,
@@ -227,11 +227,12 @@ pub struct Shell {
     /// The daemon's machine being brought up to this app's release.
     pub(crate) daemon_update: Option<DaemonUpdate>,
     /// The person closed the banner: not again this launch.
-    daemon_update_hidden: bool,
+    /// The daemon's update was asked for with the app's: the app restarts once it is in.
+    relaunch_after_daemon: bool,
     /// 현황's releases, as last found.
     pub overview: views::overview::OverviewUi,
     /// The banner's "restart now" asked once: the next click restarts.
-    daemon_restart_armed: bool,
+    pub(crate) daemon_restart_armed: bool,
     /// The ticket a `T-n` link asked the board to open.
     pub board_ticket: Option<u32>,
     /// Notifications: what macOS allows, the sheet asking, the reply awaited, the Dock's number.
@@ -353,7 +354,7 @@ impl Shell {
             side_drag: None,
             term_drag: None,
             daemon_update: None,
-            daemon_update_hidden: false,
+            relaunch_after_daemon: false,
             overview: Default::default(),
             daemon_restart_armed: false,
             board_ticket: None,
@@ -509,7 +510,7 @@ impl Shell {
                 if key == "escape" {
                     this.update(cx, |shell, cx| shell.escape_overlay(window, cx)).ok();
                     cx.stop_propagation();
-                } else if key == "enter" && this.update(cx, |shell, _| shell.confirm.is_some() && shell.ask.queue.is_empty()).unwrap_or(false) {
+                } else if key == "enter" && this.update(cx, |shell, _| shell.confirm.as_ref().is_some_and(|a| !a.destructive()) && shell.ask.queue.is_empty()).unwrap_or(false) {
                     this.update(cx, |shell, cx| shell.answer_question(true, window, cx)).ok();
                     cx.stop_propagation();
                 }
@@ -1369,7 +1370,7 @@ impl Shell {
                     Screen::Overview => views::overview::render(self, cx),
                     Screen::Roadmap => views::roadmap::render(self, cx),
                 };
-                v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(self.update_banner(cx)).children(views::disk::banner(self, cx)).child(screen).into_any_element()
+                v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).child(screen).into_any_element()
             }
         }
     }
@@ -1423,17 +1424,6 @@ impl Shell {
     }
 }
 
-/// Bringing the daemon's machine up to this app's release.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DaemonUpdate {
-    Running,
-    /// Installed: the daemon starts again on it once its members are idle.
-    Done,
-    /// The person asked for it now, not once the members are idle.
-    Restarting,
-    Failed(String),
-}
-
 /// What runs on the daemon's machine: the latest equipe over the one there
 /// (`equipe update`, else the install script), then a restart once its
 /// members are idle, left to run on its own. An `equipe` that is the app's
@@ -1455,81 +1445,34 @@ nohup equipe daemon restart >/dev/null 2>&1 &
 "#;
 
 impl Shell {
-    /// The daemon is older than this app: a line over the conversation, with
-    /// the button that updates it where it runs (this Mac, or over SSH).
-    fn update_banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
-        let p = self.palette;
-        let stale = notify::stale_daemon(&self.model.daemon_version, env!("CARGO_PKG_VERSION")).is_some();
-        if !stale && self.daemon_update.is_none() || self.daemon_update_hidden || !matches!(self.model.conn, Conn::Connected { .. }) {
-            return None;
-        }
-        let theirs = self.model.daemon_version.split('+').next().unwrap_or_default().to_owned();
-        // A Tailscale device by its name (`tinums-mac-mini`), not its address.
+    /// The daemon as the update pill needs it: where it runs — a Tailscale
+    /// device by its name (`tinums-mac-mini`), not its address — its release,
+    /// and where its own update stands.
+    pub(crate) fn daemon_view(&self) -> relaunch::Daemon {
         let place = match &self.endpoint {
             Endpoint::Ssh(host) => tailnet::peer_for(&self.connect.peers, &host.host).map(|peer| peer.short().to_owned()),
             Endpoint::Local { .. } => None,
         }
         .unwrap_or_else(|| self.endpoint.label());
-        // One line, cut short if it must; the whole of it on the pointer.
-        let (words, tone, whole) = match &self.daemon_update {
-            None => (
-                t!("main.update_daemon_short", place = place, theirs = theirs, ours = env!("CARGO_PKG_VERSION")),
-                p.text,
-                Some(t!("main.update_daemon_line", place = place, theirs = theirs, ours = env!("CARGO_PKG_VERSION"))),
-            ),
-            Some(DaemonUpdate::Running) => (t!("main.update_daemon_running", place = place), p.text2, None),
-            Some(DaemonUpdate::Done) => (t!("main.update_daemon_done_short").to_owned(), p.text2, Some(t!("main.update_daemon_done").to_owned())),
-            Some(DaemonUpdate::Failed(why)) => {
-                let all = t!("main.update_daemon_failed", why = why);
-                (all.clone(), p.text, Some(all))
-            }
-            Some(DaemonUpdate::Restarting) => (t!("main.update_daemon_restarting").to_owned(), p.text2, None),
-        };
-        let done = matches!(self.daemon_update, Some(DaemonUpdate::Done));
-        let armed = self.daemon_restart_armed;
-        // Members at work stop mid-turn: the first click says so, the second restarts.
-        let (now_label, now_kind) = if armed { (t!("main.update_daemon_now_sure"), ui::Kind::Danger) } else { (t!("main.update_daemon_now"), ui::Kind::Secondary) };
-        let can = matches!(self.daemon_update, None | Some(DaemonUpdate::Failed(_)));
-        Some(
-            h_flex()
-                .h(px(40.))
-                .flex_none()
-                .px_4()
-                .gap_3()
-                .items_center()
-                .bg(p.accent_bg)
-                .border_b_1()
-                .border_color(p.hair)
-                .text_size(px(SMALL))
-                .child(icons::icon(icons::Icon::ArrowUp, 14., p.accent))
-                .child({
-                    let line = div().id("update-daemon-words").flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(tone).child(words);
-                    match whole {
-                        Some(whole) => line.tip(p, whole, None).into_any_element(),
-                        None => line.into_any_element(),
-                    }
-                })
-                .when(matches!(self.daemon_update, Some(DaemonUpdate::Running | DaemonUpdate::Restarting)), |b| b.child(motion::spinner(13., p.muted)))
-                .when(done, |b| {
-                    b.child(ui::button(p, "restart-daemon-now", now_kind, now_label).on_click(cx.listener(move |this, _, _, cx| {
-                        if armed {
-                            this.restart_daemon_now(cx);
-                        } else {
-                            this.daemon_restart_armed = true;
-                            cx.notify();
-                        }
-                    })))
-                })
-                .when(can, |b| b.child(ui::button(p, "update-daemon", ui::Kind::Primary, t!("main.update_daemon")).on_click(cx.listener(|this, _, _, cx| this.update_daemon(cx)))))
-                .child(ui::icon_button(p, "update-daemon-hide", icons::Icon::X, t!("main.update_daemon_hide"), None).on_click(cx.listener(|this, _, _, cx| {
-                    this.daemon_update_hidden = true;
-                    cx.notify();
-                }))),
-        )
+        let connected = matches!(self.model.conn, Conn::Connected { .. });
+        relaunch::Daemon {
+            place,
+            theirs: self.model.daemon_version.split('+').next().unwrap_or_default().to_owned(),
+            older: connected && notify::stale_daemon(&self.model.daemon_version, env!("CARGO_PKG_VERSION")).is_some(),
+            remote: self.endpoint.is_remote(),
+            update: self.daemon_update.clone(),
+            armed: self.daemon_restart_armed,
+        }
+    }
+
+    /// The daemon's machine first, then the app into its waiting version.
+    pub(crate) fn update_both(&mut self, cx: &mut Context<Self>) {
+        self.relaunch_after_daemon = true;
+        self.update_daemon(cx);
     }
 
     /// Update the daemon's machine, off the main thread.
-    fn update_daemon(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn update_daemon(&mut self, cx: &mut Context<Self>) {
         self.daemon_update = Some(DaemonUpdate::Running);
         self.daemon_restart_armed = false;
         self.on_daemon_machine(UPDATE_SCRIPT, DaemonUpdate::Done, cx);
@@ -1537,7 +1480,7 @@ impl Shell {
 
     /// The person's second click: the daemon starts again on the new
     /// release now, members mid-turn or not; the app reconnects on its own.
-    fn restart_daemon_now(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn restart_daemon_now(&mut self, cx: &mut Context<Self>) {
         self.daemon_update = Some(DaemonUpdate::Restarting);
         self.daemon_restart_armed = false;
         self.on_daemon_machine(RESTART_NOW_SCRIPT, DaemonUpdate::Restarting, cx);
@@ -1569,10 +1512,15 @@ impl Shell {
         cx.spawn(async move |this, cx| {
             let done = rx.await.unwrap_or_else(|_| Err("stopped".into()));
             let _ = this.update(cx, |this, cx| {
+                let installed = done.is_ok() && then == DaemonUpdate::Done;
                 this.daemon_update = Some(match done {
                     Ok(()) => then,
                     Err(why) => DaemonUpdate::Failed(if why.is_empty() { t!("main.update_daemon_unknown").into() } else { why }),
                 });
+                // Both asked for: the daemon is on the new release, now the app.
+                if std::mem::take(&mut this.relaunch_after_daemon) && installed {
+                    this.relaunch_to_update(cx);
+                }
                 cx.notify();
             });
         })

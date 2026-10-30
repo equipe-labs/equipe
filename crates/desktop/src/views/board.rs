@@ -106,6 +106,12 @@ pub struct BoardUi {
     pub side_work_open: std::collections::HashSet<String>,
     /// The sidebar's lists of conversations shown whole (by project; "" the squad's).
     pub side_talks_all: std::collections::HashSet<String>,
+    /// Every project shown, the quiet ones past the first few too.
+    pub side_projects_all: bool,
+    /// A project's menu, open where its ⋯ or a right-click was.
+    pub project_menu: Option<(String, Point<Pixels>)>,
+    /// A project just taken off the squad, to put back while it is said.
+    pub removed_project: Option<super::sidebar::Removed>,
     /// The team block's subagent rows as last drawn, the same way.
     pub sub_motion: std::cell::RefCell<super::sidebar::SubMotion>,
     /// A small menu out of the sidebar's foot.
@@ -187,6 +193,9 @@ impl BoardUi {
             side_motion: Default::default(),
             side_work_open: Default::default(),
             side_talks_all: Default::default(),
+            side_projects_all: false,
+            project_menu: None,
+            removed_project: None,
             sub_motion: Default::default(),
             popup: None,
             popup_closed: None,

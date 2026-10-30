@@ -333,5 +333,6 @@
   "squad_home.readme_outputs": "lo que entregan las tareas (`outputs/T-12 título/…`)",
   "squad_home.readme_edit": "Puedes editar o dejar archivos aquí tú mismo. equipe recuerda cada cambio, así que cualquiera se puede deshacer (`/home undo`).",
   "squad_memory.index_title": "La memoria del equipo",
-  "squad_memory.index_intro": "Lo que el equipo sabe en común: un hecho por archivo. equipe hace esta lista a partir de los archivos; edita o borra uno y cada miembro lo tiene desde su siguiente turno. Lo que tú escribes manda."
+  "squad_memory.index_intro": "Lo que el equipo sabe en común: un hecho por archivo. equipe hace esta lista a partir de los archivos; edita o borra uno y cada miembro lo tiene desde su siguiente turno. Lo que tú escribes manda.",
+  "error.project_not_removed": "No se quitó el proyecto: {why}"
 }
