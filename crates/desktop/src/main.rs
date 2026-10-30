@@ -1880,10 +1880,10 @@ fn view_menu() -> Menu {
         MenuItem::action(t!("main.menu_zoom_out"), ZoomOut),
         MenuItem::action(t!("main.menu_actual_size"), ActualSize),
         MenuItem::separator(),
-        MenuItem::action("명령 팔레트…", CommandPalette),
-        MenuItem::action("보드 / 대화 전환", ToggleBoard),
-        MenuItem::action("모든 프로젝트", AllProjects),
-        MenuItem::action("도구 단계 펼치기/접기", ToggleFolds),
+        MenuItem::action(t!("menu.palette"), CommandPalette),
+        MenuItem::action(t!("menu.toggle_board"), ToggleBoard),
+        MenuItem::action(t!("menu.all_projects"), AllProjects),
+        MenuItem::action(t!("menu.toggle_folds"), ToggleFolds),
     ])
 }
 
@@ -1944,56 +1944,56 @@ fn edit_menu() -> Menu {
     ])
 }
 
-/// The 스쿼드 menu: its items are command lines.
+/// The Squad menu: its items are command lines.
 fn squad_menu() -> Menu {
-    Menu::new("스쿼드").items([
-        MenuItem::action("스쿼드 전환…", SwitchSquad),
-        MenuItem::action("새 스쿼드…", NewSquad),
-        MenuItem::action("폴더 추가…", AddFolder),
-        MenuItem::action("폴더 빼기…", RemoveFolder),
+    Menu::new(t!("menu.squad")).items([
+        MenuItem::action(t!("menu.switch_squad"), SwitchSquad),
+        MenuItem::action(t!("menu.new_squad"), NewSquad),
+        MenuItem::action(t!("menu.add_folder"), AddFolder),
+        MenuItem::action(t!("menu.remove_folder"), RemoveFolder),
         MenuItem::separator(),
-        MenuItem::action("스쿼드 폴더 열기", OpenSquadFolder),
-        MenuItem::action("폴더 변경 보기", HomeChanges),
-        MenuItem::action("마지막 변경 되돌리기…", HomeUndo),
+        MenuItem::action(t!("menu.open_squad_folder"), OpenSquadFolder),
+        MenuItem::action(t!("menu.home_changes"), HomeChanges),
+        MenuItem::action(t!("menu.home_undo"), HomeUndo),
         MenuItem::separator(),
-        MenuItem::action("스쿼드의 기억 열기", OpenSquadMemory),
-        MenuItem::action("기억 변경 보기", MemoryChanges),
+        MenuItem::action(t!("menu.open_memory"), OpenSquadMemory),
+        MenuItem::action(t!("menu.memory_changes"), MemoryChanges),
         MenuItem::separator(),
-        MenuItem::action("대화 내보내기…", ExportConversation),
-        MenuItem::action("보드 정리 요청…", TidyBoard),
+        MenuItem::action(t!("menu.export"), ExportConversation),
+        MenuItem::action(t!("menu.tidy"), TidyBoard),
     ])
 }
 
-/// The 멤버 menu: its items are command lines.
+/// The Member menu: its items are command lines.
 fn member_menu() -> Menu {
-    Menu::new("멤버").items([
-        MenuItem::action("멤버 추가…", AddMembers),
-        MenuItem::action("모델…", SetModel),
-        MenuItem::action("모드…", SetMode),
+    Menu::new(t!("menu.member")).items([
+        MenuItem::action(t!("menu.add_members"), AddMembers),
+        MenuItem::action(t!("menu.model"), SetModel),
+        MenuItem::action(t!("menu.mode"), SetMode),
         MenuItem::separator(),
-        MenuItem::action("새 대화로 요약해 이어가기", CompactMember),
-        MenuItem::action("새 대화 시작…", ClearMember),
-        MenuItem::action("스쿼드에서 내보내기…", CloseMember),
+        MenuItem::action(t!("menu.compact"), CompactMember),
+        MenuItem::action(t!("menu.clear"), ClearMember),
+        MenuItem::action(t!("menu.close_member"), CloseMember),
         MenuItem::separator(),
-        MenuItem::action("사용량", ShowUsage),
+        MenuItem::action(t!("menu.usage"), ShowUsage),
         MenuItem::separator(),
-        MenuItem::action("브라우저 로그인…", BrowserSignin),
-        MenuItem::action("브라우저 화면에 보이기", BrowserShow),
-        MenuItem::action("브라우저 숨기기", BrowserHide),
-        MenuItem::action("브라우저 동시 개수…", BrowserMax),
-        MenuItem::action("전송 확인 앱…", SendApps),
+        MenuItem::action(t!("menu.browser_signin"), BrowserSignin),
+        MenuItem::action(t!("menu.browser_show"), BrowserShow),
+        MenuItem::action(t!("menu.browser_hide"), BrowserHide),
+        MenuItem::action(t!("menu.browser_max"), BrowserMax),
+        MenuItem::action(t!("menu.send_apps"), SendApps),
         MenuItem::separator(),
-        MenuItem::action("맥 화면 되찾기", ScreenBack),
-        MenuItem::action("맥 화면 다시 열기", ScreenOpen),
+        MenuItem::action(t!("menu.screen_back"), ScreenBack),
+        MenuItem::action(t!("menu.screen_open"), ScreenOpen),
         MenuItem::separator(),
-        MenuItem::action("다음 말 추측 켜기", SuggestOn),
-        MenuItem::action("다음 말 추측 끄기", SuggestOff),
+        MenuItem::action(t!("menu.suggest_on"), SuggestOn),
+        MenuItem::action(t!("menu.suggest_off"), SuggestOff),
     ])
 }
 
-/// The 도움말 menu: its items are command lines.
+/// The Help menu: its items are command lines.
 fn help_menu() -> Menu {
-    Menu::new("도움말").items([MenuItem::action("단축키와 명령", ShowHelp)])
+    Menu::new(t!("menu.help")).items([MenuItem::action(t!("menu.shortcuts"), ShowHelp)])
 }
 
 

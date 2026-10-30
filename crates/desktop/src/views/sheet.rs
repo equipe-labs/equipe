@@ -5,6 +5,7 @@
 
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
+use equipe_core::t;
 use gpui_kit::*;
 
 use super::connect::{button, modal_w};
@@ -27,7 +28,7 @@ pub fn question(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 h_flex()
                     .gap_2()
                     .justify_end()
-                    .child(button(p, "ask-cancel", "취소", false).on_click(cx.listener(|this, _, window, cx| this.answer_question(false, window, cx))))
+                    .child(button(p, "ask-cancel", t!("sheet.cancel"), false).on_click(cx.listener(|this, _, window, cx| this.answer_question(false, window, cx))))
                     .child(button(p, "ask-yes", ask.yes.clone(), true).on_click(cx.listener(|this, _, window, cx| this.answer_question(true, window, cx)))),
             ),
     ))
@@ -59,7 +60,7 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                     .gap_2()
                     .justify_end()
                     .children(buttons)
-                    .child(button(p, "sheet-close", "닫기", true).on_click(cx.listener(|this, _, window, cx| this.close_info(window, cx)))),
+                    .child(button(p, "sheet-close", t!("sheet.close"), true).on_click(cx.listener(|this, _, window, cx| this.close_info(window, cx)))),
             ),
     ))
 }
@@ -88,7 +89,7 @@ fn row(shell: &Shell, ix: usize, r: &Row, key_width: f32, cx: &mut Context<Shell
                 })),
         )
         .children(undo.map(|n| {
-            button(p, "undo", "되돌리기", false).id(("undo", ix)).on_click(cx.listener(move |this, _, window, cx| this.ask_undo(squad.clone(), n, window, cx)))
+            button(p, "undo", t!("sheet.undo"), false).id(("undo", ix)).on_click(cx.listener(move |this, _, window, cx| this.ask_undo(squad.clone(), n, window, cx)))
         }))
         .into_any_element()
 }

@@ -344,10 +344,30 @@ pub fn problems(files: &[(&str, &str)]) -> Vec<String> {
         for key in words.keys().filter(|k| !english.contains_key(*k)) {
             out.push(format!("{}: {key} isn't in English", lang.code()));
         }
+        // A word in another language's letters: Korean outside Korean, Chinese
+        // characters or kana in a language written in Latin letters.
+        for (key, word) in &words {
+            if let Some(stray) = word.chars().find(|c| foreign(lang, *c)) {
+                out.push(format!("{}: {key} has '{stray}' from another language", lang.code()));
+            }
+        }
     }
     out.sort();
     out.dedup();
     out
+}
+
+/// Whether `c` is written in a script `lang` doesn't use.
+fn foreign(lang: Lang, c: char) -> bool {
+    let hangul = matches!(c, '\u{AC00}'..='\u{D7A3}' | '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}');
+    let kana = matches!(c, '\u{3040}'..='\u{30FF}');
+    let han = matches!(c, '\u{4E00}'..='\u{9FFF}');
+    match lang {
+        Lang::Ko => kana,
+        Lang::Ja => hangul,
+        Lang::ZhHans | Lang::ZhHant => hangul || kana,
+        _ => hangul || kana || han,
+    }
 }
 
 /// A front end's words in every language, one of them in use — switched while

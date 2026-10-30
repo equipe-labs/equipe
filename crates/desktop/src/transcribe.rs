@@ -146,7 +146,7 @@ mod sf {
         if !unsafe { recognizer.isAvailable() && recognizer.supportsOnDeviceRecognition() } {
             return Err(Failure::Unsupported);
         }
-        let url = NSURL::fileURLWithPath(&NSString::from_str(path.to_str().ok_or_else(|| Failure::Failed("unreadable path".into()))?));
+        let url = NSURL::fileURLWithPath(&NSString::from_str(path.to_str().ok_or_else(|| Failure::Failed(equipe_core::t!("media.unreadable").into()))?));
         let request = unsafe {
             let request = SFSpeechURLRecognitionRequest::initWithURL(SFSpeechURLRecognitionRequest::alloc(), &url);
             // Partial results show where an utterance ends, so a long one is kept whole.

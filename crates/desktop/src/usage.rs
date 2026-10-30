@@ -5,8 +5,7 @@
 use equipe_core::protocol::PlanUsage;
 
 use crate::state::{Model, Presence};
-
-pub const NOTE: &str = "Tokens count everything a member's turns processed, the cached history read again each turn among them — at about a tenth of the price. A desk conversation starts afresh past 60% full; /compact or /clear does it now.";
+use equipe_core::t;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
@@ -30,13 +29,13 @@ pub struct View {
 /// reset time (local time, which this module doesn't know).
 pub fn plan_rows(plan: Option<PlanUsage>, when: impl Fn(i64) -> String) -> Vec<Row> {
     let Some(plan) = plan else {
-        return vec![Row { label: "—".into(), text: "reported after a member's next turn on Claude Code".into(), percent: None }];
+        return vec![Row { label: "—".into(), text: t!("usage.not_yet").into(), percent: None }];
     };
-    [("5-hour", plan.five_hour), ("week", plan.seven_day)]
+    [(t!("usage.five_hour"), plan.five_hour), (t!("usage.week"), plan.seven_day)]
         .into_iter()
         .filter_map(|(label, window)| {
             let w = window?;
-            Some(Row { label: label.into(), text: format!("{}% used · starts over {}", w.used_percent, when(w.resets_at)), percent: Some(w.used_percent.min(100)) })
+            Some(Row { label: label.into(), text: t!("usage.window", used = w.used_percent, when = when(w.resets_at)), percent: Some(w.used_percent.min(100)) })
         })
         .collect()
 }
@@ -49,11 +48,11 @@ pub fn view(model: &Model, when: impl Fn(i64) -> String) -> View {
         .map(|m| {
             let spent = model.spent.get(&m.session).copied().unwrap_or_default();
             let (context, percent) = match spent.context.filter(|(_, w)| *w > 0) {
-                Some((u, w)) => (format!("context {}% ({}k of {}k)", u * 100 / w, u / 1000, w / 1000), Some((u * 100 / w).min(100) as u8)),
-                None => ("context —".to_owned(), None),
+                Some((u, w)) => (t!("usage.context", pct = u * 100 / w, used = u / 1000, window = w / 1000), Some((u * 100 / w).min(100) as u8)),
+                None => (t!("usage.context_unknown").to_owned(), None),
             };
-            let cache = (spent.seen.1 * 100).checked_div(spent.seen.0).map_or_else(String::new, |p| format!(" · {p}% from cache"));
-            Row { label: m.name.clone(), text: format!("{context} · {} tokens{cache}", short_count(spent.tokens)), percent }
+            let cache = (spent.seen.1 * 100).checked_div(spent.seen.0).map_or_else(String::new, |p| t!("usage.from_cache", pct = p));
+            Row { label: m.name.clone(), text: t!("usage.tokens", context = context, tokens = short_count(spent.tokens), cache = cache), percent }
         })
         .collect();
     let codex = match model.engines.plan(equipe_core::protocol::Engine::Codex) {
@@ -133,22 +132,22 @@ mod tests {
     fn the_plan_says_when_it_isnt_known_yet_and_then_each_window() {
         let mut m = model();
         let when = |t: i64| format!("@{t}");
-        assert_eq!(view(&m, when).plan[0].text, "reported after a member's next turn on Claude Code");
+        assert_eq!(view(&m, when).plan[0].text, "멤버가 Claude Code에서 다음 턴을 마치면 알 수 있어요");
         m.apply(Update::Event(Event::PlanUsage { usage: PlanUsage { five_hour: Some(PlanWindow { used_percent: 42, resets_at: 100 }), seven_day: None }, engine: equipe_core::protocol::Engine::Claude }), T0);
         let plan = view(&m, when).plan;
         assert_eq!(plan.len(), 1);
-        assert_eq!((plan[0].label.as_str(), plan[0].text.as_str(), plan[0].percent), ("5-hour", "42% used · starts over @100", Some(42)));
+        assert_eq!((plan[0].label.as_str(), plan[0].text.as_str(), plan[0].percent), ("5시간", "42% 사용 · @100에 초기화", Some(42)));
     }
 
     #[test]
     fn members_show_context_tokens_and_the_share_from_cache() {
         let mut m = model();
-        assert_eq!(view(&m, |_| String::new()).members[0].text, "context — · 0 tokens");
+        assert_eq!(view(&m, |_| String::new()).members[0].text, "컨텍스트 — · 토큰 0");
         let usage = Usage { input_tokens: Some(100_000), output_tokens: Some(2_000), cache_tokens: Some(900_000), context_tokens: Some(126_000), context_window: Some(200_000) };
         m.apply(Update::Event(Event::TurnEnded { session: 2, outcome: TurnOutcome::Completed, usage: Some(usage) }), T0);
         let rows = view(&m, |_| String::new()).members;
         assert_eq!(rows[1].label, "frontend");
-        assert_eq!(rows[1].text, "context 63% (126k of 200k) · 1M tokens · 89% from cache");
+        assert_eq!(rows[1].text, "컨텍스트 63% (126k / 200k) · 토큰 1M · 89% 캐시");
         assert_eq!(rows[1].percent, Some(63));
     }
 
