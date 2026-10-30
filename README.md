@@ -201,6 +201,8 @@ equipe daemon run               # in the foreground; Ctrl-C stops it
 ```
 
 Without a key nothing is sent anywhere: the daemon logs once that reviews are off.
+(For people without a key of their own, `equipe judge-relay` can hold one on a server and hand out
+capped app tokens — see `docs/hackathon/judge-access.md`; it isn't deployed anywhere.)
 
 | Variable | |
 |---|---|

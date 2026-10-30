@@ -1273,6 +1273,10 @@ impl Model {
         if let Some(alert) = self.tickets.iter().find(|t| t.id == ticket.id).and_then(|old| crate::notify::merge_alert(old, ticket, self.ticket_project_name(ticket))) {
             self.alerts.push(alert);
         }
+        // Work back in hand: its review was of what came before.
+        if !matches!(ticket.status, TicketStatus::Review | TicketStatus::Done) {
+            self.reviews.remove(&ticket.id);
+        }
         if was != Some(ticket.status) {
             self.since.insert(ticket.id, self.unix);
             if was.is_some() {
@@ -2074,6 +2078,9 @@ mod tests {
         model.apply(Update::Event(Event::CodeReviewed { squad: "acme".into(), review: review(3, ReviewVerdict::LooksGood) }), T0);
         assert_eq!(model.reviews.get(&3).map(|r| r.verdict), Some(ReviewVerdict::LooksGood));
         assert!(model.board_rev > rev, "the peek draws again");
+        // Sent back, its review goes: it was of the work before.
+        model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(3, "in_progress", None) }), T0);
+        assert!(!model.reviews.contains_key(&3));
         // Another squad's is not this one's.
         model.apply(Update::Event(Event::CodeReviewed { squad: "zeta".into(), review: review(4, ReviewVerdict::Risky) }), T0);
         assert!(!model.reviews.contains_key(&4));

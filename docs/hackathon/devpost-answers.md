@@ -88,7 +88,8 @@ as untrusted input matters as much for a reviewer as for an agent.
 
 - Let the PM read Nemotron's review before it accepts work on the person's behalf.
 - Show reviews in the terminal console and on the phone app.
-- A judge/demo relay so the feature can be tried without one's own key (see `docs/hackathon/judge-access.md`).
+- Deploy the judge/demo relay (implemented and tested against a mock, not deployed) so the feature
+  can be tried without one's own key (see `docs/hackathon/judge-access.md`).
 - Measure review quality and cost on real tickets (not done yet).
 
 ## Built with

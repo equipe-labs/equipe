@@ -4053,6 +4053,10 @@ them with `propose_accept`. Then carry on with what else waits.]"
     /// branch against it, off the loop — git, then the network: the review
     /// comes back as [`Internal::Reviewed`]. Nothing without a key.
     fn ask_for_review(&mut self, squad: &str, ticket: &Ticket, sandbox: Sandbox, member: SessionId) {
+        // A review of the work handed in before is of other work now.
+        if let Some(journal) = self.journal(squad) {
+            let _ = journal.forget_review(ticket.id);
+        }
         let Some(cfg) = self.config.nemotron.clone() else {
             return;
         };

@@ -45,6 +45,8 @@ What the mock tests cover (`crates/core/src/nemotron.rs` › `tests`, `crates/co
 | `a_line_is_cleaned_and_cut` | Text cleaning and truncation helpers. |
 | `code_handed_in_is_reviewed_by_nemotron_kept_and_shown_on_every_screen` | Daemon: a real git hand-in → diff sent to the mock → `Event::CodeReviewed`, `Snapshot.reviews`, ticket record entry by `nemotron`. |
 | `a_review_that_cant_run_says_why_and_never_the_key` | Daemon: mock 401 → localized notice in the member's conversation, no key in any event, no review stored. |
+| `judge_relay::tests::*` (`cargo test -p equipe judge_relay`) | Judge relay between equipe's client and a mock upstream: the relay's key goes upstream, never the app token; `max_tokens` capped; models cut to NVIDIA Nemotron; unknown token / other vendor's model / after the end date refused without reaching upstream; daily cap; no key in `Debug`. |
+| `nemotron_reviews_come_with_the_snapshot_and_as_they_arrive` (desktop) | The desktop Model keeps reviews from the snapshot and the event, ignores other squads', drops one when its ticket is sent back. |
 
 Results on this branch (2026-10-30, macOS, `nemotron-review`): `cargo clippy --workspace
 --all-targets -- -D warnings` clean; `cargo test --workspace --no-fail-fast`: all passed

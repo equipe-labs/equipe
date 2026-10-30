@@ -35,6 +35,7 @@ model served by **Nebius Token Factory** reviews every code ticket that is hande
         ▼
  Internal::Reviewed { squad, ticket, member, result } back to the core loop
         │
+        │  (at hand-in, any earlier review of the ticket is forgotten: it was of other work)
         ├─ Ok:  journal.save_review()          reviews(ticket INTEGER PRIMARY KEY, body TEXT) — JSON
         │       journal.ticket_event(by "nemotron", kind "reviewed", text = summary)
         │       publish Event::CodeReviewed { squad, review }
@@ -65,6 +66,7 @@ model served by **Nebius Token Factory** reviews every code ticket that is hande
 | `crates/core/src/worktree.rs` | `Sandbox::diff()` |
 | `crates/core/src/journal.rs` | `reviews` table, `save_review`, `reviews` |
 | `crates/cli/src/review.rs` | `equipe review [--base <ref>] [--models] [--goal <text>]` |
+| `crates/cli/src/judge_relay.rs` | `equipe judge-relay` (hidden): lets app tokens use the owner's key for NVIDIA Nemotron completions only, within caps — not deployed ([judge-access.md](judge-access.md)) |
 | `crates/desktop/src/state.rs`, `views/peek.rs` | Keeping and drawing reviews |
 | `crates/*/locales/*.json` | Every word shown, in ko en ja zh-Hans zh-Hant es fr de |
 

@@ -861,6 +861,12 @@ impl Journal {
         Ok(())
     }
 
+    /// Forget `ticket`'s review: its work changed since.
+    pub fn forget_review(&self, ticket: TicketId) -> Result<()> {
+        self.conn.execute("DELETE FROM reviews WHERE ticket = ?1", [ticket])?;
+        Ok(())
+    }
+
     /// The reviews of `tickets` that were kept, in their order.
     pub fn reviews(&self, tickets: &[TicketId]) -> Result<Vec<equipe_protocol::review::CodeReview>> {
         let mut stmt = self.conn.prepare("SELECT body FROM reviews WHERE ticket = ?1")?;
