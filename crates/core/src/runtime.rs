@@ -176,7 +176,7 @@ impl Config {
             browser_host: cfg!(target_os = "macos"),
             person_home: None,
             lang: crate::i18n::Lang::resolve(crate::i18n::Front::Terminal),
-            nemotron: crate::nemotron::Config::from_env().ok(),
+            nemotron: crate::nemotron::Config::from_env_or_saved(&equipe_home()).ok(),
         }
     }
 
@@ -1346,6 +1346,14 @@ impl Runtime {
 
     /// Whether members can run on Nemotron through Token Factory: a key in the
     /// daemon's environment, and the Codex CLI to run them on.
+    /// A key saved since the daemon started (`equipe login nebius`), taken up
+    /// when there was none.
+    fn refresh_nemotron(&mut self) {
+        if self.config.nemotron.is_none() && crate::nemotron::saved_key(&self.config.home).is_some() {
+            self.config.nemotron = crate::nemotron::Config::from_env_or_saved(&self.config.home).ok();
+        }
+    }
+
     fn nebius_ready(&self) -> bool {
         self.config.nemotron.is_some() && codex_app::find(&self.config.codex_binary).is_some()
     }
@@ -1424,7 +1432,10 @@ impl Runtime {
 
     async fn handle(&mut self, command: Command) {
         match command {
-            Command::Start { session, spec } => self.start(session, spec).await,
+            Command::Start { session, spec } => {
+                self.refresh_nemotron();
+                self.start(session, spec).await
+            }
             Command::Submit { session, text, about } => {
                 // A conversation the person opened is about its own project, whatever the screen shows.
                 self.said_about = self.conversation_about(session).or(about);
@@ -1633,7 +1644,12 @@ impl Runtime {
             Command::PairStart | Command::PairAnswer { .. } | Command::PairCancel | Command::Devices | Command::Unpair { .. } => {}
             Command::DiskScan => self.disk_report(None, true),
             Command::DiskClean { ids } => self.disk_clean(ids, None),
-            Command::Engines => self.look_at_engines(),
+            Command::Engines => {
+                self.refresh_nemotron();
+                self.look_at_engines();
+                self.publish_nebius();
+            }
+            Command::SetNebiusKey { key } => self.set_nebius_key(key),
             Command::SignIn { engine, device } => self.sign_in(engine, device),
             Command::SignInCancel { engine } => {
                 if let Some((_, task)) = self.sign_ins.remove(&engine) {
@@ -1669,6 +1685,36 @@ impl Runtime {
             let engines = crate::engines::statuses(&claude, &codex, &store).await;
             let _ = internal.send(Internal::Engines(engines));
         });
+    }
+
+    /// Nebius Token Factory as it stands, for every screen: where the key
+    /// comes from, whether Codex's agent is here — never the key.
+    fn publish_nebius(&mut self) {
+        let cfg = self.config.nemotron.as_ref();
+        let status = equipe_protocol::NebiusStatus {
+            key: if cfg.is_some() { crate::nemotron::key_source(&self.config.home) } else { equipe_protocol::NebiusKey::None },
+            codex: codex_app::find(&self.config.codex_binary).is_some(),
+            model: cfg.and_then(|c| c.model.clone()),
+            provider: cfg.map(|c| c.provider_name.clone()).unwrap_or_else(|| crate::nemotron::PROVIDER_NAME.to_owned()),
+        };
+        self.publish(Event::Nebius { status });
+    }
+
+    /// Save the person's Nebius key here (or forget it), and use it from now
+    /// on: members starting on Nebius and reviews. The environment's key, when
+    /// set, still comes first.
+    fn set_nebius_key(&mut self, key: Option<String>) {
+        let home = self.config.home.clone();
+        let done = match key {
+            Some(key) if !crate::nemotron::key_is_plausible(&key) => Err(say!(self, "error.nebius_key_invalid")),
+            Some(key) => crate::nemotron::save_key(&home, &key).map_err(|err| say!(self, "error.nebius_key_not_saved", why = err)),
+            None => crate::nemotron::forget_key(&home).map(|_| ()).map_err(|err| say!(self, "error.nebius_key_not_saved", why = err)),
+        };
+        if let Err(why) = done {
+            self.error(None, why, None);
+        }
+        self.config.nemotron = crate::nemotron::Config::from_env_or_saved(&home).ok();
+        self.publish_nebius();
     }
 
     /// The engines as just looked at, with who is on each and the sign-ins

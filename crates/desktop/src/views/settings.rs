@@ -74,6 +74,11 @@ pub struct SettingsUi {
     pub engine_keys: Vec<FocusHandle>,
     /// 계정's form and second clicks.
     pub accounts: super::accounts::AccountsUi,
+    /// The Nebius card's key box (masked; emptied once sent), what's wrong
+    /// with what was pasted, and the second click to remove the key.
+    pub nebius_key: Entity<InputState>,
+    pub nebius_problem: Option<String>,
+    pub nebius_forgetting: bool,
 }
 
 impl SettingsUi {
@@ -88,6 +93,9 @@ impl SettingsUi {
             scroll: ScrollHandle::new(),
             engine_keys: (0..crate::engines::PLATFORMS.len() * super::engines::KEYS).map(|_| cx.focus_handle().tab_stop(true)).collect(),
             accounts: super::accounts::AccountsUi::new(window, cx),
+            nebius_key: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("engines.nebius_key_placeholder"))),
+            nebius_problem: None,
+            nebius_forgetting: false,
         }
     }
 

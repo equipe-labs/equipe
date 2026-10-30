@@ -865,6 +865,13 @@ pub enum Command {
     },
     /// Stop the sign-in under way: answered by [`SignInStep::Cancelled`].
     SignInCancel { engine: Engine },
+    /// Save the person's Nebius Token Factory key on the daemon's machine
+    /// (`None`: forget it), for members and reviews to use from now on.
+    /// Answered, to every screen, by [`Event::Nebius`] — never with the key.
+    SetNebiusKey {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+    },
     /// Sign `engine` out with its own tool (`codex logout`). Claude Code's
     /// login is the person's own: equipe never touches it. Answered by
     /// [`Event::Engines`].
@@ -900,6 +907,33 @@ pub enum Command {
     /// [`Event::Design`], and again whenever one of them changes while a
     /// screen follows the squad.
     Design { squad: SquadName },
+}
+
+/// Where the daemon's Nebius Token Factory key comes from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NebiusKey {
+    /// None: members can't run on Nebius, nor reviews.
+    #[default]
+    None,
+    /// `NEBIUS_API_KEY` in the daemon's environment.
+    Environment,
+    /// Saved on the daemon's machine from a screen or `equipe login nebius`.
+    Saved,
+}
+
+/// Nebius Token Factory on the daemon's machine ([`Event::Nebius`]): never the key.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NebiusStatus {
+    pub key: NebiusKey,
+    /// The Codex CLI is installed: the agent members on Nebius run on.
+    pub codex: bool,
+    /// The model members start on, when set (`EQUIPE_NEBIUS_MODEL`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The provider's name: `Nebius Token Factory`, or another server's host.
+    #[serde(default)]
+    pub provider: String,
 }
 
 /// Where an engine stands on the daemon's machine ([`Event::Engines`]).
@@ -1538,6 +1572,9 @@ pub enum Event {
     },
     /// A sign-in to `engine` moved on ([`Command::SignIn`]).
     SignIn { engine: Engine, step: SignInStep },
+    /// Nebius Token Factory on the daemon's machine: sent with
+    /// [`Event::Engines`], and when its key is saved or forgotten.
+    Nebius { status: NebiusStatus },
     /// Moves between engines equipe proposes — or made on its own and tells
     /// of (`applied`), for the person to keep or undo.
     EngineProposed { squad: SquadName, proposal: engines::Proposal },
@@ -1691,6 +1728,7 @@ impl Event {
             | Event::DiskCleaned { .. } => None,
             // The engines: the daemon machine's, for every screen.
             | Event::Engines { .. }
+            | Event::Nebius { .. }
             | Event::SignIn { .. } => None,
         }
     }
@@ -1705,6 +1743,7 @@ impl Event {
                 | Event::DiskReport { .. }
                 | Event::DiskCleaned { .. }
                 | Event::Engines { .. }
+                | Event::Nebius { .. }
                 | Event::SignIn { .. }
                 | Event::Logins { .. }
                 | Event::BrowserProfiles { .. }

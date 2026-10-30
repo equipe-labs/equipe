@@ -201,7 +201,7 @@ async fn onboard(home: &Path, repo: Option<Folder>) -> Result<Start, String> {
     eprintln!("  {} {:<13}{}", mark(claude_ready), "claude code", e.dim(signed_in(claude_ready)));
     eprintln!("  {} {:<13}{}", mark(codex), "codex", e.dim(signed_in(codex)));
     // Without either: NVIDIA Nemotron on Nebius Token Factory, on the Codex CLI's agent, with only a key.
-    let nebius = equipe_core::nemotron::Config::from_env().is_ok() && equipe_providers::codex_app::find(equipe_providers::codex_app::DEFAULT_BINARY).is_some();
+    let nebius = equipe_core::nemotron::Config::from_env_or_saved(&equipe_providers::credentials::equipe_home()).is_ok() && equipe_providers::codex_app::find(equipe_providers::codex_app::DEFAULT_BINARY).is_some();
     if nebius {
         eprintln!("  {} {:<13}{}", mark(true), "nemotron", e.dim(t!("onboard.nebius_ready")));
     }

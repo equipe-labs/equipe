@@ -122,6 +122,8 @@
   "error.no_engine": "没有就绪的引擎。请先登录 Codex 或 Claude Code，或在守护进程的环境中设置 NEBIUS_API_KEY，用 NVIDIA Nemotron 运行成员。",
   "error.nebius_needs_codex": "NVIDIA Nemotron 成员运行在 Codex CLI 的智能体上（免费、开源，无需登录 ChatGPT）。请先安装 codex CLI。",
   "error.nebius_no_key": "守护进程的环境中没有 NEBIUS_API_KEY。请 export 后在该 shell 中重启守护进程。",
+  "error.nebius_key_invalid": "这看起来不像 Nebius API 密钥：请粘贴完整的密钥，不要有空格。",
+  "error.nebius_key_not_saved": "无法保存 Nebius 密钥：{why}",
   "error.nebius_no_model": "没有可启动的 NVIDIA Nemotron 模型：{why}。请把 EQUIPE_NEBIUS_MODEL 设为你的 Token Factory 账户提供的模型。",
   "error.nebius_unauthorized": "Nebius Token Factory 拒绝了该密钥。请检查 NEBIUS_API_KEY，然后在该 shell 中重启守护进程。",
   "error.no_member": "小队里没有叫 {name} 的成员。",

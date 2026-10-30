@@ -16,7 +16,7 @@ use crate::{Failure, ui};
 
 pub async fn command(base: Option<String>, list_models: bool, goal: Option<String>) -> Result<(), Failure> {
     let lang = crate::i18n::lang();
-    let mut cfg = Config::from_env().map_err(|err| Failure::new(err.why(lang)).next("export NEBIUS_API_KEY=…"))?;
+    let mut cfg = Config::from_env_or_saved(&equipe_providers::credentials::equipe_home()).map_err(|err| Failure::new(err.why(lang)).next("equipe login nebius"))?;
     let failed = |err: nemotron::ReviewError| Failure::new(t!("review.failed", why = err.why(lang)));
     if list_models {
         let all = nemotron::models(&cfg).await.map_err(failed)?;

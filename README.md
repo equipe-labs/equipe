@@ -166,6 +166,14 @@ Nemotron decides, and Codex's tools read files, run commands and tests, and chan
 in the member's worktree and sandbox, as for any Codex member. equipe's board tools (take a
 ticket, hand it in, ask the person) reach the model like Codex's own.
 
+**The key, the easy way:** in the desktop app, **Settings → AI platforms → Nebius Token
+Factory**, paste the key and press **Connect** — or run `equipe login nebius` in a terminal.
+Either saves it on the daemon's machine (`~/.equipe/keys/nebius`, readable only by you); the
+daemon uses it from then on, no restart and no shell setup needed. The card shows where the key
+comes from and removes it again. Claude Code and Codex connect from the same page.
+
+Or from a shell, for this daemon only:
+
 ```bash
 npm install -g @openai/codex                        # or: brew install codex
 read -rs NEBIUS_API_KEY && export NEBIUS_API_KEY    # paste the key; it isn't echoed or kept in history
