@@ -161,6 +161,10 @@ answers used: SSE response.created → response.output_item.added/done {function
               → response.completed {usage}
 ```
 
+Results on `nebius-engine` (2026-10-30, macOS, codex-cli 0.154.0 installed): `cargo clippy
+--workspace --all-targets -- -D warnings` clean; `cargo test --workspace --no-fail-fast`: 1,599
+passed, 0 failed — the tests above included, with the real `codex`. Mock only.
+
 ### 3.2 The owner's real run (not done)
 
 Needs: a Token Factory key, a **budget decision** (an agent turn is many requests; none is
