@@ -19,7 +19,12 @@ pub async fn command(base: Option<String>, list_models: bool, goal: Option<Strin
     let mut cfg = Config::from_env().map_err(|err| Failure::new(err.why(lang)).next("export NEBIUS_API_KEY=…"))?;
     let failed = |err: nemotron::ReviewError| Failure::new(t!("review.failed", why = err.why(lang)));
     if list_models {
-        let offered = nemotron::nemotron_models(&nemotron::models(&cfg).await.map_err(failed)?);
+        let all = nemotron::models(&cfg).await.map_err(failed)?;
+        let mut offered = nemotron::nemotron_models(&all);
+        if offered.is_empty() && cfg.provider == nemotron::CUSTOM_PROVIDER {
+            // Another server: whatever it serves can be asked.
+            offered = all;
+        }
         let Some(first) = offered.first() else {
             return Err(failed(nemotron::ReviewError::NoModel));
         };
@@ -54,7 +59,7 @@ pub async fn command(base: Option<String>, list_models: bool, goal: Option<Strin
     }
     // The model, named before the wait.
     if cfg.model.is_none() {
-        cfg.model = Some(nemotron::pick_model(&nemotron::models(&cfg).await.map_err(failed)?).map_err(failed)?);
+        cfg.model = Some(cfg.pick_model(&nemotron::models(&cfg).await.map_err(failed)?).map_err(failed)?);
     }
     let model = cfg.model.clone().unwrap_or_default();
     let what = match &base {

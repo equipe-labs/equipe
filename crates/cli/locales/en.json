@@ -472,6 +472,7 @@
   "main.row_install": "install",
   "main.row_keep": "keep",
   "main.row_key": "key",
+  "main.row_provider": "model server",
   "main.row_login": "login",
   "main.row_path": "path",
   "main.row_ready": "ready",

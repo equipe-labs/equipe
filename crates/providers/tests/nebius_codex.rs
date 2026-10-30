@@ -34,6 +34,8 @@ const KEY: &str = "test-not-a-key";
 const MODEL: &str = "nvidia/nemotron-mock-super";
 const COMMAND: &str = "printf 'written by nemotron' > made.txt && printf '%s' \"${NEBIUS_API_KEY:-absent}\" > key.txt";
 const FINAL: &str = "Done: made.txt is written.";
+/// Another provider's model, swapped in: any server's, by its id.
+const OPEN_MODEL: &str = "Qwen/Qwen3-Coder-480B-A35B-Instruct";
 
 /// One request the stand-in got: method, path, headers (names lowercased), body.
 #[derive(Debug, Clone)]
@@ -103,6 +105,39 @@ fn answer(seen: &Seen, n: usize, calls: &[(String, Value)]) -> (u16, &'static st
     (200, "text/event-stream", sse(&format!("resp_mock_{n}"), &item))
 }
 
+/// A stand-in Chat Completions server's answer to `seen`, streamed in chunks
+/// as such servers do: the next of `calls` not yet answered, else the final message.
+fn answer_chat(seen: &Seen, n: usize, calls: &[(String, Value)]) -> (u16, &'static str, String) {
+    if seen.method == "GET" {
+        return (200, "application/json", json!({ "object": "list", "data": [{ "id": OPEN_MODEL, "object": "model" }] }).to_string());
+    }
+    let messages = seen.body["messages"].as_array().cloned().unwrap_or_default();
+    let offered = |name: &str| seen.body["tools"].as_array().into_iter().flatten().any(|t| t["function"]["name"] == name);
+    let answered = messages.iter().filter(|m| m["role"] == "tool").count();
+    let id = format!("chatcmpl-{n}");
+    let chunk = |delta: Value, finish: Value| json!({ "id": id, "object": "chat.completion.chunk", "model": OPEN_MODEL, "choices": [{ "index": 0, "delta": delta, "finish_reason": finish }] });
+    let mut chunks = vec![chunk(json!({ "role": "assistant", "content": "" }), Value::Null)];
+    match calls.get(answered) {
+        Some((name, arguments)) if offered(name) => {
+            let arguments = arguments.to_string();
+            let (first, rest) = arguments.split_at(arguments.len() / 2);
+            chunks.push(chunk(json!({ "tool_calls": [{ "index": 0, "id": format!("call_mock_{}", answered + 1), "type": "function", "function": { "name": name, "arguments": first } }] }), Value::Null));
+            chunks.push(chunk(json!({ "tool_calls": [{ "index": 0, "function": { "arguments": rest } }] }), Value::Null));
+            chunks.push(chunk(json!({}), json!("tool_calls")));
+        }
+        _ => {
+            let (first, rest) = FINAL.split_at(5);
+            chunks.push(chunk(json!({ "content": first }), Value::Null));
+            chunks.push(chunk(json!({ "content": rest }), Value::Null));
+            chunks.push(chunk(json!({}), json!("stop")));
+        }
+    }
+    chunks.push(json!({ "id": id, "object": "chat.completion.chunk", "choices": [], "usage": { "prompt_tokens": 120, "completion_tokens": 12, "total_tokens": 132 } }));
+    let mut body: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
+    body.push_str("data: [DONE]\n\n");
+    (200, "text/event-stream", body)
+}
+
 /// Read one HTTP/1.1 request off `stream`; `None` when it closed first.
 async fn read_request(stream: &mut tokio::net::TcpStream) -> Option<Seen> {
     let mut buf = Vec::new();
@@ -147,6 +182,12 @@ async fn stand_in(calls: Vec<(String, Value)>) -> (String, Arc<Mutex<Vec<Seen>>>
 
 /// The stand-in, or one refusing every request with `refuse` (a status).
 async fn serve(calls: Vec<(String, Value)>, refuse: Option<u16>) -> (String, Arc<Mutex<Vec<Seen>>>) {
+    serve_as(calls, refuse, answer).await
+}
+
+type Answer = fn(&Seen, usize, &[(String, Value)]) -> (u16, &'static str, String);
+
+async fn serve_as(calls: Vec<(String, Value)>, refuse: Option<u16>, answer: Answer) -> (String, Arc<Mutex<Vec<Seen>>>) {
     let calls = Arc::new(calls);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -255,6 +296,7 @@ fn nebius(base_url: &str) -> codex_app::Provider {
         base_url: base_url.into(),
         env_key: "NEBIUS_API_KEY".into(),
         config: vec!["model_context_window=131072".into()],
+        wire: equipe_providers::relay::Wire::Responses,
     }
 }
 
@@ -382,6 +424,59 @@ async fn a_refused_key_ends_the_turn_and_says_so() {
     let said = err.to_string();
     assert!(matches!(err, equipe_providers::Error::CodexSignedOut) || said.contains("401") || said.to_ascii_lowercase().contains("unauthorized"), "{said}");
     assert!(!said.contains(KEY), "{said}");
+    let _ = std::fs::remove_dir_all(&cwd);
+    let _ = std::fs::remove_dir_all(&codex_home);
+}
+
+/// MOCK-VERIFIED: the model swapped for another server's — one speaking only
+/// Chat Completions, as nearly all do — and the same member's turn runs:
+/// Codex's Responses requests said in chat by equipe's relay, the server's
+/// chunked answer said back in Responses, the command run, the turn done.
+#[tokio::test]
+async fn the_real_codex_runs_a_members_turn_on_any_chat_completions_server() {
+    let Some(codex) = installed_codex() else {
+        eprintln!("skipped: no `codex` installed (or $EQUIPE_CODEX)");
+        return;
+    };
+    let (base_url, seen) = serve_as(vec![("exec_command".into(), json!({ "cmd": COMMAND }))], None, answer_chat).await;
+    let cwd = scratch("chat-work");
+    let codex_home = scratch("chat-codex-home");
+    let env = vec![("CODEX_HOME".to_owned(), codex_home.to_string_lossy().into_owned()), ("EQUIPE_MODEL_API_KEY".to_owned(), KEY.to_owned())];
+    let provider = codex_app::Provider {
+        id: "custom".into(),
+        name: "127.0.0.1".into(),
+        base_url: base_url.clone(),
+        env_key: "EQUIPE_MODEL_API_KEY".into(),
+        config: vec!["model_context_window=131072".into()],
+        wire: equipe_providers::relay::Wire::Chat,
+    };
+    let request = TurnRequest { prompt: "Write made.txt.", model: Some(OPEN_MODEL), access: Access::EditFiles, env: &env, provider: Some(&provider), ..Default::default() };
+    let mut activities = Vec::new();
+    let run = codex_app::run_turn(&codex, &cwd, request, None, None, None, |a| activities.push(a));
+    let outcome = tokio::time::timeout(Duration::from_secs(120), run).await;
+
+    let seen = seen.lock().unwrap().clone();
+    let shapes: Vec<Value> = seen.iter().map(|s| json!({ "request": format!("{} {}", s.method, s.path), "model": s.body["model"], "stream": s.body["stream"], "roles": s.body["messages"].as_array().map(|m| m.iter().map(|m| m["role"].clone()).collect::<Vec<_>>()), "tools": s.body["tools"].as_array().map(|t| t.iter().map(|t| t["function"]["name"].clone()).collect::<Vec<_>>()) })).collect();
+    let evidence = serde_json::to_string_pretty(&shapes).unwrap();
+    eprintln!("MOCK-VERIFIED (a stand-in chat server). What reached it, through equipe's relay:\n{evidence}");
+    let context = format!("\nrequests:\n{evidence}\nactivities: {activities:?}\noutcome: {outcome:?}");
+    let turn = outcome.unwrap_or_else(|_| panic!("the turn didn't end in 120s{context}")).unwrap_or_else(|err| panic!("the turn failed: {err}{context}"));
+    assert_eq!(turn.result.status, "completed", "{context}");
+    assert_eq!(turn.result.text, FINAL, "{context}");
+    assert_eq!(std::fs::read_to_string(cwd.join("made.txt")).ok().as_deref(), Some("written by nemotron"), "the command ran{context}");
+    assert!(activities.iter().any(|a| matches!(a, Activity::ToolDone(d) if d.name == "Bash" && d.ok)), "{context}");
+
+    let chats: Vec<&Seen> = seen.iter().filter(|s| s.method == "POST" && s.path == "/v1/chat/completions").collect();
+    assert!(chats.len() >= 2, "asked in chat, twice: the call and its output{context}");
+    assert!(!seen.iter().any(|s| s.path.ends_with("/responses")), "nothing in Responses reached it{context}");
+    for chat in &chats {
+        assert_eq!(chat.header("authorization"), Some(format!("Bearer {KEY}").as_str()), "{context}");
+        assert_eq!(chat.body["model"], OPEN_MODEL, "{context}");
+        assert_eq!(chat.body["messages"][0]["role"], "system", "{context}");
+    }
+    let back = chats.iter().find(|s| s.body["messages"].as_array().into_iter().flatten().any(|m| m["role"] == "tool")).unwrap_or_else(|| panic!("the output went back{context}"));
+    let tool = back.body["messages"].as_array().unwrap().iter().find(|m| m["role"] == "tool").unwrap();
+    assert_eq!(tool["tool_call_id"], "call_mock_1", "{context}");
     let _ = std::fs::remove_dir_all(&cwd);
     let _ = std::fs::remove_dir_all(&codex_home);
 }

@@ -38,13 +38,16 @@ For this hackathon we added two things on NVIDIA Nemotron and Nebius Token Facto
 **Coding agents on Nemotron.** With only a Token Factory key and the free, open-source Codex
 CLI — no Claude or ChatGPT subscription — every member runs on an NVIDIA Nemotron model:
 
-- The Codex CLI is the agent loop and Token Factory's OpenAI-compatible Responses API is its
-  model provider; Nemotron decides, and Codex's tools read files, run shell commands and tests,
+- The Codex CLI is the agent loop and Token Factory's OpenAI-compatible Chat Completions API
+  is its model provider (equipe's relay translates Codex's Responses requests); Nemotron decides, and Codex's tools read files, run shell commands and tests,
   and change files in the member's own git worktree and sandbox. equipe's board tools (take a
   ticket, hand it in) reach the model too.
 - With nothing else signed in, members start on Nemotron by themselves; otherwise
   `/model <member> nvidia/…` moves one over. People don't learn a new concept: it is a member
   whose model is `nvidia/…`.
+- **The model is swappable.** Any model on Token Factory (`/model <member> Qwen/…`), or any
+  other server speaking Chat Completions (`EQUIPE_MODEL_BASE_URL`: OpenRouter, vLLM, Ollama…)
+  — the agent, sandbox and board tools stay the same.
 - **Verified against a mock, not yet against Token Factory:** tests run the real installed
   Codex CLI through equipe against a stand-in Responses API — a shell command runs, an MCP
   tool call reaches its server, a member's file lands on its branch, and every request carries
@@ -75,10 +78,11 @@ CLI — no Claude or ChatGPT subscription — every member runs on an NVIDIA Nem
 - The daemon runs the review off its main loop when a ticket is handed in, stores it in the
   squad's SQLite journal and pushes a `CodeReviewed` event to every screen.
 - Members on Nemotron: `crates/providers/src/codex_app.rs` runs `codex app-server` with Token
-  Factory as a custom provider (`wire_api = "responses"`, key read by Codex from
-  `NEBIUS_API_KEY`), with what such a provider can't serve turned off; `crates/providers/src/relay.rs`
-  is a loopback relay that turns the Responses `namespace` tools Codex sends for MCP servers
-  into plain function tools and back. The daemon logs each member turn's Token Factory request
+  Factory as a custom provider (key read by Codex from `NEBIUS_API_KEY`), with what such a
+  provider can't serve turned off; `crates/providers/src/relay.rs` is a loopback relay that
+  turns the Responses `namespace` tools Codex sends for MCP servers into plain function tools,
+  and `crates/providers/src/chat_wire.rs` says each Responses request in Chat Completions and
+  the streamed chat answer (tool-call fragments included) back in Responses events. The daemon logs each member turn's Token Factory request
   ids and token counts — never the key or the text.
 - Tests run against a local mock Token Factory, so CI needs no key and no network; the members'
   tests drive the real Codex CLI against it.

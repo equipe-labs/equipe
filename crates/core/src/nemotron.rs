@@ -14,6 +14,16 @@
 //! - `EQUIPE_NEBIUS_BASE_URL`: another server speaking the same API (tests).
 //! - `EQUIPE_NEBIUS_MAX_TOKENS`: the longest answer asked for.
 //!
+//! Or any other server speaking OpenAI's chat API — OpenRouter, Together,
+//! Groq, vLLM, Ollama, LM Studio… — in place of Token Factory:
+//!
+//! - `EQUIPE_MODEL_BASE_URL`: its API's root (`…/v1`); set, it is used.
+//! - `EQUIPE_MODEL_API_KEY`: its key; a server on this machine needs none.
+//! - `EQUIPE_MODEL`: the model; otherwise a Nemotron one, or the first listed.
+//! - `EQUIPE_MODEL_MAX_TOKENS`: the longest review asked for.
+//! - `EQUIPE_MODEL_WIRE` (or `EQUIPE_NEBIUS_WIRE`): `chat` (the default) or
+//!   `responses`, the API members' turns are asked in.
+//!
 //! What the model says is data, not instructions: it is read as one JSON
 //! object, its text stripped of control characters and escape sequences, and
 //! capped in length and count. An answer that isn't a review is an error
@@ -52,6 +62,15 @@ const MAX_SNIPPET_CHARS: usize = 160;
 #[derive(Clone)]
 pub struct Config {
     key: String,
+    /// The variable the key came from: where Codex reads it, and what a
+    /// member's commands never see.
+    key_var: String,
+    /// The id Codex knows the provider by (`nebius`, `custom`).
+    pub provider: String,
+    /// Its name, as it is shown: `Nebius Token Factory`, or its server's host.
+    pub provider_name: String,
+    /// The API a member's turns are asked in.
+    pub wire: equipe_providers::relay::Wire,
     /// The API's root, ending before `chat/completions`.
     pub base_url: String,
     /// The model asked for; `None`: one picked from the account's ([`pick_model`]).
@@ -67,6 +86,7 @@ impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Config")
             .field("key", &"[redacted]")
+            .field("provider", &self.provider)
             .field("base_url", &self.base_url)
             .field("model", &self.model)
             .field("max_tokens", &self.max_tokens)
@@ -83,13 +103,41 @@ impl Config {
 
     /// From variables as `var` reads them, by name (the environment, or a test's).
     pub fn from_vars(var: impl Fn(&str) -> Option<String>) -> Result<Self, ReviewError> {
+        use equipe_providers::relay::Wire;
         let set = |name: &str| var(name).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
-        let key = set("NEBIUS_API_KEY").ok_or(ReviewError::MissingKey)?;
+        let wire = |names: &[&str]| names.iter().find_map(|n| set(n)).and_then(|w| Wire::parse(&w)).unwrap_or_default();
+        let max_tokens = |name: &str| set(name).and_then(|n| n.parse().ok()).filter(|n| (64..=32_768).contains(n)).unwrap_or(DEFAULT_MAX_TOKENS);
+        let (key, key_var, provider, provider_name, base_url, model, wire, max_tokens) = match set("EQUIPE_MODEL_BASE_URL") {
+            Some(base_url) => {
+                // A server on this machine (Ollama, LM Studio…) takes any key.
+                let key = match set("EQUIPE_MODEL_API_KEY") {
+                    Some(key) => key,
+                    None if is_loopback(&base_url) => "local".to_owned(),
+                    None => return Err(ReviewError::MissingKey),
+                };
+                let name = reqwest::Url::parse(&base_url).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_else(|| base_url.clone());
+                (key, "EQUIPE_MODEL_API_KEY", CUSTOM_PROVIDER, name, base_url, set("EQUIPE_MODEL"), wire(&["EQUIPE_MODEL_WIRE"]), max_tokens("EQUIPE_MODEL_MAX_TOKENS"))
+            }
+            None => (
+                set("NEBIUS_API_KEY").ok_or(ReviewError::MissingKey)?,
+                "NEBIUS_API_KEY",
+                CODEX_PROVIDER,
+                PROVIDER_NAME.to_owned(),
+                set("EQUIPE_NEBIUS_BASE_URL").unwrap_or_else(|| DEFAULT_BASE_URL.to_owned()),
+                set("EQUIPE_NEBIUS_MODEL").or_else(|| set("EQUIPE_MODEL")),
+                wire(&["EQUIPE_NEBIUS_WIRE", "EQUIPE_MODEL_WIRE"]),
+                max_tokens("EQUIPE_NEBIUS_MAX_TOKENS"),
+            ),
+        };
         Ok(Self {
             key,
-            base_url: set("EQUIPE_NEBIUS_BASE_URL").unwrap_or_else(|| DEFAULT_BASE_URL.to_owned()),
-            model: set("EQUIPE_NEBIUS_MODEL"),
-            max_tokens: set("EQUIPE_NEBIUS_MAX_TOKENS").and_then(|n| n.parse().ok()).filter(|n| (64..=32_768).contains(n)).unwrap_or(DEFAULT_MAX_TOKENS),
+            key_var: key_var.to_owned(),
+            provider: provider.to_owned(),
+            provider_name,
+            wire,
+            base_url,
+            model,
+            max_tokens,
             timeout: REQUEST_TIMEOUT,
             connect_timeout: CONNECT_TIMEOUT,
             backoff: Duration::from_secs(1),
@@ -254,6 +302,22 @@ pub fn pick_model(ids: &[String]) -> Result<String, ReviewError> {
     nemotron_models(ids).into_iter().next().ok_or(ReviewError::NoModel)
 }
 
+impl Config {
+    /// The model to use of the provider's `ids`: on Token Factory a Nemotron
+    /// ([`pick_model`]); on another server one too if it has it, else the first listed.
+    pub fn pick_model(&self, ids: &[String]) -> Result<String, ReviewError> {
+        match pick_model(ids) {
+            Err(ReviewError::NoModel) if self.provider == CUSTOM_PROVIDER => ids.iter().find(|id| !id.trim().is_empty()).cloned().ok_or(ReviewError::NoModel),
+            picked => picked,
+        }
+    }
+}
+
+/// Whether a base URL is a server on this machine.
+fn is_loopback(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url).ok().and_then(|u| u.host_str().map(str::to_owned)).is_some_and(|h| h == "localhost" || h == "[::1]" || h == "::1" || h.starts_with("127."))
+}
+
 /// Review `input` with `cfg`'s model, or the one picked from the account's.
 pub async fn review(cfg: &Config, input: ReviewInput) -> Result<CodeReview, ReviewError> {
     review_detailed(cfg, input).await.map(|r| r.review)
@@ -266,7 +330,7 @@ pub async fn review_detailed(cfg: &Config, input: ReviewInput) -> Result<Reviewe
     }
     let model = match &cfg.model {
         Some(model) => model.clone(),
-        None => pick_model(&models(cfg).await?)?,
+        None => cfg.pick_model(&models(cfg).await?)?,
     };
     let (diff, truncated) = cut(&input.diff, MAX_DIFF_CHARS);
     let request = json!({
@@ -563,6 +627,8 @@ pub fn clean_line(text: &str, max: usize) -> String {
 
 /// The id Codex knows Token Factory by, in a member's turns.
 pub const CODEX_PROVIDER: &str = "nebius";
+/// The id it knows another server by (`EQUIPE_MODEL_BASE_URL`).
+pub const CUSTOM_PROVIDER: &str = "custom";
 /// Its name, as Codex shows it.
 pub const PROVIDER_NAME: &str = "Nebius Token Factory";
 /// The context Codex plans a member's conversation for (when it compacts):
@@ -571,10 +637,13 @@ pub const AGENT_CONTEXT_WINDOW: u32 = 131_072;
 /// The efforts Token Factory's Responses API takes; others are left out.
 const EFFORTS: [&str; 6] = ["none", "minimal", "low", "medium", "high", "xhigh"];
 
-/// Whether `model` runs on Token Factory: one of NVIDIA's (`nvidia/…`).
-/// OpenAI's and Anthropic's ids have no `/`.
+/// Whether `model` runs on the open provider (Token Factory, or
+/// `EQUIPE_MODEL_BASE_URL`'s): an id with an organization (`nvidia/…`,
+/// `Qwen/…`, `deepseek-ai/…`) or a tag (`qwen3-coder:30b`, as Ollama names
+/// them). OpenAI's and Anthropic's ids have neither.
 pub fn is_agent_model(model: &str) -> bool {
-    model.trim().to_ascii_lowercase().starts_with("nvidia/")
+    let model = model.trim();
+    !model.is_empty() && (model.contains('/') || model.contains(':'))
 }
 
 impl Config {
@@ -583,17 +652,18 @@ impl Config {
     /// ([`Config::codex_env`]): it is never on the command line.
     pub fn codex_provider(&self) -> equipe_providers::codex_app::Provider {
         equipe_providers::codex_app::Provider {
-            id: CODEX_PROVIDER.to_owned(),
-            name: PROVIDER_NAME.to_owned(),
+            id: self.provider.clone(),
+            name: self.provider_name.clone(),
             base_url: self.base_url.trim().trim_end_matches('/').to_owned(),
-            env_key: "NEBIUS_API_KEY".to_owned(),
+            env_key: self.key_var.clone(),
             config: vec![format!("model_context_window={AGENT_CONTEXT_WINDOW}")],
+            wire: self.wire,
         }
     }
 
     /// The key, for the app-server's environment only: where Codex reads it.
     pub fn codex_env(&self) -> (String, String) {
-        ("NEBIUS_API_KEY".to_owned(), self.key.clone())
+        (self.key_var.clone(), self.key.clone())
     }
 }
 
@@ -607,7 +677,7 @@ pub fn agent_effort(effort: Option<&str>) -> Option<&str> {
 pub async fn agent_model(cfg: &Config) -> Result<String, ReviewError> {
     match &cfg.model {
         Some(model) => Ok(model.clone()),
-        None => pick_model(&models(cfg).await?),
+        None => cfg.pick_model(&models(cfg).await?),
     }
 }
 
@@ -913,10 +983,12 @@ mod tests {
     #[test]
     fn a_member_on_token_factory_runs_on_codex_with_its_config() {
         assert!(is_agent_model("nvidia/Llama-3_3-Nemotron-Super-49B-v1_5") && is_agent_model(" NVIDIA/x "));
-        assert!(!is_agent_model("gpt-5.5") && !is_agent_model("claude-opus-4-7") && !is_agent_model("Qwen/Qwen3-32B"));
+        assert!(is_agent_model("Qwen/Qwen3-Coder-480B-A35B-Instruct") && is_agent_model("qwen3-coder:30b"), "any open model can be swapped in");
+        assert!(!is_agent_model("gpt-5.5") && !is_agent_model("claude-opus-4-7") && !is_agent_model("opus") && !is_agent_model(" "));
         let real = Config::from_vars(|n| (n == "NEBIUS_API_KEY").then(|| "sk-never-on-the-command-line".to_owned())).unwrap().codex_provider();
         assert_eq!((real.id.as_str(), real.base_url.as_str(), real.env_key.as_str()), ("nebius", "https://api.tokenfactory.nebius.com/v1", "NEBIUS_API_KEY"));
         assert_eq!(real.config, ["model_context_window=131072"]);
+        assert_eq!(real.wire, equipe_providers::relay::Wire::Chat, "asked in chat, which every server speaks");
         let local = config("http://127.0.0.1:9/v1/");
         assert_eq!(local.codex_provider().base_url, "http://127.0.0.1:9/v1");
         let args = equipe_providers::codex_app::provider_args(&real, "http://127.0.0.1:1");
@@ -926,6 +998,30 @@ mod tests {
 
         assert_eq!(agent_effort(Some("high")), Some("high"));
         assert_eq!((agent_effort(Some("ultra")), agent_effort(Some("max")), agent_effort(None)), (None, None, None));
+    }
+
+    #[test]
+    fn another_server_can_take_token_factorys_place() {
+        use equipe_providers::relay::Wire;
+        let vars = |pairs: &'static [(&'static str, &'static str)]| move |n: &str| pairs.iter().find(|(k, _)| *k == n).map(|(_, v)| (*v).to_owned());
+        let open = Config::from_vars(vars(&[("EQUIPE_MODEL_BASE_URL", "https://openrouter.ai/api/v1"), ("EQUIPE_MODEL_API_KEY", "sk-or-secret"), ("EQUIPE_MODEL", "qwen/qwen3-coder"), ("NEBIUS_API_KEY", "sk-nebius")])).unwrap();
+        assert_eq!((open.provider.as_str(), open.provider_name.as_str(), open.model.as_deref(), open.wire), (CUSTOM_PROVIDER, "openrouter.ai", Some("qwen/qwen3-coder"), Wire::Chat));
+        assert_eq!(open.codex_env(), ("EQUIPE_MODEL_API_KEY".to_owned(), "sk-or-secret".to_owned()), "its own key, not Token Factory's");
+        let provider = open.codex_provider();
+        assert_eq!((provider.id.as_str(), provider.env_key.as_str(), provider.base_url.as_str()), ("custom", "EQUIPE_MODEL_API_KEY", "https://openrouter.ai/api/v1"));
+        assert!(!format!("{open:?}").contains("sk-or"));
+        // A server on this machine needs no key; one elsewhere does.
+        let local = Config::from_vars(vars(&[("EQUIPE_MODEL_BASE_URL", "http://localhost:11434/v1"), ("EQUIPE_MODEL_WIRE", "responses")])).unwrap();
+        assert_eq!((local.provider_name.as_str(), local.wire), ("localhost", Wire::Responses));
+        assert_eq!(Config::from_vars(vars(&[("EQUIPE_MODEL_BASE_URL", "https://api.together.xyz/v1")])).unwrap_err(), ReviewError::MissingKey);
+        // Token Factory by default, asked in chat.
+        let nebius = Config::from_vars(vars(&[("NEBIUS_API_KEY", "sk-nebius"), ("EQUIPE_MODEL", "Qwen/Qwen3-32B")])).unwrap();
+        assert_eq!((nebius.provider.as_str(), nebius.model.as_deref(), nebius.wire), (CODEX_PROVIDER, Some("Qwen/Qwen3-32B"), Wire::Chat));
+        // On another server without a Nemotron, the first model it lists.
+        let ids = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(open.pick_model(&ids(&["qwen/qwen3-coder", "nvidia/Nemotron-Nano-9B-v2"])).unwrap(), "nvidia/Nemotron-Nano-9B-v2");
+        assert_eq!(open.pick_model(&ids(&["qwen/qwen3-coder"])).unwrap(), "qwen/qwen3-coder");
+        assert_eq!(nebius.pick_model(&ids(&["Qwen/Qwen3-32B"])), Err(ReviewError::NoModel), "on Token Factory, a Nemotron or nothing");
     }
 
     #[tokio::test]

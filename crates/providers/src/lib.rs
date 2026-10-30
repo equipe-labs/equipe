@@ -3,6 +3,7 @@
 //! Wire formats and protocol rules live in pure functions so they are testable
 //! without a network or a login; the async functions only add I/O around them.
 
+pub mod chat_wire;
 pub mod claude_code;
 pub mod codex_app;
 pub mod credentials;

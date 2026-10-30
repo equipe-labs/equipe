@@ -456,6 +456,7 @@
   "main.row_install": "설치",
   "main.row_keep": "유지",
   "main.row_key": "키",
+  "main.row_provider": "모델 서버",
   "main.row_login": "로그인",
   "main.row_path": "경로",
   "main.row_ready": "준비됨",

@@ -263,6 +263,7 @@
   "notice.memory_updated": "✎ {name} actualizó para el equipo: {what} · /memory muestra lo que sabe el equipo",
   "notice.model": "Desde su próximo turno: {model}. Su conversación continúa.",
   "notice.on_nebius": "Funciona con NVIDIA Nemotron ({model}) a través de Nebius Token Factory, sobre el agente de la CLI de Codex. Se factura por token a tu NEBIUS_API_KEY.",
+  "notice.on_open_model": "Funciona con {model} a través de {provider}, con el agente de la CLI de Codex. {provider} cobra por token.",
   "notice.pm_accepted": "✓ El PM aceptó {ids} y lo fusionó en main — {checked}",
   "notice.refresh_clean": "Su próxima conversación en el escritorio empieza limpia: su memoria y el tablero se mantienen.",
   "notice.refresh_summary": "Su próxima conversación en el escritorio empieza de nuevo, desde un resumen de esta y su memoria.",
