@@ -2132,5 +2132,12 @@
   "settings.accept_words": "accept review approve pm",
   "accounts.add_words": "login password id",
   "accounts.profile_words": "browser profile",
-  "accounts.profile_add_words": "browser profile chrome google"
+  "accounts.profile_add_words": "browser profile chrome google",
+  "peek.review_kicker": "Nemotron review · {model}",
+  "peek.review_looks_good": "Looks good",
+  "peek.review_missing_tests": "Missing tests",
+  "peek.review_needs_attention": "Needs attention",
+  "peek.review_risks": "Risks",
+  "peek.review_risky": "Risky",
+  "peek.review_truncated": "The diff was long: only its start was reviewed."
 }

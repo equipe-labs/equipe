@@ -2132,5 +2132,12 @@
   "settings.accept_words": "aceptar revisar aprobar accept review approve pm",
   "accounts.add_words": "acceso contraseña cuenta login password id",
   "accounts.profile_words": "perfil navegador browser profile",
-  "accounts.profile_add_words": "perfil navegador cuenta browser profile chrome google"
+  "accounts.profile_add_words": "perfil navegador cuenta browser profile chrome google",
+  "peek.review_kicker": "Revisión de Nemotron · {model}",
+  "peek.review_looks_good": "Se ve bien",
+  "peek.review_missing_tests": "Pruebas que faltan",
+  "peek.review_needs_attention": "Requiere atención",
+  "peek.review_risks": "Riesgos",
+  "peek.review_risky": "Arriesgado",
+  "peek.review_truncated": "El diff era largo: solo se revisó el principio."
 }

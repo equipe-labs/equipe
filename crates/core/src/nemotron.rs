@@ -196,6 +196,7 @@ impl std::error::Error for ReviewError {}
 /// What is reviewed: a ticket and the diff of its work.
 #[derive(Debug, Clone, Default)]
 pub struct ReviewInput {
+    /// The ticket; 0 for a change of no ticket's (`equipe review`).
     pub ticket: TicketId,
     pub title: String,
     /// What the ticket asks for: its acceptance criteria.
@@ -389,9 +390,10 @@ fn user_prompt(input: &ReviewInput, diff: &str, truncated: bool) -> String {
     let (body, _) = cut(&input.body, MAX_TICKET_CHARS);
     let title = clean_line(&input.title, 300);
     let note = if truncated { format!("\nThe diff is longer than {MAX_DIFF_CHARS} characters: only its start is below.") } else { String::new() };
+    // No ticket (`equipe review`): the change, and what it is said to do.
+    let named = if input.ticket == 0 { String::from("Change") } else { format!("Ticket T-{}", input.ticket) };
     format!(
-        "Ticket T-{}: {}\n<ticket>\n{}\n</ticket>\n{note}\n<diff>\n{}\n</diff>\n\nReview the diff against the ticket. Reply with the JSON object only.",
-        input.ticket,
+        "{named}: {}\n<ticket>\n{}\n</ticket>\n{note}\n<diff>\n{}\n</diff>\n\nReview the diff against the ticket. Reply with the JSON object only.",
         fence(&title, "ticket"),
         fence(body, "ticket"),
         fence(diff, "diff"),
@@ -601,8 +603,7 @@ mod tests {
     async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
         let mut data = Vec::new();
         let mut buf = [0u8; 8192];
-        loop {
-            let Ok(n) = socket.read(&mut buf).await else { break };
+        while let Ok(n) = socket.read(&mut buf).await {
             if n == 0 {
                 break;
             }

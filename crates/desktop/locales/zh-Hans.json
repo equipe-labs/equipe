@@ -2080,5 +2080,12 @@
   "settings.accept_words": "接受 审核 批准 accept review approve pm",
   "accounts.add_words": "登录 密码 账号 login password id",
   "accounts.profile_words": "配置文件 浏览器 browser profile",
-  "accounts.profile_add_words": "配置文件 浏览器 账号 browser profile chrome google"
+  "accounts.profile_add_words": "配置文件 浏览器 账号 browser profile chrome google",
+  "peek.review_kicker": "Nemotron 审查 · {model}",
+  "peek.review_looks_good": "看起来没问题",
+  "peek.review_missing_tests": "缺少的测试",
+  "peek.review_needs_attention": "需要留意",
+  "peek.review_risks": "风险",
+  "peek.review_risky": "有风险",
+  "peek.review_truncated": "diff 较长：只审查了开头部分。"
 }

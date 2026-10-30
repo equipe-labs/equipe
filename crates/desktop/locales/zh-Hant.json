@@ -2080,5 +2080,12 @@
   "settings.accept_words": "接受 審核 批准 accept review approve pm",
   "accounts.add_words": "登入 密碼 帳號 login password id",
   "accounts.profile_words": "設定檔 瀏覽器 browser profile",
-  "accounts.profile_add_words": "設定檔 瀏覽器 帳號 browser profile chrome google"
+  "accounts.profile_add_words": "設定檔 瀏覽器 帳號 browser profile chrome google",
+  "peek.review_kicker": "Nemotron 審查 · {model}",
+  "peek.review_looks_good": "看起來沒問題",
+  "peek.review_missing_tests": "缺少的測試",
+  "peek.review_needs_attention": "需要留意",
+  "peek.review_risks": "風險",
+  "peek.review_risky": "有風險",
+  "peek.review_truncated": "diff 較長：只審查了開頭部分。"
 }

@@ -2132,5 +2132,12 @@
   "settings.accept_words": "annehmen prüfen genehmigen accept review approve pm",
   "accounts.add_words": "anmeldung passwort konto login password id",
   "accounts.profile_words": "profil browser profile",
-  "accounts.profile_add_words": "profil konto browser profile chrome google"
+  "accounts.profile_add_words": "profil konto browser profile chrome google",
+  "peek.review_kicker": "Nemotron-Prüfung · {model}",
+  "peek.review_looks_good": "Sieht gut aus",
+  "peek.review_missing_tests": "Fehlende Tests",
+  "peek.review_needs_attention": "Genauer ansehen",
+  "peek.review_risks": "Risiken",
+  "peek.review_risky": "Riskant",
+  "peek.review_truncated": "Der Diff war lang: nur sein Anfang wurde geprüft."
 }

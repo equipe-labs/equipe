@@ -24,6 +24,7 @@
 //! (no such ticket), to rest the pointer on; `FAKE_CARDS=long` gives T-42 a
 //! hand-in long enough to scroll on its card, and with `FAKE_REPLY_IMAGES=1`
 //! the reply names T-4 too — its pictures and all, a card taller than a small window.
+//! `FAKE_REVIEW=1` gives T-42 and T-71 a made-up Nemotron review (canned, not a model's).
 //! `FAKE_ASKLIST=1` ends the PM's history on a reply asking three things in a
 //! numbered list of its own words, as a member does that skips `ask_decision`.
 //!
@@ -225,6 +226,40 @@ fn git(dir: &std::path::Path, args: &[&str]) {
 }
 
 type Branch = (&'static str, Vec<(&'static str, usize)>);
+
+/// `FAKE_REVIEW=1`: made-up Nemotron reviews of T-42 and T-71, to look at
+/// how the peek shows one — canned here, never a real model's answer.
+fn reviews() -> Vec<equipe_core::protocol::review::CodeReview> {
+    use equipe_core::protocol::review::{CodeReview, ReviewPoint, ReviewVerdict};
+    if std::env::var_os("FAKE_REVIEW").is_none() {
+        return Vec::new();
+    }
+    vec![
+        CodeReview {
+            ticket: 42,
+            model: "nvidia/fake-nemotron (FAKE_REVIEW)".into(),
+            verdict: ReviewVerdict::NeedsAttention,
+            summary: "결제 수단 선택은 되지만, 새로고침 후 선택이 남는다는 기준을 코드가 지키지 않아요.".into(),
+            risks: vec![
+                ReviewPoint { file: "src/checkout.tsx".into(), line: Some(31), why: "선택한 수단을 state에만 두어 새로고침하면 사라져요.".into() },
+                ReviewPoint { file: "src/api/pay.ts".into(), line: Some(12), why: "금액을 클라이언트 값 그대로 서버에 보내요.".into() },
+            ],
+            missing_tests: vec!["새로고침 후 선택 유지".into(), "모바일 너비 레이아웃".into()],
+            truncated: false,
+            at: unix(),
+        },
+        CodeReview {
+            ticket: 71,
+            model: "nvidia/fake-nemotron (FAKE_REVIEW)".into(),
+            verdict: ReviewVerdict::LooksGood,
+            summary: "토큰 버킷 제한과 남은 횟수 헤더가 기준대로 들어갔어요.".into(),
+            risks: Vec::new(),
+            missing_tests: Vec::new(),
+            truncated: false,
+            at: unix(),
+        },
+    ]
+}
 
 /// T-42's hand-in: a few lines, or (`FAKE_CARDS=long`) one long enough to scroll on its card.
 fn checkout_note() -> String {
@@ -1052,6 +1087,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             allowed: allowed().lock().unwrap().clone(),
                             browsers_shown: true,
                             disk: disk::status(),
+                            reviews: reviews(),
                             ..Default::default()
                         };
                         team::on_hello(&events);

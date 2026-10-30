@@ -2080,5 +2080,12 @@
   "settings.accept_words": "受け入れ レビュー 承認 accept review approve pm",
   "accounts.add_words": "ログイン パスワード アカウント login password id",
   "accounts.profile_words": "プロフィール ブラウザ browser profile",
-  "accounts.profile_add_words": "プロフィール ブラウザ アカウント browser profile chrome google"
+  "accounts.profile_add_words": "プロフィール ブラウザ アカウント browser profile chrome google",
+  "peek.review_kicker": "Nemotron レビュー · {model}",
+  "peek.review_looks_good": "問題なさそう",
+  "peek.review_missing_tests": "足りないテスト",
+  "peek.review_needs_attention": "要確認",
+  "peek.review_risks": "リスク",
+  "peek.review_risky": "リスクあり",
+  "peek.review_truncated": "diff が長いため、先頭だけをレビューしました。"
 }

@@ -2080,5 +2080,12 @@
   "settings.accept_words": "수락 검토 승인 accept review approve pm",
   "accounts.add_words": "아이디 비밀번호 계정 login password id",
   "accounts.profile_words": "프로필 브라우저 browser profile",
-  "accounts.profile_add_words": "프로필 브라우저 계정 browser profile chrome google"
+  "accounts.profile_add_words": "프로필 브라우저 계정 browser profile chrome google",
+  "peek.review_kicker": "Nemotron 리뷰 · {model}",
+  "peek.review_looks_good": "괜찮아 보여요",
+  "peek.review_missing_tests": "빠진 테스트",
+  "peek.review_needs_attention": "살펴볼 게 있어요",
+  "peek.review_risks": "위험",
+  "peek.review_risky": "위험해요",
+  "peek.review_truncated": "diff가 길어서 앞부분만 리뷰했어요."
 }
