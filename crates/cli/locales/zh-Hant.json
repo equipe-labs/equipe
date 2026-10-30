@@ -981,5 +981,11 @@
   "view.write_goes_to_pm": "你在這裡寫的內容會傳給 PM，關於 T-{id}。",
   "view.writes": "寫入 {files}",
   "view.your_turn_answer": "用 /answer T-{id} 逐項回答，或在看板上按 r",
-  "view.your_turn_heading": "輪到你 · T-{id} · {title}"
+  "view.your_turn_heading": "輪到你 · T-{id} · {title}",
+  "demo.pm_added": "好的，我已把它作為 T-{id} 放上看板，交給 frontend。到達頁面（T-3）一完成就開始。",
+  "demo.pm_reply_1": "目前進度：T-2（註冊 API）等你審閱，T-3（到達頁面）正在進行，T-4 需要你提供金流服務商的測試 API 金鑰。還要新增什麼嗎？",
+  "demo.pm_reply_2": "只有 T-4 在等金流服務商的測試金鑰，其他都在推進。有可以審閱的內容時我會告訴你。",
+  "demo.pm_reply_3": "好問題。我建議先上線到達頁面和註冊，再做定價頁。告訴我要新增什麼，我會放上看板。",
+  "demo.member_noted": "{member}：收到，我會把它加進手上的工單裡。",
+  "match.demo_wants": "新增|添加|建立|工單"
 }

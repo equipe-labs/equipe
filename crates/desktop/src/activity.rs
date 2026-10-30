@@ -293,8 +293,8 @@ const NEWS: &[(&str, NewsKind)] = &[
 pub fn news_of(text: &str) -> Option<News> {
     let text = text.trim();
     for &(key, kind) in NEWS {
-        for lang in Lang::ALL {
-            let Some(args) = match_template(core(lang).get(key), text) else { continue };
+        for wording in Lang::ALL.into_iter().map(|lang| core(lang).get(key)).chain(equipe_core::i18n::previous(key)) {
+            let Some(args) = match_template(wording, text) else { continue };
             let base = key.strip_suffix(".one").or_else(|| key.strip_suffix(".other")).unwrap_or(key);
             let worded = core(crate::i18n::lang()).fill(base, &args.iter().map(|(k, v)| (k.as_str(), v.clone())).collect::<Vec<_>>());
             return Some(News { kind, text: unmark(&worded).to_owned() });
@@ -314,8 +314,8 @@ const HANDED: &[&str] = &["notice.browser_in_panel", "notice.browser_on_screen"]
 pub fn handed_of(text: &str) -> Option<(String, String)> {
     let text = text.trim();
     for key in HANDED {
-        for lang in Lang::ALL {
-            let Some(args) = match_template(core(lang).get(key), text) else { continue };
+        for wording in Lang::ALL.into_iter().map(|lang| core(lang).get(key)).chain(equipe_core::i18n::previous(key)) {
+            let Some(args) = match_template(wording, text) else { continue };
             let arg = |name: &str| args.iter().find(|(k, _)| k == name).map(|(_, v)| v.trim().to_owned());
             return Some((arg("name")?, arg("why")?));
         }
@@ -472,7 +472,7 @@ mod tests {
     #[test]
     fn news_is_known_in_any_language_and_reads_in_the_one_in_use() {
         let old = news_of("backend handed in T-118 for your review · 주문 API.").unwrap();
-        assert_eq!(old, News { kind: NewsKind::HandedIn, text: "backend이(가) T-118을(를) 검토해 달라고 넘겼습니다 · 주문 API.".into() });
+        assert_eq!(old, News { kind: NewsKind::HandedIn, text: "backend이(가) T-118을(를) 검토해 달라고 넘겼어요 · 주문 API.".into() });
         assert_eq!(news_of("You accepted T-58 · 헤더.").unwrap().kind, NewsKind::Accepted);
         assert_eq!(news_of("pm이(가) T-9을(를) 제안했습니다: 로그인").unwrap().kind, NewsKind::Proposed);
         let failed = news_of("✗ T-4 couldn't start for designer: no workspace").unwrap();

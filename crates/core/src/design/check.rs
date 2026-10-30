@@ -204,7 +204,8 @@ fn dedup(list: &[String]) -> Vec<String> {
     seen
 }
 
-/// What `brand.md` lists under `## Locked` (or `## 고정`): the brand's
+/// What `brand.md` lists under `## Locked` (or its word in another language,
+/// from the locale files): the brand's
 /// own values, lower-cased — hex colours and face names — which are the
 /// brand, not a cliché.
 pub fn locked(dir: &Path) -> Vec<String> {
@@ -215,7 +216,7 @@ pub fn locked(dir: &Path) -> Vec<String> {
         let trimmed = line.trim_start();
         if trimmed.starts_with('#') {
             let lower = trimmed.to_lowercase();
-            on = lower.contains("locked") || lower.contains("고정");
+            on = crate::i18n::every("match.locked_heading").iter().any(|w| lower.contains(w));
             continue;
         }
         if on {
@@ -268,8 +269,8 @@ fn files(dir: &Path, out: &mut Vec<Finding>) {
     } else {
         let lower = brand.to_lowercase();
         let has = |words: &[&str]| words.iter().any(|w| lower.contains(w));
-        if !has(&["voice", "tone", "말투", "보이스", "톤"]) {
-            out.push(Finding::new(Level::Warn, "brand", "brand.md says nothing about voice: how it speaks (해요체 or 합니다체, words it uses and avoids) with sample lines."));
+        if !has(crate::i18n::every("match.voice_words")) {
+            out.push(Finding::new(Level::Warn, "brand", "brand.md says nothing about voice: how it speaks (one register everywhere, words it uses and avoids) with sample lines."));
         } else {
             out.push(Finding::new(Level::Ok, "brand", "brand.md has the brand and its voice."));
         }

@@ -54,18 +54,10 @@ impl Lang {
         }
     }
 
-    /// Its name in itself, for a list to pick from.
+    /// Its name in itself, for a list to pick from: `language.native` in its
+    /// own locale file (never English's in its place), else its English name.
     pub fn native_name(self) -> &'static str {
-        match self {
-            Lang::Ko => "한국어",
-            Lang::En => "English",
-            Lang::Ja => "日本語",
-            Lang::ZhHans => "简体中文",
-            Lang::ZhHant => "繁體中文",
-            Lang::Es => "Español",
-            Lang::Fr => "Français",
-            Lang::De => "Deutsch",
-        }
+        core(self).own("language.native").unwrap_or(self.english_name())
     }
 
     /// Its name in English, as the squad's prompts name the person's language.
@@ -243,6 +235,11 @@ impl Catalog {
         self.words.get(key).or_else(|| self.english.get(key)).map_or(key, String::as_str)
     }
 
+    /// The word for `key` in this language only — no English in its place.
+    pub fn own(&self, key: &str) -> Option<&str> {
+        self.words.get(key).map(String::as_str)
+    }
+
     /// The word for `key` said of `n` things: its plural form for `n` in the
     /// language (`key.one`, `key.other`), else in English, else `key` itself.
     pub fn plural<'a>(&'a self, key: &'a str, n: u64) -> &'a str {
@@ -379,13 +376,15 @@ pub struct Words {
     /// `Lang::index` of the language in use; `u8::MAX` until one is.
     current: AtomicU8,
     tables: [OnceLock<Catalog>; 8],
+    /// [`Words::every`]'s lists, by key.
+    lists: std::sync::Mutex<std::collections::BTreeMap<String, &'static [&'static str]>>,
 }
 
 impl Words {
     /// `files` as `include_str!` brings them in; `first` says the language
     /// to start in, asked the first time a word is.
     pub const fn new(files: &'static [(&'static str, &'static str)], first: fn() -> Lang) -> Self {
-        Self { files, first, current: AtomicU8::new(u8::MAX), tables: [const { OnceLock::new() }; 8] }
+        Self { files, first, current: AtomicU8::new(u8::MAX), tables: [const { OnceLock::new() }; 8], lists: std::sync::Mutex::new(std::collections::BTreeMap::new()) }
     }
 
     /// The language in use.
@@ -414,6 +413,28 @@ impl Words {
     pub fn set(&self, lang: Lang) {
         self.current.store(lang.index() as u8, Ordering::Release);
     }
+
+    /// `key`'s words in every language, each language's list `|`-separated:
+    /// what text is matched against when it may be in any language (what a
+    /// member wrote, a page's words), whichever one the screen is in.
+    /// Read once per key and kept.
+    pub fn every(&'static self, key: &str) -> &'static [&'static str] {
+        let mut lists = self.lists.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(list) = lists.get(key) {
+            return list;
+        }
+        let mut out: Vec<&'static str> = Vec::new();
+        for lang in Lang::ALL {
+            for word in self.of(lang).own(key).unwrap_or_default().split('|').filter(|w| !w.is_empty()) {
+                if !out.contains(&word) {
+                    out.push(word);
+                }
+            }
+        }
+        let list: &'static [&'static str] = Vec::leak(out);
+        lists.insert(key.to_owned(), list);
+        list
+    }
 }
 
 /// equipe core's own words, in every language.
@@ -429,6 +450,19 @@ pub const FILES: &[(&str, &str)] = &[
 ];
 
 static CORE: Words = Words::new(FILES, || Lang::En);
+
+/// How a language worded `key` before (Korean's lines once ended "…습니다"):
+/// what a line kept from then, or a daemon not yet updated, still says.
+pub fn previous(key: &str) -> impl Iterator<Item = &'static str> {
+    static PREVIOUS: OnceLock<HashMap<String, HashMap<String, String>>> = OnceLock::new();
+    let all = PREVIOUS.get_or_init(|| serde_json::from_str(include_str!("../locales/previous.json")).unwrap_or_default());
+    all.values().filter_map(move |words| words.get(key).map(String::as_str))
+}
+
+/// core's `key` words in every language (`Words::every`).
+pub fn every(key: &str) -> &'static [&'static str] {
+    CORE.every(key)
+}
 
 /// equipe core's words in `lang`: what the daemon says to the person.
 pub fn core(lang: Lang) -> &'static Catalog {
@@ -672,6 +706,18 @@ macro_rules! words {
         pub fn set(lang: $crate::i18n::Lang) {
             WORDS.set(lang)
         }
+
+        /// `key`'s words in every language (`Words::every`).
+        #[allow(dead_code)]
+        pub fn every(key: &str) -> &'static [&'static str] {
+            WORDS.every(key)
+        }
+
+        /// The words in `lang`, whichever is in use.
+        #[allow(dead_code)]
+        pub fn of(lang: $crate::i18n::Lang) -> &'static $crate::i18n::Catalog {
+            WORDS.of(lang)
+        }
     };
 }
 
@@ -867,7 +913,7 @@ mod tests {
     fn the_transcripts_own_lines_read_in_the_persons_language_and_the_rest_as_they_are() {
         use equipe_protocol::transcript::notes;
         assert_eq!(note(Lang::En, notes::STOPPED), notes::STOPPED);
-        assert_eq!(note(Lang::Ko, notes::STOPPED), "멈췄습니다.");
+        assert_eq!(note(Lang::Ko, notes::STOPPED), "멈췄어요.");
         let working = format!("{}equipe/try-1{}", notes::WORKING_ON, notes::WORKING_REST);
         assert_eq!(note(Lang::En, &working), working, "English reads as it always did");
         assert!(note(Lang::Fr, &working).contains("equipe/try-1"));

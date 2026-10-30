@@ -724,12 +724,12 @@ async fn equipe_speaks_to_the_person_in_their_screens_language() {
     handle.send(Command::Language { lang: "ko_KR.UTF-8".into() });
     handle.send(Command::Start { session: 1, spec: member(&scratch("cwd"), "pm") });
     let failed = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
-    assert!(matches!(failed.last(), Some(Event::Error { message, .. }) if message == "acme라는 스쿼드가 없습니다."), "{failed:#?}");
+    assert!(matches!(failed.last(), Some(Event::Error { message, .. }) if message == "acme라는 스쿼드가 없어요."), "{failed:#?}");
     // A language equipe doesn't speak changes nothing.
     handle.send(Command::Language { lang: "pt-BR".into() });
     handle.send(Command::Start { session: 2, spec: member(&scratch("cwd"), "pm") });
     let failed = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
-    assert!(matches!(failed.last(), Some(Event::Error { message, .. }) if message.contains("스쿼드가 없습니다")), "{failed:#?}");
+    assert!(matches!(failed.last(), Some(Event::Error { message, .. }) if message.contains("스쿼드가 없어요")), "{failed:#?}");
 }
 
 #[tokio::test]

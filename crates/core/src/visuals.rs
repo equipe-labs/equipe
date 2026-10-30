@@ -536,12 +536,9 @@ pub fn moved(images: &[String], from: &Path, to: &Path) -> Vec<String> {
 
 /// Words a question names something to look at by, in the languages the
 /// person may write in.
-const VISUAL_WORDS: [&str; 44] = [
-    "logo", "icon", "color", "colour", "palette", "mockup", "mock-up", "wireframe", "layout", "font", "typeface", "typography",
-    "illustration", "banner", "visual", "로고", "아이콘", "색상", "컬러", "배색", "시안", "목업", "와이어프레임", "레이아웃",
-    "폰트", "서체", "일러스트", "배너", "ロゴ", "アイコン", "配色", "フォント", "レイアウト", "图标", "標誌", "标志", "配色",
-    "字体", "字體", "布局", "版面", "farbe", "couleur", "police",
-];
+fn visual_words() -> &'static [&'static str] {
+    crate::i18n::every("match.visual_words")
+}
 
 /// The word a tool's answer adds when a question names something to look at
 /// — a logo, colours, a layout — yet shows no picture: the person would be
@@ -552,7 +549,7 @@ pub fn nudge(questions: &[Question]) -> Option<&'static str> {
     }
     let names_visuals = questions.iter().filter(|q| !q.options.is_empty()).any(|q| {
         let text = std::iter::once(q.question.as_str()).chain(std::iter::once(q.header.as_str())).chain(q.options.iter().flat_map(|c| [c.label.as_str(), c.description.as_str()])).collect::<Vec<_>>().join(" ").to_lowercase();
-        VISUAL_WORDS.iter().any(|w| text.contains(w))
+        visual_words().iter().any(|w| text.contains(w))
     });
     names_visuals.then_some(
         "This reads like a visual choice, yet no option shows a picture: the person is choosing blind. Render or mock up \

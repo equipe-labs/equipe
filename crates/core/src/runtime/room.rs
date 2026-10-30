@@ -156,7 +156,7 @@ impl Runtime {
         if level.holds_builds() && !before.holds_builds() {
             // The PM above all: it plans the work, and tells the person.
             let line = format!(
-                "The disk is nearly full: {free} free. Builds may fail. Don't start heavy builds (cargo build, npm install, xcodebuild) until there's room again, and tell the person: they can free space in equipe's 디스크 panel (/disk) or with `equipe disk clean`. equipe holds new code tickets back meanwhile."
+                "The disk is nearly full: {free} free. Builds may fail. Don't start heavy builds (cargo build, npm install, xcodebuild) until there's room again, and tell the person: they can free space in equipe's Disk panel (/disk) or with `equipe disk clean`. equipe holds new code tickets back meanwhile."
             );
             for squad in &squads {
                 let shown = say!(self, "news.disk_critical", free = free);
@@ -207,7 +207,7 @@ impl Runtime {
         self.publish(Event::Notice { session: id, text });
         if let Some(session) = self.sessions.get_mut(&id) {
             session.briefing.push(
-                "Your last build failed because the disk is full (No space left on device). Don't retry it: tell the person, who frees space in equipe's 디스크 panel (/disk), then carry on."
+                "Your last build failed because the disk is full (No space left on device). Don't retry it: tell the person, who frees space in equipe's Disk panel (/disk), then carry on."
                     .to_owned(),
             );
         }
