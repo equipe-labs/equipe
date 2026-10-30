@@ -15,7 +15,6 @@ mod desktop;
 mod disk;
 mod home;
 mod i18n;
-mod judge_relay;
 mod lang;
 mod onboard;
 mod remote;
@@ -116,17 +115,6 @@ enum Command {
         /// What the change should do — its acceptance criteria — for the review to check
         #[arg(long)]
         goal: Option<String>,
-    },
-    /// A relay that lets judges try `equipe review` without a Nebius key of
-    /// their own: it holds the key and forwards only NVIDIA Nemotron chat
-    /// completions, within caps (`token <name>` makes an app token)
-    #[command(hide = true)]
-    JudgeRelay {
-        /// `token <name>`
-        words: Vec<String>,
-        /// Where to listen, plain HTTP — put a TLS proxy in front
-        #[arg(long, default_value = "127.0.0.1:8787")]
-        listen: String,
     },
     /// List the built-in squad roles
     Roles,
@@ -446,7 +434,6 @@ async fn main() -> ExitCode {
         Command::Status => app.status().await,
         Command::Try { prompt, engine, model, edit } => app.run_try(&prompt, engine, model.as_deref(), edit).await,
         Command::Review { base, models, goal } => review::command(base, models, goal).await,
-        Command::JudgeRelay { words, listen } => judge_relay::command(&words, &listen).await.map_err(Failure::new),
         Command::Daemon { action } => daemon_command(action).await,
         Command::Design { action } => design::command(action).await.map_err(Failure::new),
         Command::Disk { words, squad, yes } => disk::command(&words, squad, yes).await.map_err(Failure::new),

@@ -88,8 +88,6 @@ as untrusted input matters as much for a reviewer as for an agent.
 
 - Let the PM read Nemotron's review before it accepts work on the person's behalf.
 - Show reviews in the terminal console and on the phone app.
-- Deploy the judge/demo relay (implemented and tested against a mock, not deployed) so the feature
-  can be tried without one's own key (see `docs/hackathon/judge-access.md`).
 - Measure review quality and cost on real tickets (not done yet).
 
 ## Built with
@@ -111,7 +109,7 @@ Cloudflare Workers (the phone relay)
 
 ```bash
 curl -fsSL https://github.com/equipe-labs/equipe/releases/latest/download/install.sh | sh
-#   (the release must contain `equipe review` — [OWNER INPUT REQUIRED: release version])
+#   (equipe 0.88.0 or later contains `equipe review`)
 read -rs NEBIUS_API_KEY && export NEBIUS_API_KEY     # a Nebius Token Factory key — see below
 cd any-git-repository-with-changes
 equipe review --models                 # NVIDIA Nemotron models on the account
@@ -119,9 +117,9 @@ equipe review                          # review uncommitted changes against HEAD
 equipe review --base main              # review a branch's changes since main
 ```
 
-Access to a key: `[OWNER INPUT REQUIRED — judge access is undecided; see judge-access.md. Bring
-your own key is NOT confirmed acceptable under the rules; do not rely on it without the
-organizers' written confirmation.]`
+Access to a key: equipe is open source and has no hosted service or shared key — judges use their
+own Nebius Token Factory key (hackathon participants can get Token Factory credits with the code
+`NEBIUS-DEVPOST-GLOBAL26`, per the Resources page). The key is read from the environment only.
 
 The full squad (agents writing code, then the automatic review of each hand-in) also needs
 Claude Code or Codex signed in with the judge's own plan — see `docs/hackathon/judge-paths.md`.
