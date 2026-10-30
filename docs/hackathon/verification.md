@@ -44,9 +44,23 @@ prints `Hello from Nemotron`, then run it". Model `nvidia/Nemotron-3.5-Super-VL`
 | Latency | 3,159 ms on requests; 3,514 ms wall |
 | Outcome | **SUCCESS** — turn `completed` |
 
-Cost in the Token Factory console: `[OWNER INPUT REQUIRED]` (not read by us). Not yet run for
-real: a whole squad through the daemon (PM → ticket → hand-in → review) — the pieces above
-are the same code it runs.
+**4. The whole squad through the daemon** (16:19–16:24 UTC): an isolated equipe 0.90.0 daemon
+(its own `HOME`, no Claude Code on `PATH`, Codex signed out in an empty `CODEX_HOME`, only
+`NEBIUS_API_KEY`), so `equipe status` showed **nemotron** as the only engine ready. A PM and a
+backend member started, both on `nvidia/Nemotron-3.5-Super-VL` through Token Factory ("Runs on
+NVIDIA Nemotron … through Nebius Token Factory, on the Codex CLI's agent"). The person asked
+the PM for one small ticket.
+
+| Step | What happened (from the daemon's events and log) |
+|---|---|
+| PM turn | Read the board and the repository with its board tools and `Bash`, then `create_ticket` **T-1 "Add hello.py and test_hello.py to the demo repo"**, assigned to backend. 6 requests, all `200`; 14,232 ms on requests; tokens in 41,649 (cached 102,272) out 2,264 |
+| Backend turn | Took T-1 on its own branch `equipe/backend-t1-6ae4c3b0` in its worktree; wrote `hello.py` and `test_hello.py`; ran `python3 hello.py` and `python3 -m unittest test_hello.py`; asked **the person** to allow `git commit` (outside the sandbox) — approved by the person — committed `dff749c` "Add hello.py and test_hello.py"; handed T-1 in (`submit_for_review`). 11 requests, all `200`; 21,673 ms on requests; tokens in 57,851 (cached 182,784) out 2,628 |
+| Nemotron review (automatic, on hand-in) | **looks good** — "The diff adds hello.py with the required hello() function and script behavior, plus test_hello.py using stdlib unittest that asserts the return value. Both acceptance criteria are covered by the change itself." Request `b94bbf1318e14e2373b696e3b2bcf08f`, 788 prompt + 718 completion tokens, 3,469 ms |
+| PM after the hand-in | Ran the handed-in code in the member's worktree to check it |
+
+Outcome: **SUCCESS** — PM → ticket → member on its branch → tests → the person's approval →
+hand-in → Nemotron review, all on Token Factory, no other engine. Cost in the Token Factory
+console: `[OWNER INPUT REQUIRED]` (not read by us).
 
 ## 1. Mock tests
 

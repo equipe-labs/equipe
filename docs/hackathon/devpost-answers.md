@@ -55,7 +55,10 @@ CLI — no Claude or ChatGPT subscription — every member runs on an NVIDIA Nem
 - **Verified on the real Token Factory (2026-10-30):** `nvidia/Nemotron-3.5-Super-VL` drove
   the Codex CLI to write `hello.py` and run it (2 requests, both 200, 3.2 s, 9,820 tokens in /
   196 out), and its review of a change that let a failed token lookup through as an admin
-  flagged the auth bypass at the right line (534 + 848 tokens, 3.4 s).
+  flagged the auth bypass at the right line (534 + 848 tokens, 3.4 s). A whole squad then ran
+  through the daemon with no other engine: the PM created a ticket, the backend member wrote the
+  code and tests on its branch, asked the person before committing, handed it in, and Nemotron's
+  automatic review said it looks good (PM 6 requests, member 11, review 1 — all 200).
 
 **A reviewer with a narrow job:**
 

@@ -245,7 +245,8 @@ call reaches the MCP server and its answer goes back to the model; every request
 function tools only; a refused key (401) ends the turn with *"Nebius Token Factory refused
 the key"*. **Real run (2026-10-30):** on the real Token Factory, `nvidia/Nemotron-3.5-Super-VL`
 drove Codex to write and run `hello.py` in 2 requests (both 200, 3.2 s, 9,820 tokens in / 196
-out), and reviewed a change with an auth bypass correctly — see
+out), reviewed a change with an auth bypass correctly, and ran a whole squad (PM → ticket →
+member → tests → hand-in → review) with no other engine — see
 [verification.md](docs/hackathon/verification.md#real-runs-2026-10-30).
 
 **Limits.**
