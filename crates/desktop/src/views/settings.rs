@@ -380,7 +380,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let looks = Appearance::ALL.into_iter().map(|a| (a, appearance_word(a).to_owned())).collect();
     let appearance = Line::new(t!("settings.appearance"), t!("settings.appearance_desc")).words("appearance theme dark light").control(segmented(shell, "appearance", looks, shell.remembered.appearance, |this, a, window, cx| this.set_appearance(a, window, cx), cx));
     let link_places = vec![(false, t!("settings.links_mac").to_owned()), (true, t!("settings.links_app").to_owned())];
-    let links = Line::new(t!("settings.links"), t!("settings.links_desc")).words("link url browser open 링크 브라우저").control(segmented(shell, "links", link_places, shell.remembered.links_in_app, |this, on, _, _| this.set_links_in_app(on), cx));
+    let links = Line::new(t!("settings.links"), t!("settings.links_desc")).words(t!("settings.links_words")).control(segmented(shell, "links", link_places, shell.remembered.links_in_app, |this, on, _, _| this.set_links_in_app(on), cx));
     let zoom = Line::new(t!("settings.zoom"), t!("settings.zoom_desc")).words("zoom size scale text font larger smaller bigger").control(zoom_stepper(shell, cx));
     let starts = Start::ALL.into_iter().map(|s| (s, start_word(s).to_owned())).collect();
     let start = Line::new(t!("settings.start"), t!("settings.start_desc")).words("launch").control(segmented(shell, "start", starts, shell.remembered.start, |this, s, _, _| this.set_start(s), cx));
@@ -477,7 +477,7 @@ fn squad(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let disk_desc = short.and_then(|s| equipe_core::i18n::label::disk_line(crate::i18n::lang(), s)).unwrap_or_else(|| t!("settings.disk_desc").to_owned());
     let disk = Line::new(t!("settings.disk"), disk_desc)
         .warn(short.is_some_and(|s| s.level.holds_builds()))
-        .words("disk space storage clean target build 디스크 용량 정리 /disk")
+        .words(t!("settings.disk_words"))
         .control(ui::button(p, "open-disk", Kind::Secondary, t!("settings.disk_open")).icon(Icon::Server).disabled(!connected).on_click(cx.listener(|this, _, window, cx| this.open_disk(window, cx))));
 
     let suggestions = Line::new(t!("settings.suggestions"), t!("settings.suggestions_desc")).words("suggest").control(switch(shell, "suggestions", !model.suggestions_off, connected, |this, on, _, _| this.set_suggestions(on), cx));
@@ -494,7 +494,7 @@ fn squad(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
 /// when it was last there and "연결 끊기" — asked twice.
 fn phones(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Section {
     let p = shell.palette;
-    let words = "phone iphone android mobile app pair qr device equipe 휴대폰 아이폰 기기 앱";
+    let words = t!("settings.phone_words");
     let pair = Line::new(t!("pair.settings_pair"), t!("pair.settings_pair_desc", host = shell.endpoint.label()))
         .words(words)
         .control(ui::button(p, "pair-phone", Kind::Secondary, t!("pair.menu_item")).icon(Icon::Phone).disabled(!connected).on_click(cx.listener(|this, _, window, cx| this.open_pairing(window, cx))));
@@ -573,7 +573,7 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let lines = if lines.is_empty() { vec![Line::new(t!("settings.no_members"), t!("settings.no_members_desc"))] } else { lines };
     // Who accepts the team's work: the PM (only what needs the person comes to them), or the person, all of it.
     let pm_accepts = Line::new(t!("settings.pm_accepts"), t!("settings.pm_accepts_desc"))
-        .words("accept review approve 수락 검토 승인 pm")
+        .words(t!("settings.accept_words"))
         .control(switch(shell, "pm-accepts", model.pm_accepts, connected, |this, on, _, _| {
             let squad = this.model.squad.clone();
             this.send_command(equipe_core::protocol::Command::SetPmAccepts { squad, on });

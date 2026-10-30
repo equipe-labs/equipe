@@ -133,7 +133,8 @@ impl Endpoint {
     /// `local` / `this` / `이 맥`, or an SSH destination.
     pub fn parse(text: &str) -> Result<Self, String> {
         match text.trim() {
-            "local" | "this" | "이 맥" => Ok(Self::this_mac()),
+            "local" | "this" => Ok(Self::this_mac()),
+            other if crate::i18n::every("match.this_mac").contains(&other) => Ok(Self::this_mac()),
             other if other == t!("target.this_mac") => Ok(Self::this_mac()),
             other => SshHost::parse(other).map(Self::Ssh),
         }

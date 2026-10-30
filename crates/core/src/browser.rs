@@ -299,78 +299,30 @@ impl HostPage {
 }
 
 /// Titles of a whole-page "checking your browser" wall — Cloudflare's, in the
-/// languages it speaks, and the like.
-const WALL_TITLES: &[&str] = &[
-    "just a moment",
-    "잠시만 기다리십시오",
-    "잠시만 기다려 주십시오",
-    "잠시만 기다려주세요",
-    "un instant",
-    "einen moment",
-    "un momento",
-    "しばらくお待ちください",
-    "请稍候",
-    "請稍候",
-    "attention required! | cloudflare",
-    "checking your browser",
-    "please wait while we verify",
-    "ddos-guard",
-];
+/// languages it speaks, and the like: the locale files' words, and the walls'
+/// own names.
+fn wall_titles() -> impl Iterator<Item = &'static str> {
+    crate::i18n::every("match.wall_titles").iter().copied().chain(["attention required! | cloudflare", "ddos-guard"])
+}
 
 /// Words of a page asking whether a person is there.
-const HUMAN_WORDS: &[&str] = &[
-    "verify you are human",
-    "verifying you are human",
-    "are you a robot",
-    "i'm not a robot",
-    "i am human",
-    "not a robot",
-    "checking if the site connection is secure",
-    "needs to review the security of your connection",
-    "사람인지 확인",
-    "로봇이 아닙니다",
-    "연결이 안전한지 확인",
-    "人間であることを確認",
-    "ロボットではありません",
-    "确认您是真人",
-    "確認您是真人",
-    "vérifiez que vous êtes humain",
-    "bestätigen sie, dass sie ein mensch sind",
-    "verifica que eres humano",
-];
+fn human_words() -> &'static [&'static str] {
+    crate::i18n::every("match.human_words")
+}
 
 /// Where a CAPTCHA's frame comes from (not an invisible one's badge).
 const CAPTCHA_FRAMES: &[&str] = &["challenges.cloudflare.com", "hcaptcha.com", "/recaptcha/api2/", "/recaptcha/enterprise/", "recaptcha.net/recaptcha"];
 
 /// Words of a code from the person's phone.
-const CODE_WORDS: &[&str] = &[
-    "two-factor",
-    "2-step",
-    "two-step",
-    "2fa",
-    "verification code",
-    "security code",
-    "authentication code",
-    "authenticator app",
-    "one-time code",
-    "enter the code",
-    "인증 코드",
-    "인증번호",
-    "2단계 인증",
-    "보안 코드",
-    "確認コード",
-    "認証コード",
-    "2 段階認証",
-    "验证码",
-    "驗證碼",
-    "code de vérification",
-    "bestätigungscode",
-    "código de verificación",
-];
+fn code_words() -> impl Iterator<Item = &'static str> {
+    crate::i18n::every("match.code_words").iter().copied().chain(["2fa"])
+}
 
-/// Words of a sign-in page, in its address or title.
-const SIGN_IN_WORDS: &[&str] =
-    &["login", "log-in", "log_in", "log in", "signin", "sign-in", "sign_in", "sign in", "/auth", "/sso", "sso.", "accounts.", "로그인", "ログイン", "登录", "登入", "anmelden", "connexion", "iniciar sesión", "se connecter"];
+/// Words of a sign-in page, in its address or title: the locale files'
+/// words, and addresses' own marks.
+fn sign_in_words() -> impl Iterator<Item = &'static str> {
+    crate::i18n::every("match.sign_in_words").iter().copied().chain(["/auth", "/sso", "sso.", "accounts."])
+}
 
 /// Whether a page waits for a person, and for what: from its address, its
 /// title and what the host read off it. Only what a person must do counts —
@@ -381,9 +333,9 @@ pub fn human_check(url: &str, title: &str, signals: Option<&Signals>) -> Option<
     let s = signals.unwrap_or(&none);
     let url_l = url.to_lowercase();
     let title_l = title.trim().trim_end_matches(['.', '…', ' ']).to_lowercase();
-    let says = |words: &[&str]| words.iter().any(|w| s.text.contains(w) || title_l.contains(w));
+    let says = |w: &str| s.text.contains(w) || title_l.contains(w);
     // A wall over the whole page: its title, or Cloudflare's challenge in the address.
-    let wall_title = title_l.chars().count() <= 40 && WALL_TITLES.iter().any(|w| title_l.starts_with(w));
+    let wall_title = title_l.chars().count() <= 40 && wall_titles().any(|w| title_l.starts_with(w));
     if wall_title || url_l.contains("__cf_chl") || url_l.contains("cf_chl_") || url_l.contains("/cdn-cgi/challenge-platform") {
         return Some(HumanCheck::Challenge);
     }
@@ -392,13 +344,13 @@ pub fn human_check(url: &str, title: &str, signals: Option<&Signals>) -> Option<
         let f = f.to_lowercase();
         CAPTCHA_FRAMES.iter().any(|c| f.contains(c)) && !f.contains("size=invisible")
     });
-    if !s.solved && (s.widget || (captcha_frame && says(HUMAN_WORDS))) {
+    if !s.solved && (s.widget || (captcha_frame && human_words().iter().any(|w| says(w)))) {
         return Some(HumanCheck::Captcha);
     }
-    if s.otp || (s.code && !s.password && says(CODE_WORDS)) {
+    if s.otp || (s.code && !s.password && code_words().any(says)) {
         return Some(HumanCheck::TwoFactor);
     }
-    if s.password && SIGN_IN_WORDS.iter().any(|w| url_l.contains(w) || title_l.contains(w)) {
+    if s.password && sign_in_words().any(|w| url_l.contains(w) || title_l.contains(w)) {
         return Some(HumanCheck::SignIn);
     }
     None

@@ -981,5 +981,11 @@
   "view.write_goes_to_pm": "여기에 쓰는 글은 T-{id}에 관해 PM에게 가요.",
   "view.writes": "쓰기: {files}",
   "view.your_turn_answer": "답하기: /answer T-{id} 로 항목마다, 또는 보드에서 r",
-  "view.your_turn_heading": "내 차례 · T-{id} · {title}"
+  "view.your_turn_heading": "내 차례 · T-{id} · {title}",
+  "demo.pm_added": "알겠어요. 보드에 T-{id}로 올리고 frontend에게 맡겼어요. 랜딩 페이지(T-3)가 끝나는 대로 시작해요.",
+  "demo.pm_reply_1": "지금 상황이에요: T-2(가입 API)는 검토를 기다리고, T-3(랜딩 페이지)는 진행 중이고, T-4는 결제사의 테스트 API 키가 필요해요. 더 추가할 일이 있을까요?",
+  "demo.pm_reply_2": "T-4만 결제사 테스트 키를 기다리고 있고, 나머지는 진행 중이에요. 검토할 것이 생기면 알려 드릴게요.",
+  "demo.pm_reply_3": "랜딩 페이지와 가입을 먼저 내고, 그다음 가격 페이지를 하는 게 좋겠어요. 추가할 일을 말씀해 주시면 보드에 올릴게요.",
+  "demo.member_noted": "{member}: 알겠어요. 지금 하던 티켓에 반영할게요.",
+  "match.demo_wants": "추가|만들|티켓|해줘|해 줘"
 }

@@ -54,18 +54,10 @@ impl Lang {
         }
     }
 
-    /// Its name in itself, for a list to pick from.
+    /// Its name in itself, for a list to pick from: `language.native` in its
+    /// own locale file (never English's in its place), else its English name.
     pub fn native_name(self) -> &'static str {
-        match self {
-            Lang::Ko => "한국어",
-            Lang::En => "English",
-            Lang::Ja => "日本語",
-            Lang::ZhHans => "简体中文",
-            Lang::ZhHant => "繁體中文",
-            Lang::Es => "Español",
-            Lang::Fr => "Français",
-            Lang::De => "Deutsch",
-        }
+        core(self).own("language.native").unwrap_or(self.english_name())
     }
 
     /// Its name in English, as the squad's prompts name the person's language.
@@ -458,6 +450,14 @@ pub const FILES: &[(&str, &str)] = &[
 ];
 
 static CORE: Words = Words::new(FILES, || Lang::En);
+
+/// How a language worded `key` before (Korean's lines once ended "…습니다"):
+/// what a line kept from then, or a daemon not yet updated, still says.
+pub fn previous(key: &str) -> impl Iterator<Item = &'static str> {
+    static PREVIOUS: OnceLock<HashMap<String, HashMap<String, String>>> = OnceLock::new();
+    let all = PREVIOUS.get_or_init(|| serde_json::from_str(include_str!("../locales/previous.json")).unwrap_or_default());
+    all.values().filter_map(move |words| words.get(key).map(String::as_str))
+}
 
 /// core's `key` words in every language (`Words::every`).
 pub fn every(key: &str) -> &'static [&'static str] {
@@ -913,7 +913,7 @@ mod tests {
     fn the_transcripts_own_lines_read_in_the_persons_language_and_the_rest_as_they_are() {
         use equipe_protocol::transcript::notes;
         assert_eq!(note(Lang::En, notes::STOPPED), notes::STOPPED);
-        assert_eq!(note(Lang::Ko, notes::STOPPED), "멈췄습니다.");
+        assert_eq!(note(Lang::Ko, notes::STOPPED), "멈췄어요.");
         let working = format!("{}equipe/try-1{}", notes::WORKING_ON, notes::WORKING_REST);
         assert_eq!(note(Lang::En, &working), working, "English reads as it always did");
         assert!(note(Lang::Fr, &working).contains("equipe/try-1"));

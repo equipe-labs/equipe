@@ -470,9 +470,9 @@ pub fn all_failed(looks: &[Option<&Look>]) -> Option<ImageWhy> {
 
 /// The words members mark the option they recommend with, in the languages
 /// the person may speak — "(Recommended)", "(추천)".
-const RECOMMENDED: [&str; 14] = [
-    "recommended", "추천", "권장", "おすすめ", "推奨", "推荐", "推薦", "recomendado", "recomendada", "recommandé", "recommandée", "empfohlen", "empfehlung", "best",
-];
+fn recommended_words() -> &'static [&'static str] {
+    crate::i18n::every("match.recommended")
+}
 
 /// An option's label without its "(Recommended)", and whether it had one.
 pub fn recommended(label: &str) -> (String, bool) {
@@ -482,7 +482,7 @@ pub fn recommended(label: &str) -> (String, bool) {
             && let Some(at) = inner.rfind(open)
         {
             let word = inner[at + open.len_utf8()..].trim().to_lowercase();
-            if RECOMMENDED.contains(&word.as_str()) {
+            if recommended_words().contains(&word.as_str()) {
                 return (inner[..at].trim_end().to_owned(), true);
             }
         }

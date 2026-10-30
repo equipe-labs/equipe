@@ -981,5 +981,11 @@
   "view.write_goes_to_pm": "你写的内容会发给 PM，关于 T-{id}。",
   "view.writes": "写入 {files}",
   "view.your_turn_answer": "用 /answer T-{id} 逐项回答，或在看板上按 r",
-  "view.your_turn_heading": "轮到你 · T-{id} · {title}"
+  "view.your_turn_heading": "轮到你 · T-{id} · {title}",
+  "demo.pm_added": "好的，我已把它作为 T-{id} 放上看板，交给 frontend。落地页（T-3）一完成就开始。",
+  "demo.pm_reply_1": "目前进展：T-2（注册 API）等你审阅，T-3（落地页）正在进行，T-4 需要你提供支付服务商的测试 API 密钥。还要添加什么吗？",
+  "demo.pm_reply_2": "只有 T-4 在等支付服务商的测试密钥，其他都在推进。有可以审阅的内容时我会告诉你。",
+  "demo.pm_reply_3": "好问题。我建议先上线落地页和注册，再做定价页。告诉我要添加什么，我会放上看板。",
+  "demo.member_noted": "{member}：收到，我会把它加进手上的工单里。",
+  "match.demo_wants": "添加|新增|创建|工单"
 }

@@ -182,7 +182,7 @@ mod tests {
         let job = Job::Home { squad: "a".into(), words: vec![] };
         assert_eq!(reason(&job, "  The squad's folder isn't made yet\n", 1), "The squad's folder isn't made yet");
         assert_eq!(reason(&job, "\n✗ shop doesn't work on nope\n", 1), "shop doesn't work on nope");
-        assert!(reason(&job, "", 127).contains("찾지 못했습니다"));
+        assert!(reason(&job, "", 127).contains("찾지 못했어요"));
         assert!(reason(&job, "error: unrecognized subcommand 'squad'\n\nUsage: equipe\n", 2).contains("equipe update"));
         assert_eq!(reason(&job, "", 3), "equipe home 종료 코드 3");
     }

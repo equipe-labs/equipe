@@ -178,7 +178,7 @@ pub(super) fn sections(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
                     .child(ui::button(p, "login-save", Kind::Primary, t!("accounts.save")).on_click(cx.listener(|this, _, window, cx| this.save_login_form(window, cx)))),
             )
     });
-    let add = Line::new(t!("accounts.add"), t!("accounts.add_desc")).words("login password id 아이디 비밀번호 계정");
+    let add = Line::new(t!("accounts.add"), t!("accounts.add_desc")).words(t!("accounts.add_words"));
     let add = match (form, ui.editing.is_some()) {
         (Some(form), true) => add.below(form),
         _ => add.control(ui::button(p, "login-add", Kind::Secondary, t!("accounts.add_button")).icon(Icon::Plus).on_click(cx.listener(|this, _, window, cx| this.open_login_form(None, window, cx)))),
@@ -228,9 +228,9 @@ pub(super) fn profiles_section(shell: &Shell, cx: &mut Context<Shell>) -> Sectio
                 }))
             });
         let desc = if profile.label.is_empty() { t!("accounts.profile_tools", server = equipe_core::browser::server_name(Some(&name))) } else { format!("{} · {}", profile.label, t!("accounts.profile_tools", server = equipe_core::browser::server_name(Some(&name)))) };
-        lines.push(Line::new(name.clone(), desc).words(format!("{} {} browser profile 프로필 브라우저", name, profile.label)).control(controls));
+        lines.push(Line::new(name.clone(), desc).words(format!("{} {} {}", name, profile.label, t!("accounts.profile_words"))).control(controls));
     }
-    let add = Line::new(t!("accounts.profile_add"), t!("accounts.profile_add_desc")).words("browser profile chrome google 프로필 브라우저 계정");
+    let add = Line::new(t!("accounts.profile_add"), t!("accounts.profile_add_desc")).words(t!("accounts.profile_add_words"));
     let add = if ui.adding_profile {
         let field = |label: &'static str, input: &Entity<InputState>| v_flex().w_full().gap_1().child(div().text_size(px(12.)).text_color(p.muted).child(label)).child(boxed(p, input));
         add.below(

@@ -29,6 +29,7 @@ pub mod tags;
 pub mod team;
 pub mod transcript;
 pub mod vault;
+pub mod words;
 
 pub use transcript::Transcript;
 

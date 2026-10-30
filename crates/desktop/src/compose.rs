@@ -672,7 +672,8 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                     Some(m) => vec![m.name.clone()],
                     None => return Plan::say(t!("compose.engine_usage")),
                 },
-                ["all"] | ["모두"] | ["전부"] => Vec::new(),
+                ["all"] => Vec::new(),
+                [word] if crate::i18n::every("match.all_members").contains(word) => Vec::new(),
                 names => {
                     if let Some(missing) = names.iter().find(|n| member_named(n).is_none()) {
                         return Plan::say(t!("compose.model_no_member", name = missing));
@@ -1202,7 +1203,7 @@ mod tests {
         let model = team();
         let p = plan(&model, "@frontend 헤더 고쳐 줘");
         assert_eq!(p.commands, vec![submit(2, "헤더 고쳐 줘")]);
-        assert_eq!(p.flash.as_deref(), Some("frontend에게 보냈습니다"));
+        assert_eq!(p.flash.as_deref(), Some("frontend에게 보냈어요"));
         assert_eq!(p.effect, None);
     }
 
@@ -1424,7 +1425,7 @@ mod tests {
         assert!(matches!(&then.1, After::Squads { open: Some(name), .. } if name == "shop"));
         // Remove: asked, and only a project the squad works on.
         let remove = plan(&model, "/squad remove site");
-        assert_eq!(asked(&remove).then, Then::Job(Job::Squad { squad: "acme".into(), words: vec!["remove".into(), "site".into()], dry_run: false }, After::Squads { open: None, say: "acme은(는) 이제 site을(를) 작업하지 않습니다 — 티켓과 브랜치는 남습니다".into() }));
+        assert_eq!(asked(&remove).then, Then::Job(Job::Squad { squad: "acme".into(), words: vec!["remove".into(), "site".into()], dry_run: false }, After::Squads { open: None, say: "acme은(는) 이제 site을(를) 작업하지 않아요 — 티켓과 브랜치는 남아요".into() }));
         assert!(plan(&model, "/squad remove ghost").effect.is_none());
     }
 
@@ -1447,7 +1448,7 @@ mod tests {
         assert!(plan(&model, "/add --edits").commands.is_empty());
         assert!(plan(&model, "/add wizard").flash.unwrap().contains("wizard"));
         let nowhere = Model::new("empty");
-        assert!(plan(&nowhere, "/add qa").flash.unwrap().contains("프로젝트가 없습니다"));
+        assert!(plan(&nowhere, "/add qa").flash.unwrap().contains("프로젝트가 없어요"));
     }
 
     #[test]

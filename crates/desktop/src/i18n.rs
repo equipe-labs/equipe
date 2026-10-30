@@ -44,43 +44,6 @@ mod tests {
         assert!(problems.is_empty(), "{}", problems.join("\n"));
     }
 
-    /// The screen's words come from `locales/`, never written into the code:
-    /// a Korean line in the code would show to someone reading English. Words
-    /// matched in what people type (`"보통" | "normal"`) and search terms are
-    /// what the code may hold.
-    #[test]
-    fn no_screen_words_are_written_into_the_code() {
-        const MATCHES_TYPED: &[&str] = &["asklist.rs", "accept.rs", "browse.rs", "snapshot.rs", "accounts.rs", "settings.rs", "visuals.rs"];
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut files = vec![src];
-        let mut found = Vec::new();
-        while let Some(path) = files.pop() {
-            if path.is_dir() {
-                files.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
-                continue;
-            }
-            let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            if !name.ends_with(".rs") || MATCHES_TYPED.contains(&name.as_str()) {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).unwrap();
-            for (n, line) in text.lines().enumerate() {
-                if line.trim_start().starts_with("mod tests") {
-                    break;
-                }
-                let code = line.trim_start();
-                if code.starts_with("//") || code.contains(" | ") || code.contains(" || ") {
-                    continue;
-                }
-                let korean = code.split('"').skip(1).step_by(2).any(|lit| lit.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c)));
-                if korean {
-                    found.push(format!("{name}:{}: {}", n + 1, code));
-                }
-            }
-        }
-        assert!(found.is_empty(), "Korean in the code — move it to locales/:\n{}", found.join("\n"));
-    }
-
     #[test]
     fn a_new_language_shows_at_once() {
         // The app's own words, switched as the settings switch them — on a

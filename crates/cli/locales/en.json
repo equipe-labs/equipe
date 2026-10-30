@@ -1004,5 +1004,11 @@
   "view.write_goes_to_pm": "What you write goes to the PM, about T-{id}.",
   "view.writes": "writes {files}",
   "view.your_turn_answer": "Answer item by item with /answer T-{id}, or r on the board",
-  "view.your_turn_heading": "Your turn · T-{id} · {title}"
+  "view.your_turn_heading": "Your turn · T-{id} · {title}",
+  "demo.pm_added": "Got it — I've put that on the board as T-{id} for frontend. It starts as soon as the landing page (T-3) is done.",
+  "demo.pm_reply_1": "Here's where we are: T-2 (sign-up API) waits for your review, T-3 (landing page) is in progress, and T-4 needs a test API key from you. Want me to add anything?",
+  "demo.pm_reply_2": "Nothing is blocked except T-4, which needs the payment provider's test key. Everything else is moving; I'll tell you when something is ready to review.",
+  "demo.pm_reply_3": "Good question. I'd ship the landing page and sign-up first, then pricing. Tell me what to add and I'll put it on the board.",
+  "demo.member_noted": "{member}: Noted — I'll take that into the ticket I'm on.",
+  "match.demo_wants": "add|make|create|build|ticket|need"
 }

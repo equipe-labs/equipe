@@ -981,5 +981,11 @@
   "view.write_goes_to_pm": "ここに書いた内容はT-{id}についてPMに送られます。",
   "view.writes": "書き込み {files}",
   "view.your_turn_answer": "/answer T-{id} で項目ごとに回答、またはボードで r",
-  "view.your_turn_heading": "あなたの番 · T-{id} · {title}"
+  "view.your_turn_heading": "あなたの番 · T-{id} · {title}",
+  "demo.pm_added": "了解しました。ボードに T-{id} として追加し、frontend に任せました。ランディングページ（T-3）が終わり次第始めます。",
+  "demo.pm_reply_1": "現状です：T-2（登録 API）はレビュー待ち、T-3（ランディングページ）は進行中、T-4 は決済サービスのテスト用 API キーが必要です。ほかに追加することはありますか？",
+  "demo.pm_reply_2": "止まっているのは決済サービスのテストキーを待つ T-4 だけで、ほかは進んでいます。レビューできるものができたらお知らせします。",
+  "demo.pm_reply_3": "いい質問ですね。まずランディングページと登録を出して、その次に料金ページがいいと思います。追加したいことを教えてもらえればボードに載せます。",
+  "demo.member_noted": "{member}: 了解です。いま取り組んでいるチケットに反映します。",
+  "match.demo_wants": "追加|作って|作成|チケット"
 }

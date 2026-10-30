@@ -203,7 +203,7 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                 }),
                 "pastelong" => shell.update(cx, |shell, cx| {
                     let lines = arg.parse::<usize>().unwrap_or(60);
-                    let text: String = (1..=lines).map(|n| format!("{n}번째 줄: 로그 내용이 여기에 있습니다\n")).collect();
+                    let text: String = (1..=lines).map(|n| format!("line {n}: the log goes on here\n")).collect();
                     let taken = shell.paste_item(&ClipboardItem::new_string(text), cx);
                     eprintln!("pastelong: taken = {taken}");
                 }),
@@ -238,8 +238,8 @@ pub fn run(handle: AnyWindowHandle, shell: Entity<Shell>, cx: &mut App) {
                     use equipe_core::protocol::routines::{Routine, Schedule};
                     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
                     shell.model.routines = vec![
-                        Routine { id: 1, title: "주간 리포트".into(), prompt: "-".into(), when: Schedule::Weekly { weekday: 1, hour: 9, minute: 0 }, on: true, last_run: Some(now - 6 * 86_400), next_run: Some(now + 86_400) },
-                        Routine { id: 2, title: "의존성 점검".into(), prompt: "-".into(), when: Schedule::Weekly { weekday: 5, hour: 16, minute: 0 }, on: false, last_run: None, next_run: Some(now + 4 * 86_400) },
+                        Routine { id: 1, title: "Weekly report".into(), prompt: "-".into(), when: Schedule::Weekly { weekday: 1, hour: 9, minute: 0 }, on: true, last_run: Some(now - 6 * 86_400), next_run: Some(now + 86_400) },
+                        Routine { id: 2, title: "Dependency check".into(), prompt: "-".into(), when: Schedule::Weekly { weekday: 5, hour: 16, minute: 0 }, on: false, last_run: None, next_run: Some(now + 4 * 86_400) },
                     ];
                     cx.notify();
                 }),

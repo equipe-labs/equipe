@@ -2093,7 +2093,7 @@ mod tests {
         };
         model.apply(tick("in_progress", None), T0);
         model.apply(tick("waiting", Some("Waiting on you:\n- [ ] 토큰을 알려 주세요.\n- [ ] 일정을 정해 주세요.")), T0);
-        assert_eq!(model.take_flash().as_deref(), Some("T-3 내 차례 — backend이(가) 2가지를 묻습니다"), "no asks run together, no keys to learn");
+        assert_eq!(model.take_flash().as_deref(), Some("T-3 내 차례 — backend이(가) 2가지를 물어요"), "no asks run together, no keys to learn");
         // Answered on another screen: the card learns it as the ticket moves.
         let revision = model.revision;
         model.unix = 1_000;

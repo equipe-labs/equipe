@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use super::contrast;
 use super::values::{self, Color};
+use crate::i18n::Lang;
 use crate::protocol::design::Token;
 
 const BRAND: &str = include_str!("../../assets/design/brand.md");
@@ -115,8 +116,11 @@ fn font_links(tokens: &[Token]) -> String {
     links
 }
 
-/// The system drawn: `title` over it, light and dark side by side when it has dark values.
-pub fn specimen(tokens: &[Token], modes: &[String], title: &str) -> String {
+/// The system drawn: `title` over it, light and dark side by side when it has
+/// dark values, its sample screen in `lang`.
+pub fn specimen(tokens: &[Token], modes: &[String], title: &str, lang: Lang) -> String {
+    let words = crate::i18n::core(lang);
+    let w = |key: &str| esc(words.get(key));
     let dark = modes.iter().find(|m| m.to_ascii_lowercase().contains("dark")).map(String::as_str);
     let mut vars = String::new();
     let mut dark_vars = String::new();
@@ -181,7 +185,8 @@ pub fn specimen(tokens: &[Token], modes: &[String], title: &str) -> String {
             dark_hex.map(|d| format!(" / {d}")).unwrap_or_default(),
         ));
     }
-    // Type: each style with Korean and Latin, its numbers.
+    // Type: each style with the language's letters and Latin, its numbers.
+    let sample = w("kit.type_sample");
     let mut type_rows = String::new();
     for t in tokens.iter().filter(|t| t.kind == "typography") {
         let Some(s) = values::typography(&t.value) else { continue };
@@ -194,7 +199,7 @@ pub fn specimen(tokens: &[Token], modes: &[String], title: &str) -> String {
             s.tracking.map(|v| format!("letter-spacing:{v}px;")).unwrap_or_default()
         );
         type_rows.push_str(&format!(
-            "<div class=ty><div class=tyname>{}<span>{}{}{}</span></div><div style=\"{style}\">브랜드를 말하는 글자 · The quick brown fox 0123</div></div>",
+            "<div class=ty><div class=tyname>{}<span>{}{}{}</span></div><div style=\"{style}\">{sample} · The quick brown fox 0123</div></div>",
             esc(&t.name),
             s.size.map(|v| format!("{v}px")).unwrap_or_default(),
             s.weight.map(|v| format!(" / {v}")).unwrap_or_default(),
@@ -204,7 +209,7 @@ pub fn specimen(tokens: &[Token], modes: &[String], title: &str) -> String {
     if type_rows.is_empty() {
         for t in tokens.iter().filter(|t| t.kind == "fontFamily") {
             let family = css(t, None).unwrap_or_default();
-            type_rows.push_str(&format!("<div class=ty><div class=tyname>{}</div><div style=\"font-family:{family};font-size:28px\">브랜드를 말하는 글자 Aa 0123</div></div>", esc(&t.name)));
+            type_rows.push_str(&format!("<div class=ty><div class=tyname>{}</div><div style=\"font-family:{family};font-size:28px\">{sample} Aa 0123</div></div>", esc(&t.name)));
         }
     }
     // Spacing and radius, as bars and boxes.
@@ -229,34 +234,62 @@ pub fn specimen(tokens: &[Token], modes: &[String], title: &str) -> String {
         format!(
             r#"<div class="screen" style="{roles}">
   <div class="label">{label}</div>
-  <div class="bar"><b>{title}</b><span class="spacer"></span><button class="btn ghost">도움말</button><button class="btn primary">새로 만들기</button></div>
+  <div class="bar"><b>{title}</b><span class="spacer"></span><button class="btn ghost">{help}</button><button class="btn primary">{new}</button></div>
   <div class="kpis">
-    <div class="card"><span>이번 달 거래</span><b>1,284<small>건</small></b><em class="up">▲ 12.4%</em></div>
-    <div class="card"><span>운용 자산</span><b>600,000<small>백만원</small></b><em>지난달과 같음</em></div>
-    <div class="card"><span>검토 대기</span><b>7<small>건</small></b><em class="down">▼ 2건</em></div>
+    <div class="card"><span>{deals}</span><b>1,284<small>{unit}</small></b><em class="up">▲ 12.4%</em></div>
+    <div class="card"><span>{aum}</span><b>{aum_amount}<small>{aum_unit}</small></b><em>{aum_note}</em></div>
+    <div class="card"><span>{review}</span><b>7<small>{unit}</small></b><em class="down">{review_delta}</em></div>
   </div>
   <div class="card table">
-    <div class="tr th"><span>이름</span><span>상태</span><span class="num">금액</span></div>
-    <div class="tr"><span>시리즈 A 투자</span><span class="badge ok">완료</span><span class="num">12,500</span></div>
-    <div class="tr"><span>브리지 라운드</span><span class="badge">검토 중</span><span class="num">3,200</span></div>
-    <div class="tr"><span>엔젤 매칭</span><span class="badge bad">반려</span><span class="num">800</span></div>
+    <div class="tr th"><span>{col_name}</span><span>{col_status}</span><span class="num">{col_amount}</span></div>
+    <div class="tr"><span>{row_a}</span><span class="badge ok">{done}</span><span class="num">12,500</span></div>
+    <div class="tr"><span>{row_b}</span><span class="badge">{in_review}</span><span class="num">3,200</span></div>
+    <div class="tr"><span>{row_c}</span><span class="badge bad">{declined}</span><span class="num">800</span></div>
   </div>
   <div class="row">
-    <label class="field"><span>회사 이름</span><input value="에이티넘"></label>
-    <label class="field err"><span>사업자 번호</span><input value="123-45"><em>숫자 10자리를 입력해 주세요</em></label>
+    <label class="field"><span>{company}</span><input value="{company_sample}"></label>
+    <label class="field err"><span>{tax_id}</span><input value="123-45"><em>{tax_id_error}</em></label>
   </div>
-  <div class="row"><button class="btn primary">저장하기</button><button class="btn secondary">취소</button><button class="btn primary" disabled>보내는 중…</button><button class="btn danger">삭제</button></div>
-  <div class="empty">아직 기록이 없어요. 첫 투자를 추가해 보세요.</div>
+  <div class="row"><button class="btn primary">{save}</button><button class="btn secondary">{cancel}</button><button class="btn primary" disabled>{sending}</button><button class="btn danger">{delete}</button></div>
+  <div class="empty">{empty}</div>
 </div>"#,
-            title = esc(title)
+            title = esc(title),
+            help = w("kit.help"),
+            new = w("kit.new"),
+            deals = w("kit.kpi_deals"),
+            unit = w("kit.unit_deals"),
+            aum = w("kit.kpi_aum"),
+            aum_amount = w("kit.aum_amount"),
+            aum_unit = w("kit.aum_unit"),
+            aum_note = w("kit.aum_note"),
+            review = w("kit.kpi_review"),
+            review_delta = w("kit.review_delta"),
+            col_name = w("kit.col_name"),
+            col_status = w("kit.col_status"),
+            col_amount = w("kit.col_amount"),
+            row_a = w("kit.row_series_a"),
+            row_b = w("kit.row_bridge"),
+            row_c = w("kit.row_angel"),
+            done = w("kit.status_done"),
+            in_review = w("kit.status_review"),
+            declined = w("kit.status_declined"),
+            company = w("kit.field_company"),
+            company_sample = w("kit.company_sample"),
+            tax_id = w("kit.field_tax_id"),
+            tax_id_error = w("kit.tax_id_error"),
+            save = w("kit.save"),
+            cancel = w("kit.cancel"),
+            sending = w("kit.sending"),
+            delete = w("kit.delete"),
+            empty = w("kit.empty"),
         )
     };
     let screens = match &dark_roles {
-        Some(dark_roles) => format!("<div class=pair>{}{}</div>", screen(&light_roles, "Light"), screen(&format!("{dark_vars}{dark_roles}"), "Dark")),
-        None => format!("<div class=pair>{}</div>", screen(&light_roles, "Light")),
+        Some(dark_roles) => format!("<div class=pair>{}{}</div>", screen(&light_roles, &w("kit.light")), screen(&format!("{dark_vars}{dark_roles}"), &w("kit.dark"))),
+        None => format!("<div class=pair>{}</div>", screen(&light_roles, &w("kit.light"))),
     };
     format!(
-        r#"<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>{title} — specimen</title>
+        r#"<!doctype html><html lang="{code}"><head><meta charset="utf-8"><title>{page_title}</title>
 {fonts}<style>
 :root{{{vars}}}
 *{{box-sizing:border-box}} body{{margin:0;padding:40px;background:#F4F4F5;color:#18181B;font-family:{body_family};-webkit-font-smoothing:antialiased}}
@@ -283,17 +316,26 @@ h1{{font-size:28px;margin:0 0 4px}} h2{{font-size:13px;letter-spacing:.08em;text
 .btn{{font:inherit;font-size:14px;font-weight:600;padding:9px 14px;border-radius:var(--s-radius);border:1px solid transparent;cursor:pointer}} .btn.primary{{background:var(--s-primary);color:var(--s-on-primary)}} .btn.secondary{{background:transparent;color:var(--s-text);border-color:var(--s-border)}} .btn.ghost{{background:transparent;color:var(--s-muted)}} .btn.danger{{background:transparent;color:var(--s-danger);border-color:var(--s-danger)}} .btn:disabled{{opacity:.45}}
 .empty{{font-size:14px;color:var(--s-muted);padding:18px;border:1px dashed var(--s-border);border-radius:var(--s-radius);text-align:center}}
 </style></head><body>
-<h1>{title}</h1><p class="sub">{count} tokens · drawn from tokens.json by <code>equipe design specimen</code></p>
-<h2>Screens</h2>{screens}
-<h2>Colour</h2><div class="grid">{palette}</div>
-<h2>Type</h2>{type_rows}
-<h2>Spacing</h2>{spaces}
-<h2>Radius</h2>{radii}
-<h2>Shadow</h2>{shadows}
+<h1>{title}</h1><p class="sub">{sub}</p>
+<h2>{h_screens}</h2>{screens}
+<h2>{h_colour}</h2><div class="grid">{palette}</div>
+<h2>{h_type}</h2>{type_rows}
+<h2>{h_spacing}</h2>{spaces}
+<h2>{h_radius}</h2>{radii}
+<h2>{h_shadow}</h2>{shadows}
 </body></html>"#,
         title = esc(title),
+        code = lang.code(),
+        page_title = esc(&words.fill("kit.page_title", &[("title", title.to_owned())])),
+        sub = esc(&words.fill("kit.sub", &[("n", tokens.len().to_string()), ("file", "tokens.json".to_owned()), ("command", "equipe design specimen".to_owned())]))
+            .replace("equipe design specimen", "<code>equipe design specimen</code>"),
+        h_screens = w("kit.h_screens"),
+        h_colour = w("kit.h_colour"),
+        h_type = w("kit.h_type"),
+        h_spacing = w("kit.h_spacing"),
+        h_radius = w("kit.h_radius"),
+        h_shadow = w("kit.h_shadow"),
         fonts = font_links(tokens),
-        count = tokens.len(),
     )
 }
 
@@ -323,12 +365,14 @@ mod tests {
     #[test]
     fn a_specimen_draws_the_system_light_and_dark_from_its_tokens() {
         let parsed = super::super::tokens::parse(TOKENS);
-        let html = specimen(&parsed.tokens, &parsed.modes, "Atinum <draft>");
+        let html = specimen(&parsed.tokens, &parsed.modes, "Atinum <draft>", Lang::Ko);
+        let words = crate::i18n::core(Lang::Ko);
         assert!(html.contains("<h1>Atinum &lt;draft&gt;</h1>"), "the title escaped");
         assert!(html.contains("--color-text-primary:"), "every token a CSS variable");
-        assert!(html.contains(">Dark</div>"), "dark beside light");
+        assert!(html.contains(&format!(">{}</div>", words.get("kit.dark"))), "dark beside light");
         assert!(html.contains("pretendard"), "Pretendard's web font linked");
-        assert!(html.contains("브랜드를 말하는 글자"), "type set in Korean");
+        assert!(html.contains("<html lang=\"ko\">") && html.contains(words.get("kit.type_sample")), "type set in Korean");
+        assert!(specimen(&parsed.tokens, &parsed.modes, "Atinum", Lang::En).contains("<html lang=\"en\">"));
         // The page's roles, not a component's: the button's white text isn't the page's text.
         assert!(html.contains("--s-text:#16161A;"), "{}", &html[html.find("--s-bg").unwrap()..][..400]);
         assert!(html.contains("--s-primary:#1F6FEB;") && html.contains("--s-on-primary:#FFFFFF;"));

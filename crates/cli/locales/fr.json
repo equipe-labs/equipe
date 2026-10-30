@@ -1004,5 +1004,11 @@
   "view.write_goes_to_pm": "Ce que vous écrivez va au PM, à propos de T-{id}.",
   "view.writes": "écrit {files}",
   "view.your_turn_answer": "Répondez point par point avec /answer T-{id}, ou r sur le tableau",
-  "view.your_turn_heading": "À vous · T-{id} · {title}"
+  "view.your_turn_heading": "À vous · T-{id} · {title}",
+  "demo.pm_added": "C'est noté — je l'ai mis au tableau en T-{id} pour frontend. Ça commence dès que la page d'accueil (T-3) est finie.",
+  "demo.pm_reply_1": "Où on en est : T-2 (API d'inscription) attend ta relecture, T-3 (page d'accueil) est en cours, et T-4 a besoin d'une clé d'API de test de ta part. Je rajoute quelque chose ?",
+  "demo.pm_reply_2": "Rien n'est bloqué sauf T-4, qui attend la clé de test du prestataire de paiement. Le reste avance ; je te préviens dès que quelque chose est prêt à relire.",
+  "demo.pm_reply_3": "Bonne question. Je sortirais d'abord la page d'accueil et l'inscription, puis les tarifs. Dis-moi quoi ajouter et je le mets au tableau.",
+  "demo.member_noted": "{member} : C'est noté — je l'intègre au ticket sur lequel je suis.",
+  "match.demo_wants": "ajoute|crée|créer|fais |ticket|besoin"
 }

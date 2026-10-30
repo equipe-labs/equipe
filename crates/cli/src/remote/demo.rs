@@ -6,6 +6,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
+use equipe_core::i18n::Lang;
 use equipe_core::protocol::rpc::Hello;
 use equipe_core::protocol::{
     Access, Approval, Command, Decision, Engine, Entry, Event, Member, Mode, SessionId, SessionInfo, SessionState, Snapshot, Ticket,
@@ -343,9 +344,9 @@ impl Scene {
             Command::Submit { session, text, .. } => {
                 let Some(member) = self.member(session).map(str::to_owned).filter(|_| self.later.len() < LATER) else { return vec![] };
                 let text: String = text.chars().take(MESSAGE).collect();
-                let ko = korean(&text);
+                let lang = reply_lang(&text);
                 let start = self.free_at(session, now) + 800;
-                let reply = if member == "pm" { self.pm_reply(&text, ko, start) } else { member_reply(&member, ko) };
+                let reply = if member == "pm" { self.pm_reply(&text, lang, start) } else { member_reply(&member, lang) };
                 self.say(session, start, &reply);
                 vec![Event::UserMessage { session, text }]
             }
@@ -399,43 +400,32 @@ impl Scene {
     }
 
     /// The PM's answer. Asked for work, it puts a ticket on the board.
-    fn pm_reply(&mut self, text: &str, ko: bool, at: u64) -> String {
+    fn pm_reply(&mut self, text: &str, lang: Lang, at: u64) -> String {
         let lower = text.to_lowercase();
-        let wants = ["add", "make", "create", "build", "ticket", "need", "추가", "만들", "티켓", "해줘", "해 줘"].iter().any(|w| lower.contains(w));
+        let wants = crate::i18n::every("match.demo_wants").iter().any(|w| lower.contains(w));
         if wants && self.added < ADDED_TICKETS {
             self.added += 1;
             let id = self.tickets.iter().map(|t| t.id).max().unwrap_or(0) + 1;
             let title: String = text.lines().next().unwrap_or(text).chars().take(60).collect();
             let event = self.changed(ticket(id, &title, TicketStatus::Todo, Some("frontend"), None));
             self.at(at + 400, event);
-            return if ko {
-                format!("알겠습니다. 보드에 T-{id}로 올리고 frontend에게 맡겼어요. 랜딩 페이지(T-3)가 끝나는 대로 시작합니다.")
-            } else {
-                format!("Got it — I've put that on the board as T-{id} for frontend. It starts as soon as the landing page (T-3) is done.")
-            };
+            return crate::i18n::of(lang).fill("demo.pm_added", &[("id", id.to_string())]);
         }
         self.replies += 1;
-        let en = [
-            "Here's where we are: T-2 (sign-up API) waits for your review, T-3 (landing page) is in progress, and T-4 needs a test API key from you. Want me to add anything?",
-            "Nothing is blocked except T-4, which needs the payment provider's test key. Everything else is moving; I'll tell you when something is ready to review.",
-            "Good question. I'd ship the landing page and sign-up first, then pricing. Tell me what to add and I'll put it on the board.",
-        ];
-        let ko_replies = [
-            "현재 상황입니다: T-2(가입 API)는 검토를 기다리고, T-3(랜딩 페이지)는 진행 중이며, T-4는 결제사의 테스트 API 키가 필요해요. 더 추가할 일이 있을까요?",
-            "T-4만 결제사 테스트 키를 기다리고 있고, 나머지는 진행 중입니다. 검토할 것이 생기면 알려 드릴게요.",
-            "랜딩 페이지와 가입을 먼저 내고, 그다음 가격 페이지를 하는 게 좋겠습니다. 추가할 일을 말씀해 주시면 보드에 올릴게요.",
-        ];
-        let i = (self.replies - 1) % en.len();
-        (if ko { ko_replies[i] } else { en[i] }).to_owned()
+        const REPLIES: [&str; 3] = ["demo.pm_reply_1", "demo.pm_reply_2", "demo.pm_reply_3"];
+        let i = (self.replies - 1) % REPLIES.len();
+        crate::i18n::of(lang).get(REPLIES[i]).to_owned()
     }
 }
 
-fn member_reply(member: &str, ko: bool) -> String {
-    if ko {
-        format!("{member}: 알겠습니다. 지금 하던 티켓에 반영할게요.")
-    } else {
-        format!("{member}: Noted — I'll take that into the ticket I'm on.")
-    }
+fn member_reply(member: &str, lang: Lang) -> String {
+    crate::i18n::of(lang).fill("demo.member_noted", &[("member", member.to_owned())])
+}
+
+/// The language the members answer in: Korean when the person wrote it,
+/// else the screen's.
+fn reply_lang(text: &str) -> Lang {
+    if korean(text) { Lang::Ko } else { crate::i18n::lang() }
 }
 
 /// The demo's own place: its relay registration, its code, its devices.

@@ -535,7 +535,7 @@ mod tests {
     #[test]
     fn a_decision_says_who_asks_and_how_many_and_opens_their_conversation() {
         let t = toasts(&[Alert::Decision { session: 3, member: "backend".into(), count: 2 }], "acme", true);
-        assert_eq!((t[0].title.as_str(), t[0].body.as_str(), t[0].go), ("backend이(가) 2가지 결정을 기다립니다", "acme", Go::Member(3)));
+        assert_eq!((t[0].title.as_str(), t[0].body.as_str(), t[0].go), ("backend이(가) 2가지 결정을 기다려요", "acme", Go::Member(3)));
     }
 
     #[test]
@@ -549,7 +549,7 @@ mod tests {
     fn a_review_names_the_ticket_and_hides_the_title_when_asked() {
         let alert = Alert::Review { ticket: 54, title: "화면 설계".into(), by: Some("designer".into()), project: Some("desktop".into()) };
         let shown = toasts(std::slice::from_ref(&alert), "acme", true);
-        assert_eq!(shown[0].title, "T-54 검토를 기다립니다");
+        assert_eq!(shown[0].title, "T-54 검토를 기다려요");
         assert_eq!(shown[0].body, "designer 제출 · 화면 설계 · desktop");
         assert_eq!(shown[0].go, Go::Ticket(54));
         assert!(!toasts(&[alert], "acme", false)[0].body.contains("화면 설계"));
@@ -560,7 +560,7 @@ mod tests {
         let alerts = vec![ask("Bash", "a"), ask("Bash", "b"), Alert::Waiting { ticket: 3, by: None }, Alert::Review { ticket: 4, title: "t".into(), by: None, project: None }];
         let t = toasts(&alerts, "acme", true);
         assert_eq!(t.len(), 1);
-        assert_eq!(t[0].title, "acme에서 4건이 당신을 기다립니다");
+        assert_eq!(t[0].title, "acme에서 4건이 당신을 기다려요");
         assert_eq!(t[0].body, "승인 2 · 리뷰 1 · 사람 대기 1");
         assert_eq!(t[0].go, Go::Board);
         assert_eq!(t[0].thread, "squad/acme");

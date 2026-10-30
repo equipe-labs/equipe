@@ -1004,5 +1004,11 @@
   "view.write_goes_to_pm": "Lo que escribas va al PM, sobre T-{id}.",
   "view.writes": "escribe {files}",
   "view.your_turn_answer": "Responde punto por punto con /answer T-{id}, o r en el tablero",
-  "view.your_turn_heading": "Tu turno · T-{id} · {title}"
+  "view.your_turn_heading": "Tu turno · T-{id} · {title}",
+  "demo.pm_added": "Entendido: lo he puesto en el tablero como T-{id} para frontend. Empieza en cuanto termine la página de inicio (T-3).",
+  "demo.pm_reply_1": "Así vamos: T-2 (API de registro) espera tu revisión, T-3 (página de inicio) está en curso y T-4 necesita una clave de API de prueba tuya. ¿Quieres que añada algo?",
+  "demo.pm_reply_2": "Solo T-4 está bloqueado: necesita la clave de prueba del proveedor de pagos. Todo lo demás avanza; te aviso cuando haya algo listo para revisar.",
+  "demo.pm_reply_3": "Buena pregunta. Yo publicaría primero la página de inicio y el registro, y luego los precios. Dime qué añadir y lo pongo en el tablero.",
+  "demo.member_noted": "{member}: Anotado, lo incorporo al ticket en el que estoy.",
+  "match.demo_wants": "añade|agrega|crea |haz |necesito"
 }
