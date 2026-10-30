@@ -40,7 +40,8 @@ board of tickets on isolated git branches. Nemotron on Token Factory plays two p
         │
         ▼  POST /responses  (stream: true, Authorization: Bearer $NEBIUS_API_KEY, model nvidia/…)
  relay.rs  flatten_request: tools of type "namespace" (MCP servers: equipe's board, a browser)
-           → function tools "mcp__equipe__take_ticket"; earlier calls in `input` likewise
+           → function tools "mcp__equipe__take_ticket"; earlier calls in `input` likewise;
+           Codex's client_metadata and x-codex-* headers (workspace paths) kept back
         │
         ▼  POST https://api.tokenfactory.nebius.com/v1/responses   (headers passed on, unread)
  Token Factory → SSE: response.output_item.done {function_call | message}, response.completed {usage}

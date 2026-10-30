@@ -194,7 +194,9 @@ function tools). What such a provider can't serve is turned off for these turns 
 search, image tools, subagents, OpenAI's remote compaction). Codex sends an MCP server's
 tools — equipe's board — grouped in a Responses `namespace`; a small relay on the loopback
 (`crates/providers/src/relay.rs`) passes each request on with them as plain function tools
-(`mcp__equipe__take_ticket`) and puts the model's calls back as Codex named them. The key
+(`mcp__equipe__take_ticket`) and puts the model's calls back as Codex named them; Codex's own
+metadata for OpenAI (`client_metadata`, `x-codex-*` headers — the workspace's paths among it)
+stays on your machine. The key
 goes to the app-server in its environment only — never on a command line — Codex reads it
 there, the agent's own commands don't see it, and the relay passes the request's header on
 without reading, keeping or logging it. Code: `crates/core/src/nemotron.rs` (members on

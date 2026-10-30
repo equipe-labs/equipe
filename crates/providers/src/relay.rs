@@ -1,14 +1,17 @@
 //! A relay on this machine's loopback between `codex app-server` and another
-//! provider speaking OpenAI's Responses API, for one turn: what Codex sends
-//! goes on unchanged but for one thing — tools grouped in a `namespace` (how
-//! Codex 0.154 sends an MCP server's tools, equipe's board among them) become
-//! plain function tools named `<namespace>__<tool>`, and the calls the model
-//! makes to them come back to Codex in its own shape (`namespace` and
-//! `name`). A provider that serves only function tools then serves them all.
+//! provider speaking OpenAI's Responses API, for one turn. What Codex sends
+//! goes on unchanged but for two things:
 //!
-//! The request's headers go on as they came, its key among them — passed
-//! through, never read, kept or logged. Nothing but the tools' shape is
-//! touched: the model's answer streams back as it streams in.
+//! - tools grouped in a `namespace` (how Codex 0.154 sends an MCP server's
+//!   tools, equipe's board among them) become plain function tools named
+//!   `<namespace>__<tool>`, and the calls the model makes to them come back
+//!   to Codex in its own shape (`namespace` and `name`) — a provider that
+//!   serves only function tools then serves them all;
+//! - Codex's own metadata for OpenAI (`client_metadata`, `x-codex-*` headers:
+//!   the workspace's paths, an installation id) stays here.
+//!
+//! The other headers go on as they came, the key among them — passed through,
+//! never read, kept or logged. The model's answer streams back as it streams in.
 
 use std::collections::HashMap;
 
@@ -65,6 +68,16 @@ pub fn flatten_request(body: &mut Value) -> Names {
         }
     }
     names
+}
+
+/// Codex's metadata for OpenAI taken out of a request's body. Whether there was any.
+pub fn strip_metadata(body: &mut Value) -> bool {
+    body.as_object_mut().is_some_and(|map| map.remove("client_metadata").is_some())
+}
+
+/// Whether a request header is Codex's own metadata, not for another provider.
+fn codex_metadata(header: &str) -> bool {
+    header.starts_with("x-codex-")
 }
 
 /// The model's calls to flattened tools, anywhere in a streamed event or a
@@ -256,14 +269,15 @@ async fn relay_one(mut stream: TcpStream, client: &reqwest::Client, upstream: &s
         && let Ok(mut value) = serde_json::from_slice::<Value>(&body)
     {
         names = flatten_request(&mut value);
-        if !names.is_empty() {
+        let stripped = strip_metadata(&mut value);
+        if !names.is_empty() || stripped {
             body = serde_json::to_vec(&value).unwrap_or(body);
         }
     }
     let method = reqwest::Method::from_bytes(request.method.as_bytes()).unwrap_or(reqwest::Method::POST);
     let mut outgoing = client.request(method, &url).body(body);
     for (name, value) in &request.headers {
-        if !HOP.contains(&name.as_str()) {
+        if !HOP.contains(&name.as_str()) && !codex_metadata(name) {
             outgoing = outgoing.header(name.as_str(), value.as_str());
         }
     }
@@ -388,6 +402,16 @@ mod tests {
         assert!(restore_line(&line, &names).is_some_and(|l| l.contains("\"namespace\":\"mcp__equipe\"")));
         assert_eq!(restore_line("event: response.completed", &names), None);
         assert_eq!(restore_line("data: [DONE]", &names), None);
+    }
+
+    #[test]
+    fn codexs_metadata_for_openai_stays_here() {
+        let mut body = json!({ "model": "nvidia/x", "client_metadata": { "x-codex-turn-metadata": "{\"workspaces\":{\"/Users/me/secret-project\":{}}}" }, "input": [] });
+        assert!(strip_metadata(&mut body));
+        assert_eq!(body, json!({ "model": "nvidia/x", "input": [] }));
+        assert!(!strip_metadata(&mut body));
+        assert!(codex_metadata("x-codex-turn-metadata") && codex_metadata("x-codex-window-id"));
+        assert!(!codex_metadata("authorization") && !codex_metadata("x-request-id") && !codex_metadata("content-type"));
     }
 
     #[test]

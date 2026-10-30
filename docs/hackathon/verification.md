@@ -144,11 +144,12 @@ cargo test -p equipe-core --lib token_factory
 | `without_a_key_nothing_signed_in_says_so_and_how` (core) | No key: "No engine is ready … or set NEBIUS_API_KEY …". |
 | `mock_verified_a_member_with_nothing_signed_in_writes_code_on_nemotron_through_the_real_codex` (core) | The daemon's runtime, the real `codex` in an empty `CODEX_HOME` (signed out), the stand-in: a member writes `made.rs` in its worktree, and on close it lands on the member's branch. |
 
-What Codex 0.154.0 sent the stand-in (captured by the first test, `--nocapture`):
+What Codex 0.154.0 sent the stand-in, through equipe's relay (captured by the first test,
+`--nocapture`; the relay keeps Codex's `client_metadata` and `x-codex-*` headers back):
 
 ```
 POST /v1/responses   accept: text/event-stream   authorization: Bearer test-not-a-key
-body keys: client_metadata include input instructions model parallel_tool_calls
+body keys: include input instructions model parallel_tool_calls
            prompt_cache_key reasoning store stream tool_choice tools
 model: nvidia/nemotron-mock-super   stream: true   store: false   tool_choice: auto
 parallel_tool_calls: true   reasoning: {summary: auto}   include: [reasoning.encrypted_content]

@@ -1,13 +1,14 @@
 //! MOCK-VERIFIED, not a real Token Factory run: the person's real, installed
 //! `codex app-server`, driven through equipe's own [`codex_app::run_turn`],
 //! on the provider config a member on Nebius Token Factory gets
-//! ([`codex_app::provider_args`]) — its `base_url` pointed at a stand-in
+//! ([`codex_app::Provider`]) — its `base_url` pointed at a stand-in
 //! Responses API on this machine, its key a dummy (`test-not-a-key`).
 //!
 //! The stand-in answers the first request with a function call that runs a
 //! shell command writing a file in the turn's folder, and the next with the
 //! final message. The test asserts that the command ran there, that the turn
-//! completed with that message, and what Codex sent: `POST /v1/responses`,
+//! completed with that message, and what reached the stand-in through equipe's
+//! relay ([`equipe_providers::relay`]): `POST /v1/responses`,
 //! `Authorization: Bearer test-not-a-key`, the `nvidia/…` model, function
 //! tools only, the call's output handed back by `call_id` — and that the key
 //! never reached the command. What it sent is printed (`--nocapture`), and
@@ -213,7 +214,7 @@ async fn the_real_codex_runs_a_members_turn_on_a_stand_in_token_factory() {
     let made = std::fs::read_to_string(cwd.join("made.txt")).ok();
     let key_seen = std::fs::read_to_string(cwd.join("key.txt")).ok();
     // The evidence, shown with --nocapture and on any failure below.
-    eprintln!("MOCK-VERIFIED (not a real Token Factory run). What codex sent the stand-in:\n{evidence}");
+    eprintln!("MOCK-VERIFIED (not a real Token Factory run). What codex sent the stand-in, through equipe's relay:\n{evidence}");
     eprintln!("activities: {activities:?}");
     let context = format!("\nrequests:\n{evidence}\nactivities: {activities:?}\noutcome: {outcome:?}");
 
@@ -233,6 +234,8 @@ async fn the_real_codex_runs_a_members_turn_on_a_stand_in_token_factory() {
     assert!(turns.len() >= 2, "a request for the call and one with its output{context}");
     for request in &turns {
         assert_eq!(request.header("authorization"), Some(format!("Bearer {KEY}").as_str()), "{context}");
+        // Codex's metadata for OpenAI (the workspace's paths among it) stays on this machine.
+        assert!(request.body.get("client_metadata").is_none() && !request.headers.iter().any(|(n, _)| n.starts_with("x-codex-")), "{context}");
         assert_eq!(request.body["model"], MODEL, "{context}");
         assert_eq!(request.body["stream"], true, "{context}");
         let tools = request.body["tools"].as_array().cloned().unwrap_or_default();
